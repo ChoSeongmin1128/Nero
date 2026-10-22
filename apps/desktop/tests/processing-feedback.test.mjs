@@ -13,8 +13,8 @@ test('recognition and summary stay visibly active without inventing an inference
   assert.equal(recognition.progress, null);
   assert.equal(recognition.cancelVisible, true);
   const summary = processingFeedback(running('summary', { message: '요약 중 (12/80)', totalBytes: 80, bytes: 12 }));
-  assert.equal(summary.title, '회의록 요약 중');
-  assert.equal(summary.detail, '요약 중 (12/80)');
+  assert.equal(summary.title, '요약 중');
+  assert.equal(summary.detail, '');
   assert.equal(summary.progress, null);
 });
 
@@ -69,12 +69,12 @@ test('terminal states stop activity and keep failure or cancellation messages av
   assert.equal(processingFeedback({ status: 'running' }).active, false);
 });
 
-test('OS memory signals show an independent warning without replacing the active stage', () => {
+test('OS memory observations do not interrupt normal summary activity', () => {
   for (const memoryState of ['warning', 'critical']) {
     const job = Object.freeze(running('summary', { memoryState, message: '요약 모델을 불러오고 있습니다.', modelReady: true, summaryReady: true }));
     const feedback = processingFeedback(job);
-    assert.match(feedback.warning, /시스템 메모리 경고/);
-    assert.equal(feedback.detail, '요약 모델을 불러오고 있습니다.');
+    assert.equal(feedback.warning, '');
+    assert.equal(feedback.detail, '');
     assert.equal(feedback.state, 'running');
     assert.equal(feedback.active, true);
     assert.equal(feedback.cancelVisible, true);
@@ -99,7 +99,7 @@ test('memory warnings disappear when cancelling or terminal without inventing a 
   for (const status of ['completed', 'failed', 'cancelled', 'idle']) {
     const feedback = processingFeedback({ ...base, status, failureKind: 'workerExit', message: '요약 실행기가 종료되었습니다.' });
     assert.equal(feedback.warning, '');
-    assert.equal(feedback.detail, '요약 실행기가 종료되었습니다.');
+    assert.equal(feedback.detail, status === 'failed' ? '요약하지 못했습니다. 원인을 확인하지 못했습니다.' : '요약 실행기가 종료되었습니다.');
   }
   assert.equal(processingFeedback({ ...base, status: 'running', message: '취소 중' }).warning, '');
   assert.equal(processingFeedback({ ...base, status: 'running' }, { cancelling: true }).warning, '');
@@ -126,8 +126,8 @@ test('summary commit keeps saving activity while hiding cancellation and memory 
     const feedback = processingFeedback(job, options);
     assert.equal(feedback.active, true);
     assert.equal(feedback.state, 'running');
-    assert.equal(feedback.title, '회의록 요약 중');
-    assert.equal(feedback.detail, '회의록을 저장하고 있습니다.');
+    assert.equal(feedback.title, '저장 중');
+    assert.equal(feedback.detail, '');
     assert.equal(feedback.cancelVisible, false);
     assert.equal(feedback.cancelDisabled, true);
     assert.equal(feedback.warning, '');
@@ -140,7 +140,7 @@ test('missing summary commit metadata retains cancellation and model jobs keep b
     const feedback = processingFeedback(running('summary', { summaryCommitting, memoryState: 'warning' }));
     assert.equal(feedback.cancelVisible, true);
     assert.equal(feedback.cancelDisabled, false);
-    assert.notEqual(feedback.warning, '');
+    assert.equal(feedback.warning, '');
   }
   const download = processingFeedback(running('summary-model', { summaryCommitting: true, totalBytes: 100, bytes: 25 }));
   assert.equal(download.cancelVisible, true);
@@ -157,4 +157,47 @@ test('terminology classification stays cancellable until the final transcript co
   assert.equal(saving.cancelDisabled, true);
   assert.equal(saving.detail, '음성 기록 저장 중');
   assert.equal(saving.progress, null);
+});
+
+
+test('summary phases replace raw source indexes with one stage label', () => {
+  for (const [phase, title] of Object.entries({ preparing: '요약 준비 중', summarizing: '요약 중', merging: '요약 마무리 중', saving: '저장 중' })) {
+    const feedback = processingFeedback(running('summary', { phase, message: '요약 중 (1/80)' }));
+    assert.equal(feedback.title, title);
+    assert.equal(feedback.detail, '');
+    assert.equal(feedback.progress, null);
+  }
+  assert.equal(processingFeedback(running('summary', { retryCount: 1 })).detail, '다시 시도 중');
+});
+
+test('summary failure explains confirmed causes and preserves only an existing summary', () => {
+  const job = { id: 'job', kind: 'summary', status: 'failed', failureKind: 'outputLimit', message: 'unsafe raw output' };
+  assert.equal(processingFeedback(job).detail, '요약 분량이 처리 한도를 넘어 완성하지 못했습니다.');
+  assert.match(processingFeedback({ ...job, hasPreviousSummary: true }).detail, /기존 요약은 유지/);
+  assert.doesNotMatch(processingFeedback({ ...job, hasPreviousSummary: false }).detail, /기존 요약/);
+  assert.match(processingFeedback({ ...job, failureKind: 'allocation' }).detail, /메모리.*다른 앱/);
+  assert.match(processingFeedback({ ...job, failureKind: 'unknown', memoryState: 'critical' }).detail, /원인을 확인하지 못/);
+});
+
+test('failure diagnostics expose only known labels and valid optional counts', () => {
+  const job = { id: 'job', kind: 'summary', status: 'failed', failureDetail: { stage: 'merge', finishReason: 'length', inputTokens: 3000, outputLimit: 2048, generatedTokens: 2048, response: 'private', path: '/private/file' } };
+  assert.deepEqual(processingFeedback(job).diagnostics, [['실패 단계', '요약 통합'], ['종료 이유', '출력 한도 도달'], ['입력 토큰 수', '3000'], ['출력 토큰 한도', '2048'], ['생성 토큰 수', '2048']]);
+  assert.deepEqual(processingFeedback({ ...job, failureDetail: { stage: 'private text', finishReason: '<script>', inputTokens: -1, outputLimit: Infinity, generatedTokens: null } }).diagnostics, []);
+  assert.deepEqual(processingFeedback({ ...job, status: 'running' }).diagnostics, []);
+});
+
+
+test('typed preflight failures keep their confirmed cause without exposing raw messages', () => {
+  const expected = {
+    modelNotReady: '요약 모델을 다시 준비해 주세요.',
+    meetingUnavailable: '회의를 찾을 수 없거나 휴지통에 있어 요약할 수 없습니다.',
+    recordingActive: '녹음을 마친 뒤 요약해 주세요.',
+    sourceChanged: '요약 중 회의 내용이 변경되어 저장하지 않았습니다. 다시 시도해 주세요.',
+    inputLimit: '요약할 내용이 입력 한도를 넘었습니다.',
+  };
+  for (const [failureKind, detail] of Object.entries(expected)) {
+    const feedback = processingFeedback({ id: 'job', kind: 'summary', status: 'failed', failureKind, message: '/private/model/path raw response', hasPreviousSummary: false });
+    assert.equal(feedback.detail, detail);
+    assert.doesNotMatch(feedback.detail, /private|raw response|기존 요약/);
+  }
 });

@@ -4,9 +4,13 @@ use crate::processing::{
     cancelled, directory, interruptible, matches_file, message, plain_file, Model, Processing,
     Progress, Worker,
 };
-use crate::summary_failure::{classify_worker_failure, recovery, Failure, FailureKind};
+use crate::summary_failure::{
+    classify_worker_failure, recovery, Failure, FailureDetail, FailureKind,
+};
 use grove_core::{CoreHandle, SummaryDraft, SummaryProvenance, Transcript};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+use std::collections::VecDeque;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::TcpListener;
@@ -240,19 +244,62 @@ impl Server {
             .map(Vec::len)
             .ok_or_else(|| Failure::new(FailureKind::Protocol, "입력 길이를 확인하지 못했습니다."))
     }
-    async fn generate(&self, user: &str, cancel: &AtomicBool) -> SummaryResult<Value> {
-        if self.input_tokens(user, cancel).await? + OUTPUT + MARGIN > CONTEXT {
-            return Err("요약 입력 한도를 넘었습니다. 기존 요약은 유지했습니다.".into());
-        }
-        let response=self.request("/v1/chat/completions",Some(json!({"messages":[{"role":"system","content":SYSTEM},{"role":"user","content":user}],"temperature":1.0,"top_k":64,"top_p":0.95,"min_p":0.0,"repeat_penalty":1.0,"presence_penalty":0.0,"frequency_penalty":0.0,"max_tokens":OUTPUT,"seed":0,"stream":false,"cache_prompt":false,"chat_template_kwargs":{"enable_thinking":false}})),cancel).await?;
+    async fn generate(
+        &self,
+        user: &str,
+        stage: &str,
+        range: Option<(usize, usize)>,
+        final_output: bool,
+        cancel: &AtomicBool,
+    ) -> SummaryResult<Generation> {
+        let input_tokens = self.input_tokens(user, cancel).await?;
+        let output_limit = remaining_output(input_tokens).ok_or_else(|| {
+            let mut error = Failure::new(FailureKind::InputLimit, "요약 입력 한도를 넘었습니다.");
+            error.detail = Some(generation_detail(None, stage, input_tokens, 0));
+            error
+        })?;
+        let output_limit = if final_output {
+            output_limit
+        } else {
+            OUTPUT.min(output_limit)
+        };
         let number = self.response_index.fetch_add(1, Ordering::Relaxed);
+        let metadata = json!({
+            "schemaVersion":1,"requestIndex":number,"stage":stage,
+            "sourceRange":range.map(|(first,last)|json!({"first":first,"last":last})),
+            "inputTokens":input_tokens,"outputLimit":output_limit,"context":CONTEXT,"margin":MARGIN,
+            "finalOutput":final_output,
+            "temperature":1.0,"topK":64,"topP":0.95,"seed":0,"thinking":false,
+            "responsePath":format!("response-{number}.json")
+        });
+        fs::write(
+            self.directory.join(format!("generation-{number}.json")),
+            serde_json::to_vec(&metadata).map_err(storage)?,
+        )
+        .map_err(storage)?;
+        let response=self.request("/v1/chat/completions",Some(json!({"messages":[{"role":"system","content":SYSTEM},{"role":"user","content":user}],"temperature":1.0,"top_k":64,"top_p":0.95,"min_p":0.0,"repeat_penalty":1.0,"presence_penalty":0.0,"frequency_penalty":0.0,"max_tokens":output_limit,"seed":0,"stream":false,"cache_prompt":false,"chat_template_kwargs":{"enable_thinking":false}})),cancel).await.map_err(|mut error| {
+            error.detail = Some(generation_detail(None, stage, input_tokens, output_limit));
+            error
+        })?;
         fs::write(
             self.directory.join(format!("response-{number}.json")),
             serde_json::to_vec(&response).map_err(storage)?,
         )
         .map_err(storage)?;
-        decode(&response)?;
-        Ok(response)
+        let detail = generation_detail(Some(&response), stage, input_tokens, output_limit);
+        let result = decode(&response).map_err(|mut error| {
+            error.detail = Some(detail.clone());
+            error
+        });
+        fs::write(
+            self.directory.join(format!("generation-{number}-outcome.json")),
+            serde_json::to_vec(&json!({"request":metadata,"detail":detail,"failureKind":result.as_ref().err().map(|e|e.kind)})).map_err(storage)?,
+        ).map_err(storage)?;
+        Ok(Generation {
+            text: result?,
+            response,
+            metadata,
+        })
     }
     async fn generate_structured(
         &self,
@@ -288,6 +335,38 @@ impl Server {
         .map_err(storage)?;
         structured_content(&response)?;
         Ok(response)
+    }
+}
+
+#[derive(Debug)]
+struct Generation {
+    text: String,
+    response: Value,
+    metadata: Value,
+}
+
+fn remaining_output(input_tokens: usize) -> Option<usize> {
+    CONTEXT
+        .checked_sub(input_tokens.checked_add(MARGIN)?)
+        .filter(|remaining| *remaining >= OUTPUT)
+}
+
+fn generation_detail(
+    response: Option<&Value>,
+    stage: &str,
+    input_tokens: usize,
+    output_limit: usize,
+) -> FailureDetail {
+    FailureDetail {
+        stage: stage.into(),
+        finish_reason: response
+            .and_then(|r| r["choices"][0]["finish_reason"].as_str())
+            .map(str::to_owned),
+        input_tokens: u32::try_from(input_tokens).ok(),
+        output_limit: u32::try_from(output_limit).ok(),
+        generated_tokens: response
+            .and_then(|r| r["usage"]["completion_tokens"].as_u64())
+            .and_then(|v| u32::try_from(v).ok()),
     }
 }
 
@@ -348,14 +427,40 @@ fn structured_content(response: &Value) -> SummaryResult<&str> {
     }
     Ok(text)
 }
-fn decode(response: &Value) -> Result<String, String> {
+fn decode(response: &Value) -> SummaryResult<String> {
     let choice = &response["choices"][0];
-    if choice["finish_reason"] != "stop" {
-        return Err("요약이 끝까지 생성되지 않았습니다. 기존 요약은 유지했습니다.".into());
+    let finish = choice["finish_reason"]
+        .as_str()
+        .ok_or_else(|| Failure::new(FailureKind::Protocol, "요약 응답의 종료 상태가 없습니다."))?;
+    if finish != "stop" {
+        let mut error = Failure::new(
+            if finish == "length" {
+                FailureKind::OutputLimit
+            } else {
+                FailureKind::Output
+            },
+            if finish == "length" {
+                "출력 한도에 도달해 회의록을 완성하지 못했습니다."
+            } else {
+                "회의록 생성이 완료되지 않았습니다."
+            },
+        );
+        error.detail = Some(FailureDetail {
+            stage: "summary".into(),
+            finish_reason: Some(finish.into()),
+            input_tokens: response["usage"]["prompt_tokens"]
+                .as_u64()
+                .and_then(|v| u32::try_from(v).ok()),
+            output_limit: None,
+            generated_tokens: response["usage"]["completion_tokens"]
+                .as_u64()
+                .and_then(|v| u32::try_from(v).ok()),
+        });
+        return Err(error);
     }
     let text = choice["message"]["content"]
         .as_str()
-        .ok_or("요약 본문이 없습니다.")?;
+        .ok_or_else(|| Failure::new(FailureKind::Protocol, "요약 본문이 없습니다."))?;
     if text.trim().is_empty() || text.contains('\0') || text.len() > 2 * 1024 * 1024 {
         return Err("요약 본문이 올바르지 않습니다.".into());
     }
@@ -381,10 +486,7 @@ fn validate_references(text: &str, count: usize) -> Result<(), String> {
                 .parse::<usize>()
                 .map_err(|_| "요약의 근거 번호가 올바르지 않습니다.")?;
             if number == 0 || number > count {
-                return Err(
-                    "요약의 근거 번호가 음성 기록 범위를 벗어났습니다. 기존 요약은 유지했습니다."
-                        .into(),
-                );
+                return Err("요약의 근거 번호가 음성 기록 범위를 벗어났습니다.".into());
             }
         }
     }
@@ -590,43 +692,114 @@ async fn summarize(
     process: &Processing,
     cancel: &AtomicBool,
 ) -> SummaryResult<(String, Value)> {
+    check_cancel(cancel)?;
+    fs::write(
+        server.directory.join("source-metadata.json"),
+        serde_json::to_vec(&json!({
+            "sourceVersion":source.version,
+            "sourceSha256":format!("{:x}",Sha256::digest(serde_json::to_vec(source).map_err(storage)?)),
+            "utteranceCount":source.segments.len(),"context":CONTEXT,"planningOutputReserve":OUTPUT,"margin":MARGIN
+        })).map_err(storage)?,
+    ).map_err(storage)?;
     let lines = source_lines(source);
     let full = transcript_user(&lines);
     let mut receipts = Vec::new();
-    if server.input_tokens(&full, cancel).await? + OUTPUT + MARGIN <= CONTEXT {
-        let response = server.generate(&full, cancel).await?;
-        let text = decode(&response)?;
-        return Ok((text, json!({"strategy":"whole","responses":[response]})));
-    }
+    let mut repartitions = Vec::new();
+    let mut pending = VecDeque::new();
     let mut start = 0;
-    let mut parts = Vec::new();
-    while start < lines.len() {
-        cancelled(cancel)?;
-        process.update(|p| p.message = format!("요약 중 ({}/{})", start + 1, lines.len()));
-        let (mut low, mut high) = (start + 1, lines.len() + 1);
-        let mut fit = None;
-        while low < high {
-            let end = (low + high) / 2;
-            let user = transcript_user(&lines[start..end]);
-            if server.input_tokens(&user, cancel).await? + OUTPUT + MARGIN <= CONTEXT {
-                fit = Some(end);
-                low = end + 1;
-            } else {
-                high = end;
+    if remaining_output(server.input_tokens(&full, cancel).await?).is_some() {
+        process.update(|p| {
+            p.phase = Some("summarizing".into());
+            p.message = "회의 내용을 요약하고 있습니다.".into();
+        });
+        match server
+            .generate(&full, "whole", Some((1, lines.len())), true, cancel)
+            .await
+        {
+            Ok(generated) => {
+                return Ok((
+                    generated.text,
+                    json!({"strategy":"whole","responses":[generated.response],"requests":[generated.metadata]}),
+                ))
             }
+            Err(error) if error.kind == FailureKind::OutputLimit && lines.len() > 1 => {
+                let middle = lines.len() / 2;
+                pending.push_back((0, middle));
+                pending.push_back((middle, lines.len()));
+                start = lines.len();
+                repartitions
+                    .push(json!({"stage":"whole","first":1,"last":lines.len(),"failure":error}));
+            }
+            Err(error) => return Err(error),
         }
-        let end =
-            fit.ok_or("한 발언이 요약 입력 한도를 넘습니다. 음성 기록을 나눠 수정해 주세요.")?;
-        let response = server
-            .generate(&transcript_user(&lines[start..end]), cancel)
-            .await?;
-        parts.push(decode(&response)?);
-        receipts.push(json!({"first":start+1,"last":end,"response":response}));
-        start = end;
-        if parts.len() > 128 {
-            return Err(
-                "회의가 너무 길어 요약을 완료하지 못했습니다. 기존 요약은 유지했습니다.".into(),
-            );
+    }
+    let mut parts = Vec::new();
+    let mut part_ranges = Vec::new();
+    while start < lines.len() || !pending.is_empty() {
+        check_cancel(cancel)?;
+        if parts.len() >= 128 {
+            return Err(Failure::new(
+                FailureKind::OutputLimit,
+                "회의 요약의 분할 한도를 넘었습니다.",
+            ));
+        }
+        let (first, end) = match pending.pop_front() {
+            Some(range) => range,
+            None => {
+                let (mut low, mut high) = (start + 1, lines.len() + 1);
+                let mut fit = None;
+                while low < high {
+                    let end = (low + high) / 2;
+                    let user = transcript_user(&lines[start..end]);
+                    if remaining_output(server.input_tokens(&user, cancel).await?).is_some() {
+                        fit = Some(end);
+                        low = end + 1;
+                    } else {
+                        high = end;
+                    }
+                }
+                let end = fit.ok_or_else(|| {
+                    Failure::new(
+                        FailureKind::InputLimit,
+                        "한 발언이 요약 입력 한도를 넘습니다. 음성 기록을 나눠 수정해 주세요.",
+                    )
+                })?;
+                let range = (start, end);
+                start = end;
+                range
+            }
+        };
+        process.update(|p| {
+            p.phase = Some("summarizing".into());
+            p.message = format!("구간 요약 중 ({}번째)", parts.len() + 1);
+        });
+        match server
+            .generate(
+                &transcript_user(&lines[first..end]),
+                "map",
+                Some((first + 1, end)),
+                false,
+                cancel,
+            )
+            .await
+        {
+            Ok(generated) => {
+                parts.push(generated.text);
+                part_ranges.push((first + 1, end));
+                receipts.push(json!({"first":first+1,"last":end,"response":generated.response,"request":generated.metadata}));
+            }
+            Err(error)
+                if error.kind == FailureKind::OutputLimit
+                    && end - first > 1
+                    && parts.len() + pending.len() + 2 <= 128 =>
+            {
+                let middle = first + (end - first) / 2;
+                pending.push_front((middle, end));
+                pending.push_front((first, middle));
+                repartitions
+                    .push(json!({"stage":"map","first":first+1,"last":end,"failure":error}));
+            }
+            Err(error) => return Err(error),
         }
     }
     let mut levels = Vec::new();
@@ -634,46 +807,63 @@ async fn summarize(
         if parts.len() == 1 {
             return Ok((
                 parts.remove(0),
-                json!({"strategy":"chunks-hierarchical-merge","source_count":lines.len(),"chunks":receipts,"levels":levels}),
+                json!({"strategy":"chunks-hierarchical-merge","source_count":lines.len(),"chunks":receipts,"levels":levels,"repartitions":repartitions}),
             ));
         }
-        process.update(|p| p.message = "요약을 정리하고 있습니다.".into());
+        process.update(|p| {
+            p.phase = Some("merging".into());
+            p.message = "구간 요약을 통합하고 있습니다.".into();
+        });
         let mut next = Vec::new();
+        let mut next_ranges = Vec::new();
         let mut groups = Vec::new();
         let mut first = 0;
         while first < parts.len() {
             let mut end = first;
             while end < parts.len() {
                 let user = merge_user(&parts[first..=end]);
-                if server.input_tokens(&user, cancel).await? + OUTPUT + MARGIN > CONTEXT {
+                if remaining_output(server.input_tokens(&user, cancel).await?).is_none() {
                     break;
                 }
                 end += 1;
             }
             if end == first {
-                return Err("중간 요약이 입력 한도를 넘었습니다. 기존 요약은 유지했습니다.".into());
+                return Err(Failure::new(
+                    FailureKind::InputLimit,
+                    "중간 요약이 입력 한도를 넘었습니다.",
+                ));
             }
             if end == first + 1 {
                 next.push(parts[first].clone());
+                next_ranges.push(part_ranges[first]);
                 groups.push(json!({"first":first,"last":end,"carried":true}));
             } else {
-                let response = server
-                    .generate(&merge_user(&parts[first..end]), cancel)
+                let range = (part_ranges[first].0, part_ranges[end - 1].1);
+                let generated = server
+                    .generate(
+                        &merge_user(&parts[first..end]),
+                        "merge",
+                        Some(range),
+                        first == 0 && end == parts.len(),
+                        cancel,
+                    )
                     .await?;
-                next.push(decode(&response)?);
-                groups.push(json!({"first":first,"last":end,"response":response}));
+                next.push(generated.text);
+                next_ranges.push(range);
+                groups.push(json!({"first":first,"last":end,"response":generated.response,"request":generated.metadata}));
             }
             first = end;
         }
         if next.len() >= parts.len() {
-            return Err("요약을 더 통합할 수 없습니다. 기존 요약은 유지했습니다.".into());
+            return Err("요약을 더 통합할 수 없습니다.".into());
         }
         levels.push(groups);
         parts = next;
+        part_ranges = next_ranges;
     }
     Err(Failure::new(
         FailureKind::Output,
-        "회의가 길어 요약 통합 한도를 넘었습니다. 기존 요약은 유지했습니다.",
+        "회의가 길어 요약 통합 한도를 넘었습니다.",
     ))
 }
 async fn monitor_attempt<T>(
@@ -734,6 +924,9 @@ where
         let folder = directory(path, &format!("attempt-{number}")).map_err(storage)?;
         process.update(|p| {
             p.retry_count = number;
+            if p.kind == "summary" {
+                p.phase = Some("preparing".into());
+            }
             p.message = loading_messages[usize::from(number)].into();
         });
         let result = attempt(gpu, folder.clone()).await;
@@ -746,7 +939,7 @@ where
         } else {
             result
         };
-        let record = json!({"attempt":number,"backend":if gpu {"gpu"} else {"cpu"},"failureKind":result.as_ref().err().map(|error|error.kind)});
+        let record = json!({"attempt":number,"backend":if gpu {"gpu"} else {"cpu"},"failureKind":result.as_ref().err().map(|error|error.kind),"failureDetail":result.as_ref().err().and_then(|error|error.detail.as_ref())});
         let evidence = fs::write(
             folder.join("outcome.json"),
             serde_json::to_vec(&record).map_err(storage)?,
@@ -903,6 +1096,36 @@ async fn run_summary(
     .await
 }
 
+fn preflight_core_failure(error: grove_core::CoreError) -> Failure {
+    let kind = match &error {
+        grove_core::CoreError::MeetingNotFound => FailureKind::MeetingUnavailable,
+        grove_core::CoreError::RecordingBusy => FailureKind::RecordingActive,
+        grove_core::CoreError::Storage(_) => FailureKind::Storage,
+        grove_core::CoreError::Unavailable => FailureKind::EngineUnavailable,
+        _ => FailureKind::Input,
+    };
+    Failure::new(kind, message(error))
+}
+
+fn commit_summary_failure(error: grove_core::CoreError) -> Failure {
+    let kind = match &error {
+        // commit_summary uses InvalidState only for source/current-summary CAS failures.
+        grove_core::CoreError::InvalidState(_) => FailureKind::SourceChanged,
+        grove_core::CoreError::MeetingNotFound => FailureKind::MeetingUnavailable,
+        grove_core::CoreError::Storage(_) => FailureKind::Storage,
+        _ => FailureKind::Input,
+    };
+    Failure::new(kind, message(error))
+}
+
+fn report_summary_failure(process: &Processing, error: Failure) -> String {
+    process.update(|p| {
+        p.failure_kind = Some(error.kind);
+        p.failure_detail = error.detail.clone();
+    });
+    error.message
+}
+
 impl Processing {
     pub fn prepare_summary(self: &Arc<Self>) -> Result<Progress, String> {
         self.prepare_named_model(MANIFEST, "summary-model", "Gemma4-E4B")
@@ -930,81 +1153,95 @@ impl Processing {
             "summary",
             Some(meeting_id.clone()),
             move |process, cancel, path| {
-                if !core
-                    .snapshot()
-                    .map_err(message)?
-                    .meetings
-                    .iter()
-                    .any(|meeting| meeting.id == meeting_id && meeting.deleted_at.is_none())
-                {
-                    return Err("휴지통에 있는 회의는 요약할 수 없습니다.".into());
-                }
-                if core.snapshot().map_err(message)?.session.is_some_and(|s| {
-                    matches!(
-                        s.state,
-                        grove_core::SessionState::Recording | grove_core::SessionState::Paused
-                    )
-                }) {
-                    return Err("녹음을 마친 뒤 요약해 주세요.".into());
-                }
-                process.update(|p| p.message = "모델을 확인하고 있습니다.".into());
-                let spec = model();
-                let dir = model_dir(&process)?;
-                for item in &spec.files {
-                    if !matches_file(&dir.join(&item.name), item, &cancel) {
-                        cancelled(&cancel)?;
-                        crate::processing::invalidate_readiness(&dir)?;
-                        return Err("요약 모델을 다시 준비해 주세요.".into());
+                let result = (|| -> SummaryResult<Option<String>> {
+                    process.update(|p| {
+                        p.phase = Some("preparing".into());
+                        p.has_previous_summary = expected.is_some();
+                    });
+                    if !core
+                        .snapshot()
+                        .map_err(preflight_core_failure)?
+                        .meetings
+                        .iter()
+                        .any(|meeting| meeting.id == meeting_id && meeting.deleted_at.is_none())
+                    {
+                        return Err(Failure::new(
+                            FailureKind::MeetingUnavailable,
+                            "휴지통에 있는 회의는 요약할 수 없습니다.",
+                        ));
                     }
-                }
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .map_err(message)?;
-                let outcome = runtime.block_on(run_summary(
-                    &process,
-                    &source,
-                    &dir.join(&spec.files[0].name),
-                    &path,
-                    &cancel,
-                ));
-                let (text, receipt) = outcome.map_err(|error| {
-                    process.update(|p| p.failure_kind = Some(error.kind));
-                    error.message
-                })?;
-                cancelled(&cancel)?;
-                validate_references(&text, source.segments.len()).map_err(|error| {
-                    process.update(|p| p.failure_kind = Some(FailureKind::Output));
-                    error
-                })?;
-                let draft = SummaryDraft {
-                    source,
-                    expected_id: expected,
-                    text,
-                    provenance: SummaryProvenance {
-                        model: spec.repository,
-                        model_revision: spec.revision,
-                        model_sha256: spec.files[0].sha256.clone(),
-                        runtime: "llama.cpp b11734-f3fb2fcdb".into(),
-                        prompt_version: "nero-minutes-speakers-v2".into(),
-                        template: "minutes".into(),
-                    },
-                    receipt,
-                };
-                process.commit_summary(&cancel, || {
-                    core.commit_summary(&meeting_id, draft).map_err(|error| {
-                        process.update(|p| {
-                            p.failure_kind =
-                                Some(if matches!(error, grove_core::CoreError::Storage(_)) {
-                                    FailureKind::Storage
-                                } else {
-                                    FailureKind::Input
-                                })
-                        });
-                        message(error)
-                    })
-                })?;
-                Ok(Some(meeting_id))
+                    if core
+                        .snapshot()
+                        .map_err(preflight_core_failure)?
+                        .session
+                        .is_some_and(|s| {
+                            matches!(
+                                s.state,
+                                grove_core::SessionState::Recording
+                                    | grove_core::SessionState::Paused
+                            )
+                        })
+                    {
+                        return Err(Failure::new(
+                            FailureKind::RecordingActive,
+                            "녹음을 마친 뒤 요약해 주세요.",
+                        ));
+                    }
+                    process.update(|p| p.message = "모델을 확인하고 있습니다.".into());
+                    let spec = model();
+                    let dir = model_dir(&process).map_err(storage)?;
+                    for item in &spec.files {
+                        if !matches_file(&dir.join(&item.name), item, &cancel) {
+                            check_cancel(&cancel)?;
+                            crate::processing::invalidate_readiness(&dir).map_err(storage)?;
+                            return Err(Failure::new(
+                                FailureKind::ModelNotReady,
+                                "요약 모델을 다시 준비해 주세요.",
+                            ));
+                        }
+                    }
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .map_err(|_| {
+                            Failure::new(
+                                FailureKind::EngineUnavailable,
+                                "요약 실행 환경을 준비하지 못했습니다.",
+                            )
+                        })?;
+                    let outcome = runtime.block_on(run_summary(
+                        &process,
+                        &source,
+                        &dir.join(&spec.files[0].name),
+                        &path,
+                        &cancel,
+                    ));
+                    let (text, receipt) = outcome?;
+                    check_cancel(&cancel)?;
+                    validate_references(&text, source.segments.len())
+                        .map_err(|error| Failure::new(FailureKind::Output, error))?;
+                    let draft = SummaryDraft {
+                        source,
+                        expected_id: expected,
+                        text,
+                        provenance: SummaryProvenance {
+                            model: spec.repository,
+                            model_revision: spec.revision,
+                            model_sha256: spec.files[0].sha256.clone(),
+                            runtime: "llama.cpp b11734-f3fb2fcdb".into(),
+                            prompt_version: "nero-minutes-speakers-v3".into(),
+                            template: "minutes".into(),
+                        },
+                        receipt,
+                    };
+                    process.update(|p| p.phase = Some("saving".into()));
+                    let saved = process
+                        .commit_summary(&cancel, || Ok(core.commit_summary(&meeting_id, draft)))
+                        .map_err(|error| Failure::new(FailureKind::Cancelled, error))?;
+                    saved.map_err(commit_summary_failure)?;
+                    Ok(Some(meeting_id))
+                })();
+                result.map_err(|error| report_summary_failure(&process, error))
             },
         )
     }
@@ -1205,6 +1442,7 @@ mod tests {
             (FailureKind::Protocol, 1),
             (FailureKind::Input, 1),
             (FailureKind::Output, 1),
+            (FailureKind::OutputLimit, 1),
             (FailureKind::Storage, 1),
             (FailureKind::Cleanup, 1),
         ] {
@@ -1349,10 +1587,15 @@ mod tests {
     }
     #[test]
     fn incomplete_or_empty_generation_is_not_saved_as_success() {
-        assert!(decode(
-            &json!({"choices":[{"finish_reason":"length","message":{"content":"부분"}}]})
-        )
-        .is_err());
+        let truncated=decode(&json!({"choices":[{"finish_reason":"length","message":{"content":"부분"}}],"usage":{"prompt_tokens":3100,"completion_tokens":2048}})).unwrap_err();
+        assert_eq!(truncated.kind, FailureKind::OutputLimit);
+        assert_eq!(truncated.detail.unwrap().generated_tokens, Some(2048));
+        assert_eq!(
+            decode(&json!({"choices":[{"message":{"content":"본문"}}]}))
+                .unwrap_err()
+                .kind,
+            FailureKind::Protocol
+        );
         assert!(
             decode(&json!({"choices":[{"finish_reason":"stop","message":{"content":" "}}]}))
                 .is_err()
@@ -1362,6 +1605,377 @@ mod tests {
                 .unwrap(),
             "결정 [1]"
         );
+    }
+
+    #[test]
+    fn summary_output_uses_only_measured_remaining_context() {
+        assert_eq!(remaining_output(3100), Some(4964));
+        assert_eq!(remaining_output(5600), Some(2464));
+        assert_eq!(remaining_output(CONTEXT - OUTPUT - MARGIN), Some(OUTPUT));
+        assert_eq!(remaining_output(CONTEXT - OUTPUT - MARGIN + 1), None);
+        assert_eq!(remaining_output(usize::MAX), None);
+    }
+
+    #[test]
+    fn preflight_and_commit_failures_keep_their_known_wire_reason() {
+        let temp = tempfile::tempdir().unwrap();
+        let process = Processing::new(temp.path().into(), temp.path().into());
+        for (kind, wire) in [
+            (FailureKind::ModelNotReady, "modelNotReady"),
+            (FailureKind::MeetingUnavailable, "meetingUnavailable"),
+            (FailureKind::RecordingActive, "recordingActive"),
+            (FailureKind::SourceChanged, "sourceChanged"),
+            (FailureKind::InputLimit, "inputLimit"),
+        ] {
+            let message = report_summary_failure(&process, Failure::new(kind, "알려진 실패 원인"));
+            assert_eq!(message, "알려진 실패 원인");
+            assert_eq!(
+                serde_json::to_value(process.snapshot()).unwrap()["failureKind"],
+                wire
+            );
+            assert_eq!(recovery(kind, true, false), None);
+        }
+        assert_eq!(
+            preflight_core_failure(grove_core::CoreError::InvalidState("준비 상태".into())).kind,
+            FailureKind::Input
+        );
+        assert_eq!(
+            preflight_core_failure(grove_core::CoreError::RecordingBusy).kind,
+            FailureKind::RecordingActive
+        );
+        assert_eq!(
+            commit_summary_failure(grove_core::CoreError::InvalidState("CAS 충돌".into())).kind,
+            FailureKind::SourceChanged
+        );
+        assert_eq!(
+            commit_summary_failure(grove_core::CoreError::InvalidInput("내용 오류".into())).kind,
+            FailureKind::Input
+        );
+        assert_eq!(
+            commit_summary_failure(grove_core::CoreError::Storage("저장 실패".into())).kind,
+            FailureKind::Storage
+        );
+    }
+
+    #[cfg(unix)]
+    struct ScriptedServer {
+        server: Server,
+        done: Arc<AtomicBool>,
+        thread: Option<std::thread::JoinHandle<()>>,
+        requests: Arc<std::sync::Mutex<Vec<Value>>>,
+    }
+    #[cfg(unix)]
+    impl Drop for ScriptedServer {
+        fn drop(&mut self) {
+            self.done.store(true, Ordering::Release);
+            self.thread.take().unwrap().join().unwrap();
+        }
+    }
+    #[cfg(unix)]
+    fn scripted_server(
+        path: &Path,
+        tokenize: impl Fn(&str) -> usize + Send + 'static,
+        respond: impl Fn(&Value) -> Value + Send + 'static,
+    ) -> ScriptedServer {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let done = Arc::new(AtomicBool::new(false));
+        let flag = done.clone();
+        let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = requests.clone();
+        let thread = std::thread::spawn(move || {
+            'requests: while !flag.load(Ordering::Acquire) {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(stream) => stream,
+                    Err(_) => {
+                        std::thread::sleep(Duration::from_millis(2));
+                        continue;
+                    }
+                };
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut bytes = Vec::new();
+                let mut buffer = [0; 4096];
+                let (headers, end) = loop {
+                    let count = stream.read(&mut buffer).unwrap();
+                    if count == 0 {
+                        continue 'requests;
+                    }
+                    bytes.extend_from_slice(&buffer[..count]);
+                    if let Some(index) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+                        break (
+                            String::from_utf8_lossy(&bytes[..index]).to_string(),
+                            index + 4,
+                        );
+                    }
+                };
+                let length = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.to_lowercase()
+                            .strip_prefix("content-length:")
+                            .map(|v| v.trim().parse::<usize>().unwrap())
+                    })
+                    .unwrap();
+                while bytes.len() < end + length {
+                    let count = stream.read(&mut buffer).unwrap();
+                    if count == 0 {
+                        continue 'requests;
+                    }
+                    bytes.extend_from_slice(&buffer[..count]);
+                }
+                let request: Value = serde_json::from_slice(&bytes[end..end + length]).unwrap();
+                let response = if headers.starts_with("POST /apply-template ") {
+                    json!({"prompt":format!("{}{}",request["messages"][0]["content"].as_str().unwrap(),request["messages"][1]["content"].as_str().unwrap())})
+                } else if headers.starts_with("POST /tokenize ") {
+                    json!({"tokens":vec![0;tokenize(request["content"].as_str().unwrap())]})
+                } else {
+                    recorded.lock().unwrap().push(request.clone());
+                    respond(&request)
+                };
+                let body = serde_json::to_vec(&response).unwrap();
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream
+                    .write_all(header.as_bytes())
+                    .and_then(|_| stream.write_all(&body));
+            }
+        });
+        ScriptedServer {
+            server: Server {
+                worker: Worker(Command::new("/usr/bin/true").spawn().unwrap()),
+                client: reqwest::Client::builder().no_proxy().build().unwrap(),
+                url: format!("http://{address}"),
+                key: "test-token".into(),
+                directory: path.into(),
+                response_index: AtomicUsize::new(0),
+                log: path.join("worker.log"),
+                gpu: false,
+            },
+            done,
+            thread: Some(thread),
+            requests,
+        }
+    }
+    #[cfg(unix)]
+    fn numbered_source(count: usize) -> Transcript {
+        serde_json::from_value(json!({"version":{"id":"test","revision":0},"sourceSessionId":"audio","model":"test","modelRevision":"test",
+            "segments":(0..count).map(|i|json!({"id":format!("segment-{i}"),"start":i,"end":i+1,"text":format!("합성 발언 {}",i+1),"originalText":format!("합성 발언 {}",i+1)})).collect::<Vec<_>>()
+        })).unwrap()
+    }
+    #[cfg(unix)]
+    fn utterance_numbers(user: &str) -> Vec<usize> {
+        user.lines()
+            .filter_map(|line| {
+                line.strip_prefix('[')?
+                    .split_once(']')?
+                    .0
+                    .parse::<usize>()
+                    .ok()
+            })
+            .collect()
+    }
+    #[cfg(unix)]
+    #[test]
+    fn final_merge_uses_its_own_remaining_budget_and_preserves_typed_exhaustion() {
+        for exhausted in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let mock = scripted_server(
+                temp.path(),
+                |prompt| {
+                    if prompt.contains("<notes>") {
+                        3100
+                    } else if prompt.contains("[1]") && prompt.contains("[4]") {
+                        7000
+                    } else if prompt.contains("[1]") {
+                        5600
+                    } else {
+                        2500
+                    }
+                },
+                move |request| {
+                    let user = request["messages"][1]["content"].as_str().unwrap();
+                    let merging = user.contains("<notes>");
+                    let limit = request["max_tokens"].as_u64().unwrap();
+                    json!({"choices":[{"finish_reason":if merging && (exhausted || limit<3000) {"length"} else {"stop"},"message":{"content":if merging {"회의록 [1, 4]"} else {"구간 요약 [1]"}}}],"usage":{"prompt_tokens":if merging {3100} else if user.contains("[1]") {5600} else {2500},"completion_tokens":if merging {if exhausted {limit} else {2400}} else if user.contains("[1]") {1600} else {700}}})
+                },
+            );
+            let process = Processing::new(temp.path().into(), temp.path().into());
+            let result = runtime().block_on(summarize(
+                &mock.server,
+                &numbered_source(4),
+                &process,
+                &AtomicBool::new(false),
+            ));
+            if exhausted {
+                let error = result.unwrap_err();
+                assert_eq!(error.kind, FailureKind::OutputLimit);
+                assert_eq!(
+                    error.detail,
+                    Some(FailureDetail {
+                        stage: "merge".into(),
+                        finish_reason: Some("length".into()),
+                        input_tokens: Some(3100),
+                        output_limit: Some(4964),
+                        generated_tokens: Some(4964)
+                    })
+                );
+            } else {
+                let (text, receipt) = result.unwrap();
+                assert_eq!(text, "회의록 [1, 4]");
+                assert_eq!(receipt["levels"][0][0]["request"]["outputLimit"], 4964);
+            }
+            let requests = mock.requests.lock().unwrap();
+            assert_eq!(
+                requests
+                    .iter()
+                    .map(|r| r["max_tokens"].as_u64().unwrap())
+                    .collect::<Vec<_>>(),
+                vec![2048, 2048, 4964]
+            );
+            let metadata: Value =
+                serde_json::from_slice(&fs::read(temp.path().join("generation-2.json")).unwrap())
+                    .unwrap();
+            assert_eq!(metadata["stage"], "merge");
+            assert_eq!(metadata["sourceRange"], json!({"first":1,"last":4}));
+            assert!(metadata.get("messages").is_none());
+        }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn only_the_failed_map_range_is_split_without_repeating_completed_ranges() {
+        let temp = tempfile::tempdir().unwrap();
+        let mock = scripted_server(
+            temp.path(),
+            |prompt| {
+                if prompt.contains("<notes>") {
+                    1000
+                } else if utterance_numbers(prompt).len() > 3 {
+                    7000
+                } else {
+                    5000
+                }
+            },
+            |request| {
+                let user = request["messages"][1]["content"].as_str().unwrap();
+                let numbers = utterance_numbers(user);
+                json!({"choices":[{"finish_reason":if numbers==vec![4,5,6] {"length"} else {"stop"},"message":{"content":"완성된 요약 [1]"}}]})
+            },
+        );
+        let process = Processing::new(temp.path().into(), temp.path().into());
+        let (_, receipt) = runtime()
+            .block_on(summarize(
+                &mock.server,
+                &numbered_source(6),
+                &process,
+                &AtomicBool::new(false),
+            ))
+            .unwrap();
+        let accepted: Vec<_> = receipt["chunks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|chunk| chunk["first"].as_u64().unwrap()..=chunk["last"].as_u64().unwrap())
+            .collect();
+        assert_eq!(accepted, (1..=6).collect::<Vec<_>>());
+        let seen: Vec<_> = mock
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|r| utterance_numbers(r["messages"][1]["content"].as_str().unwrap()))
+            .filter(|ids| !ids.is_empty())
+            .collect();
+        assert_eq!(
+            seen,
+            vec![vec![1, 2, 3], vec![4, 5, 6], vec![4], vec![5, 6]]
+        );
+        assert_eq!(receipt["repartitions"].as_array().unwrap().len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn intermediate_merges_keep_the_reinput_cap_until_one_final_group_remains() {
+        let temp = tempfile::tempdir().unwrap();
+        let mock = scripted_server(
+            temp.path(),
+            |prompt| {
+                if prompt.contains("<notes>") {
+                    if prompt.contains("oversized")
+                        || prompt.matches("part-").count() + prompt.matches("merged-").count() > 2
+                    {
+                        7000
+                    } else {
+                        1000
+                    }
+                } else if utterance_numbers(prompt).len() > 1 {
+                    7000
+                } else {
+                    1000
+                }
+            },
+            |request| {
+                let user = request["messages"][1]["content"].as_str().unwrap();
+                let content = if user.contains("<notes>") {
+                    if user.contains("merged-") {
+                        "최종 회의록 [1]".into()
+                    } else if request["max_tokens"].as_u64().unwrap() > OUTPUT as u64 {
+                        "oversized".into()
+                    } else {
+                        "merged-a".into()
+                    }
+                } else {
+                    format!("part-{}", utterance_numbers(user)[0])
+                };
+                json!({"choices":[{"finish_reason":"stop","message":{"content":content}}]})
+            },
+        );
+        let process = Processing::new(temp.path().into(), temp.path().into());
+        let (text, receipt) = runtime()
+            .block_on(summarize(
+                &mock.server,
+                &numbered_source(3),
+                &process,
+                &AtomicBool::new(false),
+            ))
+            .unwrap();
+        assert_eq!(text, "최종 회의록 [1]");
+        let requests = mock.requests.lock().unwrap();
+        assert_eq!(requests.len(), 5);
+        assert!(requests[..4].iter().all(|r| r["max_tokens"] == OUTPUT));
+        assert_eq!(requests[4]["max_tokens"], CONTEXT - 1000 - MARGIN);
+        assert_eq!(receipt["levels"][0][0]["request"]["finalOutput"], false);
+        assert_eq!(receipt["levels"][1][0]["request"]["finalOutput"], true);
+    }
+    #[cfg(unix)]
+    #[test]
+    fn cancellation_of_an_incomplete_whole_result_prevents_split_generation() {
+        let temp = tempfile::tempdir().unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let flag = cancel.clone();
+        let mock = scripted_server(
+            temp.path(),
+            |_| 1000,
+            move |_| {
+                flag.store(true, Ordering::Release);
+                json!({"choices":[{"finish_reason":"length","message":{"content":"부분"}}]})
+            },
+        );
+        let process = Processing::new(temp.path().into(), temp.path().into());
+        let error = runtime()
+            .block_on(summarize(
+                &mock.server,
+                &numbered_source(4),
+                &process,
+                &cancel,
+            ))
+            .unwrap_err();
+        assert_eq!(error.kind, FailureKind::Cancelled);
+        assert_eq!(mock.requests.lock().unwrap().len(), 1);
     }
     #[test]
     fn source_numbers_outside_transcript_are_rejected() {

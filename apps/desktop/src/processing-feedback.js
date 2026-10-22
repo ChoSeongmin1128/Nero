@@ -9,6 +9,43 @@ const jobTitles = {
   summary: '회의록 요약',
 };
 
+const summaryStages = {
+  preparing: '요약 준비 중',
+  summarizing: '요약 중',
+  merging: '요약 마무리 중',
+  saving: '저장 중',
+};
+const summaryFailures = {
+  modelNotReady: '요약 모델을 다시 준비해 주세요.',
+  meetingUnavailable: '회의를 찾을 수 없거나 휴지통에 있어 요약할 수 없습니다.',
+  recordingActive: '녹음을 마친 뒤 요약해 주세요.',
+  sourceChanged: '요약 중 회의 내용이 변경되어 저장하지 않았습니다. 다시 시도해 주세요.',
+  inputLimit: '요약할 내용이 입력 한도를 넘었습니다.',
+  outputLimit: '요약 분량이 처리 한도를 넘어 완성하지 못했습니다.',
+  allocation: '요약에 필요한 메모리를 확보하지 못했습니다. 다른 앱을 닫은 뒤 다시 시도해 주세요.',
+  backendUnavailable: '요약 처리 장치를 사용할 수 없습니다. 앱을 다시 연 뒤 시도해 주세요.',
+  engineUnavailable: '요약 처리 중 오류가 발생했습니다.',
+  protocol: '요약 결과를 읽지 못했습니다.',
+  input: '요약할 내용을 처리하지 못했습니다.',
+  output: '요약 결과를 완성하지 못했습니다.',
+  storage: '요약을 저장하지 못했습니다.',
+  cleanup: '요약 처리 후 정리를 마치지 못했습니다. 앱을 다시 연 뒤 시도해 주세요.',
+};
+
+function failureDiagnostics(job) {
+  if (job.status !== 'failed' || job.kind !== 'summary' || !job.failureDetail) return [];
+  const detail = job.failureDetail;
+  const rows = [];
+  const stage = { whole: '전체 요약', map: '구간 요약', merge: '요약 통합' }[detail.stage];
+  const reason = { length: '출력 한도 도달', stop: '생성 종료' }[detail.finishReason];
+  if (typeof stage === 'string') rows.push(['실패 단계', stage]);
+  if (typeof reason === 'string') rows.push(['종료 이유', reason]);
+  for (const [key, label] of [['inputTokens', '입력 토큰 수'], ['outputLimit', '출력 토큰 한도'], ['generatedTokens', '생성 토큰 수']]) {
+    if (Number.isSafeInteger(detail[key]) && detail[key] >= 0) rows.push([label, String(detail[key])]);
+  }
+  return rows;
+}
+
 export function processingFeedback(job = {}, { cancelling = false } = {}) {
   const active = Boolean(job.id) && job.status === 'running';
   const committing = active && (job.committing === true
@@ -24,8 +61,16 @@ export function processingFeedback(job = {}, { cancelling = false } = {}) {
     progress = { value, max: job.totalBytes, percent: Math.floor(value / job.totalBytes * 100) };
   }
   const terminal = { completed: '완료', failed: '실패', cancelled: '취소됨' }[job.status];
-  const heading = cancelRequested ? `${title} 취소 중` : `${title}${active ? ' 중' : terminal ? ` ${terminal}` : ''}`;
-  const message = String(job.message || '').trim();
+  let heading = cancelRequested ? `${title} 취소 중` : `${title}${active ? ' 중' : terminal ? ` ${terminal}` : ''}`;
+  if (active && job.kind === 'summary' && !cancelRequested) {
+    heading = committing ? summaryStages.saving : summaryStages[job.phase] || '요약 중';
+  }
+  let message = String(job.message || '').trim();
+  if (active && job.kind === 'summary') message = !cancelRequested && !committing && job.retryCount > 0 ? '다시 시도 중' : '';
+  if (job.kind === 'summary' && job.status === 'failed') {
+    message = (Object.hasOwn(summaryFailures, job.failureKind) ? summaryFailures[job.failureKind] : '') || '요약하지 못했습니다. 원인을 확인하지 못했습니다.';
+    if (job.hasPreviousSummary === true) message += ' 기존 요약은 유지되었습니다.';
+  }
   const repeated = (job.kind === 'transcribe' && message === '텍스트로 변환 중')
     || (job.kind === 'summary' && message === '요약 중');
   return {
@@ -34,8 +79,8 @@ export function processingFeedback(job = {}, { cancelling = false } = {}) {
     state: cancelRequested ? 'cancelling' : active ? 'running' : job.status || 'idle',
     title: heading,
     detail: message && !cancelRequested && !repeated && !['준비 중', '완료', heading].includes(message) ? message : '',
-    warning: active && !cancelRequested && !committing && job.kind === 'summary' && ['warning', 'critical'].includes(job.memoryState)
-      ? '시스템 메모리 경고가 감지되었습니다. 다른 앱을 닫거나 요약을 취소할 수 있습니다.' : '',
+    warning: '',
+    diagnostics: failureDiagnostics(job),
     progress,
     cancelVisible: active && !committing,
     cancelDisabled: cancelRequested || committing,

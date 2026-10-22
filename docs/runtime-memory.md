@@ -8,7 +8,8 @@ qualification. The policy lives in `apps/desktop/src-tauri/src/memory.rs`,
 
 OS memory state is advisory. Warning, critical and unknown observations do not reject,
 cancel, pause or reconfigure a summary. No application-defined RAM percentage threshold
-is used. State changes are exposed separately from task progress and failure.
+is used. Observations remain available in job diagnostics; the normal processing
+view does not promote them to warnings or imply that they caused a failure.
 
 | Platform | Observation | Interpretation |
 |---|---|---|
@@ -25,7 +26,7 @@ minimum supported memory size. Windows API semantics are documented by Microsoft
 ## Failures and recovery
 
 Failure kinds separate cancellation, allocation, unavailable backend, unavailable engine,
-protocol, input, output, storage and cleanup. Allocation/backend attribution matches
+protocol, input, output, output-limit, storage and cleanup. Allocation/backend attribution matches
 strict diagnostic forms from the pinned llama.cpp runtime. Free-form memory text, an OS
 warning, SIGKILL or unexplained process death alone is not classified as OOM. HTTP and
 response-validation failures retain their own failure categories.
@@ -34,13 +35,32 @@ response-validation failures retain their own failure categories.
 |---|---|
 | Reported allocation failure or generic engine failure | Stop/reap the direct worker, then retry once with the same backend and settings. |
 | Confirmed unavailable GPU backend, including a missing required loader/bundled GPU worker | Use the CPU route after any launched direct worker is stopped/reaped. This uses the same single retry budget. |
-| Cancellation, protocol, input, output, storage or cleanup failure | No retry. |
+| Cancellation, protocol, input, invalid output, storage or cleanup failure | No worker recovery retry. |
+| Output limit reached | Incomplete whole/map output can repartition only its source range; a merge that exhausts its measured budget remains a typed failure. No worker recovery retry. |
 
 The original job owns at most two attempts, with separate attempt folders/logs. Recovery
 does not change the model, context, batch or generation-quality settings. CPU fallback
 is not presented as a solution to memory exhaustion. Failed cleanup is not hidden by
 cancellation or a failed diagnostic write: new processing/recording and successful
 normal quit remain blocked when direct-worker termination cannot be confirmed.
+
+## Summary output budget and feedback
+
+- The summary context stays at 8192 tokens. Planning reserves 2048 output tokens and
+  a 128-token margin. Whole summaries and the final merge measure their templated
+  input and use only the remaining context for output. Map and intermediate merge
+  output stays capped at 2048 tokens so it can be read by a following merge. Model,
+  context allocation and structured terminology generation settings remain unchanged.
+- A truncated whole summary falls back to source-range summaries. A truncated source
+  range is bisected without regenerating completed ranges. The existing 128-part and
+  merge-depth bounds remain; incomplete output is never saved as a completed summary.
+- Per-generation metadata is written before inference, with phase, source range,
+  measured input and output limit. Responses and completion outcomes remain separate
+  job artifacts. Final failure details retain the stage, finish reason and token counts.
+- Normal feedback shows one phase label and a cancellable activity indicator. Internal
+  utterance positions are not progress percentages. Download percentages still use real
+  transferred bytes. Failures show a cause category and a retry action, with technical
+  details collapsed. Previous-summary preservation is stated only when one exists.
 
 ## Cancellation and results
 

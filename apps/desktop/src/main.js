@@ -733,6 +733,12 @@ function renderProcessing() {
   setText('processing-title', `${owner && owner.id !== state.selectedId ? owner.title + ': ' : ''}${feedback.title}`);
   setText('processing-message', feedback.detail);
   byId('processing-message').hidden = !feedback.detail;
+  const errorInfo = byId('processing-error-info');
+  const diagnosticKey = `${progress.id}:${progress.status}`;
+  if (errorInfo.dataset.job !== diagnosticKey) errorInfo.open = false;
+  errorInfo.dataset.job = diagnosticKey;
+  errorInfo.hidden = !feedback.diagnostics.length;
+  setHTML('processing-error-fields', feedback.diagnostics.map(([label, value]) => `<div>${escape(label)}: ${escape(value)}</div>`).join(''));
   setText('processing-warning', feedback.warning);
   byId('processing-warning').hidden = !feedback.warning;
   byId('processing-spinner').hidden = !feedback.active;
@@ -889,19 +895,21 @@ function renderSummary(meeting) {
   byId('summarize').hidden = !progress.summaryReady || !progress.summarySupported;
   byId('copy-summary').hidden = !doc;
   byId('summarize').disabled = !hasTranscript || !progress.summaryReady || !progress.summarySupported || processingActive() || state.busy || Boolean(activeSession());
-  byId('summarize').textContent = doc ? '다시 요약' : '요약하기';
+  const failed = progress.kind === 'summary' && progress.status === 'failed' && progress.meetingId === meeting.id;
+  byId('summarize').textContent = failed ? '다시 시도' : doc ? '다시 요약' : '요약하기';
   byId('copy-summary').disabled = !doc;
   byId('summary-export-menu').hidden = !doc;
   let message = '';
   if (!state.summaryLoaded) message = '회의록 불러오는 중';
   else if (state.summaryLoadError) message = '회의록을 불러오지 못했습니다.';
   else if (doc && stale) message = '음성 기록이 수정되었습니다. 다시 요약해 주세요.';
-  else if (ownJob) message = '요약 중';
+  else if (ownJob || failed) message = '';
   else if (!doc && !hasTranscript) message = '음성 기록을 변환한 뒤 요약할 수 있습니다.';
   else if (!doc && !progress.summarySupported) message = '이 기기에서는 요약을 사용할 수 없습니다.';
   else if (!doc && !progress.summaryReady) message = '요약 모델을 준비해 주세요.';
   else if (!doc) message = '아직 요약하지 않은 회의입니다.';
-  if (!state.summaryLoaded || ownJob) setHTML('summary-message', '<span class="activity-spinner" aria-hidden="true"></span> ' + escape(message));
+  byId('summary-message').hidden = !message;
+  if (!state.summaryLoaded) setHTML('summary-message', '<span class="activity-spinner" aria-hidden="true"></span> ' + escape(message));
   else setText('summary-message', message);
   const key = JSON.stringify([meeting.id, doc?.id, state.transcriptDraft?.doc?.version, Boolean(stale), documentSearch.query()]);
   if (key !== state.summaryKey) {

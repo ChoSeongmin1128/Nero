@@ -8,6 +8,13 @@ the private installation and evaluation receipts.
 
 ## Native rewrite source
 
+- Summary generation measures the remaining output budget inside the unchanged context,
+  preserves typed output-limit failures and repartitions only truncated source ranges.
+  Request/outcome artifacts retain phase and token evidence. Normal feedback uses a
+  single stage label without internal utterance counters or advisory memory warnings;
+  failures expose a cause, retry action and collapsed diagnostic details. Prior-summary
+  preservation text depends on an actual prior result. See [Runtime policy](runtime-memory.md).
+
 - Optional machine-local terminology profiles run after baseline recognition and create
   separate bounded correction revisions. Contextual names require nearby literal cues
   and an acceptance from an already prepared optional model; uncertainty keeps the

@@ -9,15 +9,32 @@ pub enum FailureKind {
     EngineUnavailable,
     Protocol,
     Input,
+    InputLimit,
+    ModelNotReady,
+    MeetingUnavailable,
+    RecordingActive,
+    SourceChanged,
     Output,
+    OutputLimit,
     Storage,
     Cleanup,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FailureDetail {
+    pub stage: String,
+    pub finish_reason: Option<String>,
+    pub input_tokens: Option<u32>,
+    pub output_limit: Option<u32>,
+    pub generated_tokens: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Failure {
     pub kind: FailureKind,
     pub message: String,
+    pub detail: Option<FailureDetail>,
 }
 
 impl Failure {
@@ -25,6 +42,7 @@ impl Failure {
         Self {
             kind,
             message: message.into(),
+            detail: None,
         }
     }
 }
@@ -279,7 +297,13 @@ mod tests {
             FailureKind::Cancelled,
             FailureKind::Protocol,
             FailureKind::Input,
+            FailureKind::InputLimit,
+            FailureKind::ModelNotReady,
+            FailureKind::MeetingUnavailable,
+            FailureKind::RecordingActive,
+            FailureKind::SourceChanged,
             FailureKind::Output,
+            FailureKind::OutputLimit,
             FailureKind::Storage,
             FailureKind::Cleanup,
         ] {

@@ -63,7 +63,10 @@ pub struct Progress {
     pub summary_bytes: u64,
     pub model_stage: Option<String>,
     pub memory_state: Option<crate::memory::MemoryState>,
+    pub phase: Option<String>,
     pub failure_kind: Option<crate::summary_failure::FailureKind>,
+    pub failure_detail: Option<crate::summary_failure::FailureDetail>,
+    pub has_previous_summary: bool,
     pub retry_count: u8,
     pub committing: bool,
     pub summary_committing: bool,
@@ -361,6 +364,7 @@ impl Processing {
             cancelled(cancel)?;
             progress.committing = true;
             progress.summary_committing = summary;
+            progress.phase = Some("saving".into());
             progress.message = if summary {
                 "회의록 저장 중"
             } else {
@@ -1090,7 +1094,10 @@ impl Processing {
                 }) {
                     return Err("녹음을 마친 뒤 음성 인식을 시작해 주세요.".into());
                 }
-                this.update(|p| p.message = "모델을 확인하고 있습니다.".into());
+                this.update(|p| {
+                    p.phase = Some("preparing".into());
+                    p.message = "모델을 확인하고 있습니다.".into();
+                });
                 let model = this.model();
                 let directory = this.model_dir()?;
                 for item in &model.files {
@@ -1109,7 +1116,10 @@ impl Processing {
                     &path.join("prepare.log"),
                     &cancel,
                 )?;
-                this.update(|p| p.message = "텍스트로 변환 중".into());
+                this.update(|p| {
+                    p.phase = Some("recognizing".into());
+                    p.message = "텍스트로 변환 중".into();
+                });
                 let output = path.join("moss.json");
                 this.run_worker(
                     &this.worker("moss/MossHarness"),

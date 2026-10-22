@@ -510,9 +510,9 @@ test('memory warnings and same-job summary retries preserve readiness, new meeti
   const page = await openApp();
   const job = { id: 'summary-memory', kind: 'summary', status: 'running', meetingId: 'a', supported: true, modelReady: true, summarySupported: true, summaryReady: true, failureKind: null };
   await page.app.acceptProcessing({ ...job, revision: 3, memoryState: 'warning', retryCount: 0, message: '요약 모델을 불러오고 있습니다.' });
-  assert.equal(page.element('processing-warning').hidden, false);
-  assert.match(page.element('processing-warning').textContent, /시스템 메모리 경고/);
-  assert.equal(page.element('processing-message').textContent, '요약 모델을 불러오고 있습니다.');
+  assert.equal(page.element('processing-warning').hidden, true);
+  assert.equal(page.element('processing-warning').textContent, '');
+  assert.equal(page.element('processing-message').textContent, '');
   assert.equal(page.element('processing-spinner').hidden, false);
   assert.equal(page.element('processing-percent').hidden, true);
   assert.equal(page.element('cancel-processing').disabled, false);
@@ -552,7 +552,7 @@ test('unknown memory observations and worker failures do not fabricate low-memor
   assert.equal(page.app.state.lastError, null);
   await page.app.acceptProcessing({ ...job, revision: 4, status: 'failed', memoryState: 'critical', failureKind: 'workerExit', message: '요약 실행기가 종료되었습니다.' });
   assert.equal(page.element('processing-warning').hidden, true);
-  assert.equal(page.element('processing-message').textContent, '요약 실행기가 종료되었습니다.');
+  assert.match(page.element('processing-message').textContent, /원인을 확인하지 못/);
   assert.equal(page.element('processing-spinner').hidden, true);
   assert.equal(page.element('create-meeting').disabled, false);
   assert.equal(page.app.state.lastError, null);
@@ -562,7 +562,7 @@ test('summary commit keeps its spinner and save stage without cancellation or st
   const page = await openApp();
   const job = { id: 'summary-commit', kind: 'summary', status: 'running', meetingId: 'a', supported: true, modelReady: true, summarySupported: true, summaryReady: true, memoryState: 'critical' };
   await page.app.acceptProcessing({ ...job, revision: 3, message: '요약 중' });
-  assert.equal(page.element('processing-warning').hidden, false);
+  assert.equal(page.element('processing-warning').hidden, true);
   assert.equal(page.element('cancel-processing').hidden, false);
   page.app.state.processingCancellingId = job.id;
   await page.app.acceptProcessing({ ...job, revision: 4, summaryCommitting: true, message: '회의록을 저장하고 있습니다.' });
@@ -571,7 +571,8 @@ test('summary commit keeps its spinner and save stage without cancellation or st
   assert.equal(page.element('cancel-processing').disabled, true);
   assert.equal(page.element('processing-spinner').hidden, false);
   assert.equal(page.element('processing').dataset.state, 'running');
-  assert.equal(page.element('processing-message').textContent, '회의록을 저장하고 있습니다.');
+  assert.equal(page.element('processing-title').textContent, '저장 중');
+  assert.equal(page.element('processing-message').hidden, true);
   assert.equal(page.element('processing-percent').hidden, true);
   assert.equal(page.element('create-meeting').disabled, false);
   assert.equal(page.app.state.lastError, null);
@@ -1114,4 +1115,42 @@ test('summary source opens the transcript, focuses the utterance and seeks the s
   assert.equal(focused, true);
   assert.equal(page.element('audio-player').currentTime, 23);
   assert.equal(page.element('audio-player').playbackRate, 1.5);
+});
+
+
+test('failed summary offers one working retry, hides empty state and keeps diagnostics folded', async () => {
+  const page = await openApp(transcriptDocument());
+  const job = { id: 'summary-failed', kind: 'summary', status: 'failed', meetingId: 'a', revision: 10, supported: true, modelReady: true, summarySupported: true, summaryReady: true, failureKind: 'outputLimit', hasPreviousSummary: false, failureDetail: { stage: 'merge', finishReason: 'length', outputLimit: 2048 } };
+  await page.app.acceptProcessing(job);
+  assert.equal(page.element('summarize').textContent, '다시 시도');
+  assert.equal(page.element('summarize').disabled, false);
+  assert.equal(page.element('summary-message').hidden, true);
+  assert.equal(page.element('processing-error-info').hidden, false);
+  assert.equal(page.element('processing-error-info').open, false);
+  assert.match(page.element('processing-error-fields').innerHTML, /요약 통합.*출력 한도 도달.*2048/);
+  assert.doesNotMatch(page.element('processing-message').textContent, /기존 요약/);
+  await page.app.selectMeeting('b');
+  assert.equal(page.element('summarize').textContent, '요약하기');
+  await page.app.selectMeeting('a');
+  const calls = [];
+  page.bridge.summarizeMeeting = async id => { calls.push(id); return { ...job, id: 'retry', revision: 11, status: 'running', phase: 'preparing', failureDetail: null }; };
+  await page.element('summarize').listeners.get('click')();
+  assert.deepEqual(calls, ['a']);
+  assert.equal(page.element('processing-title').textContent, '요약 준비 중');
+  assert.equal(page.element('processing-error-info').hidden, true);
+  assert.equal(page.element('summary-message').hidden, true);
+});
+
+
+test('summary retry and failure retain the existing summary stale-source notice', async () => {
+  const page = await openApp(transcriptDocument());
+  page.app.state.summary = { document: { id: 'previous-summary', text: '이전 요약 내용', sourceVersion: structuredClone(page.app.state.transcriptDraft.doc.version) }, stale: true };
+  const job = { id: 'summary-stale', kind: 'summary', meetingId: 'a', supported: true, modelReady: true, summarySupported: true, summaryReady: true, hasPreviousSummary: true };
+  for (const [revision, status] of [[10, 'running'], [11, 'failed']]) {
+    await page.app.acceptProcessing({ ...job, revision, status, phase: 'summarizing', failureKind: status === 'failed' ? 'outputLimit' : null });
+    assert.equal(page.element('summary-message').hidden, false);
+    assert.match(page.element('summary-message').textContent, /음성 기록이 수정되었습니다/);
+    assert.match(page.element('summary-content').innerHTML, /이전 요약 내용/);
+    assert.doesNotMatch(page.element('summary-content').innerHTML, /data-summary-seek/);
+  }
 });
