@@ -11,7 +11,8 @@ const jobTitles = {
 
 export function processingFeedback(job = {}, { cancelling = false } = {}) {
   const active = Boolean(job.id) && job.status === 'running';
-  const committing = active && job.kind === 'summary' && job.summaryCommitting === true;
+  const committing = active && (job.committing === true
+    || (job.kind === 'summary' && job.summaryCommitting === true));
   const cancelRequested = active && !committing && (cancelling || job.message === '취소 중');
   const title = jobTitles[job.kind] || '처리';
   let progress = null;

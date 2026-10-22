@@ -12,6 +12,7 @@ mod recorder_policy;
 mod storage_space;
 mod summary;
 mod summary_failure;
+mod terminology;
 use grove_core::{
     CoreHandle, Device, Meeting, Snapshot, SummaryView, Transcript, TranscriptHistory,
     TranscriptSpeaker, TranscriptVersion,
@@ -1033,6 +1034,25 @@ async fn read_summary(
 }
 
 #[tauri::command]
+fn read_terminology_settings(
+    window: WebviewWindow,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<terminology::Settings, String> {
+    require_main(&window)?;
+    terminology::read_settings(&state.processing)
+}
+
+#[tauri::command]
+fn set_terminology_enabled(
+    window: WebviewWindow,
+    state: tauri::State<'_, DesktopState>,
+    enabled: bool,
+) -> Result<terminology::Settings, String> {
+    require_main(&window)?;
+    terminology::set_enabled(&state.processing, enabled)
+}
+
+#[tauri::command]
 async fn read_transcript(
     window: WebviewWindow,
     state: tauri::State<'_, DesktopState>,
@@ -1165,6 +1185,8 @@ fn main() {
             import_audio,
             transcribe_audio,
             cancel_processing,
+            read_terminology_settings,
+            set_terminology_enabled,
             read_transcript,
             read_transcript_history,
             restore_transcript,

@@ -26,6 +26,8 @@ export const startRecording = (meetingId, deviceId = null) => call('start_record
 export const pauseRecording = (sessionId) => call('pause_recording', { sessionId }).then(accept);
 export const resumeRecording = (sessionId) => call('resume_recording', { sessionId }).then(accept);
 export const stopRecording = (sessionId) => call('stop_recording', { sessionId }).then(accept);
+export const readTerminologySettings = () => call('read_terminology_settings');
+export const setTerminologyEnabled = (enabled) => call('set_terminology_enabled', { enabled });
 export const setAutoRecorder = (enabled) => call('set_auto_recorder', { enabled });
 export const dragRecorder = () => call('drag_recorder');
 export const hideRecorder = () => call('hide_recorder');

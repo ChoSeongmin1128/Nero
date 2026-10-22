@@ -65,6 +65,7 @@ pub struct Progress {
     pub memory_state: Option<crate::memory::MemoryState>,
     pub failure_kind: Option<crate::summary_failure::FailureKind>,
     pub retry_count: u8,
+    pub committing: bool,
     pub summary_committing: bool,
 }
 fn meeting_models_ready(progress: &Progress) -> Result<(), String> {
@@ -319,8 +320,13 @@ impl Processing {
             .filter(|r| r.id == id && !r.handle.is_finished())
             .ok_or("현재 작업과 다른 요청입니다.")?;
         let mut progress = self.progress.lock().unwrap();
-        if progress.summary_committing {
-            return Err("회의록을 저장하고 있습니다.".into());
+        if progress.committing || progress.summary_committing {
+            return Err(if progress.kind == "summary" {
+                "회의록을 저장하고 있습니다."
+            } else {
+                "음성 기록을 저장하고 있습니다."
+            }
+            .into());
         }
         job.cancel.store(true, Ordering::Release);
         progress.message = "취소 중".into();
@@ -333,11 +339,34 @@ impl Processing {
         cancel: &AtomicBool,
         commit: impl FnOnce() -> Result<T, String>,
     ) -> Result<T, String> {
+        self.commit_result(cancel, true, commit)
+    }
+
+    pub(super) fn commit_transcript_result<T>(
+        &self,
+        cancel: &AtomicBool,
+        commit: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        self.commit_result(cancel, false, commit)
+    }
+
+    fn commit_result<T>(
+        &self,
+        cancel: &AtomicBool,
+        summary: bool,
+        commit: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
         {
             let mut progress = self.progress.lock().unwrap();
             cancelled(cancel)?;
-            progress.summary_committing = true;
-            progress.message = "회의록 저장 중".into();
+            progress.committing = true;
+            progress.summary_committing = summary;
+            progress.message = if summary {
+                "회의록 저장 중"
+            } else {
+                "음성 기록 저장 중"
+            }
+            .into();
             progress.revision = progress.revision.saturating_add(1);
         }
         commit()
@@ -1049,6 +1078,9 @@ impl Processing {
             "transcribe",
             Some(meeting_id.clone()),
             move |this, cancel, path| {
+                // Freeze the local profile for this recognition run. A missing or invalid
+                // optional profile must never prevent preserving the recognized baseline.
+                let terminology = crate::terminology::load_snapshot(&this);
                 core.audio_path(&meeting_id).map_err(message)?;
                 if core.snapshot().map_err(message)?.session.is_some_and(|s| {
                     matches!(
@@ -1091,8 +1123,18 @@ impl Processing {
                 }
                 let raw = fs::read(output).map_err(message)?;
                 cancelled(&cancel)?;
-                core.commit_transcript(&meeting_id, expected, raw)
+                let source = core
+                    .commit_transcript(&meeting_id, expected, raw)
                     .map_err(message)?;
+                crate::terminology::correct(
+                    &this,
+                    &core,
+                    &meeting_id,
+                    source,
+                    terminology,
+                    &path,
+                    &cancel,
+                )?;
                 Ok(Some(meeting_id))
             },
         )
@@ -1343,6 +1385,46 @@ mod tests {
         );
         assert!(process.snapshot().summary_committing);
         process.shutdown().unwrap();
+    }
+    #[test]
+    fn terminology_commit_shares_cancellation_gate_without_summary_state() {
+        let (_temp, process) = setup();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let flag = cancel.clone();
+        let handle = thread::spawn(move || {
+            while !flag.load(Ordering::Acquire) {
+                thread::yield_now();
+            }
+        });
+        *process.running.lock().unwrap() = Some(Running {
+            id: "recognition".into(),
+            cancel: cancel.clone(),
+            handle,
+            import_existing: None,
+        });
+        process.update(|p| p.kind = "transcribe".into());
+        assert_eq!(
+            process
+                .commit_transcript_result(&cancel, || {
+                    let progress = process.snapshot();
+                    assert!(progress.committing);
+                    assert!(!progress.summary_committing);
+                    assert_eq!(progress.message, "음성 기록 저장 중");
+                    assert!(process.cancel("recognition").is_err());
+                    assert!(!cancel.load(Ordering::Acquire));
+                    Ok("saved")
+                })
+                .unwrap(),
+            "saved"
+        );
+        process.shutdown().unwrap();
+
+        let cancelled_flag = AtomicBool::new(true);
+        assert!(process
+            .commit_transcript_result(&cancelled_flag, || -> Result<(), String> {
+                panic!("an accepted cancellation must preserve the baseline")
+            })
+            .is_err());
     }
     #[test]
     fn recording_waits_for_summary_cancellation_before_starting_capture() {

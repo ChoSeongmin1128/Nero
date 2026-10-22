@@ -1024,6 +1024,32 @@ test('processing stays visibly active until cancellation actually finishes', asy
   assert.equal(page.element('cancel-processing').hidden, true);
 });
 
+test('cancelled or failed terminology processing reveals its already saved recognition baseline', async () => {
+  for (const status of ['cancelled', 'failed']) {
+    const page = await openApp();
+    const baseline = { version: { id: 'run', revision: 0 }, speakers: [], segments: [{ id: 'one', start: 0, end: 1, originalText: '인식된 원문', text: '인식된 원문' }] };
+    const job = { id: 'recognition', kind: 'transcribe', meetingId: 'a', supported: true, modelReady: true };
+    await page.app.acceptProcessing({ ...job, revision: 3, status: 'running', message: '용어 확인 중' });
+    page.bridge.readTranscript = async () => structuredClone(baseline);
+    await page.app.acceptProcessing({ ...job, revision: 4, status, message: '용어 확인 중단' });
+    assert.equal(page.app.state.transcriptDraft.doc.version.id, 'run');
+    assert.equal(page.app.state.transcriptDraft.doc.segments[0].text, '인식된 원문');
+  }
+});
+
+test('refreshing a saved recognition result after cancellation preserves a dirty editor', async () => {
+  const baseline = { version: { id: 'run', revision: 0 }, speakers: [], segments: [{ id: 'one', start: 0, end: 1, originalText: '원문', text: '원문' }] };
+  const page = await openApp(baseline);
+  page.editTranscript('직접 편집 중인 문장');
+  const draft = page.app.state.transcriptDraft;
+  assert.equal(draft.dirty, true);
+  page.bridge.readTranscript = async () => ({ ...baseline, version: { id: 'later', revision: 0 } });
+  await page.app.acceptProcessing({ id: 'recognition', revision: 4, kind: 'transcribe', meetingId: 'a', status: 'cancelled', supported: true, modelReady: true });
+  assert.equal(page.app.state.transcriptDraft, draft);
+  assert.equal(draft.doc.segments[0].text, '직접 편집 중인 문장');
+  assert.equal(draft.dirty, true);
+});
+
 test('setup verification has activity without a misleading zero percent bar', async () => {
   const page = await openApp(null, { id: 'prepare', kind: 'setup', status: 'running', supported: true, modelReady: false, message: '모델 파일 확인 중', totalBytes: 0 });
   assert.equal(page.element('setup-spinner').hidden, false);

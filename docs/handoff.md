@@ -8,6 +8,15 @@ the private installation and evaluation receipts.
 
 ## Native rewrite source
 
+- Optional machine-local terminology profiles run after baseline recognition and create
+  separate bounded correction revisions. Contextual names require nearby literal cues
+  and an acceptance from an already prepared optional model; uncertainty keeps the
+  original. Acronym formatting does not require that model. The profile, source and
+  decisions are preserved; concurrent manual edits prevent automatic replacement.
+  Recording settings exposes the toggle only when a local profile exists. See
+  [Local terminology correction](terminology.md). This source contract does not state
+  that the installed app or existing meetings have changed.
+
 - Read-only CLI and local stdio MCP share `LibraryReader`, without opening the writer,
   recovery, migration, microphone or model paths. Queries include active meeting/folder
   lists, date/folder/content search, corrected transcript ranges, paginated notes and

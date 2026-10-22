@@ -147,3 +147,14 @@ test('missing summary commit metadata retains cancellation and model jobs keep b
   assert.equal(download.cancelDisabled, false);
   assert.equal(download.progress.percent, 25);
 });
+
+test('terminology classification stays cancellable until the final transcript commit', () => {
+  const classification = running('transcribe', { message: '용어 확인 중' });
+  assert.equal(processingFeedback(classification).cancelVisible, true);
+  const saving = processingFeedback({ ...classification, committing: true, message: '음성 기록 저장 중' });
+  assert.equal(saving.active, true);
+  assert.equal(saving.cancelVisible, false);
+  assert.equal(saving.cancelDisabled, true);
+  assert.equal(saving.detail, '음성 기록 저장 중');
+  assert.equal(saving.progress, null);
+});

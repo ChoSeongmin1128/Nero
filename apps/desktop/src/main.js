@@ -10,6 +10,7 @@ import { mountMeetingDetail } from './meeting-detail-ui.js';
 applySystemAppearance();
 const byId = (id) => document.getElementById(id);
 const settingsPanels = ['appearance', 'recording', 'models', 'agent'];
+const terminologySettings = { info: null, error: '', request: 0, saving: null };
 const agentConnection = { info: null, loading: false, error: '', request: 0 };
 const microphonePreferenceKey = 'nero.recording.microphone.v1';
 const recorderPreferenceKey = 'nero.recording.autoRecorder.v1';
@@ -362,6 +363,66 @@ function microphoneIssue() {
   return '';
 }
 
+function resetTerminologySettings() {
+  terminologySettings.request += 1;
+  terminologySettings.info = null;
+  terminologySettings.error = '';
+}
+
+function terminologyRequestCurrent(request) {
+  return request === terminologySettings.request && byId('settings-dialog').open && state.settingsPanel === 'recording';
+}
+
+function renderTerminologySettings() {
+  const { info, saving } = terminologySettings;
+  byId('settings-terminology-row').hidden = !info?.available;
+  byId('terminology-enabled').checked = Boolean(info?.enabled);
+  byId('terminology-enabled').disabled = !info?.available || Boolean(saving) || processingActive();
+}
+
+async function loadTerminologySettings() {
+  resetTerminologySettings();
+  renderSettings();
+  if (!byId('settings-dialog').open || state.settingsPanel !== 'recording' || !bridge.readTerminologySettings) return;
+  const request = terminologySettings.request;
+  try {
+    if (terminologySettings.saving) await terminologySettings.saving.catch(() => {});
+    if (!terminologyRequestCurrent(request)) return;
+    const info = await bridge.readTerminologySettings();
+    if (!terminologyRequestCurrent(request)) return;
+    terminologySettings.info = info;
+  } catch {
+    if (!terminologyRequestCurrent(request)) return;
+    terminologySettings.error = '용어 설정을 불러오지 못했습니다. 탭을 다시 열어 주세요.';
+  } finally {
+    if (terminologyRequestCurrent(request)) renderSettings();
+  }
+}
+
+async function changeTerminologyEnabled() {
+  const previous = terminologySettings.info;
+  const request = terminologySettings.request;
+  if (!terminologyRequestCurrent(request) || !previous?.available || terminologySettings.saving || processingActive()) return renderSettings();
+  const enabled = byId('terminology-enabled').checked;
+  terminologySettings.info = { ...previous, enabled };
+  terminologySettings.error = '';
+  const saving = Promise.resolve().then(() => bridge.setTerminologyEnabled(enabled));
+  terminologySettings.saving = saving;
+  renderSettings();
+  try {
+    const info = await saving;
+    if (terminologyRequestCurrent(request)) terminologySettings.info = info;
+  } catch {
+    if (terminologyRequestCurrent(request)) {
+      terminologySettings.info = previous;
+      terminologySettings.error = '용어 설정을 저장하지 못했습니다.';
+    }
+  } finally {
+    if (terminologySettings.saving === saving) terminologySettings.saving = null;
+    if (terminologyRequestCurrent(request)) renderSettings();
+  }
+}
+
 function renderAgentConnection() {
   const { info, loading, error } = agentConnection;
   const available = Boolean(info?.available && info.executablePath && info.config);
@@ -431,6 +492,7 @@ function renderSettings() {
   const dialog = byId('settings-dialog');
   const recording = state.settingsPanel === 'recording';
   renderAgentConnection();
+  renderTerminologySettings();
   for (const name of settingsPanels) {
     const selected = state.settingsPanel === name;
     byId(`settings-${name}-tab`).setAttribute('aria-selected', String(selected));
@@ -455,7 +517,7 @@ function renderSettings() {
   const job = state.processing;
   byId('settings-speech-state').textContent = !state.connected ? '확인 중' : !job.supported ? '지원되지 않음' : job.modelReady ? '준비됨' : '다운로드 필요';
   byId('settings-summary-state').textContent = !state.connected ? '확인 중' : !job.summarySupported ? '지원되지 않음' : job.summaryReady ? '준비됨' : '다운로드 필요';
-  const message = recording ? state.settingsError || (activeSession() ? '녹음을 마친 뒤 변경할 수 있습니다.' : recording && state.devicesLoaded ? microphoneIssue() : '') : '';
+  const message = recording ? terminologySettings.error || state.settingsError || (activeSession() ? '녹음을 마친 뒤 변경할 수 있습니다.' : recording && state.devicesLoaded ? microphoneIssue() : '') : '';
   byId('settings-message').textContent = message;
   byId('settings-message').hidden = !message;
   if (dialog.open) {
@@ -475,6 +537,7 @@ async function openSettings(panel = 'appearance', returnId = 'settings') {
     globalThis.GroveControls.refresh?.();
     byId(`settings-${panel}-tab`).focus({ preventScroll: true });
     void loadAgentConnection();
+    void loadTerminologySettings();
   });
   try { await refreshDevices(); } catch { state.settingsError = '마이크 목록을 불러오지 못했습니다. 다시 시도해 주세요.'; renderSettings(); }
 }
@@ -564,17 +627,18 @@ byId('welcome-create').addEventListener('click', () => run(createMeeting));
 byId('setup-start').addEventListener('click', () => run(createMeeting));
 byId('settings').addEventListener('click', () => openSettings().catch(showError));
 byId('settings-close').addEventListener('click', () => { globalThis.GroveControls.close?.(); byId('settings-dialog').close(); });
-byId('settings-dialog').addEventListener('close', () => { resetAgentConnection(); globalThis.GroveControls.close?.(); (byId(state.settingsReturnId) || byId('settings')).focus({ preventScroll: true }); });
-for (const name of settingsPanels) byId(`settings-${name}-tab`).addEventListener('click', () => { globalThis.GroveControls.close?.(); state.settingsPanel = name; renderSettings(); void loadAgentConnection(); });
+byId('settings-dialog').addEventListener('close', () => { resetTerminologySettings(); resetAgentConnection(); globalThis.GroveControls.close?.(); (byId(state.settingsReturnId) || byId('settings')).focus({ preventScroll: true }); });
+for (const name of settingsPanels) byId(`settings-${name}-tab`).addEventListener('click', () => { globalThis.GroveControls.close?.(); state.settingsPanel = name; renderSettings(); void loadAgentConnection(); void loadTerminologySettings(); });
 byId('settings-dialog').addEventListener('keydown', event => {
   const index = settingsPanels.findIndex(name => `settings-${name}-tab` === event.target.id);
   if (index < 0 || !['ArrowDown', 'ArrowUp', 'ArrowRight', 'ArrowLeft', 'Home', 'End'].includes(event.key)) return;
   event.preventDefault();
   const step = ['ArrowUp', 'ArrowLeft'].includes(event.key) ? -1 : 1;
   state.settingsPanel = settingsPanels[event.key === 'Home' ? 0 : event.key === 'End' ? settingsPanels.length - 1 : (index + step + settingsPanels.length) % settingsPanels.length];
-  renderSettings(); byId(`settings-${state.settingsPanel}-tab`).focus(); void loadAgentConnection();
+  renderSettings(); byId(`settings-${state.settingsPanel}-tab`).focus(); void loadAgentConnection(); void loadTerminologySettings();
 });
 for (const kind of ['config', 'cli']) byId(`settings-agent-copy-${kind}`).addEventListener('click', () => copyAgentConnection(kind));
+byId('terminology-enabled').addEventListener('change', changeTerminologyEnabled);
 byId('settings-microphone').addEventListener('change', changeMicrophone);
 byId('settings-refresh-devices').addEventListener('click', async () => { state.settingsError = ''; try { await refreshDevices(); } catch { state.settingsError = '마이크 목록을 불러오지 못했습니다. 다시 시도해 주세요.'; renderSettings(); } });
 byId('models').addEventListener('click', () => run(async () => { globalThis.GroveControls.close?.(); byId('settings-dialog').close(); await openSetup(true); }));
@@ -798,9 +862,11 @@ async function acceptProcessing(progress) {
   state.processing = progress;
   if (progress.id !== state.processingCancellingId || progress.status !== 'running') state.processingCancellingId = null;
   render();
-  if (progress.status === 'completed' && (previous.id !== progress.id || previous.status !== 'completed') && progress.meetingId) {
+  const resultAvailable = progress.status === 'completed'
+    || (progress.kind === 'transcribe' && ['cancelled', 'failed'].includes(progress.status));
+  if (resultAvailable && (previous.id !== progress.id || previous.status !== progress.status) && progress.meetingId) {
     acceptSnapshot(await bridge.readSnapshot());
-    if (progress.kind === 'import') await selectMeeting(progress.meetingId);
+    if (progress.kind === 'import' && progress.status === 'completed') await selectMeeting(progress.meetingId);
     if (progress.meetingId === state.selectedId) { await loadTranscript(progress.meetingId); await loadSummary(progress.meetingId); }
     refreshMeetingSearch();
   }

@@ -87,6 +87,9 @@ frontend, whose actions require the native bridge; it does not supply fake meeti
   through the native file picker, retaining the original bytes and separate playback WAV.
 - Explicitly prepare the pinned MOSS model, then transcribe finalized audio locally.
   Downloads are checked against the shared manifest; inference uploads no audio.
+- Optional machine-local terminology profiles create a separate correction revision
+  after recognition. Uncertain names remain unchanged; an absent optional contextual
+  model does not block recognition. See [terminology correction](../../docs/terminology.md).
 - Edit transcript text, seek to a segment, and reopen corrections after restarting.
   Navigation saves and closes the editor; failed persistence retains its input.
 - Confirm re-transcription and restore a verified previous recognition run with version

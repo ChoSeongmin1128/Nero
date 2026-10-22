@@ -4,9 +4,14 @@ mod library;
 pub mod reader;
 mod store;
 mod summary;
+pub mod terminology;
 mod transcript;
 pub use library::Folder;
 pub use summary::{Summary, SummaryDraft, SummaryProvenance, SummaryView};
+pub use terminology::{
+    discover_candidates, TerminologyCandidate, TerminologyDecision, TerminologyDraft,
+    TerminologyKind, TerminologyOutcome, TerminologyProfile, TerminologyRule,
+};
 pub use transcript::{
     Transcript, TranscriptHistory, TranscriptHistoryEntry, TranscriptSegment, TranscriptSource,
     TranscriptSpeaker, TranscriptUpgradeReport, TranscriptVersion,
@@ -301,6 +306,11 @@ impl CoreHandle {
     ) -> Result<Transcript> {
         let id = id.to_owned();
         self.call(move |engine| engine.edit_transcript(&id, expected, texts))
+    }
+
+    pub fn commit_terminology(&self, id: &str, draft: TerminologyDraft) -> Result<Transcript> {
+        let id = id.to_owned();
+        self.call(move |engine| engine.commit_terminology(&id, draft))
     }
 
     pub fn edit_speakers(

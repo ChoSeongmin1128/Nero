@@ -907,6 +907,46 @@ impl Engine {
         self.save_transcript_edit(id, doc)
     }
 
+    pub fn commit_terminology(
+        &mut self,
+        id: &str,
+        draft: crate::terminology::TerminologyDraft,
+    ) -> Result<Transcript> {
+        if self.quitting {
+            return Err(CoreError::Unavailable);
+        }
+        self.require_active_meeting(id)?;
+        let current = self
+            .transcript(id)?
+            .ok_or_else(|| CoreError::InvalidState("보정할 음성 기록이 없습니다.".into()))?;
+        if current.version != draft.source.version
+            || crate::terminology::transcript_digest(&current)?
+                != crate::terminology::transcript_digest(&draft.source)?
+        {
+            return Err(CoreError::InvalidState(
+                "음성 기록이 변경되어 용어 보정을 적용하지 않았습니다.".into(),
+            ));
+        }
+        let (after, evidence) = crate::terminology::prepare(&draft)?;
+        if current
+            .segments
+            .iter()
+            .map(|s| &s.text)
+            .eq(after.segments.iter().map(|s| &s.text))
+        {
+            return Ok(current);
+        }
+        let (verified, _, _) = self.history_document(id, &current.version.id)?;
+        if crate::terminology::transcript_digest(&verified)?
+            != crate::terminology::transcript_digest(&current)?
+        {
+            return Err(CoreError::InvalidState(
+                "음성 기록이 변경되었습니다.".into(),
+            ));
+        }
+        self.save_transcript_revision_with_evidence(id, after, None, Some(evidence))
+    }
+
     pub fn edit_speakers(
         &mut self,
         id: &str,
@@ -955,8 +995,18 @@ impl Engine {
     fn save_transcript_revision(
         &self,
         id: &str,
+        doc: Transcript,
+        upgrade: Option<TranscriptUpgradeEvidence>,
+    ) -> Result<Transcript> {
+        self.save_transcript_revision_with_evidence(id, doc, upgrade, None)
+    }
+
+    fn save_transcript_revision_with_evidence(
+        &self,
+        id: &str,
         mut doc: Transcript,
         upgrade: Option<TranscriptUpgradeEvidence>,
+        terminology: Option<serde_json::Value>,
     ) -> Result<Transcript> {
         let before_version = doc.version.clone();
         doc.version.revision = doc
@@ -1001,6 +1051,22 @@ impl Engine {
                     "afterPath":edit_name,
                     "beforeVersion":before_version,
                     "afterVersion":doc.version,
+                }),
+            )?;
+        }
+        if let Some(evidence) = terminology {
+            let receipts = directory.join("terminology");
+            store::ensure_directory(&store::checked_path(&self.store.root, &receipts)?)?;
+            immutable_json(
+                &self.store.root,
+                &receipts.join(format!("receipt-{transaction}.json")),
+                &serde_json::json!({
+                    "status":"prepared",
+                    "beforeVersion":before_version,
+                    "afterVersion":doc.version,
+                    "afterCurrentSha256":sha256(&after),
+                    "afterPath":edit_name,
+                    "provenance":evidence,
                 }),
             )?;
         }
@@ -2241,6 +2307,178 @@ pub(crate) mod tests {
         assert_eq!(
             engine.transcript(&id).unwrap().unwrap().version,
             second.version
+        );
+    }
+
+    fn terminology_draft(source: Transcript) -> crate::TerminologyDraft {
+        let profile = crate::TerminologyProfile {
+            schema_version: 1,
+            id: "synthetic".into(),
+            revision: "1".into(),
+            rules: vec![crate::TerminologyRule {
+                id: "letters".into(),
+                canonical: "ABC".into(),
+                source_forms: vec!["A B C".into()],
+                kind: crate::TerminologyKind::Acronym,
+                context_cues: vec![],
+                exclusion_cues: vec![],
+                description: String::new(),
+            }],
+        };
+        let decisions = crate::discover_candidates(&profile, &source)
+            .unwrap()
+            .into_iter()
+            .map(|candidate| crate::TerminologyDecision {
+                candidate_id: candidate.id,
+                outcome: crate::TerminologyOutcome::Accept,
+            })
+            .collect();
+        crate::TerminologyDraft {
+            source,
+            profile,
+            decisions,
+            receipt: serde_json::json!({"runtime":"test"}),
+        }
+    }
+
+    fn terminology_raw() -> Vec<u8> {
+        let mut raw: serde_json::Value = serde_json::from_slice(&output()).unwrap();
+        raw["segments"][0]["text"] = "[S1] A B C는 수정하지 않습니다. 10개.".into();
+        serde_json::to_vec(&raw).unwrap()
+    }
+
+    #[test]
+    fn terminology_persists_profile_decisions_and_source_before_current_switch() {
+        let (temp, mut engine, id, _) = setup();
+        let raw = terminology_raw();
+        let source = engine.commit_transcript(&id, None, raw.clone()).unwrap();
+        let directory = engine
+            .store
+            .root
+            .join(transcript_dir(&id, &source.version.id).unwrap());
+        let initial = std::fs::read(directory.join("initial.json")).unwrap();
+        let corrected = engine
+            .commit_terminology(&id, terminology_draft(source.clone()))
+            .unwrap();
+        assert_eq!(corrected.version.revision, 1);
+        assert_eq!(corrected.segments[0].text, "ABC는 수정하지 않습니다. 10개.");
+        let mut unchanged_fields = corrected.clone();
+        unchanged_fields.version = source.version.clone();
+        unchanged_fields.segments[0].text = source.segments[0].text.clone();
+        assert_eq!(
+            serde_json::to_value(unchanged_fields).unwrap(),
+            serde_json::to_value(&source).unwrap()
+        );
+        assert_eq!(std::fs::read(directory.join("raw.json")).unwrap(), raw);
+        assert_eq!(
+            std::fs::read(directory.join("initial.json")).unwrap(),
+            initial
+        );
+        let receipts: Vec<_> = std::fs::read_dir(directory.join("terminology"))
+            .unwrap()
+            .collect();
+        assert_eq!(receipts.len(), 1);
+        let receipt: serde_json::Value =
+            store::read_json(&receipts[0].as_ref().unwrap().path()).unwrap();
+        assert_eq!(
+            receipt["beforeVersion"],
+            serde_json::to_value(&source.version).unwrap()
+        );
+        assert_eq!(
+            receipt["afterVersion"],
+            serde_json::to_value(&corrected.version).unwrap()
+        );
+        assert_eq!(
+            receipt["provenance"]["sourceSha256"],
+            crate::terminology::transcript_digest(&source).unwrap()
+        );
+        assert_eq!(
+            receipt["provenance"]["source"],
+            serde_json::to_value(&source).unwrap()
+        );
+        assert_eq!(receipt["provenance"]["profile"]["id"], "synthetic");
+        assert_eq!(receipt["provenance"]["decisions"][0]["outcome"], "accept");
+        let current = std::fs::read(directory.join("current.json")).unwrap();
+        assert_eq!(receipt["afterCurrentSha256"], sha256(&current));
+        assert_eq!(
+            std::fs::read(directory.join(receipt["afterPath"].as_str().unwrap())).unwrap(),
+            current
+        );
+        drop(engine);
+        let engine = Engine::open(temp.path().canonicalize().unwrap().join("store")).unwrap();
+        assert_eq!(
+            engine.transcript(&id).unwrap().unwrap().version,
+            corrected.version
+        );
+    }
+
+    #[test]
+    fn terminology_rejects_stale_version_and_same_version_changed_digest() {
+        let (_temp, mut engine, id, _) = setup();
+        let source = engine
+            .commit_transcript(&id, None, terminology_raw())
+            .unwrap();
+        let mut altered = source.clone();
+        altered.segments[0].original_text.push('!');
+        altered.segments[0].text.push('!');
+        assert!(engine
+            .commit_terminology(&id, terminology_draft(altered))
+            .is_err());
+        let draft = terminology_draft(source.clone());
+        let edited = engine
+            .edit_transcript(&id, source.version, vec!["사용자 수정".into()])
+            .unwrap();
+        assert!(engine.commit_terminology(&id, draft).is_err());
+        let current = engine.transcript(&id).unwrap().unwrap();
+        assert_eq!(current.version, edited.version);
+        assert_eq!(current.segments[0].text, "사용자 수정");
+    }
+
+    #[test]
+    fn terminology_missing_acceptance_is_a_noop_without_revision_or_receipt() {
+        let (_temp, mut engine, id, _) = setup();
+        let source = engine
+            .commit_transcript(&id, None, terminology_raw())
+            .unwrap();
+        let mut draft = terminology_draft(source.clone());
+        draft.decisions.clear();
+        let unchanged = engine.commit_terminology(&id, draft).unwrap();
+        assert_eq!(unchanged.version, source.version);
+        assert_eq!(unchanged.segments[0].text, source.segments[0].text);
+        let directory = engine
+            .store
+            .root
+            .join(transcript_dir(&id, &source.version.id).unwrap());
+        assert!(!directory.join("terminology").exists());
+        assert!(!std::fs::read_dir(directory).unwrap().any(|e| e
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with("edit-")));
+    }
+
+    #[test]
+    fn terminology_receipt_storage_failure_keeps_current_and_raw() {
+        let (_temp, mut engine, id, _) = setup();
+        let raw = terminology_raw();
+        let source = engine.commit_transcript(&id, None, raw.clone()).unwrap();
+        let directory = engine
+            .store
+            .root
+            .join(transcript_dir(&id, &source.version.id).unwrap());
+        let before = std::fs::read(directory.join("current.json")).unwrap();
+        std::fs::write(directory.join("terminology"), b"blocked receipt directory").unwrap();
+        assert!(engine
+            .commit_terminology(&id, terminology_draft(source.clone()))
+            .is_err());
+        assert_eq!(
+            std::fs::read(directory.join("current.json")).unwrap(),
+            before
+        );
+        assert_eq!(std::fs::read(directory.join("raw.json")).unwrap(), raw);
+        assert_eq!(
+            engine.transcript(&id).unwrap().unwrap().version,
+            source.version
         );
     }
 }
