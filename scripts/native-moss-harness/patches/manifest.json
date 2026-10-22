@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "runtime": "mlx-audio-swift-v0.1.3+nero-moss-whole-v1",
+  "upstreamVersion": "0.1.3",
+  "upstreamCommit": "d302a5c6080d2bb97bae38c7418f82abb76013b6",
+  "sourceFile": "Sources/MLXAudioSTT/Models/MossTranscribeDiarize/MossTranscribeDiarize.swift",
+  "unpatchedSha256": "14f9aeb1ed2ac1ae1db3b205ae84cc10cba41b9939a4af241a39b5371e4121b7",
+  "patchedSha256": "af46bcc409bdf729d6d8ca5508e548a813c9883c87b37d4980506fab2dff9ef8",
+  "patchFile": "nero-moss-whole-v1.patch",
+  "patchSha256": "f00b004aba9a6634eb59b0178b53ad15050d664ff51b62e9e83356d08529d1fe",
+  "metadataSchemaVersion": 1,
+  "terminationReasons": [
+    "eos",
+    "length",
+    "repetition"
+  ],
+  "eosReserve": 1
+}

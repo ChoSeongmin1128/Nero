@@ -300,6 +300,16 @@ impl CoreHandle {
         self.call(move |engine| engine.commit_transcript(&id, expected, raw))
     }
 
+    pub fn commit_whole_transcript(
+        &self,
+        id: &str,
+        expected: Option<TranscriptVersion>,
+        raw: Vec<u8>,
+    ) -> Result<Transcript> {
+        let id = id.to_owned();
+        self.call(move |engine| engine.commit_whole_transcript(&id, expected, raw))
+    }
+
     pub fn edit_transcript(
         &self,
         id: &str,

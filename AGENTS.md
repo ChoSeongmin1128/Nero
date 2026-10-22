@@ -21,8 +21,14 @@ This file applies to the entire repository.
   source revisions. Windows transcription, speaker matching and integrations remain unconnected. An
   optional whole-recording diarization adapter requires its own packaged runtime and
   explicit preparation; the default recognition pipeline does not invoke it yet. Do not fabricate transcripts or summary results.
-- Native speaker editing preserves MOSS labels within their `asr_chunk` scope; never
-  equate the same label across independently recognized chunks. Manual names/merges
+- Default recognition sends the complete recording to one MOSS decoder context.
+  Require the checked runtime patch, measured token budget, EOS and single-generation
+  evidence through `commit_whole_transcript`; never silently accept an old chunk worker.
+  The 90-minute model range is not a laptop memory/quality qualification. Preserve
+  originals on failure; never silently fall back to chunk recognition.
+- Existing chunk speaker labels retain their `asr_chunk` scope; never equate the same
+  label across independently recognized chunks. Verified whole-recording labels use
+  a separate recording scope; existing meetings are not automatically reprocessed. Manual names/merges
   are transcript revisions, not automatic identity verification. Independent
   full-recording diarization is separately invoked and does not establish qualified
   eight-person support. Keep automatic/user/unknown name origin separate; user names

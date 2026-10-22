@@ -687,7 +687,12 @@ fn source_lines(source: &Transcript) -> Vec<String> {
                         .filter(|(chunk, label)| chunk.parse::<u64>().is_ok() && !label.is_empty());
                     let scope = if let Some((chunk, label)) = chunk {
                         format!("구간 {chunk} 내부 표식 {label}")
-                    } else if source.speaker_analysis.as_ref().is_some_and(|analysis| {
+                    } else if source.source.as_ref().is_some_and(|identity| {
+                        identity.projector_version == "moss-recording-speakers-v1"
+                            && identity.speaker_scope.as_deref() == Some("recording")
+                            && identity.chunking_policy.as_deref() == Some("whole-recording-v1")
+                            && speaker.id.starts_with("moss:recording:")
+                    }) || source.speaker_analysis.as_ref().is_some_and(|analysis| {
                         analysis.scope == "recording"
                             && speaker
                                 .id
@@ -1768,9 +1773,164 @@ mod tests {
     impl Drop for ScriptedServer {
         fn drop(&mut self) {
             self.done.store(true, Ordering::Release);
-            self.thread.take().unwrap().join().unwrap();
+            let result = self.thread.take().unwrap().join();
+            if !std::thread::panicking() {
+                result.unwrap();
+            } else if result.is_err() {
+                eprintln!("scripted HTTP fixture also failed; preserving the original test panic");
+            }
         }
     }
+
+    #[cfg(unix)]
+    fn read_scripted_request(
+        stream: &mut std::net::TcpStream,
+        done: &AtomicBool,
+    ) -> std::io::Result<Option<(String, Value)>> {
+        use std::io::{Error, ErrorKind};
+        // accept() can inherit O_NONBLOCK on BSD/macOS. The HTTP fixture uses
+        // blocking framed reads; a read timeout alone does not clear that flag.
+        stream.set_nonblocking(false)?;
+        stream.set_read_timeout(Some(Duration::from_millis(100)))?;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let read = |stream: &mut std::net::TcpStream, buffer: &mut [u8]| {
+            loop {
+                if done.load(Ordering::Acquire) {
+                    return Ok(None);
+                }
+                if Instant::now() >= deadline {
+                    return Err(Error::new(
+                        ErrorKind::TimedOut,
+                        "scripted HTTP request framing exceeded five seconds",
+                    ));
+                }
+                match stream.read(buffer) {
+                    Ok(0) => return Ok(None), // A cancelled client may close before finishing its request.
+                    Ok(count) => return Ok(Some(count)),
+                    Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+                    Err(error)
+                        if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
+                    {
+                        continue
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+        };
+        let mut bytes = Vec::new();
+        let mut buffer = [0; 4096];
+        let (headers, end) = loop {
+            let Some(count) = read(stream, &mut buffer)? else {
+                return Ok(None);
+            };
+            bytes.extend_from_slice(&buffer[..count]);
+            if let Some(index) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
+                break (
+                    String::from_utf8_lossy(&bytes[..index]).to_string(),
+                    index + 4,
+                );
+            }
+        };
+        let length = headers
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>())
+            })
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorKind::InvalidData,
+                    "scripted HTTP request omitted Content-Length",
+                )
+            })?
+            .map_err(|_| {
+                Error::new(
+                    ErrorKind::InvalidData,
+                    "scripted HTTP request has invalid Content-Length",
+                )
+            })?;
+        let body_end = end.checked_add(length).ok_or_else(|| {
+            Error::new(
+                ErrorKind::InvalidData,
+                "scripted HTTP request length overflow",
+            )
+        })?;
+        while bytes.len() < body_end {
+            let Some(count) = read(stream, &mut buffer)? else {
+                return Ok(None);
+            };
+            bytes.extend_from_slice(&buffer[..count]);
+        }
+        let request = serde_json::from_slice(&bytes[end..body_end]).map_err(|_| {
+            Error::new(
+                ErrorKind::InvalidData,
+                "scripted HTTP request body is not JSON",
+            )
+        })?;
+        Ok(Some((headers, request)))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scripted_http_reader_accepts_fragmented_headers_and_body_on_an_inherited_nonblocking_stream()
+    {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let client = std::thread::spawn(move || {
+            let mut stream = std::net::TcpStream::connect(address).unwrap();
+            let body = br#"{"messages":[{"content":"fragmented request"}]}"#;
+            let headers = format!(
+                "POST /apply-template HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            );
+            stream
+                .write_all(&headers.as_bytes()[..headers.len() - 2])
+                .unwrap();
+            std::thread::sleep(Duration::from_millis(10));
+            stream
+                .write_all(&headers.as_bytes()[headers.len() - 2..])
+                .unwrap();
+            stream.write_all(&body[..8]).unwrap();
+            std::thread::sleep(Duration::from_millis(10));
+            stream.write_all(&body[8..]).unwrap();
+        });
+        let (mut stream, _) = listener.accept().unwrap();
+        // Force the accepted-socket mode that caused the macOS fixture panic,
+        // so this regression check remains meaningful on other Unix hosts.
+        stream.set_nonblocking(true).unwrap();
+        let (headers, request) = read_scripted_request(&mut stream, &AtomicBool::new(false))
+            .unwrap()
+            .unwrap();
+        assert!(headers.starts_with("POST /apply-template "));
+        assert_eq!(request["messages"][0]["content"], "fragmented request");
+        client.join().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scripted_http_reader_distinguishes_client_cancellation_from_invalid_framing() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut stream, _) = listener.accept().unwrap();
+        client
+            .write_all(b"POST /tokenize HTTP/1.1\r\nContent-Length: 20\r\n\r\n{")
+            .unwrap();
+        drop(client);
+        assert!(read_scripted_request(&mut stream, &AtomicBool::new(false))
+            .unwrap()
+            .is_none());
+
+        let mut client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut stream, _) = listener.accept().unwrap();
+        client
+            .write_all(b"POST /tokenize HTTP/1.1\r\nContent-Length: invalid\r\n\r\n{}")
+            .unwrap();
+        let error = read_scripted_request(&mut stream, &AtomicBool::new(false)).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("Content-Length"));
+    }
+
     #[cfg(unix)]
     fn scripted_server(
         path: &Path,
@@ -1785,7 +1945,7 @@ mod tests {
         let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
         let recorded = requests.clone();
         let thread = std::thread::spawn(move || {
-            'requests: while !flag.load(Ordering::Acquire) {
+            while !flag.load(Ordering::Acquire) {
                 let (mut stream, _) = match listener.accept() {
                     Ok(stream) => stream,
                     Err(_) => {
@@ -1793,40 +1953,11 @@ mod tests {
                         continue;
                     }
                 };
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(5)))
-                    .unwrap();
-                let mut bytes = Vec::new();
-                let mut buffer = [0; 4096];
-                let (headers, end) = loop {
-                    let count = stream.read(&mut buffer).unwrap();
-                    if count == 0 {
-                        continue 'requests;
-                    }
-                    bytes.extend_from_slice(&buffer[..count]);
-                    if let Some(index) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
-                        break (
-                            String::from_utf8_lossy(&bytes[..index]).to_string(),
-                            index + 4,
-                        );
-                    }
+                let Some((headers, request)) = read_scripted_request(&mut stream, &flag)
+                    .expect("scripted HTTP fixture request framing failed")
+                else {
+                    continue;
                 };
-                let length = headers
-                    .lines()
-                    .find_map(|line| {
-                        line.to_lowercase()
-                            .strip_prefix("content-length:")
-                            .map(|v| v.trim().parse::<usize>().unwrap())
-                    })
-                    .unwrap();
-                while bytes.len() < end + length {
-                    let count = stream.read(&mut buffer).unwrap();
-                    if count == 0 {
-                        continue 'requests;
-                    }
-                    bytes.extend_from_slice(&buffer[..count]);
-                }
-                let request: Value = serde_json::from_slice(&bytes[end..end + length]).unwrap();
                 let response = if headers.starts_with("POST /apply-template ") {
                     json!({"prompt":format!("{}{}",request["messages"][0]["content"].as_str().unwrap(),request["messages"][1]["content"].as_str().unwrap())})
                 } else if headers.starts_with("POST /tokenize ") {
@@ -1861,6 +1992,7 @@ mod tests {
             requests,
         }
     }
+
     #[cfg(unix)]
     fn numbered_source(count: usize) -> Transcript {
         serde_json::from_value(json!({"version":{"id":"test","revision":0},"sourceSessionId":"audio","model":"test","modelRevision":"test",
@@ -2103,6 +2235,22 @@ mod tests {
                 "[3] (화자 미지정) 알 수 없음"
             ]
         );
+    }
+    #[test]
+    fn whole_moss_scope_requires_verified_source_policy_not_only_a_label_prefix() {
+        let mut source: Transcript = serde_json::from_value(json!({
+            "version":{"id":"example","revision":0},"sourceSessionId":"audio",
+            "model":"test","modelRevision":"test",
+            "source":{"rawSha256":"a".repeat(64),"projectorVersion":"moss-recording-speakers-v1",
+                "association":"direct","speakerScope":"recording","chunkingPolicy":"whole-recording-v1"},
+            "speakers":[{"id":"moss:recording:S01","name":"화자 1","nameOrigin":"automatic"}],
+            "segments":[{"id":"segment","start":0,"end":1,"originalText":"예시","text":"예시","speakerId":"moss:recording:S01"}]
+        })).unwrap();
+        assert!(source_lines(&source)[0].contains("녹음 전체 그룹 G1"));
+        source.source.as_mut().unwrap().chunking_policy = None;
+        assert!(source_lines(&source)[0].contains("범위 미확인 표식 G1"));
+        source.source = None;
+        assert!(source_lines(&source)[0].contains("범위 미확인 표식 G1"));
     }
     #[test]
     fn summary_speaker_scope_uses_ids_and_analysis_not_display_name_patterns() {

@@ -19,6 +19,7 @@ on:
       - 'apps/desktop/**'
       - 'design-system/**'
       - 'scripts/native-summary/**'
+      - 'scripts/native-moss-harness/**'
 
 permissions:
   contents: read
@@ -95,6 +96,9 @@ jobs:
           else
             python3 scripts/native-summary/prepare.py --target macos-arm64
           fi
+      - name: Test checked MOSS runtime build contract
+        if: runner.os == 'macOS'
+        run: python3 -m unittest discover -s scripts/native-moss-harness -p 'test_*.py'
       - name: Test native processing
         run: cargo test -p grove-desktop --locked -- --test-threads=1
       - name: Check native desktop host

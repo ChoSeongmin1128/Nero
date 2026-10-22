@@ -9,6 +9,11 @@ use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 const PROJECTOR_VERSION: &str = "moss-chunk-speakers-v1";
+const RECORDING_PROJECTOR_VERSION: &str = "moss-recording-speakers-v1";
+const WHOLE_RECORDING_POLICY: &str = "whole-recording-v1";
+const WHOLE_RECORDING_RUNTIME: &str = "mlx-audio-swift-v0.1.3+nero-moss-whole-v1";
+const MOSS_PARSE_INCOMPLETE: &str = "일부 발언을 끝까지 읽지 못했습니다. 모델 원본은 보관했습니다.";
+const MOSS_PCM_INCOMPLETE: &str = "전사가 끝까지 완료되지 않았습니다. 원본 결과는 보관했습니다.";
 const LEGACY_ASSOCIATION: &str = "legacy-initial-order-v1";
 const SOURCE_TIMEBASE: u64 = 16000;
 
@@ -55,6 +60,10 @@ pub struct TranscriptSource {
     pub raw_sha256: String,
     pub projector_version: String,
     pub association: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speaker_scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chunking_policy: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -109,6 +118,30 @@ struct MossOutput {
     processed_audio_frames: u64,
     input_audio_frames: u64,
     audio_duration_seconds: f64,
+    #[serde(default, deserialize_with = "present_chunk")]
+    speaker_scope: Option<serde_json::Value>,
+    #[serde(default)]
+    chunking_policy: Option<serde_json::Value>,
+    #[serde(default)]
+    generation_count: Option<serde_json::Value>,
+    #[serde(default)]
+    max_tokens: Option<serde_json::Value>,
+    #[serde(default)]
+    chunk_duration_seconds: Option<serde_json::Value>,
+    #[serde(default)]
+    generation_tokens: Option<serde_json::Value>,
+    #[serde(default)]
+    chunks: Option<serde_json::Value>,
+    #[serde(default)]
+    runtime: Option<serde_json::Value>,
+    #[serde(default)]
+    effective_max_tokens: Option<serde_json::Value>,
+    #[serde(default)]
+    prompt_tokens: Option<serde_json::Value>,
+    #[serde(default)]
+    context_size: Option<serde_json::Value>,
+    #[serde(default)]
+    termination_reason: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -131,24 +164,133 @@ where
 }
 
 impl MossOutput {
+    fn recording_scope(&self) -> Result<bool> {
+        let whole_policy = self
+            .chunking_policy
+            .as_ref()
+            .and_then(|value| value.as_str())
+            == Some(WHOLE_RECORDING_POLICY);
+        let scope = self.speaker_scope.as_ref().and_then(|value| value.as_str());
+        let claimed_recording = whole_policy || scope == Some("recording");
+        if !claimed_recording {
+            if self.speaker_scope.is_some() && scope != Some("chunk") {
+                return Err(CoreError::InvalidInput(
+                    "화자 범위 정보가 올바르지 않습니다.".into(),
+                ));
+            }
+            return Ok(false);
+        }
+        let incomplete = || {
+            let message = "녹음 전체를 한 번에 처리한 실행 정보를 확인할 수 없습니다. 모델 원본은 보관했습니다.";
+            CoreError::InvalidInput(message.into())
+        };
+        let chunks = self
+            .chunks
+            .as_ref()
+            .and_then(|value| value.as_array())
+            .ok_or_else(incomplete)?;
+        let full_seconds = self.input_audio_frames as f64 / SOURCE_TIMEBASE as f64;
+        let chunk_duration = self
+            .chunk_duration_seconds
+            .as_ref()
+            .and_then(|value| value.as_f64());
+        let max_tokens = self.max_tokens.as_ref().and_then(|value| value.as_u64());
+        let tokens = self
+            .generation_tokens
+            .as_ref()
+            .and_then(|value| value.as_u64());
+        let prompt = self.prompt_tokens.as_ref().and_then(|value| value.as_u64());
+        let context = self.context_size.as_ref().and_then(|value| value.as_u64());
+        let effective = self
+            .effective_max_tokens
+            .as_ref()
+            .and_then(|value| value.as_u64());
+        let remaining = context
+            .zip(prompt)
+            .and_then(|(context, prompt)| context.checked_sub(prompt)?.checked_sub(1));
+        match self.termination_reason.as_ref().and_then(|value| value.as_str()) {
+            Some("eos") => (),
+            Some("length") => return Err(CoreError::InvalidInput("음성 기록이 모델의 생성 한도에 도달해 끝까지 완료되지 않았습니다. 모델 원본은 보관했습니다.".into())),
+            Some("repetition") => return Err(CoreError::InvalidInput("음성 기록에서 반복 출력이 감지되어 처리가 멈췄습니다. 모델 원본은 보관했습니다.".into())),
+            _ => return Err(incomplete()),
+        }
+        if self.has_unparsed_text {
+            return Err(CoreError::InvalidInput(MOSS_PARSE_INCOMPLETE.into()));
+        }
+        if self.input_audio_frames == 0 || self.processed_audio_frames != self.input_audio_frames {
+            return Err(CoreError::InvalidInput(MOSS_PCM_INCOMPLETE.into()));
+        }
+        if scope != Some("recording")
+            || !whole_policy
+            || self
+                .generation_count
+                .as_ref()
+                .and_then(|value| value.as_u64())
+                != Some(1)
+            || self.runtime.as_ref().and_then(|value| value.as_str())
+                != Some(WHOLE_RECORDING_RUNTIME)
+            || max_tokens != Some(65536)
+            || context != Some(131072)
+            || !prompt.is_some_and(|prompt| prompt > 0)
+            || !effective.is_some_and(|effective| {
+                effective > 0
+                    && remaining.is_some_and(|remaining| effective == remaining.min(65536))
+            })
+            || !tokens
+                .zip(effective)
+                .is_some_and(|(tokens, effective)| tokens < effective)
+            || !chunk_duration.is_some_and(|value| value.is_finite() && value >= full_seconds)
+            || self.audio_duration_seconds != full_seconds
+            || chunks.len() != 1
+        {
+            return Err(incomplete());
+        }
+        let chunk = &chunks[0];
+        if chunk["index"].as_u64() != Some(0)
+            || chunk["generationCount"].as_u64() != Some(1)
+            || chunk["start"].as_f64() != Some(0.0)
+            || chunk["end"].as_f64() != Some(full_seconds)
+            || chunk["hitTokenLimit"].as_bool() != Some(false)
+            || chunk["parsedCompletely"].as_bool() != Some(true)
+            || chunk["generationTokens"].as_u64() != tokens
+            || chunk["maxTokens"].as_u64() != max_tokens
+            || chunk["effectiveMaxTokens"].as_u64() != effective
+            || chunk["promptTokens"].as_u64() != prompt
+            || chunk["contextSize"].as_u64() != context
+            || chunk["terminationReason"].as_str() != Some("eos")
+            || chunk["rawText"].as_str().is_none()
+            || self.segments.iter().any(|segment| {
+                segment.asr_chunk.as_ref().and_then(|value| value.as_u64()) != Some(0)
+            })
+        {
+            return Err(incomplete());
+        }
+        Ok(true)
+    }
+
     fn decode(raw: &[u8], duration: f64, session_id: &str, id: &str) -> Result<Transcript> {
         if raw.len() > 16 * 1024 * 1024 {
             return Err(CoreError::InvalidInput("전사 결과가 너무 큽니다.".into()));
         }
         let output: Self = serde_json::from_slice(raw)
             .map_err(|_| CoreError::InvalidInput("전사 결과를 읽을 수 없습니다.".into()))?;
+        let recording_scope = output.recording_scope()?;
+        if output.hit_token_limit {
+            return Err(CoreError::InvalidInput(
+                "음성 기록의 생성 한도에 도달했습니다. 모델 원본은 보관했습니다.".into(),
+            ));
+        }
+        if output.has_unparsed_text {
+            return Err(CoreError::InvalidInput(MOSS_PARSE_INCOMPLETE.into()));
+        }
         if output.model != "OpenMOSS-Team/MOSS-Transcribe-Diarize"
-            || output.hit_token_limit
-            || output.has_unparsed_text
             || output.input_audio_frames == 0
             || output.processed_audio_frames != output.input_audio_frames
             || !output.audio_duration_seconds.is_finite()
             || (output.audio_duration_seconds - duration).abs() > 0.5
             || (output.input_audio_frames as f64 / 16000.0 - duration).abs() > 0.5
         {
-            return Err(CoreError::InvalidInput(
-                "전사가 끝까지 완료되지 않았습니다. 원본 결과는 보관했습니다.".into(),
-            ));
+            return Err(CoreError::InvalidInput(MOSS_PCM_INCOMPLETE.into()));
         }
         if output.segments.is_empty() {
             return Err(CoreError::InvalidInput(
@@ -180,6 +322,7 @@ impl MossOutput {
             let speaker_id = model_label
                 .as_ref()
                 .and_then(|label| match &segment.asr_chunk {
+                    _ if recording_scope => Some(format!("moss:recording:{label}")),
                     Some(value) => value
                         .as_u64()
                         .map(|chunk| format!("moss:chunk:{chunk}:{label}")),
@@ -229,8 +372,15 @@ impl MossOutput {
                 .into(),
             source: Some(TranscriptSource {
                 raw_sha256: sha256(raw),
-                projector_version: PROJECTOR_VERSION.into(),
+                projector_version: if recording_scope {
+                    RECORDING_PROJECTOR_VERSION
+                } else {
+                    PROJECTOR_VERSION
+                }
+                .into(),
                 association: "direct".into(),
+                speaker_scope: recording_scope.then(|| "recording".into()),
+                chunking_policy: recording_scope.then(|| WHOLE_RECORDING_POLICY.into()),
             }),
             speakers,
             segments,
@@ -583,8 +733,10 @@ impl Engine {
         let source = document.source.as_ref().ok_or_else(|| {
             CoreError::Storage("음성 기록의 원본 연결을 확인할 수 없습니다.".into())
         })?;
-        let valid_source = source.projector_version == PROJECTOR_VERSION
-            && source.raw_sha256 == sha256(&raw)
+        let valid_source = matches!(
+            source.projector_version.as_str(),
+            PROJECTOR_VERSION | RECORDING_PROJECTOR_VERSION
+        ) && source.raw_sha256 == sha256(&raw)
             && match source.association.as_str() {
                 "direct" => initial.source.as_ref() == Some(source),
                 LEGACY_ASSOCIATION => initial.source.is_none(),
@@ -606,7 +758,13 @@ impl Engine {
             ));
         }
         let projection = MossOutput::decode(&raw, duration, &audio.session_id, transcript_id)?;
-        if projection.model != initial.model || projection.segments.len() != initial.segments.len()
+        if projection.model != initial.model
+            || projection.segments.len() != initial.segments.len()
+            || (source.association == "direct" && projection.source.as_ref() != Some(source))
+            || (source.association == LEGACY_ASSOCIATION
+                && (source.projector_version != PROJECTOR_VERSION
+                    || source.speaker_scope.is_some()
+                    || source.chunking_policy.is_some()))
         {
             return Err(CoreError::Storage(
                 "모델 원본과 발언의 연결을 확인할 수 없습니다.".into(),
@@ -790,6 +948,15 @@ impl Engine {
         let raw = read_bytes(&self.store.root, &directory.join("raw.json"))?;
         let projection =
             MossOutput::decode(&raw, duration, &doc.source_session_id, &doc.version.id)?;
+        if projection
+            .source
+            .as_ref()
+            .is_some_and(|source| source.projector_version == RECORDING_PROJECTOR_VERSION)
+        {
+            return Err(CoreError::Storage(
+                "기존 음성 기록을 녹음 전체 화자 범위로 승격할 수 없습니다.".into(),
+            ));
+        }
         if projection.model != initial.model
             || projection.segments.len() != initial.segments.len()
             || !projection
@@ -829,6 +996,8 @@ impl Engine {
             raw_sha256: raw_sha256.clone(),
             projector_version: PROJECTOR_VERSION.into(),
             association: LEGACY_ASSOCIATION.into(),
+            speaker_scope: None,
+            chunking_policy: None,
         });
         self.save_transcript_revision(
             id,
@@ -847,6 +1016,25 @@ impl Engine {
         id: &str,
         expected: Option<TranscriptVersion>,
         raw: Vec<u8>,
+    ) -> Result<Transcript> {
+        self.commit_transcript_with_policy(id, expected, raw, false)
+    }
+
+    pub fn commit_whole_transcript(
+        &mut self,
+        id: &str,
+        expected: Option<TranscriptVersion>,
+        raw: Vec<u8>,
+    ) -> Result<Transcript> {
+        self.commit_transcript_with_policy(id, expected, raw, true)
+    }
+
+    fn commit_transcript_with_policy(
+        &mut self,
+        id: &str,
+        expected: Option<TranscriptVersion>,
+        raw: Vec<u8>,
+        require_whole: bool,
     ) -> Result<Transcript> {
         if self.quitting {
             return Err(CoreError::Unavailable);
@@ -877,6 +1065,17 @@ impl Engine {
             &transcript_id,
         )?;
         immutable_json(&self.store.root, &directory.join("initial.json"), &document)?;
+        if require_whole
+            && !document.source.as_ref().is_some_and(|source| {
+                source.projector_version == RECORDING_PROJECTOR_VERSION
+                    && source.speaker_scope.as_deref() == Some("recording")
+                    && source.chunking_policy.as_deref() == Some(WHOLE_RECORDING_POLICY)
+            })
+        {
+            return Err(CoreError::InvalidInput(
+                "녹음 전체를 한 번에 처리하는 실행기가 필요합니다. 새 원문 결과는 보관했으며 현재 음성 기록은 변경하지 않았습니다.".into(),
+            ));
+        }
         if self.transcript(id)?.map(|d| d.version) != expected {
             return Err(CoreError::InvalidState("전사가 변경되어 새 결과를 적용하지 않았습니다. 기존 수정과 새 원문 결과는 보관했습니다.".into()));
         }
@@ -1184,6 +1383,28 @@ pub(crate) mod tests {
     pub(crate) fn output() -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({"model":"OpenMOSS-Team/MOSS-Transcribe-Diarize","segments":[{"start":0.0,"end":1.0,"text":"[S1] 원문","speaker_id":"S1"}],"hitTokenLimit":false,"hasUnparsedText":false,"processedAudioFrames":16000,"inputAudioFrames":16000,"audioDurationSeconds":1.0})).unwrap()
     }
+    fn whole_output() -> Vec<u8> {
+        let mut raw: serde_json::Value = serde_json::from_slice(&output()).unwrap();
+        raw["speakerScope"] = "recording".into();
+        raw["chunkingPolicy"] = WHOLE_RECORDING_POLICY.into();
+        raw["runtime"] = WHOLE_RECORDING_RUNTIME.into();
+        raw["generationCount"] = 1.into();
+        raw["maxTokens"] = 65536.into();
+        raw["effectiveMaxTokens"] = 65536.into();
+        raw["promptTokens"] = 64.into();
+        raw["contextSize"] = 131072.into();
+        raw["terminationReason"] = "eos".into();
+        raw["generationTokens"] = 12.into();
+        raw["chunkDurationSeconds"] = 1.into();
+        raw["segments"][0]["asr_chunk"] = 0.into();
+        raw["chunks"] = serde_json::json!([{
+            "index":0,"start":0.0,"end":1.0,"rawText":"예시 모델 원본","generationCount":1,
+            "generationTokens":12,"maxTokens":65536,"effectiveMaxTokens":65536,
+            "promptTokens":64,"contextSize":131072,"terminationReason":"eos",
+            "hitTokenLimit":false,"parsedCompletely":true
+        }]);
+        serde_json::to_vec(&raw).unwrap()
+    }
     fn speaker_output(labels: &[serde_json::Value]) -> Vec<u8> {
         let mut raw: serde_json::Value = serde_json::from_slice(&output()).unwrap();
         raw["segments"] = labels
@@ -1325,6 +1546,114 @@ pub(crate) mod tests {
             .join("transcripts");
         assert_eq!(std::fs::read_dir(dir).unwrap().count(), 2);
     }
+
+    #[test]
+    fn whole_commit_rejects_stale_and_diagnostic_workers_without_replacing_user_edits() {
+        let (_temp, mut engine, id, _) = setup();
+        let first = engine
+            .commit_whole_transcript(&id, None, whole_output())
+            .unwrap();
+        let edited = engine
+            .edit_transcript(&id, first.version, vec!["사용자 수정".into()])
+            .unwrap();
+        let directory = engine
+            .store
+            .root
+            .join(transcript_dir(&id, &edited.version.id).unwrap());
+        let before = std::fs::read(directory.join("current.json")).unwrap();
+        let original_raw = std::fs::read(directory.join("raw.json")).unwrap();
+        let rejected = [output(), chunk_output()];
+        for raw in &rejected {
+            assert!(engine
+                .commit_whole_transcript(&id, Some(edited.version.clone()), raw.clone())
+                .is_err());
+            assert_eq!(
+                std::fs::read(directory.join("current.json")).unwrap(),
+                before
+            );
+        }
+        let parent = directory.parent().unwrap();
+        let candidates: Vec<_> = std::fs::read_dir(parent)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path != &directory)
+            .collect();
+        assert_eq!(candidates.len(), 2);
+        for candidate in candidates {
+            let retained_raw = std::fs::read(candidate.join("raw.json")).unwrap();
+            assert!(rejected.contains(&retained_raw));
+            assert!(candidate.join("initial.json").is_file());
+            assert!(!candidate.join("current.json").exists());
+        }
+        let current = engine.transcript(&id).unwrap().unwrap();
+        assert_eq!(current.version, edited.version);
+        assert_eq!(current.segments[0].text, "사용자 수정");
+        assert_eq!(
+            std::fs::read(directory.join("raw.json")).unwrap(),
+            original_raw
+        );
+        assert_eq!(
+            engine
+                .history_document(&id, &current.version.id)
+                .unwrap()
+                .0
+                .version,
+            current.version
+        );
+    }
+
+    #[test]
+    fn whole_commit_keeps_source_cas_and_legacy_commit_reading_available() {
+        let (_temp, mut engine, id, _) = setup();
+        assert!(engine.commit_whole_transcript(&id, None, output()).is_err());
+        assert!(engine.transcript(&id).unwrap().is_none());
+        let legacy = engine.commit_transcript(&id, None, chunk_output()).unwrap();
+        assert_eq!(
+            legacy.segments[0].speaker_id.as_deref(),
+            Some("moss:chunk:0:S1")
+        );
+        let legacy = engine
+            .edit_transcript(
+                &id,
+                legacy.version,
+                vec![
+                    "수정1".into(),
+                    "수정2".into(),
+                    "수정3".into(),
+                    "수정4".into(),
+                ],
+            )
+            .unwrap();
+        assert!(engine.history_document(&id, &legacy.version.id).is_ok());
+        let whole = engine
+            .commit_whole_transcript(&id, Some(legacy.version), whole_output())
+            .unwrap();
+        let edited = engine
+            .edit_transcript(&id, whole.version.clone(), vec!["최신 수정".into()])
+            .unwrap();
+        let candidate_raw = whole_output();
+        assert!(engine
+            .commit_whole_transcript(&id, Some(whole.version), candidate_raw.clone())
+            .is_err());
+        let current = engine.transcript(&id).unwrap().unwrap();
+        assert_eq!(current.version, edited.version);
+        assert_eq!(current.segments[0].text, "최신 수정");
+        let parent = engine
+            .store
+            .root
+            .join("meetings")
+            .join(&id)
+            .join("transcripts");
+        let retained_candidate = std::fs::read_dir(parent)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .any(|path| {
+                !path.join("current.json").exists()
+                    && path.join("initial.json").is_file()
+                    && std::fs::read(path.join("raw.json")).unwrap() == candidate_raw
+            });
+        assert!(retained_candidate);
+    }
     #[test]
     fn incomplete_malformed_and_wrong_audio_outputs_do_not_replace_transcript() {
         let (_temp, mut engine, id, _) = setup();
@@ -1460,6 +1789,338 @@ pub(crate) mod tests {
         .unwrap();
         let single = MossOutput::decode(&output(), 1.0, "session", "transcript").unwrap();
         assert_eq!(single.segments[0].speaker_id.as_deref(), Some("S1"));
+    }
+
+    #[test]
+    fn verified_whole_recording_labels_have_recording_scope_without_chunk_identity() {
+        let mut raw: serde_json::Value = serde_json::from_slice(&whole_output()).unwrap();
+        raw["segments"] = serde_json::json!([
+            {"start":0.0,"end":0.3,"text":"[S1] 첫 발언","speaker_id":"S1","asr_chunk":0},
+            {"start":0.3,"end":0.6,"text":"[S2] 다른 발언","speaker_id":"S2","asr_chunk":0},
+            {"start":0.6,"end":1.0,"text":"[S1] 이어진 발언","speaker_id":"S1","asr_chunk":0}
+        ]);
+        let raw = serde_json::to_vec(&raw).unwrap();
+        let doc = MossOutput::decode(&raw, 1.0, "session", "transcript").unwrap();
+        let ids: Vec<_> = doc
+            .segments
+            .iter()
+            .map(|segment| segment.speaker_id.as_deref())
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                Some("moss:recording:S1"),
+                Some("moss:recording:S2"),
+                Some("moss:recording:S1")
+            ]
+        );
+        assert_eq!(doc.speakers.len(), 2);
+        assert!(doc
+            .speakers
+            .iter()
+            .all(|speaker| speaker.name_origin == Some(SpeakerNameOrigin::Automatic)));
+        let source = doc.source.as_ref().unwrap();
+        assert_eq!(source.projector_version, RECORDING_PROJECTOR_VERSION);
+        assert_eq!(source.speaker_scope.as_deref(), Some("recording"));
+        assert_eq!(
+            source.chunking_policy.as_deref(),
+            Some(WHOLE_RECORDING_POLICY)
+        );
+        assert_eq!(source.raw_sha256, sha256(&raw));
+        assert_eq!(doc.segments[2].text, "이어진 발언");
+        assert_eq!(doc.segments[2].source_index, Some(2));
+        let mut explicit: serde_json::Value = serde_json::from_slice(&chunk_output()).unwrap();
+        explicit["speakerScope"] = "chunk".into();
+        explicit["chunkingPolicy"] = "explicit".into();
+        explicit["generationCount"] = 2.into();
+        let old = MossOutput::decode(
+            &serde_json::to_vec(&explicit).unwrap(),
+            1.0,
+            "session",
+            "transcript",
+        )
+        .unwrap();
+        assert_eq!(
+            old.segments[0].speaker_id.as_deref(),
+            Some("moss:chunk:0:S1")
+        );
+        assert_eq!(
+            old.segments[2].speaker_id.as_deref(),
+            Some("moss:chunk:1:S1")
+        );
+        assert_eq!(
+            old.source.as_ref().unwrap().projector_version,
+            PROJECTOR_VERSION
+        );
+        assert!(old.source.as_ref().unwrap().speaker_scope.is_none());
+        assert!(serde_json::to_value(&old).unwrap()["source"]
+            .get("speakerScope")
+            .is_none());
+        let mut single_chunk: serde_json::Value = serde_json::from_slice(&output()).unwrap();
+        single_chunk["segments"][0]["asr_chunk"] = 0.into();
+        let single_chunk = MossOutput::decode(
+            &serde_json::to_vec(&single_chunk).unwrap(),
+            1.0,
+            "session",
+            "transcript",
+        )
+        .unwrap();
+        assert_eq!(
+            single_chunk.segments[0].speaker_id.as_deref(),
+            Some("moss:chunk:0:S1")
+        );
+        assert!(single_chunk
+            .source
+            .as_ref()
+            .unwrap()
+            .speaker_scope
+            .is_none());
+    }
+
+    #[test]
+    fn whole_scope_requires_single_complete_generation_with_measured_context_budget() {
+        let valid: serde_json::Value = serde_json::from_slice(&whole_output()).unwrap();
+        for (field, value) in [
+            ("speakerScope", serde_json::json!("chunk")),
+            ("speakerScope", serde_json::Value::Null),
+            ("chunkingPolicy", serde_json::json!("explicit")),
+            ("generationCount", serde_json::json!(2)),
+            ("maxTokens", serde_json::json!(8192)),
+            ("effectiveMaxTokens", serde_json::json!(65535)),
+            ("generationTokens", serde_json::json!(65537)),
+            ("generationTokens", serde_json::json!(65536)),
+            ("promptTokens", serde_json::json!(0)),
+            ("promptTokens", serde_json::json!(131072)),
+            ("contextSize", serde_json::json!(131073)),
+            ("runtime", serde_json::json!("mlx-audio-swift-v0.1.3")),
+            ("terminationReason", serde_json::json!("unknown")),
+            ("chunkDurationSeconds", serde_json::json!(0.5)),
+            ("audioDurationSeconds", serde_json::json!(0.5)),
+            ("processedAudioFrames", serde_json::json!(15999)),
+        ] {
+            let mut invalid = valid.clone();
+            invalid[field] = value;
+            assert!(
+                MossOutput::decode(
+                    &serde_json::to_vec(&invalid).unwrap(),
+                    1.0,
+                    "session",
+                    "transcript"
+                )
+                .is_err(),
+                "field {field}"
+            );
+        }
+        for field in [
+            "speakerScope",
+            "chunkingPolicy",
+            "generationCount",
+            "effectiveMaxTokens",
+            "terminationReason",
+        ] {
+            let mut invalid = valid.clone();
+            invalid.as_object_mut().unwrap().remove(field);
+            assert!(
+                MossOutput::decode(
+                    &serde_json::to_vec(&invalid).unwrap(),
+                    1.0,
+                    "session",
+                    "transcript"
+                )
+                .is_err(),
+                "missing {field}"
+            );
+        }
+        for (field, value) in [
+            ("index", serde_json::json!(1)),
+            ("generationCount", serde_json::json!(2)),
+            ("start", serde_json::json!(0.1)),
+            ("end", serde_json::json!(0.5)),
+            ("generationTokens", serde_json::json!(11)),
+            ("effectiveMaxTokens", serde_json::json!(65535)),
+            ("terminationReason", serde_json::json!("length")),
+            ("parsedCompletely", serde_json::json!(false)),
+            ("hitTokenLimit", serde_json::json!(true)),
+        ] {
+            let mut invalid = valid.clone();
+            invalid["chunks"][0][field] = value;
+            assert!(
+                MossOutput::decode(
+                    &serde_json::to_vec(&invalid).unwrap(),
+                    1.0,
+                    "session",
+                    "transcript"
+                )
+                .is_err(),
+                "chunk {field}"
+            );
+        }
+        let mut capped_eos = valid.clone();
+        capped_eos["generationTokens"] = 65536.into();
+        capped_eos["chunks"][0]["generationTokens"] = 65536.into();
+        assert!(MossOutput::decode(
+            &serde_json::to_vec(&capped_eos).unwrap(),
+            1.0,
+            "session",
+            "transcript"
+        )
+        .is_err());
+        let mut missing_count = valid.clone();
+        missing_count["chunks"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("generationCount");
+        assert!(MossOutput::decode(
+            &serde_json::to_vec(&missing_count).unwrap(),
+            1.0,
+            "session",
+            "transcript"
+        )
+        .is_err());
+        let mut multiple = valid.clone();
+        multiple["chunks"]
+            .as_array_mut()
+            .unwrap()
+            .push(valid["chunks"][0].clone());
+        assert!(MossOutput::decode(
+            &serde_json::to_vec(&multiple).unwrap(),
+            1.0,
+            "session",
+            "transcript"
+        )
+        .is_err());
+        for chunk in [serde_json::json!(1), serde_json::Value::Null] {
+            let mut invalid = valid.clone();
+            invalid["segments"][0]["asr_chunk"] = chunk;
+            assert!(MossOutput::decode(
+                &serde_json::to_vec(&invalid).unwrap(),
+                1.0,
+                "session",
+                "transcript"
+            )
+            .is_err());
+        }
+        let mut missing = valid.clone();
+        missing["segments"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("asr_chunk");
+        assert!(MossOutput::decode(
+            &serde_json::to_vec(&missing).unwrap(),
+            1.0,
+            "session",
+            "transcript"
+        )
+        .is_err());
+        let mut remaining = valid;
+        remaining["promptTokens"] = 122880.into();
+        remaining["effectiveMaxTokens"] = 8191.into();
+        remaining["chunks"][0]["promptTokens"] = 122880.into();
+        remaining["chunks"][0]["effectiveMaxTokens"] = 8191.into();
+        assert!(MossOutput::decode(
+            &serde_json::to_vec(&remaining).unwrap(),
+            1.0,
+            "session",
+            "transcript"
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn whole_generation_length_repetition_parse_and_pcm_failures_have_distinct_causes() {
+        for (field, value, expected) in [
+            (
+                "terminationReason",
+                serde_json::json!("length"),
+                "생성 한도",
+            ),
+            (
+                "terminationReason",
+                serde_json::json!("repetition"),
+                "반복 출력",
+            ),
+            ("hasUnparsedText", serde_json::json!(true), "일부 발언"),
+            (
+                "processedAudioFrames",
+                serde_json::json!(15999),
+                "끝까지 완료",
+            ),
+        ] {
+            let mut raw: serde_json::Value = serde_json::from_slice(&whole_output()).unwrap();
+            raw[field] = value;
+            if field == "hasUnparsedText" {
+                raw["chunks"][0]["parsedCompletely"] = false.into();
+            }
+            if field == "processedAudioFrames" {
+                raw["chunks"][0]["end"] = (15999.0 / 16000.0).into();
+            }
+            let error = MossOutput::decode(
+                &serde_json::to_vec(&raw).unwrap(),
+                1.0,
+                "session",
+                "transcript",
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains(expected));
+        }
+    }
+
+    #[test]
+    fn whole_recording_scope_preserves_current_history_and_never_upgrades_missing_source() {
+        let (_temp, mut engine, id, _) = setup();
+        let raw = whole_output();
+        let source = engine.commit_transcript(&id, None, raw.clone()).unwrap();
+        let edited = engine
+            .edit_transcript(&id, source.version, vec!["사용자 수정".into()])
+            .unwrap();
+        assert_eq!(
+            engine
+                .history_document(&id, &edited.version.id)
+                .unwrap()
+                .0
+                .segments[0]
+                .text,
+            "사용자 수정"
+        );
+        let directory = engine
+            .store
+            .root
+            .join(transcript_dir(&id, &edited.version.id).unwrap());
+        let initial = std::fs::read(directory.join("initial.json")).unwrap();
+        assert_eq!(std::fs::read(directory.join("raw.json")).unwrap(), raw);
+        assert_eq!(engine.upgrade_transcript_sources().unwrap().upgraded, 0);
+        assert_eq!(
+            std::fs::read(directory.join("initial.json")).unwrap(),
+            initial
+        );
+        let (_directory, before) = make_legacy(&engine, &id, true);
+        let report = engine.upgrade_transcript_sources().unwrap();
+        assert_eq!(report.upgraded, 0);
+        assert_eq!(report.unavailable, 1);
+        assert_eq!(
+            std::fs::read(directory.join("current.json")).unwrap(),
+            before
+        );
+        assert_eq!(std::fs::read(directory.join("raw.json")).unwrap(), raw);
+    }
+
+    #[test]
+    fn recording_scope_cannot_be_added_to_stored_chunk_raw_by_source_metadata_alone() {
+        let (_temp, mut engine, id, _) = setup();
+        let doc = engine.commit_transcript(&id, None, chunk_output()).unwrap();
+        let directory = engine
+            .store
+            .root
+            .join(transcript_dir(&id, &doc.version.id).unwrap());
+        for name in ["initial.json", "current.json"] {
+            let path = directory.join(name);
+            let mut value: serde_json::Value = store::read_json(&path).unwrap();
+            value["source"]["projectorVersion"] = RECORDING_PROJECTOR_VERSION.into();
+            value["source"]["speakerScope"] = "recording".into();
+            value["source"]["chunkingPolicy"] = WHOLE_RECORDING_POLICY.into();
+            std::fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
+        }
+        assert!(engine.history_document(&id, &doc.version.id).is_err());
     }
     #[test]
     fn missing_or_invalid_chunk_scope_keeps_text_without_unscoped_identity_links() {

@@ -85,7 +85,12 @@ frontend, whose actions require the native bridge; it does not supply fake meeti
 - Recover complete stored frames after interruption; retain originals on failure.
 - On Apple silicon with macOS 26 or later and packaged workers, import local audio
   through the native file picker, retaining the original bytes and separate playback WAV.
-- Explicitly prepare the pinned MOSS model, then transcribe finalized audio locally.
+- Explicitly prepare the pinned MOSS model, then recognize each finalized recording
+  with one complete-input decoder context. The checked worker reports EOS, measured
+  context/output budgets and one-generation evidence before a result can be saved.
+  It does not silently switch to chunk recognition on failure. The upstream 90-minute
+  input range is not an ordinary-laptop memory/quality qualification. Original audio
+  and previous results remain available after an unsupported or failed input.
   Downloads are checked against the shared manifest; inference uploads no audio.
 - Optional machine-local terminology profiles create a separate correction revision
   after recognition. Uncertain names remain unchanged; an absent optional contextual
@@ -202,7 +207,7 @@ Build the pinned Release/macOS `MossHarness` scheme as described in
 Then, from the repository root, stage its matching resources before the Tauri build:
 
 ```sh
-apps/desktop/scripts/prepare-native.sh XCODE_RELEASE_DIRECTORY CHECKOUTS_DIRECTORY
+apps/desktop/scripts/prepare-native.sh XCODE_RELEASE_DIRECTORY CHECKOUTS_DIRECTORY PATCH_RECEIPT
 ```
 
 This compiles the shared audio preparer and packages the worker, its matching Metal

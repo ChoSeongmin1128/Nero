@@ -8,6 +8,16 @@ the private installation and evaluation receipts.
 
 ## Native rewrite source
 
+- Default MOSS recognition uses one complete-recording decoder context. A checked
+  build-time patch reports actual multimodal prompt/context/output budgets and
+  EOS/length/repetition termination; the new ingestion API rejects stale chunk workers
+  while retaining old stored records. Only verified single-generation EOS output can
+  replace the current transcript. Cancellation serializes with the baseline save and
+  explicitly reaps the worker; later terminology cancellation remains possible.
+  Existing recordings are never automatically rerun. See
+  [Worker contract](../scripts/native-moss-harness/README.md).
+
+
 - Whole-recording speaker analysis has an optional native adapter and explicit model
   preparation, with a single stateful NeMo-Speech.cpp invocation. It preserves raw
   output/provenance, rejects stale source revisions and projects conservatively without
@@ -75,8 +85,9 @@ the private installation and evaluation receipts.
   upgrades run as a separate startup operation with immutable before/after evidence.
   Ordinary reads do not reconstruct or migrate. Workspace JSON float parsing preserves
   persisted coordinates; timestamps are checked as ASR sample addresses, never epsilon identity.
-  MOSS labels are scoped to independent recognition chunks. A separately invoked
-  whole-recording adapter can replace those assignments; default automatic integration
+  Old MOSS labels retain their independent chunk scope; newly verified single-input
+  results have recording scope. A separately invoked whole-recording adapter can
+  replace assignments; default automatic integration
   and qualified eight-person diarization remain pending/unverified. See
   [Meeting library and speakers](meeting-library-and-speakers.md) for storage, cancellation,
   recovery and validation boundaries; this source contract is not an installed-app receipt.
