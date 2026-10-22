@@ -65,10 +65,10 @@ function openController(doc = documentForTest()) {
   } });
   document.activeElement = trigger;
   const state = { selectedId: 'meeting', connected: true, busy: false, editLocks: 0, snapshot: { meetings: [{ id: 'meeting' }] }, processing: { status: 'idle' }, transcriptDraft: { id: 'meeting', doc: structuredClone(doc) } };
-  const calls = [], errors = [], updates = [], flushes = [], plays = [];
+  const calls = [], errors = [], updates = [], flushes = [], plays = [], analysisCalls = [], processing = [];
   let playing = false, playable = true, pauses = 0;
   let beforeFlush = null;
-  const bridge = { saveSpeakers(id, expected, speakers, assignments) {
+  const bridge = { diarizeMeeting: async (id, expected) => { analysisCalls.push({ id, expected: plain(expected) }); return { id: 'analysis', kind: 'diarize', status: 'running' }; }, prepareSpeakerModel: async () => { analysisCalls.push({ prepare: true }); return { id: 'model', kind: 'speaker-model', status: 'running' }; }, saveSpeakers(id, expected, speakers, assignments) {
     return new Promise((resolve, reject) => calls.push({ id, expected: plain(expected), speakers: plain(speakers), assignments: plain(assignments), reject, resolve() {
       const current = state.transcriptDraft.doc;
       resolve({ ...structuredClone(current), version: { ...current.version, revision: current.version.revision + 1 }, speakers: plain(speakers), segments: current.segments.map((segment, index) => ({ ...segment, speakerId: assignments[index] })) });
@@ -80,7 +80,7 @@ function openController(doc = documentForTest()) {
     flushes.push(true); state.editLocks += 1;
     try { await beforeFlush?.(); return await action(); }
     finally { state.editLocks -= 1; }
-  }, onUpdated: (saved, meetingId) => { updates.push(meetingId); if (state.selectedId === meetingId) state.transcriptDraft.doc = saved; }, showError: error => errors.push(String(error.message || error)), byId: id => elements.get(id) || null, onPlay: (seconds, context) => { plays.push({ seconds, context: plain(context) }); playing = true; }, onPause: () => { pauses += 1; playing = false; }, isPlaying: () => playing, canPlay: () => playable });
+  }, onProcessing: progress => processing.push(plain(progress)), onUpdated: (saved, meetingId) => { updates.push(meetingId); if (state.selectedId === meetingId) state.transcriptDraft.doc = saved; }, showError: error => errors.push(String(error.message || error)), byId: id => elements.get(id) || null, onPlay: (seconds, context) => { plays.push({ seconds, context: plain(context) }); playing = true; }, onPause: () => { pauses += 1; playing = false; }, isPlaying: () => playing, canPlay: () => playable });
   const click = async node => {
     const target = typeof node === 'string' ? elements.get(node) : node;
     assert.ok(target, `missing click target ${node}`);
@@ -93,7 +93,7 @@ function openController(doc = documentForTest()) {
   const name = (id, value) => { const input = nameInput(id); input.value = value; body.listeners.get('input')({ target: input }); return input; };
   const input = (id, value) => { const node = elements.get(id); node.value = value; body.listeners.get('input')({ target: node }); return node; };
   const choose = value => { const node = elements.get('speaker-assignment-target'); node.value = value; change(node); };
-  return { functions, controller, elements, body, dialog, trigger, state, calls, errors, updates, flushes, plays, click, change, choose, input, name, nameInput, writes: () => writes, beforeFlush: callback => { beforeFlush = callback; }, find: (attribute, value) => body.children.find(node => node.attributes[attribute] === value), compositionStart: () => body.listeners.get('compositionstart')(), compositionEnd: () => body.listeners.get('compositionend')(), document, pauses: () => pauses, endPlayback() { playing = false; controller.syncPlayback(); }, setPlayable(value) { playable = value; controller.syncPlayback(); } };
+  return { functions, controller, elements, body, dialog, trigger, state, calls, analysisCalls, processing, errors, updates, flushes, plays, click, change, choose, input, name, nameInput, writes: () => writes, beforeFlush: callback => { beforeFlush = callback; }, find: (attribute, value) => body.children.find(node => node.attributes[attribute] === value), compositionStart: () => body.listeners.get('compositionstart')(), compositionEnd: () => body.listeners.get('compositionend')(), document, pauses: () => pauses, endPlayback() { playing = false; controller.syncPlayback(); }, setPlayable(value) { playable = value; controller.syncPlayback(); } };
 }
 
 test('speaker operations preserve text and work without model speaker labels', () => {
@@ -381,4 +381,60 @@ test('single new-speaker composition is saved once and cancellation restores the
   assert.equal(app.dialog.open, false);
   assert.equal(app.pauses() > 0, true);
   assert.equal(app.document.activeElement, row);
+});
+
+
+test('whole-recording analysis requires confirmation and submits the pinned transcript version', async () => {
+  const app = openController();
+  app.state.processing.speakerSupported = true;
+  app.state.processing.speakerReady = true;
+  await app.controller.open();
+  await app.click('speaker-analyze');
+  assert.match(app.body.innerHTML, /현재 화자 이름과 발언 배정이 새 결과로 바뀝니다/);
+  assert.equal(app.analysisCalls.length, 0);
+  await app.click('speaker-analysis-confirm');
+  assert.deepEqual(app.analysisCalls, [{ id: 'meeting', expected: { id: 'document', revision: 0 } }]);
+  assert.equal(app.processing[0].kind, 'diarize');
+  assert.equal(app.dialog.open, false);
+});
+
+test('missing speaker model needs explicit preparation without automatically analyzing', async () => {
+  const app = openController();
+  app.state.processing.speakerSupported = true;
+  app.state.processing.speakerReady = false;
+  await app.controller.open();
+  await app.click('speaker-analyze');
+  assert.match(app.body.innerHTML, /모델을 다운로드/);
+  assert.equal(app.analysisCalls.length, 0);
+  await app.click('speaker-analysis-confirm');
+  assert.deepEqual(app.analysisCalls, [{ prepare: true }]);
+  assert.equal(app.processing[0].kind, 'speaker-model');
+});
+
+test('analysis cannot replace unsaved names or a changed transcript', async () => {
+  const app = openController();
+  app.state.processing.speakerSupported = true;
+  app.state.processing.speakerReady = true;
+  await app.controller.open();
+  app.name('S1', '수정한 이름');
+  assert.equal(app.elements.get('speaker-analyze').disabled, true);
+  app.name('S1', '화자 1');
+  await app.click('speaker-analyze');
+  app.beforeFlush(() => { app.state.transcriptDraft.doc.version.revision += 1; });
+  await app.click('speaker-analysis-confirm');
+  assert.equal(app.analysisCalls.length, 0);
+  assert.match(app.elements.get('speaker-editor-message').textContent, /변경되었습니다/);
+});
+
+test('recording scope offers another analysis without claiming an attendee count', async () => {
+  const doc = documentForTest(); doc.speakerAnalysis = { scope: 'recording', assignmentsEdited: true };
+  const app = openController(doc);
+  app.state.processing.speakerSupported = true;
+  app.state.processing.speakerReady = true;
+  await app.controller.open();
+  assert.match(app.body.innerHTML, /id="speaker-analyze"[^>]*>다시 구분/);
+  assert.doesNotMatch(app.body.innerHTML, /2명/);
+  app.state.processing = { ...app.state.processing, status: 'running', meetingId: 'other' };
+  app.controller.render();
+  assert.equal(app.elements.get('speaker-analyze').disabled, true);
 });

@@ -789,7 +789,7 @@ function renderTranscript(meeting) {
   if (!state.transcriptLoaded) message = '음성 기록 불러오는 중';
   else if (state.transcriptLoadError) message = '음성 기록을 불러오지 못했습니다.';
   else if (draft?.dirty) message = '저장되지 않은 수정이 있습니다.';
-  else if (ownJob) message = processingFeedback(job).title;
+  else if (ownJob) message = job.kind === 'diarize' || job.phase === 'diarizing' ? '' : processingFeedback(job).title;
   else if (!draft?.doc && !meeting.audio) message = '녹음을 마치면 음성 기록을 볼 수 있습니다.';
   else if (!draft?.doc && !job.supported) message = '이 환경에서는 음성 기록을 변환할 수 없습니다.';
   else if (!draft?.doc && !job.modelReady) message = '음성 인식 모델을 먼저 준비해 주세요.';
@@ -1126,7 +1126,7 @@ const speakers = mountSpeakers({ bridge, getState: () => state, byId, finishEdit
     if (context.meetingId !== state.selectedId || segment?.id !== context.segmentId) return;
     speakerReplay = { meetingId: context.meetingId, end: context.endSeconds };
     seekRecording(seconds);
-  }, onUpdated(doc, meetingId) {
+  }, onProcessing: acceptProcessing, onUpdated(doc, meetingId) {
   if (state.selectedId !== meetingId) return;
   if (state.transcriptDraft) { state.transcriptDraft.doc = doc; state.transcriptDraft.savedTexts = doc.segments.map(segment => segment.text); state.transcriptDraft.dirty = false; state.transcriptEditing = null; state.transcriptKey = ''; state.summaryKey = ''; }
   render(); refreshMeetingSearch();

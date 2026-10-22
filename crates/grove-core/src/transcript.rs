@@ -38,6 +38,15 @@ pub struct TranscriptSegment {
 pub struct TranscriptSpeaker {
     pub id: String,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name_origin: Option<SpeakerNameOrigin>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum SpeakerNameOrigin {
+    Automatic,
+    User,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -68,6 +77,8 @@ pub struct Transcript {
     #[serde(default)]
     pub speakers: Vec<TranscriptSpeaker>,
     pub segments: Vec<TranscriptSegment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speaker_analysis: Option<crate::SpeakerAnalysis>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -186,6 +197,7 @@ impl MossOutput {
                     speakers.push(TranscriptSpeaker {
                         id: label.clone(),
                         name: format!("화자 {}", speakers.len() + 1),
+                        name_origin: Some(SpeakerNameOrigin::Automatic),
                     });
                 }
             }
@@ -222,6 +234,7 @@ impl MossOutput {
             }),
             speakers,
             segments,
+            speaker_analysis: None,
         })
     }
 }
@@ -944,14 +957,55 @@ impl Engine {
                 "음성 기록이 변경되었습니다.".into(),
             ));
         }
-        self.save_transcript_revision_with_evidence(id, after, None, Some(evidence))
+        self.save_transcript_revision_with_evidence(id, after, None, Some(evidence), None)
+    }
+
+    pub fn apply_diarization(
+        &mut self,
+        id: &str,
+        draft: crate::SpeakerAnalysisDraft,
+    ) -> Result<Transcript> {
+        if self.quitting {
+            return Err(CoreError::Unavailable);
+        }
+        self.require_active_meeting(id)?;
+        if self.capture.is_some() {
+            return Err(CoreError::RecordingBusy);
+        }
+        let current = self
+            .transcript(id)?
+            .ok_or_else(|| CoreError::InvalidState("분석할 음성 기록이 없습니다.".into()))?;
+        if current.version != draft.source.version
+            || crate::summary::transcript_digest(&current)?
+                != crate::summary::transcript_digest(&draft.source)?
+        {
+            return Err(CoreError::InvalidState(
+                "음성 기록이 변경되어 화자 분석을 적용하지 않았습니다.".into(),
+            ));
+        }
+        let (verified, _, _) = self.history_document(id, &current.version.id)?;
+        if crate::summary::transcript_digest(&verified)?
+            != crate::summary::transcript_digest(&current)?
+        {
+            return Err(CoreError::InvalidState(
+                "음성 기록이 변경되었습니다.".into(),
+            ));
+        }
+        let audio = self.meetings[id]
+            .meeting
+            .audio
+            .as_ref()
+            .ok_or_else(|| CoreError::InvalidState("원음 정보가 없습니다.".into()))?;
+        let (after, evidence) =
+            crate::diarization::project(draft, audio.frames, audio.sample_rate)?;
+        self.save_transcript_revision_with_evidence(id, after, None, None, Some(evidence))
     }
 
     pub fn edit_speakers(
         &mut self,
         id: &str,
         expected: TranscriptVersion,
-        speakers: Vec<TranscriptSpeaker>,
+        mut speakers: Vec<TranscriptSpeaker>,
         assignments: Vec<Option<String>>,
     ) -> Result<Transcript> {
         if self.quitting {
@@ -972,6 +1026,14 @@ impl Engine {
             ));
         }
         validate_speakers(&speakers, &assignments)?;
+        for speaker in &mut speakers {
+            speaker.name_origin = doc
+                .speakers
+                .iter()
+                .find(|previous| previous.id == speaker.id && previous.name == speaker.name)
+                .map(|previous| previous.name_origin)
+                .unwrap_or(Some(SpeakerNameOrigin::User));
+        }
         if doc.speakers == speakers
             && doc
                 .segments
@@ -982,6 +1044,9 @@ impl Engine {
             return Ok(doc);
         }
         doc.speakers = speakers;
+        if let Some(analysis) = &mut doc.speaker_analysis {
+            analysis.assignments_edited = true;
+        }
         for (segment, assignment) in doc.segments.iter_mut().zip(assignments) {
             segment.speaker_id = assignment;
         }
@@ -998,7 +1063,7 @@ impl Engine {
         doc: Transcript,
         upgrade: Option<TranscriptUpgradeEvidence>,
     ) -> Result<Transcript> {
-        self.save_transcript_revision_with_evidence(id, doc, upgrade, None)
+        self.save_transcript_revision_with_evidence(id, doc, upgrade, None, None)
     }
 
     fn save_transcript_revision_with_evidence(
@@ -1007,6 +1072,7 @@ impl Engine {
         mut doc: Transcript,
         upgrade: Option<TranscriptUpgradeEvidence>,
         terminology: Option<serde_json::Value>,
+        speaker_analysis: Option<crate::diarization::SpeakerAnalysisEvidence>,
     ) -> Result<Transcript> {
         let before_version = doc.version.clone();
         doc.version.revision = doc
@@ -1067,6 +1133,19 @@ impl Engine {
                     "afterCurrentSha256":sha256(&after),
                     "afterPath":edit_name,
                     "provenance":evidence,
+                }),
+            )?;
+        }
+        if let Some(evidence) = speaker_analysis {
+            let receipts = directory.join("speaker-analysis").join(&evidence.run_id);
+            store::ensure_directory(&store::checked_path(&self.store.root, &receipts)?)?;
+            immutable_bytes(&self.store.root, &receipts.join("raw.json"), &evidence.raw)?;
+            immutable_json(
+                &self.store.root,
+                &receipts.join("run.json"),
+                &serde_json::json!({
+                    "status":"prepared","beforeVersion":before_version,"afterVersion":doc.version,
+                    "afterCurrentSha256":sha256(&after),"afterPath":edit_name,"provenance":evidence.document
                 }),
             )?;
         }
@@ -1301,15 +1380,18 @@ pub(crate) mod tests {
             vec![
                 TranscriptSpeaker {
                     id: "S02".into(),
-                    name: "화자 1".into()
+                    name: "화자 1".into(),
+                    name_origin: Some(SpeakerNameOrigin::Automatic),
                 },
                 TranscriptSpeaker {
                     id: "S1".into(),
-                    name: "화자 2".into()
+                    name: "화자 2".into(),
+                    name_origin: Some(SpeakerNameOrigin::Automatic),
                 },
                 TranscriptSpeaker {
                     id: "S3".into(),
-                    name: "화자 3".into()
+                    name: "화자 3".into(),
+                    name_origin: Some(SpeakerNameOrigin::Automatic),
                 },
             ]
         );
@@ -1546,6 +1628,99 @@ pub(crate) mod tests {
         assert_eq!(std::fs::read(archive).unwrap(), original_minutes);
     }
     #[test]
+    fn speaker_name_origin_is_optional_without_changing_legacy_serialization() {
+        let old = r#"{"id":"S1","name":"예시 이름"}"#;
+        let speaker: TranscriptSpeaker = serde_json::from_str(old).unwrap();
+        assert_eq!(speaker.name_origin, None);
+        assert_eq!(serde_json::to_string(&speaker).unwrap(), old);
+        for (origin, expected) in [
+            (SpeakerNameOrigin::Automatic, "automatic"),
+            (SpeakerNameOrigin::User, "user"),
+        ] {
+            let mut explicit = speaker.clone();
+            explicit.name_origin = Some(origin);
+            assert_eq!(
+                serde_json::to_value(explicit).unwrap()["nameOrigin"],
+                expected
+            );
+        }
+    }
+    #[test]
+    fn speaker_edits_preserve_existing_origin_and_derive_new_origin_from_name_changes() {
+        let (_temp, mut engine, id, _) = setup();
+        let original = engine.commit_transcript(&id, None, output()).unwrap();
+        assert_eq!(
+            original.speakers[0].name_origin,
+            Some(SpeakerNameOrigin::Automatic)
+        );
+        let assignments = vec![original.segments[0].speaker_id.clone()];
+        let original_digest = crate::summary::transcript_digest(&original).unwrap();
+        for requested_origin in [None, Some(SpeakerNameOrigin::User)] {
+            let mut omitted_or_forged = original.speakers.clone();
+            omitted_or_forged[0].name_origin = requested_origin;
+            let unchanged = engine
+                .edit_speakers(
+                    &id,
+                    original.version.clone(),
+                    omitted_or_forged,
+                    assignments.clone(),
+                )
+                .unwrap();
+            assert_eq!(unchanged.version, original.version);
+            assert_eq!(
+                crate::summary::transcript_digest(&unchanged).unwrap(),
+                original_digest
+            );
+            assert_eq!(
+                unchanged.speakers[0].name_origin,
+                Some(SpeakerNameOrigin::Automatic)
+            );
+        }
+        let mut renamed = original.speakers.clone();
+        renamed[0].name = "사용자 표시명".into();
+        renamed[0].name_origin = Some(SpeakerNameOrigin::Automatic);
+        let renamed = engine
+            .edit_speakers(&id, original.version, renamed, assignments.clone())
+            .unwrap();
+        assert_eq!(
+            renamed.speakers[0].name_origin,
+            Some(SpeakerNameOrigin::User)
+        );
+        let mut no_origin = renamed.speakers.clone();
+        no_origin[0].name_origin = None;
+        let unchanged = engine
+            .edit_speakers(&id, renamed.version.clone(), no_origin, assignments)
+            .unwrap();
+        assert_eq!(unchanged.version, renamed.version);
+        assert_eq!(
+            unchanged.speakers[0].name_origin,
+            Some(SpeakerNameOrigin::User)
+        );
+        let mut new_speakers = unchanged.speakers.clone();
+        new_speakers.push(TranscriptSpeaker {
+            id: "manual-new".into(),
+            name: "화자 1".into(),
+            name_origin: Some(SpeakerNameOrigin::Automatic),
+        });
+        let added = engine
+            .edit_speakers(
+                &id,
+                unchanged.version,
+                new_speakers,
+                vec![Some("manual-new".into())],
+            )
+            .unwrap();
+        assert_eq!(added.speakers[1].name_origin, Some(SpeakerNameOrigin::User));
+        let root = engine.store.root.clone();
+        drop(engine);
+        let reopened = Engine::open(root)
+            .unwrap()
+            .transcript(&id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(reopened.speakers, added.speakers);
+    }
+    #[test]
     fn speaker_rename_merge_split_and_restore_are_versioned_without_changing_content() {
         let (_temp, mut engine, id, _) = setup();
         let raw = speaker_output(&[serde_json::json!("S1"), serde_json::json!("S2")]);
@@ -1599,6 +1774,7 @@ pub(crate) mod tests {
         split_speakers.push(TranscriptSpeaker {
             id: split_id.clone(),
             name: "새 화자".into(),
+            name_origin: None,
         });
         let split = engine
             .edit_speakers(
@@ -1664,6 +1840,7 @@ pub(crate) mod tests {
                 vec![TranscriptSpeaker {
                     id: "../invalid".into(),
                     name: "화자".into(),
+                    name_origin: None,
                 }],
                 vec![None],
             ),
@@ -1671,6 +1848,7 @@ pub(crate) mod tests {
                 vec![TranscriptSpeaker {
                     id: "S1".into(),
                     name: " ".into(),
+                    name_origin: None,
                 }],
                 vec![None],
             ),
@@ -1678,6 +1856,7 @@ pub(crate) mod tests {
                 vec![TranscriptSpeaker {
                     id: "S1".into(),
                     name: "줄\n바꿈".into(),
+                    name_origin: None,
                 }],
                 vec![None],
             ),
@@ -1685,6 +1864,7 @@ pub(crate) mod tests {
                 vec![TranscriptSpeaker {
                     id: "S1".into(),
                     name: "a".repeat(257),
+                    name_origin: None,
                 }],
                 vec![None],
             ),
@@ -2470,6 +2650,153 @@ pub(crate) mod tests {
         std::fs::write(directory.join("terminology"), b"blocked receipt directory").unwrap();
         assert!(engine
             .commit_terminology(&id, terminology_draft(source.clone()))
+            .is_err());
+        assert_eq!(
+            std::fs::read(directory.join("current.json")).unwrap(),
+            before
+        );
+        assert_eq!(std::fs::read(directory.join("raw.json")).unwrap(), raw);
+        assert_eq!(
+            engine.transcript(&id).unwrap().unwrap().version,
+            source.version
+        );
+    }
+
+    fn diarization_draft(source: Transcript) -> crate::SpeakerAnalysisDraft {
+        crate::SpeakerAnalysisDraft {
+            source,
+            model: "example/diarizer".into(),
+            model_revision: "revision-1".into(),
+            model_sha256: "a".repeat(64),
+            runtime: "example-runtime".into(),
+            configuration: serde_json::json!({"scope":"recording"}),
+            raw: br#"{"file":"input.wav","segments":[{"start":0.0,"end":1.0,"speaker":2}]}"#
+                .to_vec(),
+        }
+    }
+
+    #[test]
+    fn diarization_preserves_audio_and_edited_text_with_immutable_run_evidence() {
+        let (temp, mut engine, id, source_audio) = setup();
+        let audio_bytes = std::fs::read(&source_audio).unwrap();
+        let raw = output();
+        let initial = engine.commit_transcript(&id, None, raw.clone()).unwrap();
+        let directory = engine
+            .store
+            .root
+            .join(transcript_dir(&id, &initial.version.id).unwrap());
+        let initial_bytes = std::fs::read(directory.join("initial.json")).unwrap();
+        let source = engine
+            .edit_transcript(&id, initial.version, vec!["사용자 수정".into()])
+            .unwrap();
+        let draft = diarization_draft(source.clone());
+        let activity_bytes = draft.raw.clone();
+        let result = engine.apply_diarization(&id, draft).unwrap();
+        assert_eq!(result.version.revision, source.version.revision + 1);
+        assert_eq!(result.version.id, source.version.id);
+        assert_eq!(result.source_session_id, source.source_session_id);
+        assert_eq!(result.source, source.source);
+        assert_eq!(result.segments[0].id, source.segments[0].id);
+        assert_eq!(
+            result.segments[0].source_index,
+            source.segments[0].source_index
+        );
+        assert_eq!(
+            (result.segments[0].start, result.segments[0].end),
+            (source.segments[0].start, source.segments[0].end)
+        );
+        assert_eq!(result.segments[0].text, "사용자 수정");
+        assert_eq!(result.segments[0].original_text, "원문");
+        let analysis = result.speaker_analysis.as_ref().unwrap();
+        assert_eq!(analysis.scope, "recording");
+        assert!(!analysis.assignments_edited);
+        let evidence_dir = directory.join("speaker-analysis").join(&analysis.run_id);
+        assert_eq!(
+            std::fs::read(evidence_dir.join("raw.json")).unwrap(),
+            activity_bytes
+        );
+        let receipt: serde_json::Value = store::read_json(&evidence_dir.join("run.json")).unwrap();
+        assert_eq!(
+            receipt["beforeVersion"],
+            serde_json::to_value(&source.version).unwrap()
+        );
+        assert_eq!(
+            receipt["afterVersion"],
+            serde_json::to_value(&result.version).unwrap()
+        );
+        assert_eq!(
+            receipt["provenance"]["source"],
+            serde_json::to_value(&source).unwrap()
+        );
+        assert_eq!(
+            receipt["provenance"]["sourceSha256"],
+            crate::summary::transcript_digest(&source).unwrap()
+        );
+        let edit_name = receipt["afterPath"].as_str().unwrap();
+        assert_eq!(
+            receipt["afterCurrentSha256"],
+            sha256(&std::fs::read(directory.join(edit_name)).unwrap())
+        );
+        assert_eq!(
+            std::fs::read(directory.join("initial.json")).unwrap(),
+            initial_bytes
+        );
+        assert_eq!(std::fs::read(directory.join("raw.json")).unwrap(), raw);
+        assert_eq!(std::fs::read(source_audio).unwrap(), audio_bytes);
+        let mut names = result.speakers.clone();
+        names[0].name = "참석자".into();
+        let assignment = result.segments[0].speaker_id.clone();
+        let edited = engine
+            .edit_speakers(&id, result.version, names, vec![assignment])
+            .unwrap();
+        assert!(edited.speaker_analysis.as_ref().unwrap().assignments_edited);
+        drop(engine);
+        let reopened = Engine::open(temp.path().canonicalize().unwrap().join("store")).unwrap();
+        let current = reopened.transcript(&id).unwrap().unwrap();
+        assert_eq!(current.version, edited.version);
+        assert_eq!(current.speakers[0].name, "참석자");
+        assert_eq!(current.segments[0].text, "사용자 수정");
+        assert_eq!(
+            std::fs::read(evidence_dir.join("raw.json")).unwrap(),
+            activity_bytes
+        );
+    }
+
+    #[test]
+    fn diarization_source_digest_and_version_reject_concurrent_or_forged_source() {
+        let (_temp, mut engine, id, _) = setup();
+        let source = engine.commit_transcript(&id, None, output()).unwrap();
+        let mut forged = diarization_draft(source.clone());
+        forged.source.segments[0].text = "수정 위조".into();
+        assert!(engine.apply_diarization(&id, forged).is_err());
+        let pending = diarization_draft(source.clone());
+        let edited = engine
+            .edit_transcript(&id, source.version, vec!["사용자 수정".into()])
+            .unwrap();
+        assert!(engine.apply_diarization(&id, pending).is_err());
+        let current = engine.transcript(&id).unwrap().unwrap();
+        assert_eq!(current.version, edited.version);
+        assert_eq!(current.segments[0].text, "사용자 수정");
+        assert!(current.speaker_analysis.is_none());
+    }
+
+    #[test]
+    fn diarization_evidence_storage_failure_never_switches_current() {
+        let (_temp, mut engine, id, _) = setup();
+        let raw = output();
+        let source = engine.commit_transcript(&id, None, raw.clone()).unwrap();
+        let directory = engine
+            .store
+            .root
+            .join(transcript_dir(&id, &source.version.id).unwrap());
+        let before = std::fs::read(directory.join("current.json")).unwrap();
+        std::fs::write(
+            directory.join("speaker-analysis"),
+            b"blocked evidence directory",
+        )
+        .unwrap();
+        assert!(engine
+            .apply_diarization(&id, diarization_draft(source.clone()))
             .is_err());
         assert_eq!(
             std::fs::read(directory.join("current.json")).unwrap(),

@@ -90,6 +90,12 @@ frontend, whose actions require the native bridge; it does not supply fake meeti
 - Optional machine-local terminology profiles create a separate correction revision
   after recognition. Uncertain names remain unchanged; an absent optional contextual
   model does not block recognition. See [terminology correction](../../docs/terminology.md).
+- With separately packaged NeMo-Speech.cpp and explicit speaker-model preparation,
+  speaker management can analyze the complete finalized recording in one stateful run.
+  It preserves words/times/originals, commits only against the unchanged source and
+  leaves mixed or insufficiently covered utterances unassigned. This optional route
+  is not yet part of automatic post-recording recognition; target-hardware accuracy
+  and Windows acceptance remain separate checks.
 - Edit transcript text, seek to a segment, and reopen corrections after restarting.
   Navigation saves and closes the editor; failed persistence retains its input.
 - Confirm re-transcription and restore a verified previous recognition run with version

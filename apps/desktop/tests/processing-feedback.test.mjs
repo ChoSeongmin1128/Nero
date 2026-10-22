@@ -201,3 +201,16 @@ test('typed preflight failures keep their confirmed cause without exposing raw m
     assert.doesNotMatch(feedback.detail, /private|raw response|기존 요약/);
   }
 });
+
+
+test('speaker analysis uses real phases and model bytes without exposing chunk labels', () => {
+  const feedback = processingFeedback(running('diarize', { phase: 'diarizing', message: 'chunk 12 speaker 51' }));
+  assert.equal(feedback.title, '화자 구분 중');
+  assert.equal(feedback.detail, '');
+  assert.equal(feedback.cancelVisible, true);
+  const saving = processingFeedback(running('diarize', { phase: 'saving', committing: true }));
+  assert.equal(saving.title, '저장 중');
+  assert.equal(saving.cancelVisible, false);
+  assert.equal(processingFeedback(running('transcribe', { phase: 'diarizing' })).title, '화자 구분 중');
+  assert.equal(processingFeedback(running('speaker-model', { bytes: 50, totalBytes: 100 })).progress.percent, 50);
+});

@@ -3,6 +3,7 @@
 mod agent_connection;
 #[cfg(target_os = "macos")]
 mod app_menu;
+mod diarization;
 mod downloads;
 mod export;
 mod memory;
@@ -1011,6 +1012,28 @@ fn prepare_summary_model(
     state.processing.prepare_summary()
 }
 #[tauri::command]
+fn prepare_diarization_model(
+    window: WebviewWindow,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<Progress, String> {
+    require_main(&window)?;
+    state.processing.prepare_diarization()
+}
+#[tauri::command]
+async fn diarize_meeting(
+    window: WebviewWindow,
+    state: tauri::State<'_, DesktopState>,
+    meeting_id: String,
+    expected: TranscriptVersion,
+) -> Result<Progress, String> {
+    require_main(&window)?;
+    let processing = state.processing.clone();
+    let core = state.core.clone();
+    tauri::async_runtime::spawn_blocking(move || processing.diarize(core, meeting_id, expected))
+        .await
+        .map_err(|_| "화자 구분을 시작하지 못했습니다.".to_string())?
+}
+#[tauri::command]
 async fn summarize_meeting(
     window: WebviewWindow,
     state: tauri::State<'_, DesktopState>,
@@ -1193,6 +1216,8 @@ fn main() {
             save_transcript,
             save_speakers,
             prepare_summary_model,
+            prepare_diarization_model,
+            diarize_meeting,
             summarize_meeting,
             read_summary
         ])

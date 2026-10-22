@@ -544,6 +544,7 @@ mod tests {
             model: "synthetic".into(),
             model_revision: "1".into(),
             source: None,
+            speaker_analysis: None,
             speakers: vec![],
             segments: texts
                 .iter()

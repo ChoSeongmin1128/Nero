@@ -8,6 +8,18 @@ the private installation and evaluation receipts.
 
 ## Native rewrite source
 
+- Whole-recording speaker analysis has an optional native adapter and explicit model
+  preparation, with a single stateful NeMo-Speech.cpp invocation. It preserves raw
+  output/provenance, rejects stale source revisions and projects conservatively without
+  changing words or times. The default post-recording recognition route still does not
+  invoke it automatically; default integration, packaging and target-platform quality
+  remain pending. This is not a release/installation receipt.
+- Speaker display names record automatic/user origin when known; missing legacy origin
+  remains unknown. Summary input separates chunk scope from whole-recording groups,
+  never derives an attendee roster/count from labels, and allows user-assigned names
+  to reference first-person commitments without claiming verified voice identity.
+
+
 - Summary generation measures the remaining output budget inside the unchanged context,
   preserves typed output-limit failures and repartitions only truncated source ranges.
   Request/outcome artifacts retain phase and token evidence. Normal feedback uses a
@@ -63,8 +75,9 @@ the private installation and evaluation receipts.
   upgrades run as a separate startup operation with immutable before/after evidence.
   Ordinary reads do not reconstruct or migrate. Workspace JSON float parsing preserves
   persisted coordinates; timestamps are checked as ASR sample addresses, never epsilon identity.
-  MOSS labels are scoped to independent recognition chunks; cross-chunk identity and
-  qualified eight-person diarization remain unimplemented/unverified. See
+  MOSS labels are scoped to independent recognition chunks. A separately invoked
+  whole-recording adapter can replace those assignments; default automatic integration
+  and qualified eight-person diarization remain pending/unverified. See
   [Meeting library and speakers](meeting-library-and-speakers.md) for storage, cancellation,
   recovery and validation boundaries; this source contract is not an installed-app receipt.
 

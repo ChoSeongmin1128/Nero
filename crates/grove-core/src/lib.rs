@@ -1,4 +1,5 @@
 mod capture;
+mod diarization;
 mod engine;
 mod library;
 pub mod reader;
@@ -6,6 +7,7 @@ mod store;
 mod summary;
 pub mod terminology;
 mod transcript;
+pub use diarization::{SpeakerAnalysis, SpeakerAnalysisDraft};
 pub use library::Folder;
 pub use summary::{Summary, SummaryDraft, SummaryProvenance, SummaryView};
 pub use terminology::{
@@ -13,8 +15,8 @@ pub use terminology::{
     TerminologyKind, TerminologyOutcome, TerminologyProfile, TerminologyRule,
 };
 pub use transcript::{
-    Transcript, TranscriptHistory, TranscriptHistoryEntry, TranscriptSegment, TranscriptSource,
-    TranscriptSpeaker, TranscriptUpgradeReport, TranscriptVersion,
+    SpeakerNameOrigin, Transcript, TranscriptHistory, TranscriptHistoryEntry, TranscriptSegment,
+    TranscriptSource, TranscriptSpeaker, TranscriptUpgradeReport, TranscriptVersion,
 };
 
 use engine::Engine;
@@ -311,6 +313,11 @@ impl CoreHandle {
     pub fn commit_terminology(&self, id: &str, draft: TerminologyDraft) -> Result<Transcript> {
         let id = id.to_owned();
         self.call(move |engine| engine.commit_terminology(&id, draft))
+    }
+
+    pub fn apply_diarization(&self, id: &str, draft: SpeakerAnalysisDraft) -> Result<Transcript> {
+        let id = id.to_owned();
+        self.call(move |engine| engine.apply_diarization(&id, draft))
     }
 
     pub fn edit_speakers(

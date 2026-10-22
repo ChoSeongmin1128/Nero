@@ -1,0 +1,9 @@
+{
+  "repository": "nvidia/Nemotron-3-Diarization",
+  "revision": "f667ed73aee57d40cc39428eb768b4fd87a0a29e",
+  "files": [{
+    "name": "Nemotron-3-Diarization.q8_0.gguf",
+    "bytes": 107012128,
+    "sha256": "08456d9e22cd9a323c0364d98375f3746d6e68507ebb705cd46438c534c7a3a1"
+  }]
+}

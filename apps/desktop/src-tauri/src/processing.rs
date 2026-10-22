@@ -61,6 +61,9 @@ pub struct Progress {
     pub summary_supported: bool,
     pub summary_ready: bool,
     pub summary_bytes: u64,
+    pub speaker_supported: bool,
+    pub speaker_ready: bool,
+    pub speaker_bytes: u64,
     pub model_stage: Option<String>,
     pub memory_state: Option<crate::memory::MemoryState>,
     pub phase: Option<String>,
@@ -269,6 +272,11 @@ impl Processing {
             progress.summary_ready,
             progress.summary_bytes,
         ) = crate::summary::availability(self);
+        (
+            progress.speaker_supported,
+            progress.speaker_ready,
+            progress.speaker_bytes,
+        ) = crate::diarization::availability(self);
         let model = self.model();
         progress.model_bytes = model.files.iter().map(|file| file.bytes).sum();
         let Ok(path) = self.model_dir() else {
@@ -704,9 +712,14 @@ impl Processing {
         if self.shutting_down.load(Ordering::Acquire) {
             return Err("앱을 종료하고 있습니다.".into());
         }
-        if (kind.starts_with("summary") && !crate::summary::availability(self).0)
-            || (!kind.starts_with("summary") && !self.supported())
-        {
+        let supported = if kind.starts_with("summary") {
+            crate::summary::availability(self).0
+        } else if matches!(kind, "diarize" | "speaker-model") {
+            crate::diarization::availability(self).0
+        } else {
+            self.supported()
+        };
+        if !supported {
             return Err("이 기기의 처리 실행기가 아직 준비되지 않았습니다.".into());
         }
         if running.as_ref().is_some_and(|r| !r.handle.is_finished()) {
@@ -885,11 +898,18 @@ impl Processing {
             for item in &model.files {
                 cancelled(cancel)?;
                 self.update(|p| {
-                    p.model_stage = Some(if label == "MOSS" { "speech" } else { "summary" }.into());
-                    p.message = if label == "MOSS" {
-                        "음성 인식 모델 확인 중"
-                    } else {
-                        "요약 모델 확인 중"
+                    p.model_stage = Some(
+                        match label {
+                            "MOSS" => "speech",
+                            "Nemotron3" => "speakers",
+                            _ => "summary",
+                        }
+                        .into(),
+                    );
+                    p.message = match label {
+                        "MOSS" => "음성 인식 모델 확인 중",
+                        "Nemotron3" => "화자 구분 모델 확인 중",
+                        _ => "요약 모델 확인 중",
                     }
                     .into();
                     p.bytes = offset + done;
@@ -900,10 +920,10 @@ impl Processing {
                 cancelled(cancel)?;
                 if !matches {
                     self.update(|p| {
-                        p.message = if label == "MOSS" {
-                            "음성 인식 모델 다운로드 중"
-                        } else {
-                            "요약 모델 다운로드 중"
+                        p.message = match label {
+                            "MOSS" => "음성 인식 모델 다운로드 중",
+                            "Nemotron3" => "화자 구분 모델 다운로드 중",
+                            _ => "요약 모델 다운로드 중",
                         }
                         .into()
                     });

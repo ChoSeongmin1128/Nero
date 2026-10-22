@@ -45,7 +45,7 @@ function mergeSpeakers(working, from, into) {
   return { ...working, speakers: working.speakers.filter(speaker => speaker.id !== from).map(speaker => ({ ...speaker })), assignments: working.assignments.map(id => id === from ? into : id) };
 }
 
-export function mountSpeakers({ bridge, getState, finishEditing, onUpdated, showError, byId, onPlay, onPause, isPlaying = () => false, canPlay = () => true }) {
+export function mountSpeakers({ bridge, getState, finishEditing, onUpdated, onProcessing = async () => {}, showError, byId, onPlay, onPause, isPlaying = () => false, canPlay = () => true }) {
   const dialog = byId('speaker-dialog');
   const body = byId('speaker-dialog-body');
   const trigger = byId('speakers-button');
@@ -70,6 +70,10 @@ export function mountSpeakers({ bridge, getState, finishEditing, onUpdated, show
   const unchanged = () => editing && sameState(editing.base, editing.working) && (editing.mode !== 'single' || editing.assignmentTarget === (editing.base.assignments[editing.singleIndex] || ''));
   const nameId = id => `speaker-name-${encodeURIComponent(id)}`;
   const mergeId = id => `speaker-merge-${encodeURIComponent(id)}`;
+
+  function analysisBlocked(view) {
+    return blocked(view) || view?.state.processing?.status === 'running' || Boolean(view?.state.snapshot?.session) || !unchanged() || !view?.state.processing?.speakerSupported;
+  }
 
   function undoFor(view) {
     const record = view && undoByMeeting.get(view.id);
@@ -129,6 +133,12 @@ export function mountSpeakers({ bridge, getState, finishEditing, onUpdated, show
     const view = current();
     const stale = !view || view.id !== editing.id || !sameVersion(view.doc.version, editing.base.version);
     body.querySelectorAll('button, input, select').forEach(node => { node.disabled = saving || ((stale || blocked(view)) && !node.hasAttribute('data-speaker-close')); });
+    for (const id of ['speaker-analyze', 'speaker-analysis-confirm']) {
+      const action = byId(id);
+      if (action) action.disabled = saving || stale || analysisBlocked(view);
+    }
+    const analysisNote = byId('speaker-analysis-note');
+    if (analysisNote) analysisNote.hidden = unchanged();
     const save = byId('speaker-save');
     save.disabled = saving || stale || blocked(view) || unchanged();
     save.innerHTML = saving ? '<span class="activity-spinner" aria-hidden="true"></span>저장 중' : '저장';
@@ -160,13 +170,16 @@ export function mountSpeakers({ bridge, getState, finishEditing, onUpdated, show
     const single = mode === 'single';
     const segment = single ? working.segments[editing.singleIndex] : null;
     const mergePanel = source => `<div class="speaker-merge-panel"><label for="speaker-merge-target">${escape(source.name)}의 발언 ${countFor(source.id)}개를 합칠 화자</label><div class="speaker-assignment-controls"><select id="speaker-merge-target" data-field="speaker-merge-target"><option value="">화자 선택</option>${working.speakers.filter(speaker => speaker.id !== source.id).map(speaker => `<option value="${escape(speaker.id)}">${escape(speaker.name)}</option>`).join('')}</select><button type="button" id="speaker-merge-apply">합치기</button><button type="button" class="quiet" id="speaker-merge-cancel" data-speaker-merge-cancel>취소</button></div></div>`;
-    const names = mode === 'names' ? `${working.speakers.some(speaker => speaker.id.startsWith('moss:chunk:')) ? '<p class="speaker-chunk-note muted type-caption">같은 사람이 여러 화자로 표시되면 합칠 수 있습니다.</p>' : ''}<div class="speaker-name-list">${working.speakers.map((speaker, index) => `<div class="speaker-name-item"><div class="speaker-name-row"><label for="${escape(nameId(speaker.id))}" class="sr-only">화자 ${index + 1} 이름</label><input class="text-input" id="${escape(nameId(speaker.id))}" data-speaker-name="${escape(speaker.id)}" value="${escape(speaker.name)}" maxlength="256" autocomplete="off"><button type="button" class="quiet small" data-speaker-pick="${escape(speaker.id)}">발언 ${countFor(speaker.id)}개</button>${working.speakers.length > 1 ? `<button type="button" class="quiet small" id="${escape(mergeId(speaker.id))}" data-speaker-merge="${escape(speaker.id)}" aria-label="${escape(speaker.name)} 다른 화자와 합치기" aria-expanded="${speaker.id === mergingId}">합치기</button>` : ''}</div>${speaker.id === mergingId ? mergePanel(speaker) : ''}</div>`).join('') || '<p class="muted type-caption">발언별 변경에서 화자를 지정하세요.</p>'}</div>` : '';
+    const names = mode === 'names' ? `${working.speakers.some(speaker => speaker.id.startsWith('moss:chunk:')) ? '<p class="speaker-chunk-note muted type-caption">현재 화자는 구간별로 구분되어 같은 사람이 나뉘어 있을 수 있습니다.</p>' : ''}<div class="speaker-name-list">${working.speakers.map((speaker, index) => `<div class="speaker-name-item"><div class="speaker-name-row"><label for="${escape(nameId(speaker.id))}" class="sr-only">화자 ${index + 1} 이름</label><input class="text-input" id="${escape(nameId(speaker.id))}" data-speaker-name="${escape(speaker.id)}" value="${escape(speaker.name)}" maxlength="256" autocomplete="off"><button type="button" class="quiet small" data-speaker-pick="${escape(speaker.id)}">발언 ${countFor(speaker.id)}개</button>${working.speakers.length > 1 ? `<button type="button" class="quiet small" id="${escape(mergeId(speaker.id))}" data-speaker-merge="${escape(speaker.id)}" aria-label="${escape(speaker.name)} 다른 화자와 합치기" aria-expanded="${speaker.id === mergingId}">합치기</button>` : ''}</div>${speaker.id === mergingId ? mergePanel(speaker) : ''}</div>`).join('') || '<p class="muted type-caption">발언별 변경에서 화자를 지정하세요.</p>'}</div>` : '';
     const utterances = mode === 'utterances' ? `<div class="speaker-segment-list">${working.segments.map((item, index) => `<label class="speaker-segment"><input type="checkbox" id="speaker-segment-${escape(encodeURIComponent(item.id))}" data-speaker-segment="${escape(item.id)}"${selected.has(item.id) ? ' checked' : ''}><span class="speaker-segment-time">${escape(duration(item.start * 1000))}</span><span class="speaker-segment-content"><span class="speaker-segment-name" data-speaker-current="${escape(working.assignments[index] || '')}">${escape(working.speakers.find(speaker => speaker.id === working.assignments[index])?.name || '화자 미지정')}</span><span class="speaker-segment-text">${escape(item.text || '(내용 없음)')}</span></span></label>`).join('')}</div>` : '';
     const singleContext = segment ? `<section class="speaker-current-utterance" aria-labelledby="speaker-current-title"><div class="speaker-utterance-meta"><h3 id="speaker-current-title">${editing.singleIndex + 1}번 발언</h3><span class="speaker-segment-time">${escape(duration(segment.start * 1000))}</span><button type="button" id="speaker-listen" class="quiet small" data-speaker-play="${escape(segment.id)}" aria-pressed="false">${icon('play')}<span>다시 듣기</span></button></div><p class="speaker-segment-name">현재 ${escape(working.speakers.find(speaker => speaker.id === working.assignments[editing.singleIndex])?.name || '화자 미지정')}</p><p class="speaker-utterance-text">${escape(segment.text || '(내용 없음)')}</p></section>` : '';
+    const view = current();
+    const analysisReady = view?.state.processing?.speakerReady === true;
+    const analysis = single || !view?.state.processing?.speakerSupported ? '' : `<section class="speaker-assignment"><div class="speaker-assignment-controls"><button type="button" id="speaker-analyze" class="small">${view.doc.speakerAnalysis?.scope === 'recording' ? '다시 구분' : '화자 구분'}</button><span id="speaker-analysis-note" class="muted type-caption" hidden>화자 수정을 저장한 뒤 실행해 주세요.</span></div>${editing.analysisConfirm ? `<p class="type-caption">${analysisReady ? '녹음 전체를 분석해 화자를 다시 구분합니다. 현재 화자 이름과 발언 배정이 새 결과로 바뀝니다. 음성 기록의 내용은 유지됩니다.' : '화자 구분 모델을 다운로드합니다. 준비가 끝나면 화자 구분을 실행할 수 있습니다.'}</p><div class="speaker-assignment-controls"><button type="button" id="speaker-analysis-confirm" class="primary small">${analysisReady ? '구분하기' : '준비하기'}</button><button type="button" id="speaker-analysis-cancel" class="quiet small">취소</button></div>` : ''}</section>`;
     const assignment = mode === 'names' ? '' : `<section class="speaker-assignment" aria-labelledby="speaker-assignment-title"><div class="speaker-selection-header"><h3 id="speaker-assignment-title">${single ? '변경할 화자' : '선택한 발언 <span id="speaker-selected-count">' + selected.size + '개</span>'}</h3>${single ? '' : '<button type="button" class="quiet small" data-speaker-select-all>전체 선택</button><button type="button" class="quiet small" data-speaker-clear>선택 해제</button>'}</div><div class="speaker-assignment-controls"><label for="speaker-assignment-target" class="sr-only">${single ? '이 발언의 화자' : '선택한 발언의 화자'}</label><select id="speaker-assignment-target" data-field="speaker-assignment-target"><option value=""${editing.assignmentTarget === '' ? ' selected' : ''}>화자 미지정</option>${options}<option value="${newSpeakerValue}"${editing.assignmentTarget === newSpeakerValue ? ' selected' : ''}>새 화자</option></select><label for="speaker-new-name" class="sr-only">새 화자 이름</label><input class="text-input" id="speaker-new-name" placeholder="새 화자 이름" value="${escape(editing.newName)}" maxlength="256" autocomplete="off"${editing.assignmentTarget === newSpeakerValue ? '' : ' hidden'}>${single ? '' : '<button type="button" id="speaker-assign">선택 발언에 적용</button>'}</div></section>`;
     globalThis.GroveControls?.close();
     body.innerHTML = `<header class="speaker-dialog-header"><h2 id="speaker-dialog-title">${single ? '발언 화자 변경' : '화자 관리'}</h2><button type="button" id="speaker-close" class="icon-button quiet" data-speaker-close aria-label="닫기">${icon('x')}</button></header>${single ? '' : `<nav class="speaker-editor-views" aria-label="화자 관리 보기"><button type="button" id="speaker-view-names" class="quiet small" data-speaker-view="names" aria-pressed="${mode === 'names'}">이름과 병합</button><button type="button" id="speaker-view-utterances" class="quiet small" data-speaker-view="utterances" aria-pressed="${mode === 'utterances'}">발언별 변경</button></nav>`}
-      ${mode === 'utterances' ? assignment : ''}<div id="speaker-editor-scroll" class="speaker-dialog-scroll">${single ? singleContext : mode === 'names' ? names : utterances}</div>${single ? assignment : ''}
+      ${analysis}${mode === 'utterances' ? assignment : ''}<div id="speaker-editor-scroll" class="speaker-dialog-scroll">${single ? singleContext : mode === 'names' ? names : utterances}</div>${single ? assignment : ''}
       <p id="speaker-editor-message" class="speaker-editor-message type-caption" role="status" hidden></p><footer class="speaker-dialog-actions"><button type="button" id="speaker-undo" class="quiet small">이전 수정 되돌리기</button><button type="button" id="speaker-cancel" data-speaker-close>취소</button><button type="button" id="speaker-save" class="primary">저장</button></footer>`;
     globalThis.GroveControls?.enhanceAll(body);
     controls();
@@ -241,6 +254,26 @@ export function mountSpeakers({ bridge, getState, finishEditing, onUpdated, show
     finally { saving = false; render(); controls(); }
   }
 
+  async function analyze() {
+    const owner = editing;
+    const view = current();
+    if (!owner || !owner.analysisConfirm || analysisBlocked(view) || !sameVersion(view.doc.version, owner.base.version)) return;
+    saving = true;
+    controls();
+    try {
+      await finishEditing(async () => {
+        const latest = current();
+        if (editing !== owner || analysisBlocked(latest) || latest.id !== owner.id || !sameVersion(latest.doc.version, owner.base.version)) throw new Error('음성 기록이 변경되었습니다. 화자 편집을 다시 열어 주세요.');
+        const progress = latest.state.processing.speakerReady
+          ? await bridge.diarizeMeeting(owner.id, { ...owner.base.version })
+          : await bridge.prepareSpeakerModel();
+        if (editing === owner) close();
+        await onProcessing(progress);
+      });
+    } catch (error) { message(error instanceof Error ? error.message : String(error), true); }
+    finally { saving = false; render(); }
+  }
+
   function render() {
     const view = current();
     trigger.hidden = !view;
@@ -307,6 +340,16 @@ export function mountSpeakers({ bridge, getState, finishEditing, onUpdated, show
     const target = event.target.closest('button');
     if (!target || !editing || saving || target.disabled) return;
     if (target.hasAttribute('data-speaker-close')) { close(); return; }
+    if (target.id === 'speaker-analyze') {
+      const owner = editing;
+      await flushComposition();
+      if (editing !== owner || analysisBlocked(current())) { controls(); return; }
+      editing.analysisConfirm = true;
+      draw({ focus: 'speaker-analysis-confirm' });
+      return;
+    }
+    if (target.id === 'speaker-analysis-cancel') { editing.analysisConfirm = false; draw({ focus: 'speaker-analyze' }); return; }
+    if (target.id === 'speaker-analysis-confirm') { await analyze(); return; }
     if (target.id === 'speaker-save') { void save(); return; }
     if (target.id === 'speaker-undo') { void save(true); return; }
     if (target.hasAttribute('data-speaker-select-all')) { editing.selected = new Set(editing.working.segments.map(segment => segment.id)); selectionChanged(); return; }

@@ -18,13 +18,15 @@ This file applies to the entire repository.
   packaged workers, Apple silicon/macOS 26 supports native file import and local MOSS
   transcription, explicit pinned model preparation and separately versioned corrections.
   Packaged llama.cpp enables on-demand Gemma 4 E4B Q4 summaries with separately stored
-  source revisions. Windows transcription, independent diarization, speaker matching and
-  integrations remain unconnected. Do not fabricate transcripts or summary results.
+  source revisions. Windows transcription, speaker matching and integrations remain unconnected. An
+  optional whole-recording diarization adapter requires its own packaged runtime and
+  explicit preparation; the default recognition pipeline does not invoke it yet. Do not fabricate transcripts or summary results.
 - Native speaker editing preserves MOSS labels within their `asr_chunk` scope; never
   equate the same label across independently recognized chunks. Manual names/merges
   are transcript revisions, not automatic identity verification. Independent
-  full-recording diarization is still unconnected; eight actual speakers remain a
-  validation target, not a qualified support claim. See `docs/meeting-library-and-speakers.md`.
+  full-recording diarization is separately invoked and does not establish qualified
+  eight-person support. Keep automatic/user/unknown name origin separate; user names
+  are useful references, not automatic voice-identity verification. See `docs/meeting-library-and-speakers.md`.
 - Transcript source identity uses raw hashes, immutable initial utterance IDs/order and
   source indices. Playback time is validated at the ASR 16kHz sample address, not used
   as an approximate identity. Legacy source upgrades are a separate startup operation,

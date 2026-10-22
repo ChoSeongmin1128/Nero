@@ -772,9 +772,11 @@ mod tests {
                 model: "fixture".into(),
                 model_revision: "1".into(),
                 source: None,
+                speaker_analysis: None,
                 speakers: vec![TranscriptSpeaker {
                     id: "speaker-a".into(),
                     name: "Speaker A".into(),
+                    name_origin: None,
                 }],
                 segments: (0..3)
                     .map(|index| TranscriptSegment {

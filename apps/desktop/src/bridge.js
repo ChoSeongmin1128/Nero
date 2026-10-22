@@ -74,6 +74,9 @@ export async function subscribeProcessing(callback) {
   return listen('grove://processing', (event) => callback(event.payload));
 }
 
+export const prepareSpeakerModel = () => call('prepare_diarization_model');
+export const diarizeMeeting = (meetingId, expected) => call('diarize_meeting', { meetingId, expected });
+
 export const prepareSummaryModel = () => call('prepare_summary_model');
 export const summarizeMeeting = (meetingId) => call('summarize_meeting', { meetingId });
 export const readSummary = (meetingId) => call('read_summary', { meetingId });

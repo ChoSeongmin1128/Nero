@@ -1,0 +1,29 @@
+{
+  "repository": "NVIDIA/NeMo-Speech.cpp",
+  "version": "v0.2.0",
+  "commit": "6a3ca369370782acee0dd155e34394ba60b920c4",
+  "assets": {
+    "macos-arm64": [
+      {
+        "backend": "gpu",
+        "name": "nemo-speech-0.2.0-macos-aarch64-metal.tar.gz",
+        "bytes": 5031510,
+        "sha256": "5cb02ba7c04f0b5585ce5cde9c830be5f0b7dfb4c83083c500109c381b4f2da9"
+      }
+    ],
+    "windows-x64": [
+      {
+        "backend": "gpu",
+        "name": "nemo-speech-0.2.0-windows-x86_64-vulkan.zip",
+        "bytes": 19302464,
+        "sha256": "edf15a04ba98740aa0ab75ae4681ac7ad0a488b22b35ce2cbebd10590bb1c1e1"
+      },
+      {
+        "backend": "cpu",
+        "name": "nemo-speech-0.2.0-windows-x86_64-cpu.zip",
+        "bytes": 5528418,
+        "sha256": "82c80451086e86194aba9af19f800da77cd66d1c28d993d0efceffd6cdb49bb8"
+      }
+    ]
+  }
+}

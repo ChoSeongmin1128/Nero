@@ -14,8 +14,11 @@ Input is mono 16 kHz WAV. Use a new output path and keep recordings, transcripts
 references, and generated results under ignored local directories. Model files are
 separate from the app and repository.
 
-The worker generates text, timestamps, and upstream anonymous tags. Grove assigns final
-speakers with its independent diarizer; do not stitch ASR-local tags into identities across
+The worker generates text, timestamps, and upstream anonymous tags. Each independent
+generation has its own speaker scope. The retained Swift application can apply an
+independent diarizer afterward; the new desktop's default recognition route does not
+yet do so. Its separately invoked whole-recording adapter requires packaged workers
+and explicit preparation. Never stitch ASR-local tags into global identities across
 chunks or source channels. See the [application README](../../README.md).
 
 ## Runtime and model resources
@@ -42,7 +45,10 @@ The current implementation uses maxTokens=8192 per chunk, temperature=0, topP=1,
 minChunkDuration=0, and repetitionContextSize=100. Files up to 180 seconds use one
 chunk; longer files use 60-second chunks. The optional fourth argument overrides the
 chunk duration within 1...180 seconds. These are source configuration values, not
-recording-derived performance measurements.
+recording-derived performance measurements or a demonstrated optimum. The upstream
+model supports long single-pass inputs; this wrapper limit is an application policy,
+not an upstream model limit. Long-input support in the model does not qualify this
+Swift runtime or ordinary laptop memory use.
 
 The reader loads a bounded PCM chunk, records raw text/token counts, and offsets
 timestamps onto the original timeline. Chunk boundaries and model-generated timestamps

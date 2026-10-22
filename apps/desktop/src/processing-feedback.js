@@ -1,4 +1,4 @@
-const modelJobs = new Set(['setup', 'model', 'summary-model']);
+const modelJobs = new Set(['setup', 'model', 'summary-model', 'speaker-model']);
 const jobTitles = {
   cleanup: '임시 파일 정리',
   setup: '모델 준비',
@@ -7,6 +7,8 @@ const jobTitles = {
   import: '음성 가져오기',
   transcribe: '음성 기록 변환',
   summary: '회의록 요약',
+  diarize: '화자 구분',
+  'speaker-model': '화자 구분 모델 준비',
 };
 
 const summaryStages = {
@@ -65,7 +67,13 @@ export function processingFeedback(job = {}, { cancelling = false } = {}) {
   if (active && job.kind === 'summary' && !cancelRequested) {
     heading = committing ? summaryStages.saving : summaryStages[job.phase] || '요약 중';
   }
+  const speakerPhase = active && (job.kind === 'diarize' || (job.kind === 'transcribe' && job.phase === 'diarizing'));
+  if (speakerPhase && !cancelRequested) heading = committing || job.phase === 'saving' ? '저장 중' : job.phase === 'preparing' ? '화자 구분 준비 중' : '화자 구분 중';
   let message = String(job.message || '').trim();
+  if (speakerPhase) message = '';
+  if (job.kind === 'diarize' && job.status === 'failed') {
+    message = ({ modelNotReady: '화자 구분 모델을 다시 준비해 주세요.', meetingUnavailable: '회의를 찾을 수 없거나 휴지통에 있어 화자를 구분할 수 없습니다.', recordingActive: '녹음을 마친 뒤 화자를 구분해 주세요.', sourceChanged: '화자 구분 중 음성 기록이 변경되어 저장하지 않았습니다.', allocation: '화자 구분에 필요한 메모리를 확보하지 못했습니다. 다른 앱을 닫은 뒤 다시 시도해 주세요.', storage: '화자 구분 결과를 저장하지 못했습니다.' })[job.failureKind] || '화자를 구분하지 못했습니다. 기존 음성 기록은 유지됩니다.';
+  }
   if (active && job.kind === 'summary') message = !cancelRequested && !committing && job.retryCount > 0 ? '다시 시도 중' : '';
   if (job.kind === 'summary' && job.status === 'failed') {
     message = (Object.hasOwn(summaryFailures, job.failureKind) ? summaryFailures[job.failureKind] : '') || '요약하지 못했습니다. 원인을 확인하지 못했습니다.';
