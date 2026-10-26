@@ -10,6 +10,7 @@ const searchSource = await readFile(new URL('../src/meeting-search.js', import.m
 const detailSource = await readFile(new URL('../src/meeting-detail-ui.js', import.meta.url), 'utf8');
 const actionsSource = await readFile(new URL('../src/transcript-actions.js', import.meta.url), 'utf8');
 const feedbackSource = await readFile(new URL('../src/processing-feedback.js', import.meta.url), 'utf8');
+const processingStateSource = await readFile(new URL('../src/processing-state.js', import.meta.url), 'utf8');
 const componentsSource = await readFile(new URL('../../../design-system/components.js', import.meta.url), 'utf8');
 const tick = () => new Promise(setImmediate);
 
@@ -27,7 +28,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
       innerHTML: '', textContent: '', scrollTop: 0, listeners: new Map(),
       addEventListener(name, callback) { this.listeners.set(name, callback); },
       querySelectorAll(selector) {
-        if (this.id !== 'transcript-rows') return [];
+        if (!['transcript-rows', 'processing-jobs'].includes(this.id)) return [];
         if (selector === 'textarea') return this.children.filter(child => child.tagName === 'TEXTAREA');
         const names = [...selector.matchAll(/\[([\w-]+)\]/g)].map(match => match[1]);
         return this.children.filter(child => names.some(name => child.attributes.has(name)));
@@ -48,14 +49,16 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
       let html = node.innerHTML; node.htmlWrites = 0;
       Object.defineProperty(node, 'innerHTML', { get: () => html, set(value) {
         html = value; node.htmlWrites++;
-        if (node.id !== 'transcript-rows') return;
+        if (!['transcript-rows', 'processing-jobs'].includes(node.id)) return;
+        if (node.id === 'processing-jobs') for (const child of node.children) { child.isConnected = false; if (document.activeElement === child) document.activeElement = document.body; }
         node.children = [...value.matchAll(/<(textarea|button)\b([^>]*)>([\s\S]*?)<\/\1>/g)].map((match, index) => {
-          const child = element(`transcript-child-${index}`);
+          const child = element(node.id === 'transcript-rows' ? `transcript-child-${index}` : `processing-child-${node.htmlWrites}-${index}`);
           child.tagName = match[1].toUpperCase();
           child.attributes = new Map([...match[2].matchAll(/([\w-]+)="([^"]*)"/g)].map(attribute => [attribute[1], attribute[2]]));
           child.dataset = Object.fromEntries([...child.attributes].filter(([name]) => name.startsWith('data-')).map(([name, content]) => [name.slice(5).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase()), content]));
           child.readOnly = /\breadonly\b/.test(match[2]);
           child.disabled = /\bdisabled\b/.test(match[2]);
+          child.closest = selector => selector === '[data-job-id]' && child.dataset.jobId ? child : null;
           child.value = match[3].replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&');
           return child;
         });
@@ -119,19 +122,20 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
   const app = await vm.runInContext(`(async () => {
     ${detailSource.replace(/^export /gm, '')}
     ${feedbackSource.replace(/^export /gm, '')}
+    ${processingStateSource.replace(/^export /gm, '')}
     ${searchSource.replace(/^export /gm, '')}
     ${actionsSource.replace(/^import .*;\n/gm, '').replace(/^export /gm, '')}
     let restoreForTest;
     const createTranscriptActions = mountTranscriptActions;
     mountTranscriptActions = options => { restoreForTest = options.onRestored; return createTranscriptActions(options); };
-    ${librarySource.slice(0, librarySource.indexOf('export function mountLibrary')).replace(/^export /gm, '')}
+    ${librarySource.slice(0, librarySource.indexOf('export function mountLibrary')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '')}
     const mountLibrary = () => ({ render() {}, resetSelection() {}, toggleSelection() {}, show: async () => {} });
     const mountSpeakers = ({getState}) => ({render() {}, reset() {}, open: async () => {}, label: segment => getState().transcriptDraft?.doc?.speakers?.find(speaker=>speaker.id === segment.speakerId)?.name || '화자 미지정'});
 
     const bridge = testBridge;
     const { icon, escape, button, duration, recordingStatus, statusMarkup, sessionControls, applySystemAppearance, documentExport } = testUI;
     ${executable}
-    return { state, detail, restoreTranscript: restoreForTest, selectMeeting, saveDraft, finishEditing, onEdit, onQuitRequest, refreshDevices, acceptSnapshot, saveTranscript, loadTranscript, acceptProcessing, loadSummary, renderSummary, createMeeting, openSetup, openSettings, changeMicrophone, changeMeetingDate, render, prepareAudio, exportDocument, editTranscriptRow, completeTranscriptRow, cancelTranscriptRow, cancelProcessing };
+    return { state, detail, restoreTranscript: restoreForTest, selectMeeting, saveDraft, finishEditing, onEdit, onQuitRequest, refreshDevices, acceptSnapshot, saveTranscript, loadTranscript, acceptProcessing, loadSummary, renderSummary, createMeeting, openSetup, openSettings, changeMicrophone, changeMeetingDate, render, prepareAudio, exportDocument, editTranscriptRow, completeTranscriptRow, cancelTranscriptRow, cancelProcessing, retryProcessing, acknowledgeProcessing };
   })()`, context);
   await tick();
   return {
@@ -389,7 +393,168 @@ test('late processing replies cannot replace the current running job', async () 
   await page.app.acceptProcessing({ revision: 4, id: 'old-job', kind: 'model', status: 'completed', supported: true });
   assert.equal(page.app.state.processing.id, 'new-job');
   assert.equal(page.element('cancel-processing').hidden, false);
-  assert.equal(page.element('import-audio').disabled, true);
+  assert.equal(page.element('import-audio').disabled, false);
+});
+
+test('queued cancellation targets only its job while the download remains visible', async () => {
+  const page = await openApp();
+  const cancelled = [];
+  page.bridge.cancelProcessing = async id => { cancelled.push(id); };
+  await page.app.acceptProcessing({ revision: 3, id: 'download', kind: 'summary-model', status: 'running', supported: true, modelReady: true,
+    jobs: [{ id: 'waiting', kind: 'summary', meetingId: 'a', status: 'queued' }] });
+  assert.match(page.element('processing-jobs').innerHTML, /회의 A: 회의록 요약 대기 중/);
+  assert.equal(page.element('create-meeting').disabled, false);
+  await page.app.cancelProcessing('waiting');
+  assert.deepEqual(cancelled, ['waiting']);
+  assert.equal(page.app.state.processing.id, 'download');
+  assert.equal(page.element('processing-spinner').hidden, false);
+  await page.app.acceptProcessing({ ...page.app.state.processing, revision: 4, jobs: [{ id: 'waiting', kind: 'summary', meetingId: 'a', status: 'cancelled' }] });
+  assert.equal(page.element('processing-jobs').hidden, true);
+});
+
+test('saving recovery offers result inspection and never retries cancelled work', async () => {
+  const page = await openApp();
+  let retries = 0;
+  page.bridge.retryProcessing = async () => { retries += 1; };
+  await page.app.acceptProcessing({ revision: 5, status: 'idle', supported: true, modelReady: true, jobs: [
+    { id: 'saving', kind: 'summary', meetingId: 'a', status: 'needsReview', retryable: false },
+    { id: 'cancelled', kind: 'transcribe', meetingId: 'b', status: 'cancelled', retryable: false },
+  ] });
+  const html = page.element('processing-jobs').innerHTML;
+  assert.match(html, /저장된 결과를 확인/);
+  assert.match(html, /data-job-action="open" data-job-id="saving"/);
+  assert.doesNotMatch(html, /data-job-action="retry"|data-job-id="cancelled"/);
+  await page.app.retryProcessing('saving');
+  await page.app.retryProcessing('cancelled');
+  assert.equal(retries, 0);
+});
+
+test('a failed job remains actionable after another job starts and after restart', async () => {
+  const failed = { id: 'failed-summary', kind: 'summary', meetingId: 'a', status: 'failed', retryable: true, failureKind: 'modelNotReady', message: 'private engine path' };
+  const page = await openApp();
+  await page.app.acceptProcessing({ revision: 3, ...failed, supported: true, modelReady: true, jobs: [failed] });
+  assert.equal(page.element('retry-processing').hidden, false);
+  assert.doesNotMatch(page.element('processing-jobs').innerHTML, /data-job-id="failed-summary"/);
+  await page.app.acceptProcessing({ revision: 4, id: 'download', kind: 'summary-model', status: 'running', supported: true, modelReady: true, jobs: [failed] });
+  assert.match(page.element('processing-jobs').innerHTML, /회의 A: 회의록 요약 실패/);
+  assert.match(page.element('processing-jobs').innerHTML, /요약 모델을 다시 준비/);
+  assert.doesNotMatch(page.element('processing-jobs').innerHTML, /private engine path/);
+  assert.match(page.element('processing-jobs').innerHTML, /data-job-action="retry" data-job-id="failed-summary"/);
+  const reopened = await openApp(null, { revision: 1, status: 'idle', supported: true, modelReady: true, jobs: [failed] });
+  assert.match(reopened.element('processing-jobs').innerHTML, /data-job-action="retry" data-job-id="failed-summary"/);
+  let retried;
+  reopened.bridge.retryProcessing = async id => { retried = id; return { ...reopened.app.state.processing, revision: 2 }; };
+  await reopened.app.retryProcessing('failed-summary');
+  assert.equal(retried, 'failed-summary');
+});
+
+test('explicit acknowledgement hides only the notification and restores next, previous and stable keyboard focus', async () => {
+  const page = await openApp(transcriptDocument());
+  const jobs = ['first', 'second', 'third'].map(id => ({ id, kind: 'summary', meetingId: 'a', status: 'failed', failureKind: 'outputLimit', retryable: true }));
+  await page.app.acceptProcessing({ revision: 3, status: 'idle', supported: true, modelReady: true, jobs });
+  const control = (id, action) => page.element('processing-jobs').children.find(node => node.dataset.jobId === id && node.dataset.jobAction === action);
+  const acknowledgements = [];
+  page.bridge.acknowledgeProcessing = async id => {
+    acknowledgements.push(id);
+    return { ...page.app.state.processing, revision: page.app.state.processing.revision + 1,
+      jobs: page.app.state.processing.jobs.map(job => job.id === id ? { ...job, acknowledged: true } : job) };
+  };
+  control('first', 'ack').focus();
+  await page.app.acknowledgeProcessing('first');
+  assert.equal(page.element(page.focused()).dataset.jobId, 'second');
+  control('third', 'ack').focus();
+  await page.app.acknowledgeProcessing('third');
+  assert.equal(page.element(page.focused()).dataset.jobId, 'second');
+  control('second', 'ack').focus();
+  await page.app.acknowledgeProcessing('second');
+  assert.equal(page.focused(), 'settings');
+  assert.equal(page.element('processing-jobs').hidden, true);
+  assert.equal(page.app.state.processing.jobs.length, 3);
+  assert.deepEqual(acknowledgements, ['first', 'third', 'second']);
+  assert.equal(page.app.state.processing.jobs.every(job => job.status === 'failed' && job.acknowledged), true);
+});
+
+test('opening a recovery meeting does not acknowledge it or expose an unknown summary engine error', async () => {
+  const page = await openApp();
+  const job = { id: 'unknown', kind: 'summary', meetingId: 'b', status: 'failed', retryable: true, message: '/private/engine response token=private' };
+  await page.app.acceptProcessing({ revision: 4, status: 'idle', supported: true, modelReady: true, jobs: [job] });
+  let acknowledgements = 0;
+  page.bridge.acknowledgeProcessing = async () => { acknowledgements += 1; };
+  const html = page.element('processing-jobs').innerHTML;
+  assert.match(html, /원인을 확인하지 못했습니다/);
+  assert.doesNotMatch(html, /private|token=/);
+  const opener = page.element('processing-jobs').children.find(node => node.dataset.jobAction === 'open');
+  page.element('processing-jobs').listeners.get('click')({ target: { closest: () => opener } });
+  await tick(); await tick();
+  assert.equal(page.app.state.selectedId, 'b');
+  assert.equal(acknowledgements, 0);
+  assert.equal(page.app.state.processing.jobs[0].acknowledged, undefined);
+});
+
+test('acknowledging an alert does not take focus from a title edited during the request', async () => {
+  const page = await openApp(transcriptDocument());
+  const stopped = { id: 'stopped', kind: 'summary', meetingId: 'a', status: 'interrupted', retryable: true };
+  await page.app.acceptProcessing({ revision: 5, status: 'idle', supported: true, modelReady: true, jobs: [stopped] });
+  const response = deferred();
+  page.bridge.acknowledgeProcessing = () => response.promise;
+  page.element('processing-jobs').children.find(node => node.dataset.jobAction === 'ack').focus();
+  const request = page.app.acknowledgeProcessing('stopped');
+  page.element('meeting-title').focus(); page.element('meeting-title').value = '계속 편집하는 제목'; page.app.onEdit();
+  response.resolve({ ...page.app.state.processing, revision: 6, jobs: [{ ...stopped, acknowledged: true }] });
+  await request;
+  assert.equal(page.focused(), 'meeting-title');
+  assert.equal(page.element('meeting-title').value, '계속 편집하는 제목');
+  assert.equal(page.app.state.draft.dirty, true);
+});
+
+for (const action of ['cancel', 'retry']) {
+  test(`${action} restores focus when its recovery row disappears`, async () => {
+    const page = await openApp();
+    const first = { id: 'first', kind: 'summary', meetingId: 'a', status: action === 'cancel' ? 'queued' : 'failed', retryable: action === 'retry' };
+    const next = { id: 'next', kind: 'summary', meetingId: 'b', status: 'interrupted', retryable: true };
+    await page.app.acceptProcessing({ revision: 7, status: 'idle', supported: true, modelReady: true, jobs: [first, next] });
+    page.element('processing-jobs').children.find(node => node.dataset.jobId === 'first' && node.dataset.jobAction === action).focus();
+    const updated = { ...page.app.state.processing, revision: 8, jobs: [{ ...first, status: action === 'cancel' ? 'cancelled' : 'failed', acknowledged: action === 'retry' }, next] };
+    if (action === 'cancel') {
+      page.bridge.cancelProcessing = async () => {};
+      await page.app.cancelProcessing('first');
+      await page.app.acceptProcessing(updated);
+    } else {
+      page.bridge.retryProcessing = async () => updated;
+      await page.app.retryProcessing('first');
+    }
+    assert.equal(page.element(page.focused()).dataset.jobId, 'next');
+  });
+}
+
+test('a stale-source retry error preserves editing and remains next to the stopped job', async () => {
+  const page = await openApp(transcriptDocument());
+  page.edit('저장 전 메모');
+  const before = page.app.state.transcriptDraft.doc;
+  page.bridge.retryProcessing = async () => { throw new Error('회의 내용이 변경되었습니다.'); };
+  await page.app.acceptProcessing({ revision: 6, status: 'idle', supported: true, modelReady: true, jobs: [
+    { id: 'stopped', kind: 'summary', meetingId: 'a', status: 'interrupted', retryable: true },
+  ] });
+  await page.app.retryProcessing('stopped');
+  assert.equal(page.app.state.transcriptDraft.doc, before);
+  assert.equal(page.element('meeting-notes').value, '저장 전 메모');
+  assert.equal(page.app.state.draft.dirty, true);
+  assert.match(page.element('processing-jobs').innerHTML, /회의 내용이 변경되었습니다/);
+});
+
+test('a background recognition result refreshes its owner without switching meetings or tabs', async () => {
+  const page = await openApp(transcriptDocument());
+  let reads = 0;
+  const readTranscript = page.bridge.readTranscript;
+  page.bridge.readTranscript = async id => { reads += 1; return readTranscript(id); };
+  const current = { revision: 7, id: 'download', kind: 'summary-model', status: 'running', supported: true, modelReady: true,
+    jobs: [{ id: 'recognition', kind: 'transcribe', meetingId: 'a', status: 'queued' }] };
+  await page.app.acceptProcessing(current);
+  const selected = page.app.state.selectedId;
+  await page.app.acceptProcessing({ ...current, revision: 8, jobs: [{ ...current.jobs[0], status: 'completed' }] });
+  assert.equal(reads, 1);
+  assert.equal(page.app.state.selectedId, selected);
+  assert.equal(page.app.state.processing.id, 'download');
 });
 
 
@@ -414,7 +579,7 @@ test('summary rendering escapes model output and removes stale source links', as
   page.editTranscript('수정 중');
   page.app.renderSummary(page.app.state.snapshot.meetings[0]);
   assert.doesNotMatch(page.element('summary-content').innerHTML, /data-summary-seek/);
-  assert.match(page.element('summary-message').textContent, /음성 기록이 수정/);
+  assert.match(page.element('summary-message').textContent, /회의 내용이 변경/);
 });
 
 test('summary starts only after pending transcript edits are saved', async () => {
@@ -858,6 +1023,60 @@ test('editing a transcript immediately invalidates old summary links without a b
   assert.doesNotMatch(page.element('summary-content').innerHTML, /data-summary-seek/);
 });
 
+test('notes-aware summaries lose source links during note editing and refresh after persistence without changing the selected tab or player', async () => {
+  const page = await openApp(transcriptDocument());
+  const document = { id: 'summary', text: '회의록 [1]', notesSha256: 'a'.repeat(64), sourceVersion: structuredClone(page.app.state.transcriptDraft.doc.version) };
+  page.app.state.summary = { document, stale: false };
+  page.app.state.summaryLoaded = true;
+  page.app.renderSummary(page.app.state.snapshot.meetings[0]);
+  await page.app.detail.select('notes');
+  const player = page.element('audio-player');
+  player.playbackRate = 1.5; player.currentTime = 15;
+  let loads = 0, reads = 0;
+  player.load = () => { loads += 1; };
+  page.bridge.readSummary = async () => { reads += 1; return { document, stale: true }; };
+  page.edit('추가 안건');
+  assert.doesNotMatch(page.element('summary-content').innerHTML, /data-summary-seek/);
+  assert.match(page.element('summary-message').textContent, /회의 내용이 변경/);
+  const save = page.app.saveDraft(); await tick();
+  page.updates[0].pending.resolve(); await save;
+  assert.equal(reads, 1);
+  assert.equal(page.app.state.summary.stale, true);
+  assert.equal(page.app.detail.active(), 'notes');
+  assert.equal(player.playbackRate, 1.5);
+  assert.equal(player.currentTime, 15);
+  assert.equal(loads, 0);
+});
+
+test('failed note persistence keeps the draft and stale summary links blocked', async () => {
+  const page = await openApp(transcriptDocument());
+  const document = { id: 'summary', text: '회의록 [1]', notesSha256: 'a'.repeat(64), sourceVersion: structuredClone(page.app.state.transcriptDraft.doc.version) };
+  page.app.state.summary = { document, stale: false }; page.app.state.summaryLoaded = true;
+  page.edit('보존할 메모');
+  const save = page.app.saveDraft(); await tick();
+  page.updates[0].pending.reject(new Error('저장 실패'));
+  await assert.rejects(save, /저장 실패/);
+  assert.equal(page.app.state.draft.savedNotes, '');
+  assert.equal(page.app.state.draft.notes, '보존할 메모');
+  assert.equal(page.app.state.draft.dirty, true);
+  assert.doesNotMatch(page.element('summary-content').innerHTML, /data-summary-seek/);
+});
+
+test('legacy transcript-only summaries and title-only edits do not acquire a notes dependency', async () => {
+  for (const notesSha256 of [undefined, 'a'.repeat(64)]) {
+    const page = await openApp(transcriptDocument());
+    const document = { id: 'summary', text: '회의록 [1]', notesSha256, sourceVersion: structuredClone(page.app.state.transcriptDraft.doc.version) };
+    page.app.state.summary = { document, stale: false }; page.app.state.summaryLoaded = true;
+    page.element('meeting-title').value = '수정한 제목';
+    page.app.onEdit();
+    assert.match(page.element('summary-content').innerHTML, /data-summary-seek/);
+    if (notesSha256 == null) {
+      page.edit('구형 요약과 관계없는 메모');
+      assert.match(page.element('summary-content').innerHTML, /data-summary-seek/);
+    }
+  }
+});
+
 
 test('action failure does not downgrade a failed save recovery button', async () => {
   const page = await openApp();
@@ -1118,11 +1337,12 @@ test('summary source opens the transcript, focuses the utterance and seeks the s
 });
 
 
-test('failed summary offers one working retry, hides empty state and keeps diagnostics folded', async () => {
+test('failed summary separates job retry from current-content generation and keeps diagnostics folded', async () => {
   const page = await openApp(transcriptDocument());
-  const job = { id: 'summary-failed', kind: 'summary', status: 'failed', meetingId: 'a', revision: 10, supported: true, modelReady: true, summarySupported: true, summaryReady: true, failureKind: 'outputLimit', hasPreviousSummary: false, failureDetail: { stage: 'merge', finishReason: 'length', outputLimit: 2048 } };
+  const job = { id: 'summary-failed', kind: 'summary', status: 'failed', meetingId: 'a', revision: 10, supported: true, modelReady: true, summarySupported: true, summaryReady: true, retryable: true, failureKind: 'outputLimit', hasPreviousSummary: false, failureDetail: { stage: 'merge', finishReason: 'length', outputLimit: 2048 } };
   await page.app.acceptProcessing(job);
-  assert.equal(page.element('summarize').textContent, '다시 시도');
+  assert.equal(page.element('summarize').textContent, '현재 내용 요약');
+  assert.equal(page.element('retry-processing').hidden, false);
   assert.equal(page.element('summarize').disabled, false);
   assert.equal(page.element('summary-message').hidden, true);
   assert.equal(page.element('processing-error-info').hidden, false);
@@ -1133,9 +1353,9 @@ test('failed summary offers one working retry, hides empty state and keeps diagn
   assert.equal(page.element('summarize').textContent, '요약하기');
   await page.app.selectMeeting('a');
   const calls = [];
-  page.bridge.summarizeMeeting = async id => { calls.push(id); return { ...job, id: 'retry', revision: 11, status: 'running', phase: 'preparing', failureDetail: null }; };
-  await page.element('summarize').listeners.get('click')();
-  assert.deepEqual(calls, ['a']);
+  page.bridge.retryProcessing = async id => { calls.push(id); return { ...job, id: 'retry', revision: 11, status: 'running', phase: 'preparing', failureDetail: null }; };
+  await page.app.retryProcessing(job.id);
+  assert.deepEqual(calls, ['summary-failed']);
   assert.equal(page.element('processing-title').textContent, '요약 준비 중');
   assert.equal(page.element('processing-error-info').hidden, true);
   assert.equal(page.element('summary-message').hidden, true);
@@ -1149,7 +1369,7 @@ test('summary retry and failure retain the existing summary stale-source notice'
   for (const [revision, status] of [[10, 'running'], [11, 'failed']]) {
     await page.app.acceptProcessing({ ...job, revision, status, phase: 'summarizing', failureKind: status === 'failed' ? 'outputLimit' : null });
     assert.equal(page.element('summary-message').hidden, false);
-    assert.match(page.element('summary-message').textContent, /음성 기록이 수정되었습니다/);
+    assert.match(page.element('summary-message').textContent, /회의 내용이 변경되었습니다/);
     assert.match(page.element('summary-content').innerHTML, /이전 요약 내용/);
     assert.doesNotMatch(page.element('summary-content').innerHTML, /data-summary-seek/);
   }

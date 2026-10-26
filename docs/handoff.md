@@ -6,14 +6,40 @@ machine, recordings or evaluation results. Machine-local installation receipts a
 detailed validation logs remain in ignored `.work/`. The root `HANDOFF.md` points to
 the private installation and evaluation receipts.
 
+## Candidate state
+
+The retained installed reference is Nero 0.0.1 build 10. Source candidate 0.0.1
+build 12 is under validation. This does not establish a new installation, notarization,
+long-recording quality or target-hardware qualification. Exact release and installation
+outcomes belong in the release history and private receipts; personal installation
+does not start the public compatibility baseline.
+
 ## Native rewrite source
 
-- Default MOSS recognition uses one complete-recording decoder context. A checked
-  build-time patch reports actual multimodal prompt/context/output budgets and
-  EOS/length/repetition termination; the new ingestion API rejects stale chunk workers
-  while retaining old stored records. Only verified single-generation EOS output can
-  replace the current transcript. Cancellation serializes with the baseline save and
-  explicitly reaps the worker; later terminology cancellation remains possible.
+- Recording policy is separate from the processing slot/queue. Downloads survive capture
+  startup, inference is joined, and persisted jobs never automatically rerun at startup.
+  Source-bound retry, durable cancellation intent and uncertain-saving review preserve
+  previous results. Alerts can be acknowledged without changing outcomes/history.
+  See [Task ownership](task-management.md).
+- Individual session-manifest corruption no longer blocks all meetings. Originals and
+  valid playback remain intact; zero complete frames are not reported as recovered audio.
+- Summary input freezes meeting notes with transcript/current-summary identity. Notes
+  have their own hash, archive, CAS and stale checks; legacy transcript hashes keep their
+  meaning. Whole/map/merge prompts treat notes as reference data, not meeting evidence.
+- Folder drag revalidates placement/destination after edit flush. Windows HTML drag uses
+  `dragDropEnabled: false`; import keeps the native picker. Recorder physical placement
+  recovers after display changes while preserving visible user placement and focus policy.
+
+- Default MOSS recognition uses one complete-recording decoder context. The checked
+  `nero-moss-whole-v2` runtime retains the `whole-recording-v1` processing policy and
+  reports metadata schema 2: actual multimodal budgets, configured/tokenizer EOS,
+  terminal token and per-chunk acoustic feature/embedding coverage. New recognition
+  requires one decoder call, the pinned model EOS, consistent complete-input evidence,
+  complete parsing and the unchanged source. EOS and structural coverage do not prove
+  that every spoken word was recognized. Existing v1 whole-input artifacts remain
+  available through validated stored history, never as newly accepted v1 worker output.
+  Cancellation serializes with the baseline save and explicitly reaps the worker;
+  later terminology cancellation remains possible.
   Existing recordings are never automatically rerun. See
   [Worker contract](../scripts/native-moss-harness/README.md).
 
@@ -119,6 +145,13 @@ the private installation and evaluation receipts.
   resources preserve the source commit/tree and dirty state; release signing requires
   a clean matching source. macOS packaging can produce separately signed/notarized
   ZIP and DMG artifacts, with distinct receipts and read-only embedded-app verification.
+  macOS build/preparation and sign-time gates reject a present worker whose canonical
+  sources, lock, patch receipt, resources or executable have changed. Signing also runs
+  the no-model runtime metadata check. Developer ID signing preserves the original
+  ad-hoc provenance and records separate pre/post executable hashes, signed identity,
+  runtime metadata and package/app tree digests. These bindings do not establish
+  binary/source semantic equivalence or model quality. An absent optional macOS worker
+  remains unavailable; Windows builds do not require this unsupported MOSS runtime.
 
 - Settings contains Screen / Recording / Models / Agent integration. Shared appearance behavior is packaged
   for both windows, with six colors and independent Light / Dark / System brightness.

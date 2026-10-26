@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -15,13 +16,25 @@ spec = importlib.util.spec_from_file_location("moss_runtime_patch", HERE / "appl
 patching = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(patching)
 EXPECTED_RUNTIME_INFO = {
-    "runtime": "mlx-audio-swift-v0.1.3+nero-moss-whole-v1",
+    "runtime": "mlx-audio-swift-v0.1.3+nero-moss-whole-v2",
     "defaultPolicy": "whole-recording-v1",
     "maxInputSeconds": 5400,
     "maxRequestedTokens": 65536,
+    "metadataSchemaVersion": 2,
+    "eosPolicy": "model-generation-config+tokenizer-v1",
+    "samplingPolicy": "greedy-argmax-v1",
 }
 BUNDLES = ("mlx-swift_Cmlx", "swift-transformers_Hub", "swift-crypto_Crypto")
 METAL_RESOURCE = "mlx-swift_Cmlx.bundle/Contents/Resources/default.metallib"
+MACHO = {b'\xcf\xfa\xed\xfe', b'\xce\xfa\xed\xfe', b'\xfe\xed\xfa\xcf', b'\xfe\xed\xfa\xce', b'\xca\xfe\xba\xbe', b'\xbe\xba\xfe\xca'}
+
+
+def same_json(value, expected):
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False) == json.dumps(expected, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def hex_digest(value, length):
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{" + str(length) + "}", value) is not None
 
 
 def regular_file(path):
@@ -109,7 +122,7 @@ def verify_inputs(products, checkouts, patch_receipt, *, source_root=HERE,
         raise ValueError("The MLXAudio source does not match the required runtime patch.")
     expected_receipt = dict(contract)
     expected_receipt["upstreamTree"] = git_command(checkout, "rev-parse", "HEAD^{tree}").strip()
-    if read_json(patch_receipt) != expected_receipt:
+    if not same_json(read_json(patch_receipt), expected_receipt):
         raise ValueError("The patch receipt does not match the current runtime manifest and checkout.")
     lock_path = Path(source_root) / "Package.resolved"
     lock = read_json(lock_path)
@@ -150,7 +163,7 @@ def runtime_info(staged, *, runner=subprocess.run):
         information = json.loads(result.stdout)
     except (ValueError, TypeError) as error:
         raise ValueError("The staged worker did not return runtime metadata JSON.") from error
-    if information != EXPECTED_RUNTIME_INFO or type(information.get("maxInputSeconds")) is not int or type(information.get("maxRequestedTokens")) is not int:
+    if not same_json(information, EXPECTED_RUNTIME_INFO):
         raise ValueError("The staged worker is stale or has a different runtime/policy contract.")
     return information
 
@@ -186,6 +199,173 @@ def finalize(products, checkouts, staged, patch_receipt, *, source_root=HERE,
     return provenance
 
 
+def package_files(root):
+    files = {}
+    for path in sorted(Path(root).rglob("*")):
+        if path.is_symlink():
+            raise ValueError("Symlinked worker package entries are not supported.")
+        if path.is_file():
+            if path.stat().st_nlink != 1:
+                raise ValueError("Hard-linked worker package entries are not supported.")
+            with path.open("rb") as stream:
+                signable = stream.read(4) in MACHO
+            files[path.relative_to(root).as_posix()] = {
+                "sha256": file_sha256(path), "bytes": path.stat().st_size, "machO": signable,
+            }
+        elif not path.is_dir():
+            raise ValueError("Unexpected worker package entry.")
+    return files
+
+
+def verify_staged(staged, *, source_root=HERE, execute_runtime=False, runner=subprocess.run):
+    staged = Path(staged)
+    if staged.is_symlink() or not staged.is_dir():
+        raise ValueError("Expected a real staged worker directory.")
+    provenance_path = regular_file(staged / "RuntimeProvenance.json")
+    provenance = read_json(provenance_path)
+    contract, _ = patching.load_contract()
+    if (type(provenance.get("schemaVersion")) is not int or provenance.get("schemaVersion") != 1
+            or provenance.get("signatureStage") != "workerAdHocBeforeDeveloperId"
+            or provenance.get("sourceBinding") != "recordedAtPackagingNotEmbeddedInExecutable"):
+        raise ValueError("The worker provenance format or signature stage is not supported.")
+    if not same_json(provenance.get("runtimePatchManifest"), contract):
+        raise ValueError("The worker runtime patch manifest is stale.")
+    receipt = provenance.get("patchProvenance")
+    if not isinstance(receipt, dict) or set(receipt) != set(contract) | {"upstreamTree"}:
+        raise ValueError("The worker patch receipt is incomplete.")
+    if not same_json({key: receipt[key] for key in contract}, contract) or not hex_digest(receipt.get("upstreamTree"), 40):
+        raise ValueError("The worker patch receipt does not match the canonical patch.")
+    encoded_receipt = (json.dumps(receipt, indent=2) + "\n").encode()
+    if provenance.get("patchReceiptSha256") != hashlib.sha256(encoded_receipt).hexdigest():
+        raise ValueError("The worker patch receipt digest does not match its full contents.")
+    expected_sources = worker_source_hashes(source_root)
+    if (provenance.get("workerSourceFilesSha256") != expected_sources
+            or provenance.get("workerSourceSha256") != expected_sources["Sources/MossHarness/MossHarness.swift"]):
+        raise ValueError("The worker was packaged from different canonical sources.")
+    canonical_lock = regular_file(Path(source_root) / "Package.resolved")
+    lock_hash = file_sha256(canonical_lock)
+    if provenance.get("packageResolvedSha256") != lock_hash or file_sha256(staged / "Package.resolved") != lock_hash:
+        raise ValueError("The staged package lock does not match the canonical lock.")
+    pins = read_json(canonical_lock).get("pins", [])
+    matching = [pin for pin in pins if isinstance(pin, dict) and pin.get("identity") == "mlx-audio-swift"]
+    if len(matching) != 1 or matching[0].get("state", {}).get("revision") != contract["upstreamCommit"] or matching[0].get("state", {}).get("version") != contract["upstreamVersion"]:
+        raise ValueError("The canonical runtime pin does not match its patch.")
+    if provenance.get("resourceBundles") != bundle_hashes(staged):
+        raise ValueError("The staged worker resource bundles have changed.")
+    metal = provenance.get("mlxMetalResource")
+    if not isinstance(metal, dict) or metal != {"path": METAL_RESOURCE, "sha256": file_sha256(staged / METAL_RESOURCE)}:
+        raise ValueError("The staged Metal resource does not match its receipt.")
+    executable = regular_file(staged / "MossHarness")
+    executable_hash = file_sha256(executable)
+    if not os.access(executable, os.X_OK) or provenance.get("executableSha256") != executable_hash:
+        raise ValueError("The staged worker executable does not match its receipt.")
+    if not hex_digest(provenance.get("inputExecutableSha256"), 64):
+        raise ValueError("The input executable digest is missing.")
+    information = provenance.get("runtimeInfo")
+    if not same_json(information, EXPECTED_RUNTIME_INFO):
+        raise ValueError("The recorded worker runtime or policy contract is stale.")
+    files = package_files(staged)
+    if execute_runtime and not same_json(runtime_info(staged, runner=runner), information):
+        raise ValueError("The staged worker runtime metadata changed.")
+    return {
+        "schemaVersion": 1,
+        "provenanceSha256": file_sha256(provenance_path),
+        "preSignExecutableSha256": executable_hash,
+        "runtimeInfo": information,
+        "runtimeExecuted": execute_runtime,
+        "sourceBinding": provenance["sourceBinding"],
+        "files": files,
+    }
+
+
+def signature_metadata(executable, *, runner=subprocess.run):
+    result = runner(["codesign", "-d", "--verbose=4", str(executable)],
+                    capture_output=True, text=True, check=False, timeout=15)
+    if result.returncode:
+        raise ValueError("The signed worker identity could not be read.")
+    text = result.stdout + result.stderr
+    fields = {}
+    for name in ("Identifier", "TeamIdentifier", "CDHash"):
+        matches = re.findall(r"^" + name + r"=(.+)$", text, re.MULTILINE)
+        if len(matches) != 1:
+            raise ValueError("The signed worker identity is missing or ambiguous.")
+        fields[name] = matches[0].strip()
+    if not re.fullmatch(r"[A-Z0-9]{10}", fields["TeamIdentifier"]) or not re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", fields["CDHash"]):
+        raise ValueError("A Developer ID worker signature is required.")
+    return fields
+
+
+def verify_signed_transition(staged, preflight, expected_team, *, runner=subprocess.run):
+    staged = Path(staged)
+    if preflight.get("schemaVersion") != 1 or not preflight.get("runtimeExecuted"):
+        raise ValueError("A verified pre-signing worker package is required.")
+    if file_sha256(staged / "RuntimeProvenance.json") != preflight["provenanceSha256"]:
+        raise ValueError("Signing must not rewrite the worker runtime provenance.")
+    before = preflight["files"]
+    after = package_files(staged)
+    signature_file = lambda path: "_CodeSignature" in Path(path).parts and Path(path).name == "CodeResources"
+    for path, value in before.items():
+        if path not in after:
+            raise ValueError("A worker package input disappeared during signing.")
+        if not value["machO"] and not signature_file(path) and after[path] != value:
+            raise ValueError("A non-signature worker resource changed during signing.")
+        if value["machO"] and not after[path]["machO"]:
+            raise ValueError("A worker executable lost its Mach-O format during signing.")
+    if any(path not in before and not signature_file(path) for path in after):
+        raise ValueError("An unexpected worker resource appeared during signing.")
+    result = runner(["codesign", "--verify", "--strict", str(staged / "MossHarness")],
+                    capture_output=True, text=True, check=False, timeout=15)
+    if result.returncode:
+        raise ValueError("The signed worker verification failed.")
+    identity = signature_metadata(staged / "MossHarness", runner=runner)
+    if identity["TeamIdentifier"] != expected_team:
+        raise ValueError("The worker and application signing teams differ.")
+    information = runtime_info(staged, runner=runner)
+    if not same_json(information, preflight["runtimeInfo"]):
+        raise ValueError("The signed worker runtime contract changed.")
+    encoded = json.dumps(after, sort_keys=True, separators=(",", ":")).encode()
+    return {
+        "schemaVersion": 1, "provenanceSha256": preflight["provenanceSha256"],
+        "preSignExecutableSha256": preflight["preSignExecutableSha256"],
+        "postSignExecutableSha256": file_sha256(staged / "MossHarness"),
+        "signature": identity, "runtimeInfo": information,
+        "filesSha256": hashlib.sha256(encoded).hexdigest(),
+        "sourceBinding": preflight["sourceBinding"],
+        "boundary": "pre-sign source/package verification followed by Developer ID signing; runtime metadata is not full semantic equivalence proof",
+    }
+
+
+def verify_signed_receipt(staged, receipt, expected_team, *, runner=subprocess.run):
+    """Verify the preserved signed package without treating pre-sign hashes as current."""
+    staged = Path(staged)
+    if not isinstance(receipt, dict) or type(receipt.get("schemaVersion")) is not int or receipt["schemaVersion"] != 1:
+        raise ValueError("A signed worker package receipt is required.")
+    provenance = read_json(staged / "RuntimeProvenance.json")
+    if file_sha256(staged / "RuntimeProvenance.json") != receipt.get("provenanceSha256"):
+        raise ValueError("The preserved worker provenance no longer matches its signed receipt.")
+    if provenance.get("executableSha256") != receipt.get("preSignExecutableSha256"):
+        raise ValueError("The signed receipt is not linked to the packaged executable.")
+    if (provenance.get("signatureStage") != "workerAdHocBeforeDeveloperId"
+            or provenance.get("sourceBinding") != "recordedAtPackagingNotEmbeddedInExecutable"
+            or receipt.get("sourceBinding") != provenance.get("sourceBinding")):
+        raise ValueError("The signed receipt has an unsupported source or signature binding.")
+    files = package_files(staged)
+    encoded = json.dumps(files, sort_keys=True, separators=(",", ":")).encode()
+    if hashlib.sha256(encoded).hexdigest() != receipt.get("filesSha256") or file_sha256(staged / "MossHarness") != receipt.get("postSignExecutableSha256"):
+        raise ValueError("The signed worker package differs from its preserved receipt.")
+    result = runner(["codesign", "--verify", "--strict", str(staged / "MossHarness")],
+                    capture_output=True, text=True, check=False, timeout=15)
+    if result.returncode:
+        raise ValueError("The preserved worker signature verification failed.")
+    identity = signature_metadata(staged / "MossHarness", runner=runner)
+    if identity["TeamIdentifier"] != expected_team or not same_json(identity, receipt.get("signature")):
+        raise ValueError("The preserved worker signing identity differs from its receipt.")
+    information = runtime_info(staged, runner=runner)
+    if not same_json(information, receipt.get("runtimeInfo")) or not same_json(information, provenance.get("runtimeInfo")):
+        raise ValueError("The preserved worker runtime metadata differs from its receipt.")
+    return receipt
+
+
 def main():
     parser = argparse.ArgumentParser(description="Verify the pinned MOSS worker package without loading a model.")
     subparsers = parser.add_subparsers(dest="operation", required=True)
@@ -198,12 +378,22 @@ def main():
     packaged.add_argument("checkouts", type=Path)
     packaged.add_argument("staged", type=Path)
     packaged.add_argument("patch_receipt", type=Path)
+    staged = subparsers.add_parser("verify-staged")
+    staged.add_argument("staged", type=Path)
+    staged.add_argument("--optional", action="store_true")
+    staged.add_argument("--runtime-info", action="store_true")
     arguments = parser.parse_args()
     try:
         if arguments.operation == "preflight":
             verify_inputs(arguments.products, arguments.checkouts, arguments.patch_receipt)
-        else:
+        elif arguments.operation == "finalize":
             finalize(arguments.products, arguments.checkouts, arguments.staged, arguments.patch_receipt)
+        else:
+            if arguments.optional and not arguments.staged.exists() and not arguments.staged.is_symlink():
+                print("MOSS worker absent: optional transcription is unavailable.")
+                return
+            verified = verify_staged(arguments.staged, execute_runtime=arguments.runtime_info)
+            print(json.dumps({key: value for key, value in verified.items() if key != "files"}, sort_keys=True))
     except (ValueError, OSError, KeyError, TypeError) as error:
         parser.exit(2, str(error) + "\n")
 

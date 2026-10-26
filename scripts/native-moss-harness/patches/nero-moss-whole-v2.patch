@@ -1,0 +1,274 @@
+--- a/Sources/MLXAudioSTT/Models/MossTranscribeDiarize/MossTranscribeDiarize.swift
++++ b/Sources/MLXAudioSTT/Models/MossTranscribeDiarize/MossTranscribeDiarize.swift
+@@ -172,7 +172,8 @@
+         inputsEmbeds: MLXArray,
+         inputFeatures: MLXArray,
+         audioFeatureLengths: MLXArray,
+-        audioChunkMapping: MLXArray?
++        audioChunkMapping: MLXArray?,
++        onAudioFeatures: ((Int) -> Void)? = nil
+     ) throws -> MLXArray {
+         let audioFeatures = try getAudioFeatures(
+             inputFeatures: inputFeatures,
+@@ -182,6 +183,7 @@
+         let audioEmbeds = MLX.concatenated(audioFeatures.map { $0.squeezed(axis: 0) }, axis: 0)
+             .asType(inputsEmbeds.dtype)
+ 
++        onAudioFeatures?(audioEmbeds.dim(0))
+         let flatMask = (inputIds .== MLXArray(Int32(config.audioTokenId))).reshaped(-1)
+         let maskValues = flatMask.asType(.int32).asArray(Int32.self)
+         let audioTokenCount = maskValues.reduce(0) { $0 + ($1 == 0 ? 0 : 1) }
+@@ -239,6 +241,27 @@
+ }
+ 
+ public final class MossTranscribeDiarizeModel: Module, STTGenerationModel {
++    public struct GenerationMetadata: Sendable {
++        public let promptTokens: Int
++        public let requestedMaxTokens: Int
++        public let effectiveMaxTokens: Int
++        public let contextSize: Int
++        public let generatedTokens: Int
++        public let terminationReason: String
++        public let terminalTokenId: Int?
++        public let configuredEosTokenIds: [Int]
++        public let tokenizerEosTokenId: Int
++        public let inputAudioSamples: Int
++        public let featureChunkCount: Int
++        public let featureTokenLengths: [Int]
++        public let audioTokenCount: Int
++        public let audioEmbeddingCount: Int
++        public let samplingPolicy: String
++    }
++
++    private var configuredEosTokenIds: [Int] = []
++    public private(set) var generationMetadata: [GenerationMetadata] = []
++
+     public let config: MossTranscribeDiarizeConfig
+     public let vocabSize: Int
+     public let sampleRate: Int
+@@ -325,6 +348,7 @@
+         audio: MLXArray,
+         generationParameters: STTGenerateParameters
+     ) -> AsyncThrowingStream<STTGeneration, Error> {
++        generationMetadata.removeAll(keepingCapacity: true)
+         let sendableModel = UncheckedSendableBox(self)
+         let sendableAudio = UncheckedSendableBox(audio)
+         return AsyncThrowingStream { continuation in
+@@ -406,6 +430,7 @@
+         repetitionContextSize: Int = 100,
+         prompt: String? = nil
+     ) -> STTOutput {
++        generationMetadata.removeAll(keepingCapacity: true)
+         let start = Date()
+         do {
+             let chunks = audioChunks(
+@@ -445,6 +470,11 @@
+         let inputEmbeddings: MLXArray
+         let promptTokenCount: Int
+         let duration: Double
++        let inputAudioSamples: Int
++        let featureChunkCount: Int
++        let featureTokenLengths: [Int]
++        let audioTokenCount: Int
++        let audioEmbeddingCount: Int
+     }
+ 
+     func audioToMono(_ audio: MLXArray) throws -> MLXArray {
+@@ -470,7 +500,8 @@
+         audioLengths: MLXArray,
+         chunkMapping: MLXArray,
+         featureLengths: [Int],
+-        duration: Double
++        duration: Double,
++        inputAudioSamples: Int
+     ) {
+         let wav = try audioToMono(audio)
+         let sampleCount = wav.dim(0)
+@@ -502,7 +533,8 @@
+             MLXArray(featureLengths.map(Int32.init)),
+             MLXArray(chunkMapping),
+             featureLengths,
+-            Double(sampleCount) / Double(sampleRate)
++            Double(sampleCount) / Double(sampleRate),
++            sampleCount
+         )
+     }
+ 
+@@ -578,23 +610,30 @@
+     }
+ 
+     func prepareGenerationInputs(audio: MLXArray, prompt: String?) throws -> PreparedGenerationInputs {
+-        let (inputFeatures, audioLengths, chunkMapping, featureLengths, duration) = try preprocessAudio(audio)
++        let (inputFeatures, audioLengths, chunkMapping, featureLengths, duration, inputAudioSamples) = try preprocessAudio(audio)
+         let audioTokenCount = featureLengths.reduce(0, +)
+         let inputIds = try buildPrompt(audioTokenCount: audioTokenCount, prompt: prompt)
+         let embeds = model.languageModel.embedTokens(inputIds)
++        var audioEmbeddingCount = 0
+         let inputsEmbeds = try model.injectAudioFeatures(
+             inputIds: inputIds,
+             inputsEmbeds: embeds,
+             inputFeatures: inputFeatures,
+             audioFeatureLengths: audioLengths,
+-            audioChunkMapping: chunkMapping
++            audioChunkMapping: chunkMapping,
++            onAudioFeatures: { audioEmbeddingCount = $0 }
+         )
+         eval(inputsEmbeds)
+         return PreparedGenerationInputs(
+             promptIds: inputIds,
+             inputEmbeddings: inputsEmbeds,
+             promptTokenCount: inputIds.dim(1),
+-            duration: duration
++            duration: duration,
++            inputAudioSamples: inputAudioSamples,
++            featureChunkCount: inputFeatures.dim(0),
++            featureTokenLengths: featureLengths,
++            audioTokenCount: audioTokenCount,
++            audioEmbeddingCount: audioEmbeddingCount
+         )
+     }
+ 
+@@ -626,14 +665,25 @@
+ 
+         let start = Date()
+         let prefillStart = Date()
++        guard maxTokens > 0 else {
++            throw STTError.invalidInput("MOSS requestedMaxTokens must be positive.")
++        }
+         let prepared = try prepareGenerationInputs(audio: audio, prompt: prompt)
++        guard let tokenizerEosTokenId = tokenizer?.eosTokenId else {
++            throw STTError.modelNotInitialized("Tokenizer EOS is not initialized.")
++        }
++        let contextSize = config.textConfig.maxPositionEmbeddings
++        guard contextSize > 1, prepared.promptTokenCount < contextSize - 1 else {
++            throw STTError.invalidInput("MOSS context exhausted: promptTokens=\(prepared.promptTokenCount), contextSize=\(contextSize), eosReserve=1.")
++        }
++        let effectiveMaxTokens = min(maxTokens, contextSize - prepared.promptTokenCount - 1)
+         let prefillTime = Date().timeIntervalSince(prefillStart)
+         let genStart = Date()
+         var offsetter = MossTimestampTagOffsetter(offsetSeconds: offsetSeconds)
+-        let generatedTokens = try generateTokenIds(
++        let generation = try generateTokenIds(
+             promptIds: prepared.promptIds,
+             inputEmbeddings: prepared.inputEmbeddings,
+-            maxTokens: maxTokens,
++            maxTokens: effectiveMaxTokens,
+             temperature: temperature,
+             repetitionPenalty: repetitionPenalty,
+             repetitionContextSize: repetitionContextSize
+@@ -644,6 +694,24 @@
+                 onText?(shiftedDelta)
+             }
+         }
++        let generatedTokens = generation.tokens
++        generationMetadata.append(GenerationMetadata(
++            promptTokens: prepared.promptTokenCount,
++            requestedMaxTokens: maxTokens,
++            effectiveMaxTokens: effectiveMaxTokens,
++            contextSize: contextSize,
++            generatedTokens: generatedTokens.count,
++            terminationReason: generation.terminationReason,
++            terminalTokenId: generation.terminalTokenId,
++            configuredEosTokenIds: configuredEosTokenIds,
++            tokenizerEosTokenId: tokenizerEosTokenId,
++            inputAudioSamples: prepared.inputAudioSamples,
++            featureChunkCount: prepared.featureChunkCount,
++            featureTokenLengths: prepared.featureTokenLengths,
++            audioTokenCount: prepared.audioTokenCount,
++            audioEmbeddingCount: prepared.audioEmbeddingCount,
++            samplingPolicy: "greedy-argmax-v1"
++        ))
+         let bufferedText = offsetter.finish()
+         if !bufferedText.isEmpty {
+             onText?(bufferedText)
+@@ -671,8 +739,12 @@
+         )
+     }
+ 
+-    func eosTokenIds() -> Set<Int> {
+-        [151643, 151645]
++    func eosTokenIds() throws -> Set<Int> {
++        guard let tokenizerEos = tokenizer?.eosTokenId,
++              configuredEosTokenIds == [tokenizerEos] else {
++            throw STTError.modelNotInitialized("Model generation EOS and tokenizer EOS must agree before decoding.")
++        }
++        return Set(configuredEosTokenIds)
+     }
+ 
+     func generateTokenIds(
+@@ -683,7 +755,8 @@
+         repetitionPenalty: Float,
+         repetitionContextSize: Int,
+         onToken: ((Int) -> Void)? = nil
+-    ) throws -> [Int] {
++    ) throws -> (tokens: [Int], terminationReason: String, terminalTokenId: Int?) {
++        let eos = try eosTokenIds()
+         let cache = makeCache()
+         let prefillStepSize = 2048
+         let totalTokens = promptIds.dim(1)
+@@ -713,13 +786,16 @@
+         asyncEval(nextTokenArray)
+ 
+         var generated: [Int] = []
+-        let eos = eosTokenIds()
++        var terminationReason = "length"
++        var terminalTokenId: Int?
+ 
+         for tokenIndex in 0..<maxTokens {
+             try Task.checkCancellation()
+ 
+             let token = nextTokenArray.item(Int.self)
++            terminalTokenId = token
+             if eos.contains(token) {
++                terminationReason = "eos"
+                 break
+             }
+             generated.append(token)
+@@ -728,6 +804,7 @@
+             if repetitionPenalty == 1.0 && generated.count >= 24 {
+                 let tail = generated.suffix(24)
+                 if Set(tail).count <= 3 {
++                    terminationReason = "repetition"
+                     break
+                 }
+             }
+@@ -759,7 +836,7 @@
+                 Memory.clearCache()
+             }
+         }
+-        return generated
++        return (generated, terminationReason, terminalTokenId)
+     }
+ }
+ 
+@@ -986,6 +1063,7 @@
+         let model = MossTranscribeDiarizeModel(config)
+ 
+         model.tokenizer = try await AutoTokenizer.from(modelFolder: modelDir)
++        try model.loadGenerationConfig(from: modelDir)
+         try model.loadProcessorConfig(from: modelDir)
+         try model.initializeDigitTokenIds()
+ 
+@@ -1016,6 +1094,22 @@
+         return model
+     }
+ 
++    func loadGenerationConfig(from modelDir: URL) throws {
++        struct GenerationTokenConfiguration: Decodable {
++            let eosTokenId: Int
++            enum CodingKeys: String, CodingKey {
++                case eosTokenId = "eos_token_id"
++            }
++        }
++        let data = try Data(contentsOf: modelDir.appendingPathComponent("generation_config.json"))
++        let generation = try JSONDecoder().decode(GenerationTokenConfiguration.self, from: data)
++        guard generation.eosTokenId >= 0, generation.eosTokenId < vocabSize,
++              tokenizer?.eosTokenId == generation.eosTokenId else {
++            throw STTError.invalidInput("Model generation EOS and tokenizer EOS do not match.")
++        }
++        configuredEosTokenIds = [generation.eosTokenId]
++    }
++
+     func loadProcessorConfig(from modelDir: URL) throws {
+         let processorURL = modelDir.appendingPathComponent("processor_config.json")
+         guard FileManager.default.fileExists(atPath: processorURL.path) else {

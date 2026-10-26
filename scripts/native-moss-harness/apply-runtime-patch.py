@@ -49,7 +49,14 @@ def load_contract():
     if (manifest.get("schemaVersion") != 1
         or manifest.get("upstreamCommit") != PINNED_COMMIT
         or manifest.get("sourceFile") != SOURCE_FILE
-        or manifest.get("unpatchedSha256") != SOURCE_SHA256):
+        or manifest.get("unpatchedSha256") != SOURCE_SHA256
+        or manifest.get("runtime") != "mlx-audio-swift-v0.1.3+nero-moss-whole-v2"
+        or manifest.get("metadataSchemaVersion") != 2
+        or manifest.get("eosPolicy") != "model-generation-config+tokenizer-v1"
+        or manifest.get("samplingPolicy") != "greedy-argmax-v1"
+        or manifest.get("modelRevision") != "704aa4a9c304e8520be88901e0d1960158ef5b15"
+        or manifest.get("generationConfigSha256") != "e53a4b3ce4f944230cf1ca8fed0c42f4ff0d8c1443eaf98b5315d987334dd9e4"
+        or manifest.get("tokenizerConfigSha256") != "61d04c96104177240688396655ae3f7cf38ce2ea036db867a1d2b6883e27c3d5"):
         raise ValueError("The patch manifest does not match the pinned dependency contract.")
     patch_name = manifest.get("patchFile")
     if not isinstance(patch_name, str) or Path(patch_name).name != patch_name:

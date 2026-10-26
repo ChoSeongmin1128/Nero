@@ -4,6 +4,33 @@ import { processingFeedback } from '../src/processing-feedback.js';
 
 const running = (kind, extra = {}) => ({ id: 'job', kind, status: 'running', ...extra });
 
+test('queued work is cancellable without pretending inference is running', () => {
+  const job = { id: 'waiting', kind: 'summary', status: 'queued' };
+  const feedback = processingFeedback(job);
+  assert.equal(feedback.visible, true);
+  assert.equal(feedback.active, false);
+  assert.equal(feedback.title, '회의록 요약 대기 중');
+  assert.equal(feedback.progress, null);
+  assert.equal(feedback.cancelVisible, true);
+  assert.equal(feedback.icon, 'clock');
+  const cancelling = processingFeedback(job, { cancelling: true });
+  assert.equal(cancelling.cancelDisabled, true);
+  assert.equal(cancelling.cancelLabel, '취소 중');
+});
+
+test('interrupted work and uncertain saving have distinct recovery instructions', () => {
+  const interrupted = processingFeedback({ id: 'stopped', kind: 'transcribe', status: 'interrupted' });
+  assert.equal(interrupted.active, false);
+  assert.equal(interrupted.cancelVisible, false);
+  assert.match(interrupted.title, /중단됨/);
+  const review = processingFeedback({ id: 'saving', kind: 'summary', status: 'needsReview', message: 'old internal detail' });
+  assert.equal(review.title, '회의록 요약 확인 필요');
+  assert.equal(review.detail, '회의를 열어 저장된 결과를 확인해 주세요.');
+  assert.equal(review.cancelVisible, false);
+  assert.equal(review.icon, 'triangle-alert');
+  assert.equal(processingFeedback({ id: 'acknowledged', kind: 'summary', status: 'failed', acknowledged: true }).visible, false);
+});
+
 test('recognition and summary stay visibly active without inventing an inference percentage', () => {
   const recognition = processingFeedback(running('transcribe', { message: '텍스트로 변환 중' }));
   assert.equal(recognition.visible, true);

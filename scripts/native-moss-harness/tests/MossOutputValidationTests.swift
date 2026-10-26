@@ -3,6 +3,18 @@ import Foundation
 @main
 struct MossOutputValidationTests {
     static func main() {
+        check(MossOutputValidation.hasConfiguredEOS(terminationReason: "eos", terminalTokenId: 151645, configuredEosTokenIds: [151645], tokenizerEosTokenId: 151645), "only configured model and tokenizer EOS completes generation")
+        for (reason, token, configured, tokenizer) in [
+            ("eos", 151643, [151645], 151645),
+            ("eos", 151643, [151643, 151645], 151645),
+            ("eos", 151645, [151643, 151645], 151645),
+            ("eos", 151645, [151645], 151643),
+            ("length", 151645, [151645], 151645),
+            ("repetition", 151645, [151645], 151645),
+        ] {
+            check(!MossOutputValidation.hasConfiguredEOS(terminationReason: reason, terminalTokenId: token, configuredEosTokenIds: configured, tokenizerEosTokenId: tokenizer), "PAD, mismatched configuration and other stops cannot complete generation")
+        }
+        check(!MossOutputValidation.hasConfiguredEOS(terminationReason: "eos", terminalTokenId: nil, configuredEosTokenIds: [151645], tokenizerEosTokenId: 151645), "missing terminal token is incomplete")
         let first = segment(0, 1, "[S1] 첫 발언", "S1")
         let second = segment(2, 3, "[S2] 다음 발언", "S2")
         let raw = "[0][S1]첫 발언[1]\n[2][S2]다음 발언[3]"
@@ -16,6 +28,7 @@ struct MossOutputValidationTests {
             "[0][S1]첫 발언[1][9][S2]   [8]",
             "[0][S1]첫 발언[1][" + String(repeating: "9", count: 400) + "][S2]숫자 초과[10]",
             "[0][S1]첫 발언[1]끝나지 않은 발언",
+            "[0][S1]첫 발언[1][2][S2]",
         ] {
             check(!MossOutputValidation.isComplete(invalid, segments: [first]), "invalid raw cannot hide a dropped segment")
         }

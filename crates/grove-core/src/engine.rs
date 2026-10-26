@@ -1171,6 +1171,129 @@ mod tests {
     }
 
     #[test]
+    fn invalid_capture_metadata_is_isolated_without_changing_saved_edits_or_audio() {
+        for corruption in ["json", "schema", "identity"] {
+            let (_temporary, mut engine, id, _source) = crate::transcript::tests::setup();
+            engine
+                .update_meeting(&id, "원래 제목".into(), "사용자가 작성한 메모".into())
+                .unwrap();
+            let initial = engine
+                .commit_transcript(&id, None, crate::transcript::tests::output())
+                .unwrap();
+            let corrected = engine
+                .edit_transcript(&id, initial.version, vec!["사용자가 수정한 문장".into()])
+                .unwrap();
+            let healthy = engine
+                .create_meeting("다른 회의".into(), "다른 메모".into())
+                .unwrap();
+            let root = engine.store.root.clone();
+            let capture_id = engine.meetings[&id].capture_id.as_ref().unwrap();
+            let session = root
+                .join("meetings")
+                .join(&id)
+                .join("sessions")
+                .join(capture_id);
+            let manifest_path = session.join("manifest.json");
+            let corrupt_bytes = if corruption == "json" {
+                b"{truncated".to_vec()
+            } else {
+                let mut manifest: serde_json::Value =
+                    serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+                if corruption == "schema" {
+                    manifest["schemaVersion"] = 999.into();
+                } else {
+                    manifest["meetingId"] = Uuid::new_v4().to_string().into();
+                }
+                serde_json::to_vec(&manifest).unwrap()
+            };
+            fs::write(&manifest_path, &corrupt_bytes).unwrap();
+            let transcript = root
+                .join("meetings")
+                .join(&id)
+                .join("transcripts")
+                .join(&corrected.version.id);
+            let paths = [
+                session.join("source.wav"),
+                session.join("audio.pcm"),
+                session.join("audio.wav"),
+                transcript.join("raw.json"),
+                transcript.join("initial.json"),
+                transcript.join("current.json"),
+            ];
+            let before: Vec<_> = paths.iter().map(|path| fs::read(path).unwrap()).collect();
+            drop(engine);
+            let restored = Engine::open(root.clone()).unwrap();
+            let affected = &restored.meetings[&id].meeting;
+            assert_eq!(affected.status, MeetingStatus::Interrupted);
+            assert_eq!(affected.title, "원래 제목");
+            assert_eq!(affected.notes, "사용자가 작성한 메모");
+            assert!(affected
+                .error
+                .as_ref()
+                .unwrap()
+                .contains("자동 복구하지 못했습니다"));
+            assert!(restored.audio_path(&id).is_ok());
+            assert_eq!(
+                serde_json::to_value(restored.transcript(&id).unwrap().unwrap()).unwrap(),
+                serde_json::to_value(&corrected).unwrap()
+            );
+            assert_eq!(restored.meetings[&healthy.id].meeting, healthy);
+            for (path, original) in paths.iter().zip(&before) {
+                assert_eq!(&fs::read(path).unwrap(), original);
+            }
+            assert_eq!(fs::read(&manifest_path).unwrap(), corrupt_bytes);
+            let affected = affected.clone();
+            drop(restored);
+            let reopened = Engine::open(root).unwrap();
+            assert_eq!(reopened.meetings[&id].meeting, affected);
+            assert_eq!(fs::read(&manifest_path).unwrap(), corrupt_bytes);
+        }
+    }
+
+    #[test]
+    fn recovery_without_a_complete_frame_does_not_claim_audio_was_recovered() {
+        let (_temporary, mut engine) = engine();
+        let meeting = engine
+            .create_meeting("회의".into(), "원래 메모".into())
+            .unwrap();
+        let mut manifest = Manifest::new(
+            &meeting.id,
+            "synthetic",
+            "시험 입력",
+            1000,
+            1,
+            Encoding::F32,
+        );
+        let mut raw = engine.store.prepare_capture(&manifest).unwrap();
+        raw.write_all(&[1, 2]).unwrap();
+        raw.sync_all().unwrap();
+        drop(raw);
+        manifest.phase = CapturePhase::Recording;
+        store::write_manifest(&engine.store.root, &manifest).unwrap();
+        let stored = engine.meetings.get_mut(&meeting.id).unwrap();
+        stored.capture_id = Some(manifest.session_id.clone());
+        stored.meeting.status = MeetingStatus::Recording;
+        engine.store.save(stored).unwrap();
+        let root = engine.store.root.clone();
+        drop(engine);
+        let restored = Engine::open(root.clone()).unwrap();
+        let affected = restored.meetings[&meeting.id].meeting.clone();
+        assert_eq!(affected.status, MeetingStatus::Interrupted);
+        assert!(affected.audio.is_none());
+        assert_eq!(affected.notes, "원래 메모");
+        assert_eq!(
+            affected.error.as_deref(),
+            Some("저장된 오디오가 없어 녹음을 복구하지 못했습니다.")
+        );
+        let raw_path = root.join(manifest.relative_dir()).join("audio.pcm");
+        assert_eq!(fs::read(&raw_path).unwrap(), [1, 2]);
+        drop(restored);
+        let reopened = Engine::open(root).unwrap();
+        assert_eq!(reopened.meetings[&meeting.id].meeting, affected);
+        assert_eq!(fs::read(raw_path).unwrap(), [1, 2]);
+    }
+
+    #[test]
     fn interrupted_finalization_is_retried_after_transient_failure() {
         let (_temporary, mut engine) = engine();
         let meeting = engine

@@ -11,6 +11,9 @@ if [[ "$(uname -s)" != Darwin ]]; then
   echo 'MOSS native preparation currently requires macOS.' >&2
   exit 1
 fi
+if [[ $# -eq 0 ]]; then
+  python3 "$root/scripts/native-moss-harness/verify_worker_package.py" verify-staged "$output/moss" --optional
+fi
 xcrun swiftc -O -parse-as-library -target "$(uname -m)-apple-macos26.0" \
   "$root/Sources/GroveInference/InferenceConfiguration.swift" \
   "$root/Sources/GroveInference/AnalysisAudioPreparer.swift" \
@@ -22,3 +25,4 @@ if [[ $# -eq 0 ]]; then
 fi
 "$root/scripts/native-moss-harness/package_worker.sh" "$1" "$2" "$output/moss" "$3"
 chmod -R u+rwX "$output/moss"
+python3 "$root/scripts/native-moss-harness/verify_worker_package.py" verify-staged "$output/moss"

@@ -1,3 +1,4 @@
+import { pendingJob } from './processing-state.js';
 import { escape, duration, icon } from './ui.js';
 
 const newSpeakerValue = '__new__';
@@ -66,13 +67,15 @@ export function mountSpeakers({ bridge, getState, finishEditing, onUpdated, onPr
     return { state, id: state.selectedId, doc: draft.doc };
   }
 
-  const blocked = view => !view || !view.state.connected || view.state.busy || (view.state.processing?.status === 'running' && view.state.processing.meetingId === view.id);
+  const blocked = view => !view || !view.state.connected || view.state.busy || Boolean(pendingJob(view.state.processing, { meetingId: view.id }));
   const unchanged = () => editing && sameState(editing.base, editing.working) && (editing.mode !== 'single' || editing.assignmentTarget === (editing.base.assignments[editing.singleIndex] || ''));
   const nameId = id => `speaker-name-${encodeURIComponent(id)}`;
   const mergeId = id => `speaker-merge-${encodeURIComponent(id)}`;
 
   function analysisBlocked(view) {
-    return blocked(view) || view?.state.processing?.status === 'running' || Boolean(view?.state.snapshot?.session) || !unchanged() || !view?.state.processing?.speakerSupported;
+    const session = view?.state.snapshot?.session;
+    const recording = session?.meetingId === view?.id && ['recording', 'paused', 'finalizing'].includes(session.state);
+    return blocked(view) || Boolean(pendingJob(view?.state.processing, { kind: 'speaker-model' })) || recording || !unchanged() || !view?.state.processing?.speakerSupported;
   }
 
   function undoFor(view) {

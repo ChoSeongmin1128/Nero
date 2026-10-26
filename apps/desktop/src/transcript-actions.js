@@ -1,3 +1,4 @@
+import { pendingJob } from './processing-state.js';
 const sameVersion = (a, b) => (a == null && b == null) || (a?.id === b?.id && a?.revision === b?.revision);
 const versionOf = context => context?.transcript?.version ? { ...context.transcript.version } : null;
 const messageOf = error => error instanceof Error ? error.message : String(error);
@@ -17,7 +18,7 @@ export function mountTranscriptActions({ byId, bridge, getContext, finishEditing
   function blocked(context, kind) {
     if (missing(context)) return '회의를 찾을 수 없습니다.';
     if (recording(context)) return '녹음을 마친 뒤 다시 시도해 주세요.';
-    if (context.processing?.status === 'running' && (kind === 'rebuild' || context.processing.meetingId === context.meeting.id)) return '진행 중인 처리가 끝난 뒤 다시 시도해 주세요.';
+    if (pendingJob(context.processing, { meetingId: context.meeting.id })) return '진행 중인 처리가 끝난 뒤 다시 시도해 주세요.';
     return '';
   }
   function focusReturn() {

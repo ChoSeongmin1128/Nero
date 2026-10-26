@@ -12,6 +12,7 @@ pub struct RecorderPolicy {
     shown: bool,
     presented: bool,
     failed: bool,
+    last_moved: Option<std::time::Instant>,
 }
 
 impl Default for RecorderPolicy {
@@ -24,11 +25,20 @@ impl Default for RecorderPolicy {
             shown: false,
             presented: false,
             failed: false,
+            last_moved: None,
         }
     }
 }
 
 impl RecorderPolicy {
+    pub fn moved(&mut self, now: std::time::Instant) {
+        self.last_moved = Some(now);
+    }
+    pub fn can_reposition(&self, now: std::time::Instant) -> bool {
+        self.last_moved.is_none_or(|last| {
+            now.saturating_duration_since(last) >= std::time::Duration::from_secs(1)
+        })
+    }
     pub fn set_automatic(&mut self, enabled: bool) {
         self.automatic = enabled;
         if enabled {

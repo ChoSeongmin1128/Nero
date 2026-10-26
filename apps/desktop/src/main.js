@@ -1,6 +1,7 @@
 import * as bridge from './bridge.js';
 import { icon, escape, button, duration, recordingStatus, statusMarkup, sessionControls, applySystemAppearance, documentExport } from './ui.js';
 import { processingFeedback } from './processing-feedback.js';
+import { processingJobs, pendingJob, processingResults } from './processing-state.js';
 import { mountLibrary, filterLibraryMeetings } from './library-ui.js';
 import { mountSpeakers } from './speakers-ui.js';
 import { createMeetingSearch, mountDocumentSearch } from './meeting-search.js';
@@ -33,6 +34,9 @@ let pendingQuitSessionId = null;
 let selectionRequest = 0;
 let speakerReplay = null;
 const copyFeedbackTimers = new Map();
+const processingActions = new Map();
+const processingErrors = new Map();
+let processingFocus = null;
 function setHTML(id, html) { const node = byId(id); if (node.innerHTML !== html) node.innerHTML = html; }
 function setText(id, text) { const node = byId(id); if (node.textContent !== text) node.textContent = text; }
 const currentMeeting = () => state.snapshot.meetings.find((meeting) => meeting.id === state.selectedId);
@@ -110,7 +114,7 @@ function renderSaveState() {
 function renderRecording(meeting) {
   const session = activeSession();
   const hasMicrophone = state.devicesLoaded && !microphoneIssue();
-  const importing = state.processing.status === 'running' && state.processing.kind === 'import';
+  const importing = Boolean(pendingJob(state.processing, { kind: 'import' }));
   const ownSession = session?.meetingId === meeting.id ? session : null;
   const phase = stateFor(meeting);
   setHTML('meeting-status', statusMarkup(phase));
@@ -168,8 +172,10 @@ async function prepareAudio(meeting, recording, force = false) {
 
 const modelsReady = () => state.processing.supported && state.processing.modelReady;
 function renderSetup() {
-  const job = state.processing, ready = modelsReady();
-  const running = processingActive() && ['setup','model','summary-model'].includes(job.kind);
+  const ready = modelsReady();
+  const preparation = pendingJob(state.processing, { models: true });
+  const job = preparation && preparation.kind !== 'speaker-model' ? { ...state.processing, ...preparation } : state.processing;
+  const running = ['queued', 'running'].includes(job.status) && ['setup','model','summary-model'].includes(job.kind);
   const visible = state.connected && !activeSession() && (state.setupRequested || (!state.selectedId && (!ready || (running && job.kind === 'setup'))));
   byId('setup-screen').hidden = !visible;
   byId('setup-title').textContent = state.setupFromSettings ? '모델' : ready && state.selectedId ? '회의 요약' : '초기 설정';
@@ -177,12 +183,12 @@ function renderSetup() {
   byId('setup-speech-state').textContent = !state.connected ? '확인 중' : job.modelReady ? '준비됨' : !job.supported ? '지원되지 않음' : running && job.modelStage === 'speech' ? '준비 중' : '';
   byId('setup-summary-state').textContent = job.summaryReady ? '준비됨' : !job.summarySupported && state.connected ? '지원되지 않음' : running && job.modelStage === 'summary' ? '준비 중' : '';
   byId('setup-summary-choice').hidden = ready || job.summaryReady || !job.summarySupported || !job.supported;
-  byId('setup-summary-option').disabled = !state.connected || state.busy || processingActive();
+  byId('setup-summary-option').disabled = !state.connected || state.busy || Boolean(pendingJob(state.processing, { models: true }));
   byId('setup-download-summary').hidden = !ready || job.summaryReady || !job.summarySupported || running;
-  byId('setup-download-summary').disabled = state.busy || processingActive();
+  byId('setup-download-summary').disabled = state.busy || Boolean(pendingJob(state.processing, { models: true }));
   byId('setup-progress-region').hidden = !running;
-  const feedback = processingFeedback(job, { cancelling: state.processingCancellingId === job.id });
-  byId('setup-spinner').hidden = !running;
+  const feedback = processingFeedback(job, { cancelling: state.processingCancellingId === job.id || processingActions.get(job.id) === 'cancel' });
+  byId('setup-spinner').hidden = !feedback.active;
   byId('setup-progress').hidden = !feedback.progress;
   if (feedback.progress) { byId('setup-progress').max = feedback.progress.max; byId('setup-progress').value = feedback.progress.value; }
   byId('setup-progress-stage').textContent = feedback.detail || feedback.title;
@@ -193,13 +199,13 @@ function renderSetup() {
   byId('setup-message').hidden = !byId('setup-message').textContent;
   byId('setup-message').dataset.state = failed ? job.status : '';
   byId('setup-download').hidden = ready || unsupported || running;
-  byId('setup-download').disabled = !state.connected || state.busy || processingActive();
+  byId('setup-download').disabled = !state.connected || state.busy || Boolean(pendingJob(state.processing, { models: true }));
   byId('setup-download').textContent = failed ? '다시 다운로드' : '다운로드';
   byId('setup-cancel').hidden = !running;
   byId('setup-cancel').disabled = feedback.cancelDisabled || state.busy;
   byId('setup-cancel').textContent = feedback.cancelLabel;
   byId('setup-start').hidden = !ready || running || state.setupFromSettings || Boolean(state.selectedId);
-  byId('setup-start').disabled = state.busy || processingActive();
+  byId('setup-start').disabled = state.busy;
   byId('setup-back').hidden = !state.selectedId && !state.setupFromSettings;
   byId('setup-back').textContent = state.setupFromSettings ? '설정으로 돌아가기' : '회의로 돌아가기';
   return visible;
@@ -210,7 +216,7 @@ async function openSetup(fromSettings = false, returnId = document.activeElement
 }
 
 function render() {
-  byId('create-meeting').disabled = !state.connected || state.busy || (processingActive() && ['setup','model'].includes(state.processing.kind));
+  byId('create-meeting').disabled = !state.connected || state.busy;
   byId('welcome-create').disabled = !state.connected || state.busy;
   library.render();
   renderList();
@@ -312,11 +318,16 @@ function saveDraft() {
   const version = draft.version;
   const title = draft.title.trim() || '제목 없는 회의';
   const notes = draft.notes;
+  const notesChanged = notes !== draft.savedNotes;
   draft.saving = true;
   renderSaveState();
   const task = state.saveQueue.catch(() => {}).then(async () => {
     await bridge.updateMeeting(draft.id, title, notes);
+    draft.savedNotes = notes;
+    const refreshSummary = state.draft === draft && state.summary?.document?.notesSha256 != null;
+    if (refreshSummary && notesChanged) state.summary = { ...state.summary, stale: true };
     acceptSnapshot(await bridge.readSnapshot());
+    if (refreshSummary && state.draft === draft) await loadSummary(draft.id);
     if (draft.version === version) draft.dirty = false;
   });
   state.saveQueue = task.catch(() => {});
@@ -345,7 +356,7 @@ async function selectMeeting(id, searchIntent = null) {
         state.summaryLoaded = false; state.transcriptLoaded = false;
         state.summaryLoadError = false; state.transcriptLoadError = false;
         void loadSummary(id); void loadTranscript(id);
-        state.draft = { id, title: meeting.title, notes: meeting.notes || '', dirty: false, saving: false, version: 0 };
+        state.draft = { id, title: meeting.title, notes: meeting.notes || '', savedNotes: meeting.notes || '', dirty: false, saving: false, version: 0 };
         byId('meeting-title').value = meeting.title;
         byId('meeting-notes').value = meeting.notes || '';
         byId('meeting-notes').scrollTop = 0;
@@ -581,7 +592,7 @@ async function run(action) {
 }
 
 async function createMeeting() {
-  if (!modelsReady() || (processingActive() && ['setup','model'].includes(state.processing.kind))) return openSetup();
+  if (!modelsReady()) return openSetup();
   await finishEditing(async () => {
     state.setupRequested = false;
     const meeting = await bridge.createMeeting('새 회의', '');
@@ -602,6 +613,7 @@ function onEdit() {
   state.draft.dirty = true;
   state.draft.version += 1;
   renderSaveState();
+  if (currentMeeting()) renderSummary(currentMeeting());
   clearTimeout(state.saveTimer);
   if (!state.composing) state.saveTimer = setTimeout(() => saveDraft().catch(() => {}), 600);
 }
@@ -645,7 +657,7 @@ byId('models').addEventListener('click', () => run(async () => { globalThis.Grov
 byId('setup-back').addEventListener('click', () => { const settings = state.setupFromSettings, returnId = state.setupReturnId; state.setupRequested = false; state.setupFromSettings = false; render(); if (settings) void openSettings('models'); else { const origin = byId(returnId || 'settings'); const fallback = !byId('summarize').hidden && !byId('summarize').disabled ? byId('summarize') : byId('detail-summary-tab'); (origin && !origin.hidden && !origin.disabled ? origin : fallback)?.focus({ preventScroll: true }); } });
 byId('setup-download').addEventListener('click', () => run(async () => { state.setupRequested = true; await acceptProcessing(await bridge.prepareMeetingModels(Boolean(byId('setup-summary-option').checked) && !state.processing.summaryReady)); }));
 byId('setup-download-summary').addEventListener('click', () => run(async () => { state.setupRequested = true; await acceptProcessing(await bridge.prepareSummaryModel()); }));
-byId('setup-cancel').addEventListener('click', () => { void cancelProcessing(); });
+byId('setup-cancel').addEventListener('click', () => { void cancelProcessing(pendingJob(state.processing, { models: true })?.id); });
 byId('retry-save').addEventListener('click', () => saveDraft().catch(() => {}));
 byId('dismiss-error').addEventListener('click', () => clearError());
 byId('recording-controls').addEventListener('click', (event) => {
@@ -724,15 +736,17 @@ async function finishEditing(action) {
 const processingActive = () => state.processing.status === 'running';
 
 function renderProcessing() {
-  const progress = state.processing;
-  const feedback = processingFeedback(progress, { cancelling: state.processingCancellingId === progress.id });
-  byId('import-audio').disabled = !state.connected || state.busy || processingActive() || Boolean(activeSession());
+  rememberProcessingFocus();
+  const progress = { ...state.processing, ...processingJobs(state.processing).find(job => job.id === state.processing.id) };
+  const feedback = processingFeedback(progress, { cancelling: state.processingCancellingId === progress.id || processingActions.get(progress.id) === 'cancel' });
+  byId('import-audio').disabled = !state.connected || state.busy || Boolean(pendingJob(state.processing, { kind: 'import' })) || Boolean(activeSession());
   byId('processing').hidden = !feedback.visible || progress.kind === 'setup';
   byId('processing').dataset.state = feedback.state;
   const owner = state.snapshot.meetings.find(meeting => meeting.id === progress.meetingId);
   setText('processing-title', `${owner && owner.id !== state.selectedId ? owner.title + ': ' : ''}${feedback.title}`);
-  setText('processing-message', feedback.detail);
-  byId('processing-message').hidden = !feedback.detail;
+  const detail = processingErrors.get(progress.id) || feedback.detail;
+  setText('processing-message', detail);
+  byId('processing-message').hidden = !detail;
   const errorInfo = byId('processing-error-info');
   const diagnosticKey = `${progress.id}:${progress.status}`;
   if (errorInfo.dataset.job !== diagnosticKey) errorInfo.open = false;
@@ -743,7 +757,7 @@ function renderProcessing() {
   byId('processing-warning').hidden = !feedback.warning;
   byId('processing-spinner').hidden = !feedback.active;
   byId('processing-result-icon').hidden = feedback.active;
-  setHTML('processing-result-icon', icon(progress.status === 'failed' ? 'triangle-alert' : 'x'));
+  setHTML('processing-result-icon', icon(feedback.icon));
   byId('cancel-processing').hidden = !feedback.cancelVisible;
   byId('cancel-processing').disabled = feedback.cancelDisabled;
   setText('cancel-processing', feedback.cancelLabel);
@@ -751,15 +765,105 @@ function renderProcessing() {
   setText('processing-percent', feedback.progress ? `${feedback.progress.percent}%` : '');
   byId('processing-percent').hidden = !feedback.progress;
   if (feedback.progress) { byId('processing-progress').max = feedback.progress.max; byId('processing-progress').value = feedback.progress.value; }
+  byId('retry-processing').hidden = progress.retryable !== true || !['interrupted', 'failed'].includes(progress.status);
+  byId('retry-processing').disabled = processingActions.has(progress.id);
+  byId('open-processing-meeting').hidden = progress.status !== 'needsReview' || !owner;
+  byId('dismiss-processing').hidden = progress.acknowledged === true || !['failed', 'interrupted', 'needsReview'].includes(progress.status);
+  byId('dismiss-processing').disabled = processingActions.has(progress.id);
+  for (const [id, action] of [['cancel-processing', 'cancel'], ['retry-processing', 'retry'], ['open-processing-meeting', 'open'], ['dismiss-processing', 'ack']]) {
+    byId(id).dataset.jobId = progress.id || '';
+    byId(id).dataset.jobAction = action;
+  }
+  renderProcessingJobs(feedback.visible && progress.kind !== 'setup' ? progress.id : null);
 }
 
-async function cancelProcessing() {
-  const job = state.processing;
-  if (!processingActive() || state.processingCancellingId === job.id) return;
+function rememberProcessingFocus() {
+  if (processingFocus) return;
+  const target = document.activeElement;
+  const jobId = target?.dataset?.jobId;
+  if (!jobId) return;
+  const ids = [...new Set([...byId('processing-jobs').querySelectorAll('[data-job-id]')].map(node => node.dataset.jobId))];
+  processingFocus = { target, id: jobId, action: target.dataset.jobAction, ids, index: ids.indexOf(jobId) };
+}
+
+function restoreProcessingFocus() {
+  const saved = processingFocus;
+  if (!saved) return;
+  const active = document.activeElement;
+  if (active && active !== document.body && active !== saved.target && active.isConnected !== false) { processingFocus = null; return; }
+  if (processingActions.has(saved.id)) return;
+  const usable = node => node && !node.disabled && !node.hidden && node.isConnected !== false && !node.closest?.('[hidden]');
+  const region = byId('processing-jobs');
+  const rows = [...region.querySelectorAll('[data-job-id]')].filter(usable);
+  const banner = ['cancel-processing', 'retry-processing', 'open-processing-meeting', 'dismiss-processing'].map(byId).filter(node => !byId('processing').hidden && usable(node));
+  const forJob = id => [...banner, ...rows].filter(node => node.dataset.jobId === id);
+  const same = forJob(saved.id);
+  const nextIds = saved.ids.slice(saved.index + 1);
+  const previousIds = saved.index < 0 ? [] : saved.ids.slice(0, saved.index).reverse();
+  const next = nextIds.map(id => forJob(id)[0]).find(Boolean);
+  const previous = previousIds.map(id => forJob(id)[0]).find(Boolean);
+  const target = same.find(node => node.dataset.jobAction === saved.action) || same[0] || next || previous
+    || rows[Math.max(0, saved.index)] || rows[rows.length - 1] || banner[0]
+    || ['settings', 'library-title'].map(byId).find(usable);
+  processingFocus = null;
+  target?.focus({ preventScroll: true });
+}
+
+function renderProcessingJobs(visibleId) {
+  const region = byId('processing-jobs');
+  const jobs = processingJobs(state.processing).filter(job => job.id && job.id !== visibleId && job.acknowledged !== true && ['queued', 'interrupted', 'failed', 'needsReview'].includes(job.status));
+  region.hidden = !jobs.length;
+  setHTML('processing-jobs', jobs.map(job => {
+    const owner = state.snapshot.meetings.find(meeting => meeting.id === job.meetingId);
+    const pending = processingActions.get(job.id);
+    const feedback = processingFeedback(job, { cancelling: pending === 'cancel' });
+    const detail = feedback.detail;
+    const action = job.status === 'queued' ? ['cancel', pending === 'cancel' ? '취소 중' : '취소']
+      : ['interrupted', 'failed'].includes(job.status) && job.retryable === true ? ['retry', pending === 'retry' ? '준비 중' : '다시 시도'] : null;
+    const attrs = `data-job-id="${escape(job.id)}"${pending ? ' disabled' : ''}`;
+    const controls = `${action ? `<button type="button" class="small" data-job-action="${action[0]}" ${attrs}>${action[1]}</button>` : ''}${owner ? `<button type="button" class="quiet small" data-job-action="open" ${attrs}>회의 열기</button>` : ''}${['failed', 'interrupted', 'needsReview'].includes(job.status) ? `<button type="button" class="quiet small" data-job-action="ack" ${attrs}>알림 닫기</button>` : ''}`;
+    return `<div class="processing-job"><div class="processing-job-copy"><strong>${owner ? escape(owner.title) + ': ' : ''}${escape(feedback.title)}</strong>${detail ? `<p>${escape(detail)}</p>` : ''}${processingErrors.has(job.id) ? `<p class="field-error" role="alert">${escape(processingErrors.get(job.id))}</p>` : ''}</div><div class="processing-job-actions">${controls}</div></div>`;
+  }).join(''));
+  restoreProcessingFocus();
+}
+
+async function cancelProcessing(jobId = state.processing.id) {
+  const job = processingJobs(state.processing).find(item => item.id === jobId);
+  if (!job || !['queued', 'running'].includes(job.status) || processingActions.has(job.id) || state.processingCancellingId === job.id) return;
   state.processingCancellingId = job.id;
+  rememberProcessingFocus();
+  processingActions.set(job.id, 'cancel');
+  processingErrors.delete(job.id);
   render();
   try { await bridge.cancelProcessing(job.id); }
-  catch (error) { if (state.processingCancellingId === job.id) state.processingCancellingId = null; showError(error); render(); }
+  catch (error) {
+    if (state.processingCancellingId === job.id) state.processingCancellingId = null;
+    processingActions.delete(job.id);
+    processingErrors.set(job.id, error instanceof Error ? error.message : String(error));
+    showError(error); render();
+  }
+}
+
+async function retryProcessing(jobId = state.processing.id) {
+  const job = processingJobs(state.processing).find(item => item.id === jobId);
+  if (!job || job.acknowledged === true || job.retryable !== true || !['interrupted', 'failed'].includes(job.status) || processingActions.has(job.id)) return;
+  rememberProcessingFocus();
+  processingActions.set(job.id, 'retry');
+  processingErrors.delete(job.id);
+  render();
+  try { await acceptProcessing(await bridge.retryProcessing(job.id)); }
+  catch (error) { processingErrors.set(job.id, error instanceof Error ? error.message : String(error)); showError(error); }
+  finally { processingActions.delete(job.id); render(); }
+}
+
+async function acknowledgeProcessing(jobId = state.processing.id) {
+  const job = processingJobs(state.processing).find(item => item.id === jobId);
+  if (!job || job.acknowledged === true || !['failed', 'interrupted', 'needsReview'].includes(job.status) || processingActions.has(job.id)) return;
+  rememberProcessingFocus();
+  processingActions.set(job.id, 'ack'); processingErrors.delete(job.id); render();
+  try { await acceptProcessing(await bridge.acknowledgeProcessing(job.id)); }
+  catch (error) { processingErrors.set(job.id, error instanceof Error ? error.message : String(error)); showError(error); }
+  finally { processingActions.delete(job.id); render(); }
 }
 
 function transcriptRenderKey() {
@@ -773,13 +877,13 @@ function resizeTranscriptEditor(input) {
 }
 
 function renderTranscript(meeting) {
-  const job = state.processing;
-  const ownJob = processingActive() && job.meetingId === meeting.id;
+  const job = { ...state.processing, ...pendingJob(state.processing, { meetingId: meeting.id }) };
+  const ownJob = Boolean(pendingJob(job, { meetingId: meeting.id }));
   const draft = state.transcriptDraft;
   byId('transcript-history').hidden = !draft?.doc;
   byId('transcript-history').disabled = state.busy;
   byId('transcribe').hidden = ownJob;
-  byId('transcribe').disabled = !meeting.audio || !job.supported || !job.modelReady || processingActive() || state.busy;
+  byId('transcribe').disabled = !meeting.audio || !job.supported || !job.modelReady || ownJob || state.busy;
   byId('transcribe').textContent = draft?.doc ? '다시 변환' : ['failed', 'cancelled'].includes(job.status) && job.kind === 'transcribe' && job.meetingId === meeting.id ? '다시 시도' : '텍스트로 변환';
   byId('save-transcript').disabled = !draft?.dirty || draft.saving || ownJob;
   byId('copy-transcript').hidden = !draft?.doc?.segments?.length;
@@ -866,43 +970,48 @@ async function acceptProcessing(progress) {
   if (state.processingKey === key) return;
   state.processingKey = key;
   state.processing = progress;
+  for (const [id, action] of processingActions) {
+    const job = processingJobs(progress).find(item => item.id === id);
+    if (action === 'cancel' && (!job || !['queued', 'running', 'cancelling'].includes(job.status))) processingActions.delete(id);
+  }
   if (progress.id !== state.processingCancellingId || progress.status !== 'running') state.processingCancellingId = null;
   render();
-  const resultAvailable = progress.status === 'completed'
-    || (progress.kind === 'transcribe' && ['cancelled', 'failed'].includes(progress.status));
-  if (resultAvailable && (previous.id !== progress.id || previous.status !== progress.status) && progress.meetingId) {
+  const results = processingResults(previous, progress);
+  if (results.length) {
     acceptSnapshot(await bridge.readSnapshot());
-    if (progress.kind === 'import' && progress.status === 'completed') await selectMeeting(progress.meetingId);
-    if (progress.meetingId === state.selectedId) { await loadTranscript(progress.meetingId); await loadSummary(progress.meetingId); }
+    const imported = results.find(job => job.kind === 'import' && job.status === 'completed');
+    if (imported) await selectMeeting(imported.meetingId);
+    if (results.some(job => job.meetingId === state.selectedId)) { await loadTranscript(state.selectedId); await loadSummary(state.selectedId); }
     refreshMeetingSearch();
   }
 }
 
 function summaryIsStale() {
   const doc = state.summary?.document, transcript = state.transcriptDraft?.doc;
-  return Boolean(state.summary?.stale || state.transcriptDraft?.dirty || (doc && state.transcriptLoaded && (doc.sourceVersion.id !== transcript?.version.id || doc.sourceVersion.revision !== transcript?.version.revision)));
+  const notesChanged = doc?.notesSha256 != null && state.draft?.id === state.selectedId && state.draft.notes !== state.draft.savedNotes;
+  return Boolean(state.summary?.stale || notesChanged || state.transcriptDraft?.dirty || (doc && state.transcriptLoaded && (doc.sourceVersion.id !== transcript?.version.id || doc.sourceVersion.revision !== transcript?.version.revision)));
 }
 
 function renderSummary(meeting) {
-  const progress = state.processing;
+  const progress = { ...state.processing, ...pendingJob(state.processing, { meetingId: meeting.id, kind: 'summary' }) };
   const doc = state.summary?.document;
   const hasTranscript = Boolean(state.transcriptDraft?.doc?.segments?.length);
   const stale = summaryIsStale();
-  const ownJob = processingActive() && progress.kind === 'summary' && progress.meetingId === meeting.id;
+  const ownJob = Boolean(pendingJob(progress, { meetingId: meeting.id, kind: 'summary' }));
   byId('summary-section').setAttribute('aria-busy', String(ownJob || !state.summaryLoaded));
   byId('prepare-summary').hidden = progress.summaryReady || !progress.summarySupported;
-  byId('prepare-summary').disabled = processingActive() || state.busy || Boolean(activeSession());
+  byId('prepare-summary').disabled = Boolean(pendingJob(progress, { models: true })) || state.busy;
   byId('summarize').hidden = !progress.summaryReady || !progress.summarySupported;
   byId('copy-summary').hidden = !doc;
-  byId('summarize').disabled = !hasTranscript || !progress.summaryReady || !progress.summarySupported || processingActive() || state.busy || Boolean(activeSession());
-  const failed = progress.kind === 'summary' && progress.status === 'failed' && progress.meetingId === meeting.id;
-  byId('summarize').textContent = failed ? '다시 시도' : doc ? '다시 요약' : '요약하기';
+  byId('summarize').disabled = !hasTranscript || !progress.summaryReady || !progress.summarySupported || ownJob || state.busy;
+  const failed = processingJobs(state.processing).some(job => job.kind === 'summary' && job.status === 'failed' && job.acknowledged !== true && job.meetingId === meeting.id);
+  byId('summarize').textContent = failed ? '현재 내용 요약' : doc ? '다시 요약' : '요약하기';
   byId('copy-summary').disabled = !doc;
   byId('summary-export-menu').hidden = !doc;
   let message = '';
   if (!state.summaryLoaded) message = '회의록 불러오는 중';
   else if (state.summaryLoadError) message = '회의록을 불러오지 못했습니다.';
-  else if (doc && stale) message = '음성 기록이 수정되었습니다. 다시 요약해 주세요.';
+  else if (doc && stale) message = '회의 내용이 변경되었습니다. 다시 요약해 주세요.';
   else if (ownJob || failed) message = '';
   else if (!doc && !hasTranscript) message = '음성 기록을 변환한 뒤 요약할 수 있습니다.';
   else if (!doc && !progress.summarySupported) message = '이 기기에서는 요약을 사용할 수 없습니다.';
@@ -935,7 +1044,7 @@ async function exportDocument(kind, format, copy = false) {
   await finishEditing(async () => {
     const meeting = currentMeeting();
     if (!meeting) return;
-    const summary = state.summary && { ...state.summary, stale: state.summary.stale || Boolean(state.transcriptDraft?.dirty) || (state.summary.document?.sourceVersion.revision !== state.transcriptDraft?.doc?.version.revision) || (state.summary.document?.sourceVersion.id !== state.transcriptDraft?.doc?.version.id) };
+    const summary = state.summary && { ...state.summary, stale: summaryIsStale() };
     const result = documentExport(meeting, state.transcriptDraft?.doc, summary, kind, format);
     if (copy) {
       await navigator.clipboard.writeText(result.text);
@@ -989,6 +1098,21 @@ byId('import-audio').addEventListener('click', () => run(() => finishEditing(asy
   if (progress) await acceptProcessing(progress);
 })));
 byId('cancel-processing').addEventListener('click', () => { void cancelProcessing(); });
+byId('retry-processing').addEventListener('click', () => { void retryProcessing(); });
+byId('dismiss-processing').addEventListener('click', () => { void acknowledgeProcessing(); });
+byId('open-processing-meeting').addEventListener('click', () => {
+  const job = processingJobs(state.processing).find(item => item.id === state.processing.id);
+  if (job?.meetingId) void run(() => selectMeeting(job.meetingId));
+});
+byId('processing-jobs').addEventListener('click', event => {
+  const action = event.target.closest('[data-job-action]');
+  const job = processingJobs(state.processing).find(item => item.id === action?.dataset.jobId);
+  if (!job) return;
+  if (action.dataset.jobAction === 'cancel') void cancelProcessing(job.id);
+  if (action.dataset.jobAction === 'retry') void retryProcessing(job.id);
+  if (action.dataset.jobAction === 'ack') void acknowledgeProcessing(job.id);
+  if (action.dataset.jobAction === 'open' && job.meetingId) void run(() => selectMeeting(job.meetingId));
+});
 byId('transcribe').addEventListener('click', () => { void transcriptActions.rebuild(); });
 byId('transcript-history').addEventListener('click', () => { void transcriptActions.openHistory(); });
 byId('save-transcript').addEventListener('click', () => finishEditing(() => {}).catch(() => {}));
@@ -1008,7 +1132,7 @@ byId('transcript-rows').addEventListener('compositionstart', () => { state.trans
 byId('transcript-rows').addEventListener('compositionend', (event) => { state.transcriptComposing = false; onTranscriptEdit(event); });
 async function editTranscriptRow(index) {
   const meetingId = state.selectedId;
-  if (state.editLocks || (processingActive() && state.processing.meetingId === meetingId)) return;
+  if (state.editLocks || pendingJob(state.processing, { meetingId })) return;
   try {
     await finishEditing(() => {
       if (state.selectedId !== meetingId || !state.transcriptDraft?.doc?.segments[index]) return;

@@ -404,6 +404,15 @@ impl Processing {
         meeting_id: String,
         expected: TranscriptVersion,
     ) -> Result<Progress, String> {
+        self.diarize_bound(core, meeting_id, expected, None)
+    }
+    pub(super) fn diarize_bound(
+        self: &Arc<Self>,
+        core: CoreHandle,
+        meeting_id: String,
+        expected: TranscriptVersion,
+        required_fingerprint: Option<String>,
+    ) -> Result<Progress, String> {
         let source = core
             .transcript(&meeting_id)
             .map_err(|error| error.to_string())?
@@ -419,10 +428,26 @@ impl Processing {
         if !availability(self).1 {
             return Err("먼저 화자 구분 모델을 준비해 주세요.".into());
         }
-        self.start(
+        let source_core = core.clone();
+        self.start_meeting(
             "diarize",
-            Some(meeting_id.clone()),
+            meeting_id.clone(),
+            &source_core,
+            required_fingerprint,
             move |this, cancel, path| {
+                if core
+                    .transcript(&meeting_id)
+                    .map_err(|error| error.to_string())?
+                    .as_ref()
+                    .map(|doc| &doc.version)
+                    != Some(&source.version)
+                    || core
+                        .audio_path(&meeting_id)
+                        .map_err(|error| error.to_string())?
+                        != audio
+                {
+                    return Err("회의 내용이 변경되어 화자 구분을 시작하지 않았습니다.".into());
+                }
                 this.update(|progress| {
                     progress.phase = Some("preparing".into());
                     progress.message = "화자 구분 준비 중".into();

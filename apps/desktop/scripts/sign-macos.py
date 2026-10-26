@@ -2,6 +2,7 @@
 """Sign the new desktop bundle. Credentials come only from the invoking environment."""
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -9,12 +10,23 @@ import plistlib
 import shutil
 import subprocess
 import tempfile
+import sys
 
+sys.dont_write_bytecode=True
 ROOT=Path(__file__).resolve().parents[3]
+worker_spec=importlib.util.spec_from_file_location('nero_worker_package',ROOT/'scripts/native-moss-harness/verify_worker_package.py')
+worker_package=importlib.util.module_from_spec(worker_spec)
+worker_spec.loader.exec_module(worker_package)
 MACHO={b'\xcf\xfa\xed\xfe',b'\xce\xfa\xed\xfe',b'\xfe\xed\xfa\xcf',b'\xfe\xed\xfa\xce',b'\xca\xfe\xba\xbe',b'\xbe\xba\xfe\xca'}
 def run(*args,**kwargs):return subprocess.run(args,check=True,**kwargs)
 def digest(path):
     with path.open('rb') as stream:return hashlib.file_digest(stream,'sha256').hexdigest()
+def write_receipt(path,value):
+    with path.open('x') as destination:
+        json.dump(value,destination,indent=2)
+        destination.write('\n')
+        destination.flush()
+        os.fsync(destination.fileno())
 def notarize(path,receipt_path):
     args=['xcrun','notarytool','submit',str(path),'--wait','--timeout','10m','--output-format','json']
     profile=os.environ.get('NERO_NOTARY_PROFILE')
@@ -22,7 +34,7 @@ def notarize(path,receipt_path):
     else:args+=['--key',os.environ['NERO_NOTARY_KEY_PATH'],'--key-id',os.environ['NERO_NOTARY_KEY_ID'],'--issuer',os.environ['NERO_NOTARY_ISSUER_ID']]
     print('Submitting '+path.name+' for notarization...',flush=True)
     result=json.loads(subprocess.check_output(args,text=True))
-    receipt_path.write_text(json.dumps(result,indent=2)+'\n')
+    write_receipt(receipt_path,result)
     if result.get('status')!='Accepted':raise SystemExit('Notarization not accepted. Preserve the upload and inspect its log.')
     return result
 def tree(path):
@@ -32,6 +44,23 @@ def tree(path):
         if file.is_symlink():result[name]={'link':os.readlink(file)}
         elif file.is_file():result[name]={'bytes':file.stat().st_size,'sha256':digest(file)}
     return result
+def tree_digest(path):
+    return hashlib.sha256(json.dumps(tree(path),sort_keys=True,separators=(',',':')).encode()).hexdigest()
+def require_owned_bundle(app):
+    for path in app.rglob('*'):
+        if path.is_symlink() and not path.resolve().is_relative_to(app):
+            raise SystemExit('A bundle link escapes the app; signing would affect an external artifact')
+        if not path.is_symlink() and path.is_file() and path.stat().st_nlink!=1:
+            raise SystemExit('Hard-linked bundle files must be copied before signing')
+def included_worker(app):
+    candidate=app/'Contents/Resources/native/moss'
+    return candidate if candidate.exists() or candidate.is_symlink() else None
+def verify_preserved_worker(app,receipt,application_identity):
+    worker=included_worker(app)
+    if worker is None:
+        if receipt.get('moss_package') is not None:raise SystemExit('The signed worker package is missing')
+    else:
+        worker_package.verify_signed_receipt(worker,receipt.get('moss_package'),application_identity['TeamIdentifier'])
 def verify_dmg(path,app,require_ticket):
     run('hdiutil','verify',str(path))
     attached=plistlib.loads(subprocess.check_output(['hdiutil','attach','-readonly','-nobrowse','-noautoopen','-plist',str(path)]))
@@ -57,6 +86,9 @@ if a.dmg_only and not dmg:raise SystemExit('--dmg-only requires --dmg-output')
 if dmg and (dmg.suffix!='.dmg' or dmg.exists()):raise SystemExit('A new .dmg output path is required')
 builder=shutil.which(a.dmg_builder) if dmg else None
 if dmg and not builder:raise SystemExit('Install the dmgbuild build tool or pass --dmg-builder')
+new_artifacts=[] if a.dmg_only else [Path(str(output)+'.receipt.json'),Path(str(output)+'.notarization.json'),output.with_suffix('.notary-upload.zip')]
+if dmg:new_artifacts.extend([Path(str(dmg)+'.receipt.json'),Path(str(dmg)+'.notarization.json')])
+if any(path.exists() or path.is_symlink() for path in new_artifacts):raise SystemExit('A release receipt or upload path exists; preserve or move it first')
 identity=os.environ['NERO_SIGN_IDENTITY']
 identities=subprocess.check_output(['security','find-identity','-v','-p','codesigning'],text=True)
 if not any(identity in line and 'Developer ID Application:' in line for line in identities.splitlines()):raise SystemExit('Valid Developer ID Application identity required')
@@ -70,6 +102,7 @@ if subprocess.check_output(['git','status','--porcelain','--untracked-files=norm
 if (build_info['version'],build_info['build'],build_info['bundleIdentifier'])!=(info['CFBundleShortVersionString'],info['CFBundleVersion'],info['CFBundleIdentifier']):raise SystemExit('Bundle and release metadata differ')
 files=[p for p in (app/'Contents').rglob('*') if p.is_file()]
 if any(p.suffix.lower() in {'.gguf','.safetensors','.p8','.p12','.wav','.m4a','.mp3'} for p in files):raise SystemExit('Private/model/credential artifact found in bundle')
+require_owned_bundle(app)
 if a.dmg_only:
     receipt=json.loads(Path(str(output)+'.receipt.json').read_text())
     expected=(build_info['sourceCommit'],info['CFBundleShortVersionString'],info['CFBundleVersion'],info['CFBundleIdentifier'])
@@ -78,10 +111,15 @@ if a.dmg_only:
     if a.notarize and not receipt.get('notarized'):raise SystemExit('An already-notarized app ZIP is required')
     run('codesign','--verify','--deep','--strict',str(app))
     if a.notarize:run('xcrun','stapler','validate',str(app))
+    application_identity=worker_package.signature_metadata(app)
+    if receipt.get('app_signature')!=application_identity or receipt.get('app_tree_sha256')!=tree_digest(app):raise SystemExit('The signed app does not match its preserved signature/tree receipt')
+    verify_preserved_worker(app,receipt,application_identity)
     with tempfile.TemporaryDirectory(dir=app.parent) as temporary:
         run('ditto','-x','-k',str(output),temporary)
         if tree(app)!=tree(Path(temporary)/app.name):raise SystemExit('App differs from the preserved ZIP')
 else:
+    worker=included_worker(app)
+    worker_preflight=worker_package.verify_staged(worker,execute_runtime=True) if worker is not None else None
     for file in files:
         with file.open('rb') as f:magic=f.read(4)
         if magic in MACHO:
@@ -90,17 +128,20 @@ else:
         run('codesign','--force','--options','runtime','--timestamp','--sign',identity,str(bundle))
     run('codesign','--force','--options','runtime','--timestamp','--sign',identity,'--entitlements',str(ROOT/'apps/desktop/src-tauri/Nero.entitlements'),str(app))
     run('codesign','--verify','--deep','--strict',str(app))
+    application_identity=worker_package.signature_metadata(app)
+    worker_receipt=worker_package.verify_signed_transition(worker,worker_preflight,application_identity['TeamIdentifier']) if worker is not None else None
     output.parent.mkdir(parents=True,exist_ok=True)
     upload=output.with_suffix('.notary-upload.zip')
     if upload.exists():raise SystemExit('Notary upload path exists; preserve or move it first')
     run('ditto','-c','-k','--keepParent',str(app),str(upload))
-    receipt={'bundle_id':info['CFBundleIdentifier'],'version':info['CFBundleShortVersionString'],'build':info['CFBundleVersion'],'source_commit':build_info['sourceCommit'],'source_tree':build_info['sourceTree'],'source_dirty':False,'architecture':subprocess.check_output(['lipo','-archs',str(app/'Contents/MacOS'/info['CFBundleExecutable'])],text=True).strip(),'signed':True,'notarized':False}
+    receipt={'bundle_id':info['CFBundleIdentifier'],'version':info['CFBundleShortVersionString'],'build':info['CFBundleVersion'],'source_commit':build_info['sourceCommit'],'source_tree':build_info['sourceTree'],'source_dirty':False,'architecture':subprocess.check_output(['lipo','-archs',str(app/'Contents/MacOS'/info['CFBundleExecutable'])],text=True).strip(),'signed':True,'notarized':False,'app_signature':application_identity,'moss_package':worker_receipt}
     if a.notarize:
         receipt['notary']=notarize(upload,Path(str(output)+'.notarization.json'))
         run('xcrun','stapler','staple',str(app));run('xcrun','stapler','validate',str(app));run('spctl','--assess','--type','execute','--verbose=2',str(app));receipt['notarized']=True
     run('ditto','-c','-k','--keepParent',str(app),str(output))
-    receipt.update(zip_bytes=output.stat().st_size,zip_sha256=digest(output))
-    Path(str(output)+'.receipt.json').write_text(json.dumps(receipt,indent=2)+'\n')
+    verify_preserved_worker(app,receipt,application_identity)
+    receipt.update(zip_bytes=output.stat().st_size,zip_sha256=digest(output),app_tree_sha256=tree_digest(app))
+    write_receipt(Path(str(output)+'.receipt.json'),receipt)
     print('Created:',output,flush=True)
 if dmg:
     dmg.parent.mkdir(parents=True,exist_ok=True)
@@ -118,5 +159,5 @@ if dmg:
         dmg_receipt['notarized']=True
     dmg_receipt['verification']=verify_dmg(dmg,app,a.notarize)
     dmg_receipt.update(dmg_bytes=dmg.stat().st_size,dmg_sha256=digest(dmg),app_notary=receipt.get('notary'))
-    Path(str(dmg)+'.receipt.json').write_text(json.dumps(dmg_receipt,indent=2)+'\n')
+    write_receipt(Path(str(dmg)+'.receipt.json'),dmg_receipt)
     print('Created:',dmg,flush=True)

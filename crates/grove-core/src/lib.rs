@@ -9,7 +9,7 @@ pub mod terminology;
 mod transcript;
 pub use diarization::{SpeakerAnalysis, SpeakerAnalysisDraft};
 pub use library::Folder;
-pub use summary::{Summary, SummaryDraft, SummaryProvenance, SummaryView};
+pub use summary::{Summary, SummaryDraft, SummaryInput, SummaryProvenance, SummaryView};
 pub use terminology::{
     discover_candidates, TerminologyCandidate, TerminologyDecision, TerminologyDraft,
     TerminologyKind, TerminologyOutcome, TerminologyProfile, TerminologyRule,
@@ -344,6 +344,10 @@ impl CoreHandle {
     pub fn summary(&self, id: &str) -> Result<Option<SummaryView>> {
         let id = id.to_owned();
         self.call(move |engine| engine.summary(&id))
+    }
+    pub fn summary_input(&self, id: &str) -> Result<SummaryInput> {
+        let id = id.to_owned();
+        self.call(move |engine| engine.summary_input(&id))
     }
     pub fn commit_summary(&self, id: &str, draft: SummaryDraft) -> Result<Summary> {
         let id = id.to_owned();

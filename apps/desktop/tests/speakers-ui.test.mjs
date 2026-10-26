@@ -4,6 +4,7 @@ import test from 'node:test';
 import vm from 'node:vm';
 
 const source = await readFile(new URL('../src/speakers-ui.js', import.meta.url), 'utf8');
+const processingStateSource = await readFile(new URL('../src/processing-state.js', import.meta.url), 'utf8');
 const tick = () => new Promise(setImmediate);
 const plain = value => JSON.parse(JSON.stringify(value));
 const escape = value => String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
@@ -75,7 +76,7 @@ function openController(doc = documentForTest()) {
     } }));
   } };
   const context = vm.createContext({ escape, duration: value => `00:${String(Math.floor(value / 1000)).padStart(2, '0')}`, icon: () => '', TextEncoder, document, requestAnimationFrame: callback => callback(), crypto: { randomUUID: () => 'generated-id' }, GroveControls: { enhanceAll() {}, refresh() {}, close() {} } });
-  const functions = vm.runInContext(`${source.replace(/^import .*;\n/gm, '').replace(/^export /gm, '')}\n({ mountSpeakers, speakerLabel, copyWorking, assignSelected, mergeSpeakers, nextSpeakerName, validateNames })`, context);
+  const functions = vm.runInContext(`${processingStateSource.replace(/^export /gm, '')}\n${source.replace(/^import .*;\n/gm, '').replace(/^export /gm, '')}\n({ mountSpeakers, speakerLabel, copyWorking, assignSelected, mergeSpeakers, nextSpeakerName, validateNames })`, context);
   const controller = functions.mountSpeakers({ bridge, getState: () => state, finishEditing: async action => {
     flushes.push(true); state.editLocks += 1;
     try { await beforeFlush?.(); return await action(); }
@@ -436,5 +437,5 @@ test('recording scope offers another analysis without claiming an attendee count
   assert.doesNotMatch(app.body.innerHTML, /2명/);
   app.state.processing = { ...app.state.processing, status: 'running', meetingId: 'other' };
   app.controller.render();
-  assert.equal(app.elements.get('speaker-analyze').disabled, true);
+  assert.equal(app.elements.get('speaker-analyze').disabled, false);
 });

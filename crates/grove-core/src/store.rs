@@ -344,82 +344,103 @@ impl Store {
 
     pub fn recover(&self, meetings: &mut BTreeMap<String, StoredMeeting>) -> Result<()> {
         for stored in meetings.values_mut() {
-            let Some(session_id) = stored.capture_id.clone() else {
-                if matches!(
-                    stored.meeting.status,
-                    MeetingStatus::Recording | MeetingStatus::Paused
-                ) {
-                    return Err(CoreError::Storage(
-                        "녹음 정보가 누락된 회의가 있습니다.".into(),
-                    ));
+            let previous = stored.meeting.clone();
+            if let Err(error) = self.recover_meeting(stored) {
+                stored.meeting.status = MeetingStatus::Interrupted;
+                if self.audio_path(&stored.meeting).is_err() {
+                    stored.meeting.audio = None;
                 }
-                continue;
-            };
-            let relative = Path::new("meetings")
-                .join(&stored.meeting.id)
-                .join("sessions")
-                .join(&session_id)
-                .join("manifest.json");
-            let path = checked_path(&self.root, &relative)?;
-            let mut manifest: Manifest = read_json(&path)?;
-            manifest.validate()?;
-            if manifest.meeting_id != stored.meeting.id || manifest.session_id != session_id {
-                return Err(CoreError::Storage(
-                    "회의와 녹음 정보가 일치하지 않습니다.".into(),
+                stored.meeting.error = Some(format!(
+                    "녹음 정보를 확인할 수 없어 자동 복구하지 못했습니다: {error}"
                 ));
             }
-            let recording_date_added =
-                stored.meeting.recorded_at.is_none() && manifest.device_id != "import";
-            if recording_date_added {
-                stored.meeting.recorded_at = Some(manifest.started_at);
+            if stored.meeting != previous {
+                if stored.meeting.status != previous.status
+                    || stored.meeting.audio != previous.audio
+                    || stored.meeting.error != previous.error
+                {
+                    stored.meeting.updated_at = now();
+                }
+                self.save(stored)?;
             }
-            if manifest.warning.is_none() {
-                manifest.warning = manifest.quality.as_ref().and_then(CaptureQuality::warning);
-            }
-            let warning_changed = stored.meeting.warning != manifest.warning;
-            stored.meeting.warning = manifest.warning.clone();
-            let unfinished = matches!(
-                manifest.phase,
-                CapturePhase::Prepared | CapturePhase::Recording | CapturePhase::Paused
-            ) || matches!(
+        }
+        Ok(())
+    }
+
+    fn recover_meeting(&self, stored: &mut StoredMeeting) -> Result<()> {
+        let Some(session_id) = stored.capture_id.clone() else {
+            if matches!(
                 stored.meeting.status,
                 MeetingStatus::Recording | MeetingStatus::Paused
-            );
-            let interrupted = stored.meeting.status == MeetingStatus::Interrupted
-                || manifest.phase == CapturePhase::Interrupted;
-            let playback_needs_repair = interrupted && self.audio_path(&stored.meeting).is_err();
-            if !unfinished && !playback_needs_repair {
-                if recording_date_added || warning_changed {
-                    self.save(stored)?;
-                }
-                continue;
+            ) {
+                return Err(CoreError::Storage(
+                    "녹음 정보가 누락된 회의가 있습니다.".into(),
+                ));
             }
-            let raw = checked_path(&self.root, &manifest.relative_dir().join("audio.pcm"))
-                .and_then(|path| open_read(&path));
-            if let Err(error) = raw {
+            return Ok(());
+        };
+        let relative = Path::new("meetings")
+            .join(&stored.meeting.id)
+            .join("sessions")
+            .join(&session_id)
+            .join("manifest.json");
+        let path = checked_path(&self.root, &relative)?;
+        let mut manifest: Manifest = read_json(&path)?;
+        manifest.validate()?;
+        if manifest.meeting_id != stored.meeting.id || manifest.session_id != session_id {
+            return Err(CoreError::Storage(
+                "회의와 녹음 정보가 일치하지 않습니다.".into(),
+            ));
+        }
+        if stored.meeting.recorded_at.is_none() && manifest.device_id != "import" {
+            stored.meeting.recorded_at = Some(manifest.started_at);
+        }
+        if manifest.warning.is_none() {
+            manifest.warning = manifest.quality.as_ref().and_then(CaptureQuality::warning);
+        }
+        stored.meeting.warning = manifest.warning.clone();
+        let unfinished = matches!(
+            manifest.phase,
+            CapturePhase::Prepared | CapturePhase::Recording | CapturePhase::Paused
+        ) || matches!(
+            stored.meeting.status,
+            MeetingStatus::Recording | MeetingStatus::Paused
+        );
+        let interrupted = stored.meeting.status == MeetingStatus::Interrupted
+            || manifest.phase == CapturePhase::Interrupted;
+        let playback_needs_repair = interrupted && self.audio_path(&stored.meeting).is_err();
+        if !unfinished && !playback_needs_repair {
+            return Ok(());
+        }
+        let raw = checked_path(&self.root, &manifest.relative_dir().join("audio.pcm"))
+            .and_then(|path| open_read(&path));
+        let raw = match raw {
+            Ok(raw) => raw,
+            Err(error) => {
                 stored.meeting.status = MeetingStatus::Interrupted;
                 stored.meeting.audio = None;
                 stored.meeting.error = Some(format!(
                     "원본 녹음을 읽을 수 없어 복구하지 못했습니다: {error}"
                 ));
-                stored.meeting.updated_at = now();
-                self.save(stored)?;
-                continue;
+                return Ok(());
             }
-            manifest.phase = CapturePhase::Interrupted;
-            manifest.error = Some("녹음이 중단되었습니다. 저장된 구간을 복구했습니다.".into());
-            let outcome = finalize_audio(&self.root, &mut manifest);
-            stored.meeting.status = MeetingStatus::Interrupted;
-            stored.meeting.error = manifest.error.clone();
-            stored.meeting.updated_at = now();
-            match outcome {
-                Ok(audio) => stored.meeting.audio = audio,
-                Err(error) => {
-                    stored.meeting.audio = None;
-                    stored.meeting.error = Some(format!("녹음이 중단되었습니다. 원본은 보관되지만 재생 파일을 만들지 못했습니다: {error}"));
-                }
+        };
+        manifest.phase = CapturePhase::Interrupted;
+        manifest.error = Some(if raw.metadata()?.len() < manifest.frame_bytes() as u64 {
+            "저장된 오디오가 없어 녹음을 복구하지 못했습니다.".into()
+        } else {
+            "녹음이 중단되었습니다. 저장된 구간을 복구했습니다.".into()
+        });
+        drop(raw);
+        let outcome = finalize_audio(&self.root, &mut manifest);
+        stored.meeting.status = MeetingStatus::Interrupted;
+        stored.meeting.error = manifest.error.clone();
+        match outcome {
+            Ok(audio) => stored.meeting.audio = audio,
+            Err(error) => {
+                stored.meeting.audio = None;
+                stored.meeting.error = Some(format!("녹음이 중단되었습니다. 원본은 보관되지만 재생 파일을 만들지 못했습니다: {error}"));
             }
-            self.save(stored)?;
         }
         Ok(())
     }

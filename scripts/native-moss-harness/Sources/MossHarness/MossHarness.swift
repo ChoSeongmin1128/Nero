@@ -23,10 +23,13 @@ struct MossHarness {
     private static func run() async throws {
         if CommandLine.arguments.count == 2, CommandLine.arguments[1] == "--runtime-info" {
             let data = try JSONSerialization.data(withJSONObject: [
-                "runtime": "mlx-audio-swift-v0.1.3+nero-moss-whole-v1",
+                "runtime": "mlx-audio-swift-v0.1.3+nero-moss-whole-v2",
                 "defaultPolicy": "whole-recording-v1",
                 "maxInputSeconds": 5400,
                 "maxRequestedTokens": 65536,
+                "metadataSchemaVersion": 2,
+                "eosPolicy": "model-generation-config+tokenizer-v1",
+                "samplingPolicy": "greedy-argmax-v1",
             ], options: [.sortedKeys])
             FileHandle.standardOutput.write(data)
             FileHandle.standardOutput.write(Data("\n".utf8))
@@ -89,15 +92,32 @@ struct MossHarness {
             let evidence: [[String: Any]] = metadata.map { item in
                 ["promptTokens": item.promptTokens, "maxTokens": item.requestedMaxTokens,
                  "effectiveMaxTokens": item.effectiveMaxTokens, "contextSize": item.contextSize,
-                 "generationTokens": item.generatedTokens, "terminationReason": item.terminationReason]
+                 "generationTokens": item.generatedTokens, "terminationReason": item.terminationReason,
+                 "terminalTokenId": item.terminalTokenId.map { $0 as Any } ?? NSNull(),
+                 "configuredEosTokenIds": item.configuredEosTokenIds,
+                 "tokenizerEosTokenId": item.tokenizerEosTokenId,
+                 "inputAudioSamples": item.inputAudioSamples,
+                 "featureChunkCount": item.featureChunkCount,
+                 "featureTokenLengths": item.featureTokenLengths,
+                 "audioTokenCount": item.audioTokenCount,
+                 "audioEmbeddingCount": item.audioEmbeddingCount,
+                 "metadataSchemaVersion": 2,
+                 "eosPolicy": "model-generation-config+tokenizer-v1",
+                 "samplingPolicy": item.samplingPolicy]
             }
             generationEvidence.append(contentsOf: evidence)
             let capped = metadata.contains { $0.terminationReason == "length" }
             let validatedSegments = MossOutputValidation.validatedSegments(output.text, segments: output.segments ?? [])
             let parsedCompletely = validatedSegments != nil
             hasUnparsedText = hasUnparsedText || !parsedCompletely
+            let configuredEOS = metadata.count == 1 && metadata.allSatisfy {
+                MossOutputValidation.hasConfiguredEOS(
+                    terminationReason: $0.terminationReason, terminalTokenId: $0.terminalTokenId,
+                    configuredEosTokenIds: $0.configuredEosTokenIds, tokenizerEosTokenId: $0.tokenizerEosTokenId
+                )
+            }
             let chunkIndex = chunks.count
-            for var segment in validatedSegments ?? [] {
+            for var segment in configuredEOS ? (validatedSegments ?? []) : [] {
                 guard let start = segment["start"] as? Double, let end = segment["end"] as? Double,
                       let text = segment["text"] as? String else {
                     throw NSError(domain: "MossHarness", code: 5, userInfo: [NSLocalizedDescriptionKey: "Malformed MOSS segment"])
@@ -124,12 +144,12 @@ struct MossHarness {
             chunks.append(chunk)
             generationTokens += output.generationTokens
             hitTokenLimit = hitTokenLimit || capped
-            if capped || !parsedCompletely || metadata.count != 1 || metadata.first?.terminationReason != "eos" { break }
+            if capped || !parsedCompletely || !configuredEOS { break }
         }
         let finished = Date()
         var document: [String: Any] = [
             "model": "OpenMOSS-Team/MOSS-Transcribe-Diarize",
-            "runtime": "mlx-audio-swift-v0.1.3+nero-moss-whole-v1",
+            "runtime": "mlx-audio-swift-v0.1.3+nero-moss-whole-v2",
             "chunkDurationSeconds": chunkSeconds,
             "chunkingPolicy": wholeRecording ? "whole-recording-v1" : "explicit-diagnostic-chunks-v1",
             "speakerScope": wholeRecording ? "recording" : "chunk",

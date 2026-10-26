@@ -142,6 +142,14 @@ html.recorder-document { background: transparent; }
 .processing-notice progress { width: 140px; height: 5px; accent-color: var(--accent-fill); }
 .processing-notice .activity-spinner, .setup-progress-region .activity-spinner { color: var(--accent); }
 .processing-inline, .detail-actions { display: inline-flex; align-items: center; gap: 7px; }
+.processing-jobs { flex: none; max-height: 12rem; overflow: auto; border-bottom: 1px solid var(--border); background: var(--surface-secondary); }
+.processing-job { display: flex; align-items: center; gap: 10px; padding: 8px 24px; }
+.processing-job + .processing-job { border-top: 1px solid var(--border); }
+.processing-job-copy { flex: 1; min-width: 0; }
+.processing-job-copy strong { display: block; font-size: var(--text-caption-size); font-weight: var(--weight-medium); overflow-wrap: anywhere; }
+.processing-job-copy p { margin: 2px 0 0; color: var(--text-secondary); font-size: var(--text-caption-size); overflow-wrap: anywhere; }
+.processing-job-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.processing-job .field-error { color: var(--danger-text); }
 .transcript-section { border: 0; container-type: inline-size; container-name: transcript; }
 .transcript-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
 .transcript-heading .row { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -260,6 +268,7 @@ html.recorder-document { background: transparent; }
 .meeting-entry .meeting-item-state { font-size: var(--text-caption-size); color: var(--text-secondary); margin-left: auto; }
 .meeting-entry .meeting-item[aria-current="true"] { border-color: transparent; }
 .meeting-entry.is-selected { background: var(--accent-subtle); }
+.meeting-entry[draggable="true"] .meeting-item { cursor: grab; }
 .meeting-entry > input { flex: none; margin-left: 8px; }
 .meeting-entry > details { flex: none; margin-right: 4px; }
 .meeting-menu > summary { border-color: transparent; background: transparent; padding: 6px; min-width: 30px; }

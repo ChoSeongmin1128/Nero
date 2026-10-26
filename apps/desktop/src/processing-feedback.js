@@ -50,9 +50,10 @@ function failureDiagnostics(job) {
 
 export function processingFeedback(job = {}, { cancelling = false } = {}) {
   const active = Boolean(job.id) && job.status === 'running';
+  const queued = Boolean(job.id) && job.status === 'queued';
   const committing = active && (job.committing === true
     || (job.kind === 'summary' && job.summaryCommitting === true));
-  const cancelRequested = active && !committing && (cancelling || job.message === '취소 중');
+  const cancelRequested = (active || queued) && !committing && (cancelling || job.message === '취소 중');
   const title = jobTitles[job.kind] || '처리';
   let progress = null;
   // Byte counts describe model preparation. Inference messages and chunk counts
@@ -62,7 +63,7 @@ export function processingFeedback(job = {}, { cancelling = false } = {}) {
     const value = Math.min(job.totalBytes, Math.max(0, Number.isFinite(job.bytes) ? job.bytes : 0));
     progress = { value, max: job.totalBytes, percent: Math.floor(value / job.totalBytes * 100) };
   }
-  const terminal = { completed: '완료', failed: '실패', cancelled: '취소됨' }[job.status];
+  const terminal = { completed: '완료', failed: '실패', cancelled: '취소됨', queued: '대기 중', interrupted: '중단됨', needsReview: '확인 필요' }[job.status];
   let heading = cancelRequested ? `${title} 취소 중` : `${title}${active ? ' 중' : terminal ? ` ${terminal}` : ''}`;
   if (active && job.kind === 'summary' && !cancelRequested) {
     heading = committing ? summaryStages.saving : summaryStages[job.phase] || '요약 중';
@@ -70,6 +71,9 @@ export function processingFeedback(job = {}, { cancelling = false } = {}) {
   const speakerPhase = active && (job.kind === 'diarize' || (job.kind === 'transcribe' && job.phase === 'diarizing'));
   if (speakerPhase && !cancelRequested) heading = committing || job.phase === 'saving' ? '저장 중' : job.phase === 'preparing' ? '화자 구분 준비 중' : '화자 구분 중';
   let message = String(job.message || '').trim();
+  if (job.status === 'queued') message = message || '앞선 작업이나 녹음이 끝나면 실행합니다.';
+  if (job.status === 'interrupted') message = message || '기존 녹음과 결과는 유지됩니다.';
+  if (job.status === 'needsReview') message = '회의를 열어 저장된 결과를 확인해 주세요.';
   if (speakerPhase) message = '';
   if (job.kind === 'diarize' && job.status === 'failed') {
     message = ({ modelNotReady: '화자 구분 모델을 다시 준비해 주세요.', meetingUnavailable: '회의를 찾을 수 없거나 휴지통에 있어 화자를 구분할 수 없습니다.', recordingActive: '녹음을 마친 뒤 화자를 구분해 주세요.', sourceChanged: '화자 구분 중 음성 기록이 변경되어 저장하지 않았습니다.', allocation: '화자 구분에 필요한 메모리를 확보하지 못했습니다. 다른 앱을 닫은 뒤 다시 시도해 주세요.', storage: '화자 구분 결과를 저장하지 못했습니다.' })[job.failureKind] || '화자를 구분하지 못했습니다. 기존 음성 기록은 유지됩니다.';
@@ -82,16 +86,17 @@ export function processingFeedback(job = {}, { cancelling = false } = {}) {
   const repeated = (job.kind === 'transcribe' && message === '텍스트로 변환 중')
     || (job.kind === 'summary' && message === '요약 중');
   return {
-    visible: Boolean(job.id) && ['running', 'failed', 'cancelled'].includes(job.status),
+    visible: Boolean(job.id) && job.acknowledged !== true && ['running', 'failed', 'cancelled', 'queued', 'interrupted', 'needsReview'].includes(job.status),
     active,
     state: cancelRequested ? 'cancelling' : active ? 'running' : job.status || 'idle',
+    icon: job.status === 'queued' ? 'clock' : ['failed', 'needsReview'].includes(job.status) ? 'triangle-alert' : job.status === 'interrupted' ? 'pause' : 'x',
     title: heading,
     detail: message && !cancelRequested && !repeated && !['준비 중', '완료', heading].includes(message) ? message : '',
     warning: '',
     diagnostics: failureDiagnostics(job),
     progress,
-    cancelVisible: active && !committing,
-    cancelDisabled: cancelRequested || committing,
+    cancelVisible: (active || queued) && !committing,
+    cancelDisabled: cancelRequested || committing || (queued && cancelling),
     cancelLabel: cancelRequested ? '취소 중' : '취소',
   };
 }

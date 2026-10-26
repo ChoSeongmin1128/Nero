@@ -406,16 +406,13 @@ impl<'a> Transaction<'a> {
         store::validate_id(&summary.source_version.id).map_err(|_| ReadError::InvalidDocument)?;
         if summary.source_sha256.len() != 64
             || !summary.source_sha256.bytes().all(|b| b.is_ascii_hexdigit())
+            || summary.notes_sha256.as_ref().is_some_and(|digest| {
+                digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit())
+            })
         {
             return Err(ReadError::InvalidDocument.into());
         }
-        let stale = match transcript {
-            Some(transcript) => {
-                crate::summary::transcript_digest(transcript)? != summary.source_sha256
-                    || transcript.version != summary.source_version
-            }
-            None => true,
-        };
+        let stale = crate::summary::is_stale(&summary, transcript, &meeting.notes)?;
         Ok(Some(
             json!({"id":summary.id,"text":summary.text,"createdAt":summary.created_at,
             "sourceVersion":summary.source_version,"stale":stale}),
@@ -824,6 +821,7 @@ mod tests {
                 created_at: 2100,
                 source_version: source.version.clone(),
                 source_sha256: crate::summary::transcript_digest(source).unwrap(),
+                notes_sha256: None,
                 provenance: SummaryProvenance {
                     model: "fixture".into(),
                     model_revision: "1".into(),
@@ -974,6 +972,36 @@ mod tests {
             .as_array()
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn read_only_summary_freshness_includes_the_notes_snapshot() {
+        let fixture = Fixture::new();
+        let summary_path = Path::new("meetings")
+            .join(&fixture.id)
+            .join("summaries/current.json");
+        let mut summary: Summary = store::read_json(&fixture.root.join(&summary_path)).unwrap();
+        summary.notes_sha256 = Some(crate::summary::notes_digest(
+            "note one\nnote two\nnote three",
+        ));
+        store::write_json(&fixture.root, &summary_path, &summary).unwrap();
+        let before = fs::read(fixture.root.join(&summary_path)).unwrap();
+        let reader = fixture.reader();
+        let params = json!({"meetingId":fixture.id});
+        assert_eq!(
+            reader.query("summary_get", params.clone()).unwrap()["summary"]["stale"],
+            false
+        );
+        let meeting_path = Path::new("meetings").join(&fixture.id).join("meeting.json");
+        let mut meeting: store::StoredMeeting =
+            store::read_json(&fixture.root.join(&meeting_path)).unwrap();
+        meeting.meeting.notes.push_str("\nupdated context");
+        store::write_json(&fixture.root, &meeting_path, &meeting).unwrap();
+        assert_eq!(
+            reader.query("summary_get", params).unwrap()["summary"]["stale"],
+            true
+        );
+        assert_eq!(fs::read(fixture.root.join(summary_path)).unwrap(), before);
     }
 
     #[test]

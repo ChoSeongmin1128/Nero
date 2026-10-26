@@ -64,8 +64,103 @@ function harness(overrides = {}, options = {}) {
   let targetNode;
   const delegated = (id, dataset, selectors) => { targetNode = target(dataset, selectors); click(id, targetNode); };
   const submit = async () => { byId('library-dialog').listeners.submit({ preventDefault() {} }); await settle(); };
-  return { state, nodes, byId, calls, errors, controller, bridge, click, delegated, submit, snapshot };
+  const drag = id => {
+    const payload = new Map();
+    const dataTransfer = { types: [], effectAllowed: '', dropEffect: '', setData(type, value) { payload.set(type, value); this.types = [...payload.keys()]; } };
+    const row = { dataset: { meetingId: id } };
+    let prevented = false;
+    byId('meeting-list').listeners.dragstart({ target: { closest: selector => selector === '[data-meeting-id]' ? row : null }, dataTransfer, preventDefault() { prevented = true; } });
+    return { dataTransfer, payload, prevented };
+  };
+  const destination = filter => {
+    const classes = new Set();
+    const target = { dataset: { libraryFilter: filter }, isConnected: true, disabled: false, contains: value => value === target,
+      classList: { add: name => classes.add(name), remove: name => classes.delete(name) } };
+    target.closest = selector => selector === '[data-library-filter]' ? target : null;
+    return { target, classes };
+  };
+  const dragEvent = (type, transfer, destination) => {
+    let prevented = false;
+    byId('folder-list').listeners[type]({ target: destination.target, dataTransfer: transfer.dataTransfer, preventDefault() { prevented = true; } });
+    return prevented;
+  };
+  return { state, nodes, byId, calls, errors, controller, bridge, click, delegated, submit, snapshot, drag, destination, dragEvent };
 }
+
+test('dragging a meeting onto a folder flushes edits and moves its ID without touching recording or processing', async () => {
+  const app = harness();
+  app.state.snapshot.meetings[1].audio = { sessionId: 'audio', relativePath: 'original.wav' };
+  app.state.snapshot.session = { id: 'capture', meetingId: 'two', state: 'recording' };
+  app.state.processing = { jobs: [{ id: 'queued', kind: 'summary', meetingId: 'two', status: 'queued' }] };
+  const transfer = app.drag('two'), folder = app.destination('project');
+  assert.equal(transfer.prevented, false);
+  assert.equal(transfer.payload.get('application/x-nero-meetings'), '["two"]');
+  assert.equal(app.dragEvent('dragover', transfer, folder), true);
+  assert.equal(folder.classes.has('is-drop-target'), true);
+  assert.equal(app.dragEvent('drop', transfer, folder), true);
+  await settle();
+  const move = app.calls.find(call => call.name === 'move');
+  assert.deepEqual(move.args, [['two'], 'project']);
+  assert.equal(move.locked, false);
+  assert.equal(app.calls[0].name, 'flush');
+  assert.equal(folder.classes.has('is-drop-target'), false);
+  assert.equal(app.state.snapshot.session.id, 'capture');
+  assert.equal(app.state.processing.jobs[0].status, 'queued');
+  assert.equal(app.state.snapshot.meetings[1].audio.relativePath, 'original.wav');
+  assert.equal(app.calls.some(call => ['trash', 'purge'].includes(call.name)), false);
+});
+
+test('selected meetings drag together while all/same-folder/external drops remain invalid', async () => {
+  const app = harness();
+  app.state.librarySelection = new Set(['one', 'two']);
+  app.state.librarySelecting = true;
+  const transfer = app.drag('one');
+  assert.equal(app.dragEvent('dragover', transfer, app.destination('all')), false);
+  const folder = app.destination('project');
+  app.dragEvent('drop', transfer, folder); await settle();
+  assert.deepEqual(app.calls.find(call => call.name === 'move').args, [['one', 'two'], 'project']);
+  const noMove = app.drag('one');
+  assert.equal(app.dragEvent('dragover', noMove, folder), false);
+  assert.equal(app.dragEvent('dragover', { dataTransfer: { types: ['Files'] } }, app.destination('unfiled')), false);
+});
+
+test('failed edit persistence never executes a drag move and retains the selection', async () => {
+  const app = harness({}, { finishEditing: async () => { throw new Error('메모 저장 실패'); } });
+  app.state.librarySelection.add('two');
+  app.dragEvent('drop', app.drag('two'), app.destination('project')); await settle();
+  assert.equal(app.calls.some(call => call.name === 'move'), false);
+  assert.equal(app.state.librarySelection.has('two'), true);
+  assert.match(app.errors[0], /메모 저장 실패/);
+});
+
+for (const change of ['folder-removed', 'folder-renamed', 'source-moved', 'source-trashed']) {
+  test(`a drag move rejects ${change} while edits are being saved`, async () => {
+    let release;
+    const saved = new Promise(resolve => { release = resolve; });
+    const app = harness({}, { finishEditing: async action => { await saved; return action(); } });
+    app.dragEvent('drop', app.drag('two'), app.destination('project'));
+    if (change === 'folder-removed') app.state.snapshot.folders = [];
+    if (change === 'folder-renamed') app.state.snapshot.folders[0].name = '다른 이름';
+    if (change === 'source-moved') app.state.snapshot.meetings[1].folderId = 'project';
+    if (change === 'source-trashed') app.state.snapshot.meetings[1].deletedAt = 100;
+    release(); await settle();
+    assert.equal(app.calls.some(call => call.name === 'move'), false);
+    assert.match(app.errors[0], /변경되었습니다/);
+  });
+}
+
+test('a stale or disconnected drag cannot highlight or move, and trash still asks for confirmation', () => {
+  const app = harness();
+  const transfer = app.drag('two'), folder = app.destination('project');
+  folder.target.isConnected = false;
+  assert.equal(app.dragEvent('dragover', transfer, folder), false);
+  app.state.connected = false;
+  assert.equal(app.drag('two').prevented, true);
+  app.state.connected = true;
+  app.dragEvent('drop', app.drag('two'), app.destination('trash'));
+  assert.equal(app.calls.some(call => call.name === 'trash'), false);
+  assert.equal(app.byId('library-dialog').open, true);
+});
 
 test('library scopes exclude trash and do not confuse unfiled with a folder', () => {
   const input = meetings();

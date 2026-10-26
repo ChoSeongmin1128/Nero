@@ -6,9 +6,11 @@ mod app_menu;
 mod diarization;
 mod downloads;
 mod export;
+mod job_journal;
 mod memory;
 mod microphone_permission;
 mod processing;
+mod recorder_geometry;
 mod recorder_policy;
 mod storage_space;
 mod summary;
@@ -223,6 +225,65 @@ fn sync_recorder(app: &tauri::AppHandle, snapshot: &Snapshot) {
             }
         }
         None => (),
+    }
+    if app
+        .state::<DesktopState>()
+        .recorder
+        .lock()
+        .unwrap()
+        .can_reposition(std::time::Instant::now())
+    {
+        if let Some(window) = app
+            .get_webview_window("recorder")
+            .filter(|window| window.is_visible().unwrap_or(false))
+        {
+            recover_recorder_position(&window);
+        }
+    }
+}
+
+fn recover_recorder_position(window: &WebviewWindow) {
+    use recorder_geometry::Rect;
+    let (Ok(position), Ok(size), Ok(monitors)) = (
+        window.outer_position(),
+        window.outer_size(),
+        window.available_monitors(),
+    ) else {
+        return;
+    };
+    let areas = monitors
+        .iter()
+        .map(|monitor| {
+            let a = monitor.work_area();
+            Rect {
+                x: a.position.x,
+                y: a.position.y,
+                width: a.size.width,
+                height: a.size.height,
+            }
+        })
+        .collect::<Vec<_>>();
+    let preferred = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .and_then(|current| {
+            monitors
+                .iter()
+                .position(|m| m.position() == current.position())
+        })
+        .unwrap_or(0);
+    if let Some((x, y)) = recorder_geometry::recover_position(
+        Rect {
+            x: position.x,
+            y: position.y,
+            width: size.width,
+            height: size.height,
+        },
+        &areas,
+        preferred,
+    ) {
+        let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
     }
 }
 
@@ -1004,6 +1065,28 @@ fn cancel_processing(
     state.processing.cancel(&job_id)
 }
 #[tauri::command]
+fn acknowledge_processing(
+    window: WebviewWindow,
+    state: tauri::State<'_, DesktopState>,
+    job_id: String,
+) -> Result<Progress, String> {
+    require_main(&window)?;
+    state.processing.acknowledge(&job_id)
+}
+#[tauri::command]
+async fn retry_processing(
+    window: WebviewWindow,
+    state: tauri::State<'_, DesktopState>,
+    job_id: String,
+) -> Result<Progress, String> {
+    require_main(&window)?;
+    let process = state.processing.clone();
+    let core = state.core.clone();
+    tauri::async_runtime::spawn_blocking(move || process.retry(core, &job_id))
+        .await
+        .map_err(|_| "작업을 다시 시작하지 못했습니다.".to_string())?
+}
+#[tauri::command]
 fn prepare_summary_model(
     window: WebviewWindow,
     state: tauri::State<'_, DesktopState>,
@@ -1208,6 +1291,8 @@ fn main() {
             import_audio,
             transcribe_audio,
             cancel_processing,
+            retry_processing,
+            acknowledge_processing,
             read_terminology_settings,
             set_terminology_enabled,
             read_transcript,
@@ -1263,6 +1348,7 @@ fn main() {
                 let mut previous: Option<Snapshot> = None;
                 let mut previous_progress = None;
                 while polling.load(Ordering::Acquire) {
+                    let _ = processing.drive(&core);
                     if let Ok(snapshot) = core.snapshot() {
                         let changed = snapshot_changed(previous.as_ref(), &snapshot);
                         if changed {
@@ -1283,6 +1369,15 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            if window.label() == "recorder" && matches!(event, tauri::WindowEvent::Moved(_)) {
+                window
+                    .app_handle()
+                    .state::<DesktopState>()
+                    .recorder
+                    .lock()
+                    .unwrap()
+                    .moved(std::time::Instant::now());
+            }
             if window.label() == "main"
                 && matches!(
                     event,

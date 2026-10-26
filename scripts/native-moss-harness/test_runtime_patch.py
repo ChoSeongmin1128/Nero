@@ -64,14 +64,16 @@ class Fixture:
 
 
 class RuntimePatchTests(unittest.TestCase):
-    def test_pinned_artifact_records_effective_budget_and_distinct_stops_without_changing_guard(self):
+    def test_pinned_artifact_records_actual_eos_and_features_without_changing_sampling_or_guard(self):
         contract, path = build.load_contract()
-        self.assertEqual(contract["runtime"], "mlx-audio-swift-v0.1.3+nero-moss-whole-v1")
+        self.assertEqual(contract["runtime"], "mlx-audio-swift-v0.1.3+nero-moss-whole-v2")
+        self.assertEqual(contract["metadataSchemaVersion"], 2)
+        self.assertEqual(contract["eosPolicy"], "model-generation-config+tokenizer-v1")
         self.assertEqual(contract["terminationReasons"], ["eos", "length", "repetition"])
         text = path.read_text()
         added = "\n".join(line[1:] for line in text.splitlines() if line.startswith("+") and not line.startswith("+++"))
         removed = "\n".join(line[1:] for line in text.splitlines() if line.startswith("-") and not line.startswith("---"))
-        for field in ("promptTokens", "requestedMaxTokens", "effectiveMaxTokens", "contextSize", "generatedTokens", "terminationReason"):
+        for field in ("promptTokens", "requestedMaxTokens", "effectiveMaxTokens", "contextSize", "generatedTokens", "terminationReason", "terminalTokenId", "configuredEosTokenIds", "tokenizerEosTokenId", "inputAudioSamples", "featureChunkCount", "featureTokenLengths", "audioTokenCount", "audioEmbeddingCount", "samplingPolicy"):
             self.assertIn("public let " + field + ":", added)
         self.assertIn("prepared.promptTokenCount < contextSize - 1", added)
         self.assertIn("min(maxTokens, contextSize - prepared.promptTokenCount - 1)", added)
@@ -82,6 +84,35 @@ class RuntimePatchTests(unittest.TestCase):
             self.assertIn(reason, added)
         for unchanged in ("repetitionPenalty == 1.0", "generated.count >= 24", "Set(tail).count <= 3", "temperature"):
             self.assertNotIn(unchanged, removed)
+        self.assertIn("[151643, 151645]", removed)
+        self.assertIn('modelDir.appendingPathComponent("generation_config.json")', added)
+        self.assertIn('case eosTokenId = "eos_token_id"', added)
+        self.assertIn("tokenizer?.eosTokenId == generation.eosTokenId", added)
+        self.assertIn("configuredEosTokenIds == [tokenizerEos]", added)
+        self.assertIn("return Set(configuredEosTokenIds)", added)
+        self.assertIn("terminalTokenId = token", added)
+        self.assertIn("onAudioFeatures?(audioEmbeds.dim(0))", added)
+        self.assertIn("featureChunkCount: inputFeatures.dim(0)", added)
+        self.assertIn("featureTokenLengths: featureLengths", added)
+        self.assertNotIn("argMax", removed)
+
+    def test_patch_applies_to_and_hashes_the_exact_pinned_source_when_available(self):
+        import subprocess
+        checkout = build.REPO / ".work/moss-whole-default-20261022/moss-build/checkouts/mlx-audio-swift"
+        if not checkout.is_dir():
+            self.skipTest("Pinned local checkout is not available; native build verifies application separately.")
+        source = subprocess.run(["git", "-C", str(checkout), "show", build.PINNED_COMMIT + ":" + build.SOURCE_FILE], capture_output=True, check=False)
+        self.assertEqual(source.returncode, 0)
+        self.assertEqual(build.sha256(source.stdout), build.SOURCE_SHA256)
+        contract, patch = build.load_contract()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / build.SOURCE_FILE
+            path.parent.mkdir(parents=True)
+            path.write_bytes(source.stdout)
+            result = subprocess.run(["git", "apply", str(patch)], cwd=root, capture_output=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr.decode())
+            self.assertEqual(build.sha256(path.read_bytes()), contract["patchedSha256"])
 
     def test_clean_apply_is_idempotent_and_receipt_is_bound_to_source_hashes(self):
         with tempfile.TemporaryDirectory() as temporary:

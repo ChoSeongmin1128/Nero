@@ -1,6 +1,11 @@
 import Foundation
 
 enum MossOutputValidation {
+    static func hasConfiguredEOS(terminationReason: String, terminalTokenId: Int?, configuredEosTokenIds: [Int], tokenizerEosTokenId: Int) -> Bool {
+        terminationReason == "eos" && configuredEosTokenIds == [151645]
+            && tokenizerEosTokenId == 151645 && terminalTokenId == 151645
+    }
+
     private struct Segment: Equatable {
         let start: Double
         let end: Double

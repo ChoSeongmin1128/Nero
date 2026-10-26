@@ -67,6 +67,8 @@ export const prepareMeetingModels = (includeSummary = false) => call('prepare_me
 export const importAudio = () => call('import_audio');
 export const transcribeAudio = (meetingId) => call('transcribe_audio', { meetingId });
 export const cancelProcessing = (jobId) => call('cancel_processing', { jobId });
+export const retryProcessing = (jobId) => call('retry_processing', { jobId });
+export const acknowledgeProcessing = (jobId) => call('acknowledge_processing', { jobId });
 export const readTranscript = (meetingId) => call('read_transcript', { meetingId });
 export const saveTranscript = (meetingId, expected, texts) => call('save_transcript', { meetingId, expected, texts });
 export async function subscribeProcessing(callback) {

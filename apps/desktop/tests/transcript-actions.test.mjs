@@ -83,7 +83,7 @@ test('replacement confirmation rejects a changed meeting, version, recording or 
     context => { context.meeting = { id: 'meeting-b' }; },
     context => { context.transcript.version = version('current', 2); },
     context => { context.recording = true; },
-    context => { context.processing = { status: 'running', meetingId: 'meeting-b' }; },
+    context => { context.processing = { status: 'running', meetingId: 'meeting-a' }; },
   ]) {
     const app = harness();
     await app.controller.rebuild();

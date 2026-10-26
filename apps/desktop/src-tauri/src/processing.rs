@@ -1,13 +1,14 @@
+use crate::job_journal::{JobRecord, JobStatus, Journal};
 use grove_core::{CoreHandle, SessionState, Snapshot};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc, Mutex, OnceLock,
 };
 use std::thread::{self, JoinHandle};
@@ -102,6 +103,43 @@ pub struct Progress {
     pub retry_count: u8,
     pub committing: bool,
     pub summary_committing: bool,
+    pub jobs: Vec<JobView>,
+}
+
+#[derive(Clone, Serialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct JobView {
+    pub id: String,
+    pub kind: String,
+    pub meeting_id: Option<String>,
+    pub status: String,
+    pub phase: Option<String>,
+    pub message: String,
+    pub retryable: bool,
+    pub acknowledged: bool,
+    pub failure_kind: Option<crate::summary_failure::FailureKind>,
+}
+
+type Action = Box<
+    dyn FnOnce(Arc<Processing>, Arc<AtomicBool>, PathBuf) -> Result<Option<String>, String> + Send,
+>;
+struct Pending {
+    record: JobRecord,
+    action: Action,
+    import_existing: Option<HashSet<String>>,
+    validate: Option<Box<dyn Fn() -> Result<(), String> + Send>>,
+}
+
+fn model_job(kind: &str) -> bool {
+    matches!(kind, "setup" | "model" | "summary-model" | "speaker-model")
+}
+
+fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u64::MAX as u128) as u64
 }
 fn meeting_models_ready(progress: &Progress) -> Result<(), String> {
     if !progress.supported {
@@ -155,6 +193,13 @@ pub struct Processing {
     progress: Mutex<Progress>,
     startup_issues: Mutex<Vec<Progress>>,
     running: Mutex<Option<Running>>,
+    pending: Mutex<VecDeque<Pending>>,
+    records: Mutex<Vec<JobRecord>>,
+    journal: Journal,
+    journal_error: Mutex<Option<String>>,
+    recording: AtomicBool,
+    interrupted_jobs: Mutex<HashSet<String>>,
+    revision: AtomicU64,
     recording_transcription: Mutex<RecordingTranscription>,
     shutting_down: AtomicBool,
     worker_cleanup_failed: AtomicBool,
@@ -265,12 +310,47 @@ impl Drop for Worker {
 
 impl Processing {
     pub fn new(root: PathBuf, resources: PathBuf) -> Arc<Self> {
+        let journal = Journal::new(root.clone());
+        let (records, issues, journal_error) = match journal.recover_available() {
+            Ok(report) => (report.records, report.issues, None),
+            Err(error) => (Vec::new(), Vec::new(), Some(error)),
+        };
+        let startup_issues = journal_error
+            .as_ref()
+            .map(|error| {
+                vec![Progress {
+                    id: Some(Uuid::new_v4().to_string()),
+                    kind: "recovery".into(),
+                    status: "failed".into(),
+                    message: error.clone(),
+                    ..Default::default()
+                }]
+            })
+            .unwrap_or_default();
+        let mut startup_issues = startup_issues;
+        if !issues.is_empty() {
+            startup_issues.push(Progress {
+                id: Some(Uuid::new_v4().to_string()),
+                kind: "recovery".into(),
+                status: "failed".into(),
+                message: "이전 작업의 상태를 복구하지 못했습니다. 기존 회의 자료는 유지했습니다."
+                    .into(),
+                ..Default::default()
+            });
+        }
         Arc::new(Self {
             root,
             resources,
             progress: Mutex::new(Progress::default()),
-            startup_issues: Mutex::new(Vec::new()),
+            startup_issues: Mutex::new(startup_issues),
             running: Mutex::new(None),
+            pending: Mutex::new(VecDeque::new()),
+            records: Mutex::new(records),
+            journal,
+            journal_error: Mutex::new(journal_error),
+            recording: AtomicBool::new(false),
+            interrupted_jobs: Mutex::new(HashSet::new()),
+            revision: AtomicU64::new(0),
             recording_transcription: Mutex::new(RecordingTranscription::default()),
             shutting_down: AtomicBool::new(false),
             worker_cleanup_failed: AtomicBool::new(false),
@@ -294,7 +374,38 @@ impl Processing {
             && self.worker("AudioPrepare").is_file()
     }
     pub fn snapshot(&self) -> Progress {
-        let mut progress = self.progress.lock().unwrap().clone();
+        let mut progress = {
+            let stored = self.progress.lock().unwrap();
+            let records = self.records.lock().unwrap();
+            let mut progress = stored.clone();
+            progress.jobs = records
+                .iter()
+                .map(|record| JobView {
+                    id: record.id.clone(),
+                    kind: record.kind.clone(),
+                    meeting_id: record.meeting_id.clone(),
+                    status: serde_json::to_value(record.status)
+                        .unwrap()
+                        .as_str()
+                        .unwrap()
+                        .into(),
+                    phase: record.phase.clone(),
+                    message: record.message.clone(),
+                    acknowledged: record.acknowledged,
+                    failure_kind: record.failure_kind,
+                    retryable: matches!(record.status, JobStatus::Interrupted | JobStatus::Failed)
+                        && record.kind != "import",
+                })
+                .collect();
+            if records
+                .iter()
+                .any(|record| Some(&record.id) == progress.id.as_ref() && record.acknowledged)
+            {
+                progress.status = "acknowledged".into();
+            }
+            progress.revision = self.revision.load(Ordering::Acquire);
+            progress
+        };
         progress.supported = self.supported();
         (
             progress.summary_supported,
@@ -335,7 +446,10 @@ impl Processing {
             return false;
         }
         progress.memory_state = Some(state);
-        progress.revision = progress.revision.saturating_add(1);
+        progress.revision = self
+            .revision
+            .fetch_add(1, Ordering::AcqRel)
+            .saturating_add(1);
         true
     }
     pub(super) fn cleanup_failed(&self) {
@@ -349,17 +463,159 @@ impl Processing {
     }
     pub(super) fn update(&self, action: impl FnOnce(&mut Progress)) {
         let mut progress = self.progress.lock().unwrap();
-        let revision = progress.revision.saturating_add(1);
         action(&mut progress);
-        progress.revision = revision;
+        progress.revision = self
+            .revision
+            .fetch_add(1, Ordering::AcqRel)
+            .saturating_add(1);
+        if let Some(id) = &progress.id {
+            let record = self
+                .records
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|record| &record.id == id)
+                .cloned();
+            if let Some(mut record) = record {
+                let status = match progress.status.as_str() {
+                    "running" => JobStatus::Running,
+                    "completed" => JobStatus::Completed,
+                    "cancelled" => JobStatus::Cancelled,
+                    "interrupted" => JobStatus::Interrupted,
+                    "failed" => JobStatus::Failed,
+                    "needsReview" => JobStatus::NeedsReview,
+                    _ => record.status,
+                };
+                if record.status != status
+                    || record.phase != progress.phase
+                    || record.message != progress.message
+                    || record.meeting_id != progress.meeting_id
+                    || record.failure_kind != progress.failure_kind
+                {
+                    record.status = if record.status == JobStatus::Cancelled
+                        || (status == JobStatus::Running
+                            && matches!(
+                                record.status,
+                                JobStatus::Interrupted | JobStatus::Cancelling
+                            )) {
+                        record.status
+                    } else {
+                        status
+                    };
+                    record.phase = progress.phase.clone();
+                    record.failure_kind = progress.failure_kind;
+                    record.message = progress.message.clone();
+                    record.meeting_id = progress.meeting_id.clone();
+                    record.updated_at = now().max(record.updated_at);
+                    if let Err(error) = self.save_job(record) {
+                        *self.journal_error.lock().unwrap() = Some(error.clone());
+                        progress.status = "failed".into();
+                        progress.message = error;
+                    }
+                }
+            }
+        }
+    }
+
+    fn save_job(&self, record: JobRecord) -> Result<(), String> {
+        self.journal.write(&record)?;
+        let mut records = self.records.lock().unwrap();
+        if let Some(previous) = records.iter_mut().find(|r| r.id == record.id) {
+            *previous = record;
+        } else {
+            records.push(record);
+        }
+        self.revision.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+
+    fn job_ready(&self) -> Result<(), String> {
+        self.worker_ready()?;
+        if let Some(error) = self.journal_error.lock().unwrap().as_ref() {
+            return Err(error.clone());
+        }
+        Ok(())
+    }
+
+    pub(super) fn source_fingerprint(
+        core: &CoreHandle,
+        id: &str,
+        kind: &str,
+    ) -> Result<String, String> {
+        let snapshot = core.snapshot().map_err(message)?;
+        let meeting = snapshot
+            .meetings
+            .iter()
+            .find(|m| m.id == id && m.deleted_at.is_none())
+            .ok_or("회의를 찾을 수 없습니다.")?;
+        let transcript = core.transcript(id).map_err(message)?;
+        let summary = if kind == "summary" {
+            core.summary(id).map_err(message)?.map(|s| s.document.id)
+        } else {
+            None
+        };
+        let input = serde_json::json!({"audio":meeting.audio,"transcript":transcript,"summary":summary,
+            "notes": if kind == "summary" { Some(&meeting.notes) } else { None }});
+        Ok(format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&input).map_err(message)?)
+        ))
+    }
+
+    pub fn drive(self: &Arc<Self>, core: &CoreHandle) -> Result<(), String> {
+        let mut running = self.running.lock().unwrap();
+        self.recording.store(
+            core.snapshot()
+                .map_err(message)?
+                .session
+                .is_some_and(|s| matches!(s.state, SessionState::Recording | SessionState::Paused)),
+            Ordering::Release,
+        );
+        if running.as_ref().is_some_and(|r| !r.handle.is_finished())
+            || self.shutting_down.load(Ordering::Acquire)
+        {
+            return Ok(());
+        }
+        if let Some(old) = running.take() {
+            old.handle
+                .join()
+                .map_err(|_| "처리 작업의 종료를 확인하지 못했습니다.")?;
+        }
+        self.job_ready()?;
+        let mut queue = self.pending.lock().unwrap();
+        let index = queue
+            .iter()
+            .position(|job| !self.recording.load(Ordering::Acquire) || model_job(&job.record.kind));
+        if let Some(index) = index {
+            let job = queue.remove(index).unwrap();
+            drop(queue);
+            *running = Some(self.launch_checked(job)?);
+        }
+        Ok(())
     }
     pub fn cancel(&self, id: &str) -> Result<(), String> {
         let running = self.running.lock().unwrap();
+        let mut pending = self.pending.lock().unwrap();
+        if let Some(index) = pending.iter().position(|job| job.record.id == id) {
+            let mut record = pending[index].record.clone();
+            record.status = JobStatus::Cancelled;
+            record.message = "취소했습니다.".into();
+            record.updated_at = now().max(record.updated_at);
+            self.save_job(record)?;
+            pending.remove(index);
+            drop(pending);
+            self.update(|_| ());
+            return Ok(());
+        }
+        drop(pending);
         let job = running
             .as_ref()
             .filter(|r| r.id == id && !r.handle.is_finished())
             .ok_or("현재 작업과 다른 요청입니다.")?;
         let mut progress = self.progress.lock().unwrap();
+        if progress.id.as_deref() == Some(id) && progress.status != "running" {
+            return Err("이미 종료된 작업입니다.".into());
+        }
         if progress.committing || progress.summary_committing {
             return Err(if progress.kind == "summary" {
                 "회의록을 저장하고 있습니다."
@@ -368,9 +624,25 @@ impl Processing {
             }
             .into());
         }
+        let record = self
+            .records
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|r| r.id == id)
+            .cloned();
+        if let Some(mut record) = record {
+            record.status = JobStatus::Cancelling;
+            record.updated_at = now().max(record.updated_at);
+            record.message = "취소 요청을 받았습니다.".into();
+            self.save_job(record)?;
+        }
         job.cancel.store(true, Ordering::Release);
         progress.message = "취소 중".into();
-        progress.revision = progress.revision.saturating_add(1);
+        progress.revision = self
+            .revision
+            .fetch_add(1, Ordering::AcqRel)
+            .saturating_add(1);
         Ok(())
     }
 
@@ -393,18 +665,49 @@ impl Processing {
     fn checkpoint_transcript<T>(
         &self,
         cancel: &AtomicBool,
-        commit: impl FnOnce() -> Result<T, String>,
+        commit: impl FnOnce() -> grove_core::Result<T>,
     ) -> Result<T, String> {
         // cancel() takes running -> progress. This checkpoint takes only progress,
         // then calls the core actor, which never calls back into Processing.
         // An accepted cancellation therefore wins before the baseline CAS write;
         // cancellation arriving during that write is accepted only after it returns.
         // Unlike the final commit gate, this ends before optional postprocessing.
-        let progress = self.progress.lock().unwrap();
+        let mut progress = self.progress.lock().unwrap();
         cancelled(cancel)?;
+        self.job_ready()?;
+        self.save_phase(&progress, "saving")?;
+        progress.phase = Some("saving".into());
         let result = commit();
+        let rejection = match &result {
+            Err(grove_core::CoreError::InvalidInput(_)) => Some((
+                "outputRejected",
+                crate::summary_failure::FailureKind::Output,
+            )),
+            Err(grove_core::CoreError::InvalidState(_)) => Some((
+                "sourceChanged",
+                crate::summary_failure::FailureKind::SourceChanged,
+            )),
+            Err(grove_core::CoreError::MeetingNotFound) => Some((
+                "meetingUnavailable",
+                crate::summary_failure::FailureKind::MeetingUnavailable,
+            )),
+            _ => None,
+        };
+        if result.is_ok() {
+            self.save_phase(&progress, "postprocessing")?;
+            progress.phase = Some("postprocessing".into());
+        } else if let Some((phase, kind)) = rejection {
+            // These core transcript errors precede current-document publication.
+            self.save_phase(&progress, phase)?;
+            progress.phase = Some(phase.into());
+            progress.failure_kind = Some(kind);
+        }
+        progress.revision = self
+            .revision
+            .fetch_add(1, Ordering::AcqRel)
+            .saturating_add(1);
         drop(progress);
-        result
+        result.map_err(message)
     }
 
     fn commit_result<T>(
@@ -416,18 +719,44 @@ impl Processing {
         {
             let mut progress = self.progress.lock().unwrap();
             cancelled(cancel)?;
+            self.job_ready()?;
+            self.save_phase(&progress, "saving")?;
             progress.committing = true;
             progress.summary_committing = summary;
             progress.phase = Some("saving".into());
-            progress.message = if summary {
+            progress.message = if progress.kind == "import" {
+                "음성 저장 중"
+            } else if summary {
                 "회의록 저장 중"
             } else {
                 "음성 기록 저장 중"
             }
             .into();
-            progress.revision = progress.revision.saturating_add(1);
+            progress.revision = self
+                .revision
+                .fetch_add(1, Ordering::AcqRel)
+                .saturating_add(1);
         }
         commit()
+    }
+
+    fn save_phase(&self, progress: &Progress, phase: &str) -> Result<(), String> {
+        let record = self
+            .records
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|r| Some(&r.id) == progress.id.as_ref())
+            .cloned();
+        if let Some(mut record) = record {
+            record.phase = Some(phase.into());
+            record.updated_at = now().max(record.updated_at);
+            self.save_job(record).map_err(|error| {
+                *self.journal_error.lock().unwrap() = Some(error.clone());
+                error
+            })?;
+        }
+        Ok(())
     }
 
     pub fn transcript_restore<T>(
@@ -446,6 +775,12 @@ impl Processing {
             .as_ref()
             .is_some_and(|job| !job.handle.is_finished())
             && self.progress.lock().unwrap().meeting_id.as_deref() == Some(meeting_id)
+            || self
+                .pending
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|job| job.record.meeting_id.as_deref() == Some(meeting_id))
         {
             return Err(grove_core::CoreError::InvalidState(
                 "이 회의의 처리가 끝난 뒤 이전 기록으로 되돌려 주세요.".into(),
@@ -514,12 +849,46 @@ impl Processing {
                 })?;
             }
         }
+        {
+            let mut pending = self.pending.lock().unwrap();
+            let mut index = 0;
+            while index < pending.len() {
+                if pending[index]
+                    .record
+                    .meeting_id
+                    .as_ref()
+                    .is_some_and(|id| ids.contains(id))
+                {
+                    let mut record = pending[index].record.clone();
+                    record.status = JobStatus::Cancelled;
+                    record.message = "회의가 삭제되어 작업을 취소했습니다.".into();
+                    record.updated_at = now().max(record.updated_at);
+                    self.save_job(record)
+                        .map_err(grove_core::CoreError::Storage)?;
+                    pending.remove(index);
+                } else {
+                    index += 1;
+                }
+            }
+        }
         self.worker_ready()
             .map_err(grove_core::CoreError::InvalidState)?;
         action()
     }
 
     fn bind_job(path: &Path, meeting_id: &str) -> Result<(), String> {
+        if path.join("owner.json").exists() {
+            let file = plain_file(&path.join("owner.json"))?;
+            if file.metadata().map_err(message)?.len() > 4096 {
+                return Err("작업 소유 정보가 올바르지 않습니다.".into());
+            }
+            let owner: JobOwner = serde_json::from_reader(file.take(4096)).map_err(message)?;
+            return if owner.meeting_id == meeting_id {
+                Ok(())
+            } else {
+                Err("다른 회의의 작업입니다.".into())
+            };
+        }
         let mut owner = OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -663,6 +1032,11 @@ impl Processing {
                 fs::remove_dir_all(path)?;
             }
         }
+        self.records
+            .lock()
+            .unwrap()
+            .retain(|r| !r.meeting_id.as_ref().is_some_and(|id| ids.contains(id)));
+        self.revision.fetch_add(1, Ordering::AcqRel);
         Ok(())
     }
 
@@ -679,6 +1053,13 @@ impl Processing {
                     fs::remove_dir_all(path)?;
                 }
             }
+            self.records.lock().unwrap().retain(|record| {
+                record
+                    .meeting_id
+                    .as_ref()
+                    .is_none_or(|id| existing.contains(id))
+            });
+            self.revision.fetch_add(1, Ordering::AcqRel);
             Ok(())
         })();
         if canonical_cleanup.is_err() || result.is_err() {
@@ -724,15 +1105,36 @@ impl Processing {
     pub fn shutdown(&self) -> Result<(), String> {
         self.shutting_down.store(true, Ordering::Release);
         if let Some(job) = self.running.lock().unwrap().take() {
+            self.mark_interrupted(&job);
             job.cancel.store(true, Ordering::Release);
             job.handle
                 .join()
                 .map_err(|_| "음성 처리 종료를 확인하지 못했습니다.".to_string())?;
         }
+        let mut pending = self.pending.lock().unwrap();
+        while let Some(job) = pending.front() {
+            let mut record = job.record.clone();
+            record.status = JobStatus::Interrupted;
+            record.message = "앱을 종료하여 작업이 중단되었습니다.".into();
+            record.updated_at = now().max(record.updated_at);
+            self.save_job(record)?;
+            pending.pop_front();
+        }
         self.worker_ready()
     }
     pub fn resume(&self) {
         self.shutting_down.store(false, Ordering::Release);
+    }
+
+    fn mark_interrupted(&self, job: &Running) {
+        if job.handle.is_finished()
+            || self.records.lock().unwrap().iter().any(|r| {
+                r.id == job.id && matches!(r.status, JobStatus::Cancelled | JobStatus::Cancelling)
+            })
+        {
+            return;
+        }
+        self.interrupted_jobs.lock().unwrap().insert(job.id.clone());
     }
     pub(super) fn start(
         self: &Arc<Self>,
@@ -742,19 +1144,49 @@ impl Processing {
             + Send
             + 'static,
     ) -> Result<Progress, String> {
-        self.start_scoped(kind, meeting_id, None, action)
+        self.start_scoped(kind, meeting_id, None, None, false, action)
     }
+
+    pub(super) fn start_meeting(
+        self: &Arc<Self>,
+        kind: &str,
+        meeting_id: String,
+        core: &CoreHandle,
+        required_fingerprint: Option<String>,
+        action: impl FnOnce(Arc<Self>, Arc<AtomicBool>, PathBuf) -> Result<Option<String>, String>
+            + Send
+            + 'static,
+    ) -> Result<Progress, String> {
+        let fingerprint = Self::source_fingerprint(core, &meeting_id, kind)?;
+        if required_fingerprint
+            .as_ref()
+            .is_some_and(|required| required != &fingerprint)
+        {
+            return Err("회의 내용이 변경되어 이전 작업을 다시 실행하지 않았습니다.".into());
+        }
+        self.start_scoped(
+            kind,
+            Some(meeting_id),
+            None,
+            Some((core.clone(), fingerprint)),
+            false,
+            action,
+        )
+    }
+
     fn start_scoped(
         self: &Arc<Self>,
         kind: &str,
         meeting_id: Option<String>,
         importing_core: Option<CoreHandle>,
+        source: Option<(CoreHandle, String)>,
+        include_summary: bool,
         action: impl FnOnce(Arc<Self>, Arc<AtomicBool>, PathBuf) -> Result<Option<String>, String>
             + Send
             + 'static,
     ) -> Result<Progress, String> {
         let mut running = self.running.lock().unwrap();
-        self.worker_ready()?;
+        self.job_ready()?;
         if self.shutting_down.load(Ordering::Acquire) {
             return Err("앱을 종료하고 있습니다.".into());
         }
@@ -768,73 +1200,190 @@ impl Processing {
         if !supported {
             return Err("이 기기의 처리 실행기가 아직 준비되지 않았습니다.".into());
         }
-        if running.as_ref().is_some_and(|r| !r.handle.is_finished()) {
-            return Err("다른 작업이 진행 중입니다.".into());
+        let mut queue = self.pending.lock().unwrap();
+        if queue.len() >= 32 {
+            return Err("대기 중인 작업을 마치거나 취소한 뒤 다시 시도해 주세요.".into());
         }
-        if let Some(old) = running.take() {
-            let _ = old.handle.join();
+        if queue
+            .iter()
+            .any(|job| job.record.kind == kind && job.record.meeting_id == meeting_id)
+            || (running
+                .as_ref()
+                .is_some_and(|job| !job.handle.is_finished())
+                && {
+                    let p = self.progress.lock().unwrap();
+                    p.kind == kind && p.meeting_id == meeting_id
+                })
+        {
+            return Err("이미 같은 작업이 진행 중이거나 대기 중입니다.".into());
         }
-        self.worker_ready()?;
         let import_existing = importing_core
             .map(|core| {
                 core.list_meetings()
-                    .map(|meetings| {
-                        meetings
-                            .into_iter()
-                            .map(|meeting| meeting.id)
-                            .collect::<HashSet<_>>()
-                    })
+                    .map(|meetings| meetings.into_iter().map(|m| m.id).collect::<HashSet<_>>())
                     .map_err(message)
             })
             .transpose()?;
         let id = Uuid::new_v4().to_string();
-        let path = directory(&self.root, &format!("processing/{id}"))?;
-        if let Some(meeting_id) = &meeting_id {
+        let created_at = now();
+        let record = JobRecord {
+            schema_version: 1,
+            id: id.clone(),
+            kind: kind.into(),
+            meeting_id: meeting_id.clone(),
+            source_fingerprint: source.as_ref().map(|(_, fingerprint)| fingerprint.clone()),
+            include_summary,
+            acknowledged: false,
+            failure_kind: None,
+            status: JobStatus::Queued,
+            phase: None,
+            message: "대기 중".into(),
+            created_at,
+            updated_at: created_at,
+        };
+        if let Some(meeting_id) = &record.meeting_id {
+            let path = directory(&self.root, &format!("processing/{}", record.id))?;
             Self::bind_job(&path, meeting_id)?;
         }
-        let cancel = Arc::new(AtomicBool::new(false));
+        let validate = source.map(|(core, fingerprint)| {
+            let id = meeting_id.unwrap(); let kind = kind.to_string();
+            Box::new(move || {
+                if Self::source_fingerprint(&core, &id, &kind)? != fingerprint {
+                    return Err("회의 내용이 변경되어 대기하던 작업을 실행하지 않았습니다. 현재 내용을 확인해 주세요.".into());
+                }
+                Ok(())
+            }) as Box<dyn Fn() -> Result<(), String> + Send>
+        });
+        self.save_job(record.clone())?;
+        let job = Pending {
+            record,
+            action: Box::new(action),
+            import_existing,
+            validate,
+        };
+        if !queue.is_empty()
+            || running.as_ref().is_some_and(|r| !r.handle.is_finished())
+            || (self.recording.load(Ordering::Acquire) && !model_job(kind))
+        {
+            queue.push_back(job);
+            drop(queue);
+            self.update(|_| ());
+        } else {
+            if let Some(old) = running.take() {
+                old.handle
+                    .join()
+                    .map_err(|_| "이전 작업 종료를 확인하지 못했습니다.")?;
+            }
+            drop(queue);
+            *running = Some(self.launch_checked(job)?);
+        }
+        Ok(self.snapshot())
+    }
+
+    fn launch(self: &Arc<Self>, mut job: Pending) -> Result<Running, String> {
+        self.job_ready()?;
+        let id = job.record.id.clone();
+        let path = directory(&self.root, &format!("processing/{id}"))?;
+        if let Some(meeting_id) = &job.record.meeting_id {
+            Self::bind_job(&path, meeting_id)?;
+        }
+        job.record.status = JobStatus::Running;
+        job.record.message = "준비 중".into();
+        job.record.updated_at = now().max(job.record.updated_at);
+        self.save_job(job.record.clone())?;
         self.update(|p| {
             *p = Progress {
+                revision: p.revision,
                 id: Some(id.clone()),
-                kind: kind.into(),
-                meeting_id,
+                kind: job.record.kind.clone(),
+                meeting_id: job.record.meeting_id.clone(),
                 status: "running".into(),
                 message: "준비 중".into(),
                 ..Progress::default()
             }
         });
-        let this = self.clone();
+        let cancel = Arc::new(AtomicBool::new(false));
         let flag = cancel.clone();
-        let handle = thread::spawn(move || {
-            let result = action(this.clone(), flag.clone(), path);
-            this.update(|p| match result {
-                Ok(meeting) => {
-                    if meeting.is_some() {
-                        p.meeting_id = meeting;
+        let this = self.clone();
+        let job_id = id.clone();
+        let handle = thread::Builder::new()
+            .name(format!("nero-job-{id}"))
+            .spawn(move || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    if let Some(validate) = job.validate {
+                        validate()?;
                     }
-                    p.status = "completed".into();
-                    p.message = "완료".into();
+                    (job.action)(this.clone(), flag.clone(), path)
+                }))
+                .unwrap_or_else(|_| {
+                    this.cleanup_failed();
+                    Err("처리 작업이 예기치 않게 종료되었습니다. 기존 결과는 유지했습니다.".into())
+                });
+                let interrupted = this.interrupted_jobs.lock().unwrap().remove(&job_id);
+                let user_cancelled = this.records.lock().unwrap().iter().any(|r| {
+                    r.id == job_id
+                        && matches!(r.status, JobStatus::Cancelled | JobStatus::Cancelling)
+                });
+                if user_cancelled {
+                    this.update(|p| {
+                        p.status = "cancelled".into();
+                        p.message = "취소했습니다.".into();
+                    });
+                    return;
                 }
-                Err(error) => {
-                    p.status = if flag.load(Ordering::Acquire)
-                        && !this.worker_cleanup_failed.load(Ordering::Acquire)
-                    {
-                        "cancelled"
-                    } else {
-                        "failed"
+                this.update(|p| match result {
+                    Ok(meeting) => {
+                        if meeting.is_some() {
+                            p.meeting_id = meeting;
+                        }
+                        p.status = "completed".into();
+                        p.message = "완료".into();
                     }
-                    .into();
-                    p.message = error;
-                }
-            });
-        });
-        *running = Some(Running {
+                    Err(error) => {
+                        p.status = if p.phase.as_deref() == Some("saving") {
+                            "needsReview"
+                        } else if interrupted {
+                            "interrupted"
+                        } else if flag.load(Ordering::Acquire)
+                            && !this.worker_cleanup_failed.load(Ordering::Acquire)
+                        {
+                            "cancelled"
+                        } else {
+                            "failed"
+                        }
+                        .into();
+                        p.message = if p.phase.as_deref() == Some("saving") {
+                            "저장 완료 여부를 확인하지 못했습니다. 회의의 결과를 확인해 주세요."
+                                .into()
+                        } else if interrupted {
+                            "녹음 또는 앱 종료로 작업이 중단되었습니다. 다시 시도할 수 있습니다."
+                                .into()
+                        } else {
+                            error
+                        };
+                    }
+                });
+            })
+            .map_err(message)?;
+        Ok(Running {
             id,
             cancel,
             handle,
-            import_existing,
-        });
-        Ok(self.snapshot())
+            import_existing: job.import_existing,
+        })
+    }
+
+    fn launch_checked(self: &Arc<Self>, job: Pending) -> Result<Running, String> {
+        let mut record = job.record.clone();
+        self.launch(job).map_err(|error| {
+            record.status = JobStatus::Failed;
+            record.message = error.clone();
+            record.updated_at = now().max(record.updated_at);
+            if let Err(failure) = self.save_job(record) {
+                *self.journal_error.lock().unwrap() = Some(failure);
+            }
+            error
+        })
     }
     pub fn prepare_model(self: &Arc<Self>) -> Result<Progress, String> {
         self.prepare_named_model(MODEL, "model", "MOSS")
@@ -857,26 +1406,33 @@ impl Processing {
                 0
             };
         crate::storage_space::check(&self.root, required)?;
-        self.start("setup", None, move |this, cancel, _path| {
-            let progress = this.snapshot();
-            let total = progress.model_bytes
-                + if include_summary {
-                    progress.summary_bytes
-                } else {
-                    0
-                };
-            let first = this.prepare_files(MODEL, "MOSS", &cancel, 0, total)?;
-            if include_summary {
-                this.prepare_files(
-                    crate::summary::MANIFEST,
-                    "Gemma4-E4B",
-                    &cancel,
-                    first,
-                    total,
-                )?;
-            }
-            Ok(None)
-        })
+        self.start_scoped(
+            "setup",
+            None,
+            None,
+            None,
+            include_summary,
+            move |this, cancel, _path| {
+                let progress = this.snapshot();
+                let total = progress.model_bytes
+                    + if include_summary {
+                        progress.summary_bytes
+                    } else {
+                        0
+                    };
+                let first = this.prepare_files(MODEL, "MOSS", &cancel, 0, total)?;
+                if include_summary {
+                    this.prepare_files(
+                        crate::summary::MANIFEST,
+                        "Gemma4-E4B",
+                        &cancel,
+                        first,
+                        total,
+                    )?;
+                }
+                Ok(None)
+            },
+        )
     }
     pub(super) fn prepare_named_model(
         self: &Arc<Self>,
@@ -1100,18 +1656,116 @@ impl Processing {
                 return Err("음성 가져오기가 끝난 뒤 녹음을 시작해 주세요.".into());
             }
         }
-        if let Some(job) = running.take() {
-            job.cancel.store(true, Ordering::Release);
-            let _ = job.handle.join();
+        let downloading = model_job(&self.progress.lock().unwrap().kind);
+        if !downloading {
+            if let Some(job) = running.take() {
+                self.mark_interrupted(&job);
+                job.cancel.store(true, Ordering::Release);
+                job.handle
+                    .join()
+                    .map_err(|_| "처리 작업의 종료를 확인하지 못했습니다.")?;
+            }
         }
         self.worker_ready()?;
-        action()
+        let result = action();
+        if result.is_ok() {
+            self.recording.store(true, Ordering::Release);
+        }
+        result
+    }
+
+    pub fn acknowledge(&self, id: &str) -> Result<Progress, String> {
+        let _running = self.running.lock().unwrap();
+        let mut record = self
+            .records
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|record| record.id == id)
+            .cloned()
+            .ok_or("작업을 찾을 수 없습니다.")?;
+        if !matches!(
+            record.status,
+            JobStatus::Failed | JobStatus::Interrupted | JobStatus::NeedsReview
+        ) {
+            return Err("진행 중인 작업의 알림은 닫을 수 없습니다.".into());
+        }
+        record.acknowledged = true;
+        record.updated_at = now().max(record.updated_at);
+        self.save_job(record)?;
+        Ok(self.snapshot())
+    }
+
+    pub fn retry(self: &Arc<Self>, core: CoreHandle, id: &str) -> Result<Progress, String> {
+        let record = self
+            .records
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|r| r.id == id)
+            .cloned()
+            .ok_or("작업을 찾을 수 없습니다.")?;
+        if !matches!(record.status, JobStatus::Interrupted | JobStatus::Failed)
+            || record.kind == "import"
+        {
+            return Err(
+                "현재 작업은 다시 실행할 수 없습니다. 회의의 저장 결과를 먼저 확인해 주세요."
+                    .into(),
+            );
+        }
+        if let Some(meeting_id) = &record.meeting_id {
+            if record.source_fingerprint.as_ref()
+                != Some(&Self::source_fingerprint(&core, meeting_id, &record.kind)?)
+            {
+                return Err("회의 내용이 변경되어 이전 작업을 다시 실행하지 않았습니다. 현재 회의에서 작업을 시작해 주세요.".into());
+            }
+        }
+        match record.kind.as_str() {
+            "setup" => self.prepare_meeting_models(record.include_summary)?,
+            "model" => self.prepare_model()?,
+            "summary-model" => self.prepare_summary()?,
+            "speaker-model" => self.prepare_diarization()?,
+            "transcribe" => self.transcribe_bound(
+                core,
+                record.meeting_id.clone().ok_or("회의가 없습니다.")?,
+                record.source_fingerprint.clone(),
+            )?,
+            "summary" => self.summarize_bound(
+                core,
+                record.meeting_id.clone().ok_or("회의가 없습니다.")?,
+                record.source_fingerprint.clone(),
+            )?,
+            "diarize" => {
+                let meeting_id = record.meeting_id.clone().ok_or("회의가 없습니다.")?;
+                let expected = core
+                    .transcript(&meeting_id)
+                    .map_err(message)?
+                    .ok_or("음성 기록이 없습니다.")?
+                    .version;
+                self.diarize_bound(
+                    core,
+                    meeting_id,
+                    expected,
+                    record.source_fingerprint.clone(),
+                )?
+            }
+            _ => return Err("지원하지 않는 작업입니다.".into()),
+        };
+        let mut old = record;
+        old.status = JobStatus::Cancelled;
+        old.message = "새 작업으로 다시 시도했습니다.".into();
+        old.updated_at = now().max(old.updated_at);
+        self.save_job(old)?;
+        self.update(|_| ());
+        Ok(self.snapshot())
     }
     pub fn import(self: &Arc<Self>, core: CoreHandle, source: PathBuf) -> Result<Progress, String> {
         self.start_scoped(
             "import",
             None,
             Some(core.clone()),
+            None,
+            false,
             move |this, cancel, path| {
                 let source = source.canonicalize().map_err(message)?;
                 let mut input = plain_file(&source)?;
@@ -1166,9 +1820,10 @@ impl Processing {
                     .chars()
                     .take(200)
                     .collect::<String>();
-                let meeting = core
-                    .import_audio(&title, &copied, &prepared)
-                    .map_err(message)?;
+                let meeting = this.commit_transcript_result(&cancel, || {
+                    core.import_audio(&title, &copied, &prepared)
+                        .map_err(message)
+                })?;
                 this.update(|progress| progress.meeting_id = Some(meeting.id.clone()));
                 Self::bind_job(&path, &meeting.id)?;
                 Ok(Some(meeting.id))
@@ -1180,6 +1835,14 @@ impl Processing {
         core: CoreHandle,
         meeting_id: String,
     ) -> Result<Progress, String> {
+        self.transcribe_bound(core, meeting_id, None)
+    }
+    fn transcribe_bound(
+        self: &Arc<Self>,
+        core: CoreHandle,
+        meeting_id: String,
+        required_fingerprint: Option<String>,
+    ) -> Result<Progress, String> {
         let audio = core.audio_path(&meeting_id).map_err(message)?;
         let expected = core
             .transcript(&meeting_id)
@@ -1188,10 +1851,22 @@ impl Processing {
         if !self.snapshot().model_ready {
             return Err("먼저 음성 인식 모델을 준비해 주세요.".into());
         }
-        self.start(
+        let source_core = core.clone();
+        self.start_meeting(
             "transcribe",
-            Some(meeting_id.clone()),
+            meeting_id.clone(),
+            &source_core,
+            required_fingerprint,
             move |this, cancel, path| {
+                if core.audio_path(&meeting_id).map_err(message)? != audio
+                    || core
+                        .transcript(&meeting_id)
+                        .map_err(message)?
+                        .map(|d| d.version)
+                        != expected
+                {
+                    return Err("회의 내용이 변경되어 음성 인식을 시작하지 않았습니다.".into());
+                }
                 // Freeze the local profile for this recognition run. A missing or invalid
                 // optional profile must never prevent preserving the recognized baseline.
                 let terminology = crate::terminology::load_snapshot(&this);
@@ -1245,7 +1920,6 @@ impl Processing {
                 cancelled(&cancel)?;
                 let source = this.checkpoint_transcript(&cancel, || {
                     core.commit_whole_transcript(&meeting_id, expected, raw)
-                        .map_err(message)
                 })?;
                 crate::terminology::correct(
                     &this,
@@ -1269,9 +1943,14 @@ impl Processing {
         let Some(meeting_id) = self.recording_transcription.lock().unwrap().claim(snapshot) else {
             return Ok(None);
         };
+        self.recording.store(false, Ordering::Release);
         self.transcribe(core, meeting_id).map(Some)
     }
 }
+
+#[cfg(test)]
+#[path = "processing_job_tests.rs"]
+mod job_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1423,7 +2102,6 @@ mod tests {
         assert!(process
             .checkpoint_transcript(&cancel, || {
                 core.commit_transcript(&id, Some(source.version.clone()), raw_transcript("새 결과"))
-                    .map_err(message)
             })
             .is_err());
         assert_eq!(fs::read(current).unwrap(), before);
@@ -1455,7 +2133,6 @@ mod tests {
         assert!(process
             .checkpoint_transcript(&cancel, || {
                 core.commit_transcript(&id, Some(source.version), raw_transcript("새 모델 결과"))
-                    .map_err(message)
             })
             .is_err());
         assert_eq!(fs::read(current).unwrap(), before);
@@ -1488,7 +2165,6 @@ mod tests {
         let baseline = process
             .checkpoint_transcript(&cancel, || {
                 core.commit_transcript(&id, Some(source.version), raw_transcript("새 음성 기록"))
-                    .map_err(message)
             })
             .unwrap();
         cancel.store(true, Ordering::Release);

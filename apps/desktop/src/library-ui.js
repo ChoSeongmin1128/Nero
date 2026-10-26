@@ -1,3 +1,4 @@
+import { pendingJob } from './processing-state.js';
 export function filterLibraryMeetings(meetings, filter = 'all', query = '') {
   const term = query.trim().toLocaleLowerCase();
   return meetings.filter(meeting => {
@@ -11,13 +12,31 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
   const dialog = byId('library-dialog');
   const dialogBody = byId('library-dialog-body');
   const owner = dialog.ownerDocument;
-  let folderKey = '', pending = null, returnFocus = null, dragIds = [];
+  let folderKey = '', pending = null, returnFocus = null, dragSources = [];
   let activeMenu = null, dropTarget = null;
   const state = () => getState();
   const selection = () => state().librarySelection ||= new Set();
   const selectedIds = () => [...selection()];
   const query = () => byId('search')?.value?.trim() || '';
   const current = id => state().snapshot.meetings.find(meeting => meeting.id === id);
+  const sourcesForMove = ids => ids.map(id => current(id)).every(meeting => meeting && meeting.deletedAt == null)
+    ? ids.map(id => ({ id, folderId: current(id).folderId || null })) : [];
+  const sourcesUnchanged = sources => Boolean(state().connected && sources.length) && sources.every(source => {
+    const meeting = current(source.id);
+    return meeting && meeting.deletedAt == null && (meeting.folderId || null) === source.folderId;
+  });
+  function moveDestination(filter) {
+    if (filter === 'unfiled') return { folderId: null, name: '미분류' };
+    const folder = state().snapshot.folders?.find(item => item.id === filter);
+    return folder ? { folderId: folder.id, name: folder.name } : null;
+  }
+  async function moveChecked(sources, destination) {
+    acceptSnapshot(await bridge.readSnapshot());
+    if (!sourcesUnchanged(sources)) throw new Error('회의의 위치가 변경되었습니다. 다시 선택해 주세요.');
+    const latest = moveDestination(destination.folderId || 'unfiled');
+    if (!latest || latest.name !== destination.name) throw new Error('대상 폴더가 변경되었습니다. 다시 선택해 주세요.');
+    return bridge.moveMeetings(sources.map(source => source.id), destination.folderId);
+  }
   const runningRecording = ids => {
     const session = state().snapshot.session;
     return session && ['recording', 'paused'].includes(session.state) && ids.includes(session.meetingId);
@@ -149,19 +168,22 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
   }
   function moveDialog(ids) {
     if (!ids.length) return;
+    const sources = sourcesForMove(ids);
+    if (!sources.length) return;
     let folderId = ids.every(id => current(id)?.folderId === current(ids[0])?.folderId) ? current(ids[0])?.folderId || '' : null;
     const folders = [{ id: '', name: '미분류' }, ...(state().snapshot.folders || [])];
     openDialog({ title: '폴더로 이동', content: `<p class="muted">${escape(description(ids))}</p><div class="library-folder-choices" role="radiogroup" aria-label="이동할 폴더">${folders.map(folder => `<label class="library-folder-choice"><input type="radio" name="library-destination" value="${escape(folder.id)}"${folderId === folder.id ? ' checked' : ''}><span>${icon(folder.id ? 'folder' : 'inbox')}${escape(folder.name)}</span></label>`).join('')}</div>`, confirm: '이동', action: () => {
       const chosen = dialogBody.querySelector('input[name="library-destination"]:checked');
       if (!chosen) throw new Error('이동할 폴더를 선택해 주세요.');
-      return bridge.moveMeetings(ids, chosen.value || null);
+      const destination = moveDestination(chosen.value || 'unfiled');
+      if (!destination) throw new Error('대상 폴더를 찾을 수 없습니다.');
+      return moveChecked(sources, destination);
     } });
   }
   function trashDialog(ids) {
     if (!ids.length) return;
     if (runningRecording(ids)) { showError('녹음을 종료한 뒤 삭제해 주세요.'); return; }
-    const job = state().processing;
-    const cancels = job?.status === 'running' && ids.includes(job.meetingId);
+    const cancels = ids.some(meetingId => pendingJob(state().processing, { meetingId }));
     openDialog({ title: '휴지통으로 이동할까요?', content: `<p>${escape(description(ids))}</p><p class="muted">${cancels ? '진행 중인 처리를 취소한 뒤 이동합니다. ' : ''}휴지통에서 복원할 수 있습니다.</p>`, confirm: cancels ? '처리 취소 후 휴지통' : '휴지통으로 이동', destructive: true, detach: true, action: () => bridge.trashMeetings(ids) });
   }
   function purgeDialog(ids) {
@@ -200,6 +222,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     const navigation = [{ id: 'all', name: '전체 회의', icon: 'notebook-pen' }, { id: 'unfiled', name: '미분류', icon: 'inbox' }, ...folders.map(folder => ({ ...folder, icon: 'folder' })), { id: 'trash', name: '휴지통', icon: 'trash-2' }];
     const key = JSON.stringify([filter, folders, disabled, snapshot.meetings.map(meeting => [meeting.id, meeting.folderId, meeting.deletedAt])]);
     if (key !== folderKey) {
+      clearDropTarget();
       folderKey = key;
       const focused = dialog.ownerDocument?.activeElement?.dataset?.libraryFilter;
       byId('folder-list').innerHTML = navigation.map(item => `<div class="library-folder-item"><button type="button" class="quiet library-folder-link" data-library-filter="${escape(item.id)}"${filter === item.id ? ' aria-current="page"' : ''}${disabled ? ' disabled' : ''}>${icon(item.icon)}<span class="library-folder-name" title="${escape(item.name)}">${escape(item.name)}</span><span class="library-folder-count">${filterLibraryMeetings(snapshot.meetings, item.id).length}</span></button>${folders.some(folder => folder.id === item.id) ? `<details class="library-folder-menu"><summary aria-label="${escape(item.name)} 폴더 메뉴">${icon('ellipsis')}</summary><div class="action-menu"><button type="button" data-folder-rename="${escape(item.id)}"${disabled ? ' disabled' : ''}>이름 변경</button><button type="button" class="danger" data-folder-delete="${escape(item.id)}"${disabled ? ' disabled' : ''}>폴더 삭제</button></div></details>` : ''}</div>`).join('');
@@ -286,7 +309,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
   }, true);
   owner?.defaultView?.addEventListener('resize', () => closeMenu());
   owner?.addEventListener?.('drop', clearDropTarget, true);
-  owner?.addEventListener?.('dragend', () => { dragIds = []; clearDropTarget(); });
+  owner?.addEventListener?.('dragend', () => { dragSources = []; clearDropTarget(); });
   dialog.addEventListener('submit', event => {
     event.preventDefault();
     if (!pending || state().libraryBusy) return;
@@ -328,29 +351,44 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     menu.querySelector('button:not(:disabled)')?.focus({ preventScroll: true });
   });
   byId('meeting-list').addEventListener('dragstart', event => {
+    dragSources = [];
+    clearDropTarget();
     const row = event.target.closest('[data-meeting-id]');
-    if (!row || state().libraryBusy || current(row.dataset.meetingId)?.deletedAt != null || event.target.closest('input,summary,[data-library-action]')) { event.preventDefault(); return; }
-    dragIds = selection().has(row.dataset.meetingId) ? selectedIds() : [row.dataset.meetingId];
+    const ids = row && selection().has(row.dataset.meetingId) ? selectedIds() : row ? [row.dataset.meetingId] : [];
+    if (!row || !state().connected || state().libraryBusy || !event.dataTransfer || event.target.closest('input,summary,[data-library-action]')) { event.preventDefault(); return; }
+    dragSources = sourcesForMove(ids);
+    if (!dragSources.length) { event.preventDefault(); return; }
+    closeMenu();
     event.dataTransfer.effectAllowed = 'move';
-    event.dataTransfer.setData('application/x-nero-meetings', JSON.stringify(dragIds));
+    event.dataTransfer.setData('application/x-nero-meetings', JSON.stringify(dragSources.map(source => source.id)));
   });
-  byId('meeting-list').addEventListener('dragend', () => { dragIds = []; clearDropTarget(); });
-  byId('folder-list').addEventListener('dragover', event => {
+  byId('meeting-list').addEventListener('dragend', () => { dragSources = []; clearDropTarget(); });
+  function dropDestination(event) {
     const target = event.target.closest('[data-library-filter]');
-    if (!target || target.dataset.libraryFilter === 'all' || state().libraryBusy || !Array.from(event.dataTransfer.types).includes('application/x-nero-meetings')) { clearDropTarget(); return; }
+    if (!target || target.disabled || target.isConnected === false || state().libraryBusy || !sourcesUnchanged(dragSources)
+      || !Array.from(event.dataTransfer?.types || []).includes('application/x-nero-meetings')) return null;
+    const filter = target.dataset.libraryFilter;
+    if (filter === 'trash') return { target, filter };
+    const destination = moveDestination(filter);
+    return destination && dragSources.some(source => source.folderId !== destination.folderId) ? { target, filter, destination } : null;
+  }
+  byId('folder-list').addEventListener('dragover', event => {
+    const destination = dropDestination(event);
+    if (!destination) { clearDropTarget(); if (event.dataTransfer) event.dataTransfer.dropEffect = 'none'; return; }
+    const { target } = destination;
     event.preventDefault();
     event.dataTransfer.dropEffect = 'move';
     if (dropTarget !== target) { clearDropTarget(); dropTarget = target; target.classList.add('is-drop-target'); }
   });
   byId('folder-list').addEventListener('dragleave', event => { if (dropTarget && !dropTarget.contains(event.relatedTarget)) clearDropTarget(); });
   byId('folder-list').addEventListener('drop', event => {
-    const target = event.target.closest('[data-library-filter]');
+    const destination = dropDestination(event);
     clearDropTarget();
-    if (!target || target.dataset.libraryFilter === 'all' || state().libraryBusy || !dragIds.length) return;
+    if (!destination) { dragSources = []; return; }
     event.preventDefault();
-    const ids = [...dragIds]; dragIds = [];
-    if (target.dataset.libraryFilter === 'trash') trashDialog(ids);
-    else void mutate(() => bridge.moveMeetings(ids, target.dataset.libraryFilter === 'unfiled' ? null : target.dataset.libraryFilter), resetSelection);
+    const sources = dragSources; dragSources = [];
+    if (destination.filter === 'trash') trashDialog(sources.map(source => source.id));
+    else void mutate(() => moveChecked(sources, destination.destination), resetSelection);
   });
   return { render, show, resetSelection, toggleSelection, selectedIds, visibleMeetings };
 }

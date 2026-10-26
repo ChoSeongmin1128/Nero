@@ -1,18 +1,23 @@
 {
   "schemaVersion": 1,
-  "runtime": "mlx-audio-swift-v0.1.3+nero-moss-whole-v1",
+  "runtime": "mlx-audio-swift-v0.1.3+nero-moss-whole-v2",
   "upstreamVersion": "0.1.3",
   "upstreamCommit": "d302a5c6080d2bb97bae38c7418f82abb76013b6",
   "sourceFile": "Sources/MLXAudioSTT/Models/MossTranscribeDiarize/MossTranscribeDiarize.swift",
   "unpatchedSha256": "14f9aeb1ed2ac1ae1db3b205ae84cc10cba41b9939a4af241a39b5371e4121b7",
-  "patchedSha256": "af46bcc409bdf729d6d8ca5508e548a813c9883c87b37d4980506fab2dff9ef8",
-  "patchFile": "nero-moss-whole-v1.patch",
-  "patchSha256": "f00b004aba9a6634eb59b0178b53ad15050d664ff51b62e9e83356d08529d1fe",
-  "metadataSchemaVersion": 1,
+  "patchedSha256": "85ddac05dbfca62b3d11c7784098b753b805e1e16a7e68037509d8b744bad914",
+  "patchFile": "nero-moss-whole-v2.patch",
+  "patchSha256": "5e026b76b5882fe54ec710f953018012243ddfcfd77480622e865cd2bf0fe03a",
+  "metadataSchemaVersion": 2,
   "terminationReasons": [
     "eos",
     "length",
     "repetition"
   ],
-  "eosReserve": 1
+  "eosReserve": 1,
+  "eosPolicy": "model-generation-config+tokenizer-v1",
+  "samplingPolicy": "greedy-argmax-v1",
+  "modelRevision": "704aa4a9c304e8520be88901e0d1960158ef5b15",
+  "generationConfigSha256": "e53a4b3ce4f944230cf1ca8fed0c42f4ff0d8c1443eaf98b5315d987334dd9e4",
+  "tokenizerConfigSha256": "61d04c96104177240688396655ae3f7cf38ce2ea036db867a1d2b6883e27c3d5"
 }
