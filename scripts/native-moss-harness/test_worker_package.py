@@ -51,8 +51,11 @@ class Fixture:
             resource = self.products / (name + ".bundle") / "Contents/Info.plist"
             resource.parent.mkdir(parents=True)
             resource.write_text("resource fixture")
+            payload = resource.parent / "Resources/payload.txt"
+            payload.parent.mkdir()
+            payload.write_text("canonical resource payload")
         metal = self.products / package.METAL_RESOURCE
-        metal.parent.mkdir(parents=True)
+        metal.parent.mkdir(parents=True, exist_ok=True)
         metal.write_bytes(b"matching metal fixture")
         for name in package.BUNDLES:
             shutil.copytree(self.products / (name + ".bundle"), self.staged / (name + ".bundle"))
@@ -64,6 +67,10 @@ class Fixture:
         self.team = "ABCDE12345"
         self.cdhash = "c" * 40
         self.codesign_status = 0
+        self.bundle_teams = {}
+        self.bundle_identifiers = {}
+        self.bundle_cdhashes = {}
+        self.bundle_status = {}
 
     def git(self, checkout, *arguments):
         assert checkout == self.checkout
@@ -77,10 +84,14 @@ class Fixture:
     def runner(self, arguments, **options):
         self.calls.append((arguments, options))
         if arguments[0] == "codesign":
+            name = Path(arguments[-1]).name
             if "-d" in arguments:
-                identity = f"Identifier=MossHarness\nTeamIdentifier={self.team}\nCDHash={self.cdhash}\n"
+                identifier = self.bundle_identifiers.get(name, package.BUNDLE_IDENTIFIERS.get(name, "MossHarness"))
+                team = self.bundle_teams.get(name, self.team)
+                cdhash = self.bundle_cdhashes.get(name, self.cdhash)
+                identity = f"Identifier={identifier}\nTeamIdentifier={team}\nCDHash={cdhash}\n"
                 return subprocess.CompletedProcess(arguments, 0, "", identity)
-            return subprocess.CompletedProcess(arguments, self.codesign_status, "", "")
+            return subprocess.CompletedProcess(arguments, self.bundle_status.get(name, self.codesign_status), "", "")
         return subprocess.CompletedProcess(arguments, 0, json.dumps(self.information), "")
 
     def verify(self):
@@ -110,9 +121,11 @@ class Fixture:
         # Simulate the permitted effects of the trusted codesign invocation.
         with (self.staged / "MossHarness").open("ab") as output:
             output.write(b"Developer ID signature fixture")
-        signature = self.staged / (package.BUNDLES[0] + ".bundle/Contents/_CodeSignature/CodeResources")
-        signature.parent.mkdir()
-        signature.write_text("signed resource envelope fixture")
+        for name in package.BUNDLE_IDENTIFIERS:
+            directory = self.staged / name / "Contents/_CodeSignature"
+            directory.mkdir()
+            for component in ("CodeDirectory", "CodeRequirements", "CodeResources", "CodeSignature"):
+                (directory / component).write_text("signed " + component + " fixture")
         return preflight
 
 
@@ -234,6 +247,40 @@ class WorkerPackageTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "did not complete"):
                 package.runtime_info(fixture.staged, runner=timeout)
 
+    def test_resource_layout_rejects_mixed_flat_and_incomplete_xcode_products_before_execution(self):
+        for invalid in ("mixed", "flat", "missing info", "missing resources", "symlinked contents"):
+            with self.subTest(invalid=invalid), tempfile.TemporaryDirectory() as temporary:
+                fixture = Fixture(Path(temporary))
+                bundle = fixture.products / "swift-transformers_Hub.bundle"
+                payload = bundle / "Contents/Resources/payload.txt"
+                if invalid == "mixed":
+                    shutil.copy2(payload, bundle / "payload.txt")
+                elif invalid == "flat":
+                    shutil.copy2(payload, bundle / "payload.txt")
+                    (bundle / "Contents").rename(fixture.task / "saved-flat-contents")
+                elif invalid == "missing info":
+                    (bundle / "Contents/Info.plist").rename(fixture.task / "saved-info.plist")
+                elif invalid == "missing resources":
+                    (bundle / "Contents/Resources").rename(fixture.task / "saved-resources")
+                else:
+                    saved = fixture.task / "saved-contents"
+                    (bundle / "Contents").rename(saved)
+                    (bundle / "Contents").symlink_to(saved, target_is_directory=True)
+                with self.assertRaises(ValueError): fixture.verify()
+                self.assertEqual(fixture.calls, [])
+                self.assertFalse((fixture.staged / "RuntimeProvenance.json").exists())
+
+    def test_staged_mixed_layout_is_rejected_before_runtime_even_with_identical_duplicate_bytes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = Fixture(Path(temporary))
+            fixture.finalize()
+            fixture.calls.clear()
+            bundle = fixture.staged / "swift-transformers_Hub.bundle"
+            shutil.copy2(bundle / "Contents/Resources/payload.txt", bundle / "payload.txt")
+            with self.assertRaisesRegex(ValueError, "canonical Xcode resource bundle"):
+                fixture.verify_staged(execute_runtime=True)
+            self.assertEqual(fixture.calls, [])
+
     def test_static_consumption_check_verifies_staged_contract_without_running_worker(self):
         with tempfile.TemporaryDirectory() as temporary:
             fixture = Fixture(Path(temporary))
@@ -300,6 +347,13 @@ class WorkerPackageTests(unittest.TestCase):
             self.assertEqual(observed["preSignExecutableSha256"], preflight["preSignExecutableSha256"])
             self.assertEqual(observed["signature"]["CDHash"], fixture.cdhash)
             self.assertEqual(observed["signature"]["TeamIdentifier"], fixture.team)
+            self.assertEqual(set(observed["resourceBundleSignatures"]), set(package.BUNDLE_IDENTIFIERS))
+            for name, identity in observed["resourceBundleSignatures"].items():
+                self.assertEqual(identity["TeamIdentifier"], fixture.team)
+                self.assertEqual(identity["Identifier"], package.BUNDLE_IDENTIFIERS[name])
+                self.assertIn((["codesign", "--verify", "--strict", str(fixture.staged / name)], {
+                    "capture_output": True, "text": True, "check": False, "timeout": 15,
+                }), fixture.calls)
             self.assertEqual((fixture.staged / "RuntimeProvenance.json").read_bytes(), provenance)
             # Repackaging a signed app must use its post-sign receipt, not fail on the old ad-hoc hash.
             self.assertIs(package.verify_signed_receipt(fixture.staged, observed, fixture.team, runner=fixture.runner), observed)
@@ -338,6 +392,77 @@ class WorkerPackageTests(unittest.TestCase):
                 if invalid == "runtime": fixture.information["runtime"] = "different-runtime"
                 with self.assertRaises(ValueError):
                     package.verify_signed_receipt(fixture.staged, receipt, "ABCDE12345", runner=fixture.runner)
+
+    def test_signature_changes_are_limited_to_four_files_in_each_exact_resource_bundle(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = Fixture(Path(temporary))
+            preflight = fixture.sign()
+            expected = {
+                name + "/Contents/_CodeSignature/" + component
+                for name in ("mlx-swift_Cmlx.bundle", "swift-transformers_Hub.bundle", "swift-crypto_Crypto.bundle")
+                for component in ("CodeDirectory", "CodeRequirements", "CodeResources", "CodeSignature")
+            }
+            actual = set(package.package_files(fixture.staged)) - set(preflight["files"])
+            self.assertEqual(actual, expected)
+            package.verify_signed_transition(fixture.staged, preflight, fixture.team, runner=fixture.runner)
+
+    def test_unexpected_signature_paths_and_components_are_not_resource_exceptions(self):
+        for relative in (
+            "_CodeSignature/CodeResources",
+            "other.bundle/Contents/_CodeSignature/CodeResources",
+            "mlx-swift_Cmlx.bundle/_CodeSignature/CodeResources",
+            "mlx-swift_Cmlx.bundle/Contents/Resources/_CodeSignature/CodeResources",
+            "mlx-swift_Cmlx.bundle/Contents/_CodeSignature/nested/CodeResources",
+            "swift-transformers_Hub.bundle/Contents/_CodeSignature/unexpected.txt",
+            "swift-crypto_Crypto.bundle/Contents/_CodeSignature/CodeSignature.bak",
+        ):
+            with self.subTest(relative=relative), tempfile.TemporaryDirectory() as temporary:
+                fixture = Fixture(Path(temporary))
+                preflight = fixture.sign()
+                unexpected = fixture.staged / relative
+                unexpected.parent.mkdir(parents=True, exist_ok=True)
+                unexpected.write_text("not an allowed signature resource")
+                with self.assertRaisesRegex(ValueError, "unexpected worker package signature path"):
+                    package.verify_signed_transition(fixture.staged, preflight, fixture.team, runner=fixture.runner)
+
+    def test_staged_input_cannot_hide_unexpected_files_in_a_signature_directory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = Fixture(Path(temporary))
+            fixture.finalize()
+            unexpected = fixture.staged / "swift-crypto_Crypto.bundle/Contents/_CodeSignature/unexpected.txt"
+            unexpected.parent.mkdir()
+            unexpected.write_text("arbitrary resource")
+            fixture.calls.clear()
+            with self.assertRaisesRegex(ValueError, "unexpected worker package signature path"):
+                fixture.verify_staged(execute_runtime=True)
+            self.assertEqual(fixture.calls, [])
+
+    def test_every_resource_bundle_requires_valid_strict_signature_team_and_identifier(self):
+        for name in package.BUNDLE_IDENTIFIERS:
+            for invalid in ("signature", "team", "identifier"):
+                with self.subTest(bundle=name, invalid=invalid), tempfile.TemporaryDirectory() as temporary:
+                    fixture = Fixture(Path(temporary))
+                    preflight = fixture.sign()
+                    if invalid == "signature": fixture.bundle_status[name] = 1
+                    if invalid == "team": fixture.bundle_teams[name] = "OTHER12345"
+                    if invalid == "identifier": fixture.bundle_identifiers[name] = "unrelated.resources"
+                    with self.assertRaises(ValueError):
+                        package.verify_signed_transition(fixture.staged, preflight, fixture.team, runner=fixture.runner)
+
+    def test_signed_resource_bundle_identities_are_required_and_rechecked_from_receipt(self):
+        for invalid in ("missing receipt", "signature", "team", "identifier", "cdhash"):
+            with self.subTest(invalid=invalid), tempfile.TemporaryDirectory() as temporary:
+                fixture = Fixture(Path(temporary))
+                preflight = fixture.sign()
+                receipt = package.verify_signed_transition(fixture.staged, preflight, fixture.team, runner=fixture.runner)
+                name = "swift-transformers_Hub.bundle"
+                if invalid == "missing receipt": receipt.pop("resourceBundleSignatures")
+                if invalid == "signature": fixture.bundle_status[name] = 1
+                if invalid == "team": fixture.bundle_teams[name] = "OTHER12345"
+                if invalid == "identifier": fixture.bundle_identifiers[name] = "unrelated.resources"
+                if invalid == "cdhash": fixture.bundle_cdhashes[name] = "f" * 40
+                with self.assertRaises(ValueError):
+                    package.verify_signed_receipt(fixture.staged, receipt, fixture.team, runner=fixture.runner)
 
     def test_mac_build_and_signing_consumers_use_the_package_guard(self):
         root = package.HERE.parents[1]

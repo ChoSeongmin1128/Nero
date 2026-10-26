@@ -112,6 +112,11 @@ worker's runtime identity, and records source, executable and resource hashes in
 `RuntimeProvenance.json`. The source inventory includes `Package.swift` and every Swift
 helper; the full patch receipt, canonical resolution lock, bundle contents and matching
 Metal resource are checked separately. Weights are not copied into the helper.
+The `XCODE_RELEASE_DIRECTORY` contract requires macOS resource bundles with only
+`Contents` at their root, including `Contents/Info.plist` and `Contents/Resources`.
+Mixed native/Xcode layouts and flat bundles fail before copying or running the worker;
+identical duplicate bytes do not make such a bundle signable. The public packager does
+not silently normalize resource layouts or remove an input resource.
 
 The desktop preparation/build paths use the same staged-package verifier. Static
 verification does not execute the worker, so a build host does not need to run the
@@ -130,7 +135,13 @@ Developer ID signing changes Mach-O bytes and resource signature envelopes, so
 `RuntimeProvenance.json` keeps its pre-sign executable hash and is never rewritten
 to match the new signature. A separate release receipt binds its digest and pre-sign
 executable hash to the post-sign executable hash, Team/Identifier/CDHash, runtime
-metadata and package tree digest. Non-signature resources must remain unchanged.
+metadata and package tree digest. Only `CodeDirectory`, `CodeRequirements`,
+`CodeResources` and `CodeSignature` under each of the three known resource bundles'
+exact `Contents/_CodeSignature` directory may be added or changed as external
+signature components. Other signature paths/files are rejected. Each resource
+bundle must pass strict code-signature verification with its expected identifier
+and the application's signing team; its signed identity is retained and rechecked
+from the release receipt. Non-signature resources must remain unchanged.
 The final release receipt also records the app tree digest; `--dmg-only` verifies the
 preserved signed receipt instead of comparing signed bytes with an ad-hoc hash.
 

@@ -25,6 +25,15 @@ EXPECTED_RUNTIME_INFO = {
     "samplingPolicy": "greedy-argmax-v1",
 }
 BUNDLES = ("mlx-swift_Cmlx", "swift-transformers_Hub", "swift-crypto_Crypto")
+BUNDLE_IDENTIFIERS = {
+    "mlx-swift_Cmlx.bundle": "mlx-swift.Cmlx.resources",
+    "swift-transformers_Hub.bundle": "swift-transformers.Hub.resources",
+    "swift-crypto_Crypto.bundle": "swift-crypto.Crypto.resources",
+}
+SIGNATURE_COMPONENTS = ("CodeDirectory", "CodeRequirements", "CodeResources", "CodeSignature")
+SIGNATURE_DIRECTORIES = frozenset(name + "/Contents/_CodeSignature" for name in BUNDLE_IDENTIFIERS)
+SIGNATURE_FILES = frozenset(directory + "/" + name for directory in SIGNATURE_DIRECTORIES
+                            for name in SIGNATURE_COMPONENTS)
 METAL_RESOURCE = "mlx-swift_Cmlx.bundle/Contents/Resources/default.metallib"
 MACHO = {b'\xcf\xfa\xed\xfe', b'\xce\xfa\xed\xfe', b'\xfe\xed\xfa\xcf', b'\xfe\xed\xfa\xce', b'\xca\xfe\xba\xbe', b'\xbe\xba\xfe\xca'}
 
@@ -79,16 +88,34 @@ def worker_source_hashes(source_root):
     }
 
 
+def validate_signature_path(relative, *, is_directory):
+    relative = Path(relative)
+    if "_CodeSignature" not in relative.parts:
+        return
+    allowed = SIGNATURE_DIRECTORIES if is_directory else SIGNATURE_FILES
+    if relative.as_posix() not in allowed:
+        raise ValueError("An unexpected worker package signature path is not supported.")
+
+
 def bundle_hashes(root):
     bundles = {}
     for name in BUNDLES:
         folder = root / (name + ".bundle")
         if folder.is_symlink() or not folder.is_dir():
             raise ValueError("A required worker resource bundle is missing or symlinked.")
+        contents = folder / "Contents"
+        if ({entry.name for entry in folder.iterdir()} != {"Contents"}
+                or contents.is_symlink() or not contents.is_dir()):
+            raise ValueError("Expected a canonical Xcode resource bundle with only Contents at its root; mixed/flat layouts are not converted.")
+        regular_file(contents / "Info.plist")
+        resources = contents / "Resources"
+        if resources.is_symlink() or not resources.is_dir():
+            raise ValueError("A canonical Xcode resource bundle requires Contents/Resources.")
         records = []
         for item in sorted(folder.rglob("*")):
             if item.is_symlink():
                 raise ValueError("Symlinked resource bundle contents are not supported.")
+            validate_signature_path(item.relative_to(root), is_directory=item.is_dir())
             if item.is_file():
                 records.append({"path": item.relative_to(folder).as_posix(), "sha256": file_sha256(item), "bytes": item.stat().st_size})
             elif not item.is_dir():
@@ -204,6 +231,7 @@ def package_files(root):
     for path in sorted(Path(root).rglob("*")):
         if path.is_symlink():
             raise ValueError("Symlinked worker package entries are not supported.")
+        validate_signature_path(path.relative_to(root), is_directory=path.is_dir())
         if path.is_file():
             if path.stat().st_nlink != 1:
                 raise ValueError("Hard-linked worker package entries are not supported.")
@@ -295,6 +323,23 @@ def signature_metadata(executable, *, runner=subprocess.run):
     return fields
 
 
+def verify_resource_signatures(staged, expected_team, *, runner=subprocess.run):
+    identities = {}
+    for name, identifier in BUNDLE_IDENTIFIERS.items():
+        bundle = staged / name
+        if bundle.is_symlink() or not bundle.is_dir():
+            raise ValueError("A signed worker resource bundle is missing or symlinked.")
+        result = runner(["codesign", "--verify", "--strict", str(bundle)],
+                        capture_output=True, text=True, check=False, timeout=15)
+        if result.returncode:
+            raise ValueError("A signed worker resource bundle verification failed.")
+        identity = signature_metadata(bundle, runner=runner)
+        if identity["TeamIdentifier"] != expected_team or identity["Identifier"] != identifier:
+            raise ValueError("A worker resource bundle has a different signing team or identifier.")
+        identities[name] = identity
+    return identities
+
+
 def verify_signed_transition(staged, preflight, expected_team, *, runner=subprocess.run):
     staged = Path(staged)
     if preflight.get("schemaVersion") != 1 or not preflight.get("runtimeExecuted"):
@@ -303,15 +348,14 @@ def verify_signed_transition(staged, preflight, expected_team, *, runner=subproc
         raise ValueError("Signing must not rewrite the worker runtime provenance.")
     before = preflight["files"]
     after = package_files(staged)
-    signature_file = lambda path: "_CodeSignature" in Path(path).parts and Path(path).name == "CodeResources"
     for path, value in before.items():
         if path not in after:
             raise ValueError("A worker package input disappeared during signing.")
-        if not value["machO"] and not signature_file(path) and after[path] != value:
+        if not value["machO"] and path not in SIGNATURE_FILES and after[path] != value:
             raise ValueError("A non-signature worker resource changed during signing.")
         if value["machO"] and not after[path]["machO"]:
             raise ValueError("A worker executable lost its Mach-O format during signing.")
-    if any(path not in before and not signature_file(path) for path in after):
+    if any(path not in before and path not in SIGNATURE_FILES for path in after):
         raise ValueError("An unexpected worker resource appeared during signing.")
     result = runner(["codesign", "--verify", "--strict", str(staged / "MossHarness")],
                     capture_output=True, text=True, check=False, timeout=15)
@@ -320,6 +364,7 @@ def verify_signed_transition(staged, preflight, expected_team, *, runner=subproc
     identity = signature_metadata(staged / "MossHarness", runner=runner)
     if identity["TeamIdentifier"] != expected_team:
         raise ValueError("The worker and application signing teams differ.")
+    resource_identities = verify_resource_signatures(staged, expected_team, runner=runner)
     information = runtime_info(staged, runner=runner)
     if not same_json(information, preflight["runtimeInfo"]):
         raise ValueError("The signed worker runtime contract changed.")
@@ -328,7 +373,8 @@ def verify_signed_transition(staged, preflight, expected_team, *, runner=subproc
         "schemaVersion": 1, "provenanceSha256": preflight["provenanceSha256"],
         "preSignExecutableSha256": preflight["preSignExecutableSha256"],
         "postSignExecutableSha256": file_sha256(staged / "MossHarness"),
-        "signature": identity, "runtimeInfo": information,
+        "signature": identity, "resourceBundleSignatures": resource_identities,
+        "runtimeInfo": information,
         "filesSha256": hashlib.sha256(encoded).hexdigest(),
         "sourceBinding": preflight["sourceBinding"],
         "boundary": "pre-sign source/package verification followed by Developer ID signing; runtime metadata is not full semantic equivalence proof",
@@ -360,6 +406,9 @@ def verify_signed_receipt(staged, receipt, expected_team, *, runner=subprocess.r
     identity = signature_metadata(staged / "MossHarness", runner=runner)
     if identity["TeamIdentifier"] != expected_team or not same_json(identity, receipt.get("signature")):
         raise ValueError("The preserved worker signing identity differs from its receipt.")
+    resource_identities = verify_resource_signatures(staged, expected_team, runner=runner)
+    if not same_json(resource_identities, receipt.get("resourceBundleSignatures")):
+        raise ValueError("The preserved worker resource bundle identities differ from their receipt.")
     information = runtime_info(staged, runner=runner)
     if not same_json(information, receipt.get("runtimeInfo")) or not same_json(information, provenance.get("runtimeInfo")):
         raise ValueError("The preserved worker runtime metadata differs from its receipt.")
