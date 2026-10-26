@@ -6,13 +6,13 @@ machine, recordings or evaluation results. Machine-local installation receipts a
 detailed validation logs remain in ignored `.work/`. The root `HANDOFF.md` points to
 the private installation and evaluation receipts.
 
-## Candidate state
+## Release state
 
-The retained installed reference is Nero 0.0.1 build 10. Source candidate 0.0.1
-build 12 is under validation. This does not establish a new installation, notarization,
-long-recording quality or target-hardware qualification. Exact release and installation
-outcomes belong in the release history and private receipts; personal installation
-does not start the public compatibility baseline.
+Nero 0.0.1 build 12 has signed/notarized macOS arm64 artifacts. This is a personal
+development build; it does not establish long-recording quality, target-hardware or
+Windows-device qualification, nor start the public compatibility baseline. Release
+source commits and artifact hashes are in [Release history](release-history.md).
+Machine-local installation and preservation receipts remain private.
 
 ## Native rewrite source
 
