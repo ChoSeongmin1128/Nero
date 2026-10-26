@@ -1,0 +1,9 @@
+{
+  "repository": "nvidia/nemotron-3.5-asr-streaming-0.6b",
+  "revision": "1c8deaecc64b91f034d73e08dd8b64625eb3395d",
+  "files": [{
+    "name": "nemotron-3.5-asr-streaming-0.6b.q8_0.gguf",
+    "bytes": 741548352,
+    "sha256": "a5c435f294eea8f88ce68dd27b8c3bfea7f777cb2fbba04fcd30eaa555f429ae"
+  }]
+}

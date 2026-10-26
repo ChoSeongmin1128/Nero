@@ -1,10 +1,12 @@
 import importlib.util
 import io
+import json
 from pathlib import Path
 import sys
 import tarfile
 import tempfile
 import unittest
+from unittest.mock import patch
 import zipfile
 
 sys.dont_write_bytecode = True
@@ -14,6 +16,21 @@ spec.loader.exec_module(build)
 
 
 class PackagingTests(unittest.TestCase):
+    def fixture(self, root):
+        for name, data in {
+            "gpu/bin/nemo-speech": b"\xcf\xfa\xed\xfebinary",
+            "gpu/lib/libggml.dylib": b"\xcf\xfa\xed\xfelibrary",
+            "gpu/share/licenses/nemo-speech/LICENSE": b"license",
+        }.items():
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+        receipt = {"target": "macos-arm64", "runtime": build.SPEC,
+                   "sourceArchiveHashesVerified": True, "fileHashScope": "before Developer ID code signing",
+                   "files": build.package_files(root)}
+        (root / "runtime.json").write_text(json.dumps(receipt))
+        return receipt
+
     def test_archive_paths_reject_traversal_and_other_bundle_roots(self):
         for name in ("/worker/bin/nemo-speech", "worker/../bin/nemo-speech", "other/bin/nemo-speech"):
             with self.assertRaises(ValueError):
@@ -59,6 +76,64 @@ class PackagingTests(unittest.TestCase):
             self.assertEqual((output / "bin/runtime.dll").read_bytes(), b"dll")
             with self.assertRaises(FileExistsError):
                 build.extract(archive, output, {"name": archive.name})
+
+    def test_staged_package_requires_unchanged_files_and_matching_target(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            expected = self.fixture(root)
+            self.assertEqual(build.verify_staged(root, "macos-arm64"), expected)
+            with self.assertRaises(ValueError):
+                build.verify_staged(root, "windows-x64")
+            (root / "gpu/lib/libggml.dylib").write_bytes(b"changed")
+            with self.assertRaises(ValueError):
+                build.verify_staged(root)
+
+    def test_package_rejects_changed_source_pin_and_links(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            receipt = self.fixture(root)
+            receipt["sourceArchiveHashesVerified"] = False
+            (root / "runtime.json").write_text(json.dumps(receipt))
+            with self.assertRaises(ValueError):
+                build.verify_staged(root)
+            self.fixture(root)
+            (root / "gpu/lib/alias.dylib").symlink_to(root / "gpu/lib/libggml.dylib")
+            with self.assertRaises(ValueError):
+                build.verify_staged(root)
+
+    def test_package_rejects_extra_model_even_with_matching_file_receipt(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            receipt = self.fixture(root)
+            (root / "gpu/lib/model.gguf").write_bytes(b"not a runtime")
+            receipt["files"] = build.package_files(root)
+            (root / "runtime.json").write_text(json.dumps(receipt))
+            with self.assertRaises(ValueError):
+                build.verify_staged(root)
+
+    def test_signing_allows_only_binary_changes_and_preserves_signed_files(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            before = self.fixture(root)
+            with (root / "gpu/bin/nemo-speech").open("ab") as output:
+                output.write(b"signed")
+            signed = build.signed_transition(root, before)
+            build.verify_signed(root, signed)
+            (root / "gpu/share/licenses/nemo-speech/LICENSE").write_bytes(b"changed")
+            with self.assertRaises(ValueError):
+                build.signed_transition(root, before)
+            with self.assertRaises(ValueError):
+                build.verify_signed(root, signed)
+
+    def test_runtime_version_check_has_no_inference_or_download(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.fixture(root)
+            with patch.object(build.subprocess, "run") as run:
+                run.return_value.stdout = "nemo-speech 0.2.0\n"
+                build.verify_staged(root, execute_runtime=True)
+            self.assertEqual(run.call_args.args[0], [str(root / "gpu/bin/nemo-speech"), "--version"])
+            self.assertEqual(run.call_args.kwargs["timeout"], 15)
 
 
 if __name__ == "__main__":

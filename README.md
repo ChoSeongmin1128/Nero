@@ -15,10 +15,13 @@ and storage; it does not import the legacy library automatically.
 The first development slice contains meeting creation, notes, microphone selection,
 recording/pause/stop, PCM preservation, interrupted-file recovery, WAV playback and
 a compact recording window. With packaged workers, Apple silicon/macOS 26 also
-supports local audio import, explicit pinned MOSS model preparation, transcription
-and separately versioned corrections. With a packaged llama.cpp worker, explicit model
+supports local audio import, pinned Nemotron 3.5 Q8 speech recognition, independent
+whole-recording Nemotron 3 speaker analysis and separately versioned corrections.
+Existing MOSS results and edits remain readable without automatic reprocessing.
+With a packaged llama.cpp worker, explicit model
 preparation enables on-demand Gemma 4 E4B Q4 meeting summaries linked to transcript
-revisions. Windows transcription and independent diarization remain unconnected. Native macOS and Windows acceptance results must
+revisions. Windows speech runtimes have separate Vulkan/CPU packaging; native audio
+preparation and end-to-end Windows acceptance remain incomplete. Native macOS and Windows acceptance results must
 be recorded separately.
 
 The Swift source below is retained temporarily as the legacy implementation.

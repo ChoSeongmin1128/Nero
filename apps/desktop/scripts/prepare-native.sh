@@ -8,19 +8,20 @@ root="$(cd "$(dirname "$0")/../../.." && pwd)"
 output="$root/apps/desktop/.generated/native"
 mkdir -p "$output"
 if [[ "$(uname -s)" != Darwin ]]; then
-  echo 'MOSS native preparation currently requires macOS.' >&2
+  echo 'Native audio preparation currently requires macOS.' >&2
   exit 1
 fi
 if [[ $# -eq 0 ]]; then
   python3 "$root/scripts/native-moss-harness/verify_worker_package.py" verify-staged "$output/moss" --optional
 fi
+python3 "$root/scripts/native-diarization/prepare.py" --verify-staged "$output/diarization" --target macos-arm64 --optional
 xcrun swiftc -O -parse-as-library -target "$(uname -m)-apple-macos26.0" \
   "$root/Sources/GroveInference/InferenceConfiguration.swift" \
   "$root/Sources/GroveInference/AnalysisAudioPreparer.swift" \
   "$root/scripts/audio-prepare/AudioPrepare.swift" -o "$output/AudioPrepare"
 codesign --force --sign - "$output/AudioPrepare"
 if [[ $# -eq 0 ]]; then
-  echo 'AudioPrepare ready. Supply matching Release products, package checkouts and the runtime patch receipt to stage MOSS.'
+  echo 'AudioPrepare ready. Prepare the shared speech runtime with scripts/native-diarization/prepare.py --target macos-arm64. MOSS staging remains optional.'
   exit 0
 fi
 "$root/scripts/native-moss-harness/package_worker.sh" "$1" "$2" "$output/moss" "$3"

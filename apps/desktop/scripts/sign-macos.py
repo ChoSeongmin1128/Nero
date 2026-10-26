@@ -17,6 +17,9 @@ ROOT=Path(__file__).resolve().parents[3]
 worker_spec=importlib.util.spec_from_file_location('nero_worker_package',ROOT/'scripts/native-moss-harness/verify_worker_package.py')
 worker_package=importlib.util.module_from_spec(worker_spec)
 worker_spec.loader.exec_module(worker_package)
+speech_spec=importlib.util.spec_from_file_location('nero_speech_package',ROOT/'scripts/native-diarization/prepare.py')
+speech_package=importlib.util.module_from_spec(speech_spec)
+speech_spec.loader.exec_module(speech_package)
 MACHO={b'\xcf\xfa\xed\xfe',b'\xce\xfa\xed\xfe',b'\xfe\xed\xfa\xcf',b'\xfe\xed\xfa\xce',b'\xca\xfe\xba\xbe',b'\xbe\xba\xfe\xca'}
 def run(*args,**kwargs):return subprocess.run(args,check=True,**kwargs)
 def digest(path):
@@ -55,12 +58,20 @@ def require_owned_bundle(app):
 def included_worker(app):
     candidate=app/'Contents/Resources/native/moss'
     return candidate if candidate.exists() or candidate.is_symlink() else None
+def included_speech(app):
+    candidate=app/'Contents/Resources/native/diarization'
+    return candidate if candidate.exists() or candidate.is_symlink() else None
 def verify_preserved_worker(app,receipt,application_identity):
     worker=included_worker(app)
     if worker is None:
         if receipt.get('moss_package') is not None:raise SystemExit('The signed worker package is missing')
     else:
         worker_package.verify_signed_receipt(worker,receipt.get('moss_package'),application_identity['TeamIdentifier'])
+    speech=included_speech(app)
+    if speech is None:
+        if receipt.get('speech_package') is not None:raise SystemExit('The signed speech package is missing')
+    else:
+        speech_package.verify_signed(speech,receipt.get('speech_package'))
 def verify_dmg(path,app,require_ticket):
     run('hdiutil','verify',str(path))
     attached=plistlib.loads(subprocess.check_output(['hdiutil','attach','-readonly','-nobrowse','-noautoopen','-plist',str(path)]))
@@ -120,6 +131,8 @@ if a.dmg_only:
 else:
     worker=included_worker(app)
     worker_preflight=worker_package.verify_staged(worker,execute_runtime=True) if worker is not None else None
+    speech=included_speech(app)
+    speech_preflight=speech_package.verify_staged(speech,target='macos-arm64',execute_runtime=True) if speech is not None else None
     for file in files:
         with file.open('rb') as f:magic=f.read(4)
         if magic in MACHO:
@@ -130,11 +143,13 @@ else:
     run('codesign','--verify','--deep','--strict',str(app))
     application_identity=worker_package.signature_metadata(app)
     worker_receipt=worker_package.verify_signed_transition(worker,worker_preflight,application_identity['TeamIdentifier']) if worker is not None else None
+    speech_receipt=speech_package.signed_transition(speech,speech_preflight) if speech is not None else None
     output.parent.mkdir(parents=True,exist_ok=True)
     upload=output.with_suffix('.notary-upload.zip')
     if upload.exists():raise SystemExit('Notary upload path exists; preserve or move it first')
     run('ditto','-c','-k','--keepParent',str(app),str(upload))
     receipt={'bundle_id':info['CFBundleIdentifier'],'version':info['CFBundleShortVersionString'],'build':info['CFBundleVersion'],'source_commit':build_info['sourceCommit'],'source_tree':build_info['sourceTree'],'source_dirty':False,'architecture':subprocess.check_output(['lipo','-archs',str(app/'Contents/MacOS'/info['CFBundleExecutable'])],text=True).strip(),'signed':True,'notarized':False,'app_signature':application_identity,'moss_package':worker_receipt}
+    receipt['speech_package']=speech_receipt
     if a.notarize:
         receipt['notary']=notarize(upload,Path(str(output)+'.notarization.json'))
         run('xcrun','stapler','staple',str(app));run('xcrun','stapler','validate',str(app));run('spctl','--assess','--type','execute','--verbose=2',str(app));receipt['notarized']=True

@@ -1578,6 +1578,7 @@ dependencies = [
  "block2",
  "fs2",
  "grove-core",
+ "hound",
  "objc2",
  "objc2-foundation",
  "reqwest",

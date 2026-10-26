@@ -23,9 +23,11 @@ export function processingResults(previous, progress) {
   const prior = new Map(processingJobs(previous).map(job => [job.id, job]));
   return processingJobs(progress).filter(job => {
     const before = prior.get(job.id);
+    const recognized = before?.kind === 'transcribe' && job.kind === 'diarize';
     const available = job.status === 'completed'
-      || (job.kind === 'transcribe' && ['cancelled', 'failed', 'interrupted', 'needsReview'].includes(job.status));
+      || recognized
+      || (['transcribe', 'diarize'].includes(job.kind) && ['cancelled', 'failed', 'interrupted', 'needsReview'].includes(job.status));
     return available && job.id && job.meetingId && (before || job.id === progress.id)
-      && before?.status !== job.status;
+      && (recognized || before?.status !== job.status);
   });
 }

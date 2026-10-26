@@ -45,7 +45,9 @@ A UI host should call them off its event/render thread.
 | `audio_path(meeting_id)` | Validated `PathBuf` for finalized playback |
 | `import_audio(title, original, prepared_wav)` | `Meeting`; original plus mono 16 kHz PCM/playback |
 | `transcript(meeting_id)` | `Option<Transcript>` |
-| `commit_transcript(meeting_id, expected_version, raw)` | `Transcript`; validated complete MOSS output |
+| `commit_transcript(meeting_id, expected_version, raw)` | `Transcript`; retained MOSS output contract |
+| `commit_whole_transcript(meeting_id, expected_version, raw)` | `Transcript`; MOSS whole-input EOS/budget/completeness contract |
+| `commit_nemotron_transcript(meeting_id, expected_version, raw)` | `Transcript`; pinned Nemotron 3.5 ASR input/completion/word validation |
 | `edit_transcript(meeting_id, expected_version, texts)` | `Transcript`; separate correction revision |
 | `prepare_shutdown(expected_session_id)` | `Snapshot` |
 
@@ -60,12 +62,27 @@ one command. `None` requires there to be no active session. The host may exit af
 success; a failed final metadata save clears the shutdown fence and returns an error.
 The main window and floating controls should hide independently of this method.
 
-Transcripts bind to the finalized audio session. Commits reject incomplete coverage,
-unparsed output, token caps, invalid timestamps and stale expected versions. Raw output
-is retained even when it cannot become the active transcript. Corrections preserve
-segment identities, times and original text; optimistic versions reject stale edits.
+Transcripts bind to the finalized audio session. The default native host uses pinned
+Nemotron 3.5 Q8 ASR through one complete-input stateful stream, then commits its result
+with `commit_nemotron_transcript`. The core checks model/runtime identity, full input
+frame/duration identity, native completion evidence and valid word timestamps, and
+projects sentence rows without inventing speaker labels. A completed native stream
+does not establish complete recognition of every spoken word.
+
+Retained MOSS APIs keep their incomplete-coverage, parsing, token-cap and whole-input
+EOS/budget validation. Existing MOSS raw output, edits and history retain their saved
+revisions and speaker scope; ordinary reads never rerun recognition. All recognition
+commits reject stale expected versions and preserve raw output even when it cannot
+become the active transcript. Corrections preserve segment identities, times and
+original text; optimistic versions reject stale edits.
 Import retains the original file and its hash separately from normalized PCM/playback.
 The host owns format conversion, model preparation and worker cancellation.
+
+After durable ASR and optional terminology correction, the native host runs independent
+whole-recording Nemotron 3 diarization. Speaker output binds to the saved transcript
+revision and preserves words/times; a speaker-stage failure leaves recognition intact.
+The host persists the source-bound continuation under the same job ID and retries that
+stage without rerunning ASR. Existing meetings are not automatically reprocessed.
 
 Only one recording can own a store. Session commands require the exact current ID;
 stale IDs cannot control a newer recording. Existing recordings cannot be overwritten

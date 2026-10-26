@@ -156,7 +156,18 @@ struct ErrorBody {
     exit_code: i32,
 }
 
+#[cfg(test)]
 fn classify(log: &str, gpu: bool, exit_code: Option<i32>, input: Option<&Path>) -> FailureKind {
+    classify_operation(log, gpu, exit_code, input, "diarize")
+}
+
+fn classify_operation(
+    log: &str,
+    gpu: bool,
+    exit_code: Option<i32>,
+    input: Option<&Path>,
+    operation: &str,
+) -> FailureKind {
     // A missing Windows loader dependency is different from inference/allocation failure.
     if gpu && exit_code == Some(0xc0000135u32 as i32) {
         return FailureKind::BackendUnavailable;
@@ -166,7 +177,7 @@ fn classify(log: &str, gpu: bool, exit_code: Option<i32>, input: Option<&Path>) 
             continue;
         };
         let error = error.error;
-        if error.command != "diarize" || Some(error.exit_code) != exit_code {
+        if error.command != operation || Some(error.exit_code) != exit_code {
             continue;
         }
         if gpu
@@ -205,7 +216,7 @@ fn bounded_log(path: &Path) -> String {
     log
 }
 
-fn run(
+pub(super) fn run(
     process: &Processing,
     executable: &Path,
     arguments: &[std::ffi::OsString],
@@ -213,6 +224,7 @@ fn run(
     cancel: &AtomicBool,
     gpu: bool,
     input: Option<&Path>,
+    operation: &str,
 ) -> Result<(), Failure> {
     check_cancel(cancel)?;
     let output = OpenOptions::new()
@@ -257,11 +269,12 @@ fn run(
         match worker.0.try_wait() {
             Ok(Some(status)) if status.success() => return Ok(()),
             Ok(Some(status)) => {
-                return Err(failure(classify(
+                return Err(failure(classify_operation(
                     &bounded_log(log),
                     gpu,
                     status.code(),
                     input,
+                    operation,
                 )))
             }
             Ok(None) => thread::sleep(Duration::from_millis(100)),
@@ -295,8 +308,19 @@ fn analyze(
     path: &Path,
     cancel: &AtomicBool,
 ) -> Result<SpeakerAnalysisDraft, Failure> {
-    let spec = model();
     let directory = model_dir(process).map_err(|_| failure(FailureKind::Storage))?;
+    analyze_with_model(process, source, audio, path, cancel, &directory)
+}
+
+pub(super) fn analyze_with_model(
+    process: &Processing,
+    source: Transcript,
+    audio: &Path,
+    path: &Path,
+    cancel: &AtomicBool,
+    directory: &Path,
+) -> Result<SpeakerAnalysisDraft, Failure> {
+    let spec = model();
     let item = &spec.files[0];
     check_cancel(cancel)?;
     if !matches_file(&directory.join(&item.name), item, cancel) {
@@ -332,6 +356,7 @@ fn analyze(
             cancel,
             gpu,
             Some(audio),
+            "diarize",
         );
         record(
             &attempt_dir.join("outcome.json"),
@@ -393,6 +418,84 @@ fn directory_for_attempt(path: &Path, attempt: u8) -> Result<PathBuf, Failure> {
     directory(path, &format!("diarization-{attempt}")).map_err(|_| failure(FailureKind::Storage))
 }
 
+fn source_failure(error: grove_core::CoreError) -> Failure {
+    failure(match error {
+        grove_core::CoreError::MeetingNotFound => FailureKind::MeetingUnavailable,
+        grove_core::CoreError::InvalidState(_) => FailureKind::SourceChanged,
+        _ => FailureKind::Storage,
+    })
+}
+
+fn check_source(
+    core: &CoreHandle,
+    meeting_id: &str,
+    source: &Transcript,
+    audio: &Path,
+) -> Result<(), Failure> {
+    let current = core.transcript(meeting_id).map_err(source_failure)?;
+    if current.as_ref().map(|document| &document.version) != Some(&source.version)
+        || core.audio_path(meeting_id).map_err(source_failure)? != audio
+    {
+        return Err(failure(FailureKind::SourceChanged));
+    }
+    let snapshot = core.snapshot().map_err(source_failure)?;
+    if snapshot.session.is_some_and(|session| {
+        matches!(
+            session.state,
+            grove_core::SessionState::Recording | grove_core::SessionState::Paused
+        )
+    }) {
+        return Err(failure(FailureKind::RecordingActive));
+    }
+    Ok(())
+}
+
+pub(super) fn analyze_recording(
+    process: &Processing,
+    core: &CoreHandle,
+    meeting_id: &str,
+    source: Transcript,
+    audio: &Path,
+    path: &Path,
+    cancel: &AtomicBool,
+) -> Result<(), Failure> {
+    check_cancel(cancel)?;
+    check_source(core, meeting_id, &source, audio)?;
+    if !availability(process).1 {
+        return Err(failure(FailureKind::ModelNotReady));
+    }
+    process.update(|progress| {
+        progress.phase = Some("diarizing".into());
+        progress.message = "화자 구분 중".into();
+    });
+    let draft = analyze(process, source, audio, path, cancel)?;
+    check_cancel(cancel)?;
+    check_source(core, meeting_id, &draft.source, audio)?;
+    let mut commit_failure = None;
+    process
+        .commit_transcript_result(cancel, || {
+            core.apply_diarization(meeting_id, draft).map_err(|error| {
+                commit_failure = Some(match error {
+                    grove_core::CoreError::InvalidState(_) => FailureKind::SourceChanged,
+                    grove_core::CoreError::MeetingNotFound => FailureKind::MeetingUnavailable,
+                    grove_core::CoreError::InvalidInput(_) => FailureKind::Output,
+                    _ => FailureKind::Storage,
+                });
+                error.to_string()
+            })
+        })
+        .map_err(|_| {
+            failure(commit_failure.unwrap_or_else(|| {
+                if cancel.load(std::sync::atomic::Ordering::Acquire) {
+                    FailureKind::Cancelled
+                } else {
+                    FailureKind::Storage
+                }
+            }))
+        })?;
+    Ok(())
+}
+
 impl Processing {
     pub fn prepare_diarization(self: &Arc<Self>) -> Result<Progress, String> {
         self.prepare_named_model(MANIFEST, "speaker-model", "Nemotron3")
@@ -435,59 +538,8 @@ impl Processing {
             &source_core,
             required_fingerprint,
             move |this, cancel, path| {
-                if core
-                    .transcript(&meeting_id)
-                    .map_err(|error| error.to_string())?
-                    .as_ref()
-                    .map(|doc| &doc.version)
-                    != Some(&source.version)
-                    || core
-                        .audio_path(&meeting_id)
-                        .map_err(|error| error.to_string())?
-                        != audio
-                {
-                    return Err("회의 내용이 변경되어 화자 구분을 시작하지 않았습니다.".into());
-                }
-                this.update(|progress| {
-                    progress.phase = Some("preparing".into());
-                    progress.message = "화자 구분 준비 중".into();
-                });
-                let result = (|| -> Result<(), Failure> {
-                    let snapshot = core
-                        .snapshot()
-                        .map_err(|_| failure(FailureKind::MeetingUnavailable))?;
-                    if snapshot.session.is_some_and(|session| {
-                        matches!(
-                            session.state,
-                            grove_core::SessionState::Recording | grove_core::SessionState::Paused
-                        )
-                    }) {
-                        return Err(Failure::new(
-                            FailureKind::RecordingActive,
-                            "녹음을 마친 뒤 화자를 구분해 주세요.",
-                        ));
-                    }
-                    let draft = analyze(&this, source, &audio, &path, &cancel)?;
-                    check_cancel(&cancel)?;
-                    let mut commit_failure = None;
-                    this.commit_transcript_result(&cancel, || {
-                        core.apply_diarization(&meeting_id, draft).map_err(|error| {
-                            commit_failure = Some(match error {
-                                grove_core::CoreError::InvalidState(_) => {
-                                    FailureKind::SourceChanged
-                                }
-                                grove_core::CoreError::MeetingNotFound => {
-                                    FailureKind::MeetingUnavailable
-                                }
-                                grove_core::CoreError::InvalidInput(_) => FailureKind::Output,
-                                _ => FailureKind::Storage,
-                            });
-                            error.to_string()
-                        })
-                    })
-                    .map_err(|_| failure(commit_failure.unwrap_or(FailureKind::Cancelled)))?;
-                    Ok(())
-                })();
+                let result =
+                    analyze_recording(&this, &core, &meeting_id, source, &audio, &path, &cancel);
                 if let Err(error) = result {
                     this.update(|progress| progress.failure_kind = Some(error.kind));
                     return Err(error.message);
@@ -501,6 +553,121 @@ impl Processing {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn baseline(process: &Processing) -> (CoreHandle, String, Transcript, PathBuf) {
+        let core = CoreHandle::open(&process.root).unwrap();
+        let input = process.root.join("synthetic-input.wav");
+        let data_size = 16000u32 * 2;
+        let mut bytes = Vec::from(b"RIFF".as_slice());
+        bytes.extend_from_slice(&(36 + data_size).to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt ");
+        bytes.extend_from_slice(&16u32.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&16000u32.to_le_bytes());
+        bytes.extend_from_slice(&32000u32.to_le_bytes());
+        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&16u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&data_size.to_le_bytes());
+        bytes.resize(bytes.len() + data_size as usize, 0);
+        fs::write(&input, bytes).unwrap();
+        let meeting = core
+            .import_audio("Synthetic meeting", &input, &input)
+            .unwrap();
+        let raw = serde_json::to_vec(&json!({
+            "model":"OpenMOSS-Team/MOSS-Transcribe-Diarize",
+            "segments":[{"start":0.0,"end":1.0,"text":"예시 문장","speaker_id":"S1"}],
+            "hitTokenLimit":false,"hasUnparsedText":false,
+            "processedAudioFrames":16000,"inputAudioFrames":16000,"audioDurationSeconds":1.0
+        }))
+        .unwrap();
+        let document = core.commit_transcript(&meeting.id, None, raw).unwrap();
+        let audio = core.audio_path(&meeting.id).unwrap();
+        (core, meeting.id, document, audio)
+    }
+
+    #[test]
+    fn absent_speaker_model_preserves_the_saved_recognition_and_audio() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let process = Processing::new(root.clone(), root);
+        let (core, meeting_id, source, audio) = baseline(&process);
+        let before = fs::read(&audio).unwrap();
+        let cancel = AtomicBool::new(false);
+        let error = analyze_recording(
+            &process,
+            &core,
+            &meeting_id,
+            source.clone(),
+            &audio,
+            temporary.path(),
+            &cancel,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, FailureKind::ModelNotReady);
+        assert_eq!(
+            core.transcript(&meeting_id).unwrap().unwrap().version,
+            source.version
+        );
+        assert_eq!(fs::read(&audio).unwrap(), before);
+        assert!(!temporary.path().join("diarization-0").exists());
+    }
+
+    #[test]
+    fn changed_recognition_is_rejected_before_starting_speaker_analysis() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let process = Processing::new(root.clone(), root);
+        let (core, meeting_id, source, audio) = baseline(&process);
+        let edited = core
+            .edit_transcript(
+                &meeting_id,
+                source.version.clone(),
+                vec!["수정한 문장".into()],
+            )
+            .unwrap();
+        let error = analyze_recording(
+            &process,
+            &core,
+            &meeting_id,
+            source,
+            &audio,
+            temporary.path(),
+            &AtomicBool::new(false),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, FailureKind::SourceChanged);
+        assert_eq!(
+            core.transcript(&meeting_id).unwrap().unwrap().version,
+            edited.version
+        );
+        assert!(!temporary.path().join("diarization-0").exists());
+    }
+
+    #[test]
+    fn cancellation_between_recognition_and_speaker_analysis_keeps_the_baseline() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let process = Processing::new(root.clone(), root);
+        let (core, meeting_id, source, audio) = baseline(&process);
+        let error = analyze_recording(
+            &process,
+            &core,
+            &meeting_id,
+            source.clone(),
+            &audio,
+            temporary.path(),
+            &AtomicBool::new(true),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, FailureKind::Cancelled);
+        assert_eq!(
+            core.transcript(&meeting_id).unwrap().unwrap().version,
+            source.version
+        );
+        assert!(!temporary.path().join("diarization-0").exists());
+    }
 
     #[test]
     fn one_recording_invocation_preserves_state_and_never_uses_full_attention() {
@@ -659,7 +826,8 @@ mod tests {
     #[test]
     fn cancellation_reaps_the_single_worker_without_starting_a_cpu_retry() {
         let temporary = tempfile::tempdir().unwrap();
-        let process = Processing::new(temporary.path().into(), temporary.path().into());
+        let root = temporary.path().canonicalize().unwrap();
+        let process = Processing::new(root.clone(), root);
         let cancel = Arc::new(AtomicBool::new(false));
         let worker_cancel = cancel.clone();
         let log = temporary.path().join("worker.log");
@@ -673,6 +841,7 @@ mod tests {
                 &worker_cancel,
                 false,
                 None,
+                "diarize",
             )
         });
         thread::sleep(Duration::from_millis(150));

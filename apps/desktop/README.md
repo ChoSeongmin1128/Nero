@@ -85,26 +85,31 @@ frontend, whose actions require the native bridge; it does not supply fake meeti
 - Recover complete stored frames after interruption; retain originals on failure.
 - On Apple silicon with macOS 26 or later and packaged workers, import local audio
   through the native file picker, retaining the original bytes and separate playback WAV.
-- Explicitly prepare the pinned MOSS model, then recognize each finalized recording
-  with one complete-input decoder context. The checked worker reports EOS, measured
-  context/output budgets and one-generation evidence before a result can be saved.
-  It does not silently switch to chunk recognition on failure. The upstream 90-minute
-  input range is not an ordinary-laptop memory/quality qualification. Original audio
-  and previous results remain available after an unsupported or failed input.
-  Downloads are checked against the shared manifest; inference uploads no audio.
+- Explicitly prepare pinned Nemotron 3.5 Q8 ASR and recognize each finalized recording
+  through one stateful NeMo-Speech.cpp stream over the complete prepared WAV, with
+  endpointing disabled and a finish call at EOF. Native output and execution evidence
+  are retained; saving checks pinned identity, full input-frame identity, completion
+  evidence and word timestamps. The core projects sentence rows without speaker labels.
+  There is no silent chunk-ASR fallback. Original audio and previous results remain
+  available after an unsupported or failed input. Inference uploads no audio.
 - Optional machine-local terminology profiles create a separate correction revision
   after recognition. Uncertain names remain unchanged; an absent optional contextual
   model does not block recognition. See [terminology correction](../../docs/terminology.md).
-- With separately packaged NeMo-Speech.cpp and explicit speaker-model preparation,
-  speaker management can analyze the complete finalized recording in one stateful run.
-  It preserves words/times/originals, commits only against the unchanged source and
-  leaves mixed or insufficiently covered utterances unassigned. This optional route
-  is not yet part of automatic post-recording recognition; target-hardware accuracy
-  and Windows acceptance remain separate checks.
+- After recognition is saved and optional terminology correction finishes, independent
+  Nemotron 3 speaker analysis processes the complete finalized recording in one
+  stateful run using the shared native speech package. The source-bound continuation
+  is durable under the same job ID; a speaker-stage retry does not rerun ASR. Failure
+  or cancellation preserves the saved transcript and audio. Analysis preserves words/
+  times/originals, commits against the unchanged source and leaves mixed or insufficiently
+  covered utterances unassigned. Speaker management also supports explicit reanalysis;
+  target-hardware accuracy and Windows acceptance remain separate checks.
 - Edit transcript text, seek to a segment, and reopen corrections after restarting.
   Navigation saves and closes the editor; failed persistence retains its input.
 - Confirm re-transcription and restore a verified previous recognition run with version
   checks. This preserves original audio and raw/initial recognition output.
+  Existing MOSS results, edits and history remain readable/restorable with their
+  original model revisions and chunk/recording scope. Their whole-input EOS and
+  completeness contract is retained; existing meetings are not automatically rerun.
 - Search matching context in the library or highlight/move through literal matches in
   a meeting. Speaker changes on one utterance include replay; full speaker management
   keeps its actions outside the scrolling content.
@@ -120,9 +125,11 @@ Keychain access, automatic model installation or account connection occurs.
 ## First use
 
 New meetings, new recordings and file import require speech recognition to be
-prepared. Meeting summary is optional: an unchecked choice includes it in the initial
-download, or it can be downloaded separately later. Preparation starts only after a
-click, verifies each model and retains completed models and partial downloads.
+prepared. Initial setup includes Nemotron 3.5 Q8 ASR and the smaller Nemotron 3 speaker
+model when its runtime is supported. Meeting summary is optional: select its initially
+unchecked choice to include it in the initial download, or download it separately
+later. Preparation starts only after a click, verifies each model and retains completed
+models and partial downloads.
 Normal controls show no model sizes. Available disk space is checked before transfer
 and periodically while downloading; insufficient space surfaces a recovery message.
 The UI calls the generated text "음성 기록" and the summary "회의록".
@@ -200,28 +207,42 @@ app assets using the pinned Tauri CLI. Tray assets retain the transparent mark. 
 Windows switches the monochrome tray asset on reported window-theme changes;
 contrast on separately configured taskbar/application themes needs Windows validation.
 
-## Optional macOS transcription workers
+## Native speech workers
 
-Build the pinned Release/macOS `MossHarness` scheme as described in
-`scripts/native-moss-harness/README.md`, using task-local build and checkout directories.
-Then, from the repository root, stage its matching resources before the Tauri build:
+From the repository root, stage the pinned shared NeMo-Speech.cpp package and compile
+AudioPrepare before the Tauri build:
 
 ```sh
-apps/desktop/scripts/prepare-native.sh XCODE_RELEASE_DIRECTORY CHECKOUTS_DIRECTORY PATCH_RECEIPT
+python3 scripts/native-diarization/prepare.py --target macos-arm64
+apps/desktop/scripts/prepare-native.sh
 ```
 
-This compiles the shared audio preparer and packages the worker, its matching Metal
-resources, dependency notices and resolution lock under `.generated/native`.
-The worker destination must be new; existing packages are never silently replaced.
-No development tools are needed by the resulting app. The recording app itself retains
-its macOS 13 minimum; this optional transcription route requires Apple silicon/macOS 26.
-Absent or unsupported workers leave transcription unavailable. Windows transcription
-is not implemented. Models remain outside the application bundle in its own data directory.
+The shared package supplies ASR and diarization executables, libraries, Metal resources
+and licenses once under `.generated/native/diarization`. Preparation/build/signing
+verify pinned archive provenance, target and file hashes; signing preserves separate
+post-signing hashes. The worker destination must be new; existing packages are never
+silently replaced. End users need no compiler, Python or separate CLI. The recorder
+retains its macOS 13 minimum; AudioPrepare and the complete recognition path currently
+require Apple silicon/macOS 26. Absent or unsupported workers leave recognition unavailable.
 
-The model snapshot and file hashes are shared with the retained Swift implementation
-through `Sources/GroveApp/Resources/Models/moss.json`. Preparation starts only from the
-app's explicit model button. The downloader retains interrupted partial files, resumes verified Range responses,
-and checks the complete file SHA256 before publishing a readiness marker.
+The same preparation tool supports `--target windows-x64` with app-local Microsoft C++
+runtime files as described in [the runtime contract](../../scripts/native-diarization/README.md).
+It packages separate Vulkan and CPU bundles. This does not supply a Windows
+AudioPrepare implementation or establish end-to-end Windows recognition availability.
+ASR and diarization prefer GPU; only confirmed GPU-backend unavailability permits the
+CPU route. Allocation or generic runtime errors do not trigger a CPU fallback.
+
+ASR model files and hashes are pinned in `config/models/nemotron-asr.json`, and the
+speaker model in `apps/desktop/models/diarization.json`. Models remain outside the app
+bundle in its own data directory. Preparation starts only from the app's explicit
+model action. The downloader retains interrupted partial files, resumes verified Range
+responses and checks the complete file SHA256 before publishing a readiness marker.
+
+Retained MOSS packaging remains available through
+`scripts/native-moss-harness/README.md` and the three-argument `prepare-native.sh` route.
+It does not replace the shared speech package or make MOSS the default ASR. Stored
+MOSS whole-input output keeps its EOS/budget/complete-input validation and versioned
+history; loading it does not start recognition or download a model.
 
 The product name is Nero. Packaging uses the approved 23-B r7 A mark and light
 application-icon background. The existing application identifier and
@@ -239,9 +260,10 @@ The current recorder has a RIFF WAV size limit and no automatic device reconnect
 It interrupts rather than silently claiming success on device/queue/write errors.
 See the core README for queue capacity and file recovery details.
 
-Diarization, domain dictionaries and reference-based summary context remain
-future integrations. MOSS worker execution does not establish transcript accuracy or
-speaker identities; model qualification and release acceptance remain separate work.
+Automatic voice identity matching and reference-based summary context remain future
+integrations. Native worker completion does not establish transcript accuracy,
+eight-person diarization quality or speaker identities; model qualification and release
+acceptance remain separate work.
 
 
 ## On-demand summaries

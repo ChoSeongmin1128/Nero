@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod agent_connection;
+mod asr;
 #[cfg(target_os = "macos")]
 mod app_menu;
 mod diarization;

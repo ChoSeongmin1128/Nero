@@ -15,7 +15,8 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use uuid::Uuid;
 
-const MODEL: &str = include_str!("../../../../Sources/GroveApp/Resources/Models/moss.json");
+const MODEL: &str = crate::asr::MANIFEST;
+const MODEL_LABEL: &str = crate::asr::LABEL;
 
 fn moss_worker_failure(log: &str) -> Option<(crate::summary_failure::FailureKind, &'static str)> {
     use crate::summary_failure::FailureKind;
@@ -357,21 +358,19 @@ impl Processing {
         })
     }
     fn model(&self) -> Model {
-        serde_json::from_str(MODEL).expect("bundled MOSS manifest")
+        serde_json::from_str(MODEL).expect("bundled speech recognition manifest")
     }
     fn model_dir(&self) -> Result<PathBuf, String> {
         directory(
             &self.root,
-            &format!("models/MOSS-{}", self.model().revision),
+            &format!("models/{MODEL_LABEL}-{}", self.model().revision),
         )
     }
     fn worker(&self, name: &str) -> PathBuf {
         self.resources.join("native").join(name)
     }
     fn supported(&self) -> bool {
-        platform_supported()
-            && self.worker("moss/MossHarness").is_file()
-            && self.worker("AudioPrepare").is_file()
+        platform_supported() && crate::asr::supported(self) && self.worker("AudioPrepare").is_file()
     }
     pub fn snapshot(&self) -> Progress {
         let mut progress = {
@@ -1386,7 +1385,7 @@ impl Processing {
         })
     }
     pub fn prepare_model(self: &Arc<Self>) -> Result<Progress, String> {
-        self.prepare_named_model(MODEL, "model", "MOSS")
+        self.prepare_meeting_models(false)
     }
     pub fn require_meeting_models(&self) -> Result<(), String> {
         meeting_models_ready(&self.snapshot())
@@ -1395,11 +1394,19 @@ impl Processing {
         self: &Arc<Self>,
         include_summary: bool,
     ) -> Result<Progress, String> {
+        if self.shutting_down.load(Ordering::Acquire) {
+            return Err("앱을 종료하고 있습니다.".into());
+        }
         let progress = self.snapshot();
         if !progress.supported || (include_summary && !progress.summary_supported) {
             return Err("이 환경에서는 음성 인식과 회의 요약을 아직 사용할 수 없습니다.".into());
         }
-        let required = self.remaining_model_bytes(MODEL, "MOSS")?
+        let required = self.remaining_model_bytes(MODEL, MODEL_LABEL)?
+            + if progress.speaker_supported {
+                self.remaining_model_bytes(crate::diarization::MANIFEST, "Nemotron3")?
+            } else {
+                0
+            }
             + if include_summary {
                 self.remaining_model_bytes(crate::summary::MANIFEST, "Gemma4-E4B")?
             } else {
@@ -1415,12 +1422,26 @@ impl Processing {
             move |this, cancel, _path| {
                 let progress = this.snapshot();
                 let total = progress.model_bytes
+                    + if progress.speaker_supported {
+                        progress.speaker_bytes
+                    } else {
+                        0
+                    }
                     + if include_summary {
                         progress.summary_bytes
                     } else {
                         0
                     };
-                let first = this.prepare_files(MODEL, "MOSS", &cancel, 0, total)?;
+                let mut first = this.prepare_files(MODEL, MODEL_LABEL, &cancel, 0, total)?;
+                if progress.speaker_supported {
+                    first += this.prepare_files(
+                        crate::diarization::MANIFEST,
+                        "Nemotron3",
+                        &cancel,
+                        first,
+                        total,
+                    )?;
+                }
                 if include_summary {
                     this.prepare_files(
                         crate::summary::MANIFEST,
@@ -1502,14 +1523,14 @@ impl Processing {
                 self.update(|p| {
                     p.model_stage = Some(
                         match label {
-                            "MOSS" => "speech",
+                            MODEL_LABEL => "speech",
                             "Nemotron3" => "speakers",
                             _ => "summary",
                         }
                         .into(),
                     );
                     p.message = match label {
-                        "MOSS" => "음성 인식 모델 확인 중",
+                        MODEL_LABEL => "음성 인식 모델 확인 중",
                         "Nemotron3" => "화자 구분 모델 확인 중",
                         _ => "요약 모델 확인 중",
                     }
@@ -1523,7 +1544,7 @@ impl Processing {
                 if !matches {
                     self.update(|p| {
                         p.message = match label {
-                            "MOSS" => "음성 인식 모델 다운로드 중",
+                            MODEL_LABEL => "음성 인식 모델 다운로드 중",
                             "Nemotron3" => "화자 구분 모델 다운로드 중",
                             _ => "요약 모델 다운로드 중",
                         }
@@ -1905,21 +1926,25 @@ impl Processing {
                     p.phase = Some("recognizing".into());
                     p.message = "텍스트로 변환 중".into();
                 });
-                let output = path.join("moss.json");
-                this.run_worker(
-                    &this.worker("moss/MossHarness"),
-                    &[&prepared, &output, &directory],
-                    &path.join("moss.log"),
-                    &cancel,
-                )?;
-                cancelled(&cancel)?;
-                if fs::metadata(&output).map_err(message)?.len() > 16 * 1024 * 1024 {
-                    return Err("음성 기록 결과가 너무 큽니다. 원문 결과는 보관했습니다.".into());
-                }
-                let raw = fs::read(output).map_err(message)?;
+                let raw = crate::asr::recognize(&this, &prepared, &path, &cancel, &directory)
+                    .map_err(|error| {
+                        this.update(|progress| progress.failure_kind = Some(error.kind));
+                        error.message
+                    })?;
+                let mut output = OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(path.join("recognition.json"))
+                    .map_err(message)?;
+                output
+                    .write_all(&raw)
+                    .map_err(crate::storage_space::write_error)?;
+                output
+                    .sync_all()
+                    .map_err(crate::storage_space::write_error)?;
                 cancelled(&cancel)?;
                 let source = this.checkpoint_transcript(&cancel, || {
-                    core.commit_whole_transcript(&meeting_id, expected, raw)
+                    core.commit_nemotron_transcript(&meeting_id, expected, raw)
                 })?;
                 crate::terminology::correct(
                     &this,
@@ -1930,9 +1955,72 @@ impl Processing {
                     &path,
                     &cancel,
                 )?;
+                cancelled(&cancel)?;
+                // Recognition is already durable. A speaker-stage retry must never rerun ASR.
+                let source = core
+                    .transcript(&meeting_id)
+                    .map_err(message)?
+                    .ok_or("음성 기록을 찾을 수 없습니다.")?;
+                this.continue_with_speakers(&core, &meeting_id, &cancel)?;
+                crate::diarization::analyze_recording(
+                    &this,
+                    &core,
+                    &meeting_id,
+                    source,
+                    &audio,
+                    &path,
+                    &cancel,
+                )
+                .map_err(|error| {
+                    this.update(|progress| progress.failure_kind = Some(error.kind));
+                    error.message
+                })?;
                 Ok(Some(meeting_id))
             },
         )
+    }
+
+    fn continue_with_speakers(
+        &self,
+        core: &CoreHandle,
+        meeting_id: &str,
+        cancel: &AtomicBool,
+    ) -> Result<(), String> {
+        let fingerprint = Self::source_fingerprint(core, meeting_id, "diarize")?;
+        let mut progress = self.progress.lock().unwrap();
+        cancelled(cancel)?;
+        self.job_ready()?;
+        let mut record = self
+            .records
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|record| Some(&record.id) == progress.id.as_ref())
+            .cloned()
+            .ok_or("음성 처리 작업을 찾을 수 없습니다.")?;
+        if record.kind != "transcribe"
+            || record.status != JobStatus::Running
+            || record.meeting_id.as_deref() != Some(meeting_id)
+        {
+            return Err("음성 처리 작업이 변경되었습니다.".into());
+        }
+        record.kind = "diarize".into();
+        record.source_fingerprint = Some(fingerprint);
+        record.phase = Some("preparing".into());
+        record.message = "화자 구분 준비 중".into();
+        record.updated_at = now().max(record.updated_at);
+        self.save_job(record)?;
+        progress.kind = "diarize".into();
+        progress.phase = Some("preparing".into());
+        progress.message = "화자 구분 준비 중".into();
+        progress.failure_kind = None;
+        progress.committing = false;
+        progress.summary_committing = false;
+        progress.revision = self
+            .revision
+            .fetch_add(1, Ordering::AcqRel)
+            .saturating_add(1);
+        Ok(())
     }
 
     pub fn transcribe_recording(

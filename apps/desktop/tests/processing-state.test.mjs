@@ -45,3 +45,16 @@ test('cancellation keeps the meeting owned until worker termination is confirmed
   assert.equal(pendingJob(progress, { meetingId: 'meeting-a' }).id, 'stopping');
   assert.equal(pendingJob({ ...progress, jobs: [{ ...progress.jobs[0], status: 'cancelled' }] }), undefined);
 });
+
+test('recognition becomes readable before speaker analysis and stays available on speaker failure', () => {
+  const recognition = { id: 'pipeline', kind: 'transcribe', meetingId: 'meeting-a', status: 'running' };
+  const speaker = { ...recognition, kind: 'diarize' };
+  assert.deepEqual(processingResults(recognition, speaker), [speaker]);
+  assert.deepEqual(processingResults(speaker, speaker), []);
+  for (const status of ['failed', 'cancelled', 'interrupted', 'needsReview']) {
+    const finished = { ...speaker, status };
+    assert.deepEqual(processingResults(speaker, finished), [finished]);
+    assert.deepEqual(processingResults(recognition, finished), [finished]);
+    assert.deepEqual(processingResults(finished, finished), []);
+  }
+});

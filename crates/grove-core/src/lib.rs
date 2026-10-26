@@ -2,6 +2,7 @@ mod capture;
 mod diarization;
 mod engine;
 mod library;
+mod nemotron;
 pub mod reader;
 mod store;
 mod summary;
@@ -308,6 +309,16 @@ impl CoreHandle {
     ) -> Result<Transcript> {
         let id = id.to_owned();
         self.call(move |engine| engine.commit_whole_transcript(&id, expected, raw))
+    }
+
+    pub fn commit_nemotron_transcript(
+        &self,
+        id: &str,
+        expected: Option<TranscriptVersion>,
+        raw: Vec<u8>,
+    ) -> Result<Transcript> {
+        let id = id.to_owned();
+        self.call(move |engine| engine.commit_nemotron_transcript(&id, expected, raw))
     }
 
     pub fn edit_transcript(

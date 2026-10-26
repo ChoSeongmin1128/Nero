@@ -30,26 +30,32 @@ Machine-local installation and preservation receipts remain private.
   `dragDropEnabled: false`; import keeps the native picker. Recorder physical placement
   recovers after display changes while preserving visible user placement and focus policy.
 
-- Default MOSS recognition uses one complete-recording decoder context. The checked
-  `nero-moss-whole-v2` runtime retains the `whole-recording-v1` processing policy and
-  reports metadata schema 2: actual multimodal budgets, configured/tokenizer EOS,
-  terminal token and per-chunk acoustic feature/embedding coverage. New recognition
-  requires one decoder call, the pinned model EOS, consistent complete-input evidence,
-  complete parsing and the unchanged source. EOS and structural coverage do not prove
-  that every spoken word was recognized. Existing v1 whole-input artifacts remain
-  available through validated stored history, never as newly accepted v1 worker output.
-  Cancellation serializes with the baseline save and explicitly reaps the worker;
-  later terminology cancellation remains possible.
-  Existing recordings are never automatically rerun. See
-  [Worker contract](../scripts/native-moss-harness/README.md).
+- Default recognition uses the pinned Nemotron 3.5 Q8 GGUF and NeMo-Speech.cpp
+  runtime. One stateful stream consumes the complete prepared WAV with endpointing
+  disabled and finishes at EOF. The adapter preserves native output and execution
+  evidence separately; the core checks model/runtime identity, full input-frame
+  identity, native completion and valid word timestamps before saving sentence rows.
+  ASR does not invent speaker labels. A successful process/stream finish is not proof
+  that every spoken word was recognized. Cancellation serializes with the baseline
+  save and explicitly reaps the worker. Existing recordings are never automatically
+  rerun. See [Native speech contract](../scripts/native-diarization/README.md).
+- Saved MOSS raw output, corrections and recognition history keep their original
+  identities and remain readable/restorable. Its whole-recording artifacts retain the
+  `nero-moss-whole-v2` runtime/schema-2 EOS, measured-budget, single-generation and
+  complete-input validation contract.
+  Existing v1 artifacts use the validated stored-artifact policy, not a new-worker
+  acceptance path. MOSS is not a fallback for new recognition. See
+  [Retained MOSS worker contract](../scripts/native-moss-harness/README.md).
 
 
-- Whole-recording speaker analysis has an optional native adapter and explicit model
-  preparation, with a single stateful NeMo-Speech.cpp invocation. It preserves raw
-  output/provenance, rejects stale source revisions and projects conservatively without
-  changing words or times. The default post-recording recognition route still does not
-  invoke it automatically; default integration, packaging and target-platform quality
-  remain pending. This is not a release/installation receipt.
+- After durable recognition and optional terminology correction, the default route
+  runs independent whole-recording Nemotron 3 speaker analysis through the shared
+  NeMo-Speech.cpp package. Its source-bound continuation is persisted under the same
+  job ID; a speaker-stage retry does not rerun recognition. It preserves raw output/
+  provenance, rejects stale source revisions and projects conservatively without
+  changing words or times. Failure/cancellation retains the saved transcript and audio.
+  Speaker management also supports explicit reanalysis. Target-hardware accuracy and
+  distribution acceptance remain unqualified; this is not a release/installation receipt.
 - Speaker display names record automatic/user origin when known; missing legacy origin
   remains unknown. Summary input separates chunk scope from whole-recording groups,
   never derives an attendee roster/count from labels, and allows user-assigned names
@@ -111,10 +117,10 @@ Machine-local installation and preservation receipts remain private.
   upgrades run as a separate startup operation with immutable before/after evidence.
   Ordinary reads do not reconstruct or migrate. Workspace JSON float parsing preserves
   persisted coordinates; timestamps are checked as ASR sample addresses, never epsilon identity.
-  Old MOSS labels retain their independent chunk scope; newly verified single-input
-  results have recording scope. A separately invoked whole-recording adapter can
-  replace assignments; default automatic integration
-  and qualified eight-person diarization remain pending/unverified. See
+  Old MOSS labels retain their original independent chunk or verified recording scope.
+  New Nemotron ASR has no speaker labels; the separate whole-recording stage supplies
+  recording-scoped assignments. Explicit reanalysis can replace assignments while
+  preserving text. Qualified eight-person diarization remains unverified. See
   [Meeting library and speakers](meeting-library-and-speakers.md) for storage, cancellation,
   recovery and validation boundaries; this source contract is not an installed-app receipt.
 
@@ -145,13 +151,17 @@ Machine-local installation and preservation receipts remain private.
   resources preserve the source commit/tree and dirty state; release signing requires
   a clean matching source. macOS packaging can produce separately signed/notarized
   ZIP and DMG artifacts, with distinct receipts and read-only embedded-app verification.
-  macOS build/preparation and sign-time gates reject a present worker whose canonical
-  sources, lock, patch receipt, resources or executable have changed. Signing also runs
-  the no-model runtime metadata check. Developer ID signing preserves the original
+  macOS build/preparation and sign-time gates reject a present retained MOSS worker whose
+  canonical sources, lock, patch receipt, resources or executable have changed. The
+  shared speech package verifies pinned archive provenance, target and staged file
+  hashes; signing retains separate pre/post-signing hashes and checks its runtime version
+  without loading models. MOSS signing also runs its no-model runtime metadata check.
+  Developer ID signing preserves the original
   ad-hoc provenance and records separate pre/post executable hashes, signed identity,
   runtime metadata and package/app tree digests. These bindings do not establish
-  binary/source semantic equivalence or model quality. An absent optional macOS worker
-  remains unavailable; Windows builds do not require this unsupported MOSS runtime.
+  binary/source semantic equivalence or model quality. An absent shared speech package
+  leaves ASR/diarization unavailable; a retained MOSS package cannot substitute for it.
+  Windows builds do not require the unsupported MOSS runtime.
 
 - Settings contains Screen / Recording / Models / Agent integration. Shared appearance behavior is packaged
   for both windows, with six colors and independent Light / Dark / System brightness.
@@ -161,6 +171,8 @@ Machine-local installation and preservation receipts remain private.
 
 - Initial setup gates creation, recording start and import on speech recognition
   readiness. Meeting summary is optional, unchecked initially and downloadable later.
+  Setup includes the smaller pinned Nemotron 3 speaker model after the Nemotron 3.5
+  Q8 ASR model when the speaker runtime is supported.
   Preparation is explicit/cancellable; selected models download sequentially. Available
   disk space is checked before and during transfer, with partial files retained. Normal
   controls omit model sizes. Existing meeting access and active pause/resume/stop stay
@@ -215,12 +227,14 @@ Machine-local installation and preservation receipts remain private.
   once per state transition and allow a deliberate retry after restoration/settings.
   A native atomic shutdown operation checks the active session and fences
   new recording starts before the app exits.
-- Apple silicon/macOS 26 can import audio with the native picker when the audio and
-  MOSS workers are packaged. Original bytes/hash, normalized PCM and playback remain
-  separate. The base recorder retains its macOS 13 minimum.
-- Explicit model preparation downloads the pinned MOSS snapshot and checks each size
-  and SHA256. The manifest is shared with the retained Swift catalog. Workers and matching
-  Metal resources are packaged; runtime developer tools and audio uploads are unnecessary.
+- Apple silicon/macOS 26 can import audio with the native picker when AudioPrepare and
+  the shared native speech runtime are packaged. Original bytes/hash, normalized PCM
+  and playback remain separate. The base recorder retains its macOS 13 minimum.
+- Explicit model preparation downloads the pinned Nemotron 3.5 Q8 ASR snapshot and
+  the smaller Nemotron 3 speaker model, checking each size and SHA256 before readiness.
+  The ASR manifest is `config/models/nemotron-asr.json`; the retained Swift MOSS catalog
+  remains separate. Native executables, libraries and Metal resources are packaged;
+  runtime developer tools and audio uploads are unnecessary.
 - Transcription binds complete output to the finalized audio session. Raw output,
   initial transcript and correction revisions remain separate. Stale edits/reruns cannot
   replace current corrections. Text editing, timestamp playback and reopen are connected;
@@ -262,10 +276,11 @@ Machine-local installation and preservation receipts remain private.
   output fails rather than replacing prior content. This does not establish summary quality.
 - Model preparation now resumes validated Range responses and verifies full-file SHA256.
   Existing partial/invalid files are preserved; no automatic preparation or private uploads.
-- Independent full-recording diarization, cross-chunk identity matching, Calendar and
-  Notion remain unconnected. Windows transcription is not implemented. No weights are downloaded
-  automatically. No notch panel or platform-specific nonactivating floating-window
-  contract is implemented yet.
+- Cross-chunk identity matching, Calendar and Notion remain unconnected. Windows has
+  pinned Vulkan/CPU speech runtime packages, but the current AudioPrepare path requires
+  Apple silicon/macOS 26. End-to-end Windows recognition is currently unavailable;
+  native acceptance remains unqualified. No weights are downloaded automatically.
+  No notch panel or platform-specific nonactivating floating-window contract is implemented yet.
 - A macOS development bundle builds. Windows-native CI is prepared separately;
   actual Windows execution, installer, permissions and driver tests remain pending.
   This is not a release distribution or replacement for qualified recording tests.

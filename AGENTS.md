@@ -15,23 +15,38 @@ This file applies to the entire repository.
   The legacy AAC/M4A and model rules below apply to the retained Swift implementation,
   not this new format. Never discard original PCM after playback conversion.
 - The native app provides meetings, notes, microphone recording and playback. With
-  packaged workers, Apple silicon/macOS 26 supports native file import and local MOSS
-  transcription, explicit pinned model preparation and separately versioned corrections.
-  Packaged llama.cpp enables on-demand Gemma 4 E4B Q4 summaries with separately stored
-  source revisions. Windows transcription, speaker matching and integrations remain unconnected. An
-  optional whole-recording diarization adapter requires its own packaged runtime and
-  explicit preparation; the default recognition pipeline does not invoke it yet. Do not fabricate transcripts or summary results.
-- Default recognition sends the complete recording to one MOSS decoder context.
-  Require the checked runtime patch, measured token budget, EOS and single-generation
-  evidence through `commit_whole_transcript`; never silently accept an old chunk worker.
-  The 90-minute model range is not a laptop memory/quality qualification. Preserve
-  originals on failure; never silently fall back to chunk recognition.
+  packaged workers, Apple silicon/macOS 26 supports native file import and local
+  Nemotron 3.5 Q8 speech recognition. Explicit setup prepares the pinned ASR model
+  and the smaller Nemotron 3 speaker model; speech readiness gates new meetings,
+  recording and import. Packaged llama.cpp enables on-demand Gemma 4 E4B Q4 summaries
+  with separately stored source revisions; summary preparation remains optional.
+  Do not fabricate transcripts or summary results.
+- Default recognition sends the complete recording through one stateful
+  NeMo-Speech.cpp stream with endpointing disabled, then finishes the stream at EOF.
+  `commit_nemotron_transcript` requires pinned model/runtime identity, full input-frame
+  identity, successful native completion evidence and valid word timestamps. Preserve
+  native output, the execution receipt and original audio; completion evidence does
+  not prove that every spoken word was recognized. Never silently switch to chunk ASR.
+- Save recognition before optional terminology correction and the separate
+  whole-recording Nemotron 3 speaker stage. Persist the source-bound diarization
+  continuation under the same job ID so a speaker-stage retry does not rerun ASR.
+  Failure or cancellation retains the saved text and audio. Existing meetings are
+  never automatically reprocessed. Speaker management can explicitly rerun analysis.
+- Stored MOSS output, edits and history remain readable with their original source
+  and revision identities. Preserve the MOSS EOS, measured-budget, single-generation
+  and complete-input checks for its whole-recording artifacts; the stored-artifact
+  policy does not authorize an old worker as a new recognition fallback.
+- ASR and diarization share the pinned native speech package. GPU is preferred;
+  only a confirmed unavailable GPU backend permits the packaged CPU route. Allocation
+  and generic runtime failures do not authorize CPU fallback. Windows packages contain
+  Vulkan and CPU runtimes, but the current AudioPrepare path requires Apple silicon/
+  macOS 26. Windows end-to-end recognition availability remains unqualified.
 - Existing chunk speaker labels retain their `asr_chunk` scope; never equate the same
   label across independently recognized chunks. Verified whole-recording labels use
-  a separate recording scope; existing meetings are not automatically reprocessed. Manual names/merges
-  are transcript revisions, not automatic identity verification. Independent
-  full-recording diarization is separately invoked and does not establish qualified
-  eight-person support. Keep automatic/user/unknown name origin separate; user names
+  a separate recording scope. Nemotron ASR starts without speaker labels; the independent
+  full-recording speaker stage supplies recording-scoped assignments. Manual names/merges
+  are transcript revisions, not automatic identity verification. Diarization does not
+  establish qualified eight-person support. Keep automatic/user/unknown name origin separate; user names
   are useful references, not automatic voice-identity verification. See `docs/meeting-library-and-speakers.md`.
 - Transcript source identity uses raw hashes, immutable initial utterance IDs/order and
   source indices. Playback time is validated at the ASR 16kHz sample address, not used

@@ -225,6 +225,12 @@ enum MossValidationPolicy {
     StoredArtifact,
 }
 
+enum TranscriptCommitPolicy {
+    Moss,
+    WholeMoss,
+    Nemotron,
+}
+
 fn present_chunk<'de, D>(
     deserializer: D,
 ) -> std::result::Result<Option<serde_json::Value>, D::Error>
@@ -864,7 +870,7 @@ impl Engine {
         })?;
         let valid_source = matches!(
             source.projector_version.as_str(),
-            PROJECTOR_VERSION | RECORDING_PROJECTOR_VERSION
+            PROJECTOR_VERSION | RECORDING_PROJECTOR_VERSION | crate::nemotron::PROJECTOR_VERSION
         ) && source.raw_sha256 == sha256(&raw)
             && match source.association.as_str() {
                 "direct" => initial.source.as_ref() == Some(source),
@@ -886,14 +892,20 @@ impl Engine {
                 "음성 기록의 원본 연결을 확인할 수 없습니다.".into(),
             ));
         }
-        let projection = MossOutput::decode_with_policy(
-            &raw,
-            duration,
-            &audio.session_id,
-            transcript_id,
-            MossValidationPolicy::StoredArtifact,
-        )?;
+        let projection = if source.projector_version == crate::nemotron::PROJECTOR_VERSION {
+            crate::nemotron::decode(&raw, duration, &audio.session_id, transcript_id)?
+        } else {
+            MossOutput::decode_with_policy(
+                &raw,
+                duration,
+                &audio.session_id,
+                transcript_id,
+                MossValidationPolicy::StoredArtifact,
+            )?
+        };
         if projection.model != initial.model
+            || (source.projector_version == crate::nemotron::PROJECTOR_VERSION
+                && projection.model_revision != initial.model_revision)
             || projection.segments.len() != initial.segments.len()
             || (source.association == "direct" && projection.source.as_ref() != Some(source))
             || (source.association == LEGACY_ASSOCIATION
@@ -1152,7 +1164,7 @@ impl Engine {
         expected: Option<TranscriptVersion>,
         raw: Vec<u8>,
     ) -> Result<Transcript> {
-        self.commit_transcript_with_policy(id, expected, raw, false)
+        self.commit_transcript_with_policy(id, expected, raw, TranscriptCommitPolicy::Moss)
     }
 
     pub fn commit_whole_transcript(
@@ -1161,7 +1173,16 @@ impl Engine {
         expected: Option<TranscriptVersion>,
         raw: Vec<u8>,
     ) -> Result<Transcript> {
-        self.commit_transcript_with_policy(id, expected, raw, true)
+        self.commit_transcript_with_policy(id, expected, raw, TranscriptCommitPolicy::WholeMoss)
+    }
+
+    pub fn commit_nemotron_transcript(
+        &mut self,
+        id: &str,
+        expected: Option<TranscriptVersion>,
+        raw: Vec<u8>,
+    ) -> Result<Transcript> {
+        self.commit_transcript_with_policy(id, expected, raw, TranscriptCommitPolicy::Nemotron)
     }
 
     fn commit_transcript_with_policy(
@@ -1169,7 +1190,7 @@ impl Engine {
         id: &str,
         expected: Option<TranscriptVersion>,
         raw: Vec<u8>,
-        require_whole: bool,
+        policy: TranscriptCommitPolicy,
     ) -> Result<Transcript> {
         if self.quitting {
             return Err(CoreError::Unavailable);
@@ -1193,14 +1214,14 @@ impl Engine {
         )?)?;
         file.write_all(&raw)?;
         file.sync_all()?;
-        let document = MossOutput::decode(
-            &raw,
-            audio.frames as f64 / audio.sample_rate as f64,
-            &audio.session_id,
-            &transcript_id,
-        )?;
+        let duration = audio.frames as f64 / audio.sample_rate as f64;
+        let document = if matches!(policy, TranscriptCommitPolicy::Nemotron) {
+            crate::nemotron::decode(&raw, duration, &audio.session_id, &transcript_id)?
+        } else {
+            MossOutput::decode(&raw, duration, &audio.session_id, &transcript_id)?
+        };
         immutable_json(&self.store.root, &directory.join("initial.json"), &document)?;
-        if require_whole
+        if matches!(policy, TranscriptCommitPolicy::WholeMoss)
             && !document.source.as_ref().is_some_and(|source| {
                 source.projector_version == RECORDING_PROJECTOR_VERSION
                     && source.speaker_scope.as_deref() == Some("recording")
@@ -3095,6 +3116,24 @@ pub(crate) mod tests {
             LEGACY_ASSOCIATION
         );
         assert_eq!(after.segments[0].speaker_id.as_deref(), Some("S1"));
+        let history = engine.transcript_history(&id).unwrap();
+        assert_eq!(history.unavailable, 0);
+        assert_eq!(history.entries.len(), 1);
+        let next = engine
+            .commit_transcript(&id, Some(after.version.clone()), output())
+            .unwrap();
+        let restored = engine
+            .restore_transcript(&id, next.version, after.version)
+            .unwrap();
+        assert_eq!(restored.model_revision, "historical-revision");
+        assert_eq!(
+            restored.segments[0].start.to_bits(),
+            before.segments[0].start.to_bits()
+        );
+        assert_eq!(
+            restored.segments[0].end.to_bits(),
+            before.segments[0].end.to_bits()
+        );
         assert_eq!(source_position(f64::NAN, 16000), None);
         assert_eq!(source_position(f64::INFINITY, 16000), None);
         assert_eq!(source_position(-0.1, 16000), None);

@@ -777,3 +777,85 @@ fn a_late_cancel_cannot_reopen_the_completed_state_while_the_thread_unwinds() {
     release.send(()).unwrap();
     finish(&process);
 }
+
+#[test]
+fn speaker_continuation_is_durable_retryable_and_releases_only_the_finished_save_gate() {
+    let (_temporary, process) = setup();
+    let (core, meeting_id, source) = edited_source(&process);
+    let mut job = record("transcribe");
+    job.meeting_id = Some(meeting_id.clone());
+    job.status = JobStatus::Running;
+    let id = job.id.clone();
+    process.save_job(job).unwrap();
+    process.update(|p| {
+        p.id = Some(id.clone());
+        p.kind = "transcribe".into();
+        p.status = "running".into();
+        p.meeting_id = Some(meeting_id.clone());
+        p.committing = true;
+        p.phase = Some("saving".into());
+    });
+    process
+        .continue_with_speakers(&core, &meeting_id, &AtomicBool::new(false))
+        .unwrap();
+    let p = process.snapshot();
+    assert_eq!(p.kind, "diarize");
+    assert!(!p.committing);
+    let stored = process
+        .journal
+        .records()
+        .unwrap()
+        .into_iter()
+        .find(|r| r.id == id)
+        .unwrap();
+    assert_eq!(stored.kind, "diarize");
+    assert_eq!(
+        stored.source_fingerprint,
+        Some(Processing::source_fingerprint(&core, &meeting_id, "diarize").unwrap())
+    );
+    assert_eq!(
+        core.transcript(&meeting_id).unwrap().unwrap().version,
+        source.version
+    );
+    process.update(|p| p.status = "failed".into());
+    assert!(
+        process
+            .snapshot()
+            .jobs
+            .iter()
+            .find(|r| r.id == id)
+            .unwrap()
+            .retryable
+    );
+}
+
+#[test]
+fn cancelled_recognition_cannot_publish_a_speaker_continuation() {
+    let (_temporary, process) = setup();
+    let (core, meeting_id, _) = edited_source(&process);
+    let mut job = record("transcribe");
+    job.meeting_id = Some(meeting_id.clone());
+    job.status = JobStatus::Running;
+    let id = job.id.clone();
+    process.save_job(job).unwrap();
+    process.update(|p| {
+        p.id = Some(id.clone());
+        p.kind = "transcribe".into();
+        p.status = "running".into();
+        p.meeting_id = Some(meeting_id.clone());
+    });
+    assert!(process
+        .continue_with_speakers(&core, &meeting_id, &AtomicBool::new(true))
+        .is_err());
+    assert_eq!(
+        process
+            .journal
+            .records()
+            .unwrap()
+            .into_iter()
+            .find(|r| r.id == id)
+            .unwrap()
+            .kind,
+        "transcribe"
+    );
+}

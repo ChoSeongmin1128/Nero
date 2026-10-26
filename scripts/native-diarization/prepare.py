@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Build-time only: verify and stage the pinned native diarizer, without weights."""
+"""Build-time only: stage the shared native ASR/diarization runtime, without weights."""
 import argparse
 import hashlib
 import importlib.util
 import json
 import os
 from pathlib import Path, PurePosixPath
+import re
 import shutil
+import subprocess
 import tarfile
 import tempfile
 import urllib.request
@@ -14,11 +16,94 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
 SPEC = json.loads(Path(__file__).with_name("runtime.json").read_text())
+MACHO = {b'\xcf\xfa\xed\xfe', b'\xce\xfa\xed\xfe', b'\xfe\xed\xfa\xcf', b'\xfe\xed\xfa\xce', b'\xca\xfe\xba\xbe', b'\xbe\xba\xfe\xca'}
 
 
 def sha(path):
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def package_files(root):
+    files = []
+    for path in sorted(root.rglob("*")):
+        if path.is_symlink() or not (path.is_file() or path.is_dir()):
+            raise ValueError("Linked or special runtime package entry")
+        if path.is_file() and path != root / "runtime.json":
+            files.append({"path": path.relative_to(root).as_posix(), "bytes": path.stat().st_size, "sha256": sha(path)})
+    return files
+
+
+def package_receipt(root, target=None):
+    if root.is_symlink() or not root.is_dir():
+        raise ValueError("Missing native speech runtime directory")
+    path = root / "runtime.json"
+    if path.is_symlink() or not path.is_file() or path.stat().st_size > 1024 * 1024:
+        raise ValueError("Missing or invalid speech runtime receipt")
+    receipt = json.loads(path.read_text())
+    if (receipt.get("runtime") != SPEC or receipt.get("sourceArchiveHashesVerified") is not True
+            or receipt.get("target") not in SPEC["assets"] or target is not None and receipt["target"] != target):
+        raise ValueError("Speech runtime does not match the pinned target/source")
+    entries = receipt.get("files")
+    if not isinstance(entries, list) or not entries:
+        raise ValueError("Speech runtime file receipt is empty")
+    names = set()
+    backends = {item["backend"] for item in SPEC["assets"][receipt["target"]]}
+    for entry in entries:
+        name = entry.get("path", "")
+        relative = PurePosixPath(name)
+        if (not name or relative.is_absolute() or ".." in relative.parts or "\\" in name
+                or relative.as_posix() != name or name in names or name == "runtime.json"):
+            raise ValueError("Unsafe or duplicate runtime receipt path")
+        if (len(relative.parts) < 3 or relative.parts[0] not in backends
+                or archive_path("package/" + PurePosixPath(*relative.parts[1:]).as_posix(), "package") is None
+                or relative.suffix.lower() in (".gguf", ".safetensors", ".wav", ".m4a", ".mp3", ".p8", ".p12")
+                or type(entry.get("bytes")) is not int or entry["bytes"] < 0
+                or re.fullmatch(r"[0-9a-f]{64}", entry.get("sha256", "")) is None):
+            raise ValueError("Unexpected speech runtime file")
+        names.add(name)
+    for item in SPEC["assets"][receipt["target"]]:
+        backend = item["backend"]
+        binary = "nemo-speech.exe" if receipt["target"].startswith("windows") else "nemo-speech"
+        if f"{backend}/bin/{binary}" not in names or f"{backend}/share/licenses/nemo-speech/LICENSE" not in names:
+            raise ValueError("Speech executable or license is missing")
+    return receipt
+
+
+def verify_staged(root, target=None, execute_runtime=False):
+    root = Path(root)
+    receipt = package_receipt(root, target)
+    if package_files(root) != receipt["files"]:
+        raise ValueError("Speech runtime files differ from the verified archive")
+    if execute_runtime:
+        for item in SPEC["assets"][receipt["target"]]:
+            binary = root / item["backend"] / "bin" / ("nemo-speech.exe" if receipt["target"].startswith("windows") else "nemo-speech")
+            result = subprocess.run([str(binary), "--version"], capture_output=True, text=True, timeout=15, check=True)
+            if result.stdout.strip() != "nemo-speech 0.2.0":
+                raise ValueError("Unexpected speech runtime version")
+    return receipt
+
+
+def signed_transition(root, before):
+    root = Path(root)
+    if package_receipt(root) != before:
+        raise ValueError("Speech runtime receipt changed during signing")
+    after = package_files(root)
+    if [entry["path"] for entry in after] != [entry["path"] for entry in before["files"]]:
+        raise ValueError("Speech runtime file inventory changed during signing")
+    for old, new in zip(before["files"], after):
+        with (root / new["path"]).open("rb") as stream:
+            is_binary = stream.read(4) in MACHO
+        if old != new and not is_binary:
+            raise ValueError("Speech runtime resource changed during signing")
+    return {"beforeSigning": before, "signedFiles": after}
+
+
+def verify_signed(root, receipt):
+    if not isinstance(receipt, dict) or package_receipt(Path(root)) != receipt.get("beforeSigning"):
+        raise ValueError("Missing or changed signed speech runtime receipt")
+    if package_files(Path(root)) != receipt.get("signedFiles"):
+        raise ValueError("Signed speech runtime differs from its preserved receipt")
 
 
 def archive_path(name, prefix):
@@ -116,10 +201,7 @@ def prepare(target, cache, output, redist=None):
             "runtime": SPEC,
             "sourceArchiveHashesVerified": True,
             "fileHashScope": "before Developer ID code signing",
-            "files": [
-                {"path": str(path.relative_to(stage)), "bytes": path.stat().st_size, "sha256": sha(path)}
-                for path in sorted(stage.rglob("*")) if path.is_file()
-            ],
+            "files": package_files(stage),
         }
         (stage / "runtime.json").write_text(json.dumps(receipt, indent=2) + "\n")
         os.rename(stage, output)
@@ -128,9 +210,21 @@ def prepare(target, cache, output, redist=None):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--target", required=True, choices=SPEC["assets"])
+    parser.add_argument("--target", choices=SPEC["assets"])
     parser.add_argument("--cache", type=Path, default=ROOT / ".work/diarization-runtime-downloads")
     parser.add_argument("--output", type=Path, default=ROOT / "apps/desktop/.generated/native/diarization")
     parser.add_argument("--msvc-redist", type=Path)
+    parser.add_argument("--verify-staged", type=Path)
+    parser.add_argument("--optional", action="store_true")
+    parser.add_argument("--execute-runtime", action="store_true")
     args = parser.parse_args()
-    prepare(args.target, args.cache, args.output, args.msvc_redist)
+    if args.verify_staged is not None:
+        if args.optional and not args.verify_staged.exists() and not args.verify_staged.is_symlink():
+            print("Native speech runtime absent: recognition/diarization unavailable.")
+        else:
+            verify_staged(args.verify_staged, args.target, args.execute_runtime)
+            print("Verified shared native speech runtime.")
+    else:
+        if args.target is None:
+            parser.error("--target is required to prepare a runtime")
+        prepare(args.target, args.cache, args.output, args.msvc_redist)
