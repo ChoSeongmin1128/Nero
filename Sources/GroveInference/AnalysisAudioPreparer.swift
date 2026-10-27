@@ -37,7 +37,7 @@ public enum AnalysisAudioPreparer {
         try Task.checkCancellation()
         let bits = input.fileFormat.settings[AVLinearPCMBitDepthKey] as? Int
         if source.pathExtension.lowercased() == "wav", input.fileFormat.sampleRate == 16_000,
-           input.fileFormat.channelCount == 1, bits == 16 {
+           input.fileFormat.channelCount == 1, bits == 16, try isCanonicalPCM16WAV(source) {
             // Preserve the already-normalized benchmark waveform byte for byte.
             try files.copyItem(at: source, to: temporary)
         } else {
@@ -52,6 +52,24 @@ public enum AnalysisAudioPreparer {
         let frames = normalized.length
         try files.moveItem(at: temporary, to: destination)
         return PreparedAnalysisAudio(url: destination, frameCount: frames, sampleRate: 16_000)
+    }
+
+    private static func isCanonicalPCM16WAV(_ source: URL) throws -> Bool {
+        let file = try FileHandle(forReadingFrom: source)
+        defer { try? file.close() }
+        guard let header = try file.read(upToCount: 12), header.count == 12,
+              header.prefix(4) == Data("RIFF".utf8), header.suffix(4) == Data("WAVE".utf8) else { return false }
+        while true {
+            try Task.checkCancellation()
+            guard let chunk = try file.read(upToCount: 8), chunk.count == 8 else { return false }
+            let size = chunk.withUnsafeBytes { UInt32(littleEndian: $0.loadUnaligned(fromByteOffset: 4, as: UInt32.self)) }
+            if chunk.prefix(4) == Data("fmt ".utf8) {
+                guard size >= 16, let format = try file.read(upToCount: 2), format.count == 2 else { return false }
+                return format == Data([1, 0])
+            }
+            let offset = try file.offset()
+            try file.seek(toOffset: offset + UInt64(size) + UInt64(size % 2))
+        }
     }
 
     private static func resample(input: AVAudioFile, output: URL) throws {

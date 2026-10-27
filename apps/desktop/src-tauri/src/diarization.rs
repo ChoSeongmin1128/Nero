@@ -3,6 +3,7 @@ use crate::processing::{
     cancelled, directory, invalidate_readiness, matches_file, plain_file, Model, Processing,
     Progress, Worker,
 };
+use crate::speech_audio::AnalysisAudio;
 use crate::summary_failure::{Failure, FailureKind};
 use grove_core::{CoreHandle, SpeakerAnalysisDraft, Transcript, TranscriptVersion};
 use serde::Deserialize;
@@ -198,6 +199,14 @@ fn classify_operation(
             })
         {
             return FailureKind::Allocation;
+        }
+        if error.r#type == "runtime_error" && input.is_some_and(|input| {
+            let prefix = format!("{}: ", input.to_string_lossy());
+            let message = error.message.strip_prefix(&prefix);
+            let message = message.map(|message| message.strip_prefix(&prefix).unwrap_or(message));
+            message.is_some_and(|message| message == "unsupported WAV encoding; convert with: ffmpeg -i INPUT -ac 1 -ar 16000 -c:a pcm_s16le output.wav")
+        }) {
+            return FailureKind::Input;
         }
         if error.message.starts_with("cannot write ")
             || error.message.starts_with("cannot finish writing ")
@@ -456,6 +465,7 @@ pub(super) fn analyze_recording(
     meeting_id: &str,
     source: Transcript,
     audio: &Path,
+    prepared: Option<&AnalysisAudio>,
     path: &Path,
     cancel: &AtomicBool,
 ) -> Result<(), Failure> {
@@ -468,7 +478,20 @@ pub(super) fn analyze_recording(
         progress.phase = Some("diarizing".into());
         progress.message = "화자 구분 중".into();
     });
-    let draft = analyze(process, source, audio, path, cancel)?;
+    let owned;
+    let input = match prepared {
+        Some(prepared) => prepared,
+        None => {
+            let work =
+                directory(path, "speaker-input").map_err(|_| failure(FailureKind::Storage))?;
+            owned = AnalysisAudio::prepare(process, audio, &work, cancel)?;
+            &owned
+        }
+    };
+    input.verify(audio, cancel)?;
+    record(&path.join("speaker-input.json"), &input.evidence())?;
+    let draft = analyze(process, source, input.path(), path, cancel)?;
+    input.verify(audio, cancel)?;
     check_cancel(cancel)?;
     check_source(core, meeting_id, &draft.source, audio)?;
     let mut commit_failure = None;
@@ -538,8 +561,16 @@ impl Processing {
             &source_core,
             required_fingerprint,
             move |this, cancel, path| {
-                let result =
-                    analyze_recording(&this, &core, &meeting_id, source, &audio, &path, &cancel);
+                let result = analyze_recording(
+                    &this,
+                    &core,
+                    &meeting_id,
+                    source,
+                    &audio,
+                    None,
+                    &path,
+                    &cancel,
+                );
                 if let Err(error) = result {
                     this.update(|progress| progress.failure_kind = Some(error.kind));
                     return Err(error.message);
@@ -588,6 +619,71 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires explicit recorded audio, saved transcript, shared model and packaged workers"]
+    fn local_recorded_audio_speaker_acceptance() {
+        let configured = |name: &str| PathBuf::from(std::env::var(name).expect(name));
+        let audio = configured("NERO_ACCEPTANCE_AUDIO");
+        let transcript = configured("NERO_ACCEPTANCE_TRANSCRIPT");
+        let work = configured("NERO_ACCEPTANCE_WORK");
+        fs::create_dir(&work).unwrap();
+        let process = Processing::new(
+            work.join("library"),
+            configured("NERO_ACCEPTANCE_RESOURCES"),
+        );
+        let cancel = AtomicBool::new(false);
+        let source: Transcript = serde_json::from_slice(&fs::read(transcript).unwrap()).unwrap();
+        // Same rate/depth as normalized audio, but a container the native reader rejects.
+        let extensible = work.join("extensible.wav");
+        let mut bytes = Vec::from(b"RIFF".as_slice());
+        bytes.extend_from_slice(&(60_u32 + 3200).to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt ");
+        bytes.extend_from_slice(&40_u32.to_le_bytes());
+        for value in [65534_u16, 1] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        for value in [16000_u32, 32000] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        for value in [2_u16, 16, 22, 16] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        bytes.extend_from_slice(&4_u32.to_le_bytes());
+        bytes.extend_from_slice(&[1, 0, 0, 0, 0, 0, 16, 0, 128, 0, 0, 170, 0, 56, 155, 113]);
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&3200_u32.to_le_bytes());
+        bytes.resize(bytes.len() + 3200, 0);
+        fs::write(&extensible, &bytes).unwrap();
+        let ext_work = work.join("extensible-check");
+        fs::create_dir(&ext_work).unwrap();
+        let ext_input = AnalysisAudio::prepare(&process, &extensible, &ext_work, &cancel).unwrap();
+        assert_ne!(ext_input.path(), extensible);
+        assert_eq!(fs::read(&extensible).unwrap(), bytes);
+        let started = std::time::Instant::now();
+        let prepared = AnalysisAudio::prepare(&process, &audio, &work, &cancel).unwrap();
+        let prepare_seconds = started.elapsed().as_secs_f64();
+        let native_started = std::time::Instant::now();
+        let draft = analyze_with_model(
+            &process,
+            source,
+            prepared.path(),
+            &work,
+            &cancel,
+            &configured("NERO_ACCEPTANCE_SPEAKER_MODEL_DIR"),
+        )
+        .unwrap();
+        prepared.verify(&audio, &cancel).unwrap();
+        let native: Value = serde_json::from_slice(&draft.raw).unwrap();
+        assert!(!native["segments"].as_array().unwrap().is_empty());
+        record(&work.join("report.json"), &json!({
+            "input":prepared.evidence(), "prepareSeconds":prepare_seconds,
+            "speakerSeconds":native_started.elapsed().as_secs_f64(),
+            "activitySegments":native["segments"].as_array().unwrap().len(), "extensiblePcm16Normalized":true,
+            "sourceVersion":draft.source.version,
+            "scope":"recorded input normalization plus native speaker execution; no user library writes or accuracy qualification"
+        })).unwrap();
+    }
+
+    #[test]
     fn absent_speaker_model_preserves_the_saved_recognition_and_audio() {
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path().canonicalize().unwrap();
@@ -601,6 +697,7 @@ mod tests {
             &meeting_id,
             source.clone(),
             &audio,
+            None,
             temporary.path(),
             &cancel,
         )
@@ -633,6 +730,7 @@ mod tests {
             &meeting_id,
             source,
             &audio,
+            None,
             temporary.path(),
             &AtomicBool::new(false),
         )
@@ -657,6 +755,7 @@ mod tests {
             &meeting_id,
             source.clone(),
             &audio,
+            None,
             temporary.path(),
             &AtomicBool::new(true),
         )
@@ -820,6 +919,39 @@ mod tests {
             ),
             FailureKind::EngineUnavailable
         );
+    }
+
+    #[test]
+    fn unsupported_wave_is_an_input_error_only_for_the_invoked_native_contract() {
+        let input = Path::new("private/recorded.wav");
+        let diagnostic = "unsupported WAV encoding; convert with: ffmpeg -i INPUT -ac 1 -ar 16000 -c:a pcm_s16le output.wav";
+        for message in [
+            format!("private/recorded.wav: {diagnostic}"),
+            format!("private/recorded.wav: private/recorded.wav: {diagnostic}"),
+        ] {
+            let log = worker_error(&message, "runtime_error");
+            assert_eq!(
+                classify(&log, true, Some(1), Some(input)),
+                FailureKind::Input
+            );
+            assert_eq!(
+                classify(&log, true, Some(2), Some(input)),
+                FailureKind::EngineUnavailable
+            );
+            assert_eq!(
+                classify(&log, true, Some(1), Some(Path::new("other.wav"))),
+                FailureKind::EngineUnavailable
+            );
+            assert_eq!(
+                classify(
+                    &worker_error(&message, "unknown"),
+                    true,
+                    Some(1),
+                    Some(input)
+                ),
+                FailureKind::EngineUnavailable
+            );
+        }
     }
 
     #[cfg(unix)]

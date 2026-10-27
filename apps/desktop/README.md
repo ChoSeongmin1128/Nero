@@ -103,6 +103,14 @@ frontend, whose actions require the native bridge; it does not supply fake meeti
   times/originals, commits against the unchanged source and leaves mixed or insufficiently
   covered utterances unassigned. Speaker management also supports explicit reanalysis;
   target-hardware accuracy and Windows acceptance remain separate checks.
+- Recognition and speaker analysis share an immutable analysis-input contract: mono,
+  16kHz PCM16 WAV. Supported normalized files are verified and read directly, including
+  on Windows without a platform converter; other input formats require the packaged
+  converter. Automatic speaker analysis reuses recognition's prepared input. Standalone
+  analysis/retry prepares and verifies the same format, preserving original audio and
+  checking original/prepared hashes before save. Container format is checked as well
+  as rate/depth; EXTENSIBLE WAV is re-encoded rather than copied by the converter.
+  Typed input, engine, storage and cleanup failures remain separate in the UI.
 - Edit transcript text, seek to a segment, and reopen corrections after restarting.
   Navigation saves and closes the editor; failed persistence retains its input.
 - Confirm re-transcription and restore a verified previous recognition run with version

@@ -33,6 +33,20 @@ const summaryFailures = {
   storage: '요약을 저장하지 못했습니다.',
   cleanup: '요약 처리 후 정리를 마치지 못했습니다. 앱을 다시 연 뒤 시도해 주세요.',
 };
+const speakerFailures = {
+  modelNotReady: '화자 구분 모델을 다시 준비해 주세요.',
+  meetingUnavailable: '회의를 찾을 수 없거나 휴지통에 있어 화자를 구분할 수 없습니다.',
+  recordingActive: '녹음을 마친 뒤 화자를 구분해 주세요.',
+  sourceChanged: '화자 구분 중 음성 기록이 변경되어 저장하지 않았습니다.',
+  allocation: '화자 구분에 필요한 메모리를 확보하지 못했습니다. 다른 앱을 닫은 뒤 다시 시도해 주세요.',
+  backendUnavailable: '화자 구분 처리 장치를 사용할 수 없습니다. 앱을 다시 연 뒤 시도해 주세요.',
+  engineUnavailable: '화자 구분 실행 중 오류가 발생했습니다.',
+  input: '화자 구분에 사용할 녹음 파일을 읽지 못했습니다.',
+  output: '화자 구분 결과를 읽지 못했습니다.',
+  protocol: '화자 구분 결과를 읽지 못했습니다.',
+  storage: '화자 구분 결과를 저장하지 못했습니다.',
+  cleanup: '화자 구분 실행기의 종료를 확인하지 못했습니다. 앱을 다시 열어 주세요.',
+};
 
 function failureDiagnostics(job) {
   if (job.status !== 'failed' || job.kind !== 'summary' || !job.failureDetail) return [];
@@ -76,7 +90,8 @@ export function processingFeedback(job = {}, { cancelling = false } = {}) {
   if (job.status === 'needsReview') message = '회의를 열어 저장된 결과를 확인해 주세요.';
   if (speakerPhase) message = '';
   if (job.kind === 'diarize' && job.status === 'failed') {
-    message = ({ modelNotReady: '화자 구분 모델을 다시 준비해 주세요.', meetingUnavailable: '회의를 찾을 수 없거나 휴지통에 있어 화자를 구분할 수 없습니다.', recordingActive: '녹음을 마친 뒤 화자를 구분해 주세요.', sourceChanged: '화자 구분 중 음성 기록이 변경되어 저장하지 않았습니다.', allocation: '화자 구분에 필요한 메모리를 확보하지 못했습니다. 다른 앱을 닫은 뒤 다시 시도해 주세요.', storage: '화자 구분 결과를 저장하지 못했습니다.' })[job.failureKind] || '화자를 구분하지 못했습니다. 기존 음성 기록은 유지됩니다.';
+    message = (Object.hasOwn(speakerFailures, job.failureKind) ? speakerFailures[job.failureKind] : '')
+      || '화자를 구분하지 못했습니다. 원인을 확인하지 못했습니다. 기존 음성 기록은 유지됩니다.';
   }
   if (active && job.kind === 'summary') message = !cancelRequested && !committing && job.retryCount > 0 ? '다시 시도 중' : '';
   if (job.kind === 'summary' && job.status === 'failed') {

@@ -56,6 +56,12 @@ Machine-local installation and preservation receipts remain private.
   changing words or times. Failure/cancellation retains the saved transcript and audio.
   Speaker management also supports explicit reanalysis. Target-hardware accuracy and
   distribution acceptance remain unqualified; this is not a release/installation receipt.
+- The shared speech-input adapter binds original and normalized audio by hashes and
+  verifies mono/16kHz/PCM16 WAV, including the container tag. Automatic speaker analysis
+  reuses recognition's prepared input; standalone analysis/retry uses the same contract.
+  Already-normalized input needs no platform converter. The native converter re-encodes
+  EXTENSIBLE inputs instead of preserving an unsupported container. Failures retain
+  typed input/engine/storage/cleanup categories and safe speaker-specific UI messages.
 - Speaker display names record automatic/user origin when known; missing legacy origin
   remains unknown. Summary input separates chunk scope from whole-recording groups,
   never derives an attendee roster/count from labels, and allows user-assigned names

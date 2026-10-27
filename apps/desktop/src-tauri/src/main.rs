@@ -1,9 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod agent_connection;
-mod asr;
 #[cfg(target_os = "macos")]
 mod app_menu;
+mod asr;
 mod diarization;
 mod downloads;
 mod export;
@@ -13,6 +13,7 @@ mod microphone_permission;
 mod processing;
 mod recorder_geometry;
 mod recorder_policy;
+mod speech_audio;
 mod storage_space;
 mod summary;
 mod summary_failure;

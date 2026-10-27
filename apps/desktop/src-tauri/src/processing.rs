@@ -366,7 +366,7 @@ impl Processing {
             &format!("models/{MODEL_LABEL}-{}", self.model().revision),
         )
     }
-    fn worker(&self, name: &str) -> PathBuf {
+    pub(super) fn worker(&self, name: &str) -> PathBuf {
         self.resources.join("native").join(name)
     }
     fn supported(&self) -> bool {
@@ -1826,13 +1826,12 @@ impl Processing {
                     return Err("가져오는 동안 파일이 변경됐습니다. 다시 선택해 주세요.".into());
                 }
                 this.update(|p| p.message = "음성을 준비하고 있습니다.".into());
-                let prepared = path.join("analysis.wav");
-                this.run_worker(
-                    &this.worker("AudioPrepare"),
-                    &[&copied, &prepared],
-                    &path.join("prepare.log"),
-                    &cancel,
-                )?;
+                let prepared =
+                    crate::speech_audio::AnalysisAudio::prepare(&this, &copied, &path, &cancel)
+                        .map_err(|error| {
+                            this.update(|progress| progress.failure_kind = Some(error.kind));
+                            error.message
+                        })?;
                 cancelled(&cancel)?;
                 let title = source
                     .file_stem()
@@ -1842,7 +1841,7 @@ impl Processing {
                     .take(200)
                     .collect::<String>();
                 let meeting = this.commit_transcript_result(&cancel, || {
-                    core.import_audio(&title, &copied, &prepared)
+                    core.import_audio(&title, &copied, prepared.path())
                         .map_err(message)
                 })?;
                 this.update(|progress| progress.meeting_id = Some(meeting.id.clone()));
@@ -1915,18 +1914,17 @@ impl Processing {
                         return Err("모델 파일을 다시 준비해 주세요.".into());
                     }
                 }
-                let prepared = path.join("analysis.wav");
-                this.run_worker(
-                    &this.worker("AudioPrepare"),
-                    &[&audio, &prepared],
-                    &path.join("prepare.log"),
-                    &cancel,
-                )?;
+                let prepared =
+                    crate::speech_audio::AnalysisAudio::prepare(&this, &audio, &path, &cancel)
+                        .map_err(|error| {
+                            this.update(|progress| progress.failure_kind = Some(error.kind));
+                            error.message
+                        })?;
                 this.update(|p| {
                     p.phase = Some("recognizing".into());
                     p.message = "텍스트로 변환 중".into();
                 });
-                let raw = crate::asr::recognize(&this, &prepared, &path, &cancel, &directory)
+                let raw = crate::asr::recognize(&this, prepared.path(), &path, &cancel, &directory)
                     .map_err(|error| {
                         this.update(|progress| progress.failure_kind = Some(error.kind));
                         error.message
@@ -1968,6 +1966,7 @@ impl Processing {
                     &meeting_id,
                     source,
                     &audio,
+                    Some(&prepared),
                     &path,
                     &cancel,
                 )

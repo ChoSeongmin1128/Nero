@@ -3,7 +3,7 @@ use crate::summary_failure::{Failure, FailureKind};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::fs::OpenOptions;
-use std::io::{BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
@@ -13,7 +13,7 @@ const RUNTIME: &str = "nemo-speech-0.2.0@6a3ca369370782acee0dd155e34394ba60b920c
 const POLICY: &str = "whole-recording-stateful-v1";
 const COMPLETION: &str = "native-stream-finish-exit0-v1";
 const RESULT_LIMIT: u64 = 16 * 1024 * 1024;
-const SAMPLE_RATE: u32 = 16000;
+use crate::speech_audio::{audio_frames, digest, SAMPLE_RATE};
 
 pub fn executable(process: &Processing, gpu: bool) -> PathBuf {
     process
@@ -62,65 +62,6 @@ fn failure(kind: FailureKind) -> Failure {
 
 fn check_cancel(cancel: &AtomicBool) -> Result<(), Failure> {
     cancelled(cancel).map_err(|_| failure(FailureKind::Cancelled))
-}
-
-fn digest(path: &Path) -> Result<String, Failure> {
-    let mut input = plain_file(path).map_err(|_| failure(FailureKind::Input))?;
-    let mut hash = Sha256::new();
-    let mut block = [0u8; 65536];
-    loop {
-        let count = input
-            .read(&mut block)
-            .map_err(|_| failure(FailureKind::Input))?;
-        if count == 0 {
-            break;
-        }
-        hash.update(&block[..count]);
-    }
-    Ok(format!("{:x}", hash.finalize()))
-}
-
-fn audio_frames(audio: &Path, cancel: &AtomicBool) -> Result<u64, Failure> {
-    let input = plain_file(audio).map_err(|_| failure(FailureKind::Input))?;
-    let mut reader =
-        hound::WavReader::new(BufReader::new(input)).map_err(|_| failure(FailureKind::Input))?;
-    let spec = reader.spec();
-    if spec.channels != 1 || spec.sample_rate != SAMPLE_RATE {
-        return Err(failure(FailureKind::Input));
-    }
-    let expected = u64::from(reader.duration());
-    if expected == 0 {
-        return Err(failure(FailureKind::Input));
-    }
-    let mut frames = 0u64;
-    match (spec.sample_format, spec.bits_per_sample) {
-        (hound::SampleFormat::Float, 32) => {
-            for sample in reader.samples::<f32>() {
-                if !sample.map_err(|_| failure(FailureKind::Input))?.is_finite() {
-                    return Err(failure(FailureKind::Input));
-                }
-                frames += 1;
-                if frames % u64::from(SAMPLE_RATE) == 0 {
-                    check_cancel(cancel)?;
-                }
-            }
-        }
-        (hound::SampleFormat::Int, 16) => {
-            for sample in reader.samples::<i16>() {
-                sample.map_err(|_| failure(FailureKind::Input))?;
-                frames += 1;
-                if frames % u64::from(SAMPLE_RATE) == 0 {
-                    check_cancel(cancel)?;
-                }
-            }
-        }
-        _ => return Err(failure(FailureKind::Input)),
-    }
-    if frames != expected {
-        return Err(failure(FailureKind::Input));
-    }
-    check_cancel(cancel)?;
-    Ok(frames)
 }
 
 fn backend(gpu: bool) -> &'static str {

@@ -241,3 +241,41 @@ test('speaker analysis uses real phases and model bytes without exposing chunk l
   assert.equal(processingFeedback(running('transcribe', { phase: 'diarizing' })).title, '화자 구분 중');
   assert.equal(processingFeedback(running('speaker-model', { bytes: 50, totalBytes: 100 })).progress.percent, 50);
 });
+
+test('speaker failures retain confirmed causes without displaying private worker messages', () => {
+  const expected = {
+    modelNotReady: '화자 구분 모델을 다시 준비해 주세요.',
+    meetingUnavailable: '회의를 찾을 수 없거나 휴지통에 있어 화자를 구분할 수 없습니다.',
+    recordingActive: '녹음을 마친 뒤 화자를 구분해 주세요.',
+    sourceChanged: '화자 구분 중 음성 기록이 변경되어 저장하지 않았습니다.',
+    allocation: '화자 구분에 필요한 메모리를 확보하지 못했습니다. 다른 앱을 닫은 뒤 다시 시도해 주세요.',
+    backendUnavailable: '화자 구분 처리 장치를 사용할 수 없습니다. 앱을 다시 연 뒤 시도해 주세요.',
+    engineUnavailable: '화자 구분 실행 중 오류가 발생했습니다.',
+    input: '화자 구분에 사용할 녹음 파일을 읽지 못했습니다.',
+    output: '화자 구분 결과를 읽지 못했습니다.',
+    protocol: '화자 구분 결과를 읽지 못했습니다.',
+    storage: '화자 구분 결과를 저장하지 못했습니다.',
+    cleanup: '화자 구분 실행기의 종료를 확인하지 못했습니다. 앱을 다시 열어 주세요.',
+  };
+  for (const [failureKind, detail] of Object.entries(expected)) {
+    const feedback = processingFeedback({ id: 'job', kind: 'diarize', status: 'failed', failureKind,
+      message: '/private/meeting/audio.wav: unsupported WAV encoding',
+      failureDetail: { stage: '/private/path', response: 'private output' } });
+    assert.equal(feedback.title, '화자 구분 실패');
+    assert.equal(feedback.detail, detail);
+    assert.equal(feedback.active, false);
+    assert.equal(feedback.cancelVisible, false);
+    assert.deepEqual(feedback.diagnostics, []);
+    assert.doesNotMatch(feedback.detail, /private|unsupported WAV|audio\.wav/);
+  }
+});
+
+test('unclassified speaker failures do not infer a cause from raw messages or memory observations', () => {
+  for (const failureKind of [undefined, null, 'unknown', '__proto__', 'constructor']) {
+    const feedback = processingFeedback({ id: 'job', kind: 'diarize', status: 'failed', failureKind,
+      message: 'std::bad_alloc /private/meeting/audio.wav', memoryState: 'critical' });
+    assert.equal(feedback.detail, '화자를 구분하지 못했습니다. 원인을 확인하지 못했습니다. 기존 음성 기록은 유지됩니다.');
+    assert.equal(feedback.warning, '');
+    assert.doesNotMatch(feedback.detail, /private|메모리|bad_alloc/);
+  }
+});
