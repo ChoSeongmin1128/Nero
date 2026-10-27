@@ -13,7 +13,7 @@ applySystemAppearance();
 const byId = (id) => document.getElementById(id);
 const settingsPanels = ['appearance', 'recording', 'models', 'agent'];
 const terminologySettings = { info: null, error: '', request: 0, saving: null };
-const agentConnection = { info: null, loading: false, error: '', request: 0 };
+const agentConnection = { info: null, loading: false, error: '', request: 0, refresh: 0, timer: null, pending: {}, errors: {} };
 const microphonePreferenceKey = 'nero.recording.microphone.v1';
 const recorderPreferenceKey = 'nero.recording.autoRecorder.v1';
 function readAutoRecorder() { try { return globalThis.localStorage?.getItem(recorderPreferenceKey) !== 'false'; } catch { return true; } }
@@ -439,11 +439,24 @@ async function changeTerminologyEnabled() {
 }
 
 function renderAgentConnection() {
-  const { info, loading, error } = agentConnection;
+  const { info, error } = agentConnection;
   const available = Boolean(info?.available && info.executablePath && info.config);
-  const message = error || (loading || !info ? '확인 중' : !available ? '연결 도구가 포함되지 않은 빌드입니다.' : '');
+  const message = error || (info && !available ? '연결 도구가 포함되지 않은 빌드입니다.' : '');
   byId('settings-agent-status').textContent = message;
   byId('settings-agent-status').hidden = !message;
+  for (const client of ['claude', 'codex']) {
+    const entry = info?.clients?.find(item => item.id === client);
+    const pending = Boolean(agentConnection.pending[client]);
+    byId(`settings-${client}-spinner`).hidden = !pending && !(agentConnection.loading && !info);
+    const labels = { not_connected: '연결 안 됨', waiting: '연결 대기', connected: '연결됨', unavailable: '사용 불가' };
+    byId(`settings-${client}-status`).textContent = pending ? '연결 중' : !info ? (error ? '확인 불가' : '확인 중') : labels[entry?.state] || '사용 불가';
+    const button = byId(`settings-${client}-connect`);
+    button.disabled = pending || !available || !entry || entry.state === 'unavailable' || entry.state === 'connected';
+    button.textContent = pending ? '연결 중' : entry?.state === 'waiting' ? '다시 열기' : '연결';
+    const errorNode = byId(`settings-${client}-error`);
+    errorNode.textContent = agentConnection.errors[client] || entry?.detail || '';
+    errorNode.hidden = !errorNode.textContent;
+  }
   byId('settings-agent-details').hidden = !available;
   byId('settings-agent-path').textContent = available ? info.executablePath : '';
   byId('settings-agent-cli').textContent = available ? info.cliExample || '' : '';
@@ -451,32 +464,77 @@ function renderAgentConnection() {
   byId('settings-agent-copy-cli').disabled = !available || !info.cliExample;
 }
 
-async function loadAgentConnection() {
-  if (!byId('settings-dialog').open || state.settingsPanel !== 'agent' || agentConnection.loading || agentConnection.info) return;
-  const request = ++agentConnection.request;
+function agentConnectionActive() {
+  return byId('settings-dialog').open && state.settingsPanel === 'agent';
+}
+
+async function loadAgentConnection(force = false) {
+  if (!agentConnectionActive()) {
+    resetAgentConnection();
+    return;
+  }
+  if (agentConnection.loading || (!force && agentConnection.info)) return;
+  clearTimeout(agentConnection.timer);
+  agentConnection.timer = null;
+  const request = agentConnection.request;
+  const refresh = ++agentConnection.refresh;
   agentConnection.loading = true;
   agentConnection.error = '';
   renderAgentConnection();
   try {
     const info = await bridge.agentConnectionInfo();
-    if (request !== agentConnection.request) return;
+    if (request !== agentConnection.request || refresh !== agentConnection.refresh || !agentConnectionActive()) return;
     agentConnection.info = info;
   } catch {
-    if (request !== agentConnection.request) return;
-    agentConnection.error = '연결 설정을 불러오지 못했습니다. 탭을 다시 열어 주세요.';
+    if (request !== agentConnection.request || refresh !== agentConnection.refresh || !agentConnectionActive()) return;
+    agentConnection.error = '연결 상태를 불러오지 못했습니다.';
   } finally {
     if (request === agentConnection.request) {
       agentConnection.loading = false;
+      if (agentConnectionActive()) {
+        renderAgentConnection();
+        agentConnection.timer = setTimeout(() => { agentConnection.timer = null; void loadAgentConnection(true); }, 3000);
+      }
+    }
+  }
+}
+
+async function connectAgentClient(client) {
+  const entry = agentConnection.info?.clients?.find(item => item.id === client);
+  if (!agentConnectionActive() || agentConnection.pending[client] || !agentConnection.info?.available || !entry || ['unavailable', 'connected'].includes(entry.state)) return;
+  const request = agentConnection.request;
+  agentConnection.pending[client] = true;
+  agentConnection.errors[client] = '';
+  agentConnection.refresh += 1;
+  renderAgentConnection();
+  try {
+    const info = await bridge.connectAgentClient(client);
+    if (request !== agentConnection.request || !agentConnectionActive()) return;
+    const updated = info.clients?.find(item => item.id === client);
+    if (updated) agentConnection.info = { ...agentConnection.info, clients: agentConnection.info.clients.map(item => item.id === client ? updated : item) };
+  } catch (error) {
+    const message = typeof error === 'string' ? error : error?.message;
+    const reason = typeof message === 'string' && message.length <= 160 && !/[\r\n]/.test(message) && /[가-힣]/.test(message) ? message : '연결하지 못했습니다. 다시 시도해 주세요.';
+    if (request === agentConnection.request && agentConnectionActive()) agentConnection.errors[client] = reason;
+  } finally {
+    delete agentConnection.pending[client];
+    agentConnection.refresh += 1;
+    if (agentConnectionActive()) {
       renderAgentConnection();
+      void loadAgentConnection(true);
     }
   }
 }
 
 function resetAgentConnection() {
   agentConnection.request += 1;
+  agentConnection.refresh += 1;
+  clearTimeout(agentConnection.timer);
+  agentConnection.timer = null;
   agentConnection.info = null;
   agentConnection.loading = false;
   agentConnection.error = '';
+  agentConnection.errors = {};
   clearTimeout(copyFeedbackTimers.get('agent'));
   copyFeedbackTimers.delete('agent');
   byId('settings-agent-feedback').textContent = '';
@@ -654,6 +712,8 @@ byId('settings-dialog').addEventListener('keydown', event => {
   renderSettings(); byId(`settings-${state.settingsPanel}-tab`).focus(); void loadAgentConnection(); void loadTerminologySettings();
 });
 for (const kind of ['config', 'cli']) byId(`settings-agent-copy-${kind}`).addEventListener('click', () => copyAgentConnection(kind));
+for (const client of ['claude', 'codex']) byId(`settings-${client}-connect`).addEventListener('click', () => { void connectAgentClient(client); });
+globalThis.addEventListener?.('focus', () => { if (agentConnectionActive()) void loadAgentConnection(true); });
 byId('terminology-enabled').addEventListener('change', changeTerminologyEnabled);
 byId('settings-microphone').addEventListener('change', changeMicrophone);
 byId('settings-refresh-devices').addEventListener('click', async () => { state.settingsError = ''; try { await refreshDevices(); } catch { state.settingsError = '마이크 목록을 불러오지 못했습니다. 다시 시도해 주세요.'; renderSettings(); } });

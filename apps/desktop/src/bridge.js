@@ -18,6 +18,7 @@ function accept(snapshot) {
 
 export const readSnapshot = () => call('read_snapshot').then(accept);
 export const agentConnectionInfo = () => call('agent_connection_info');
+export const connectAgentClient = (client) => call('agent_connect_client', { client });
 export const createMeeting = (title, notes = '') => call('create_meeting', { title, notes });
 export const updateMeeting = (id, title, notes) => call('update_meeting', { id, title, notes });
 export const setMeetingDate = (id, meetingDate) => call('set_meeting_date', { id, meetingDate });

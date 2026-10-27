@@ -1,0 +1,18 @@
+{
+  "name": "nero",
+  "version": "0.0.1",
+  "description": "Nero 회의 검색, 음성 기록과 요약 조회",
+  "author": { "name": "Nero" },
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Nero",
+    "shortDescription": "회의 검색과 요약",
+    "longDescription": "Nero에서 저장한 회의의 음성 기록과 요약을 읽습니다.",
+    "developerName": "Nero",
+    "category": "Productivity",
+    "capabilities": [],
+    "logo": "./assets/icon.png",
+    "defaultPrompt": ["Nero에서 어제 회의 찾아서 결정 사항과 할 일 정리해 줘."]
+  }
+}

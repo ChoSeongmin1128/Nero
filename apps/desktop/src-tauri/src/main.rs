@@ -63,7 +63,118 @@ fn agent_connection_info(
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
-    Ok(agent_connection::connection_info(&resources, &root))
+    let connections = connection_directory(&app)?;
+    Ok(agent_connection::connection_info(
+        &resources,
+        &root,
+        &connections,
+    ))
+}
+
+fn connection_directory(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    app.path()
+        .config_dir()
+        .map(|path| path.join("Nero").join("connections"))
+        .map_err(|_| "연결 설정 경로를 확인하지 못했습니다.".to_string())
+}
+
+#[tauri::command]
+async fn agent_connect_client(
+    app: tauri::AppHandle,
+    window: WebviewWindow,
+    client: String,
+) -> Result<agent_connection::ConnectionInfo, String> {
+    require_main(&window)?;
+    let resources = app
+        .path()
+        .resource_dir()
+        .map_err(|_| "연결 경로를 확인하지 못했습니다.".to_string())?;
+    let root = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| "연결 경로를 확인하지 못했습니다.".to_string())?;
+    let connections = connection_directory(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let action =
+            agent_connection::prepare_connection(&resources, &root, &connections, &client)?;
+        open_connection(&action)?;
+        Ok(agent_connection::connection_info(
+            &resources,
+            &root,
+            &connections,
+        ))
+    })
+    .await
+    .map_err(|_| "연결 화면을 열지 못했습니다. 다시 시도해 주세요.".to_string())?
+}
+
+fn open_connection(action: &agent_connection::ConnectionAction) -> Result<(), String> {
+    let valid = match action.kind.as_str() {
+        "file" => {
+            std::path::Path::new(&action.target).is_absolute()
+                && std::path::Path::new(&action.target)
+                    .extension()
+                    .is_some_and(|value| value == "mcpb")
+        }
+        "url" => action
+            .target
+            .starts_with("codex://plugins/nero?marketplacePath="),
+        _ => false,
+    };
+    if !valid || action.target.contains('\0') {
+        return Err("연결 대상을 확인하지 못했습니다.".into());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut command = std::process::Command::new("/usr/bin/open");
+        if action.kind == "file" {
+            command.args(["-b", "com.anthropic.claudefordesktop"]);
+        }
+        let status = command
+            .arg(&action.target)
+            .output()
+            .map_err(|_| "앱을 열지 못했습니다. 설치 상태를 확인해 주세요.".to_string())?;
+        if status.status.success() {
+            return Ok(());
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        #[link(name = "shell32")]
+        extern "system" {
+            fn ShellExecuteW(
+                window: *mut std::ffi::c_void,
+                operation: *const u16,
+                file: *const u16,
+                parameters: *const u16,
+                directory: *const u16,
+                show: i32,
+            ) -> isize;
+        }
+        let wide = |text: &str| {
+            std::ffi::OsStr::new(text)
+                .encode_wide()
+                .chain(Some(0))
+                .collect::<Vec<_>>()
+        };
+        let operation = wide("open");
+        let target = wide(&action.target);
+        let result = unsafe {
+            ShellExecuteW(
+                std::ptr::null_mut(),
+                operation.as_ptr(),
+                target.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                1,
+            )
+        };
+        if result > 32 {
+            return Ok(());
+        }
+    }
+    Err("앱을 열지 못했습니다. 설치 상태를 확인해 주세요.".into())
 }
 
 fn require_local_window(window: &WebviewWindow) -> Result<(), String> {
@@ -1295,6 +1406,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             agent_connection_info,
+            agent_connect_client,
             read_snapshot,
             search_meetings,
             create_meeting,

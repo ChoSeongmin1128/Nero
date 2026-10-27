@@ -4,7 +4,7 @@
 
 Nero에 동봉된 `nero` 실행 파일은 읽기 전용 CLI와 `nero mcp`를 제공한다. 클라우드 DB,
 계정 서버, 네트워크 수신 포트는 사용하지 않는다. MCP는 클라이언트가 실행하는 stdio
-프로세스이며 공식 Rust SDK를 사용한다. 사용자는 연결할 AI 앱에 실행 파일을 등록한다.
+프로세스이며 공식 Rust SDK를 사용한다. 클라이언트의 설치 확인을 거쳐 연결한다.
 
 회의 생성, 편집, 삭제, 녹음, 모델 준비와 실행은 제공하지 않는다. 휴지통은 목록과 ID
 조회 모두에서 제외한다. 원음, 모델 원출력, 인증 정보도 도구 응답에 포함하지 않는다.
@@ -12,9 +12,15 @@ Nero에 동봉된 `nero` 실행 파일은 읽기 전용 CLI와 `nero mcp`를 제
 
 ## 연결
 
-Nero의 `설정 > 에이전트 연동`에서 `연결 설정 복사`를 선택하고 사용할 앱의 로컬 MCP
-설정에 `nero` 항목을 추가한다. 기존 MCP 항목은 유지한다. Nero가 다른 앱의 설정 파일이나
-사용자 PATH를 자동 변경하지 않는다. CLI 실행 예시도 같은 패널에서 복사할 수 있다.
+Nero의 `설정 > 연결`에서 Claude 또는 Codex의 `연결`을 선택한다. Claude는 네이티브
+MCPB 확장의 설치 확인 화면, Codex는 로컬 플러그인 설치 화면을 연다. 사용자가 해당 앱에서
+설치를 확인한다. 다른 앱의 기존 MCP 설정 파일이나 사용자 PATH를 Nero가 직접 덮어쓰지 않는다.
+
+설치 준비나 화면 열기만으로 `연결됨`을 표시하지 않는다. 선택한 클라이언트가 MCP 초기화를
+완료해 실제 세션이 확인되어야 연결 상태로 표시한다. 준비 중, 연결 대기, 실행 실패는
+연결 완료와 구분한다. 기존 설정 복사와 CLI 실행 예시는 고급 설정에 남겨 둔다. 클라이언트가 닫혔거나
+아직 세션을 시작하지 않은 경우도 연결 대기다. 실행 파일이나 템플릿/스킬이 바뀌면 새 패키지
+설치를 열 수 있으며, 이전 실행 세션을 새 패키지의 연결로 표시하지 않는다.
 
 macOS는 앱 리소스의 `agent/nero`, Windows는 설치 리소스의 `agent/nero.exe`를 사용한다.
 사용자에게 Node.js, Python, Cargo를 설치하도록 요구하지 않는다. MCP 설정의 `command`는
@@ -24,9 +30,15 @@ macOS는 앱 리소스의 `agent/nero`, Windows는 설치 리소스의 `agent/ne
 ["--data-dir", "Nero 앱이 제공한 실제 데이터 경로", "mcp"]
 ```
 
-앱을 이동하면 연결 설정을 다시 복사한다. 실행 파일을 동봉하지 않은 개발 빌드는 연결
-설정 복사를 비활성화한다. Claude Desktop과 Claude Code의 연결 설정은 클라이언트가
-관리하며, Nero는 연결 성공을 추정해서 표시하지 않는다.
+간편 연결은 서명된 앱 리소스의 실행 파일을 연결 전용 관리 경로에 보존해 설치된 MCPB나
+플러그인에서 사용한다. 앱 자체의 위치가 바뀌어도 이미 설치한 확장이 앱 번들 절대 경로에
+묶이지 않는다. 실행 파일을 동봉하지 않은 개발 빌드는 연결을 제공하지 않는다. 직접 복사한
+고급 설정은 앱 번들 경로를 가리키므로 앱을 이동하면 다시 복사한다.
+
+Claude Desktop 일반 채팅용 MCPB와 Codex 플러그인은 별개 패키지다. Claude Code나 Cowork에
+같은 설치 결과가 자동 적용된다고 가정하지 않는다. 기본 검색과 조회에 별도 스킬은 필요하지
+않다. Codex 플러그인은 전체 페이지 조회, 결정/제안 구분, 담당자/기한 근거를 다루는 일반
+회의 요약 스킬을 포함한다. 새 요약은 연결한 AI의 채팅에 표시되며 Nero에 저장하지 않는다.
 
 ## CLI
 
@@ -85,6 +97,31 @@ nero mcp
 변경 중이면 오류로 알린다. 전체 저장소의 트랜잭션 스냅샷이나 세션 간 고정 스냅샷을
 보장하지는 않는다. 여러 페이지 사이에 sourceVersion이 달라지면 첫 페이지부터 다시 읽는다.
 경로 탈출/심볼릭 링크, 손상/미지원 형식은 빈 결과로 숨기지 않고 거부한다.
+
+간편 연결로 시작한 MCP만 명시적으로 지정한 연결 관리 디렉터리에 초기화/세션 상태를
+기록한다. 회의 라이브러리와 분리된 제어 정보이며 조회 도구는 회의, 음성, 요약, 모델을
+변경하지 않는다. 일반 CLI/MCP 실행에는 이 기록을 생성하지 않는다.
+
+## 설치 패키지
+
+`prepare:agent`는 대상 OS의 실행 파일과 `agent/integrations` 템플릿을 함께 준비한다.
+공통 템플릿에는 사용자 경로, 인증 정보와 회의 데이터가 없다. Nero가 연결 버튼을 처리할 때
+실제 데이터 경로와 연결 상태 정보를 넣어 설치 패키지를 만든다.
+연결 패키지 버전은 앱의 `0.0.1`과 별도로 `0.0.1-nero.<build>`를 사용한다. 앱 빌드를
+올렸을 때 클라이언트가 이전 연결 패키지를 같은 버전으로 취급하지 않도록 구분한다.
+
+- Claude MCPB: manifest 0.3의 `server.type=binary`, 대상 OS만의 compatibility, 실행 파일,
+  아이콘. 런타임 의존성이나 모델을 포함하지 않는다. Unix 실행 파일의 권한을 보존한다.
+- Codex: 로컬 marketplace와 portable `plugin.json`/`mcp.json`, 호환 manifest, 회의 요약 스킬.
+  MCP transport는 `stdio`이며 공개 서버 등록이나 클라우드 업로드가 없다. portable 실행 파일은 플러그인 내부의
+  `server/nero` 또는 `server/nero.exe`이며 `./server/...`로 선언한다. marketplace는
+  `.agents/plugins/marketplace.json`, source는 marketplace 루트 기준 `./plugins/nero`다.
+- macOS: 앱 서명 후 리소스의 네이티브 실행 파일을 그대로 복사해 MCPB를 생성하므로 서명 전
+  실행 파일이 압축본 안에 남지 않는다. Windows는 해당 설치 대상의 `.exe`를 사용한다.
+
+형식 근거: [MCPB manifest](https://github.com/modelcontextprotocol/mcpb/blob/main/MANIFEST.md),
+[Codex 플러그인 패키지](https://developers.openai.com/plugins/build/plugins),
+[Codex 로컬 설치 링크](https://learn.chatgpt.com/docs/reference/commands#supported-links).
 
 ## 빌드와 검증
 

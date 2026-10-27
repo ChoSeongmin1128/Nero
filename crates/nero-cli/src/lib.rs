@@ -1,4 +1,5 @@
 pub mod cli;
+mod connection;
 pub mod mcp;
 
 use grove_core::{

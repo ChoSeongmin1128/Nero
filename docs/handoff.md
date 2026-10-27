@@ -88,6 +88,15 @@ Machine-local installation and preservation receipts remain private.
   [Local terminology correction](terminology.md). This source contract does not state
   that the installed app or existing meetings have changed.
 
+- Settings > Connections opens a native Claude Desktop MCPB or the Codex local plugin
+  installation page. Client registration, install files and a live initialized MCP session
+  are distinct: only the matching live session of the current package is shown connected.
+  Agent and template changes enable a package update; copies preserve the signed CLI and
+  do not depend on the app staying at its initial path. Session management files live
+  outside the meeting library. Existing client settings are owned by the client's install
+  flow; advanced manual config/CLI copy remains available. Native host acceptance and
+  Windows execution are separate validation gates. See [Local agent integration](local-agent.md).
+
 - Read-only CLI and local stdio MCP share `LibraryReader`, without opening the writer,
   recovery, migration, microphone or model paths. Queries include active meeting/folder
   lists, date/folder/content search, corrected transcript ranges, paginated notes and
@@ -179,7 +188,7 @@ Machine-local installation and preservation receipts remain private.
   leaves ASR/diarization unavailable; a retained MOSS package cannot substitute for it.
   Windows builds do not require the unsupported MOSS runtime.
 
-- Settings contains Screen / Recording / Models / Agent integration. Shared appearance behavior is packaged
+- Settings contains Screen / Recording / Models / Connections. Shared appearance behavior is packaged
   for both windows, with six colors and independent Light / Dark / System brightness.
   The native app uses its own saved preference instead of forcing green on every launch.
   Meeting title/notes autosave without a permanent Saved label or manual Save button;

@@ -115,7 +115,7 @@
           <button id="settings-appearance-tab" type="button" role="tab" aria-selected="true" aria-controls="settings-appearance-panel">화면</button>
           <button id="settings-recording-tab" type="button" role="tab" aria-selected="false" aria-controls="settings-recording-panel" tabindex="-1">녹음</button>
           <button id="settings-models-tab" type="button" role="tab" aria-selected="false" aria-controls="settings-models-panel" tabindex="-1">모델</button>
-          <button id="settings-agent-tab" type="button" role="tab" aria-selected="false" aria-controls="settings-agent-panel" tabindex="-1">에이전트 연동</button>
+          <button id="settings-agent-tab" type="button" role="tab" aria-selected="false" aria-controls="settings-agent-panel" tabindex="-1">연결</button>
         </nav>
         <div class="app-settings-content">
           <section id="settings-recording-panel" role="tabpanel" aria-labelledby="settings-recording-tab" hidden>
@@ -171,17 +171,24 @@
             <div class="settings-model-actions"><button id="models" type="button" class="small">모델 관리</button></div>
           </section>
           <section id="settings-agent-panel" role="tabpanel" aria-labelledby="settings-agent-tab" hidden>
-            <p class="app-settings-label">읽기 전용</p>
-            <p class="settings-agent-description">회의 목록, 검색, 음성 기록, 요약 조회</p>
-            <p class="settings-agent-description">사용할 앱의 MCP 설정에 추가하세요.</p>
-            <p id="settings-agent-status" class="notice" role="status">확인 중</p>
-            <div id="settings-agent-details" hidden>
+            <p class="app-settings-label">연결</p>
+            <div class="settings-client-row">
+              <div class="settings-client-info"><span class="settings-client-name">Claude</span><div class="settings-client-meta"><span id="settings-claude-spinner" class="activity-spinner" aria-hidden="true" hidden></span><span id="settings-claude-status" class="settings-client-status" role="status">확인 중</span></div><p id="settings-claude-error" class="notice" role="alert" hidden></p></div>
+              <button id="settings-claude-connect" type="button" class="small" aria-label="Claude 연결" disabled>연결</button>
+            </div>
+            <div class="settings-client-row">
+              <div class="settings-client-info"><span class="settings-client-name">Codex</span><div class="settings-client-meta"><span id="settings-codex-spinner" class="activity-spinner" aria-hidden="true" hidden></span><span id="settings-codex-status" class="settings-client-status" role="status">확인 중</span></div><p id="settings-codex-error" class="notice" role="alert" hidden></p></div>
+              <button id="settings-codex-connect" type="button" class="small" aria-label="Codex 연결" disabled>연결</button>
+            </div>
+            <p id="settings-agent-status" class="notice" role="status" hidden></p>
+            <details id="settings-agent-details" class="settings-agent-advanced" hidden>
+              <summary>고급 설정</summary>
               <dl class="settings-agent-details"><dt>실행 파일</dt><dd id="settings-agent-path"></dd></dl>
               <button id="settings-agent-copy-config" type="button" class="small" disabled>연결 설정 복사</button>
               <p id="settings-agent-cli-label" class="app-settings-label settings-agent-cli-label">CLI 실행 예시</p>
               <pre id="settings-agent-cli" class="settings-agent-code" aria-labelledby="settings-agent-cli-label"></pre>
               <button id="settings-agent-copy-cli" type="button" class="small" disabled>실행 예시 복사</button>
-            </div>
+            </details>
             <p id="settings-agent-feedback" class="notice app-settings-message" role="status" hidden></p>
           </section>
           <p id="settings-message" class="notice app-settings-message" role="status" hidden></p>

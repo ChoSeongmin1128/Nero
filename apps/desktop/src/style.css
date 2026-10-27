@@ -237,7 +237,17 @@ html.recorder-document { background: transparent; }
 .settings-model-status dt { font-size: var(--text-label-size); font-weight: var(--weight-medium); }
 .settings-model-status dd { margin: 0; color: var(--text-secondary); font-size: var(--text-caption-size); }
 .settings-model-actions { display: flex; justify-content: flex-end; margin-top: 12px; }
-.settings-agent-description { margin: 0 0 12px; color: var(--text-secondary); font-size: var(--text-label-size); }
+.settings-client-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0; }
+.settings-client-row + .settings-client-row { border-top: 1px solid var(--border); }
+.settings-client-info { min-width: 0; }
+.settings-client-name { font-size: var(--text-label-size); font-weight: var(--weight-medium); }
+.settings-client-meta { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+.settings-client-status { display: block; color: var(--text-secondary); font-size: var(--text-caption-size); }
+.settings-client-info .notice { margin: 6px 0 0; overflow-wrap: anywhere; }
+.settings-client-row button { flex: none; }
+.settings-agent-advanced { margin-top: 24px; }
+.settings-agent-advanced summary { cursor: pointer; color: var(--text-secondary); font-size: var(--text-label-size); }
+.settings-agent-advanced[open] summary { margin-bottom: 12px; }
 .settings-agent-details { margin: 0 0 12px; }
 .settings-agent-details dt { font-size: var(--text-label-size); font-weight: var(--weight-medium); }
 .settings-agent-details dd { margin: 6px 0 0; color: var(--text-secondary); font-family: var(--font-code); font-size: var(--text-caption-size); overflow-wrap: anywhere; }
