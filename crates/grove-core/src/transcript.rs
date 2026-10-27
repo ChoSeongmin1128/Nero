@@ -870,7 +870,10 @@ impl Engine {
         })?;
         let valid_source = matches!(
             source.projector_version.as_str(),
-            PROJECTOR_VERSION | RECORDING_PROJECTOR_VERSION | crate::nemotron::PROJECTOR_VERSION
+            PROJECTOR_VERSION
+                | RECORDING_PROJECTOR_VERSION
+                | crate::nemotron::PROJECTOR_VERSION
+                | crate::nemotron::WORD_PROJECTOR_VERSION
         ) && source.raw_sha256 == sha256(&raw)
             && match source.association.as_str() {
                 "direct" => initial.source.as_ref() == Some(source),
@@ -892,7 +895,10 @@ impl Engine {
                 "음성 기록의 원본 연결을 확인할 수 없습니다.".into(),
             ));
         }
-        let projection = if source.projector_version == crate::nemotron::PROJECTOR_VERSION {
+        let projection = if matches!(
+            source.projector_version.as_str(),
+            crate::nemotron::PROJECTOR_VERSION | crate::nemotron::WORD_PROJECTOR_VERSION
+        ) {
             crate::nemotron::decode(&raw, duration, &audio.session_id, transcript_id)?
         } else {
             MossOutput::decode_with_policy(
@@ -904,8 +910,10 @@ impl Engine {
             )?
         };
         if projection.model != initial.model
-            || (source.projector_version == crate::nemotron::PROJECTOR_VERSION
-                && projection.model_revision != initial.model_revision)
+            || (matches!(
+                source.projector_version.as_str(),
+                crate::nemotron::PROJECTOR_VERSION | crate::nemotron::WORD_PROJECTOR_VERSION
+            ) && projection.model_revision != initial.model_revision)
             || projection.segments.len() != initial.segments.len()
             || (source.association == "direct" && projection.source.as_ref() != Some(source))
             || (source.association == LEGACY_ASSOCIATION
@@ -916,6 +924,49 @@ impl Engine {
             return Err(CoreError::Storage(
                 "모델 원본과 발언의 연결을 확인할 수 없습니다.".into(),
             ));
+        }
+        if source.projector_version == crate::nemotron::WORD_PROJECTOR_VERSION {
+            if initial.speaker_analysis != projection.speaker_analysis
+                || initial.speakers != projection.speakers
+                || initial
+                    .segments
+                    .iter()
+                    .map(|s| &s.speaker_id)
+                    .ne(projection.segments.iter().map(|s| &s.speaker_id))
+            {
+                return Err(CoreError::Storage(
+                    "화자 분석의 원본 연결을 확인할 수 없습니다.".into(),
+                ));
+            }
+            let (run, bytes, expected_hash) = crate::nemotron::posterior_source(&raw)?;
+            store::validate_id(&run)?;
+            let path = store::checked_path(
+                &self.store.root,
+                &directory
+                    .join("speaker-analysis")
+                    .join(run)
+                    .join("posterior.f32le"),
+            )?;
+            let mut file = store::open_read(&path)?;
+            if bytes > 128 * 1024 * 1024 || file.metadata()?.len() != bytes {
+                return Err(CoreError::Storage(
+                    "화자 확률 원본의 크기가 다릅니다.".into(),
+                ));
+            }
+            let mut digest = Sha256::new();
+            let mut buffer = [0_u8; 64 * 1024];
+            loop {
+                let count = file.read(&mut buffer)?;
+                if count == 0 {
+                    break;
+                }
+                digest.update(&buffer[..count]);
+            }
+            if format!("{:x}", digest.finalize()) != expected_hash {
+                return Err(CoreError::Storage(
+                    "화자 확률 원본을 확인할 수 없습니다.".into(),
+                ));
+            }
         }
         let mut ids = BTreeSet::new();
         for (index, ((original, current), projected)) in initial
@@ -1216,7 +1267,7 @@ impl Engine {
         file.sync_all()?;
         let duration = audio.frames as f64 / audio.sample_rate as f64;
         let document = if matches!(policy, TranscriptCommitPolicy::Nemotron) {
-            crate::nemotron::decode(&raw, duration, &audio.session_id, &transcript_id)?
+            crate::nemotron::decode_asr(&raw, duration, &audio.session_id, &transcript_id)?
         } else {
             MossOutput::decode(&raw, duration, &audio.session_id, &transcript_id)?
         };
@@ -1351,8 +1402,126 @@ impl Engine {
             .audio
             .as_ref()
             .ok_or_else(|| CoreError::InvalidState("원음 정보가 없습니다.".into()))?;
-        let (after, evidence) =
-            crate::diarization::project(draft, audio.frames, audio.sample_rate)?;
+        if draft.posterior.is_some()
+            && draft.source.model == "nvidia/nemotron-3.5-asr-streaming-0.6b"
+        {
+            let before = draft.source.version.clone();
+            let before_digest = crate::summary::transcript_digest(&draft.source)?;
+            let raw = read_bytes(
+                &self.store.root,
+                &transcript_dir(id, &before.id)?.join("raw.json"),
+            )?;
+            let next_id = Uuid::new_v4().to_string();
+            let generation = crate::nemotron::create_speaker_generation(
+                draft,
+                &raw,
+                audio.frames,
+                audio.sample_rate,
+                &next_id,
+            )?;
+            let directory = transcript_dir(id, &next_id)?;
+            store::ensure_directory(&store::checked_path(&self.store.root, &directory)?)?;
+            immutable_bytes(
+                &self.store.root,
+                &directory.join("raw.json"),
+                &generation.raw,
+            )?;
+            immutable_json(
+                &self.store.root,
+                &directory.join("initial.json"),
+                &generation.initial,
+            )?;
+            validate_speakers(
+                &generation.current.speakers,
+                &generation
+                    .current
+                    .segments
+                    .iter()
+                    .map(|s| s.speaker_id.clone())
+                    .collect::<Vec<_>>(),
+            )?;
+            let after_path = if generation.current.version.revision > 0 {
+                let name = format!("edit-{}.json", Uuid::new_v4());
+                immutable_json(
+                    &self.store.root,
+                    &directory.join(&name),
+                    &generation.current,
+                )?;
+                name
+            } else {
+                "initial.json".into()
+            };
+            let evidence = generation.evidence;
+            let receipts = directory.join("speaker-analysis").join(&evidence.run_id);
+            store::ensure_directory(&store::checked_path(&self.store.root, &receipts)?)?;
+            immutable_bytes(&self.store.root, &receipts.join("raw.json"), &evidence.raw)?;
+            immutable_bytes(
+                &self.store.root,
+                &receipts.join("posterior.f32le"),
+                evidence
+                    .posterior
+                    .as_deref()
+                    .ok_or_else(|| CoreError::InvalidState("화자 확률 원본이 없습니다.".into()))?,
+            )?;
+            immutable_json(
+                &self.store.root,
+                &receipts.join("run.json"),
+                &serde_json::json!({
+                    "status":"prepared","beforeVersion":before,"afterVersion":generation.current.version,
+                    "afterPath":after_path,"provenance":evidence.document
+                }),
+            )?;
+            // All immutable artifacts are complete before replacing the meeting pointer.
+            // A concurrent edit keeps its active generation and leaves this candidate archived.
+            let latest = self
+                .transcript(id)?
+                .ok_or_else(|| CoreError::InvalidState("음성 기록이 변경되었습니다.".into()))?;
+            if latest.version != before
+                || crate::summary::transcript_digest(&latest)? != before_digest
+            {
+                return Err(CoreError::InvalidState(
+                    "음성 기록이 변경되어 새 화자 분석을 적용하지 않았습니다.".into(),
+                ));
+            }
+            store::write_json(
+                &self.store.root,
+                &directory.join("current.json"),
+                &generation.current,
+            )?;
+            let mut stored = self.meetings[id].clone();
+            stored.meeting.transcript_id = Some(next_id);
+            stored.meeting.updated_at = store::now();
+            self.store.save(&stored)?;
+            self.meetings.insert(id.into(), stored);
+            return Ok(generation.current);
+        }
+        let preserve_source_assignments =
+            if draft.posterior.is_some() && draft.source.speaker_analysis.is_none() {
+                // history_document above verified the initial/current segment identities.
+                // Before the first analysis there is no assignments_edited receipt yet.
+                let initial: Transcript = serde_json::from_slice(&read_bytes(
+                    &self.store.root,
+                    &transcript_dir(id, &current.version.id)?.join("initial.json"),
+                )?)
+                .map_err(|_| CoreError::Storage("원본 음성 기록을 읽을 수 없습니다.".into()))?;
+                current
+                    .segments
+                    .iter()
+                    .map(|s| &s.speaker_id)
+                    .ne(initial.segments.iter().map(|s| &s.speaker_id))
+            } else {
+                false
+            };
+        let (after, evidence) = if preserve_source_assignments {
+            crate::diarization::project_with_source_assignments(
+                draft,
+                audio.frames,
+                audio.sample_rate,
+                true,
+            )?
+        } else {
+            crate::diarization::project(draft, audio.frames, audio.sample_rate)?
+        };
         self.save_transcript_revision_with_evidence(id, after, None, None, Some(evidence))
     }
 
@@ -1495,6 +1664,13 @@ impl Engine {
             let receipts = directory.join("speaker-analysis").join(&evidence.run_id);
             store::ensure_directory(&store::checked_path(&self.store.root, &receipts)?)?;
             immutable_bytes(&self.store.root, &receipts.join("raw.json"), &evidence.raw)?;
+            if let Some(posterior) = &evidence.posterior {
+                immutable_bytes(
+                    &self.store.root,
+                    &receipts.join("posterior.f32le"),
+                    posterior,
+                )?;
+            }
             immutable_json(
                 &self.store.root,
                 &receipts.join("run.json"),
@@ -3775,6 +3951,7 @@ pub(crate) mod tests {
             configuration: serde_json::json!({"scope":"recording"}),
             raw: br#"{"file":"input.wav","segments":[{"start":0.0,"end":1.0,"speaker":2}]}"#
                 .to_vec(),
+            posterior: None,
         }
     }
 
@@ -3910,5 +4087,400 @@ pub(crate) mod tests {
             engine.transcript(&id).unwrap().unwrap().version,
             source.version
         );
+    }
+    #[test]
+    fn posterior_generation_preserves_edited_parent_and_roundtrips_history_restore() {
+        let (_temp, mut engine, id, _audio) = setup();
+        let raw = crate::nemotron::tests::raw();
+        let baseline = engine
+            .commit_nemotron_transcript(&id, None, raw.clone())
+            .unwrap();
+        let old_dir = transcript_dir(&id, &baseline.version.id).unwrap();
+        let original_initial =
+            read_bytes(&engine.store.root, &old_dir.join("initial.json")).unwrap();
+        let mut texts = baseline
+            .segments
+            .iter()
+            .map(|s| s.text.clone())
+            .collect::<Vec<_>>();
+        texts[0] = "사용자가 수정한 문장".into();
+        let edited = engine
+            .edit_transcript(&id, baseline.version, texts)
+            .unwrap();
+        let edited_version = edited.version.clone();
+        let after = engine
+            .apply_diarization(&id, crate::nemotron::tests::posterior_draft(edited))
+            .unwrap();
+        assert_ne!(after.version.id, edited_version.id);
+        assert_eq!(after.version.revision, 1);
+        assert_eq!(after.segments[0].text, "사용자가 수정한 문장");
+        assert_eq!(after.segments[0].original_text, "첫 문장.");
+        let new_dir = transcript_dir(&id, &after.version.id).unwrap();
+        let initial: Transcript = serde_json::from_slice(
+            &read_bytes(&engine.store.root, &new_dir.join("initial.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(initial.segments[0].text, "첫 문장.");
+        assert_eq!(
+            read_bytes(&engine.store.root, &old_dir.join("raw.json")).unwrap(),
+            raw
+        );
+        assert_eq!(
+            read_bytes(&engine.store.root, &old_dir.join("initial.json")).unwrap(),
+            original_initial
+        );
+        assert_eq!(engine.transcript_history(&id).unwrap().entries.len(), 2);
+        let restored = engine
+            .restore_transcript(&id, after.version.clone(), edited_version)
+            .unwrap();
+        assert_eq!(restored.segments[0].text, "사용자가 수정한 문장");
+        let back = engine
+            .restore_transcript(&id, restored.version, after.version)
+            .unwrap();
+        assert_eq!(back.segments.len(), after.segments.len());
+        assert_eq!(back.segments[0].text, "사용자가 수정한 문장");
+        assert_eq!(
+            engine.summary_input(&id).unwrap().source.version,
+            back.version
+        );
+    }
+
+    #[test]
+    fn posterior_rerun_is_a_new_generation_with_canonical_words_and_no_old_mutation() {
+        let (_temp, mut engine, id, _audio) = setup();
+        let raw = crate::nemotron::tests::raw();
+        let baseline = engine
+            .commit_nemotron_transcript(&id, None, raw.clone())
+            .unwrap();
+        let first = engine
+            .apply_diarization(&id, crate::nemotron::tests::posterior_draft(baseline))
+            .unwrap();
+        let first_dir = transcript_dir(&id, &first.version.id).unwrap();
+        let first_raw = read_bytes(&engine.store.root, &first_dir.join("raw.json")).unwrap();
+        let first_current =
+            read_bytes(&engine.store.root, &first_dir.join("current.json")).unwrap();
+        let second = engine
+            .apply_diarization(&id, crate::nemotron::tests::posterior_draft(first.clone()))
+            .unwrap();
+        assert_ne!(second.version.id, first.version.id);
+        assert_eq!(
+            second
+                .segments
+                .iter()
+                .map(|s| s.text.as_str())
+                .collect::<Vec<_>>(),
+            first
+                .segments
+                .iter()
+                .map(|s| s.text.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            read_bytes(&engine.store.root, &first_dir.join("raw.json")).unwrap(),
+            first_raw
+        );
+        assert_eq!(
+            read_bytes(&engine.store.root, &first_dir.join("current.json")).unwrap(),
+            first_current
+        );
+        let raw2 = read_bytes(
+            &engine.store.root,
+            &transcript_dir(&id, &second.version.id)
+                .unwrap()
+                .join("raw.json"),
+        )
+        .unwrap();
+        assert_eq!(crate::nemotron::canonical_asr(&raw2).unwrap(), raw);
+        assert_eq!(engine.transcript_history(&id).unwrap().entries.len(), 3);
+    }
+
+    #[test]
+    fn invalid_posterior_or_missing_evidence_never_replaces_the_active_generation() {
+        let (_temp, mut engine, id, _audio) = setup();
+        let raw = crate::nemotron::tests::raw();
+        let baseline = engine.commit_nemotron_transcript(&id, None, raw).unwrap();
+        let mut bad = crate::nemotron::tests::posterior_draft(baseline.clone());
+        bad.posterior.as_mut().unwrap().frames = 100;
+        assert!(engine.apply_diarization(&id, bad).is_err());
+        assert_eq!(
+            engine.transcript(&id).unwrap().unwrap().version,
+            baseline.version
+        );
+        let after = engine
+            .apply_diarization(&id, crate::nemotron::tests::posterior_draft(baseline))
+            .unwrap();
+        let directory = transcript_dir(&id, &after.version.id).unwrap();
+        let run = after.speaker_analysis.as_ref().unwrap().run_id.clone();
+        let posterior = store::checked_path(
+            &engine.store.root,
+            &directory
+                .join("speaker-analysis")
+                .join(run)
+                .join("posterior.f32le"),
+        )
+        .unwrap();
+        let mut bytes = std::fs::read(&posterior).unwrap();
+        bytes[0] ^= 1;
+        std::fs::write(&posterior, bytes).unwrap();
+        assert!(engine
+            .apply_diarization(&id, crate::nemotron::tests::posterior_draft(after.clone()))
+            .is_err());
+        assert_eq!(
+            engine.transcript(&id).unwrap().unwrap().version,
+            after.version
+        );
+        assert_eq!(engine.transcript_history(&id).unwrap().unavailable, 1);
+    }
+    #[test]
+    fn legacy_moss_reanalysis_validates_new_posterior_but_keeps_the_legacy_generation() {
+        let (_temp, mut engine, id, _audio) = setup();
+        let raw = output();
+        let baseline = engine.commit_transcript(&id, None, raw.clone()).unwrap();
+        let after = engine
+            .apply_diarization(
+                &id,
+                crate::nemotron::tests::posterior_draft(baseline.clone()),
+            )
+            .unwrap();
+        assert_eq!(after.version.id, baseline.version.id);
+        assert_eq!(after.version.revision, baseline.version.revision + 1);
+        assert_eq!(after.segments.len(), baseline.segments.len());
+        assert_eq!(
+            after.segments[0].original_text,
+            baseline.segments[0].original_text
+        );
+        assert_eq!(after.source, baseline.source);
+        let run = &after.speaker_analysis.as_ref().unwrap().run_id;
+        assert!(store::checked_path(
+            &engine.store.root,
+            &transcript_dir(&id, &after.version.id)
+                .unwrap()
+                .join("speaker-analysis")
+                .join(run)
+                .join("posterior.f32le")
+        )
+        .unwrap()
+        .exists());
+        assert_eq!(
+            read_bytes(
+                &engine.store.root,
+                &transcript_dir(&id, &after.version.id)
+                    .unwrap()
+                    .join("raw.json")
+            )
+            .unwrap(),
+            raw
+        );
+        let mut bad = crate::nemotron::tests::posterior_draft(after.clone());
+        bad.posterior.as_mut().unwrap().probabilities.pop();
+        assert!(engine.apply_diarization(&id, bad).is_err());
+        assert_eq!(
+            engine.transcript(&id).unwrap().unwrap().version,
+            after.version
+        );
+    }
+    #[test]
+    fn new_moss_posterior_preserves_user_names_and_manual_unassignment_through_reopen_restore() {
+        let (_temp, mut engine, id, _audio) = setup();
+        let root = engine.store.root.clone();
+        let raw = output();
+        let baseline = engine.commit_transcript(&id, None, raw.clone()).unwrap();
+        let directory = transcript_dir(&id, &baseline.version.id).unwrap();
+        let original_initial = read_bytes(&root, &directory.join("initial.json")).unwrap();
+        let mut names = baseline.speakers.clone();
+        names[0].name = "사용자가 정한 이름".into();
+        let assignments = baseline
+            .segments
+            .iter()
+            .map(|s| s.speaker_id.clone())
+            .collect();
+        let named = engine
+            .edit_speakers(&id, baseline.version, names, assignments)
+            .unwrap();
+        let named = engine
+            .edit_transcript(&id, named.version, vec!["사용자 수정문".into()])
+            .unwrap();
+        let first = engine
+            .apply_diarization(&id, crate::nemotron::tests::posterior_draft(named.clone()))
+            .unwrap();
+        assert_eq!(first.speakers, named.speakers);
+        assert_eq!(first.segments[0].speaker_id, named.segments[0].speaker_id);
+        assert_eq!(first.segments[0].text, "사용자 수정문");
+        let unassigned = engine
+            .edit_speakers(&id, first.version, first.speakers, vec![None])
+            .unwrap();
+        let after = engine
+            .apply_diarization(&id, crate::nemotron::tests::posterior_draft(unassigned))
+            .unwrap();
+        assert_eq!(after.segments[0].speaker_id, None);
+        assert_eq!(after.speakers[0].name, "사용자가 정한 이름");
+        assert!(after.speaker_analysis.as_ref().unwrap().assignments_edited);
+        assert_eq!(after.version.id, named.version.id);
+        assert_eq!(read_bytes(&root, &directory.join("raw.json")).unwrap(), raw);
+        assert_eq!(
+            read_bytes(&root, &directory.join("initial.json")).unwrap(),
+            original_initial
+        );
+        drop(engine);
+        let mut engine = Engine::open(root.clone()).unwrap();
+        let reopened = engine.transcript(&id).unwrap().unwrap();
+        assert_eq!(reopened.version, after.version);
+        assert_eq!(reopened.speakers, after.speakers);
+        assert_eq!(reopened.segments[0].speaker_id, None);
+        let other = engine
+            .commit_transcript(&id, Some(after.version.clone()), output())
+            .unwrap();
+        let restored = engine
+            .restore_transcript(&id, other.version, after.version)
+            .unwrap();
+        assert_eq!(restored.speakers, reopened.speakers);
+        assert_eq!(restored.segments[0].speaker_id, None);
+        assert_eq!(restored.segments[0].text, "사용자 수정문");
+        assert!(
+            restored
+                .speaker_analysis
+                .as_ref()
+                .unwrap()
+                .assignments_edited
+        );
+        assert_eq!(engine.transcript_history(&id).unwrap().unavailable, 0);
+    }
+
+    #[test]
+    fn asr_commit_rejects_a_derived_envelope_without_publishing_incomplete_posterior_history() {
+        let (_temp, mut engine, id, _audio) = setup();
+        let baseline = engine
+            .commit_nemotron_transcript(&id, None, crate::nemotron::tests::raw())
+            .unwrap();
+        let derived = engine
+            .apply_diarization(&id, crate::nemotron::tests::posterior_draft(baseline))
+            .unwrap();
+        let directory = transcript_dir(&id, &derived.version.id).unwrap();
+        let raw = read_bytes(&engine.store.root, &directory.join("raw.json")).unwrap();
+        let before = read_bytes(&engine.store.root, &directory.join("current.json")).unwrap();
+        assert!(engine
+            .commit_nemotron_transcript(&id, Some(derived.version.clone()), raw.clone())
+            .is_err());
+        assert_eq!(
+            engine.transcript(&id).unwrap().unwrap().version,
+            derived.version
+        );
+        assert_eq!(
+            read_bytes(&engine.store.root, &directory.join("raw.json")).unwrap(),
+            raw
+        );
+        assert_eq!(
+            read_bytes(&engine.store.root, &directory.join("current.json")).unwrap(),
+            before
+        );
+        assert!(engine.history_document(&id, &derived.version.id).is_ok());
+    }
+    #[test]
+    fn first_moss_posterior_preserves_manual_unassignment_without_a_name_edit() {
+        let (_temp, mut engine, id, _audio) = setup();
+        let raw = output();
+        let initial = engine.commit_transcript(&id, None, raw.clone()).unwrap();
+        let manual = engine
+            .edit_speakers(&id, initial.version, initial.speakers.clone(), vec![None])
+            .unwrap();
+        assert!(manual.speaker_analysis.is_none());
+        assert!(manual
+            .speakers
+            .iter()
+            .all(|s| s.name_origin == Some(SpeakerNameOrigin::Automatic)));
+        let digest = crate::summary::transcript_digest(&manual).unwrap();
+        let after = engine
+            .apply_diarization(&id, crate::nemotron::tests::posterior_draft(manual.clone()))
+            .unwrap();
+        assert_eq!(after.version.id, manual.version.id);
+        assert_eq!(after.speakers, manual.speakers);
+        assert_eq!(after.segments[0].speaker_id, None);
+        assert!(after.speaker_analysis.as_ref().unwrap().assignments_edited);
+        let run = &after.speaker_analysis.as_ref().unwrap().run_id;
+        let provenance: serde_json::Value = store::read_json(
+            &store::checked_path(
+                &engine.store.root,
+                &transcript_dir(&id, &after.version.id)
+                    .unwrap()
+                    .join("speaker-analysis")
+                    .join(run)
+                    .join("run.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(provenance["provenance"]["sourceSha256"], digest);
+        assert_eq!(
+            provenance["provenance"]["assignmentPreservation"]["verifiedInitialAssignmentsDiffer"],
+            true
+        );
+        assert_eq!(
+            provenance["provenance"]["decisions"][0]["reason"],
+            "preserved_source_assignment"
+        );
+        assert_eq!(
+            read_bytes(
+                &engine.store.root,
+                &transcript_dir(&id, &after.version.id)
+                    .unwrap()
+                    .join("raw.json")
+            )
+            .unwrap(),
+            raw
+        );
+    }
+
+    #[test]
+    fn first_moss_posterior_preserves_a_manual_existing_automatic_speaker_assignment() {
+        let (_temp, mut engine, id, _audio) = setup();
+        let mut value: serde_json::Value = serde_json::from_slice(&output()).unwrap();
+        value["segments"] = serde_json::json!([
+            {"start":0.0,"end":0.4,"text":"[S1] 첫 발언","speaker_id":"S1"},
+            {"start":0.5,"end":1.0,"text":"[S2] 둘째 발언","speaker_id":"S2"}
+        ]);
+        let initial = engine
+            .commit_transcript(&id, None, serde_json::to_vec(&value).unwrap())
+            .unwrap();
+        let target = initial.segments[1].speaker_id.clone();
+        let manual = engine
+            .edit_speakers(
+                &id,
+                initial.version,
+                initial.speakers.clone(),
+                vec![target.clone(), target],
+            )
+            .unwrap();
+        assert!(manual.speaker_analysis.is_none());
+        let after = engine
+            .apply_diarization(&id, crate::nemotron::tests::posterior_draft(manual.clone()))
+            .unwrap();
+        assert_eq!(after.speakers, manual.speakers);
+        assert!(after
+            .segments
+            .iter()
+            .map(|s| &s.speaker_id)
+            .eq(manual.segments.iter().map(|s| &s.speaker_id)));
+        assert!(after.speaker_analysis.as_ref().unwrap().assignments_edited);
+    }
+
+    #[test]
+    fn previous_automatic_moss_analysis_is_not_mistaken_for_a_manual_initial_difference() {
+        let (_temp, mut engine, id, _audio) = setup();
+        let initial = engine.commit_transcript(&id, None, output()).unwrap();
+        let first = engine
+            .apply_diarization(&id, crate::nemotron::tests::posterior_draft(initial))
+            .unwrap();
+        assert_eq!(first.segments[0].speaker_id, None);
+        assert!(!first.speaker_analysis.as_ref().unwrap().assignments_edited);
+        let mut next = crate::nemotron::tests::posterior_draft(first);
+        let p = next.posterior.as_mut().unwrap();
+        for (index, b) in p.probabilities.chunks_exact_mut(4).enumerate() {
+            let value = if index % 8 == 0 { 0.9_f32 } else { 0.0_f32 };
+            b.copy_from_slice(&value.to_le_bytes());
+        }
+        next.raw = br#"{"segments":[{"start":0.0,"end":1.0,"speaker":1}]}"#.to_vec();
+        let second = engine.apply_diarization(&id, next).unwrap();
+        assert!(second.segments[0].speaker_id.is_some());
+        assert!(!second.speaker_analysis.as_ref().unwrap().assignments_edited);
     }
 }

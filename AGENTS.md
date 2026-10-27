@@ -32,6 +32,11 @@ This file applies to the entire repository.
   continuation under the same job ID so a speaker-stage retry does not rerun ASR.
   Failure or cancellation retains the saved text and audio. Existing meetings are
   never automatically reprocessed. Speaker management can explicitly rerun analysis.
+  The isolated V3 C ABI child preserves every probability frame before compaction.
+  Whole-file contiguous activity uses p > 0.5, while timestamped words use the pinned
+  native onset argmax rule. Store new word-turn projections as separate generations,
+  preserving canonical ASR, corrections, manual assignments and prior history. Do not
+  force the number of model slots to match an attendee list.
 - Stored MOSS output, edits and history remain readable with their original source
   and revision identities. Preserve the MOSS EOS, measured-budget, single-generation
   and complete-input checks for its whole-recording artifacts; the stored-artifact

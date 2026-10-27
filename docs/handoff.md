@@ -52,8 +52,10 @@ Machine-local installation and preservation receipts remain private.
   runs independent whole-recording Nemotron 3 speaker analysis through the shared
   NeMo-Speech.cpp package. Its source-bound continuation is persisted under the same
   job ID; a speaker-stage retry does not rerun recognition. It preserves raw output/
-  provenance, rejects stale source revisions and projects conservatively without
-  changing words or times. Failure/cancellation retains the saved transcript and audio.
+  provenance and rejects stale source revisions. V3 frame probabilities are collected
+  before native compaction and projected with the pinned word-onset argmax rule.
+  Word turns form a new validated generation; original ASR, text corrections, manual
+  speaker edits and old generations are preserved. Failure/cancellation retains the saved transcript and audio.
   Speaker management also supports explicit reanalysis. Target-hardware accuracy and
   distribution acceptance remain unqualified; this is not a release/installation receipt.
 - The shared speech-input adapter binds original and normalized audio by hashes and

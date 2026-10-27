@@ -1579,6 +1579,7 @@ dependencies = [
  "fs2",
  "grove-core",
  "hound",
+ "libloading",
  "objc2",
  "objc2-foundation",
  "reqwest",

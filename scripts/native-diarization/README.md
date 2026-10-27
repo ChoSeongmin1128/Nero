@@ -36,16 +36,36 @@ sample-accurate count of audio consumed or proof of complete spoken coverage.
 The adapter must retain the original raw result and separate execution evidence.
 GPU/CPU selection and failure handling belong to the native app adapter.
 
-The native adapter sends one complete audio file to one stateful diarization
-invocation with `v3-offline`, pinned runtime segmentation defaults and disabled
-dynamic batching. Custom segmentation overrides are deliberately absent: this runtime
-freezes long-recording prefixes with library defaults during compaction, so a different
-tail configuration would describe a mixed-policy result. The request receipt records
-the actual defaults. It does not use the short-recording full-attention `--offline` option.
-The model has at most eight speaker slots; slots are not registered identities.
-Inference receives only a verified local model path and cannot implicitly search
-an archived application's models. GPU availability failures may use the packaged
-CPU path. An allocation or unrelated runtime failure does not prove a missing GPU.
+Speaker analysis uses the app's isolated `--nero-speaker-worker` child process,
+before Tauri windows or single-instance registration. It loads the same packaged
+C ABI library as ASR. No Python, separate model runtime or compiler is needed by
+users. One mono16k PCM16 recording is pushed through one continuous stream and
+finished at EOF. The V3 geometry uses speaker cache 264, FIFO 40, chunk 340,
+update period 300, left context 0 and right context 40 (80ms encoder frames).
+It does not use short-recording full-attention `--offline`.
+
+The child exports every new probability frame before native compaction can discard
+it. It rejects missing frames, revised retained probabilities, nonfinite values and
+incomplete input/output counts. Full-timeline `p > 0.5` contiguous activity has no
+padding, gap filling or minimum-turn filtering. This bypasses the old runtime's
+V2-derived segmentation defaults and its different prefix/tail configuration path.
+Raw frame-major float32 probabilities, activity, source/model/library hashes and
+completion evidence are retained. Probability output is bounded at 128MiB and
+retained native snapshots at 64MiB; these are memory bounds, not accuracy guarantees.
+
+For timestamped Nemotron words, the shared Core projects the model probabilities
+using the pinned native rule: sum each slot over the word onset, up to 160ms,
+then choose the largest sum. This is not a calibrated confidence score or verified
+human identity. New word turns form a separate source-validated generation; old
+recognition, corrections, manual speaker edits and history remain available.
+No attendee count or name is supplied to inference. The model has eight slots,
+which do not establish qualified eight-person meeting accuracy.
+
+GPU is preferred. Only a confirmed unavailable GPU backend permits the packaged
+CPU route; allocation and generic engine failures do not. Windows loads the selected
+app-local DLL and dependencies only from its directory and System32. Backend choice,
+cancellation, source-version checks and final publication remain owned by the app's
+existing processing/job boundary. A speaker retry does not rerun ASR.
 
 Packaging does not establish Windows hardware qualification. The complete app
 also needs its own supported audio preparation path and target-device acceptance.

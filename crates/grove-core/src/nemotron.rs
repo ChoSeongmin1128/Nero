@@ -1,8 +1,9 @@
 use crate::{
     CoreError, Result, Transcript, TranscriptSegment, TranscriptSource, TranscriptVersion,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
 pub(crate) const PROJECTOR_VERSION: &str = "nemotron-asr-sentences-v1";
@@ -64,6 +65,22 @@ struct Word {
 }
 
 pub(crate) fn decode(raw: &[u8], duration: f64, session_id: &str, id: &str) -> Result<Transcript> {
+    if raw.len() > 16 * 1024 * 1024 {
+        return Err(derived_invalid());
+    }
+    let value: serde_json::Value = serde_json::from_slice(raw).map_err(|_| derived_invalid())?;
+    if value["schemaVersion"] == 2 {
+        return decode_derived(raw, duration, session_id, id);
+    }
+    decode_asr(raw, duration, session_id, id)
+}
+
+pub(crate) fn decode_asr(
+    raw: &[u8],
+    duration: f64,
+    session_id: &str,
+    id: &str,
+) -> Result<Transcript> {
     let invalid = || {
         CoreError::InvalidInput(
             "음성 인식의 전체 입력 또는 완료 정보를 확인할 수 없습니다. 모델 원본은 보관했습니다."
@@ -193,8 +210,509 @@ fn push_sentence(
     Ok(())
 }
 
+pub(crate) const WORD_PROJECTOR_VERSION: &str = "nemotron-word-speakers-v1";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WordAtom {
+    id: String,
+    parent_index: usize,
+    word_start: usize,
+    word_end: usize,
+    speaker_id: Option<String>,
+    preserved: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PosteriorSource {
+    input_frames: u64,
+    input_sample_rate: u32,
+    prepared_frames: u64,
+    frames: u64,
+    speakers: u32,
+    seconds_per_frame: f64,
+    bytes: u64,
+    sha256: String,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DerivedOutput {
+    schema_version: u32,
+    projector_version: String,
+    canonical_asr_raw: String,
+    canonical_asr_sha256: String,
+    parent: Transcript,
+    parent_sha256: String,
+    configuration: serde_json::Value,
+    analysis: crate::SpeakerAnalysis,
+    posterior: PosteriorSource,
+    word_slots: Vec<u32>,
+    atoms: Vec<WordAtom>,
+}
+
+pub(crate) struct SpeakerTurnGeneration {
+    pub raw: Vec<u8>,
+    pub initial: Transcript,
+    pub current: Transcript,
+    pub evidence: crate::diarization::SpeakerAnalysisEvidence,
+}
+
+fn derived_invalid() -> CoreError {
+    CoreError::InvalidInput(
+        "화자 분석과 원본 단어의 연결을 확인할 수 없습니다. 기존 기록은 유지됩니다.".into(),
+    )
+}
+
+fn hash(raw: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(raw))
+}
+
+pub(crate) fn canonical_asr(raw: &[u8]) -> Result<Vec<u8>> {
+    if raw.len() > 16 * 1024 * 1024 {
+        return Err(derived_invalid());
+    }
+    let value: serde_json::Value = serde_json::from_slice(raw).map_err(|_| derived_invalid())?;
+    if value["schemaVersion"] == 1 {
+        return Ok(raw.to_vec());
+    }
+    let output: DerivedOutput = serde_json::from_value(value).map_err(|_| derived_invalid())?;
+    if output.schema_version != 2
+        || output.projector_version != WORD_PROJECTOR_VERSION
+        || hash(output.canonical_asr_raw.as_bytes()) != output.canonical_asr_sha256
+    {
+        return Err(derived_invalid());
+    }
+    let inner: serde_json::Value =
+        serde_json::from_str(&output.canonical_asr_raw).map_err(|_| derived_invalid())?;
+    if inner["schemaVersion"] != 1 {
+        return Err(derived_invalid());
+    }
+    Ok(output.canonical_asr_raw.into_bytes())
+}
+
+fn word_ranges(parent: &Transcript, words: &[Word], duration: f64) -> Result<Vec<(usize, usize)>> {
+    let mut cursor = 0;
+    let mut ranges = Vec::new();
+    for segment in &parent.segments {
+        let start = cursor;
+        let mut text = String::new();
+        while cursor < words.len() {
+            if !text.is_empty() {
+                text.push(' ');
+            }
+            text.push_str(&words[cursor].word);
+            cursor += 1;
+            if text == segment.original_text {
+                break;
+            }
+            if !segment.original_text.starts_with(&text) {
+                return Err(derived_invalid());
+            }
+        }
+        if cursor == start
+            || text != segment.original_text
+            || (segment.start * 16000.0).round()
+                != (words[start].start.min(duration) * 16000.0).round()
+            || (segment.end * 16000.0).round()
+                != (words[cursor - 1].end.min(duration) * 16000.0).round()
+        {
+            return Err(derived_invalid());
+        }
+        ranges.push((start, cursor));
+    }
+    if cursor != words.len() {
+        return Err(derived_invalid());
+    }
+    Ok(ranges)
+}
+
+fn preserve_atom(parent: &Transcript, index: usize) -> bool {
+    let segment = &parent.segments[index];
+    segment.text != segment.original_text
+        || parent
+            .speaker_analysis
+            .as_ref()
+            .is_some_and(|a| a.assignments_edited)
+        || segment.speaker_id.as_ref().is_some_and(|id| {
+            parent
+                .speakers
+                .iter()
+                .any(|s| &s.id == id && s.name_origin != Some(crate::SpeakerNameOrigin::Automatic))
+        })
+}
+
+fn atoms(
+    parent: &Transcript,
+    words: &[Word],
+    slots: &[u32],
+    duration: f64,
+    run: &str,
+) -> Result<Vec<WordAtom>> {
+    let ranges = word_ranges(parent, words, duration)?;
+    let mut result = Vec::new();
+    for (parent_index, (start, end)) in ranges.into_iter().enumerate() {
+        if preserve_atom(parent, parent_index) {
+            result.push(WordAtom {
+                id: String::new(),
+                parent_index,
+                word_start: start,
+                word_end: end,
+                speaker_id: parent.segments[parent_index].speaker_id.clone(),
+                preserved: true,
+            });
+            continue;
+        }
+        let mut begin = start;
+        while begin < end {
+            let mut stop = begin + 1;
+            while stop < end && slots[stop] == slots[begin] {
+                stop += 1;
+            }
+            result.push(WordAtom {
+                id: String::new(),
+                parent_index,
+                word_start: begin,
+                word_end: stop,
+                speaker_id: Some(format!("diarization:{run}:{}", slots[begin])),
+                preserved: false,
+            });
+            begin = stop;
+        }
+    }
+    Ok(result)
+}
+
+fn materialize(
+    output: &DerivedOutput,
+    words: &[Word],
+    duration: f64,
+    session: &str,
+    id: &str,
+) -> Result<Transcript> {
+    if output.schema_version != 2
+        || output.projector_version != WORD_PROJECTOR_VERSION
+        || output.parent.source_session_id != session
+        || output.parent_sha256 != crate::summary::transcript_digest(&output.parent)?
+        || hash(output.canonical_asr_raw.as_bytes()) != output.canonical_asr_sha256
+        || output.word_slots.len() != words.len()
+        || output.word_slots.iter().any(|s| !(1..=8).contains(s))
+        || output.posterior.speakers != 8
+        || output.posterior.seconds_per_frame != f64::from(0.01_f32)
+        || output.posterior.bytes
+            != output
+                .posterior
+                .frames
+                .checked_mul(32)
+                .ok_or_else(derived_invalid)?
+        || output.posterior.bytes > 128 * 1024 * 1024
+        || output.posterior.sha256.len() != 64
+        || !output
+            .posterior
+            .sha256
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit())
+        || output.analysis.projection_version != crate::diarization::WORD_PROJECTION_VERSION
+        || output.analysis.scope != "recording"
+        || output.analysis.run_id.is_empty()
+        || output
+            .analysis
+            .run_id
+            .contains(|c: char| !c.is_ascii_alphanumeric() && c != '-')
+    {
+        return Err(derived_invalid());
+    }
+    let profile = crate::SpeakerAnalysisDraft {
+        source: output.parent.clone(),
+        model: output.analysis.model.clone(),
+        model_revision: output.analysis.model_revision.clone(),
+        model_sha256: output.analysis.model_sha256.clone(),
+        runtime: output.analysis.runtime.clone(),
+        configuration: output.configuration.clone(),
+        raw: Vec::new(),
+        posterior: None,
+    };
+    if !crate::diarization::posterior_profile(&profile) {
+        return Err(derived_invalid());
+    }
+    if output.posterior.input_frames == 0
+        || output.posterior.input_sample_rate == 0
+        || duration
+            != output.posterior.input_frames as f64 / f64::from(output.posterior.input_sample_rate)
+    {
+        return Err(derived_invalid());
+    }
+    let prepared = (u128::from(output.posterior.input_frames) * 16_000
+        + u128::from(output.posterior.input_sample_rate / 2))
+        / u128::from(output.posterior.input_sample_rate);
+    if prepared != u128::from(output.posterior.prepared_frames)
+        || output.posterior.frames != output.posterior.prepared_frames / 160 + 1
+    {
+        return Err(derived_invalid());
+    }
+    let expected = atoms(
+        &output.parent,
+        words,
+        &output.word_slots,
+        duration,
+        &output.analysis.run_id,
+    )?;
+    if expected.len() != output.atoms.len() {
+        return Err(derived_invalid());
+    }
+    let mut ids = BTreeSet::new();
+    let mut speakers = BTreeMap::new();
+    let mut segments = Vec::new();
+    let mut causes = BTreeMap::new();
+    for (index, (atom, expected)) in output.atoms.iter().zip(expected).enumerate() {
+        if atom.id.is_empty()
+            || atom.id.len() > 128
+            || !atom
+                .id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            || !ids.insert(atom.id.clone())
+            || atom.parent_index != expected.parent_index
+            || atom.word_start != expected.word_start
+            || atom.word_end != expected.word_end
+            || atom.speaker_id != expected.speaker_id
+            || atom.preserved != expected.preserved
+        {
+            return Err(derived_invalid());
+        }
+        let parent = &output.parent.segments[atom.parent_index];
+        let text = words[atom.word_start..atom.word_end]
+            .iter()
+            .map(|w| w.word.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        if let Some(speaker) = &atom.speaker_id {
+            let name = if atom.preserved {
+                output
+                    .parent
+                    .speakers
+                    .iter()
+                    .find(|s| &s.id == speaker)
+                    .cloned()
+                    .ok_or_else(derived_invalid)?
+            } else {
+                crate::TranscriptSpeaker {
+                    id: speaker.clone(),
+                    name: format!("화자 {}", output.word_slots[atom.word_start]),
+                    name_origin: Some(crate::SpeakerNameOrigin::Automatic),
+                }
+            };
+            speakers.insert(speaker.clone(), name);
+        } else {
+            *causes
+                .entry(if atom.preserved {
+                    "preserved_parent_assignment".into()
+                } else {
+                    "no_output".into()
+                })
+                .or_insert(0) += 1;
+        }
+        segments.push(TranscriptSegment {
+            id: atom.id.clone(),
+            start: if atom.preserved {
+                parent.start
+            } else {
+                words[atom.word_start].start.min(duration)
+            },
+            end: if atom.preserved {
+                parent.end
+            } else {
+                words[atom.word_end - 1].end.min(duration)
+            },
+            original_text: text.clone(),
+            text,
+            speaker_id: atom.speaker_id.clone(),
+            source_index: Some(u32::try_from(index).map_err(|_| derived_invalid())?),
+        });
+    }
+    let assigned = segments.iter().filter(|s| s.speaker_id.is_some()).count();
+    if output.analysis.assigned_count != assigned
+        || output.analysis.unassigned_count != segments.len() - assigned
+        || output.analysis.review_causes != causes
+    {
+        return Err(derived_invalid());
+    }
+    Ok(Transcript {
+        version: TranscriptVersion {
+            id: id.into(),
+            revision: 0,
+        },
+        source_session_id: session.into(),
+        model: output.parent.model.clone(),
+        model_revision: output.parent.model_revision.clone(),
+        source: None,
+        speakers: speakers.into_values().collect(),
+        segments,
+        speaker_analysis: Some(output.analysis.clone()),
+    })
+}
+
+fn decode_derived(raw: &[u8], duration: f64, session: &str, id: &str) -> Result<Transcript> {
+    if raw.len() > 16 * 1024 * 1024 {
+        return Err(derived_invalid());
+    }
+    let output: DerivedOutput = serde_json::from_slice(raw).map_err(|_| derived_invalid())?;
+    let canonical = decode_asr(output.canonical_asr_raw.as_bytes(), duration, session, id)?;
+    if canonical.model != output.parent.model
+        || canonical.model_revision != output.parent.model_revision
+    {
+        return Err(derived_invalid());
+    }
+    let words: Output =
+        serde_json::from_str(&output.canonical_asr_raw).map_err(|_| derived_invalid())?;
+    if words.input_audio_frames != output.posterior.prepared_frames {
+        return Err(derived_invalid());
+    }
+    let mut transcript = materialize(&output, &words.words, duration, session, id)?;
+    transcript.source = Some(TranscriptSource {
+        raw_sha256: hash(raw),
+        projector_version: WORD_PROJECTOR_VERSION.into(),
+        association: "direct".into(),
+        speaker_scope: Some("recording".into()),
+        chunking_policy: Some(POLICY.into()),
+    });
+    Ok(transcript)
+}
+
+pub(crate) fn posterior_source(raw: &[u8]) -> Result<(String, u64, String)> {
+    let output: DerivedOutput = serde_json::from_slice(raw).map_err(|_| derived_invalid())?;
+    Ok((
+        output.analysis.run_id,
+        output.posterior.bytes,
+        output.posterior.sha256,
+    ))
+}
+
+pub(crate) fn create_speaker_generation(
+    draft: crate::SpeakerAnalysisDraft,
+    parent_raw: &[u8],
+    frames: u64,
+    sample_rate: u32,
+    id: &str,
+) -> Result<SpeakerTurnGeneration> {
+    if draft.source.source.as_ref().is_none_or(|s| {
+        s.raw_sha256 != hash(parent_raw)
+            || !matches!(
+                s.projector_version.as_str(),
+                PROJECTOR_VERSION | WORD_PROJECTOR_VERSION
+            )
+    }) {
+        return Err(derived_invalid());
+    }
+    let duration = frames as f64 / f64::from(sample_rate);
+    let canonical = canonical_asr(parent_raw)?;
+    let baseline = decode_asr(&canonical, duration, &draft.source.source_session_id, id)?;
+    if baseline.model != draft.source.model
+        || baseline.model_revision != draft.source.model_revision
+    {
+        return Err(derived_invalid());
+    }
+    let parsed: Output = serde_json::from_slice(&canonical).map_err(|_| derived_invalid())?;
+    let prepared = (u128::from(frames) * 16_000 + u128::from(sample_rate / 2))
+        / u128::from(sample_rate.max(1));
+    if sample_rate == 0 || prepared != u128::from(parsed.input_audio_frames) {
+        return Err(derived_invalid());
+    }
+    let positions = parsed
+        .words
+        .iter()
+        .map(|w| (w.start, w.end))
+        .collect::<Vec<_>>();
+    let slots = crate::diarization::posterior_slots(&draft, &positions, frames, sample_rate)?;
+    let run = Uuid::new_v4().to_string();
+    let mut plans = atoms(&draft.source, &parsed.words, &slots, duration, &run)?;
+    for atom in &mut plans {
+        atom.id = Uuid::new_v4().to_string();
+    }
+    let assigned = plans.iter().filter(|a| a.speaker_id.is_some()).count();
+    let mut causes = BTreeMap::new();
+    for atom in plans.iter().filter(|a| a.speaker_id.is_none()) {
+        *causes
+            .entry(if atom.preserved {
+                "preserved_parent_assignment".into()
+            } else {
+                "no_output".into()
+            })
+            .or_insert(0) += 1;
+    }
+    let posterior = draft.posterior.as_ref().ok_or_else(derived_invalid)?;
+    let output = DerivedOutput {
+        schema_version: 2,
+        projector_version: WORD_PROJECTOR_VERSION.into(),
+        canonical_asr_raw: String::from_utf8(canonical).map_err(|_| derived_invalid())?,
+        canonical_asr_sha256: baseline.source.as_ref().unwrap().raw_sha256.clone(),
+        parent: draft.source.clone(),
+        parent_sha256: crate::summary::transcript_digest(&draft.source)?,
+        configuration: draft.configuration.clone(),
+        analysis: crate::SpeakerAnalysis {
+            run_id: run.clone(),
+            scope: "recording".into(),
+            model: draft.model.clone(),
+            model_revision: draft.model_revision.clone(),
+            model_sha256: draft.model_sha256.clone(),
+            runtime: draft.runtime.clone(),
+            projection_version: crate::diarization::WORD_PROJECTION_VERSION.into(),
+            raw_sha256: hash(&draft.raw),
+            assigned_count: assigned,
+            unassigned_count: plans.len() - assigned,
+            review_causes: causes,
+            assignments_edited: draft
+                .source
+                .speaker_analysis
+                .as_ref()
+                .is_some_and(|a| a.assignments_edited),
+        },
+        posterior: PosteriorSource {
+            input_frames: frames,
+            input_sample_rate: sample_rate,
+            prepared_frames: parsed.input_audio_frames,
+            frames: posterior.frames,
+            speakers: posterior.speakers,
+            seconds_per_frame: posterior.seconds_per_frame,
+            bytes: posterior.probabilities.len() as u64,
+            sha256: hash(&posterior.probabilities),
+        },
+        word_slots: slots,
+        atoms: plans,
+    };
+    let raw = serde_json::to_vec(&output).map_err(|_| derived_invalid())?;
+    let initial = decode_derived(&raw, duration, &draft.source.source_session_id, id)?;
+    let mut current = initial.clone();
+    for (segment, atom) in current.segments.iter_mut().zip(&output.atoms) {
+        if atom.preserved {
+            segment.text = output.parent.segments[atom.parent_index].text.clone();
+        }
+    }
+    if current.segments.iter().any(|s| s.text != s.original_text) {
+        current.version.revision = 1;
+    }
+    let document = serde_json::json!({"schemaVersion":2,"analysis":output.analysis,"source":draft.source,"sourceSha256":output.parent_sha256,
+        "configuration":output.configuration,"posterior":{"path":"posterior.f32le","frames":output.posterior.frames,"speakers":output.posterior.speakers,"secondsPerFrame":output.posterior.seconds_per_frame,"bytes":output.posterior.bytes,"sha256":output.posterior.sha256},
+        "activityNormalization":{"rule":"nemo-v3-probability-frame-boundaries-v1","inputFrames":frames,"inputSampleRate":sample_rate,
+            "preparedFrames":output.posterior.prepared_frames,"preparedSampleRate":16000,"nativeFrames":output.posterior.frames,
+            "secondsPerFrame":output.posterior.seconds_per_frame,"terminalEndClippedToPreparedDuration":true},
+        "projection":{"projectorVersion":WORD_PROJECTOR_VERSION,"assignment":crate::diarization::WORD_PROJECTION_VERSION,"wordSpans":output.atoms},"rawBytes":draft.raw.len(),"rawPath":"raw.json"});
+    Ok(SpeakerTurnGeneration {
+        raw,
+        initial,
+        current,
+        evidence: crate::diarization::SpeakerAnalysisEvidence {
+            run_id: run,
+            raw: draft.raw,
+            document,
+            posterior: Some(draft.posterior.unwrap().probabilities),
+        },
+    })
+}
+
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::transcript::tests::{output as moss_output, setup};
 
@@ -218,7 +736,7 @@ mod tests {
         })
     }
 
-    fn raw() -> Vec<u8> {
+    pub(crate) fn raw() -> Vec<u8> {
         serde_json::to_vec(&value()).unwrap()
     }
 
@@ -484,5 +1002,276 @@ mod tests {
             changed.version
         );
         assert_eq!(std::fs::read(path).unwrap(), forged);
+    }
+    pub(crate) fn posterior_draft(source: Transcript) -> crate::SpeakerAnalysisDraft {
+        let stride = f64::from(0.01_f32);
+        let mut probabilities = Vec::new();
+        for frame in 0..101 {
+            for slot in 0..8 {
+                let probability: f32 = if slot == if frame < 20 { 0 } else { 1 } {
+                    0.9
+                } else {
+                    0.0
+                };
+                probabilities.extend_from_slice(&probability.to_le_bytes());
+            }
+        }
+        crate::SpeakerAnalysisDraft {
+            source,
+            model: "nvidia/Nemotron-3-Diarization".into(),
+            model_revision: "f667ed73aee57d40cc39428eb768b4fd87a0a29e".into(),
+            model_sha256: "08456d9e22cd9a323c0364d98375f3746d6e68507ebb705cd46438c534c7a3a1".into(),
+            runtime: RUNTIME.into(),
+            configuration: serde_json::json!({"scope":"recording","fullAttention":false,"batching":false,"backend":"cpu",
+                "postprocessingSource":"nvidia-v3-probability-v1","assignment":"nemo-word-160ms-argmax-v1",
+                "geometry":{"spkcache":264,"fifo":40,"chunk":340,"updatePeriod":300,"leftContext":0,"rightContext":40}}),
+            raw: serde_json::to_vec(&serde_json::json!({"file":"test.wav","segments":[
+                {"start":0.0,"end":20.0*stride,"speaker":1},
+                {"start":20.0*stride,"end":1.0,"speaker":2}
+            ]}))
+            .unwrap(),
+            posterior: Some(crate::SpeakerPosterior {
+                frames: 101,
+                speakers: 8,
+                seconds_per_frame: stride,
+                probabilities,
+            }),
+        }
+    }
+
+    #[test]
+    fn posterior_generation_splits_only_native_word_boundaries_and_replays_exactly() {
+        let raw = raw();
+        let parent = decode(&raw, 1.0, "session", "parent").unwrap();
+        let generation = create_speaker_generation(
+            posterior_draft(parent.clone()),
+            &raw,
+            16000,
+            16000,
+            "derived",
+        )
+        .unwrap();
+        assert_eq!(generation.initial.segments.len(), 4);
+        assert_eq!(
+            generation
+                .initial
+                .segments
+                .iter()
+                .map(|s| s.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["첫", "문장.", "둘째 문장?", "마지막"]
+        );
+        assert_eq!(
+            generation
+                .initial
+                .segments
+                .iter()
+                .map(|s| s.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" "),
+            parent
+                .segments
+                .iter()
+                .map(|s| s.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        assert_eq!(canonical_asr(&generation.raw).unwrap(), raw);
+        let replay = decode(&generation.raw, 1.0, "session", "derived").unwrap();
+        assert_eq!(
+            serde_json::to_value(replay).unwrap(),
+            serde_json::to_value(&generation.initial).unwrap()
+        );
+        assert!(generation
+            .current
+            .segments
+            .iter()
+            .all(|s| s.speaker_id.is_some()));
+        assert_eq!(generation.current.version.revision, 0);
+        assert!(generation.evidence.posterior.is_some());
+        assert_eq!(
+            generation.evidence.document["activityNormalization"]["preparedFrames"],
+            16000
+        );
+    }
+
+    #[test]
+    fn posterior_never_guesses_alignment_for_an_edited_parent_block() {
+        let raw = raw();
+        let mut parent = decode(&raw, 1.0, "session", "parent").unwrap();
+        parent.segments[0].text = "사용자가 문장 전체를 고쳤습니다".into();
+        parent.version.revision = 1;
+        let generation = create_speaker_generation(
+            posterior_draft(parent.clone()),
+            &raw,
+            16000,
+            16000,
+            "derived",
+        )
+        .unwrap();
+        assert_eq!(generation.initial.segments.len(), 3);
+        assert_eq!(generation.initial.segments[0].text, "첫 문장.");
+        assert_eq!(generation.current.segments[0].text, parent.segments[0].text);
+        assert_eq!(generation.current.segments[0].original_text, "첫 문장.");
+        assert_eq!(generation.current.segments[0].speaker_id, None);
+        assert_eq!(generation.current.version.revision, 1);
+        assert_eq!(
+            generation.current.segments[0].start,
+            parent.segments[0].start
+        );
+        assert_eq!(generation.current.segments[0].end, parent.segments[0].end);
+    }
+
+    #[test]
+    fn user_names_and_manual_assignments_keep_their_own_namespace_on_reanalysis() {
+        let raw = raw();
+        let mut parent = decode(&raw, 1.0, "session", "parent").unwrap();
+        parent.speakers.push(crate::TranscriptSpeaker {
+            id: "user-alice".into(),
+            name: "직접 지정한 이름".into(),
+            name_origin: Some(crate::SpeakerNameOrigin::User),
+        });
+        parent.segments[0].speaker_id = Some("user-alice".into());
+        let first = create_speaker_generation(posterior_draft(parent), &raw, 16000, 16000, "first")
+            .unwrap();
+        assert_eq!(
+            first.initial.segments[0].speaker_id.as_deref(),
+            Some("user-alice")
+        );
+        assert_eq!(first.initial.segments[0].text, "첫 문장.");
+        assert_eq!(
+            first
+                .initial
+                .speakers
+                .iter()
+                .filter(|s| s.name == "직접 지정한 이름")
+                .count(),
+            1
+        );
+        let mut manual = first.current.clone();
+        manual.speaker_analysis.as_mut().unwrap().assignments_edited = true;
+        manual.segments[1].speaker_id = None;
+        let second = create_speaker_generation(
+            posterior_draft(manual.clone()),
+            &first.raw,
+            16000,
+            16000,
+            "second",
+        )
+        .unwrap();
+        assert_eq!(second.current.segments.len(), manual.segments.len());
+        assert!(second
+            .current
+            .segments
+            .iter()
+            .map(|s| &s.speaker_id)
+            .eq(manual.segments.iter().map(|s| &s.speaker_id)));
+        assert!(second.current.speaker_analysis.unwrap().assignments_edited);
+        assert_eq!(canonical_asr(&second.raw).unwrap(), raw);
+    }
+
+    #[test]
+    fn posterior_uses_the_onset_anchor_and_keeps_official_lower_slot_ties() {
+        let raw = raw();
+        let parent = decode(&raw, 1.0, "session", "parent").unwrap();
+        let draft = posterior_draft(parent.clone());
+        assert_eq!(
+            crate::diarization::posterior_slots(&draft, &[(0., 1.), (0.15, 0.4)], 16000, 16000)
+                .unwrap(),
+            vec![1, 2]
+        );
+        let mut tied = posterior_draft(parent);
+        for bytes in tied
+            .posterior
+            .as_mut()
+            .unwrap()
+            .probabilities
+            .chunks_exact_mut(4)
+        {
+            bytes.copy_from_slice(&0.2_f32.to_le_bytes());
+        }
+        tied.raw = br#"{"segments":[]}"#.to_vec();
+        assert_eq!(
+            crate::diarization::posterior_slots(&tied, &[(0., 0.9), (1.0, 1.0)], 16000, 16000)
+                .unwrap(),
+            vec![1, 1]
+        );
+    }
+
+    #[test]
+    fn posterior_rejects_shape_nan_mismatched_activity_and_unpinned_config() {
+        let raw = raw();
+        let parent = decode(&raw, 1.0, "session", "parent").unwrap();
+        let base = posterior_draft(parent);
+        let mut variants = Vec::new();
+        let mut bad = base.clone();
+        bad.posterior.as_mut().unwrap().probabilities.pop();
+        variants.push(bad);
+        let mut bad = base.clone();
+        bad.posterior.as_mut().unwrap().probabilities[..4].copy_from_slice(&f32::NAN.to_le_bytes());
+        variants.push(bad);
+        let mut bad = base.clone();
+        bad.posterior.as_mut().unwrap().frames = 100;
+        variants.push(bad);
+        let mut bad = base.clone();
+        bad.raw = br#"{"segments":[]}"#.to_vec();
+        variants.push(bad);
+        let mut bad = base.clone();
+        bad.configuration["geometry"]["chunk"] = 264.into();
+        variants.push(bad);
+        let mut bad = base;
+        bad.configuration["assignment"] = "guessed-rule".into();
+        variants.push(bad);
+        for bad in variants {
+            assert!(create_speaker_generation(bad, &raw, 16000, 16000, "derived").is_err());
+        }
+    }
+
+    #[test]
+    fn derived_replay_rejects_changed_word_spans_slots_parent_and_source_geometry() {
+        let raw = raw();
+        let parent = decode(&raw, 1.0, "session", "parent").unwrap();
+        let generation =
+            create_speaker_generation(posterior_draft(parent), &raw, 16000, 16000, "derived")
+                .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&generation.raw).unwrap();
+        let mut variants = Vec::new();
+        let mut bad = value.clone();
+        bad["atoms"][0]["wordEnd"] = 2.into();
+        variants.push(bad);
+        let mut bad = value.clone();
+        bad["wordSlots"][0] = 0.into();
+        variants.push(bad);
+        let mut bad = value.clone();
+        bad["parent"]["segments"][0]["originalText"] = "가짜 원문".into();
+        variants.push(bad);
+        let mut bad = value;
+        bad["posterior"]["preparedFrames"] = 16001.into();
+        variants.push(bad);
+        for bad in variants {
+            assert!(decode(
+                &serde_json::to_vec(&bad).unwrap(),
+                1.0,
+                "session",
+                "derived"
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn posterior_binds_prepared_frames_to_integer_resampling_without_widening_audio_bounds() {
+        let raw = raw();
+        let physical_duration = 48001.0 / 48000.0;
+        let parent = decode(&raw, physical_duration, "session", "parent").unwrap();
+        let generation =
+            create_speaker_generation(posterior_draft(parent), &raw, 48001, 48000, "derived")
+                .unwrap();
+        assert_eq!(
+            generation.evidence.document["activityNormalization"]["preparedFrames"],
+            16000
+        );
+        assert!(decode(&generation.raw, physical_duration, "session", "derived").is_ok());
+        assert!(decode(&generation.raw, 1.0, "session", "derived").is_err());
     }
 }

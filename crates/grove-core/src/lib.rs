@@ -8,7 +8,7 @@ mod store;
 mod summary;
 pub mod terminology;
 mod transcript;
-pub use diarization::{SpeakerAnalysis, SpeakerAnalysisDraft};
+pub use diarization::{SpeakerAnalysis, SpeakerAnalysisDraft, SpeakerPosterior};
 pub use library::Folder;
 pub use summary::{Summary, SummaryDraft, SummaryInput, SummaryProvenance, SummaryView};
 pub use terminology::{

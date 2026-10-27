@@ -4,6 +4,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const PROJECTION_VERSION: &str = "majority-coverage-v1";
+pub const WORD_PROJECTION_VERSION: &str = "nemo-word-160ms-argmax-v1";
 const TIMEBASE: u64 = 16_000;
 const NEMO_RUNTIME: &str = "nemo-speech-0.2.0@6a3ca369370782acee0dd155e34394ba60b920c4";
 const NEMO_MODEL: &str = "nvidia/Nemotron-3-Diarization";
@@ -36,6 +37,19 @@ fn normalization(
     frames: u64,
     sample_rate: u32,
 ) -> Result<(Option<f64>, serde_json::Value)> {
+    if draft.posterior.is_some() && posterior_profile(draft) {
+        let prepared =
+            (u128::from(frames) * 16_000 + u128::from(sample_rate / 2)) / u128::from(sample_rate);
+        let prepared = u64::try_from(prepared).map_err(|_| invalid())?;
+        return Ok((
+            Some(prepared as f64 / 16_000.0),
+            serde_json::json!({
+                "rule":"nemo-v3-probability-frame-boundaries-v1","inputFrames":frames,
+                "inputSampleRate":sample_rate,"preparedFrames":prepared,"preparedSampleRate":16000,
+                "nativeFrames":prepared/160+1,"secondsPerFrame":f64::from(0.01_f32),"clipped":[]
+            }),
+        ));
+    }
     if !pinned_nemo(draft) {
         return Ok((
             None,
@@ -93,6 +107,15 @@ pub struct SpeakerAnalysis {
 }
 
 #[derive(Debug, Clone)]
+pub struct SpeakerPosterior {
+    pub frames: u64,
+    pub speakers: u32,
+    pub seconds_per_frame: f64,
+    /// Little-endian, frame-major float32 sigmoid probabilities.
+    pub probabilities: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
 pub struct SpeakerAnalysisDraft {
     pub source: Transcript,
     pub model: String,
@@ -101,6 +124,7 @@ pub struct SpeakerAnalysisDraft {
     pub runtime: String,
     pub configuration: serde_json::Value,
     pub raw: Vec<u8>,
+    pub posterior: Option<SpeakerPosterior>,
 }
 
 #[derive(Deserialize)]
@@ -123,6 +147,136 @@ pub(crate) struct SpeakerAnalysisEvidence {
     pub run_id: String,
     pub raw: Vec<u8>,
     pub document: serde_json::Value,
+    pub posterior: Option<Vec<u8>>,
+}
+
+pub(crate) fn posterior_profile(draft: &SpeakerAnalysisDraft) -> bool {
+    let c = &draft.configuration;
+    !(draft.model != NEMO_MODEL
+        || draft.model_revision != NEMO_REVISION
+        || draft.model_sha256 != NEMO_SHA256
+        || draft.runtime != NEMO_RUNTIME
+        || c["scope"] != "recording"
+        || c["fullAttention"] != false
+        || c["batching"] != false
+        || !matches!(c["backend"].as_str(), Some("cpu" | "metal" | "vulkan"))
+        || c["postprocessingSource"] != "nvidia-v3-probability-v1"
+        || c["assignment"] != WORD_PROJECTION_VERSION
+        || c["geometry"]
+            != serde_json::json!({"spkcache":264,"fifo":40,"chunk":340,
+            "updatePeriod":300,"leftContext":0,"rightContext":40}))
+}
+
+pub(crate) fn posterior_slots(
+    draft: &SpeakerAnalysisDraft,
+    words: &[(f64, f64)],
+    frames: u64,
+    sample_rate: u32,
+) -> Result<Vec<u32>> {
+    let p = draft.posterior.as_ref().ok_or_else(invalid)?;
+    if frames == 0
+        || sample_rate == 0
+        || !posterior_profile(draft)
+        || p.speakers != 8
+        || p.seconds_per_frame != f64::from(0.01_f32)
+    {
+        return Err(invalid());
+    }
+    let resampled =
+        (u128::from(frames) * 16_000 + u128::from(sample_rate / 2)) / u128::from(sample_rate);
+    let expected = u64::try_from(resampled).map_err(|_| invalid())? / 160 + 1;
+    let bytes = expected
+        .checked_mul(8)
+        .and_then(|n| n.checked_mul(4))
+        .ok_or_else(invalid)?;
+    if p.frames != expected
+        || bytes != p.probabilities.len() as u64
+        || bytes > 128 * 1024 * 1024
+        || resampled == 0
+    {
+        return Err(invalid());
+    }
+    if p.probabilities.chunks_exact(4).any(|b| {
+        let value = f32::from_le_bytes(b.try_into().unwrap());
+        !value.is_finite() || !(0.0..=1.0).contains(&value)
+    }) {
+        return Err(invalid());
+    }
+    let output: Output = serde_json::from_slice(&draft.raw).map_err(|_| invalid())?;
+    if output.segments.len() > 100_000 {
+        return Err(invalid());
+    }
+    // V2 activity is an exact view of the archived full timeline, with only the
+    // centered-STFT terminal tail clipped to the prepared 16 kHz sample count.
+    let duration = resampled as f64 / 16_000.0;
+    let mut expected_activity = Vec::new();
+    for speaker in 0..8_usize {
+        let mut start = None;
+        for frame in 0..=p.frames {
+            let active = if frame == p.frames {
+                false
+            } else {
+                let offset = (frame as usize * 8 + speaker) * 4;
+                f32::from_le_bytes(p.probabilities[offset..offset + 4].try_into().unwrap()) > 0.5
+            };
+            if active && start.is_none() {
+                start = Some(frame);
+            }
+            if !active {
+                if let Some(first) = start.take() {
+                    let a = (first as f64 * p.seconds_per_frame).min(duration);
+                    let b = (frame as f64 * p.seconds_per_frame).min(duration);
+                    if a < b {
+                        expected_activity.push((a, b, speaker as u32 + 1));
+                    }
+                }
+            }
+        }
+    }
+    let mut actual_activity = output
+        .segments
+        .into_iter()
+        .map(|a| (a.start, a.end, a.speaker))
+        .collect::<Vec<_>>();
+    let order = |a: &(f64, f64, u32), b: &(f64, f64, u32)| {
+        a.0.total_cmp(&b.0)
+            .then(a.2.cmp(&b.2))
+            .then(a.1.total_cmp(&b.1))
+    };
+    expected_activity.sort_by(order);
+    actual_activity.sort_by(order);
+    if expected_activity != actual_activity {
+        return Err(invalid());
+    }
+    let mut result = Vec::with_capacity(words.len());
+    for &(start, end) in words {
+        if !start.is_finite() || !end.is_finite() || start < 0.0 || end < start {
+            return Err(invalid());
+        }
+        // Pinned sortformer_model.h computes ceil(2560 / 160) on the sample grid.
+        // The word API has no activity/confidence threshold and lower-slot ties win.
+        let f0 = (start / p.seconds_per_frame) as u64;
+        let f1 = ((end / p.seconds_per_frame).ceil() as u64).min(f0.saturating_add(16));
+        let first = f0.min(p.frames - 1);
+        let last = f1.min(p.frames).max(first + 1);
+        let mut sums = [0.0_f64; 8];
+        for frame in first..last {
+            for (slot, sum) in sums.iter_mut().enumerate() {
+                let offset = (frame as usize * 8 + slot) * 4;
+                *sum += f64::from(f32::from_le_bytes(
+                    p.probabilities[offset..offset + 4].try_into().unwrap(),
+                ));
+            }
+        }
+        let mut best = 0;
+        for slot in 1..8 {
+            if sums[slot] > sums[best] {
+                best = slot;
+            }
+        }
+        result.push(best as u32 + 1);
+    }
+    Ok(result)
 }
 
 fn invalid() -> CoreError {
@@ -152,6 +306,23 @@ pub(crate) fn project(
     frames: u64,
     sample_rate: u32,
 ) -> Result<(Transcript, SpeakerAnalysisEvidence)> {
+    project_with_source_assignments(draft, frames, sample_rate, false)
+}
+
+pub(crate) fn project_with_source_assignments(
+    draft: SpeakerAnalysisDraft,
+    frames: u64,
+    sample_rate: u32,
+    preserve_source_assignments: bool,
+) -> Result<(Transcript, SpeakerAnalysisEvidence)> {
+    if preserve_source_assignments
+        && (draft.posterior.is_none() || draft.source.speaker_analysis.is_some())
+    {
+        return Err(invalid());
+    }
+    if draft.posterior.is_some() {
+        posterior_slots(&draft, &[], frames, sample_rate)?;
+    }
     let duration = frames as f64 / f64::from(sample_rate);
     if frames == 0
         || sample_rate == 0
@@ -187,7 +358,19 @@ pub(crate) fn project(
         {
             return Err(invalid());
         }
-        let start = sample(activity.start, duration, samples)?;
+        let clipped_start = if activity.start > duration
+            && draft.posterior.is_some()
+            && terminal_horizon.is_some_and(|horizon| activity.start <= horizon)
+        {
+            normalization["clipped"].as_array_mut().unwrap().push(serde_json::json!({
+                "activityIndex":index,"speaker":activity.speaker,"originalStartSeconds":activity.start,
+                "clippedStartSeconds":duration
+            }));
+            duration
+        } else {
+            activity.start
+        };
+        let start = sample(clipped_start, duration, samples)?;
         let clipped_end =
             if activity.end > duration {
                 if !activity.end.is_finite()
@@ -223,6 +406,24 @@ pub(crate) fn project(
     let mut slots = BTreeSet::new();
     let mut review_causes = BTreeMap::new();
     let mut assigned_count = 0;
+    let preserve_assignments = draft.posterior.is_some()
+        && (preserve_source_assignments
+            || draft
+                .source
+                .speaker_analysis
+                .as_ref()
+                .is_some_and(|a| a.assignments_edited));
+    let protected_speakers: BTreeMap<_, _> = draft
+        .source
+        .speakers
+        .iter()
+        .filter(|speaker| {
+            draft.posterior.is_some()
+                && (preserve_assignments
+                    || speaker.name_origin != Some(crate::SpeakerNameOrigin::Automatic))
+        })
+        .map(|speaker| (speaker.id.clone(), speaker.clone()))
+        .collect();
     for segment in &mut after.segments {
         let start = sample(segment.start, duration, samples)?;
         let end = sample(segment.end, duration, samples)?;
@@ -257,9 +458,27 @@ pub(crate) fn project(
                 (None, "insufficient_coverage")
             }
         };
-        segment.speaker_id = slot.map(|speaker| format!("diarization:{run_id}:{speaker}"));
-        if let Some(slot) = slot {
-            slots.insert(slot);
+        let protected = preserve_assignments
+            || segment
+                .speaker_id
+                .as_ref()
+                .is_some_and(|id| protected_speakers.contains_key(id));
+        let reason = if protected {
+            if preserve_source_assignments {
+                "preserved_source_assignment"
+            } else {
+                "preserved_manual_assignment"
+            }
+        } else {
+            reason
+        };
+        if !protected {
+            segment.speaker_id = slot.map(|speaker| format!("diarization:{run_id}:{speaker}"));
+            if let Some(slot) = slot {
+                slots.insert(slot);
+            }
+        }
+        if segment.speaker_id.is_some() {
             assigned_count += 1;
         } else {
             *review_causes.entry(reason.into()).or_insert(0) += 1;
@@ -270,13 +489,13 @@ pub(crate) fn project(
             "assignment":segment.speaker_id,"reason":reason
         }));
     }
-    after.speakers = slots
-        .into_iter()
-        .map(|slot| TranscriptSpeaker {
+    after.speakers = protected_speakers
+        .into_values()
+        .chain(slots.into_iter().map(|slot| TranscriptSpeaker {
             id: format!("diarization:{run_id}:{slot}"),
             name: format!("화자 {slot}"),
             name_origin: Some(crate::SpeakerNameOrigin::Automatic),
-        })
+        }))
         .collect();
     after.speaker_analysis = Some(SpeakerAnalysis {
         run_id: run_id.clone(),
@@ -290,12 +509,14 @@ pub(crate) fn project(
         assigned_count,
         unassigned_count: after.segments.len() - assigned_count,
         review_causes,
-        assignments_edited: false,
+        assignments_edited: preserve_assignments,
     });
     let document = serde_json::json!({
         "schemaVersion":1,"analysis":after.speaker_analysis,"source":draft.source,
         "sourceSha256":crate::summary::transcript_digest(&draft.source)?,
         "configuration":draft.configuration,"timebase":TIMEBASE,"decisions":decisions,
+        "assignmentPreservation":{"verifiedInitialAssignmentsDiffer":preserve_source_assignments,
+            "preserveSourceAssignments":preserve_assignments},
         "activityNormalization":normalization,
         "rawBytes":draft.raw.len(),"rawPath":"raw.json"
     });
@@ -305,6 +526,7 @@ pub(crate) fn project(
             run_id,
             raw: draft.raw,
             document,
+            posterior: draft.posterior.map(|p| p.probabilities),
         },
     ))
 }
@@ -356,6 +578,7 @@ mod tests {
                 "file":"input.wav", "segments":activity
             }))
             .unwrap(),
+            posterior: None,
         }
     }
 
@@ -592,5 +815,28 @@ mod tests {
         );
         invalid.raw = br#"{"segments":[],"unexpected":true}"#.to_vec();
         assert!(project(invalid, 16000, 16000).is_err());
+    }
+    #[test]
+    fn new_posterior_keeps_unknown_origin_names_without_linking_new_slot_numbers() {
+        let source = draft(
+            serde_json::json!([utterance(0.0, 1.0)]),
+            serde_json::json!([]),
+        )
+        .source;
+        let mut request = crate::nemotron::tests::posterior_draft(source.clone());
+        request.source.speakers[0].name = "이름 출처 미확인".into();
+        let (after, evidence) = project(request, 16000, 16000).unwrap();
+        assert_eq!(after.segments[0].speaker_id.as_deref(), Some("S1"));
+        assert_eq!(after.speakers.len(), 1);
+        assert_eq!(after.speakers[0].name, "이름 출처 미확인");
+        assert_eq!(after.speakers[0].name_origin, None);
+        assert_eq!(
+            evidence.document["decisions"][0]["reason"],
+            "preserved_manual_assignment"
+        );
+        assert_eq!(
+            after.segments[0].original_text,
+            source.segments[0].original_text
+        );
     }
 }

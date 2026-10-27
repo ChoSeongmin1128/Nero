@@ -5,7 +5,9 @@ use crate::processing::{
 };
 use crate::speech_audio::AnalysisAudio;
 use crate::summary_failure::{Failure, FailureKind};
-use grove_core::{CoreHandle, SpeakerAnalysisDraft, Transcript, TranscriptVersion};
+use grove_core::{
+    CoreHandle, SpeakerAnalysisDraft, SpeakerPosterior, Transcript, TranscriptVersion,
+};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::fs::{self, OpenOptions};
@@ -19,6 +21,7 @@ use std::time::Duration;
 pub const MANIFEST: &str = include_str!("../../models/diarization.json");
 const RUNTIME: &str = "nemo-speech-0.2.0@6a3ca369370782acee0dd155e34394ba60b920c4";
 const RESULT_LIMIT: u64 = 16 * 1024 * 1024;
+const POSTERIOR_LIMIT: u64 = 128 * 1024 * 1024;
 
 fn model() -> Model {
     serde_json::from_str(MANIFEST).expect("bundled diarization manifest")
@@ -52,7 +55,8 @@ pub fn availability(process: &Processing) -> (bool, bool, u64) {
     let spec = model();
     let supported = (cfg!(all(target_os = "macos", target_arch = "aarch64"))
         || cfg!(all(target_os = "windows", target_arch = "x86_64")))
-        && (executable(process, true).is_file() || executable(process, false).is_file());
+        && ((executable(process, true).is_file() && library(process, true).is_file())
+            || (executable(process, false).is_file() && library(process, false).is_file()));
     let ready = model_dir(process).ok().is_some_and(|directory| {
         plain_file(&directory.join("verified.json"))
             .ok()
@@ -113,35 +117,27 @@ fn record(path: &Path, value: &Value) -> Result<(), Failure> {
     file.sync_all().map_err(|_| failure(FailureKind::Storage))
 }
 
-fn args(audio: &Path, model: &Path, output: &Path, gpu: bool) -> Vec<std::ffi::OsString> {
-    [
-        Path::new("--json"),
-        Path::new("--verbose"),
-        Path::new("diarize"),
-        audio,
-        Path::new("--model"),
-        model,
-        Path::new("--backend"),
-        Path::new(if gpu {
-            if cfg!(target_os = "macos") {
-                "metal"
-            } else {
-                "vulkan"
-            }
-        } else {
-            "cpu"
-        }),
-        Path::new("--preset"),
-        Path::new("v3-offline"),
-        Path::new("--no-batching"),
-        Path::new("--format"),
-        Path::new("json"),
-        Path::new("--output"),
-        output,
-    ]
-    .iter()
-    .map(|path| path.as_os_str().to_os_string())
-    .collect()
+fn library(process: &Processing, gpu: bool) -> PathBuf {
+    let root = executable(process, gpu)
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    if cfg!(windows) {
+        root.join("bin/nemo_speech_asr_c.dll")
+    } else {
+        root.join("lib/libnemo_speech_asr_c.dylib")
+    }
+}
+
+fn worker_executable() -> Result<PathBuf, Failure> {
+    // Acceptance tests run the built product executable, never the test harness.
+    #[cfg(test)]
+    if let Some(path) = std::env::var_os("NERO_ACCEPTANCE_SPEAKER_WORKER") {
+        return Ok(PathBuf::from(path));
+    }
+    std::env::current_exe().map_err(|_| failure(FailureKind::EngineUnavailable))
 }
 
 #[derive(Deserialize)]
@@ -155,6 +151,8 @@ struct ErrorBody {
     r#type: String,
     command: String,
     exit_code: i32,
+    #[serde(default, rename = "failureKind")]
+    failure_kind: Option<FailureKind>,
 }
 
 #[cfg(test)]
@@ -180,6 +178,22 @@ fn classify_operation(
         let error = error.error;
         if error.command != operation || Some(error.exit_code) != exit_code {
             continue;
+        }
+        if operation == "diarize" && error.r#type == "nero_speaker_worker" {
+            if let Some(kind) = error.failure_kind {
+                return match kind {
+                    FailureKind::BackendUnavailable if !gpu => FailureKind::EngineUnavailable,
+                    FailureKind::BackendUnavailable
+                    | FailureKind::Allocation
+                    | FailureKind::ModelNotReady
+                    | FailureKind::Input
+                    | FailureKind::Output
+                    | FailureKind::Protocol
+                    | FailureKind::Storage
+                    | FailureKind::SourceChanged => kind,
+                    _ => FailureKind::EngineUnavailable,
+                };
+            }
         }
         if gpu
             && (error.message == "use_gpu=true but no matching GPU device found (gpu_device_idx=0)"
@@ -300,13 +314,88 @@ pub(super) fn run(
 
 fn configuration(gpu: bool) -> Value {
     json!({
-        "scope": "recording", "preset": "v3-offline", "fullAttention": false,
+        "scope": "recording", "fullAttention": false,
         "backend": if gpu { if cfg!(target_os = "macos") { "metal" } else { "vulkan" } } else { "cpu" },
-        // Pinned DiarSegmentationCfg is also used by long-recording compaction.
-        // Preserve the actual float32 onset/offset values in the receipt.
-        "postprocessingSource": "pinned-runtime-defaults",
-        "onset": 0.641_f32, "offset": 0.561_f32, "padOnset": 0.229, "padOffset": 0.079,
-        "minDurationOn": 0.511, "minDurationOff": 0.296, "batching": false
+        "geometry": {"spkcache":264,"fifo":40,"chunk":340,"updatePeriod":300,
+            "leftContext":0,"rightContext":40},
+        "postprocessingSource": "nvidia-v3-probability-v1",
+        "assignment": "nemo-word-160ms-argmax-v1", "batching": false
+    })
+}
+
+fn read_limited(path: &Path, limit: u64) -> Result<Vec<u8>, Failure> {
+    let file = plain_file(path).map_err(|_| failure(FailureKind::Output))?;
+    if file
+        .metadata()
+        .map_err(|_| failure(FailureKind::Storage))?
+        .len()
+        > limit
+    {
+        return Err(failure(FailureKind::Output));
+    }
+    let mut data = Vec::new();
+    file.take(limit + 1)
+        .read_to_end(&mut data)
+        .map_err(|_| failure(FailureKind::Output))?;
+    if data.len() as u64 > limit {
+        return Err(failure(FailureKind::Output));
+    }
+    Ok(data)
+}
+
+fn posterior(
+    path: &Path,
+    audio: &Path,
+    weights: &Path,
+    native: &Path,
+    config: &Value,
+    cancel: &AtomicBool,
+) -> Result<SpeakerPosterior, Failure> {
+    check_cancel(cancel)?;
+    let receipt: Value =
+        serde_json::from_slice(&read_limited(&path.join("receipt.json"), RESULT_LIMIT)?)
+            .map_err(|_| failure(FailureKind::Output))?;
+    let frames = crate::speech_audio::audio_frames(audio, cancel)?;
+    let native_frames = frames / 160 + 1;
+    let expected_bytes = native_frames
+        .checked_mul(8 * 4)
+        .ok_or_else(|| failure(FailureKind::Output))?;
+    if receipt["nativeStreamFinished"] != true
+        || receipt["sourceFramesFed"].as_u64() != Some(frames)
+        || receipt["backend"] != config["backend"]
+        || receipt["nativeFrames"].as_u64() != Some(native_frames)
+        || receipt["expectedNativeFrames"].as_u64() != Some(native_frames)
+        || receipt["speakerSlots"] != 8
+        || receipt["secondsPerFrame"].as_f64() != Some(f64::from(0.01_f32))
+        || receipt["probabilityBytes"].as_u64() != Some(expected_bytes)
+        || receipt["runtimeVersionString"] != "nemo-speech-asr 0.2.0"
+        || receipt["runtimePin"] != "6a3ca369370782acee0dd155e34394ba60b920c4"
+        || receipt["inputAndWeightsAndLibraryUnchanged"] != true
+        || receipt["postprocessingPolicy"] != "nemotron-v3-contiguous-threshold-0.5-v1"
+        || receipt["threshold"] != 0.5
+        || receipt["thresholdComparison"] != ">"
+        || receipt["geometry"]
+            != json!({"timebaseSeconds":0.08,"spkcache":264,
+            "fifo":40,"chunk":340,"updatePeriod":300,"leftContext":0,"rightContext":40})
+        || receipt["sourceAudioSha256"].as_str()
+            != Some(crate::speech_audio::digest(audio)?.as_str())
+        || receipt["modelSha256"].as_str() != Some(crate::speech_audio::digest(weights)?.as_str())
+        || receipt["librarySha256"].as_str() != Some(crate::speech_audio::digest(native)?.as_str())
+        || receipt["probabilitySHA256"].as_str()
+            != Some(crate::speech_audio::digest(&path.join("probabilities.f32le"))?.as_str())
+    {
+        return Err(failure(FailureKind::Output));
+    }
+    let probabilities = read_limited(&path.join("probabilities.f32le"), POSTERIOR_LIMIT)?;
+    if probabilities.len() as u64 != expected_bytes {
+        return Err(failure(FailureKind::Output));
+    }
+    check_cancel(cancel)?;
+    Ok(SpeakerPosterior {
+        frames: native_frames,
+        speakers: 8,
+        seconds_per_frame: f64::from(0.01_f32),
+        probabilities,
     })
 }
 
@@ -338,13 +427,24 @@ pub(super) fn analyze_with_model(
         return Err(failure(FailureKind::ModelNotReady));
     }
     plain_file(audio).map_err(|_| failure(FailureKind::Input))?;
-    let mut gpu = executable(process, true).is_file();
+    let mut gpu = executable(process, true).is_file() && library(process, true).is_file();
     let mut attempt = 0u8;
     loop {
         check_cancel(cancel)?;
         let attempt_dir = directory_for_attempt(path, attempt)?;
         let output = attempt_dir.join("diarization.json");
         let config = configuration(gpu);
+        let native = library(process, gpu);
+        let weights = directory.join(&item.name);
+        record(
+            &attempt_dir.join("worker-request.json"),
+            &json!({
+                "schemaVersion":1, "audio":audio, "model":weights,
+                "library":native, "output":attempt_dir,
+                "backend":config["backend"], "modelSha256":item.sha256,
+                "runtimePin":"6a3ca369370782acee0dd155e34394ba60b920c4"
+            }),
+        )?;
         record(
             &attempt_dir.join("request.json"),
             &json!({
@@ -359,8 +459,11 @@ pub(super) fn analyze_with_model(
         });
         let result = run(
             process,
-            &executable(process, gpu),
-            &args(audio, &directory.join(&item.name), &output, gpu),
+            &worker_executable()?,
+            &[
+                std::ffi::OsString::from("--nero-speaker-worker"),
+                attempt_dir.join("worker-request.json").into_os_string(),
+            ],
             &attempt_dir.join("worker.log"),
             cancel,
             gpu,
@@ -381,22 +484,8 @@ pub(super) fn analyze_with_model(
         match result {
             Ok(()) => {
                 check_cancel(cancel)?;
-                let file = plain_file(&output).map_err(|_| failure(FailureKind::Output))?;
-                if file
-                    .metadata()
-                    .map_err(|_| failure(FailureKind::Storage))?
-                    .len()
-                    > RESULT_LIMIT
-                {
-                    return Err(failure(FailureKind::Output));
-                }
-                let mut raw = Vec::new();
-                file.take(RESULT_LIMIT + 1)
-                    .read_to_end(&mut raw)
-                    .map_err(|_| failure(FailureKind::Output))?;
-                if raw.len() as u64 > RESULT_LIMIT {
-                    return Err(failure(FailureKind::Output));
-                }
+                let raw = read_limited(&output, RESULT_LIMIT)?;
+                let posterior = posterior(&attempt_dir, audio, &weights, &native, &config, cancel)?;
                 return Ok(SpeakerAnalysisDraft {
                     source,
                     model: spec.repository,
@@ -405,6 +494,7 @@ pub(super) fn analyze_with_model(
                     runtime: RUNTIME.into(),
                     configuration: config,
                     raw,
+                    posterior: Some(posterior),
                 });
             }
             Err(error)
@@ -631,7 +721,18 @@ mod tests {
             configured("NERO_ACCEPTANCE_RESOURCES"),
         );
         let cancel = AtomicBool::new(false);
-        let source: Transcript = serde_json::from_slice(&fs::read(transcript).unwrap()).unwrap();
+        let mut source: Transcript =
+            serde_json::from_slice(&fs::read(transcript).unwrap()).unwrap();
+        let isolated = std::env::var_os("NERO_ACCEPTANCE_ASR_RAW").map(|raw| {
+            let core = CoreHandle::open(&process.root).unwrap();
+            let meeting = core
+                .import_audio("Recorded acceptance", &audio, &audio)
+                .unwrap();
+            source = core
+                .commit_nemotron_transcript(&meeting.id, None, fs::read(raw).unwrap())
+                .unwrap();
+            (core, meeting.id)
+        });
         // Same rate/depth as normalized audio, but a container the native reader rejects.
         let extensible = work.join("extensible.wav");
         let mut bytes = Vec::from(b"RIFF".as_slice());
@@ -674,11 +775,60 @@ mod tests {
         prepared.verify(&audio, &cancel).unwrap();
         let native: Value = serde_json::from_slice(&draft.raw).unwrap();
         assert!(!native["segments"].as_array().unwrap().is_empty());
+        let speaker_seconds = native_started.elapsed().as_secs_f64();
+        let source_version = draft.source.version.clone();
+        let native_frames = draft.posterior.as_ref().unwrap().frames;
+        let mut storage = json!(null);
+        if let Some((core, meeting_id)) = isolated {
+            let before = core.transcript(&meeting_id).unwrap().unwrap();
+            let store_started = std::time::Instant::now();
+            let after = core.apply_diarization(&meeting_id, draft).unwrap();
+            assert_ne!(after.version.id, before.version.id);
+            let words = |doc: &Transcript| {
+                doc.segments
+                    .iter()
+                    .flat_map(|s| s.text.split_whitespace())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            };
+            assert_eq!(words(&before), words(&after));
+            assert_eq!(
+                core.transcript_history(&meeting_id).unwrap().entries.len(),
+                2
+            );
+            let reader = grove_core::reader::LibraryReader::open(&process.root).unwrap();
+            let mut read_segments = Vec::new();
+            for offset in (0..after.segments.len()).step_by(200) {
+                let page = reader
+                    .query(
+                        "transcript_get",
+                        json!({"meetingId":meeting_id,"offset":offset,"limit":200}),
+                    )
+                    .unwrap();
+                read_segments.extend(page["segments"].as_array().unwrap().iter().cloned());
+            }
+            assert_eq!(read_segments.len(), after.segments.len());
+            for (actual, expected) in read_segments.iter().zip(&after.segments) {
+                assert_eq!(actual["id"], expected.id);
+                assert_eq!(actual["text"], expected.text);
+                assert_eq!(actual["speakerId"], json!(expected.speaker_id));
+            }
+            record(
+                &work.join("after.json"),
+                &serde_json::to_value(&after).unwrap(),
+            )
+            .unwrap();
+            storage = json!({"seconds":store_started.elapsed().as_secs_f64(),"historyGenerations":2,
+                "beforeVersion":before.version,"afterVersion":after.version,
+                "beforeSegments":before.segments.len(),"afterSegments":after.segments.len(),
+                "speakers":after.speakers.len(),"readerAllPagesEqual":true,"textUnchanged":true,
+                "analysis":after.speaker_analysis});
+        }
         record(&work.join("report.json"), &json!({
             "input":prepared.evidence(), "prepareSeconds":prepare_seconds,
-            "speakerSeconds":native_started.elapsed().as_secs_f64(),
+            "speakerSeconds":speaker_seconds,"nativeFrames":native_frames,"storage":storage,
             "activitySegments":native["segments"].as_array().unwrap().len(), "extensiblePcm16Normalized":true,
-            "sourceVersion":draft.source.version,
+            "sourceVersion":source_version,
             "scope":"recorded input normalization plus native speaker execution; no user library writes or accuracy qualification"
         })).unwrap();
     }
@@ -769,45 +919,103 @@ mod tests {
     }
 
     #[test]
-    fn one_recording_invocation_preserves_state_and_never_uses_full_attention() {
-        let arguments = args(
-            Path::new("whole.wav"),
-            Path::new("pinned.gguf"),
-            Path::new("new.json"),
-            true,
-        );
-        let values: Vec<_> = arguments
-            .iter()
-            .map(|value| value.to_str().unwrap())
-            .collect();
-        assert_eq!(
-            values.iter().filter(|value| **value == "whole.wav").count(),
-            1
-        );
-        assert_eq!(values[0..3], ["--json", "--verbose", "diarize"]);
-        assert!(values
-            .windows(2)
-            .any(|pair| pair == ["--preset", "v3-offline"]));
-        assert!(values.contains(&"--no-batching"));
-        assert!(!values.contains(&"--offline"));
-        for flag in [
-            "--onset",
-            "--offset",
-            "--pad-onset",
-            "--pad-offset",
-            "--min-duration-on",
-            "--min-duration-off",
-        ] {
-            assert!(!values.contains(&flag));
-        }
+    fn whole_recording_policy_is_shared_with_the_versioned_posterior_projector() {
         let config = configuration(true);
-        assert_eq!(config["postprocessingSource"], "pinned-runtime-defaults");
-        assert_eq!(config["onset"], json!(0.641_f32));
-        assert_eq!(config["offset"], json!(0.561_f32));
-        assert_eq!(config["padOnset"], json!(0.229));
-        assert_eq!(config["padOffset"], json!(0.079));
-        assert_eq!(config["minDurationOn"], json!(0.511));
-        assert_eq!(config["minDurationOff"], json!(0.296));
+        assert_eq!(config["scope"], "recording");
+        assert_eq!(config["postprocessingSource"], "nvidia-v3-probability-v1");
+        assert_eq!(config["assignment"], "nemo-word-160ms-argmax-v1");
+        assert_eq!(
+            config["geometry"],
+            json!({"spkcache":264,"fifo":40,"chunk":340,
+            "updatePeriod":300,"leftContext":0,"rightContext":40})
+        );
+        assert_eq!(config["fullAttention"], false);
+        assert_eq!(config["batching"], false);
+        assert!(config.get("preset").is_none());
+    }
+
+    #[test]
+    fn posterior_completion_and_hashes_must_match_the_actual_input_and_files() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let process = Processing::new(root.clone(), root.clone());
+        let (_, _, _, audio) = baseline(&process);
+        let weights = root.join("pinned.gguf");
+        let native = root.join("native-library");
+        fs::write(&weights, b"test weight identity").unwrap();
+        fs::write(&native, b"test library identity").unwrap();
+        let data = vec![0u8; 101 * 8 * 4];
+        let probabilities = root.join("probabilities.f32le");
+        fs::write(&probabilities, &data).unwrap();
+        let valid = json!({"nativeStreamFinished":true,"sourceFramesFed":16000,
+            "nativeFrames":101,"expectedNativeFrames":101,"speakerSlots":8,"backend":"cpu",
+            "secondsPerFrame":f64::from(0.01_f32),"probabilityBytes":data.len(),
+            "runtimeVersionString":"nemo-speech-asr 0.2.0",
+            "runtimePin":"6a3ca369370782acee0dd155e34394ba60b920c4",
+            "inputAndWeightsAndLibraryUnchanged":true,
+            "postprocessingPolicy":"nemotron-v3-contiguous-threshold-0.5-v1",
+            "threshold":0.5,"thresholdComparison":">",
+            "geometry":{"timebaseSeconds":0.08,"spkcache":264,"fifo":40,"chunk":340,
+                "updatePeriod":300,"leftContext":0,"rightContext":40},
+            "sourceAudioSha256":crate::speech_audio::digest(&audio).unwrap(),
+            "modelSha256":crate::speech_audio::digest(&weights).unwrap(),
+            "librarySha256":crate::speech_audio::digest(&native).unwrap(),
+            "probabilitySHA256":crate::speech_audio::digest(&probabilities).unwrap()});
+        let receipt = root.join("receipt.json");
+        fs::write(&receipt, serde_json::to_vec(&valid).unwrap()).unwrap();
+        let cancel = AtomicBool::new(false);
+        assert_eq!(
+            posterior(
+                &root,
+                &audio,
+                &weights,
+                &native,
+                &configuration(false),
+                &cancel
+            )
+            .unwrap()
+            .probabilities,
+            data
+        );
+        for (key, value) in [
+            ("nativeStreamFinished", json!(false)),
+            ("nativeFrames", json!(100)),
+            ("sourceFramesFed", json!(15999)),
+            ("probabilitySHA256", json!("0".repeat(64))),
+            ("secondsPerFrame", json!(0.01_f64)),
+        ] {
+            let mut changed = valid.clone();
+            changed[key] = value;
+            fs::write(&receipt, serde_json::to_vec(&changed).unwrap()).unwrap();
+            assert_eq!(
+                posterior(
+                    &root,
+                    &audio,
+                    &weights,
+                    &native,
+                    &configuration(false),
+                    &cancel
+                )
+                .unwrap_err()
+                .kind,
+                FailureKind::Output
+            );
+        }
+        fs::write(&receipt, serde_json::to_vec(&valid).unwrap()).unwrap();
+        fs::write(&probabilities, &data[..data.len() - 4]).unwrap();
+        assert_eq!(
+            posterior(
+                &root,
+                &audio,
+                &weights,
+                &native,
+                &configuration(false),
+                &cancel
+            )
+            .unwrap_err()
+            .kind,
+            FailureKind::Output
+        );
     }
 
     fn worker_error(message: &str, kind: &str) -> String {
@@ -859,6 +1067,28 @@ mod tests {
             classify("", true, Some(0xc0000135u32 as i32), None),
             FailureKind::BackendUnavailable
         );
+        for kind in [
+            FailureKind::BackendUnavailable,
+            FailureKind::Allocation,
+            FailureKind::Protocol,
+        ] {
+            let error = json!({"error":{"message":"native operation failed",
+                "type":"nero_speaker_worker","command":"diarize","exit_code":1,"failureKind":kind}})
+            .to_string();
+            assert_eq!(classify(&error, true, Some(1), None), kind);
+            assert_eq!(
+                classify(&error, false, Some(1), None),
+                if kind == FailureKind::BackendUnavailable {
+                    FailureKind::EngineUnavailable
+                } else {
+                    kind
+                }
+            );
+            assert_eq!(
+                classify(&error, true, Some(2), None),
+                FailureKind::EngineUnavailable
+            );
+        }
     }
 
     #[test]

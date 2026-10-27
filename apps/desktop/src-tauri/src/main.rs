@@ -5,6 +5,7 @@ mod agent_connection;
 mod app_menu;
 mod asr;
 mod diarization;
+mod speaker_worker;
 mod downloads;
 mod export;
 mod job_journal;
@@ -1252,6 +1253,23 @@ fn tray_icon(theme: tauri::Theme) -> tauri::image::Image<'static> {
 }
 
 fn main() {
+    // This isolated child only loads the packaged speech library. It must run
+    // before single-instance registration, windows, recording or model setup.
+    let mut arguments = std::env::args_os().skip(1);
+    if arguments.next().as_deref() == Some(std::ffi::OsStr::new("--nero-speaker-worker")) {
+        let request = arguments.next();
+        if request.is_none() || arguments.next().is_some() {
+            eprintln!("invalid speaker worker request");
+            std::process::exit(64);
+        }
+        match speaker_worker::entry(std::path::Path::new(&request.unwrap())) {
+            Ok(()) => std::process::exit(0),
+            Err(error) => {
+                eprintln!("{}", error.error_json());
+                std::process::exit(1);
+            }
+        }
+    }
     let builder = tauri::Builder::default();
     #[cfg(target_os = "macos")]
     let builder = builder.menu(app_menu::default);
