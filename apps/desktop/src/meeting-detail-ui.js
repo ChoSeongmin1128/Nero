@@ -41,16 +41,22 @@ export function mountMeetingDetail({ byId, finishEditing, onReveal = () => {}, o
     }
     if (focus) (view === 'summary' ? controls.get(memory().lastPanel || 'transcript') : close).focus({ preventScroll: true });
   }
-  function update({ id, recording = false, summaryLoaded = false, transcriptLoaded = false }) {
+  function update({ id, recording = false, summaryLoaded = false, transcriptLoaded = false, hasSummary = false, hasTranscript = false }) {
     if (id !== meetingId) { meetingId = id; request++; pendingRestore = new Set(views); }
     ready = { summary: summaryLoaded, transcript: transcriptLoaded, notes: true };
     for (const view of views) if (!ready[view]) pendingRestore.add(view);
-    if (id && !memories.has(id)) memories.set(id, { view: recording ? 'notes' : 'summary', lastPanel: 'transcript', scroll: { summary: 0, transcript: 0, notes: 0, notesEditor: 0 } });
+    if (id && !memories.has(id)) memories.set(id, { view: recording && !hasSummary && !hasTranscript ? 'notes' : 'summary', explicit: false, recordingConsidered: false, lastPanel: 'transcript', scroll: { summary: 0, transcript: 0, notes: 0, notesEditor: 0 } });
+    const current = memory();
+    if (current && recording && !current.recordingConsidered && summaryLoaded && transcriptLoaded) {
+      current.recordingConsidered = true;
+      if (!current.explicit && !hasSummary && !hasTranscript) { rememberScroll(); current.view = 'notes'; current.lastPanel = 'notes'; }
+    }
     display();
   }
   async function select(view, { focus = false } = {}) {
     if (!views.includes(view) || !meetingId) return false;
     const id = meetingId, intent = ++request;
+    memory().explicit = true;
     try {
       return Boolean(await finishEditing(() => {
         if (id !== meetingId || intent !== request) return false;

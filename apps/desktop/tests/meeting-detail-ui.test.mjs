@@ -94,3 +94,24 @@ test('meeting updates never read a replacement DOM back into the previous meetin
   app.update({id:'b',...loaded}); app.update({id:'a',...loaded}); assert.equal(app.node('meeting-notes').scrollTop,320); assert.equal(app.node('summary-section').scrollTop,410);
   await app.controller.select('transcript'); assert.equal(app.node('transcript-scroll').scrollTop,1200);
 });
+
+test('starting the first recording in an already-open empty meeting reveals notes once', async () => {
+  const app=page(), loaded={summaryLoaded:true,transcriptLoaded:true}; app.update(loaded); assert.equal(app.controller.active(),'summary');
+  app.update({...loaded,recording:true}); assert.equal(app.controller.active(),'notes');
+  await app.controller.select('summary'); app.update({...loaded,recording:true}); assert.equal(app.controller.active(),'summary');
+  app.update({...loaded,recording:false}); app.update({...loaded,recording:true}); assert.equal(app.controller.active(),'summary');
+});
+test('explicit summary or transcript intent prevents recording snapshots from reopening notes', async () => {
+  for(const view of ['summary','transcript']) {
+    const app=page(), loaded={summaryLoaded:true,transcriptLoaded:true}; app.update(loaded); await app.controller.select(view);
+    app.update({...loaded,recording:true}); assert.equal(app.controller.active(),view);
+    app.update({...loaded,recording:true}); assert.equal(app.controller.active(),view);
+  }
+});
+test('recording waits for result discovery and keeps completed meetings on summary', () => {
+  const app=page(); app.update({}); app.update({recording:true}); assert.equal(app.controller.active(),'summary');
+  app.update({recording:true,summaryLoaded:true,transcriptLoaded:true}); assert.equal(app.controller.active(),'notes');
+  for(const result of [{hasTranscript:true},{hasSummary:true}]) {
+    const completed=page(), loaded={summaryLoaded:true,transcriptLoaded:true,...result}; completed.update(loaded); completed.update({...loaded,recording:true}); assert.equal(completed.controller.active(),'summary');
+  }
+});
