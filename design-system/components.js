@@ -50,7 +50,7 @@
   function minutes(sections) {
     return `<article class="minutes-document">${sections.map(({ title, text, emptyText = "작성된 내용이 없습니다." }) => `<section><h3>${escape(title)}</h3><div class="minutes-text">${String(text || "").trim() ? escape(text) : `<span class="muted">${escape(emptyText)}</span>`}</div></section>`).join("")}</article>`;
   }
-  function summaryDocument(value, { sources = [], searchQuery = "" } = {}) {
+  function summaryDocument(value, { searchQuery = "" } = {}) {
     const headings = new Set(["회의 요약", "요약", "주요 내용", "논의 내용", "논의 사항", "결정 사항", "결정사항", "합의 사항", "다음 작업", "후속 작업", "할 일", "할일", "액션 아이템", "미결 사항", "확인 필요", "참고 사항"]);
     const term = String(searchQuery ?? "").trim();
     const pattern = term ? new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "giu") : null;
@@ -58,11 +58,30 @@
     const references = text => {
       const tokens = [];
       let cursor = 0;
-      for (const match of text.matchAll(/\[(\d+)\]/g)) {
-        tokens.push({ text: text.slice(cursor, match.index) });
-        const number = Number(match[1]), index = number - 1;
-        const source = Array.isArray(sources) && Number.isSafeInteger(number) && number > 0 && Object.prototype.hasOwnProperty.call(sources, index) ? sources[index] : null;
-        tokens.push({ text: match[0], reference: typeof source === "string" ? { index, number, source } : null });
+      // Keep the saved one-based references. Never resolve them against current rows.
+      for (const match of text.matchAll(/\[([0-9, \t-]+)\]/g)) {
+        const before = text.slice(0, match.index), after = text.slice(match.index + match[0].length);
+        if (/(?:\\|!)$/.test(before) || /^(?:\(|\[[^0-9])/.test(after)) continue;
+        const refs = [];
+        let valid = true;
+        for (const part of match[1].split(',')) {
+          const range = part.trim().match(/^(\d+)(?:\s*-\s*(\d+))?$/);
+          const first = Number(range?.[1]), last = Number(range?.[2] ?? range?.[1]);
+          if (!range || !Number.isSafeInteger(first) || !Number.isSafeInteger(last) || first < 1 || last < first || last - first >= 32) { valid = false; break; }
+          for (let number = first; number <= last; number += 1) {
+            if (!refs.includes(number)) refs.push(number);
+            if (refs.length > 32) { valid = false; break; }
+          }
+          if (!valid) break;
+        }
+        if (!valid || !refs.length) continue;
+        const previous = tokens.at(-1), gap = text.slice(cursor, match.index);
+        const merged = previous?.references ? [...new Set([...previous.references, ...refs])] : [];
+        if (previous?.references && /^[ \t]*$/.test(gap) && merged.length <= 32) {
+          previous.text += gap + match[0]; previous.references = merged;
+        } else {
+          tokens.push({ text: gap }, { text: match[0], references: refs });
+        }
         cursor = match.index + match[0].length;
       }
       tokens.push({ text: text.slice(cursor) });
@@ -88,8 +107,14 @@
       };
       const render = node => {
         if (node.children) return `<${node.tag}>${node.children.map(render).join("")}</${node.tag}>`;
+        const start = offset;
         const html = textHTML(node.text);
-        return node.reference ? button({ html, className: "quiet source-reference", attrs: { "data-summary-seek": node.reference.index, title: node.reference.source, "aria-label": `${node.reference.number}번 발언 확인` } }) : html;
+        if (!node.references) return html;
+        const label = node.references.length > 1 ? `근거 ${node.references.length}` : "근거";
+        const matches = ranges.filter(range => range.start < offset && range.end > start);
+        const visibleLabel = matches.length ? `<mark class="search-match" data-search-group="${matches[0].group}">${label}</mark>` : label;
+        const content = `<span aria-hidden="true">${visibleLabel}</span><span class="sr-only">${html}</span>`;
+        return button({ html: content, className: "quiet source-reference", attrs: { "data-summary-citations": node.references.join(","), "aria-haspopup": "dialog", "aria-expanded": "false", "aria-label": `${node.references.join(", ")}번 발언 확인` } });
       };
       return tokens.map(render).join("");
     };

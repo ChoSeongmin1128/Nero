@@ -1,4 +1,5 @@
 import { pendingJob } from './processing-state.js';
+import { createDragPreview } from './drag-preview.js';
 export function filterLibraryMeetings(meetings, filter = 'all', query = '') {
   const term = query.trim().toLocaleLowerCase();
   return meetings.filter(meeting => {
@@ -12,6 +13,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
   const dialog = byId('library-dialog');
   const dialogBody = byId('library-dialog-body');
   const owner = dialog.ownerDocument;
+  const dragPreview = createDragPreview(owner);
   let folderKey = '', pending = null, returnFocus = null, dragSources = [];
   let activeMenu = null, dropTarget = null;
   const state = () => getState();
@@ -294,6 +296,11 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     dropTarget?.classList.remove('is-drop-target');
     dropTarget = null;
   }
+  function clearDrag() {
+    dragSources = [];
+    clearDropTarget();
+    dragPreview.clear();
+  }
   owner?.addEventListener?.('toggle', event => {
     const menu = event.target;
     if (!menu.matches?.('[data-meeting-menu],.library-folder-menu')) return;
@@ -301,15 +308,17 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
   }, true);
   owner?.addEventListener?.('pointerdown', event => { if (activeMenu && !activeMenu.contains(event.target)) closeMenu(); }, true);
   owner?.addEventListener?.('keydown', event => {
-    if (event.key !== 'Escape' || !activeMenu) return;
+    if (event.key !== 'Escape') return;
+    clearDrag();
+    if (!activeMenu) return;
     event.preventDefault(); event.stopPropagation(); closeMenu(activeMenu, true);
   }, true);
   owner?.addEventListener?.('scroll', event => {
     if (activeMenu && !menuContent(activeMenu)?.contains(event.target)) closeMenu();
   }, true);
   owner?.defaultView?.addEventListener('resize', () => closeMenu());
-  owner?.addEventListener?.('drop', clearDropTarget, true);
-  owner?.addEventListener?.('dragend', () => { dragSources = []; clearDropTarget(); });
+  owner?.addEventListener?.('drop', () => { clearDropTarget(); dragPreview.clear(); }, true);
+  owner?.addEventListener?.('dragend', clearDrag);
   dialog.addEventListener('submit', event => {
     event.preventDefault();
     if (!pending || state().libraryBusy) return;
@@ -351,18 +360,23 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     menu.querySelector('button:not(:disabled)')?.focus({ preventScroll: true });
   });
   byId('meeting-list').addEventListener('dragstart', event => {
-    dragSources = [];
-    clearDropTarget();
+    clearDrag();
     const row = event.target.closest('[data-meeting-id]');
     const ids = row && selection().has(row.dataset.meetingId) ? selectedIds() : row ? [row.dataset.meetingId] : [];
     if (!row || !state().connected || state().libraryBusy || !event.dataTransfer || event.target.closest('input,summary,[data-library-action]')) { event.preventDefault(); return; }
     dragSources = sourcesForMove(ids);
     if (!dragSources.length) { event.preventDefault(); return; }
-    closeMenu();
-    event.dataTransfer.effectAllowed = 'move';
-    event.dataTransfer.setData('application/x-nero-meetings', JSON.stringify(dragSources.map(source => source.id)));
+    try {
+      closeMenu();
+      event.dataTransfer.effectAllowed = 'move';
+      event.dataTransfer.setData('application/x-nero-meetings', JSON.stringify(dragSources.map(source => source.id)));
+      dragPreview.show(event, current(row.dataset.meetingId)?.title, dragSources.length);
+    } catch {
+      event.preventDefault();
+      clearDrag();
+    }
   });
-  byId('meeting-list').addEventListener('dragend', () => { dragSources = []; clearDropTarget(); });
+  byId('meeting-list').addEventListener('dragend', clearDrag);
   function dropDestination(event) {
     const target = event.target.closest('[data-library-filter]');
     if (!target || target.disabled || target.isConnected === false || state().libraryBusy || !sourcesUnchanged(dragSources)
@@ -384,6 +398,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
   byId('folder-list').addEventListener('drop', event => {
     const destination = dropDestination(event);
     clearDropTarget();
+    dragPreview.clear();
     if (!destination) { dragSources = []; return; }
     event.preventDefault();
     const sources = dragSources; dragSources = [];

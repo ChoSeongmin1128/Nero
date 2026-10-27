@@ -129,13 +129,15 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     const createTranscriptActions = mountTranscriptActions;
     mountTranscriptActions = options => { restoreForTest = options.onRestored; return createTranscriptActions(options); };
     ${librarySource.slice(0, librarySource.indexOf('export function mountLibrary')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '')}
+    let summaryEvidenceOptions;
+    const mountSummaryEvidence = options => { summaryEvidenceOptions = options; return { reset() {}, update() {}, restoreFocus() {} }; };
     const mountLibrary = () => ({ render() {}, resetSelection() {}, toggleSelection() {}, show: async () => {} });
     const mountSpeakers = ({getState}) => ({render() {}, reset() {}, open: async () => {}, label: segment => getState().transcriptDraft?.doc?.speakers?.find(speaker=>speaker.id === segment.speakerId)?.name || '화자 미지정'});
 
     const bridge = testBridge;
     const { icon, escape, button, duration, recordingStatus, statusMarkup, sessionControls, applySystemAppearance, documentExport } = testUI;
     ${executable}
-    return { state, detail, restoreTranscript: restoreForTest, selectMeeting, saveDraft, finishEditing, onEdit, onQuitRequest, refreshDevices, acceptSnapshot, saveTranscript, loadTranscript, acceptProcessing, loadSummary, renderSummary, createMeeting, openSetup, openSettings, changeMicrophone, changeMeetingDate, render, prepareAudio, exportDocument, editTranscriptRow, completeTranscriptRow, cancelTranscriptRow, cancelProcessing, retryProcessing, acknowledgeProcessing };
+    return { state, detail, summaryEvidenceOptions, restoreTranscript: restoreForTest, selectMeeting, saveDraft, finishEditing, onEdit, onQuitRequest, refreshDevices, acceptSnapshot, saveTranscript, loadTranscript, acceptProcessing, loadSummary, renderSummary, createMeeting, openSetup, openSettings, changeMicrophone, changeMeetingDate, render, prepareAudio, exportDocument, editTranscriptRow, completeTranscriptRow, cancelTranscriptRow, cancelProcessing, retryProcessing, acknowledgeProcessing };
   })()`, context);
   await tick();
   return {
@@ -539,7 +541,7 @@ test('a stale-source retry error preserves editing and remains next to the stopp
   assert.equal(page.app.state.transcriptDraft.doc, before);
   assert.equal(page.element('meeting-notes').value, '저장 전 메모');
   assert.equal(page.app.state.draft.dirty, true);
-  assert.match(page.element('processing-jobs').innerHTML, /회의 내용이 변경되었습니다/);
+  assert.match(page.element('processing-jobs').innerHTML, /회의 내용이 변경/);
 });
 
 test('a background recognition result refreshes its owner without switching meetings or tabs', async () => {
@@ -567,19 +569,19 @@ test('late summary response cannot leak into another meeting', async () => {
   pending.resolve({ document: { id: 'summary-a', text: '회의 A 내용', sourceVersion: transcriptDocument().version }, stale: false });
   await loading;
   assert.equal(page.app.state.summary, null);
-  assert.doesNotMatch(page.element('summary-content').innerHTML, /회의 A 내용|data-summary-seek/);
+  assert.doesNotMatch(page.element('summary-content').innerHTML, /회의 A 내용|data-summary-citations/);
 });
 
-test('summary rendering escapes model output and removes stale source links', async () => {
+test('summary rendering escapes model output and retains frozen evidence after editing', async () => {
   const page = await openApp(transcriptDocument());
   page.app.state.summary = { document: { id: 'summary-a', text: '<script>bad()</script> 결정 [1]', sourceVersion: structuredClone(page.app.state.transcriptDraft.doc.version) }, stale: false };
   page.app.renderSummary(page.app.state.snapshot.meetings[0]);
   assert.match(page.element('summary-content').innerHTML, /&lt;script&gt;/);
-  assert.match(page.element('summary-content').innerHTML, /data-summary-seek/);
+  assert.match(page.element('summary-content').innerHTML, /data-summary-citations/);
   page.editTranscript('수정 중');
   page.app.renderSummary(page.app.state.snapshot.meetings[0]);
-  assert.doesNotMatch(page.element('summary-content').innerHTML, /data-summary-seek/);
-  assert.match(page.element('summary-message').textContent, /회의 내용이 변경/);
+  assert.match(page.element('summary-content').innerHTML, /data-summary-citations/);
+  assert.match(page.element('summary-message').textContent, /이전 내용으로 만든 요약/);
 });
 
 test('summary starts only after pending transcript edits are saved', async () => {
@@ -1014,16 +1016,16 @@ test('automatic recorder preference persists and rolls back native preference wh
   assert.equal(failed.app.state.autoRecorder, true);
 });
 
-test('editing a transcript immediately invalidates old summary links without a background refresh', async () => {
+test('editing a transcript retains frozen citations without ordinal navigation', async () => {
   const page = await openApp(transcriptDocument());
   page.app.state.summary = { document: { id: 'summary', text: '회의록 [1]', sourceVersion: structuredClone(page.app.state.transcriptDraft.doc.version) }, stale: false };
   page.app.renderSummary(page.app.state.snapshot.meetings[0]);
-  assert.match(page.element('summary-content').innerHTML, /data-summary-seek/);
+  assert.match(page.element('summary-content').innerHTML, /data-summary-citations/);
   page.editTranscript('새 내용');
-  assert.doesNotMatch(page.element('summary-content').innerHTML, /data-summary-seek/);
+  assert.match(page.element('summary-content').innerHTML, /data-summary-citations/);
 });
 
-test('notes-aware summaries lose source links during note editing and refresh after persistence without changing the selected tab or player', async () => {
+test('notes-aware summaries retain frozen citations and refresh after persistence without changing the selected tab or player', async () => {
   const page = await openApp(transcriptDocument());
   const document = { id: 'summary', text: '회의록 [1]', notesSha256: 'a'.repeat(64), sourceVersion: structuredClone(page.app.state.transcriptDraft.doc.version) };
   page.app.state.summary = { document, stale: false };
@@ -1036,8 +1038,8 @@ test('notes-aware summaries lose source links during note editing and refresh af
   player.load = () => { loads += 1; };
   page.bridge.readSummary = async () => { reads += 1; return { document, stale: true }; };
   page.edit('추가 안건');
-  assert.doesNotMatch(page.element('summary-content').innerHTML, /data-summary-seek/);
-  assert.match(page.element('summary-message').textContent, /회의 내용이 변경/);
+  assert.match(page.element('summary-content').innerHTML, /data-summary-citations/);
+  assert.match(page.element('summary-message').textContent, /이전 내용으로 만든 요약/);
   const save = page.app.saveDraft(); await tick();
   page.updates[0].pending.resolve(); await save;
   assert.equal(reads, 1);
@@ -1048,7 +1050,7 @@ test('notes-aware summaries lose source links during note editing and refresh af
   assert.equal(loads, 0);
 });
 
-test('failed note persistence keeps the draft and stale summary links blocked', async () => {
+test('failed note persistence keeps the draft and frozen summary citations', async () => {
   const page = await openApp(transcriptDocument());
   const document = { id: 'summary', text: '회의록 [1]', notesSha256: 'a'.repeat(64), sourceVersion: structuredClone(page.app.state.transcriptDraft.doc.version) };
   page.app.state.summary = { document, stale: false }; page.app.state.summaryLoaded = true;
@@ -1059,7 +1061,7 @@ test('failed note persistence keeps the draft and stale summary links blocked', 
   assert.equal(page.app.state.draft.savedNotes, '');
   assert.equal(page.app.state.draft.notes, '보존할 메모');
   assert.equal(page.app.state.draft.dirty, true);
-  assert.doesNotMatch(page.element('summary-content').innerHTML, /data-summary-seek/);
+  assert.match(page.element('summary-content').innerHTML, /data-summary-citations/);
 });
 
 test('legacy transcript-only summaries and title-only edits do not acquire a notes dependency', async () => {
@@ -1069,10 +1071,10 @@ test('legacy transcript-only summaries and title-only edits do not acquire a not
     page.app.state.summary = { document, stale: false }; page.app.state.summaryLoaded = true;
     page.element('meeting-title').value = '수정한 제목';
     page.app.onEdit();
-    assert.match(page.element('summary-content').innerHTML, /data-summary-seek/);
+    assert.match(page.element('summary-content').innerHTML, /data-summary-citations/);
     if (notesSha256 == null) {
       page.edit('구형 요약과 관계없는 메모');
-      assert.match(page.element('summary-content').innerHTML, /data-summary-seek/);
+      assert.match(page.element('summary-content').innerHTML, /data-summary-citations/);
     }
   }
 });
@@ -1300,7 +1302,7 @@ test('a long transcript does not need scrolling to reveal the summary and loadin
   const doc = transcriptDocument();
   doc.segments = Array.from({length: 300}, (_,i) => ({id: `segment-${i}`, start: i * 5, end: i * 5 + 4, text: `발언 ${i + 1}`, originalText: `발언 ${i + 1}`}));
   const page = await openApp(doc);
-  assert.equal(page.app.detail.active(), 'transcript');
+  assert.equal(page.app.detail.active(), 'summary');
   const pending = deferred();
   page.bridge.readSummary = () => pending.promise;
   const loading = page.app.loadSummary('a');
@@ -1315,25 +1317,59 @@ test('a long transcript does not need scrolling to reveal the summary and loadin
   assert.match(page.element('transcript-rows').innerHTML, /발언 300/);
 });
 
-test('summary source opens the transcript, focuses the utterance and seeks the shared player', async () => {
+test('summary evidence navigates by verified segment ID without playing and returns to summary', async () => {
   const doc = transcriptDocument();
   doc.segments[0].start = 23;
   const page = await openApp(doc);
   page.bridge.readSummary = async () => ({document: {id: 'summary-a', text: '결정 사항 [1]', sourceVersion: doc.version}, stale: false});
   await page.app.loadSummary('a');
   await page.app.detail.select('summary');
-  let scrolled = false, focused = false;
+  let scrolled = false, focused = false, played = 0;
   page.element('transcript-rows').querySelector = () => ({scrollIntoView() { scrolled = true; }, focus() { focused = true; }});
   page.element('audio-player').setAttribute('src', 'example.wav');
-  page.element('audio-player').playbackRate = 1.5;
-  await page.element('summary-content').listeners.get('click')({target: {closest: () => ({dataset: {summarySeek: '0'}})}});
+  page.element('audio-player').currentTime = 7;
+  page.element('audio-player').play = async () => { played++; };
+  const evidence = page.app.summaryEvidenceOptions;
+  const entry = {currentSegmentIds: [doc.segments[0].id], segment: {start: 23}};
+  assert.equal(await evidence.onNavigate(entry, {currentVersion: doc.version}, evidence.getContext()), true);
   assert.equal(page.app.detail.active(), 'transcript');
-  assert.equal(page.element('transcript-section').hidden, false);
-  assert.equal(page.element('summary-section').hidden, true);
-  assert.equal(scrolled, true);
-  assert.equal(focused, true);
-  assert.equal(page.element('audio-player').currentTime, 23);
-  assert.equal(page.element('audio-player').playbackRate, 1.5);
+  assert.equal(scrolled && focused, true);
+  assert.equal(page.element('return-to-summary').hidden, false);
+  assert.equal(page.element('audio-player').currentTime, 7);
+  assert.equal(played, 0);
+  await page.element('return-to-summary').listeners.get('click')();
+  assert.equal(page.app.detail.active(), 'summary');
+  assert.equal(page.element('return-to-summary').hidden, true);
+});
+
+test('frozen evidence cannot navigate missing IDs, changed versions or unsaved edits', async () => {
+  const doc = transcriptDocument();
+  const page = await openApp(doc);
+  page.app.state.summary = { document: {id: 'summary-a', text: '결정 [1]', sourceVersion: doc.version} };
+  const evidence = page.app.summaryEvidenceOptions, context = evidence.getContext();
+  const entry = {currentSegmentIds: [doc.segments[0].id], segment: {start: 23}};
+  for (const response of [{currentVersion: {...doc.version, revision: 8}}, {currentVersion: null}]) {
+    assert.equal(await evidence.onNavigate(entry, response, context), false);
+  }
+  assert.equal(await evidence.onNavigate({...entry, currentSegmentIds: ['absent']}, {currentVersion: doc.version}, context), false);
+  page.app.state.transcriptDraft.dirty = true;
+  assert.equal(await evidence.onNavigate(entry, {currentVersion: doc.version}, context), false);
+  page.app.state.transcriptDraft.dirty = false;
+  await page.app.selectMeeting('b');
+  assert.equal(await evidence.onNavigate(entry, {currentVersion: doc.version}, context), false);
+});
+
+test('summary audio requires explicit playback and the same source recording session', async () => {
+  const page = await openApp(transcriptDocument());
+  page.app.state.summary = {document: {id: 'summary-a'}};
+  page.app.state.snapshot.meetings[0].audio = {sessionId: 'session-a'};
+  const evidence = page.app.summaryEvidenceOptions, context = evidence.getContext();
+  const player = page.element('audio-player'); player.setAttribute('src', 'audio.wav');
+  player.currentTime = 7; let played = 0; player.play = async () => { played++; };
+  evidence.onPlay({segment: {start: 23}}, {audioAvailable: true, sourceSessionId: 'other'}, context);
+  assert.equal(played, 0);
+  evidence.onPlay({segment: {start: 23}}, {audioAvailable: true, sourceSessionId: 'session-a'}, context);
+  assert.equal(played, 1); assert.equal(player.currentTime, 23);
 });
 
 
@@ -1369,8 +1405,8 @@ test('summary retry and failure retain the existing summary stale-source notice'
   for (const [revision, status] of [[10, 'running'], [11, 'failed']]) {
     await page.app.acceptProcessing({ ...job, revision, status, phase: 'summarizing', failureKind: status === 'failed' ? 'outputLimit' : null });
     assert.equal(page.element('summary-message').hidden, false);
-    assert.match(page.element('summary-message').textContent, /회의 내용이 변경되었습니다/);
+    assert.match(page.element('summary-message').textContent, /이전 내용으로 만든 요약/);
     assert.match(page.element('summary-content').innerHTML, /이전 요약 내용/);
-    assert.doesNotMatch(page.element('summary-content').innerHTML, /data-summary-seek/);
+    assert.doesNotMatch(page.element('summary-content').innerHTML, /data-summary-citations/);
   }
 });

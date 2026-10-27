@@ -42,9 +42,9 @@ test('initial view waits for both result loads, then resolves its default once',
   app.update({ transcriptLoaded: true, hasTranscript: true });
   assert.equal(app.controller.active(), 'summary');
   app.update({ transcriptLoaded: true, summaryLoaded: true, hasTranscript: true });
-  assert.equal(app.controller.active(), 'transcript');
+  assert.equal(app.controller.active(), 'summary');
   app.update({ transcriptLoaded: true, summaryLoaded: true, hasTranscript: true, hasSummary: true });
-  assert.equal(app.controller.active(), 'transcript');
+  assert.equal(app.controller.active(), 'summary');
   app.update({ id: 'b', transcriptLoaded: true, summaryLoaded: true, hasTranscript: true, hasSummary: true });
   assert.equal(app.controller.active(), 'summary');
 });
@@ -103,6 +103,7 @@ test('each panel restores scroll after tab and meeting transitions', async () =>
   await app.controller.select('summary');
   assert.equal(app.node('summary-section').scrollTop, 410);
   app.update({ id: 'b', summaryLoaded: true, transcriptLoaded: true, hasTranscript: true });
+  await app.controller.select('transcript');
   app.scroll('transcript', 250);
   app.update({ id: 'a', summaryLoaded: true, transcriptLoaded: true, hasSummary: true });
   assert.equal(app.controller.active(), 'summary');
@@ -219,7 +220,7 @@ test('pending selection for a previous meeting cannot change the next meeting', 
   app.update({ id: 'b', summaryLoaded: true, transcriptLoaded: true, hasTranscript: true });
   saved.resolve();
   assert.equal(await selecting, false);
-  assert.equal(app.controller.active(), 'transcript');
+  assert.equal(app.controller.active(), 'summary');
   assert.equal(app.focused(), null);
 });
 

@@ -50,7 +50,7 @@ export function documentExport(meeting, transcript, summary, kind, format = 'txt
   } else {
     if (!summary?.document?.text) throw new Error('내보낼 요약이 없습니다.');
     body = summary.document.text;
-    if (summary.stale) body = `음성 기록이 수정된 후 다시 작성되지 않은 요약입니다.\n\n${body}`;
+    if (summary.stale) body = `이전 내용으로 만든 요약\n\n${body}`;
   }
   const header = format === 'md' ? `# ${markdown(title)}\n\n## ${heading}` : `${title}\n${heading}`;
   return { name: `${safeName}-${heading}.${format}`, text: `${header}\n\n${body}\n` };

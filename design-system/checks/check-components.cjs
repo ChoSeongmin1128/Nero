@@ -93,26 +93,38 @@ test('summary structures known headings, markdown headings, paragraphs and lists
   assert.equal(UI.summaryDocument(''), '<article class="summary-document"></article>');
 });
 
-test('summary references require an existing source and escape source attributes and raw markup', () => {
-  const source = '"><img src=x onerror=bad()>';
-  const html = UI.summaryDocument('# <script>bad()</script>\n내용 [1] [0] [2] [999999999999999999999999]\n\n[x](javascript:bad())', { sources: [source] });
-  assert.doesNotMatch(html, /<script|<img|<a\b/);
+test('summary evidence preserves frozen references without consulting current source positions', () => {
+  const html = UI.summaryDocument('# <script>bad()</script>\n내용 [1] [0] [2] [999999999999999999999999]\n\n[x](javascript:bad())', { sources: ['"><img src=x onerror=bad()>'] });
+  assert.doesNotMatch(html, /<script|<img|<a\b|data-summary-seek|title=/);
   assert.match(html, /<h3>&lt;script&gt;bad\(\)&lt;\/script&gt;<\/h3>/);
-  assert.equal((html.match(/data-summary-seek=/g) || []).length, 1);
-  assert.match(html, /data-summary-seek="0" title="&quot;&gt;&lt;img src=x onerror=bad\(\)&gt;" aria-label="1번 발언 확인">\[1\]<\/button>/);
-  assert.match(html, /\[0\] \[2\] \[999999999999999999999999\]/);
-  assert.doesNotMatch(UI.summaryDocument('내용 [1]', { sources: [] }), /<button/);
-  assert.doesNotMatch(UI.summaryDocument('내용 [1]', { sources: [null] }), /<button/);
-  const code = UI.summaryDocument('```html\n<script> [1]\n# 제목\n```', { sources: ['원문'] });
+  assert.equal((html.match(/data-summary-citations=/g) || []).length, 2);
+  assert.match(html, /data-summary-citations="1"/);
+  assert.match(html, /data-summary-citations="2"/);
+  assert.match(html, /\[0\]/);
+  assert.match(html, /\[999999999999999999999999\]/);
+  assert.match(UI.summaryDocument('내용 [1]', { sources: [] }), /data-summary-citations="1"/);
+  const code = UI.summaryDocument('```html\n<script> [1]\n# 제목\n```');
   assert.match(code, /<pre><code>&lt;script&gt; \[1\]\n# 제목<\/code><\/pre>/);
   assert.doesNotMatch(code, /<button|<h3>/);
+});
+
+test('summary groups adjacent comma and bounded range citations without altering identifiers', () => {
+  const html = UI.summaryDocument('내용 [1] [2, 3] [3-5] 뒤 [7]');
+  assert.equal((html.match(/<button/g) || []).length, 2);
+  assert.match(html, /data-summary-citations="1,2,3,4,5"/);
+  assert.match(html, />근거 5<\/span>/);
+  assert.match(html, /data-summary-citations="7"/);
+  for (const input of ['[0]', '[5-3]', '[1-33]', '[1-99999999999]', '[1,,2]', '[9007199254740992]']) assert.doesNotMatch(UI.summaryDocument(input), /<button/);
+  const adjacent = UI.summaryDocument('[1-32][33]');
+  assert.equal((adjacent.match(/<button/g) || []).length, 2);
+  assert.doesNotMatch(UI.summaryDocument('`[1]` \\[2] [3](url) ![4](url) [5][name]'), /<button/);
 });
 
 test('search highlighting leaves summary source controls and editable transcript fields intact', () => {
   const summary = UI.summaryDocument('요약\nAlpha [1] alpha', { sources: ['원문 Alpha'], searchQuery: 'alpha' });
   assert.equal((summary.match(/<mark class="search-match" /g) || []).length, 2);
-  assert.match(summary, /title="원문 Alpha" aria-label="1번 발언 확인">\[1\]<\/button>/);
-  assert.match(UI.summaryDocument('내용 [1]', { sources: ['원문'], searchQuery: '1' }), /aria-label="1번 발언 확인">\[<mark class="search-match" data-search-group="summary-1">1<\/mark>\]<\/button>/);
+  assert.match(summary, /data-summary-citations="1"[^>]*aria-label="1번 발언 확인"/);
+  assert.match(UI.summaryDocument('내용 [1]', { sources: ['원문'], searchQuery: '1' }), /data-search-group="summary-1">근거<\/mark>/);
   const row = UI.transcriptRow({ index: 0, time: '00:00', start: 0, text: 'Alpha <value>', searchQuery: 'alpha' });
   assert.match(row, /<p class="transcript-text"><mark class="search-match">Alpha<\/mark> &lt;value&gt;<\/p>/);
   const editor = UI.transcriptRow({ index: 0, time: '00:00', start: 0, text: 'Alpha <value>', searchQuery: 'alpha', editing: true });
@@ -128,11 +140,11 @@ test('summary searches visible text across strong, code and reference boundaries
   const options = { sources: ['원문 <내용> "확인"'] };
   const html = UI.summaryDocument(text, { ...options, searchQuery: '계획 일정 확인 [1]' });
   const marks = [...html.matchAll(/<mark class="search-match" data-search-group="([^"]+)">([^<]+)<\/mark>/g)];
-  assert.deepEqual(marks.map(mark => mark[2]), ['계획', ' ', '일정', ' 확인 ', '[1]', '계획', ' ', '일정', ' 확인 ', '[1]']);
-  assert.deepEqual(marks.map(mark => mark[1]), [...Array(5).fill('summary-1'), ...Array(5).fill('summary-2')]);
+  assert.deepEqual(marks.map(mark => mark[2]), ['계획', ' ', '일정', ' 확인 ', '근거', '[1]', '계획', ' ', '일정', ' 확인 ', '근거', '[1]']);
+  assert.deepEqual(marks.map(mark => mark[1]), [...Array(6).fill('summary-1'), ...Array(6).fill('summary-2')]);
   assert.equal(html.replace(/<mark\b[^>]*>|<\/mark>/g, ''), UI.summaryDocument(text, options));
-  assert.equal((html.match(/data-summary-seek="0"/g) || []).length, 2);
-  assert.match(html, /title="원문 &lt;내용&gt; &quot;확인&quot;" aria-label="1번 발언 확인"><mark/);
+  assert.equal((html.match(/data-summary-citations="1"/g) || []).length, 2);
+  assert.match(html, /aria-label="1번 발언 확인"><span aria-hidden="true"><mark/);
   assert.doesNotMatch(html, /<mark\b[^>]*><\/mark>/);
   assert.doesNotMatch(UI.summaryDocument('**계획** `일정`', { searchQuery: '**' }), /<mark/);
 });
@@ -141,12 +153,12 @@ test('summary searches reference labels without changing their click or escape c
   const text = '**[1]** 뒤 [0] [2]';
   const options = { sources: ['"><img src=x onerror=bad()>'] };
   const html = UI.summaryDocument(text, { ...options, searchQuery: '[1] 뒤' });
-  assert.match(html, /<strong><button[^>]*data-summary-seek="0"[^>]*aria-label="1번 발언 확인"><mark class="search-match" data-search-group="summary-1">\[1\]<\/mark><\/button><\/strong><mark class="search-match" data-search-group="summary-1"> 뒤<\/mark>/);
+  assert.match(html, /<strong><button[^>]*data-summary-citations="1"[^>]*aria-label="1번 발언 확인"><span aria-hidden="true"><mark class="search-match" data-search-group="summary-1">근거<\/mark>/);
   assert.equal(html.replace(/<mark\b[^>]*>|<\/mark>/g, ''), UI.summaryDocument(text, options));
   assert.doesNotMatch(html, /<img|<script|<a\b|<mark\b[^>]*><\/mark>/);
   const invalid = UI.summaryDocument(text, { ...options, searchQuery: '[2]' });
   assert.match(invalid, /<mark class="search-match" data-search-group="summary-1">\[2\]<\/mark>/);
-  assert.equal((invalid.match(/<button\b/g) || []).length, 1);
+  assert.equal((invalid.match(/<button\b/g) || []).length, 2);
 });
 
 test('summary searches fenced code literally with and without a closing fence', () => {

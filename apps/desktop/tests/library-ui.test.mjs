@@ -10,11 +10,11 @@ const meetings = () => [
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
 function harness(overrides = {}, options = {}) {
-  const nodes = new Map(), calls = [], errors = [];
+  const nodes = new Map(), calls = [], errors = [], dragImages = [], frames = new Map();
   const state = { snapshot: { meetings: meetings(), folders: [{ id: 'project', name: '프로젝트' }], session: null }, selectedId: 'one', connected: true, libraryFilter: 'all', libraryOpen: true, librarySelection: new Set(), librarySelecting: false, libraryBusy: false, processing: { status: 'idle' } };
-  let locked = false;
+  let locked = false, owner, frameId = 0;
   class Node {
-    constructor(id) { this.id = id; this.listeners = {}; this.dataset = {}; this.value = ''; this.open = false; this.hidden = false; this.disabled = false; this.isConnected = true; this.ownerDocument = { activeElement: null }; }
+    constructor(id) { this.id = id; this.listeners = {}; this.dataset = {}; this.value = ''; this.open = false; this.hidden = false; this.disabled = false; this.isConnected = true; this.ownerDocument = owner; this.style = {}; this.children = []; }
     addEventListener(name, listener) { this.listeners[name] = listener; }
     setAttribute(name, value) { this[name] = value; }
     removeAttribute(name) { delete this[name]; }
@@ -22,6 +22,9 @@ function harness(overrides = {}, options = {}) {
     select() { this.selected = true; }
     showModal() { this.open = true; }
     close() { this.open = false; }
+    appendChild(node) { this.children.push(node); node.parentNode = this; node.isConnected = this.isConnected; return node; }
+    remove() { if (this.parentNode) this.parentNode.children = this.parentNode.children.filter(node => node !== this); this.parentNode = null; this.isConnected = false; }
+    getBoundingClientRect() { return { width: Math.min(280, this.children.reduce((sum, node) => sum + (node.textContent?.length || 0) * 8 + 8, 20)), height: 34 }; }
     set innerHTML(value) {
       this.html = value;
       if (this.id === 'library-dialog-body') {
@@ -42,6 +45,14 @@ function harness(overrides = {}, options = {}) {
     }
     querySelectorAll() { return []; }
   }
+  owner = { activeElement: null, listeners: {},
+    addEventListener(name, listener) { (this.listeners[name] ||= []).push(listener); },
+    createElement(tag) { const node = new Node(tag); node.isConnected = false; return node; },
+    defaultView: { innerWidth: 1000, innerHeight: 700, addEventListener() {},
+      requestAnimationFrame(action) { frames.set(++frameId, action); return frameId; },
+      cancelAnimationFrame(id) { frames.delete(id); } },
+  };
+  owner.body = new Node('document-body');
   const byId = id => { if (!nodes.has(id)) nodes.set(id, new Node(id)); return nodes.get(id); };
   const snapshot = () => structuredClone(state.snapshot);
   const record = (name, action = () => snapshot()) => async (...args) => { calls.push({ name, args, locked }); return action(...args); };
@@ -64,13 +75,17 @@ function harness(overrides = {}, options = {}) {
   let targetNode;
   const delegated = (id, dataset, selectors) => { targetNode = target(dataset, selectors); click(id, targetNode); };
   const submit = async () => { byId('library-dialog').listeners.submit({ preventDefault() {} }); await settle(); };
-  const drag = id => {
+  const drag = (id, { image = 'supported', failData = false, clientX = 500, clientY = 350 } = {}) => {
     const payload = new Map();
-    const dataTransfer = { types: [], effectAllowed: '', dropEffect: '', setData(type, value) { payload.set(type, value); this.types = [...payload.keys()]; } };
+    const dataTransfer = { types: [], effectAllowed: '', dropEffect: '', setData(type, value) { if (failData) throw new Error('transfer failed'); payload.set(type, value); this.types = [...payload.keys()]; } };
+    if (image !== 'missing') dataTransfer.setDragImage = (node, x, y) => {
+      dragImages.push({ node, x, y, connectedAtCall: node.isConnected });
+      if (image === 'throws') throw new Error('drag bitmap unavailable');
+    };
     const row = { dataset: { meetingId: id } };
     let prevented = false;
-    byId('meeting-list').listeners.dragstart({ target: { closest: selector => selector === '[data-meeting-id]' ? row : null }, dataTransfer, preventDefault() { prevented = true; } });
-    return { dataTransfer, payload, prevented };
+    byId('meeting-list').listeners.dragstart({ target: { closest: selector => selector === '[data-meeting-id]' ? row : null }, dataTransfer, clientX, clientY, preventDefault() { prevented = true; } });
+    return { dataTransfer, payload, prevented, row };
   };
   const destination = filter => {
     const classes = new Set();
@@ -84,8 +99,119 @@ function harness(overrides = {}, options = {}) {
     byId('folder-list').listeners[type]({ target: destination.target, dataTransfer: transfer.dataTransfer, preventDefault() { prevented = true; } });
     return prevented;
   };
-  return { state, nodes, byId, calls, errors, controller, bridge, click, delegated, submit, snapshot, drag, destination, dragEvent };
+  const documentEvent = (name, event = {}) => { for (const listener of owner.listeners[name] || []) listener(event); };
+  const paint = () => { const pending = [...frames.values()]; frames.clear(); pending.forEach(action => action()); };
+  return { state, nodes, byId, calls, errors, controller, bridge, click, delegated, submit, snapshot, drag, destination, dragEvent, owner, dragImages, documentEvent, paint };
 }
+
+test('a single meeting uses its title-only rendered drag image instead of the full meeting row', () => {
+  const app = harness();
+  app.state.snapshot.meetings[1].audio = { frames: 16000, sampleRate: 16000 };
+  const transfer = app.drag('two');
+  const image = app.dragImages[0];
+  assert.equal(image.connectedAtCall, true);
+  assert.notEqual(image.node, transfer.row);
+  assert.equal(image.node.className, 'meeting-drag-preview');
+  assert.equal(image.node['aria-hidden'], 'true');
+  assert.deepEqual(image.node.children.map(node => node.textContent), ['기획 검토']);
+  assert.equal(image.node.children[0].className, 'meeting-drag-preview-title');
+  assert.equal(image.x, 12);
+  assert.equal(image.y, 17);
+  assert.equal(transfer.payload.get('application/x-nero-meetings'), '["two"]');
+  app.paint();
+  assert.equal(image.node.isConnected, false);
+  assert.equal(app.owner.body.children.length, 0);
+  assert.equal(transfer.dataTransfer.effectAllowed, 'move');
+});
+
+test('a selected drag shows the actual grabbed title and total count while preserving selected ID provenance', () => {
+  const app = harness();
+  app.state.librarySelection = new Set(['one', 'two']);
+  const transfer = app.drag('two');
+  const image = app.dragImages[0].node;
+  assert.deepEqual(image.children.map(node => node.textContent), ['기획 검토', '2개']);
+  assert.equal(image.children[1].className, 'meeting-drag-preview-count');
+  assert.equal(transfer.payload.get('application/x-nero-meetings'), '["one","two"]');
+  assert.deepEqual([...app.state.librarySelection], ['one', 'two']);
+});
+
+test('a long title remains safe text in the ellipsis label and its drag image stays inside the viewport', () => {
+  const app = harness();
+  const title = '긴 프로젝트 운영과 다음 분기 실행 계획을 검토하는 회의 '.repeat(10) + '<img src=x onerror=alert(1)>';
+  app.state.snapshot.meetings[1].title = title;
+  app.drag('two', { clientX: 999, clientY: 699 });
+  const { node, x, y } = app.dragImages[0];
+  assert.equal(node.children[0].textContent, title);
+  assert.equal(node.children[0].innerHTML, '');
+  assert.equal(node.children[0].className, 'meeting-drag-preview-title');
+  const bounds = node.getBoundingClientRect();
+  assert.ok(Number.parseFloat(node.style.left) >= 0);
+  assert.ok(Number.parseFloat(node.style.left) + bounds.width <= app.owner.defaultView.innerWidth);
+  assert.ok(Number.parseFloat(node.style.top) + bounds.height <= app.owner.defaultView.innerHeight);
+  assert.ok(x < bounds.width && y < bounds.height);
+});
+
+for (const end of ['document-dragend', 'row-dragend', 'escape', 'next-drag']) {
+  test(`a drag preview is removed on ${end} without changing meetings`, () => {
+    const app = harness();
+    const before = app.snapshot();
+    app.drag('two');
+    const preview = app.dragImages[0].node;
+    if (end === 'document-dragend') app.documentEvent('dragend');
+    if (end === 'row-dragend') app.byId('meeting-list').listeners.dragend();
+    if (end === 'escape') app.documentEvent('keydown', { key: 'Escape' });
+    if (end === 'next-drag') app.drag('one', { image: 'missing' });
+    assert.equal(preview.isConnected, false);
+    assert.equal(app.owner.body.children.length, 0);
+    assert.deepEqual(app.snapshot(), before);
+    assert.equal(app.calls.length, 0);
+  });
+}
+
+test('document drop cleanup preserves source validation until the folder drop handler consumes it', async () => {
+  const app = harness();
+  const transfer = app.drag('two');
+  app.documentEvent('drop');
+  assert.equal(app.owner.body.children.length, 0);
+  assert.equal(app.dragEvent('drop', transfer, app.destination('project')), true);
+  await settle();
+  assert.deepEqual(app.calls.find(call => call.name === 'move').args, [['two'], 'project']);
+});
+
+test('Escape cancels the local drag and leaves no source IDs available for a later synthetic drop', async () => {
+  const app = harness();
+  const transfer = app.drag('two');
+  app.documentEvent('keydown', { key: 'Escape' });
+  assert.equal(app.dragEvent('drop', transfer, app.destination('project')), false);
+  await settle();
+  assert.equal(app.calls.some(call => call.name === 'move'), false);
+});
+
+for (const image of ['missing', 'throws']) {
+  test(`a ${image} native drag-image API safely keeps the original move payload without leaking preview nodes`, async () => {
+    const app = harness();
+    const transfer = app.drag('two', { image });
+    assert.equal(transfer.prevented, false);
+    assert.equal(transfer.payload.get('application/x-nero-meetings'), '["two"]');
+    assert.equal(app.owner.body.children.length, 0);
+    assert.equal(app.dragEvent('drop', transfer, app.destination('project')), true);
+    await settle();
+    assert.deepEqual(app.calls.find(call => call.name === 'move').args, [['two'], 'project']);
+    assert.equal(app.errors.length, 0);
+  });
+}
+
+test('a failed data transfer cancels the drag and clears prior preview and source state', () => {
+  const app = harness();
+  app.drag('one');
+  const previous = app.dragImages[0].node;
+  const failed = app.drag('two', { failData: true });
+  assert.equal(failed.prevented, true);
+  assert.equal(previous.isConnected, false);
+  assert.equal(app.owner.body.children.length, 0);
+  assert.equal(app.dragEvent('dragover', failed, app.destination('project')), false);
+  assert.equal(app.calls.length, 0);
+});
 
 test('dragging a meeting onto a folder flushes edits and moves its ID without touching recording or processing', async () => {
   const app = harness();

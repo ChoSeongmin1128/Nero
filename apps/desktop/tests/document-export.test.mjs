@@ -23,7 +23,7 @@ test('Markdown export keeps utterance text literal and summary export uses its o
   assert.ok(output.text.includes('\\[보류\\]'));
   const summary = documentExport(meeting, transcript, { document: { text: '## 결정\n보류 [1]' }, stale: true }, 'summary', 'md');
   assert.match(summary.name, /회의록\.md$/);
-  assert.match(summary.text, /다시 작성되지 않은 요약/);
+  assert.match(summary.text, /이전 내용으로 만든 요약/);
   assert.match(summary.text, /## 결정\n보류 \[1\]/);
   assert.doesNotMatch(summary.text, /다음 회의에서/);
 });

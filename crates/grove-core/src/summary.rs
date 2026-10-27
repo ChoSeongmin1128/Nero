@@ -1,9 +1,10 @@
 use crate::engine::Engine;
 use crate::store;
-use crate::{CoreError, Result, Transcript, TranscriptVersion};
+use crate::{CoreError, Result, Transcript, TranscriptSegment, TranscriptVersion};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::io::Write;
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -34,6 +35,99 @@ pub struct Summary {
 pub struct SummaryView {
     pub document: Summary,
     pub stale: bool,
+}
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SummaryCitation {
+    pub reference: u32,
+    pub segment: TranscriptSegment,
+    pub speaker_name: Option<String>,
+    pub current_segment_ids: Vec<String>,
+}
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SummaryCitations {
+    pub summary_id: String,
+    pub source_version: TranscriptVersion,
+    pub source_session_id: String,
+    pub current_version: Option<TranscriptVersion>,
+    pub audio_available: bool,
+    pub entries: Vec<SummaryCitation>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SummaryArchive {
+    document: Summary,
+    source: Transcript,
+    #[serde(default)]
+    notes: Option<String>,
+    #[serde(rename = "receipt")]
+    _receipt: serde_json::Value,
+}
+
+fn invalid_citations() -> CoreError {
+    CoreError::Storage("요약에 사용한 음성 기록의 연결을 확인할 수 없습니다.".into())
+}
+
+fn citation_bytes(root: &Path, relative: &Path) -> Result<Vec<u8>> {
+    let path = store::checked_path(root, relative)?;
+    let file = store::open_read(&path)?;
+    const LIMIT: u64 = 16 * 1024 * 1024;
+    if file.metadata()?.len() > LIMIT {
+        return Err(invalid_citations());
+    }
+    let mut bytes = Vec::new();
+    file.take(LIMIT + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > LIMIT {
+        return Err(invalid_citations());
+    }
+    Ok(bytes)
+}
+
+fn validate_citation_source(source: &Transcript) -> Result<()> {
+    store::validate_id(&source.version.id)?;
+    store::validate_id(&source.source_session_id)?;
+    if source.segments.is_empty() || source.segments.len() > 100_000 || source.speakers.len() > 4096
+    {
+        return Err(invalid_citations());
+    }
+    let mut speakers = BTreeSet::new();
+    for speaker in &source.speakers {
+        if speaker.id.is_empty()
+            || speaker.id.len() > 128
+            || !speaker
+                .id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b':'))
+            || !speakers.insert(&speaker.id)
+            || speaker.name.trim().is_empty()
+            || speaker.name.len() > 256
+            || speaker.name.chars().any(char::is_control)
+        {
+            return Err(invalid_citations());
+        }
+    }
+    let mut segments = BTreeSet::new();
+    for segment in &source.segments {
+        store::validate_id(&segment.id)?;
+        if !segments.insert(&segment.id)
+            || !segment.start.is_finite()
+            || !segment.end.is_finite()
+            || segment.start < 0.0
+            || segment.end < segment.start
+            || segment.text.len() > 2 * 1024 * 1024
+            || segment.original_text.len() > 2 * 1024 * 1024
+            || segment.text.contains('\0')
+            || segment.original_text.contains('\0')
+            || segment
+                .speaker_id
+                .as_ref()
+                .is_some_and(|id| !speakers.contains(id))
+        {
+            return Err(invalid_citations());
+        }
+    }
+    Ok(())
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -110,6 +204,148 @@ impl Engine {
             &self.meetings[id].meeting.notes,
         )?;
         Ok(Some(SummaryView { document, stale }))
+    }
+    pub fn summary_citations(
+        &self,
+        id: &str,
+        summary_id: &str,
+        references: &[u32],
+    ) -> Result<SummaryCitations> {
+        self.require_active_meeting(id)?;
+        store::validate_id(id)?;
+        store::validate_id(summary_id)?;
+        if references.is_empty() || references.len() > 32 {
+            return Err(CoreError::InvalidInput(
+                "근거 번호는 1개 이상 32개 이하로 요청해 주세요.".into(),
+            ));
+        }
+        let directory = location(id)?;
+        let active_bytes = citation_bytes(&self.store.root, &directory.join("current.json"))?;
+        let active: Summary =
+            serde_json::from_slice(&active_bytes).map_err(|_| invalid_citations())?;
+        if active.id != summary_id {
+            return Err(CoreError::InvalidState(
+                "요약이 변경되었습니다. 다시 열어 주세요.".into(),
+            ));
+        }
+        let archive: SummaryArchive = serde_json::from_slice(&citation_bytes(
+            &self.store.root,
+            &directory.join(summary_id).join("run.json"),
+        )?)
+        .map_err(|_| invalid_citations())?;
+        if serde_json::to_value(&archive.document).map_err(|_| invalid_citations())?
+            != serde_json::to_value(&active).map_err(|_| invalid_citations())?
+            || archive.source.version != active.source_version
+            || transcript_digest(&archive.source)? != active.source_sha256
+            || active.notes_sha256.as_ref().is_some_and(|expected| {
+                archive
+                    .notes
+                    .as_deref()
+                    .is_none_or(|notes| notes_digest(notes) != *expected)
+            })
+        {
+            return Err(invalid_citations());
+        }
+        validate_citation_source(&archive.source)?;
+        if references
+            .iter()
+            .any(|reference| *reference == 0 || *reference as usize > archive.source.segments.len())
+        {
+            return Err(CoreError::InvalidInput(
+                "요약의 근거 번호가 음성 기록 범위를 벗어났습니다.".into(),
+            ));
+        }
+        let current = if self.meetings[id].meeting.audio.is_some() {
+            self.transcript(id)?
+        } else {
+            None
+        };
+        if let Some(current) = &current {
+            validate_citation_source(current)?;
+        }
+        let mut targets: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        if let Some(current) = &current {
+            if current.version == active.source_version
+                && transcript_digest(current)? == active.source_sha256
+            {
+                targets = current
+                    .segments
+                    .iter()
+                    .map(|segment| (segment.id.clone(), vec![segment.id.clone()]))
+                    .collect();
+            } else if current.source.as_ref().is_some_and(|source| {
+                source.projector_version == crate::nemotron::WORD_PROJECTOR_VERSION
+            }) {
+                let raw_path = Path::new("meetings")
+                    .join(id)
+                    .join("transcripts")
+                    .join(&current.version.id)
+                    .join("raw.json");
+                targets = crate::nemotron::direct_parent_citation_targets(
+                    &citation_bytes(&self.store.root, &raw_path)?,
+                    current,
+                    &archive.source,
+                )?
+                .unwrap_or_default();
+            }
+        }
+        let audio_available = self.meetings[id]
+            .meeting
+            .audio
+            .as_ref()
+            .is_some_and(|audio| {
+                audio.session_id == archive.source.source_session_id
+                    && self.audio_path(id).is_ok()
+                    && archive
+                        .source
+                        .segments
+                        .iter()
+                        .all(|s| s.end <= audio.frames as f64 / f64::from(audio.sample_rate))
+            });
+        let entries = references
+            .iter()
+            .map(|reference| {
+                let segment = archive.source.segments[*reference as usize - 1].clone();
+                let speaker_name = segment.speaker_id.as_ref().and_then(|id| {
+                    archive
+                        .source
+                        .speakers
+                        .iter()
+                        .find(|speaker| &speaker.id == id)
+                        .map(|speaker| speaker.name.clone())
+                });
+                let current_segment_ids = targets.get(&segment.id).cloned().unwrap_or_default();
+                SummaryCitation {
+                    reference: *reference,
+                    segment,
+                    speaker_name,
+                    current_segment_ids,
+                }
+            })
+            .collect();
+        let result = SummaryCitations {
+            summary_id: active.id,
+            source_version: active.source_version,
+            source_session_id: archive.source.source_session_id,
+            current_version: current.map(|doc| doc.version),
+            audio_available,
+            entries,
+        };
+        if serde_json::to_vec(&result)
+            .map_err(|_| invalid_citations())?
+            .len()
+            > 1024 * 1024
+        {
+            return Err(CoreError::InvalidInput(
+                "근거 내용이 너무 큽니다. 요청할 근거 수를 줄여 주세요.".into(),
+            ));
+        }
+        if citation_bytes(&self.store.root, &directory.join("current.json"))? != active_bytes {
+            return Err(CoreError::InvalidState(
+                "요약이 변경되었습니다. 다시 열어 주세요.".into(),
+            ));
+        }
+        Ok(result)
     }
     pub fn commit_summary(&mut self, id: &str, draft: SummaryDraft) -> Result<Summary> {
         self.require_active_meeting(id)?;
@@ -388,5 +624,222 @@ mod tests {
         let summary = reopened.summary(&id).unwrap().unwrap();
         assert_eq!(summary.document.id, legacy.id);
         assert!(!summary.stale);
+    }
+
+    fn archived_run(engine: &Engine, id: &str, summary: &Summary) -> PathBuf {
+        engine
+            .store
+            .root
+            .join(location(id).unwrap())
+            .join(&summary.id)
+            .join("run.json")
+    }
+
+    #[test]
+    fn citations_read_the_frozen_source_and_current_target_without_writes() {
+        let (_temp, mut engine, id, _) = setup();
+        let source = engine.commit_transcript(&id, None, output()).unwrap();
+        let summary = engine
+            .commit_summary(&id, draft(source.clone(), None, "요약 [1]"))
+            .unwrap();
+        let archive = archived_run(&engine, &id, &summary);
+        let before = std::fs::read(&archive).unwrap();
+        let result = engine.summary_citations(&id, &summary.id, &[1]).unwrap();
+        assert_eq!(result.summary_id, summary.id);
+        assert_eq!(result.source_version, source.version);
+        assert_eq!(result.current_version, Some(source.version));
+        assert_eq!(result.entries[0].segment.id, source.segments[0].id);
+        assert_eq!(result.entries[0].segment.text, "원문");
+        assert_eq!(
+            result.entries[0].speaker_name,
+            Some(source.speakers[0].name.clone())
+        );
+        assert_eq!(
+            result.entries[0].current_segment_ids,
+            vec![source.segments[0].id.clone()]
+        );
+        assert!(result.audio_available);
+        assert_eq!(std::fs::read(archive).unwrap(), before);
+        let value = serde_json::to_value(result).unwrap();
+        assert!(value.get("sourceVersion").is_some());
+        assert!(value["entries"][0].get("currentSegmentIds").is_some());
+    }
+
+    #[test]
+    fn stale_citations_map_only_a_verified_direct_parent_generation() {
+        let (_temp, mut engine, id, _) = setup();
+        let source = engine
+            .commit_nemotron_transcript(&id, None, crate::nemotron::tests::raw())
+            .unwrap();
+        let summary = engine
+            .commit_summary(&id, draft(source.clone(), None, "요약 [1]"))
+            .unwrap();
+        let turns = engine
+            .apply_diarization(&id, crate::nemotron::tests::posterior_draft(source.clone()))
+            .unwrap();
+        let result = engine.summary_citations(&id, &summary.id, &[1]).unwrap();
+        assert_eq!(result.entries[0].segment.text, source.segments[0].text);
+        assert_eq!(result.entries[0].segment.id, source.segments[0].id);
+        assert_eq!(
+            result.entries[0].current_segment_ids,
+            turns.segments[..2]
+                .iter()
+                .map(|s| s.id.clone())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(result.current_version, Some(turns.version.clone()));
+        assert!(engine.summary(&id).unwrap().unwrap().stale);
+        let next = engine
+            .apply_diarization(&id, crate::nemotron::tests::posterior_draft(turns))
+            .unwrap();
+        let unmapped = engine.summary_citations(&id, &summary.id, &[1]).unwrap();
+        assert_eq!(unmapped.current_version, Some(next.version));
+        assert_eq!(unmapped.entries[0].segment.text, source.segments[0].text);
+        assert!(unmapped.entries[0].current_segment_ids.is_empty());
+        assert!(unmapped.audio_available);
+    }
+
+    #[test]
+    fn changed_revision_or_unrelated_generation_never_reuses_reference_ordinals() {
+        let (_temp, mut engine, id, _) = setup();
+        let source = engine.commit_transcript(&id, None, output()).unwrap();
+        let summary = engine
+            .commit_summary(&id, draft(source.clone(), None, "요약 [1]"))
+            .unwrap();
+        let edited = engine
+            .edit_transcript(&id, source.version, vec!["수정한 문장".into()])
+            .unwrap();
+        let result = engine.summary_citations(&id, &summary.id, &[1]).unwrap();
+        assert_eq!(result.entries[0].segment.text, "원문");
+        assert!(result.entries[0].current_segment_ids.is_empty());
+        engine
+            .commit_transcript(&id, Some(edited.version), output())
+            .unwrap();
+        assert!(engine
+            .summary_citations(&id, &summary.id, &[1])
+            .unwrap()
+            .entries[0]
+            .current_segment_ids
+            .is_empty());
+    }
+
+    #[test]
+    fn citation_requests_reject_invalid_ranges_and_a_late_summary_id() {
+        let (_temp, mut engine, id, _) = setup();
+        let source = engine.commit_transcript(&id, None, output()).unwrap();
+        let first = engine
+            .commit_summary(&id, draft(source.clone(), None, "요약 [1]"))
+            .unwrap();
+        for references in [vec![], vec![0], vec![2], vec![1, 2], vec![1; 33]] {
+            assert!(matches!(
+                engine.summary_citations(&id, &first.id, &references),
+                Err(CoreError::InvalidInput(_))
+            ));
+        }
+        let second = engine
+            .commit_summary(&id, draft(source, Some(first.id.clone()), "새 요약 [1]"))
+            .unwrap();
+        assert!(matches!(
+            engine.summary_citations(&id, &first.id, &[1]),
+            Err(CoreError::InvalidState(_))
+        ));
+        assert!(engine.summary_citations(&id, &second.id, &[1]).is_ok());
+    }
+
+    #[test]
+    fn missing_audio_or_replaced_session_keeps_excerpts_without_playing_another_recording() {
+        let (_temp, mut engine, id, _) = setup();
+        let source = engine.commit_transcript(&id, None, output()).unwrap();
+        let summary = engine
+            .commit_summary(&id, draft(source.clone(), None, "요약 [1]"))
+            .unwrap();
+        let audio = engine.audio_path(&id).unwrap();
+        std::fs::rename(&audio, audio.with_extension("unavailable")).unwrap();
+        let missing = engine.summary_citations(&id, &summary.id, &[1]).unwrap();
+        assert!(!missing.audio_available);
+        assert_eq!(missing.entries[0].segment.text, source.segments[0].text);
+        let meeting = &mut engine.meetings.get_mut(&id).unwrap().meeting;
+        meeting.transcript_id = None;
+        meeting.audio.as_mut().unwrap().session_id = Uuid::new_v4().to_string();
+        let replaced = engine.summary_citations(&id, &summary.id, &[1]).unwrap();
+        assert!(!replaced.audio_available);
+        assert!(replaced.current_version.is_none());
+        assert!(replaced.entries[0].current_segment_ids.is_empty());
+        engine.meetings.get_mut(&id).unwrap().meeting.audio = None;
+        assert!(
+            !engine
+                .summary_citations(&id, &summary.id, &[1])
+                .unwrap()
+                .audio_available
+        );
+    }
+
+    #[test]
+    fn citations_reject_changed_archive_identity_and_source_digest() {
+        let (_temp, mut engine, id, _) = setup();
+        let source = engine.commit_transcript(&id, None, output()).unwrap();
+        let summary = engine
+            .commit_summary(&id, draft(source, None, "요약 [1]"))
+            .unwrap();
+        let path = archived_run(&engine, &id, &summary);
+        let before = std::fs::read(&path).unwrap();
+        for kind in 0..3 {
+            let mut value: serde_json::Value = serde_json::from_slice(&before).unwrap();
+            match kind {
+                0 => value["source"]["segments"][0]["text"] = "바뀐 원문".into(),
+                1 => value["document"]["sourceVersion"]["revision"] = 99.into(),
+                _ => value["source"]["sourceSessionId"] = Uuid::new_v4().to_string().into(),
+            }
+            std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+            assert!(engine.summary_citations(&id, &summary.id, &[1]).is_err());
+        }
+    }
+
+    #[test]
+    fn direct_parent_targets_reject_changed_raw_or_current_atom_ids() {
+        let (_temp, mut engine, id, _) = setup();
+        let source = engine
+            .commit_nemotron_transcript(&id, None, crate::nemotron::tests::raw())
+            .unwrap();
+        let summary = engine
+            .commit_summary(&id, draft(source.clone(), None, "요약 [1]"))
+            .unwrap();
+        let turns = engine
+            .apply_diarization(&id, crate::nemotron::tests::posterior_draft(source))
+            .unwrap();
+        let directory = engine
+            .store
+            .root
+            .join("meetings")
+            .join(&id)
+            .join("transcripts")
+            .join(&turns.version.id);
+        let current = directory.join("current.json");
+        let before = std::fs::read(&current).unwrap();
+        let mut altered = turns;
+        altered.segments[0].id = Uuid::new_v4().to_string();
+        std::fs::write(&current, serde_json::to_vec(&altered).unwrap()).unwrap();
+        assert!(engine.summary_citations(&id, &summary.id, &[1]).is_err());
+        std::fs::write(current, before).unwrap();
+        let raw = directory.join("raw.json");
+        let mut bytes = std::fs::read(&raw).unwrap();
+        bytes.push(b' ');
+        std::fs::write(raw, bytes).unwrap();
+        assert!(engine.summary_citations(&id, &summary.id, &[1]).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn citation_archive_paths_never_follow_links() {
+        let (_temp, mut engine, id, _) = setup();
+        let source = engine.commit_transcript(&id, None, output()).unwrap();
+        let summary = engine
+            .commit_summary(&id, draft(source, None, "요약 [1]"))
+            .unwrap();
+        let path = archived_run(&engine, &id, &summary);
+        let retained = path.with_file_name("retained.json");
+        std::fs::rename(&path, &retained).unwrap();
+        std::os::unix::fs::symlink(retained, path).unwrap();
+        assert!(engine.summary_citations(&id, &summary.id, &[1]).is_err());
     }
 }

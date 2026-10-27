@@ -589,6 +589,67 @@ pub(crate) fn posterior_source(raw: &[u8]) -> Result<(String, u64, String)> {
     ))
 }
 
+pub(crate) fn direct_parent_citation_targets(
+    raw: &[u8],
+    current: &Transcript,
+    source: &Transcript,
+) -> Result<Option<BTreeMap<String, Vec<String>>>> {
+    if raw.len() > 16 * 1024 * 1024
+        || current.source.as_ref().is_none_or(|identity| {
+            identity.projector_version != WORD_PROJECTOR_VERSION
+                || identity.association != "direct"
+                || identity.raw_sha256 != hash(raw)
+        })
+    {
+        return Err(derived_invalid());
+    }
+    let output: DerivedOutput = serde_json::from_slice(raw).map_err(|_| derived_invalid())?;
+    if output.posterior.input_sample_rate == 0 {
+        return Err(derived_invalid());
+    }
+    let duration =
+        output.posterior.input_frames as f64 / f64::from(output.posterior.input_sample_rate);
+    let replay = decode_derived(
+        raw,
+        duration,
+        &current.source_session_id,
+        &current.version.id,
+    )?;
+    if replay.source != current.source
+        || replay.model != current.model
+        || replay.model_revision != current.model_revision
+        || replay.segments.len() != current.segments.len()
+        || replay
+            .segments
+            .iter()
+            .zip(&current.segments)
+            .any(|(expected, actual)| {
+                expected.id != actual.id
+                    || expected.source_index != actual.source_index
+                    || expected.start != actual.start
+                    || expected.end != actual.end
+                    || expected.original_text != actual.original_text
+            })
+    {
+        return Err(derived_invalid());
+    }
+    if output.parent.version != source.version
+        || output.parent_sha256 != crate::summary::transcript_digest(source)?
+        || serde_json::to_value(&output.parent).map_err(|_| derived_invalid())?
+            != serde_json::to_value(source).map_err(|_| derived_invalid())?
+    {
+        return Ok(None);
+    }
+    let mut targets: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (atom, segment) in output.atoms.iter().zip(&current.segments) {
+        targets
+            .entry(source.segments[atom.parent_index].id.clone())
+            .or_default()
+            .push(segment.id.clone());
+    }
+    Ok(Some(targets))
+}
+
 pub(crate) fn create_speaker_generation(
     draft: crate::SpeakerAnalysisDraft,
     parent_raw: &[u8],

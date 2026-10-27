@@ -58,7 +58,7 @@ export function mountMeetingDetail({ byId, finishEditing, onReveal = () => {}, o
     if (!current.resolved && summaryLoaded && transcriptLoaded) {
       current.resolved = true;
       if (!current.explicit) {
-        const next = recording ? 'notes' : hasSummary ? 'summary' : hasTranscript ? 'transcript' : 'notes';
+        const next = recording ? 'notes' : hasSummary || hasTranscript ? 'summary' : 'notes';
         if (next !== current.view) { rememberScroll(); current.view = next; }
       }
     }

@@ -5,7 +5,6 @@ mod agent_connection;
 mod app_menu;
 mod asr;
 mod diarization;
-mod speaker_worker;
 mod downloads;
 mod export;
 mod job_journal;
@@ -14,14 +13,15 @@ mod microphone_permission;
 mod processing;
 mod recorder_geometry;
 mod recorder_policy;
+mod speaker_worker;
 mod speech_audio;
 mod storage_space;
 mod summary;
 mod summary_failure;
 mod terminology;
 use grove_core::{
-    CoreHandle, Device, Meeting, Snapshot, SummaryView, Transcript, TranscriptHistory,
-    TranscriptSpeaker, TranscriptVersion,
+    CoreHandle, Device, Meeting, Snapshot, SummaryCitations, SummaryView, Transcript,
+    TranscriptHistory, TranscriptSpeaker, TranscriptVersion,
 };
 use processing::{Processing, Progress};
 use serde::Serialize;
@@ -1143,6 +1143,21 @@ async fn read_summary(
 }
 
 #[tauri::command]
+async fn read_summary_citations(
+    window: WebviewWindow,
+    state: tauri::State<'_, DesktopState>,
+    meeting_id: String,
+    summary_id: String,
+    references: Vec<u32>,
+) -> Result<SummaryCitations, String> {
+    require_main(&window)?;
+    on_core(state.core.clone(), move |core| {
+        core.summary_citations(&meeting_id, &summary_id, references)
+    })
+    .await
+}
+
+#[tauri::command]
 fn read_terminology_settings(
     window: WebviewWindow,
     state: tauri::State<'_, DesktopState>,
@@ -1324,7 +1339,8 @@ fn main() {
             prepare_diarization_model,
             diarize_meeting,
             summarize_meeting,
-            read_summary
+            read_summary,
+            read_summary_citations
         ])
         .setup(|app| {
             let root = app.path().app_data_dir()?;

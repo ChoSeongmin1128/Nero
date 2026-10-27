@@ -26,7 +26,9 @@ Machine-local installation and preservation receipts remain private.
 - Summary input freezes meeting notes with transcript/current-summary identity. Notes
   have their own hash, archive, CAS and stale checks; legacy transcript hashes keep their
   meaning. Whole/map/merge prompts treat notes as reference data, not meeting evidence.
-- Folder drag revalidates placement/destination after edit flush. Windows HTML drag uses
+- Folder drag uses a bounded single-line title preview, with a count for multiple
+  meetings. It omits full row metadata, clears temporary DOM on completion/cancel,
+  and revalidates placement/destination after edit flush. Windows HTML drag uses
   `dragDropEnabled: false`; import keeps the native picker. Recorder physical placement
   recovers after display changes while preserving visible user placement and focus policy.
 
@@ -106,7 +108,7 @@ Machine-local installation and preservation receipts remain private.
   remains outside the single scrolling body. Completed meeting headers/player/toolbars
   are compact; settings keeps fixed navigation and dimensions across categories.
 - Shared summary rendering separates headings, paragraphs and lists, escapes raw markup,
-  and retains only validated source controls. Korean text wraps at word boundaries with
+  and groups frozen source references into compact evidence controls. Korean text wraps at word boundaries with
   a fallback for long unspaced text. Month navigation preserves a keyboard date entry
   without changing the selected date until confirmation. Familiar secondary actions
   (copy, search, settings, close and search navigation) use shared icons with Korean
@@ -116,7 +118,14 @@ Machine-local installation and preservation receipts remain private.
   header/recorder/player outside the scrolling content. Initial result loads choose a
   default once; explicit user choices, edits, playback and per-panel reading positions
   survive tab changes. Result panels never hide themselves. Scroll restoration waits
-  for content readiness, and valid summary citations reveal the referenced utterance.
+  for content readiness. Completed recordings with text open the summary view by
+  default; explicit user choices remain stable. Hover/focus/click on a summary
+  reference reads the summary archive, not the current transcript index. Only a
+  verified exact source or direct-parent word-turn lineage permits navigation to
+  current utterance IDs. Source navigation does not play audio; playback is a
+  separate action, and a return control restores the summary position/focus.
+  Stale summaries retain their frozen evidence. Invalid/unmapped archives never
+  fall back to ordinal/time proximity.
   See `docs/meeting-library-and-speakers.md` and the canonical `.content-tabs` example.
 - Meeting management now includes single-folder placement, batch move, trash/restore,
   permanent deletion with tombstone recovery, and content search. Speaker names and

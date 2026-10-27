@@ -7,6 +7,7 @@ import { mountSpeakers } from './speakers-ui.js';
 import { createMeetingSearch, mountDocumentSearch } from './meeting-search.js';
 import { mountTranscriptActions } from './transcript-actions.js';
 import { mountMeetingDetail } from './meeting-detail-ui.js';
+import { mountSummaryEvidence } from './summary-evidence.js';
 
 applySystemAppearance();
 const byId = (id) => document.getElementById(id);
@@ -33,6 +34,7 @@ const meetingTimestamp = meeting => meeting.recordedAt ?? meeting.createdAt;
 let pendingQuitSessionId = null;
 let selectionRequest = 0;
 let speakerReplay = null;
+let summaryEvidence = null, summaryReturn = null;
 const copyFeedbackTimers = new Map();
 const processingActions = new Map();
 const processingErrors = new Map();
@@ -229,7 +231,7 @@ function render() {
   byId('library-screen').hidden = setupVisible || !state.connected || (!modelsReady() && !state.snapshot.meetings.length) || (!state.libraryOpen && Boolean(meeting));
   byId('welcome').hidden = !byId('library-screen').hidden || setupVisible || Boolean(meeting);
   byId('meeting-detail').hidden = setupVisible || state.libraryOpen || !meeting;
-  if (!meeting) { detail.update({ id: null }); return; }
+  if (!meeting) { detail.update({ id: null }); summaryEvidence?.reset(); return; }
   renderMeetingDates(meeting);
   if (!state.draft?.dirty && !state.draft?.saving && document.activeElement !== byId('meeting-title') && document.activeElement !== byId('meeting-notes')) {
     byId('meeting-title').value = meeting.title;
@@ -240,6 +242,8 @@ function render() {
   renderTranscript(meeting);
   renderSummary(meeting);
   detail.update({ id: byId('meeting-detail').hidden ? null : meeting.id, recording: Boolean(activeSession()?.meetingId === meeting.id), summaryLoaded: state.summaryLoaded, transcriptLoaded: state.transcriptLoaded, hasSummary: Boolean(state.summary?.document), hasTranscript: Boolean(state.transcriptDraft?.doc?.segments?.length) });
+  if (byId('meeting-detail').hidden) summaryEvidence?.reset();
+  updateSummaryReturn();
   renderNotesSearch();
   documentSearch.refresh();
   speakers.syncPlayback?.();
@@ -1011,7 +1015,7 @@ function renderSummary(meeting) {
   let message = '';
   if (!state.summaryLoaded) message = '회의록 불러오는 중';
   else if (state.summaryLoadError) message = '회의록을 불러오지 못했습니다.';
-  else if (doc && stale) message = '회의 내용이 변경되었습니다. 다시 요약해 주세요.';
+  else if (doc && stale) message = '이전 내용으로 만든 요약';
   else if (ownJob || failed) message = '';
   else if (!doc && !hasTranscript) message = '음성 기록을 변환한 뒤 요약할 수 있습니다.';
   else if (!doc && !progress.summarySupported) message = '이 기기에서는 요약을 사용할 수 없습니다.';
@@ -1024,10 +1028,10 @@ function renderSummary(meeting) {
   if (key !== state.summaryKey) {
     state.summaryKey = key;
     byId('summary-content').innerHTML = globalThis.GroveUI.summaryDocument(doc?.text || '', {
-      sources: state.transcriptLoaded && !stale ? (state.transcriptDraft?.doc?.segments || []).map(segment => segment.text) : [],
       searchQuery: documentSearch.query(),
     });
   }
+  summaryEvidence?.update();
 }
 async function loadSummary(id) {
   const request = ++state.summaryLoadId;
@@ -1079,17 +1083,18 @@ function seekRecording(seconds) {
   if (player.getAttribute('src')) { player.currentTime = seconds; player.play().catch(showError); }
 }
 
-byId('summary-content').addEventListener('click', async (event) => {
-  state.pendingSearchIntent = null;
-  const reference = event.target.closest('[data-summary-seek]');
-  if (!reference || summaryIsStale()) return;
-  const index = Number(reference.dataset.summarySeek), meetingId = state.selectedId;
-  if (!await detail.select('transcript') || state.selectedId !== meetingId || summaryIsStale()) return;
-  const segment = state.transcriptDraft?.doc?.segments?.[index];
-  if (!segment) return;
-  const row = byId('transcript-rows').querySelector(`[data-transcript-row="${index}"]`);
-  row?.scrollIntoView({ block: 'center', behavior: 'smooth' }); row?.focus({ preventScroll: true });
-  seekRecording(segment.start);
+const sameTranscriptVersion = (a, b) => Boolean(a && b && a.id === b.id && a.revision === b.revision);
+function updateSummaryReturn() {
+  if (summaryReturn && (summaryReturn.meetingId !== state.selectedId || summaryReturn.summaryId !== state.summary?.document?.id)) summaryReturn = null;
+  byId('return-to-summary').hidden = !summaryReturn || detail.active() !== 'transcript';
+}
+byId('return-to-summary').addEventListener('click', async () => {
+  const origin = summaryReturn;
+  if (!origin || origin.meetingId !== state.selectedId || origin.summaryId !== state.summary?.document?.id) return;
+  if (await detail.select('summary') && origin.meetingId === state.selectedId && origin.summaryId === state.summary?.document?.id) {
+    summaryReturn = null; updateSummaryReturn();
+    if (!summaryEvidence.restoreFocus()) byId('detail-summary-tab').focus({ preventScroll: true });
+  }
 });
 
 byId('import-audio').addEventListener('click', () => run(() => finishEditing(async () => {
@@ -1218,10 +1223,37 @@ byId('quit-dialog').addEventListener('click', (event) => {
 byId('quit-dialog').addEventListener('close', () => { pendingQuitSessionId = null; });
 
 const detail = mountMeetingDetail({ byId, finishEditing, onError: showError, onReveal(view) {
+  summaryEvidence?.reset();
+  updateSummaryReturn();
   if (view === 'transcript') byId('transcript-rows').querySelectorAll('textarea').forEach(resizeTranscriptEditor);
   for (const kind of ['transcript', 'summary']) byId(`${kind}-export-menu`).open = false;
   globalThis.GroveControls.close?.();
 } });
+summaryEvidence = mountSummaryEvidence({
+  container: byId('summary-content'),
+  getContext: () => ({ meetingId: state.selectedId, summaryId: state.summary?.document?.id, currentVersion: state.transcriptDraft?.doc?.version, dirty: Boolean(state.transcriptDraft?.dirty), canPlay: Boolean(byId('audio-player').getAttribute('src')) }),
+  loadCitations: bridge.readSummaryCitations,
+  onError: error => console.warn('Summary evidence unavailable', error),
+  async onNavigate(entry, response, context) {
+    const valid = () => context.meetingId === state.selectedId && context.summaryId === state.summary?.document?.id && !state.transcriptDraft?.dirty
+      && sameTranscriptVersion(response.currentVersion, state.transcriptDraft?.doc?.version)
+      && entry.currentSegmentIds?.length && entry.currentSegmentIds.every(id => state.transcriptDraft.doc.segments.some(segment => segment.id === id));
+    if (!valid()) return false;
+    state.pendingSearchIntent = null;
+    if (!await detail.select('transcript') || !valid()) return false;
+    const index = state.transcriptDraft.doc.segments.findIndex(segment => segment.id === entry.currentSegmentIds[0]);
+    const row = byId('transcript-rows').querySelector(`[data-transcript-row="${index}"]`);
+    if (!row) return false;
+    summaryReturn = { meetingId: context.meetingId, summaryId: context.summaryId }; updateSummaryReturn();
+    row.scrollIntoView({ block: 'center', behavior: 'smooth' }); row.focus({ preventScroll: true });
+    return true;
+  },
+  onPlay(entry, response, context) {
+    if (context.meetingId !== state.selectedId || context.summaryId !== state.summary?.document?.id || !response.audioAvailable
+      || response.sourceSessionId !== currentMeeting()?.audio?.sessionId || !Number.isFinite(entry.segment?.start) || entry.segment.start < 0) return;
+    speakerReplay = null; seekRecording(entry.segment.start);
+  },
+});
 for (const view of ['summary', 'transcript', 'notes']) {
   for (const event of ['click', 'keydown']) byId(`detail-${view}-tab`).addEventListener(event, () => { state.pendingSearchIntent = null; });
 }
