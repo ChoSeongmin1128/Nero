@@ -993,47 +993,17 @@ button.danger:hover:not(:disabled), button.danger-text:hover:not(:disabled) { co
   .speaker-selection-header { flex-wrap: wrap; }
 }
 
-/* Frozen summary evidence uses the same surface and typography roles as documents. */
-.summary-document .source-reference {
-  position: relative;
-  margin-inline: 3px;
-  color: var(--text-secondary);
-  white-space: nowrap;
-}
-.summary-document .source-reference:hover,
-.summary-document .source-reference[aria-expanded="true"] {
-  color: var(--text);
-  background: var(--hover);
-}
-.summary-evidence {
-  position: fixed;
-  z-index: 80;
-  width: min(420px, calc(100vw - 16px));
-  max-height: min(320px, calc(100vh - 16px));
-  overflow: auto;
-  overscroll-behavior: contain;
-  padding: 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface);
-  color: var(--text);
-  box-shadow: 0 4px 16px var(--shadow-soft);
-  font: var(--weight-regular) var(--text-body-size)/var(--leading-ui) var(--font-ui);
-  overflow-wrap: anywhere;
-}
+/* Linked evidence remains within the transcript workspace. */
+.summary-document .source-reference { display: inline-flex; align-items: center; justify-content: center; vertical-align: middle; min-height: 24px; width: 24px; padding: 3px; position: relative; margin-inline: 3px; color: var(--text-secondary); white-space: nowrap; }
+.summary-document .source-reference:hover, .summary-document .source-reference[aria-pressed="true"] { color: var(--text); background: var(--hover); }
+.summary-evidence { flex: none; min-width: 0; padding: 0 16px 12px; color: var(--text); overflow-wrap: anywhere; }
 .summary-evidence[hidden] { display: none; }
-.summary-evidence-heading,
-.summary-evidence-meta,
-.summary-evidence-actions { display: flex; align-items: center; gap: 8px; }
-.summary-evidence-heading { justify-content: space-between; gap: 12px; }
-.summary-evidence-heading strong { font-size: var(--text-caption-size); font-weight: var(--weight-medium); color: var(--text-secondary); }
-.summary-evidence-heading > button { flex: none; }
-.summary-evidence-entry { padding-top: 12px; }
-.summary-evidence-entry + .summary-evidence-entry { border-top: 1px solid var(--border); margin-top: 12px; }
-.summary-evidence-meta { color: var(--text-secondary); font-size: var(--text-caption-size); flex-wrap: wrap; }
+.summary-evidence-navigation { display: flex; align-items: center; gap: 4px; font-size: var(--text-caption-size); color: var(--text-secondary); }
+.summary-evidence-navigation > span { margin-right: auto; }
+.summary-evidence-entry { max-height: 180px; overflow: auto; padding: 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+.summary-evidence-entry strong, .summary-evidence-meta { font-size: var(--text-caption-size); color: var(--text-secondary); }
 .summary-evidence-text { margin-top: 6px; white-space: pre-wrap; line-height: var(--leading-reading); }
-.summary-evidence-actions { margin-top: 8px; flex-wrap: wrap; }
-.summary-evidence-message { padding-top: 8px; color: var(--text-secondary); }
+.summary-evidence-message { color: var(--text-secondary); }
 .summary-evidence button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .meeting-drag-preview {
   position: fixed;
@@ -1055,3 +1025,5 @@ button.danger:hover:not(:disabled), button.danger-text:hover:not(:disabled) { co
 .meeting-drag-preview > svg { flex: none; width: 16px; height: 16px; }
 
 .summary-document .source-reference:has(.search-match.is-current) { outline: 2px solid var(--focus); outline-offset: 1px; }
+
+.summary-document .source-reference svg { width: 16px; height: 16px; }

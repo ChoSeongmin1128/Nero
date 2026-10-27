@@ -22,7 +22,7 @@ body { overflow: hidden; }
 .meeting-item-meta .recording { color: var(--recording-text); }
 .list-empty { padding: 14px 8px; color: var(--text-secondary); font-size: var(--text-label-size); text-align: center; }
 .library-footer { display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; border-top: 1px solid var(--border); color: var(--text-secondary); font-size: var(--text-caption-size); }
-.main-content { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--surface); }
+.main-content { container-type: inline-size; container-name: detail; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--surface); }
 .app-error { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 16px 24px 0; }
 .app-error > span { flex: 1; min-width: 150px; overflow-wrap: anywhere; }
 .welcome { display: flex; flex: 1; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 14px; padding: 32px; }
@@ -31,7 +31,8 @@ body { overflow: hidden; }
 .welcome-icon { color: var(--accent); background: var(--accent-subtle); padding: 16px; border-radius: var(--radius); }
 .welcome-icon svg { width: 28px; height: 28px; display: block; }
 .welcome > button { margin-top: 8px; }
-.meeting-detail { display: flex; flex: 1; flex-direction: column; min-height: 0; overflow: hidden; padding: 12px max(24px, calc((100% - var(--meeting-content-width)) / 2)) 0; }
+.meeting-detail { display: flex; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
+.detail-primary { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: 12px 24px 0; }
 .detail-header { flex: none; padding-bottom: 4px; }
 .detail-title-row { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .detail-title-row > .meeting-title { flex: 1; }
@@ -77,8 +78,6 @@ body { overflow: hidden; }
 .recording-section:has(#audio-region:not([hidden])) .recording-toolbar:has(#recording-controls:empty) { display: none; }
 .recording-section:has(#audio-region:not([hidden])):has(#recording-controls:empty) { padding: 8px 10px; margin-top: 4px; }
 .recording-section:has(#recording-controls:empty) .audio-controls { margin-top: 0; }
-.meeting-detail > .content-tabs { flex: none; margin-top: 6px; }
-.meeting-detail > .content-tabs [role="tab"] { min-height: 36px; padding-block: 6px; }
 .detail-panels { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
 .detail-panel { flex: 1; min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; scroll-padding-top: 64px; padding: 0 12px 20px 0; }
 .detail-panel:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
@@ -191,7 +190,7 @@ html.recorder-document { background: transparent; }
 .setup-actions .primary { min-width: 108px; min-height: 36px; padding: 6px 16px; }
 #setup-back { order: -1; margin-right: auto; }
 #save-transcript:disabled { display: none; }
-@media (max-width: 900px) { .workspace { grid-template-columns: 200px minmax(0, 1fr); } .setup-screen { padding: 24px; } .meeting-detail { padding: 16px 24px 0; } }
+@media (max-width: 900px) { .workspace { grid-template-columns: 200px minmax(0, 1fr); } .setup-screen { padding: 24px; } .detail-primary { padding: 16px 24px 0; } }
 .workspace[data-onboarding="true"] { grid-template-columns: minmax(0, 1fr); }
 .workspace[data-onboarding="true"] .library { display: none; }
 .setup-summary-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-left: auto; }
@@ -304,6 +303,36 @@ html.recorder-document { background: transparent; }
   .meeting-entry.is-selected { border-color: Highlight; }
 }
 @media (max-height: 700px) {
-  .meeting-detail { padding-top: 10px; }
+  .detail-primary { padding-top: 10px; }
   .audio-region p { margin-top: 4px; }
 }
+
+.detail-inspector { display: flex; flex-direction: column; flex: 0 0 clamp(312px, 34%, 420px); min-width: 0; min-height: 0; background: var(--surface-secondary); border-left: 1px solid var(--border); }
+.inspector-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 16px; flex: none; }
+.inspector-header h2 { font-size: var(--text-body-size); }
+.inspector-back { display: none; }
+.detail-inspector .detail-panel { padding: 0; }
+.detail-inspector .transcript-section { display: flex; flex-direction: column; overflow: hidden; }
+.detail-inspector .transcript-heading { position: static; flex: none; padding: 4px 16px 10px; background: transparent; }
+.detail-inspector .transcript-heading > .row { justify-content: flex-start; gap: 4px; margin: 0; }
+.transcript-scroll { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 0 16px 24px; }
+.detail-inspector .notes-section { padding: 0 16px 16px; }
+.detail-inspector .document-search { flex: none; margin: 0 16px 10px; flex-wrap: wrap; }
+.detail-inspector .document-search label { min-width: 100px; }
+[data-citation-active="true"] { background: var(--surface-tint-strong); box-shadow: inset 2px 0 0 var(--accent); border-radius: var(--radius); }
+#inspector-audio-toggle, .inspector-audio-status { display: none; }
+@container detail (max-width: 759px) {
+  .meeting-detail { position: relative; }
+  .meeting-detail[data-inspector="transcript"] > .detail-primary, .meeting-detail[data-inspector="notes"] > .detail-primary { visibility: hidden; pointer-events: none; }
+  .detail-inspector { position: absolute; inset: 0; width: 100%; border-left: 0; }
+  .inspector-back { display: inline; }
+  #inspector-audio-toggle { display: inline-flex; }
+  .inspector-audio-status:not([hidden]) { display: block; }
+  .inspector-close-icon { display: none; }
+  #detail-inspector-close { width: auto; }
+}
+
+.detail-library-actions { flex-wrap: wrap; }
+.detail-library-actions > .row { flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
+.detail-panel-toolbar > h2 { font-size: var(--text-body-size); margin-right: auto; }
+.inspector-header > h2 { margin-right: auto; }

@@ -311,7 +311,7 @@ test('loading and empty results disable movement, while Escape removes highlight
   assert.equal(page.controller.query(), '');
   assert.equal(page.node('document-query').value, '');
   assert.equal(page.node('document-search').hidden, true);
-  assert.equal(page.focused(), 'document-search-toggle');
+  assert.equal(page.focused(), 'inspector-search-toggle');
   assert.equal(page.marks().length, 0);
 });
 

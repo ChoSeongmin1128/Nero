@@ -16,9 +16,9 @@ export function connectAudioPlayer(document, icons = globalThis.GroveIcons, cont
   const audio = get('audio-player');
   if (!audio) return;
   const toggle = get('audio-toggle'), seek = get('audio-seek'), mute = get('audio-mute'), speed = get('audio-speed');
-  const status = get('audio-player-status');
+  const status = get('audio-player-status'), inspectorToggle = get('inspector-audio-toggle'), inspectorStatus = get('inspector-audio-status');
   let metadataReady = audio.readyState >= 1, generation = 0, lastIcon;
-  function clearStatus() { status.textContent = ''; status.hidden = true; }
+  function clearStatus() { status.textContent = ''; status.hidden = true; if (inspectorStatus) { inspectorStatus.textContent = ''; inspectorStatus.hidden = true; } }
   function render() {
     const ready = metadataReady && !!audio.getAttribute('src') && !audio.error;
     const duration = ready && Number.isFinite(audio.duration) ? Math.max(0, audio.duration) : 0;
@@ -30,7 +30,10 @@ export function connectAudioPlayer(document, icons = globalThis.GroveIcons, cont
     seek.setAttribute('aria-valuetext', `${spokenTime(current)} / ${spokenTime(duration)}`);
     get('audio-current').textContent = formatAudioTime(current);
     get('audio-duration').textContent = formatAudioTime(duration);
-    get('audio-toggle-label').textContent = playing ? '일시정지' : audio.ended && ready ? '다시 재생' : '재생';
+    const label = playing ? '일시정지' : audio.ended && ready ? '다시 재생' : '재생';
+    get('audio-toggle-label').textContent = label;
+    if (inspectorToggle) { inspectorToggle.disabled = !ready; inspectorToggle.textContent = label; inspectorToggle.setAttribute('aria-label', `녹음 ${label}`); }
+    if (inspectorStatus) { inspectorStatus.textContent = status.textContent; inspectorStatus.hidden = status.hidden; }
     const icon = playing ? 'pause' : 'play';
     if (lastIcon !== icon) { get('audio-toggle-icon').innerHTML = icons?.(icon) || ''; lastIcon = icon; }
     mute.setAttribute('aria-pressed', String(audio.muted));
@@ -47,7 +50,7 @@ export function connectAudioPlayer(document, icons = globalThis.GroveIcons, cont
   for (const name of ['timeupdate', 'seeking', 'seeked', 'play', 'pause', 'ended', 'volumechange']) audio.addEventListener(name, render);
   audio.addEventListener('ratechange', renderControls);
   audio.addEventListener('error', () => { generation += 1; metadataReady = false; clearStatus(); renderControls(); });
-  toggle.addEventListener('click', async () => {
+  const togglePlayback = async () => {
     if (toggle.disabled) return;
     clearStatus();
     if (!audio.paused && !audio.ended) { audio.pause(); return; }
@@ -60,7 +63,9 @@ export function connectAudioPlayer(document, icons = globalThis.GroveIcons, cont
       status.textContent = '재생을 시작하지 못했습니다. 다시 재생해 주세요.';
       status.hidden = false; render();
     }
-  });
+  };
+  toggle.addEventListener('click', togglePlayback);
+  inspectorToggle?.addEventListener('click', togglePlayback);
   seek.addEventListener('input', () => {
     if (seek.disabled) return;
     audio.currentTime = Math.min(audio.duration, Math.max(0, Number(seek.value)));

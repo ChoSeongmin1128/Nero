@@ -10,7 +10,7 @@ function fixture() {
     setAttribute(name, value) { this.attributes.set(name, value); }
     getAttribute(name) { return this.attributes.get(name); }
   }
-  const nodes = Object.fromEntries(['audio-player', 'audio-toggle', 'audio-seek', 'audio-mute', 'audio-speed', 'audio-player-status', 'audio-current', 'audio-duration', 'audio-toggle-label', 'audio-toggle-icon'].map(id => [id, new Element()]));
+  const nodes = Object.fromEntries(['audio-player', 'audio-toggle', 'audio-seek', 'audio-mute', 'audio-speed', 'audio-player-status', 'audio-current', 'audio-duration', 'audio-toggle-label', 'audio-toggle-icon', 'inspector-audio-toggle', 'inspector-audio-status'].map(id => [id, new Element()]));
   const audio = nodes['audio-player'];
   Object.assign(audio, { readyState: 0, paused: true, ended: false, error: null, duration: NaN, currentTime: 0, playbackRate: 1, muted: false });
   audio.play = async () => { audio.paused = false; await audio.emit('play'); };
@@ -84,4 +84,19 @@ test('time formatting supports long recordings and unknown duration', () => {
   assert.equal(formatAudioTime(NaN), '0:00');
   assert.equal(formatAudioTime(Infinity), '0:00');
   assert.equal(formatAudioTime(-1), '0:00');
+});
+
+test('compact inspector playback shares media state and can pause playback started from a citation', async () => {
+  const f = fixture(), compact = f.nodes['inspector-audio-toggle'];
+  assert.equal(compact.disabled, true); await f.load(); assert.equal(compact.disabled, false);
+  f.audio.currentTime = 23; await f.audio.play();
+  assert.equal(compact.textContent, '일시정지');
+  await compact.emit('click'); assert.equal(f.audio.paused, true); assert.equal(f.audio.currentTime, 23); assert.equal(f.get('toggle-label').textContent, '재생');
+  await compact.emit('click'); assert.equal(f.audio.paused, false); assert.equal(f.get('toggle-label').textContent, '일시정지');
+  f.audio.readyState = 0; await f.audio.emit('emptied'); assert.equal(compact.disabled, true);
+});
+test('compact playback shows the same failed-play feedback and clears it on a source replacement', async () => {
+  const f = fixture(); await f.load(); f.audio.play = async () => { throw Error('unsupported'); };
+  await f.nodes['inspector-audio-toggle'].emit('click'); assert.equal(f.nodes['inspector-audio-status'].textContent, f.get('player-status').textContent); assert.equal(f.nodes['inspector-audio-status'].hidden, false);
+  await f.load(60); assert.equal(f.nodes['inspector-audio-status'].hidden, true);
 });

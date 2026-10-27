@@ -34,7 +34,7 @@ const meetingTimestamp = meeting => meeting.recordedAt ?? meeting.createdAt;
 let pendingQuitSessionId = null;
 let selectionRequest = 0;
 let speakerReplay = null;
-let summaryEvidence = null, summaryReturn = null;
+let summaryEvidence = null;
 const copyFeedbackTimers = new Map();
 const processingActions = new Map();
 const processingErrors = new Map();
@@ -243,7 +243,6 @@ function render() {
   renderSummary(meeting);
   detail.update({ id: byId('meeting-detail').hidden ? null : meeting.id, recording: Boolean(activeSession()?.meetingId === meeting.id), summaryLoaded: state.summaryLoaded, transcriptLoaded: state.transcriptLoaded, hasSummary: Boolean(state.summary?.document), hasTranscript: Boolean(state.transcriptDraft?.doc?.segments?.length) });
   if (byId('meeting-detail').hidden) summaryEvidence?.reset();
-  updateSummaryReturn();
   renderNotesSearch();
   documentSearch.refresh();
   speakers.syncPlayback?.();
@@ -349,6 +348,7 @@ async function selectMeeting(id, searchIntent = null) {
       const meeting = state.snapshot.meetings.find(item => item.id === id);
       if (!meeting || meeting.deletedAt) return;
       const changed = state.selectedId !== id;
+      detail.rememberScroll();
       state.libraryOpen = false;
       speakers.reset(); transcriptActions.reset(); documentSearch.reset();
       state.setupRequested = false; state.setupFromSettings = false;
@@ -658,7 +658,7 @@ byId('terminology-enabled').addEventListener('change', changeTerminologyEnabled)
 byId('settings-microphone').addEventListener('change', changeMicrophone);
 byId('settings-refresh-devices').addEventListener('click', async () => { state.settingsError = ''; try { await refreshDevices(); } catch { state.settingsError = '마이크 목록을 불러오지 못했습니다. 다시 시도해 주세요.'; renderSettings(); } });
 byId('models').addEventListener('click', () => run(async () => { globalThis.GroveControls.close?.(); byId('settings-dialog').close(); await openSetup(true); }));
-byId('setup-back').addEventListener('click', () => { const settings = state.setupFromSettings, returnId = state.setupReturnId; state.setupRequested = false; state.setupFromSettings = false; render(); if (settings) void openSettings('models'); else { const origin = byId(returnId || 'settings'); const fallback = !byId('summarize').hidden && !byId('summarize').disabled ? byId('summarize') : byId('detail-summary-tab'); (origin && !origin.hidden && !origin.disabled ? origin : fallback)?.focus({ preventScroll: true }); } });
+byId('setup-back').addEventListener('click', () => { const settings = state.setupFromSettings, returnId = state.setupReturnId; state.setupRequested = false; state.setupFromSettings = false; render(); if (settings) void openSettings('models'); else { const origin = byId(returnId || 'settings'); const fallback = !byId('summarize').hidden && !byId('summarize').disabled ? byId('summarize') : byId('detail-transcript-open'); (origin && !origin.hidden && !origin.disabled ? origin : fallback)?.focus({ preventScroll: true }); } });
 byId('setup-download').addEventListener('click', () => run(async () => { state.setupRequested = true; await acceptProcessing(await bridge.prepareMeetingModels(Boolean(byId('setup-summary-option').checked) && !state.processing.summaryReady)); }));
 byId('setup-download-summary').addEventListener('click', () => run(async () => { state.setupRequested = true; await acceptProcessing(await bridge.prepareSummaryModel()); }));
 byId('setup-cancel').addEventListener('click', () => { void cancelProcessing(pendingJob(state.processing, { models: true })?.id); });
@@ -912,10 +912,10 @@ function renderTranscript(meeting) {
   const key = transcriptRenderKey();
   if (key !== state.transcriptKey) {
     state.transcriptKey = key;
-    const scroll = byId('transcript-section').scrollTop;
+    const scroll = byId('transcript-scroll').scrollTop;
     byId('transcript-rows').innerHTML = (draft?.doc?.segments || []).map((segment,index) => globalThis.GroveUI.transcriptRow({ index, time: duration(segment.start * 1000), start: segment.start, text: segment.text, originalText: segment.originalText, editing: state.transcriptEditing === index, speaker: speakers.label(segment), speakerVisible: true, searchQuery: documentSearch.query(), disabled: ownJob || state.editLocks > 0 })).join('');
     byId('transcript-rows').querySelectorAll('textarea').forEach(resizeTranscriptEditor);
-    byId('transcript-section').scrollTop = scroll;
+    byId('transcript-scroll').scrollTop = scroll;
   }
   byId('transcript-rows').querySelectorAll('textarea').forEach((input) => { input.readOnly = ownJob || state.editLocks > 0; });
   byId('transcript-rows').querySelectorAll('[data-transcript-edit], [data-transcript-done], [data-transcript-cancel], [data-speaker-edit]').forEach(input => { input.disabled = ownJob || state.editLocks > 0; });
@@ -1084,19 +1084,6 @@ function seekRecording(seconds) {
 }
 
 const sameTranscriptVersion = (a, b) => Boolean(a && b && a.id === b.id && a.revision === b.revision);
-function updateSummaryReturn() {
-  if (summaryReturn && (summaryReturn.meetingId !== state.selectedId || summaryReturn.summaryId !== state.summary?.document?.id)) summaryReturn = null;
-  byId('return-to-summary').hidden = !summaryReturn || detail.active() !== 'transcript';
-}
-byId('return-to-summary').addEventListener('click', async () => {
-  const origin = summaryReturn;
-  if (!origin || origin.meetingId !== state.selectedId || origin.summaryId !== state.summary?.document?.id) return;
-  if (await detail.select('summary') && origin.meetingId === state.selectedId && origin.summaryId === state.summary?.document?.id) {
-    summaryReturn = null; updateSummaryReturn();
-    if (!summaryEvidence.restoreFocus()) byId('detail-summary-tab').focus({ preventScroll: true });
-  }
-});
-
 byId('import-audio').addEventListener('click', () => run(() => finishEditing(async () => {
   if (!modelsReady()) return openSetup();
   const progress = await bridge.importAudio();
@@ -1223,40 +1210,44 @@ byId('quit-dialog').addEventListener('click', (event) => {
 byId('quit-dialog').addEventListener('close', () => { pendingQuitSessionId = null; });
 
 const detail = mountMeetingDetail({ byId, finishEditing, onError: showError, onReveal(view) {
-  summaryEvidence?.reset();
-  updateSummaryReturn();
+  if (view !== 'transcript') summaryEvidence?.reset();
   if (view === 'transcript') byId('transcript-rows').querySelectorAll('textarea').forEach(resizeTranscriptEditor);
   for (const kind of ['transcript', 'summary']) byId(`${kind}-export-menu`).open = false;
   globalThis.GroveControls.close?.();
 } });
 summaryEvidence = mountSummaryEvidence({
-  container: byId('summary-content'),
+  container: byId('summary-content'), panel: byId('summary-evidence'),
+  onOpen: () => detail.select('transcript'),
+  onReset: () => byId('transcript-rows').querySelectorAll('[data-citation-active]').forEach(node => node.removeAttribute('data-citation-active')),
   getContext: () => ({ meetingId: state.selectedId, summaryId: state.summary?.document?.id, currentVersion: state.transcriptDraft?.doc?.version, dirty: Boolean(state.transcriptDraft?.dirty), canPlay: Boolean(byId('audio-player').getAttribute('src')) }),
   loadCitations: bridge.readSummaryCitations,
   onError: error => console.warn('Summary evidence unavailable', error),
   async onNavigate(entry, response, context) {
-    const valid = () => context.meetingId === state.selectedId && context.summaryId === state.summary?.document?.id && !state.transcriptDraft?.dirty
+    const valid = () => context.meetingId === state.selectedId && context.summaryId === state.summary?.document?.id && !context.dirty && !state.transcriptDraft?.dirty
+      && sameTranscriptVersion(context.currentVersion, state.transcriptDraft?.doc?.version)
       && sameTranscriptVersion(response.currentVersion, state.transcriptDraft?.doc?.version)
       && entry.currentSegmentIds?.length && entry.currentSegmentIds.every(id => state.transcriptDraft.doc.segments.some(segment => segment.id === id));
     if (!valid()) return false;
     state.pendingSearchIntent = null;
-    if (!await detail.select('transcript') || !valid()) return false;
-    const index = state.transcriptDraft.doc.segments.findIndex(segment => segment.id === entry.currentSegmentIds[0]);
-    const row = byId('transcript-rows').querySelector(`[data-transcript-row="${index}"]`);
-    if (!row) return false;
-    summaryReturn = { meetingId: context.meetingId, summaryId: context.summaryId }; updateSummaryReturn();
-    row.scrollIntoView({ block: 'center', behavior: 'smooth' }); row.focus({ preventScroll: true });
+    if (detail.active() !== 'transcript' || !valid()) return false;
+    const rows = entry.currentSegmentIds.map(id => {
+      const index = state.transcriptDraft.doc.segments.findIndex(segment => segment.id === id);
+      return byId('transcript-rows').querySelector(`[data-transcript-row="${index}"]`);
+    });
+    if (rows.some(row => !row)) return false;
+    byId('transcript-rows').querySelectorAll('[data-citation-active]').forEach(node => node.removeAttribute('data-citation-active'));
+    rows.forEach(row => row.setAttribute('data-citation-active', 'true'));
+    rows[0].scrollIntoView({ block: 'center', behavior: 'smooth' }); rows[0].focus({ preventScroll: true });
     return true;
   },
   onPlay(entry, response, context) {
-    if (context.meetingId !== state.selectedId || context.summaryId !== state.summary?.document?.id || !response.audioAvailable
+    if (context.meetingId !== state.selectedId || context.summaryId !== state.summary?.document?.id || context.dirty !== Boolean(state.transcriptDraft?.dirty)
+      || !sameTranscriptVersion(context.currentVersion, state.transcriptDraft?.doc?.version) || !response.audioAvailable
       || response.sourceSessionId !== currentMeeting()?.audio?.sessionId || !Number.isFinite(entry.segment?.start) || entry.segment.start < 0) return;
     speakerReplay = null; seekRecording(entry.segment.start);
   },
 });
-for (const view of ['summary', 'transcript', 'notes']) {
-  for (const event of ['click', 'keydown']) byId(`detail-${view}-tab`).addEventListener(event, () => { state.pendingSearchIntent = null; });
-}
+for (const view of ['transcript', 'notes']) byId(`detail-${view}-open`).addEventListener('click', () => { state.pendingSearchIntent = null; summaryEvidence?.reset(); });
 const documentSearch = mountDocumentSearch({ byId, prepare: () => finishEditing(() => true), onError: showError, selectView: view => detail.select(view), ready: () => state.summaryLoaded && state.transcriptLoaded, renderContent() {
   const meeting = currentMeeting(); if (meeting) { renderTranscript(meeting); renderSummary(meeting); renderNotesSearch(); }
 } });

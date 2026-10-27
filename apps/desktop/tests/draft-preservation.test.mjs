@@ -24,6 +24,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
   const elements = new Map();
   const element = (id) => {
     if (!elements.has(id)) elements.set(id, {
+      append(child) { child.parentNode = this; }, insertBefore(child) { child.parentNode = this; },
       id, value: '', dataset: {}, readOnly: false, disabled: false, hidden: false,
       innerHTML: '', textContent: '', scrollTop: 0, listeners: new Map(),
       addEventListener(name, callback) { this.listeners.set(name, callback); },
@@ -108,7 +109,9 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     requestQuit() { const pending = deferred(); exits.push({ type: 'quit', pending }); return pending.promise; },
     hideMain() { const pending = deferred(); exits.push({ type: 'close', pending }); return pending.promise; },
   };
+  const copied = [];
   const context = vm.createContext({
+    navigator: { clipboard: { writeText: async text => { copied.push(text); } } },
     document, testBridge: bridge, localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
     GroveControls: { enhanceAll() {} },
     setTimeout: () => 1, clearTimeout() {}, requestAnimationFrame: (callback) => callback(),
@@ -137,11 +140,11 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     const bridge = testBridge;
     const { icon, escape, button, duration, recordingStatus, statusMarkup, sessionControls, applySystemAppearance, documentExport } = testUI;
     ${executable}
-    return { state, detail, summaryEvidenceOptions, restoreTranscript: restoreForTest, selectMeeting, saveDraft, finishEditing, onEdit, onQuitRequest, refreshDevices, acceptSnapshot, saveTranscript, loadTranscript, acceptProcessing, loadSummary, renderSummary, createMeeting, openSetup, openSettings, changeMicrophone, changeMeetingDate, render, prepareAudio, exportDocument, editTranscriptRow, completeTranscriptRow, cancelTranscriptRow, cancelProcessing, retryProcessing, acknowledgeProcessing };
+    return { state, detail, documentSearch, summaryEvidenceOptions, restoreTranscript: restoreForTest, selectMeeting, saveDraft, finishEditing, onEdit, onQuitRequest, refreshDevices, acceptSnapshot, saveTranscript, loadTranscript, acceptProcessing, loadSummary, renderSummary, createMeeting, openSetup, openSettings, changeMicrophone, changeMeetingDate, render, prepareAudio, exportDocument, editTranscriptRow, completeTranscriptRow, cancelTranscriptRow, cancelProcessing, retryProcessing, acknowledgeProcessing };
   })()`, context);
   await tick();
   return {
-    app, element, updates, exits, bridge, transcriptUpdates, savedTranscript: () => transcript,
+    app, element, updates, exits, bridge, copied, transcriptUpdates, savedTranscript: () => transcript,
     focused: () => document.activeElement?.id,
     editTranscript(text) {
       const target = element('transcript-rows').querySelector('[data-segment="0"]') || { dataset: { segment: '0' } };
@@ -1280,8 +1283,9 @@ test('setup verification has activity without a misleading zero percent bar', as
 });
 
 
-test('detail tabs preserve Korean composition and stay on the editor if saving fails', async () => {
+test('inspector switches preserve Korean composition and stay on the editor if saving fails', async () => {
   const page = await openApp();
+  await page.app.detail.select('notes');
   assert.equal(page.app.detail.active(), 'notes');
   page.app.state.composing = true;
   page.element('meeting-notes').focus();
@@ -1325,21 +1329,22 @@ test('summary evidence navigates by verified segment ID without playing and retu
   await page.app.loadSummary('a');
   await page.app.detail.select('summary');
   let scrolled = false, focused = false, played = 0;
-  page.element('transcript-rows').querySelector = () => ({scrollIntoView() { scrolled = true; }, focus() { focused = true; }});
+  page.element('transcript-rows').querySelector = () => ({setAttribute() {}, scrollIntoView() { scrolled = true; }, focus() { focused = true; }});
   page.element('audio-player').setAttribute('src', 'example.wav');
   page.element('audio-player').currentTime = 7;
   page.element('audio-player').play = async () => { played++; };
   const evidence = page.app.summaryEvidenceOptions;
   const entry = {currentSegmentIds: [doc.segments[0].id], segment: {start: 23}};
+  assert.equal(await evidence.onOpen(), true);
   assert.equal(await evidence.onNavigate(entry, {currentVersion: doc.version}, evidence.getContext()), true);
   assert.equal(page.app.detail.active(), 'transcript');
   assert.equal(scrolled && focused, true);
-  assert.equal(page.element('return-to-summary').hidden, false);
+  assert.equal(page.element('detail-inspector').hidden, false);
   assert.equal(page.element('audio-player').currentTime, 7);
   assert.equal(played, 0);
-  await page.element('return-to-summary').listeners.get('click')();
+  await page.app.detail.select('summary');
   assert.equal(page.app.detail.active(), 'summary');
-  assert.equal(page.element('return-to-summary').hidden, true);
+  assert.equal(page.element('detail-inspector').hidden, true);
 });
 
 test('frozen evidence cannot navigate missing IDs, changed versions or unsaved edits', async () => {
@@ -1408,5 +1413,56 @@ test('summary retry and failure retain the existing summary stale-source notice'
     assert.match(page.element('summary-message').textContent, /이전 내용으로 만든 요약/);
     assert.match(page.element('summary-content').innerHTML, /이전 요약 내용/);
     assert.doesNotMatch(page.element('summary-content').innerHTML, /data-summary-citations/);
+  }
+});
+
+test('meeting switching captures all scroll positions before replacing the shared document DOM', async () => {
+  const page = await openApp(transcriptDocument());
+  page.element('summary-section').scrollTop = 410;
+  await page.app.detail.select('transcript'); page.element('transcript-scroll').scrollTop = 1200;
+  await page.app.detail.select('notes'); page.element('meeting-notes').scrollTop = 320;
+  await page.app.selectMeeting('b'); await tick();
+  assert.equal(page.element('meeting-notes').scrollTop, 0);
+  await page.app.selectMeeting('a'); await tick();
+  assert.equal(page.app.detail.active(), 'notes');
+  assert.equal(page.element('meeting-notes').scrollTop, 320);
+  assert.equal(page.element('summary-section').scrollTop, 410);
+  await page.app.detail.select('transcript'); assert.equal(page.element('transcript-scroll').scrollTop, 1200);
+});
+test('a frozen utterance mapped into multiple speaker rows highlights every verified fragment and scrolls only to the first', async () => {
+  const doc = transcriptDocument();
+  doc.segments = [0,1,2].map(index => ({id: `fragment-${index}`, start:index, end:index+1, text:`발언 ${index}`, originalText:`발언 ${index}`}));
+  const page = await openApp(doc);
+  page.app.state.summary = { document: {id:'summary-a', text:'결정 [1]', sourceVersion:doc.version} };
+  const rows = doc.segments.map(() => ({ marked: false, scrolled: false, focused: false, setAttribute() { this.marked = true; }, scrollIntoView() { this.scrolled = true; }, focus() { this.focused = true; } }));
+  page.element('transcript-rows').querySelector = selector => rows[Number(selector.match(/"(\d+)"/)[1])];
+  const evidence = page.app.summaryEvidenceOptions; await evidence.onOpen();
+  assert.equal(await evidence.onNavigate({currentSegmentIds:['fragment-0','fragment-2']}, {currentVersion:doc.version}, evidence.getContext()), true);
+  assert.deepEqual(rows.map(row=>row.marked), [true,false,true]);
+  assert.deepEqual(rows.map(row=>row.scrolled), [true,false,false]);
+  assert.deepEqual(rows.map(row=>row.focused), [true,false,false]);
+});
+
+test('transcript copy and TXT/Markdown export include the whole saved document during search and multi-row citation navigation', async () => {
+  for (const [format, copy] of [['txt',true],['txt',false],['md',false]]) {
+    const doc=transcriptDocument();
+    doc.segments=[0,1,2].map(index=>({id:`row-${index}`,start:index,end:index+1,text:`전체 발언 ${index}`,originalText:`전체 발언 ${index}`}));
+    const page=await openApp(doc), exported=[];
+    page.bridge.exportText=async(name,text)=>{exported.push({name,text});};
+    await page.app.documentSearch.find('발언 0',{view:'transcript'});
+    page.app.state.summary={document:{id:'summary-a',text:'결정 [1]',sourceVersion:doc.version}};
+    const marked=[], query=page.element('transcript-rows').querySelector.bind(page.element('transcript-rows'));
+    page.element('transcript-rows').querySelector=selector=>selector.startsWith('[data-transcript-row=') ? {setAttribute(){marked.push(selector);},scrollIntoView(){},focus(){}} : query(selector);
+    const evidence=page.app.summaryEvidenceOptions; await evidence.onOpen();
+    assert.equal(await evidence.onNavigate({currentSegmentIds:['row-0','row-2']},{currentVersion:doc.version},evidence.getContext()),true);
+    assert.equal(marked.length,2); assert.equal(page.app.documentSearch.query(),'발언 0');
+    page.editTranscript('저장할 수정 발언');
+    const exporting=page.app.exportDocument('transcript',format,copy); await tick();
+    assert.equal(page.copied.length,0); assert.equal(exported.length,0);
+    page.transcriptUpdates[0].pending.resolve(); await exporting;
+    const text=copy?page.copied[0]:exported[0].text;
+    assert.match(text,/저장할 수정 발언/); assert.match(text,/전체 발언 1/); assert.match(text,/전체 발언 2/); assert.doesNotMatch(text,/전체 발언 0/);
+    assert.equal(page.app.state.transcriptDraft.dirty,false);
+    if(!copy) assert.ok(exported[0].name.endsWith(`.${format}`));
   }
 });

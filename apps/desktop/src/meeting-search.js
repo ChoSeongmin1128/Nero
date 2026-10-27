@@ -32,6 +32,7 @@ export function mountDocumentSearch({ byId, selectView, renderContent, ready = (
   function refresh() {
     container.hidden = !opened;
     byId('document-search-toggle').setAttribute('aria-expanded', String(opened));
+    byId('inspector-search-toggle')?.setAttribute('aria-expanded', String(opened));
     const key = matches[current]?.key;
     matches = [];
     if (opened && query) {
@@ -91,16 +92,18 @@ export function mountDocumentSearch({ byId, selectView, renderContent, ready = (
     generation++; opened = false; query = ''; field.value = '';
     renderContent(); refresh();
     byId('meeting-notes').scrollTop = notesScroll;
-    if (focus) byId('document-search-toggle').focus({ preventScroll: true });
+    if (focus) byId(byId('detail-inspector')?.hidden === false ? 'inspector-search-toggle' : 'document-search-toggle').focus({ preventScroll: true });
   }
-  byId('document-search-toggle').addEventListener('click', async () => {
+  const toggle = async () => {
     if (opened) return close();
     const request = ++generation;
     try {
       if (!await prepare() || request !== generation) return;
       opened = true; refresh(); field.focus({ preventScroll: true });
     } catch (error) { if (request === generation) onError(error); }
-  });
+  };
+  byId('document-search-toggle').addEventListener('click', toggle);
+  byId('inspector-search-toggle')?.addEventListener('click', toggle);
   byId('document-search-close').addEventListener('click', () => close());
   byId('document-search-prev').addEventListener('click', () => { void step(-1); });
   byId('document-search-next').addEventListener('click', () => { void step(1); });

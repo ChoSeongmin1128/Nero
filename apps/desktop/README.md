@@ -182,6 +182,22 @@ start time or creation time when recording time is unavailable. Hover distinguis
 recording from creation and shows the separately editable meeting date. Imported
 files are not assigned an inferred original recording time.
 
+## Summary workspace
+
+Completed meetings open on the summary. Header actions open the full voice record or
+notes alongside it in a non-modal inspector. The voice record remains one continuous
+editable document with its existing search, speaker/history, copy and export controls.
+The inspector starts at the detail header; closing it preserves the summary position.
+Narrow available detail space uses a single surface with a return action and shared
+playback control rather than dimming the summary behind a modal.
+
+A summary citation opens this same voice record and highlights verified current
+utterances without playing audio. Source identity, current revision and meeting identity
+are checked before navigation. If the original utterance no longer maps to the current
+record, its summary-time text remains readable in the inspector. Citation numbers or
+nearby timestamps are never used to guess a current row. Existing audio, corrections,
+notes and summary archives are unchanged by the workspace layout.
+
 ## Playback and exports
 
 Playback uses Korean controls for play/pause, seek, mute and speed instead of the

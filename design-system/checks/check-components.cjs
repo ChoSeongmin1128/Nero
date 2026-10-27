@@ -95,7 +95,8 @@ test('summary structures known headings, markdown headings, paragraphs and lists
 
 test('summary evidence preserves frozen references without consulting current source positions', () => {
   const html = UI.summaryDocument('# <script>bad()</script>\n내용 [1] [0] [2] [999999999999999999999999]\n\n[x](javascript:bad())', { sources: ['"><img src=x onerror=bad()>'] });
-  assert.doesNotMatch(html, /<script|<img|<a\b|data-summary-seek|title=/);
+  assert.doesNotMatch(html, /<script|<img|<a\b|data-summary-seek/);
+  assert.deepEqual([...html.matchAll(/title="([^"]*)"/g)].map(match => match[1]), ['음성 기록에서 발언 확인', '음성 기록에서 발언 확인']);
   assert.match(html, /<h3>&lt;script&gt;bad\(\)&lt;\/script&gt;<\/h3>/);
   assert.equal((html.match(/data-summary-citations=/g) || []).length, 2);
   assert.match(html, /data-summary-citations="1"/);
@@ -112,7 +113,9 @@ test('summary groups adjacent comma and bounded range citations without altering
   const html = UI.summaryDocument('내용 [1] [2, 3] [3-5] 뒤 [7]');
   assert.equal((html.match(/<button/g) || []).length, 2);
   assert.match(html, /data-summary-citations="1,2,3,4,5"/);
-  assert.match(html, />근거 5<\/span>/);
+  assert.match(html, /aria-label="1, 2, 3, 4, 5번 발언 확인"/);
+  assert.match(html, /aria-pressed="false"/);
+  assert.doesNotMatch(html, /aria-haspopup|aria-expanded/);
   assert.match(html, /data-summary-citations="7"/);
   for (const input of ['[0]', '[5-3]', '[1-33]', '[1-99999999999]', '[1,,2]', '[9007199254740992]']) assert.doesNotMatch(UI.summaryDocument(input), /<button/);
   const adjacent = UI.summaryDocument('[1-32][33]');
@@ -144,7 +147,7 @@ test('summary searches visible text across strong, code and reference boundaries
   assert.deepEqual(marks.map(mark => mark[1]), [...Array(6).fill('summary-1'), ...Array(6).fill('summary-2')]);
   assert.equal(html.replace(/<mark\b[^>]*>|<\/mark>/g, ''), UI.summaryDocument(text, options));
   assert.equal((html.match(/data-summary-citations="1"/g) || []).length, 2);
-  assert.match(html, /aria-label="1번 발언 확인"><span aria-hidden="true"><mark/);
+  assert.match(html, /aria-label="1번 발언 확인"><span aria-hidden="true">[\s\S]*?<\/span><span class="sr-only"><mark/);
   assert.doesNotMatch(html, /<mark\b[^>]*><\/mark>/);
   assert.doesNotMatch(UI.summaryDocument('**계획** `일정`', { searchQuery: '**' }), /<mark/);
 });
@@ -153,7 +156,7 @@ test('summary searches reference labels without changing their click or escape c
   const text = '**[1]** 뒤 [0] [2]';
   const options = { sources: ['"><img src=x onerror=bad()>'] };
   const html = UI.summaryDocument(text, { ...options, searchQuery: '[1] 뒤' });
-  assert.match(html, /<strong><button[^>]*data-summary-citations="1"[^>]*aria-label="1번 발언 확인"><span aria-hidden="true"><mark class="search-match" data-search-group="summary-1">근거<\/mark>/);
+  assert.match(html, /<strong><button[^>]*data-summary-citations="1"[^>]*aria-label="1번 발언 확인"><span aria-hidden="true">[\s\S]*?<\/span><span class="sr-only"><mark class="search-match" data-search-group="summary-1">근거<\/mark>/);
   assert.equal(html.replace(/<mark\b[^>]*>|<\/mark>/g, ''), UI.summaryDocument(text, options));
   assert.doesNotMatch(html, /<img|<script|<a\b|<mark\b[^>]*><\/mark>/);
   const invalid = UI.summaryDocument(text, { ...options, searchQuery: '[2]' });

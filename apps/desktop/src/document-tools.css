@@ -1,5 +1,3 @@
-.detail-tab-bar { display: flex; align-items: center; gap: 12px; border-bottom: 1px solid var(--border); flex: 0 0 auto; }
-.detail-tab-bar .content-tabs { flex: 1; min-width: 0; border-bottom: 0; margin: 0; }
 .document-search { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 8px 0; flex: 0 0 auto; }
 .document-search label { flex: 1 1 150px; min-width: 0; }
 .document-search input { width: 100%; }

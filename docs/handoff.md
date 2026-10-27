@@ -114,19 +114,18 @@ Machine-local installation and preservation receipts remain private.
   (copy, search, settings, close and search navigation) use shared icons with Korean
   accessible names/tooltips; generation, export-format and destructive actions retain text.
 
-- Meeting details use top-level Summary / Voice record / Notes tabs, with the shared
-  header/recorder/player outside the scrolling content. Initial result loads choose a
-  default once; explicit user choices, edits, playback and per-panel reading positions
-  survive tab changes. Result panels never hide themselves. Scroll restoration waits
-  for content readiness. Completed recordings with text open the summary view by
-  default; explicit user choices remain stable. Hover/focus/click on a summary
-  reference reads the summary archive, not the current transcript index. Only a
-  verified exact source or direct-parent word-turn lineage permits navigation to
-  current utterance IDs. Source navigation does not play audio; playback is a
-  separate action, and a return control restores the summary position/focus.
-  Stale summaries retain their frozen evidence. Invalid/unmapped archives never
-  fall back to ordinal/time proximity.
-  See `docs/meeting-library-and-speakers.md` and the canonical `.content-tabs` example.
+- Meeting details keep the summary as the primary reading surface. Header actions open
+  the full voice record or notes in one non-modal inspector; the summary stays readable
+  beside it. Only a narrow available detail area switches to a single inspector surface
+  with a return action. Playback uses the same media state in both layouts.
+  Existing edits, exports, speaker/history actions, search and per-meeting reading
+  positions retain their existing owners. Search tools remain outside scrolling text.
+  Clicking a summary reference opens that same full record and reads its frozen archive.
+  Only verified exact-source or direct-parent word-turn lineage permits current-row
+  navigation. Matched utterances are highlighted without playing audio. Unmapped
+  references retain the summary-time text in the inspector; current text remains
+  accessible. Invalid archives never fall back to ordinal/time proximity. Storage,
+  summary generation and recognition models are unchanged by this layout.
 - Meeting management now includes single-folder placement, batch move, trash/restore,
   permanent deletion with tombstone recovery, and content search. Speaker names and
   assignments share transcript revision checks and preserve raw results/corrections.

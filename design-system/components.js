@@ -113,8 +113,8 @@
         const label = node.references.length > 1 ? `근거 ${node.references.length}` : "근거";
         const matches = ranges.filter(range => range.start < offset && range.end > start);
         const visibleLabel = matches.length ? `<mark class="search-match" data-search-group="${matches[0].group}">${label}</mark>` : label;
-        const content = `<span aria-hidden="true">${visibleLabel}</span><span class="sr-only">${html}</span>`;
-        return button({ html: content, className: "quiet source-reference", attrs: { "data-summary-citations": node.references.join(","), "aria-haspopup": "dialog", "aria-expanded": "false", "aria-label": `${node.references.join(", ")}번 발언 확인` } });
+        const content = `<span aria-hidden="true">${icon("messages-square")}</span><span class="sr-only">${visibleLabel}${html}</span>`;
+        return button({ html: content, className: "quiet source-reference", attrs: { "data-summary-citations": node.references.join(","), "aria-pressed": "false", "title": "음성 기록에서 발언 확인", "aria-label": `${node.references.join(", ")}번 발언 확인` } });
       };
       return tokens.map(render).join("");
     };
