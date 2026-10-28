@@ -9,6 +9,8 @@ use std::time::Duration;
 const MEETING_ID: &str = "11111111-1111-4111-8111-111111111111";
 const PRIVATE_MARKER: &str = "SYNTHETIC_PRIVATE_BODY";
 const FOLDER_ID: &str = "33333333-3333-4333-8333-333333333333";
+const TRANSCRIPT_ID: &str = "55555555-5555-4555-8555-555555555555";
+const SESSION_ID: &str = "66666666-6666-4666-8666-666666666666";
 
 fn temporary_root() -> tempfile::TempDir {
     tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap()
@@ -25,6 +27,28 @@ fn fixture() -> tempfile::TempDir {
             "createdAt":1000,"updatedAt":2000,"recordedAt":1000,"status":"draft",
             "audio":null,"error":null,"transcriptId":null
         }
+    }).to_string()).unwrap();
+    root
+}
+
+fn summary_fixture() -> tempfile::TempDir {
+    let root = fixture();
+    let meeting = root.path().join("meetings").join(MEETING_ID);
+    let path = meeting.join("meeting.json");
+    let mut document: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    document["meeting"]["status"] = json!("completed");
+    document["meeting"]["transcriptId"] = json!(TRANSCRIPT_ID);
+    document["meeting"]["audio"] = json!({"sessionId":SESSION_ID,"relativePath":format!("meetings/{MEETING_ID}/sessions/{SESSION_ID}/audio.wav"),"frames":320000,"sampleRate":16000,"channels":1});
+    fs::write(&path, document.to_string()).unwrap();
+    let transcripts = meeting.join("transcripts").join(TRANSCRIPT_ID);
+    fs::create_dir_all(&transcripts).unwrap();
+    fs::write(transcripts.join("current.json"),json!({
+        "version":{"id":TRANSCRIPT_ID,"revision":1},"sourceSessionId":SESSION_ID,
+        "model":"synthetic","modelRevision":"fixture","speakers":[],
+        "segments":[
+            {"id":"unrelated-utterance-80","start":0.0,"end":1.0,"originalText":"Synthetic first statement","text":"Synthetic first statement","sourceIndex":0},
+            {"id":"unrelated-utterance-10","start":10.0,"end":11.0,"originalText":"Synthetic second statement","text":"Synthetic second statement","sourceIndex":1}
+        ]
     }).to_string()).unwrap();
     root
 }
@@ -529,6 +553,217 @@ fn meeting_change_commands_require_the_app_and_never_write_library_files_directl
     assert!(!root.path().join("templates").exists());
 }
 
+#[test]
+fn summary_context_is_body_free_bounded_and_uses_stable_transcript_references() {
+    let root = summary_fixture();
+    let meeting_path = root
+        .path()
+        .join("meetings")
+        .join(MEETING_ID)
+        .join("meeting.json");
+    let before = fs::read(&meeting_path).unwrap();
+    let output = command(root.path())
+        .args(["summary", "context", MEETING_ID, "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let context: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        context,
+        nero_cli::dispatch(
+            root.path(),
+            "summary_context",
+            json!({"meetingId":MEETING_ID})
+        )
+        .unwrap()
+    );
+    assert_eq!(
+        context["context"]["transcriptVersion"],
+        json!({"id":TRANSCRIPT_ID,"revision":1})
+    );
+    assert!(context["context"]["summaryId"].is_null());
+    assert_eq!(
+        context["context"]["notesSha256"].as_str().unwrap().len(),
+        64
+    );
+    assert!(!context.to_string().contains(PRIVATE_MARKER));
+    assert!(!context.to_string().contains("Synthetic first statement"));
+    assert!(context.get("pagination").is_none());
+    let transcript = nero_cli::dispatch(
+        root.path(),
+        "transcript_get",
+        json!({"meetingId":MEETING_ID,"start":10,"offset":0,"limit":1}),
+    )
+    .unwrap();
+    assert_eq!(transcript["segments"][0]["reference"], 2);
+    assert_eq!(transcript["segments"][0]["id"], "unrelated-utterance-10");
+    assert_eq!(
+        nero_cli::dispatch(
+            root.path(),
+            "summary_context",
+            json!({"meetingId":MEETING_ID,"maxBytes":1})
+        )
+        .unwrap_err()
+        .code,
+        "response_too_large"
+    );
+    assert_eq!(nero_cli::dispatch(root.path(), "summary_context", json!({"meetingId":MEETING_ID,"expectedSourceVersion":format!("sha256:{}", "a".repeat(64))})).unwrap_err().code, "source_version_mismatch");
+    assert_eq!(before, fs::read(meeting_path).unwrap());
+    assert!(!root.path().join("store.lock").exists());
+    assert!(!root.path().join("library.json").exists());
+}
+
+#[test]
+fn summary_import_requires_app_and_rejects_input_overrides_without_echoing_body() {
+    let root = summary_fixture();
+    let inputs = temporary_root();
+    let path = inputs.path().join("summary.json");
+    let context = nero_cli::dispatch(
+        root.path(),
+        "summary_context",
+        json!({"meetingId":MEETING_ID}),
+    )
+    .unwrap()["context"]
+        .clone();
+    let mut input =
+        json!({"context":context,"text":PRIVATE_MARKER,"producer":{"name":"Synthetic agent"}});
+    fs::write(&path, input.to_string()).unwrap();
+    let output = command(root.path())
+        .args([
+            "summary",
+            "import",
+            MEETING_ID,
+            "--file",
+            path.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stderr).unwrap()["error"]["code"],
+        "app_not_running"
+    );
+    assert!(!String::from_utf8_lossy(&output.stderr).contains(PRIVATE_MARKER));
+    input["meetingId"] = json!(MEETING_ID);
+    fs::write(&path, input.to_string()).unwrap();
+    let output = command(root.path())
+        .args([
+            "summary",
+            "import",
+            MEETING_ID,
+            "--file",
+            path.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    assert!(!String::from_utf8_lossy(&output.stderr).contains(PRIVATE_MARKER));
+    assert!(!root
+        .path()
+        .join("meetings")
+        .join(MEETING_ID)
+        .join("summaries")
+        .exists());
+    assert!(!root.path().join("store.lock").exists());
+}
+
+#[test]
+fn cli_and_mcp_import_through_app_writer_and_reject_stale_contexts() {
+    use grove_core::agent_control::{ControlError, Server};
+    let root = summary_fixture();
+    let core = grove_core::CoreHandle::open(root.path()).unwrap();
+    let writer = core.clone();
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let invoked = calls.clone();
+    let _server = Server::start(root.path(), core.clone(), move |mutation| {
+        invoked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        writer.agent_mutate(mutation).map_err(ControlError::core)
+    })
+    .unwrap();
+    let context = nero_cli::dispatch(
+        root.path(),
+        "summary_context",
+        json!({"meetingId":MEETING_ID}),
+    )
+    .unwrap()["context"]
+        .clone();
+    let inputs = temporary_root();
+    let path = inputs.path().join("summary.json");
+    fs::write(&path, json!({"context":context,"text":"Synthetic summary [2]","producer":{"name":"Synthetic agent","model":"self-reported","template":"meeting"}}).to_string()).unwrap();
+    let output = command(root.path())
+        .args([
+            "summary",
+            "import",
+            MEETING_ID,
+            "--file",
+            path.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let saved: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(saved["applied"], true);
+    assert_eq!(saved["meetingId"], MEETING_ID);
+    assert_eq!(saved.as_object().unwrap().len(), 3);
+    assert!(!saved.to_string().contains("Synthetic summary"));
+    let first_id = saved["summaryId"].as_str().unwrap();
+    let latest = core.summary(MEETING_ID).unwrap().unwrap();
+    assert_eq!(latest.document.id, first_id);
+    assert_eq!(latest.document.text, "Synthetic summary [2]");
+    let mut process = McpProcess::start(root.path());
+    process.initialize();
+    process.send(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"summary_import","arguments":{"meetingId":MEETING_ID,"context":context,"text":PRIVATE_MARKER,"producer":{"name":"Synthetic agent"}}}}));
+    let stale = process.result(2);
+    assert_eq!(stale["result"]["isError"], true);
+    assert_eq!(tool_data(&stale)["error"]["code"], "edit_conflict");
+    assert!(!stale.to_string().contains(PRIVATE_MARKER));
+    assert_eq!(
+        core.summary(MEETING_ID).unwrap().unwrap().document.id,
+        first_id
+    );
+    process.send(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"summary_context","arguments":{"meetingId":MEETING_ID}}}));
+    let refreshed = tool_data(&process.result(3));
+    core.update_meeting(MEETING_ID, "Synthetic meeting", "Changed notes")
+        .unwrap();
+    process.send(json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"summary_import","arguments":{"meetingId":MEETING_ID,"context":refreshed["context"],"text":"Stale notes summary","producer":{"name":"Synthetic agent"}}}}));
+    assert_eq!(
+        tool_data(&process.result(4))["error"]["code"],
+        "edit_conflict"
+    );
+    process.send(json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"summary_context","arguments":{"meetingId":MEETING_ID}}}));
+    let refreshed = tool_data(&process.result(5));
+    process.send(json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"summary_import","arguments":{"meetingId":MEETING_ID,"context":refreshed["context"],"text":"Updated summary [1]","producer":{"name":"Synthetic agent"}}}}));
+    let updated = tool_data(&process.result(6));
+    assert_eq!(updated["applied"], true);
+    assert_ne!(updated["summaryId"], first_id);
+    assert_eq!(
+        core.summary(MEETING_ID).unwrap().unwrap().document.text,
+        "Updated summary [1]"
+    );
+    assert!(root
+        .path()
+        .join("meetings")
+        .join(MEETING_ID)
+        .join("summaries")
+        .join(first_id)
+        .join("run.json")
+        .is_file());
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 4);
+}
+
 #[cfg(unix)]
 #[test]
 fn explicit_linked_roots_are_rejected_without_following_them() {
@@ -733,6 +968,7 @@ fn stdio_initialization_tools_errors_and_framing_use_the_sdk() {
         "meeting_get",
         "transcript_get",
         "summary_get",
+        "summary_context",
         "folders_list",
         "status",
         "templates_list",
@@ -745,7 +981,10 @@ fn stdio_initialization_tools_errors_and_framing_use_the_sdk() {
             tool["annotations"]["idempotentHint"],
             readers.contains(&name)
         );
-        if matches!(name, "template_delete" | "meetings_trash" | "folder_delete") {
+        if matches!(
+            name,
+            "summary_import" | "template_delete" | "meetings_trash" | "folder_delete"
+        ) {
             assert_eq!(tool["annotations"]["destructiveHint"], true);
         }
         assert_eq!(tool["annotations"]["openWorldHint"], false);

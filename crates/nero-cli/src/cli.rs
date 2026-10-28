@@ -15,6 +15,8 @@ pub const HELP: &str = "Nero 로컬 CLI
   meetings get ID [--offset N] [--limit N]
   transcript get ID [--start SECONDS] [--end SECONDS] [--offset N] [--limit N]
   summary get ID [--offset N] [--limit N]
+  summary context ID
+  summary import ID --file JSON_PATH
   folders list [--offset N] [--limit N]
   meetings update ID --expected-version HASH --file JSON_PATH
   meetings date ID --expected-version HASH [--date YYYY-MM-DD | --clear]
@@ -57,6 +59,8 @@ mcp는 stdin/stdout으로 MCP를 제공하며 stdout에 진단 문구를 쓰지 
 회의 수정은 실행 중인 Nero에 요청합니다. 파일은 update의 title/notes 또는
 일괄 작업의 expectedVersions와 move의 folderId(null=미분류)를 포함합니다.
 회의/폴더 수정본은 조회 응답의 editVersion이며 sourceVersion과 다릅니다.
+요약 import 파일은 summary context의 context, 생성한 text, producer를 포함합니다.
+원문/메모/기존 요약이 바뀌면 저장하지 않습니다. 요약 저장은 실행 중인 Nero에 요청합니다.
 ";
 
 #[derive(Debug, PartialEq)]
@@ -82,6 +86,7 @@ enum FileContent {
     MeetingUpdate,
     MeetingMove,
     MeetingSet,
+    SummaryImport,
 }
 
 #[derive(Debug)]
@@ -140,6 +145,7 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Options, QueryError
             Action::Help
         }
         ["templates", command, remaining @ ..] => parse_templates(command, remaining)?,
+        ["summary", "import", remaining @ ..] => parse_summary_import(remaining)?,
         [group @ ("meetings" | "folders"), command @ ("update" | "date" | "move" | "trash" | "restore" | "create" | "rename"
         | "delete"), remaining @ ..] => parse_mutation(group, command, remaining)?,
         [group, command, remaining @ ..] => parse_query(group, command, remaining)?,
@@ -155,6 +161,7 @@ fn parse_query(group: &str, command: &str, remaining: &[&str]) -> Result<Action,
         ("meetings", "get") => "meeting_get",
         ("transcript", "get") => "transcript_get",
         ("summary", "get") => "summary_get",
+        ("summary", "context") => "summary_context",
         ("folders", "list") => "folders_list",
         _ => return Err(QueryError::invalid()),
     };
@@ -162,7 +169,7 @@ fn parse_query(group: &str, command: &str, remaining: &[&str]) -> Result<Action,
     let mut args = remaining.iter().copied();
     if matches!(
         method,
-        "meeting_get" | "transcript_get" | "summary_get" | "meetings_search"
+        "meeting_get" | "transcript_get" | "summary_get" | "summary_context" | "meetings_search"
     ) {
         let value = args
             .next()
@@ -201,8 +208,8 @@ fn parse_query(group: &str, command: &str, remaining: &[&str]) -> Result<Action,
             continue;
         }
         let field = match flag {
-            "--offset" => "offset",
-            "--limit" => "limit",
+            "--offset" if method != "summary_context" => "offset",
+            "--limit" if method != "summary_context" => "limit",
             "--max-bytes" => "maxBytes",
             "--expected-source-version" => "expectedSourceVersion",
             "--folder-id" if matches!(method, "meetings_list" | "meetings_search") => "folderId",
@@ -337,6 +344,27 @@ fn parse_templates(command: &str, remaining: &[&str]) -> Result<Action, QueryErr
             params: Value::Object(params),
         })
     }
+}
+
+fn parse_summary_import(remaining: &[&str]) -> Result<Action, QueryError> {
+    let (id, remaining) = remaining.split_first().ok_or_else(QueryError::invalid)?;
+    if id.starts_with("--") || id.is_empty() {
+        return Err(QueryError::invalid());
+    }
+    let path = match remaining {
+        ["--file", path] if !path.is_empty() => *path,
+        [argument] => argument
+            .strip_prefix("--file=")
+            .filter(|path| !path.is_empty())
+            .ok_or_else(QueryError::invalid)?,
+        _ => return Err(QueryError::invalid()),
+    };
+    Ok(Action::FileRequest {
+        method: "summary_import",
+        params: json!({"meetingId":id}),
+        path: PathBuf::from(path),
+        content: FileContent::SummaryImport,
+    })
 }
 
 fn parse_mutation(group: &str, command: &str, remaining: &[&str]) -> Result<Action, QueryError> {
@@ -495,6 +523,12 @@ fn read_content_file(
                 && content
                     .get("expectedVersions")
                     .is_some_and(Value::is_object)
+        }
+        FileContent::SummaryImport => {
+            content.len() == 3
+                && content.get("context").is_some_and(Value::is_object)
+                && content.get("text").is_some_and(Value::is_string)
+                && content.get("producer").is_some_and(Value::is_object)
         }
     };
     if !valid {
@@ -718,6 +752,10 @@ fn render(method: &str, value: &Value, timezone: &TimeZone) -> String {
                 output.push_str(&body(&value["summary"]["text"]));
                 output.push('\n');
             }
+        }
+        "summary_context" => {
+            output.push_str(&serde_json::to_string_pretty(value).unwrap());
+            output.push('\n');
         }
         "status" => {
             output.push_str("조회: 읽기 전용\n템플릿 관리: 가능\n회의 수정: Nero 실행 필요\n");
@@ -990,6 +1028,67 @@ mod tests {
         ] {
             assert!(args(&arguments).is_err(), "{arguments:?}");
         }
+    }
+
+    #[test]
+    fn summary_commands_keep_write_context_in_the_input_file() {
+        assert_eq!(
+            args(&["summary", "context", "id"]).unwrap().action,
+            Action::Request {
+                method: "summary_context",
+                params: json!({"meetingId":"id"})
+            }
+        );
+        assert_eq!(
+            args(&["summary", "import", "id", "--file=input.json"])
+                .unwrap()
+                .action,
+            Action::FileRequest {
+                method: "summary_import",
+                params: json!({"meetingId":"id"}),
+                path: PathBuf::from("input.json"),
+                content: FileContent::SummaryImport
+            }
+        );
+        for arguments in [
+            vec!["summary", "context", "id", "--offset", "0"],
+            vec!["summary", "context", "id", "--limit", "1"],
+            vec!["summary", "import", "id"],
+            vec!["summary", "import", "id", "--file="],
+            vec!["summary", "import", "id", "--file", "one", "--file", "two"],
+            vec![
+                "summary",
+                "import",
+                "id",
+                "--expected-source-version",
+                "hash",
+                "--file",
+                "input.json",
+            ],
+        ] {
+            assert!(args(&arguments).is_err(), "{arguments:?}");
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("summary.json");
+        let input = json!({"context":{},"text":"Summary","producer":{"name":"Agent"}});
+        std::fs::write(&path, input.to_string()).unwrap();
+        let result = read_content_file(
+            &path,
+            json!({"meetingId":"fixed"}),
+            FileContent::SummaryImport,
+        )
+        .unwrap();
+        assert_eq!(result["meetingId"], "fixed");
+        assert_eq!(result["text"], "Summary");
+        let mut overridden = input;
+        overridden["meetingId"] = json!("other");
+        std::fs::write(&path, overridden.to_string()).unwrap();
+        assert!(read_content_file(
+            &path,
+            json!({"meetingId":"fixed"}),
+            FileContent::SummaryImport
+        )
+        .is_err());
     }
 
     #[test]

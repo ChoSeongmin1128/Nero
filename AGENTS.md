@@ -188,6 +188,8 @@ inference, proposals, and unverified items.
   new app is installed. Development bundles stay in `.work/rust-target`.
 - Build/test instructions for the new app are in `apps/desktop/README.md`.
   Never install or launch an archived legacy app as part of rewrite validation.
+- Move discarded artifacts to Trash only. The user empties Trash personally; do not
+  ask to purge cleanup groups or permanently delete them.
 - Ordinary app replacement does not authorize a full library snapshot. Do not copy
   the user's audio, models or complete data directory for each build. A schema/data
   migration must declare its affected paths and preserve only the data it changes.

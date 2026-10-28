@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import vm from 'node:vm';
+import { Window } from 'happy-dom';
 
 const source = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
 const uiSource = await readFile(new URL('../src/ui.js', import.meta.url), 'utf8');
@@ -12,6 +13,10 @@ const actionsSource = await readFile(new URL('../src/transcript-actions.js', imp
 const feedbackSource = await readFile(new URL('../src/processing-feedback.js', import.meta.url), 'utf8');
 const processingStateSource = await readFile(new URL('../src/processing-state.js', import.meta.url), 'utf8');
 const componentsSource = await readFile(new URL('../../../design-system/components.js', import.meta.url), 'utf8');
+const markup = new Window();
+markup.document.body.innerHTML = await readFile(new URL('../src/index.html', import.meta.url), 'utf8');
+const settingsTabAttributes = [...markup.document.querySelectorAll('#settings-dialog .app-settings-tabs [role="tab"]')].map(tab => Object.fromEntries([...tab.attributes].map(attribute => [attribute.name, attribute.value])));
+await markup.happyDOM.close();
 const tick = () => new Promise(setImmediate);
 
 function deferred() {
@@ -29,6 +34,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
       innerHTML: '', textContent: '', scrollTop: 0, listeners: new Map(),
       addEventListener(name, callback) { this.listeners.set(name, callback); },
       querySelectorAll(selector) {
+        if (this.id === 'settings-dialog' && selector === '.app-settings-tabs [role="tab"][data-settings-panel]') return settingsTabs.filter(tab => tab.dataset.settingsPanel);
         if (!['transcript-rows', 'processing-jobs'].includes(this.id)) return [];
         if (selector === 'textarea') return this.children.filter(child => child.tagName === 'TEXTAREA');
         const names = [...selector.matchAll(/\[([\w-]+)\]/g)].map(match => match[1]);
@@ -72,6 +78,12 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     querySelector: element, querySelectorAll: () => [], addEventListener() {},
   };
   document.activeElement = document.body;
+  const settingsTabs = settingsTabAttributes.map(attributes => {
+    const tab = element(attributes.id);
+    for (const [name, value] of Object.entries(attributes)) tab.setAttribute(name, value);
+    tab.dataset = { settingsPanel: attributes['data-settings-panel'] };
+    return tab;
+  });
   let snapshot = { revision: 1, session: null, meetings: [
     { id: 'a', title: '회의 A', notes: '', createdAt: 1, status: 'draft' },
     { id: 'b', title: '회의 B', notes: '', createdAt: 2, status: 'draft' },
@@ -110,9 +122,10 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     hideMain() { const pending = deferred(); exits.push({ type: 'close', pending }); return pending.promise; },
   };
   const copied = [], agentDialogCalls = [];
+  const templateSettings = { setActive() {}, beforeLeave: async () => true, isConfirming: () => false, hide() {} };
   const context = vm.createContext({
     navigator: { clipboard: { writeText: async text => { copied.push(text); } } },
-    document, testBridge: bridge, testAgentDialogCalls: agentDialogCalls, localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
+    document, testBridge: bridge, testAgentDialogCalls: agentDialogCalls, testTemplateSettings: templateSettings, localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
     GroveControls: { enhanceAll() {} },
     setTimeout: () => 1, clearTimeout() {}, requestAnimationFrame: (callback) => callback(),
   });
@@ -134,7 +147,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     ${librarySource.slice(0, librarySource.indexOf('export function mountLibrary')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '')}
     let summaryEvidenceOptions;
     const mountSummaryEvidence = options => { summaryEvidenceOptions = options; return { reset() {}, update() {}, restoreFocus() {} }; };
-    const mountTemplateSettings = () => ({ setActive() {}, beforeLeave: async () => true, isConfirming: () => false, hide() {} });
+    const mountTemplateSettings = () => testTemplateSettings;
     const mountAgentConnectionDialog = () => ({ open(...args) { testAgentDialogCalls.push(args); }, update() {}, close() {}, isOpen: () => false });
     const mountLibrary = ({getState}) => ({ render() {}, resetSelection() {}, toggleSelection() {}, handleRowSelection: () => false, show: async () => {}, visibleMeetings() {
       const current = getState(), query = document.getElementById('search').value.trim();
@@ -150,7 +163,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
   })()`, context);
   await tick();
   return {
-    app, element, updates, exits, bridge, copied, agentDialogCalls, transcriptUpdates, savedTranscript: () => transcript,
+    app, element, updates, exits, bridge, copied, agentDialogCalls, templateSettings, settingsTabs, transcriptUpdates, savedTranscript: () => transcript,
     focused: () => document.activeElement?.id,
     editTranscript(text) {
       const target = element('transcript-rows').querySelector('[data-segment="0"]') || { dataset: { segment: '0' } };
@@ -875,27 +888,88 @@ test('summary preparation returns to its meeting and focuses summary when the or
   assert.equal(page.focused(), 'summarize');
 });
 
-test('settings category keyboard navigation includes appearance and leaves editing state intact', async () => {
+async function navigateSettings(page, tab, key, options = {}) {
+  let prevented = false;
+  page.element('settings-dialog').listeners.get('keydown')({ target: tab, key, ...options, preventDefault() { prevented = true; } });
+  await tick();
+  return prevented;
+}
+
+function assertSettingsSelection(page, selectedTab) {
+  assert.equal(page.app.state.settingsPanel, selectedTab.dataset.settingsPanel);
+  assert.equal(page.focused(), selectedTab.id);
+  for (const tab of page.settingsTabs) {
+    const selected = tab === selectedTab;
+    assert.equal(tab.getAttribute('aria-selected'), String(selected));
+    assert.equal(tab.tabIndex, selected ? 0 : -1);
+    assert.equal(page.element(tab.getAttribute('aria-controls')).hidden, !selected);
+  }
+}
+
+test('settings category keyboard navigation follows the displayed tab order and preserves meeting edits', async () => {
   const page = await openApp();
   await page.app.openSettings();
   assert.equal(page.app.state.settingsPanel, 'appearance');
   assert.equal(page.element('settings-appearance-panel').hidden, false);
-  const navigate = async (id, key) => { page.element('settings-dialog').listeners.get('keydown')({ target: { id }, key, preventDefault() {} }); await tick(); };
-  await navigate('settings-appearance-tab', 'ArrowDown');
-  assert.equal(page.app.state.settingsPanel, 'recording');
-  await navigate('settings-recording-tab', 'ArrowDown');
-  assert.equal(page.app.state.settingsPanel, 'models');
-  await navigate('settings-models-tab', 'ArrowDown');
-  assert.equal(page.app.state.settingsPanel, 'templates');
-  await navigate('settings-templates-tab', 'ArrowDown');
-  assert.equal(page.app.state.settingsPanel, 'agent');
-  await navigate('settings-agent-tab', 'ArrowDown');
-  assert.equal(page.app.state.settingsPanel, 'appearance');
-  await navigate('settings-appearance-tab', 'End');
-  assert.equal(page.app.state.settingsPanel, 'agent');
-  await navigate('settings-agent-tab', 'Home');
-  assert.equal(page.app.state.settingsPanel, 'appearance');
+  page.edit('설정 전환 중 보관할 메모');
+  const draft = page.app.state.draft;
+  const tabs = page.settingsTabs;
+  assert.ok(tabs.length > 1);
+  assert.ok(tabs.every(tab => tab.dataset.settingsPanel));
+  for (const [index, tab] of tabs.entries()) {
+    for (const [key, offset] of [['ArrowDown', 1], ['ArrowRight', 1], ['ArrowUp', -1], ['ArrowLeft', -1], ['Home', null], ['End', null]]) {
+      tab.listeners.get('click')();
+      await tick();
+      tab.focus();
+      assert.equal(await navigateSettings(page, tab, key), true);
+      const expected = key === 'Home' ? tabs[0] : key === 'End' ? tabs.at(-1) : tabs[(index + offset + tabs.length) % tabs.length];
+      assertSettingsSelection(page, expected);
+    }
+  }
+  assert.equal(page.app.state.draft, draft);
+  assert.equal(draft.notes, '설정 전환 중 보관할 메모');
+  assert.equal(draft.dirty, true);
   assert.equal(page.updates.length, 0);
+});
+
+test('settings category navigation waits for template draft approval before changing tabs', async () => {
+  const page = await openApp();
+  await page.app.openSettings('templates');
+  const tab = page.settingsTabs.find(tab => tab.dataset.settingsPanel === 'templates');
+  const next = page.settingsTabs[(page.settingsTabs.indexOf(tab) + 1) % page.settingsTabs.length];
+  const decision = deferred();
+  let checks = 0;
+  page.templateSettings.beforeLeave = () => { checks++; return decision.promise; };
+  assert.equal(await navigateSettings(page, tab, 'ArrowDown'), true);
+  assert.equal(checks, 1);
+  assertSettingsSelection(page, tab);
+  decision.resolve(false);
+  await tick();
+  assertSettingsSelection(page, tab);
+  page.templateSettings.beforeLeave = async () => true;
+  assert.equal(await navigateSettings(page, tab, 'ArrowDown'), true);
+  assertSettingsSelection(page, next);
+  assert.equal(page.updates.length, 0);
+});
+
+test('settings category navigation ignores IME input and an open template confirmation', async () => {
+  const page = await openApp();
+  await page.app.openSettings('templates');
+  const tab = page.settingsTabs.find(tab => tab.dataset.settingsPanel === 'templates');
+  let checks = 0;
+  page.templateSettings.beforeLeave = async () => { checks++; return true; };
+  for (const options of [{ isComposing: true }, { keyCode: 229 }]) {
+    for (const key of ['ArrowDown', 'ArrowUp', 'ArrowRight', 'ArrowLeft', 'Home', 'End']) {
+      assert.equal(await navigateSettings(page, tab, key, options), false);
+      assertSettingsSelection(page, tab);
+    }
+  }
+  page.templateSettings.isConfirming = () => true;
+  for (const key of ['ArrowDown', 'ArrowUp', 'ArrowRight', 'ArrowLeft', 'Home', 'End']) {
+    assert.equal(await navigateSettings(page, tab, key), false);
+    assertSettingsSelection(page, tab);
+  }
+  assert.equal(checks, 0);
 });
 
 test('automatic saving shows pending feedback and clears it after persistence', async () => {
@@ -1527,5 +1601,24 @@ test('agent request rejects failed draft saves without approving mutation', asyn
   assert.equal(typeof calls[0].error, 'string');
   assert.equal(page.app.state.draft.dirty, true);
   assert.equal(page.app.state.draft.notes, '보존할 메모');
+  assert.equal(page.element('meeting-notes').readOnly, false);
+});
+
+
+test('agent summary writes reload the open summary before releasing edit ownership', async () => {
+  const page = await openApp(transcriptDocument());
+  const ack = deferred();
+  const loaded = deferred();
+  page.app.state.summary = { document: { id: 'old', text: '이전 요약', sourceVersion: page.app.state.transcriptDraft.doc.version }, stale: false };
+  page.bridge.agentWriteReady = async () => { await ack.promise; };
+  page.bridge.readSnapshot = async () => ({ revision: 100, session: null, meetings: [page.saved()] });
+  page.bridge.readSummary = async id => { assert.equal(id, 'a'); return loaded.promise; };
+  const request = page.app.onAgentWriteRequest({ requestId: '11111111-1111-4111-8111-111111111111' });
+  await tick(); ack.resolve(); await tick();
+  assert.equal(page.element('meeting-notes').readOnly, true);
+  loaded.resolve({ document: { id: 'new', text: '에이전트가 저장한 요약', sourceVersion: page.app.state.transcriptDraft.doc.version }, stale: false });
+  await request;
+  assert.equal(page.app.state.summary.document.id, 'new');
+  assert.equal(page.app.state.summary.document.text, '에이전트가 저장한 요약');
   assert.equal(page.element('meeting-notes').readOnly, false);
 });

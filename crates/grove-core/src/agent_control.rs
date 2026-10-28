@@ -1,6 +1,8 @@
 use crate::engine::Engine;
 use crate::library::Library;
-use crate::{store, CoreError, CoreHandle, Meeting, Result};
+use crate::{
+    store, CoreError, CoreHandle, ExternalSummaryProducer, Meeting, Result, SummaryContext,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -77,6 +79,14 @@ impl ControlError {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "method", content = "params", deny_unknown_fields)]
 pub enum Mutation {
+    #[serde(rename = "summary_import")]
+    SummaryImport {
+        #[serde(rename = "meetingId")]
+        meeting_id: String,
+        context: SummaryContext,
+        text: String,
+        producer: ExternalSummaryProducer,
+    },
     #[serde(rename = "meeting_update")]
     MeetingUpdate {
         #[serde(rename = "meetingId")]
@@ -135,7 +145,8 @@ pub enum Mutation {
     },
 }
 
-pub const METHODS: [&str; 8] = [
+pub const METHODS: [&str; 9] = [
+    "summary_import",
     "meeting_update",
     "meeting_date_set",
     "meetings_move",
@@ -158,6 +169,11 @@ impl Mutation {
             || !params.is_object()
             || (method == "meeting_date_set" && params.get("meetingDate").is_none())
             || (method == "meetings_move" && params.get("folderId").is_none())
+            || (method == "summary_import"
+                && params
+                    .get("context")
+                    .and_then(|value| value.get("summaryId"))
+                    .is_none())
         {
             return Err(ControlError::invalid());
         }
@@ -168,7 +184,7 @@ impl Mutation {
             &mutation,
             Self::FolderCreate { .. } | Self::FolderRename { .. } | Self::FolderDelete { .. }
         );
-        if (!folder && versions.is_empty())
+        if (!folder && !matches!(&mutation, Self::SummaryImport { .. }) && versions.is_empty())
             || versions.len() > 200
             || versions
                 .iter()
@@ -201,6 +217,19 @@ impl Mutation {
             _ => (),
         }
         match &mutation {
+            Self::SummaryImport {
+                meeting_id,
+                context,
+                text,
+                producer,
+            } => {
+                store::validate_id(meeting_id).map_err(|_| ControlError::invalid())?;
+                context.validate().map_err(|_| ControlError::invalid())?;
+                producer.validate().map_err(|_| ControlError::invalid())?;
+                if text.trim().is_empty() || text.len() > 2 * 1024 * 1024 || text.contains('\0') {
+                    return Err(ControlError::invalid());
+                }
+            }
             Self::MeetingDateSet {
                 meeting_date: Some(date),
                 ..
@@ -217,6 +246,7 @@ impl Mutation {
 
     fn versions(&self) -> Vec<(&str, &str)> {
         match self {
+            Self::SummaryImport { .. } => Vec::new(),
             Self::MeetingUpdate {
                 meeting_id,
                 expected_version,
@@ -269,6 +299,13 @@ pub(crate) fn validate(engine: &Engine, mutation: &Mutation) -> Result<()> {
         return Err(CoreError::Unavailable);
     }
     match mutation {
+        Mutation::SummaryImport {
+            meeting_id,
+            context,
+            ..
+        } => {
+            engine.validate_summary_context(meeting_id, context)?;
+        }
         Mutation::FolderCreate {
             expected_version, ..
         }
@@ -312,6 +349,15 @@ fn targets(engine: &Engine, ids: &[String]) -> Result<Value> {
 pub(crate) fn apply(engine: &mut Engine, mutation: Mutation) -> Result<Value> {
     validate(engine, &mutation)?;
     match mutation {
+        Mutation::SummaryImport {
+            meeting_id,
+            context,
+            text,
+            producer,
+        } => {
+            let summary = engine.import_summary(&meeting_id, context, text, producer)?;
+            Ok(json!({"applied":true,"meetingId":meeting_id,"summaryId":summary.id}))
+        }
         Mutation::MeetingUpdate {
             meeting_id,
             title,

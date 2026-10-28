@@ -13,8 +13,8 @@ mod transcript;
 pub use diarization::{SpeakerAnalysis, SpeakerAnalysisDraft, SpeakerPosterior};
 pub use library::Folder;
 pub use summary::{
-    Summary, SummaryCitation, SummaryCitations, SummaryDraft, SummaryInput, SummaryProvenance,
-    SummaryView, MAX_SUMMARY_CITATION_REFERENCES,
+    ExternalSummaryProducer, Summary, SummaryCitation, SummaryCitations, SummaryContext,
+    SummaryDraft, SummaryInput, SummaryProvenance, SummaryView, MAX_SUMMARY_CITATION_REFERENCES,
 };
 pub use terminology::{
     discover_candidates, TerminologyCandidate, TerminologyDecision, TerminologyDraft,

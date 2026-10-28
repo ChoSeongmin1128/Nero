@@ -3,7 +3,7 @@
   "name": "nero",
   "display_name": "Nero",
   "version": "0.0.1",
-  "description": "Nero 회의와 요약 조회, 회의와 요약 템플릿 관리",
+  "description": "Nero 회의와 요약 조회, 새 요약 저장, 회의와 요약 템플릿 관리",
   "author": {
     "name": "Nero"
   },
@@ -44,6 +44,14 @@
     {
       "name": "summary_get",
       "description": "저장된 요약 조회"
+    },
+    {
+      "name": "summary_context",
+      "description": "요약 저장에 필요한 원문과 기존 요약 수정본 조회"
+    },
+    {
+      "name": "summary_import",
+      "description": "에이전트가 생성한 요약을 Nero에 저장"
     },
     {
       "name": "folders_list",

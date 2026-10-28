@@ -13,12 +13,14 @@ use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 
 pub const APP_IDENTIFIER: &str = "io.github.choseongmin1128.grove.desktop";
-pub const METHODS: [&str; 22] = [
+pub const METHODS: [&str; 24] = [
     "meetings_list",
     "meetings_search",
     "meeting_get",
     "transcript_get",
     "summary_get",
+    "summary_context",
+    "summary_import",
     "folders_list",
     "status",
     "templates_list",
@@ -46,6 +48,7 @@ pub fn is_read_only(method: &str) -> bool {
             | "meeting_get"
             | "transcript_get"
             | "summary_get"
+            | "summary_context"
             | "folders_list"
             | "status"
             | "templates_list"
@@ -57,6 +60,7 @@ pub fn is_destructive(method: &str) -> bool {
     matches!(
         method,
         "template_update"
+            | "summary_import"
             | "template_delete"
             | "template_reset"
             | "meeting_update"
@@ -118,8 +122,7 @@ pub fn dispatch(root: &Path, method: &str, params: Value) -> Result<Value, Query
     let mut result = reader.query(method, params).map_err(query_error)?;
     if method == "status" {
         result["readOnly"] = json!(false);
-        result["capabilities"] =
-            json!({"queriesReadOnly":true,"templateWrites":true,"meetingWritesRequireApp":true});
+        result["capabilities"] = json!({"queriesReadOnly":true,"templateWrites":true,"meetingWritesRequireApp":true,"summaryImportsRequireApp":true});
     }
     Ok(result)
 }
@@ -208,7 +211,10 @@ pub fn input_schema(method: &str) -> Map<String, Value> {
     }
     let mut properties = Map::new();
     let mut required = Vec::new();
-    if matches!(method, "meeting_get" | "transcript_get" | "summary_get") {
+    if matches!(
+        method,
+        "meeting_get" | "transcript_get" | "summary_get" | "summary_context"
+    ) {
         properties.insert("meetingId".into(), id_schema());
         required.push("meetingId");
     }
@@ -236,28 +242,40 @@ pub fn input_schema(method: &str) -> Map<String, Value> {
         }
     }
     if method != "status" {
-        properties.insert("expectedSourceVersion".into(), json!({"type":"string","pattern":"^sha256:[0-9a-f]{64}$","description":"First page sourceVersion for the same method and filters. Rejects changed sources before returning body."}));
-        properties.insert("maxBytes".into(), json!({"type":"integer","minimum":1,"maximum":grove_core::reader::MAX_RESPONSE_BYTES,"description":"Compact JSON payload byte budget. May reduce returned items; follow pagination.nextOffset, not offset+limit."}));
-        let (offset_description, limit_description) =
-            if matches!(method, "meeting_get" | "summary_get") {
-                (
+        let source_description = if method == "summary_context" {
+            "Earlier summary_context sourceVersion for a repeated read. Not the context used for writes."
+        } else {
+            "First page sourceVersion for the same method and filters. Rejects changed sources before returning body."
+        };
+        let budget_description = if method == "summary_context" {
+            "Compact JSON payload byte budget. Returns the complete context or response_too_large."
+        } else {
+            "Compact JSON payload byte budget. May reduce returned items; follow pagination.nextOffset, not offset+limit."
+        };
+        properties.insert("expectedSourceVersion".into(), json!({"type":"string","pattern":"^sha256:[0-9a-f]{64}$","description":source_description}));
+        properties.insert("maxBytes".into(), json!({"type":"integer","minimum":1,"maximum":grove_core::reader::MAX_RESPONSE_BYTES,"description":budget_description}));
+        if method != "summary_context" {
+            let (offset_description, limit_description) =
+                if matches!(method, "meeting_get" | "summary_get") {
+                    (
                     "Text-chunk offset. Chunks retain newlines and are at most 4096 UTF-8 bytes.",
                     "Maximum text chunks. Concatenate page text in order.",
                 )
-            } else {
-                (
-                    "Number of items to skip.",
-                    "Maximum number of items to return.",
-                )
-            };
-        properties.insert(
-            "offset".into(),
-            json!({"type":"integer","minimum":0,"default":0,"description":offset_description}),
-        );
-        properties.insert(
+                } else {
+                    (
+                        "Number of items to skip.",
+                        "Maximum number of items to return.",
+                    )
+                };
+            properties.insert(
+                "offset".into(),
+                json!({"type":"integer","minimum":0,"default":0,"description":offset_description}),
+            );
+            properties.insert(
             "limit".into(),
             json!({"type":"integer","minimum":1,"maximum":200,"default":50,"description":limit_description}),
         );
+        }
     }
     json!({
         "type":"object", "properties":properties, "required":required,
@@ -340,6 +358,26 @@ mod tests {
         assert!(Value::Object(input_schema("transcript_get"))["properties"]
             .get("on")
             .is_none());
+        let context = Value::Object(input_schema("summary_context"));
+        assert!(context["properties"].get("offset").is_none());
+        assert!(context["properties"].get("limit").is_none());
+        let import = Value::Object(input_schema("summary_import"));
+        assert_eq!(
+            import["required"],
+            json!(["meetingId", "context", "text", "producer"])
+        );
+        assert_eq!(
+            import["properties"]["context"]["additionalProperties"],
+            false
+        );
+        assert_eq!(
+            import["properties"]["producer"]["additionalProperties"],
+            false
+        );
+        assert!(import["properties"].get("expectedSourceVersion").is_none());
+        assert!(is_read_only("summary_context"));
+        assert!(!is_read_only("summary_import"));
+        assert!(is_destructive("summary_import"));
     }
 
     #[test]

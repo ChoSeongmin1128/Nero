@@ -204,6 +204,9 @@ impl AgentMutations {
             )
         } else if self.gate.closing.load(Ordering::Acquire) {
             Err(grove_core::CoreError::Unavailable)
+        } else if let Mutation::SummaryImport { meeting_id, .. } = &request {
+            let meeting_id = meeting_id.clone();
+            processing.meeting_idle(&meeting_id, || core.agent_mutate(request))
         } else {
             core.agent_mutate(request)
         };

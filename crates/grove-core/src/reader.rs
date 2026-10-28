@@ -1,6 +1,6 @@
 use crate::library::Library;
 use crate::store::{self, StoredMeeting};
-use crate::{CoreError, Meeting, Result, Summary, Transcript};
+use crate::{CoreError, Meeting, Result, Summary, SummaryContext, Transcript};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -66,6 +66,7 @@ impl Params {
                 "query", "folderId", "unfiled", "from", "to", "offset", "limit",
             ],
             "meeting_get" | "summary_get" => &["meetingId", "offset", "limit"],
+            "summary_context" => &["meetingId"],
             "transcript_get" => &["meetingId", "start", "end", "offset", "limit"],
             "folders_list" => &["offset", "limit"],
             "status" => &[],
@@ -152,7 +153,10 @@ impl Params {
         if let Some(id) = &params.folder_id {
             store::validate_id(id)?;
         }
-        if matches!(method, "meeting_get" | "transcript_get" | "summary_get") {
+        if matches!(
+            method,
+            "meeting_get" | "transcript_get" | "summary_get" | "summary_context"
+        ) {
             store::validate_id(
                 params
                     .meeting_id
@@ -293,6 +297,9 @@ fn fit_response(value: Value, method: &str, params: &Params) -> Result<Value> {
     let budget = params.max_bytes.unwrap_or(MAX_RESPONSE_BYTES);
     if response_bytes(&value)? <= budget {
         return Ok(value);
+    }
+    if method == "summary_context" {
+        return Err(ReadError::ResponseTooLarge.into());
     }
     let returned = value["pagination"]["returned"].as_u64().unwrap() as usize;
     let mut minimum = 1;
@@ -580,12 +587,13 @@ impl<'a> Transaction<'a> {
                     .map(|doc| {
                         doc.segments
                             .iter()
-                            .filter(|segment| {
+                            .enumerate()
+                            .filter(|(_, segment)| {
                                 params.start.is_none_or(|start| segment.end > start)
                                     && params.end.is_none_or(|end| segment.start < end)
                             })
-                            .map(|segment| {
-                                json!({"id":segment.id,"start":segment.start,"end":segment.end,
+                            .map(|(index, segment)| {
+                                json!({"reference":index + 1,"id":segment.id,"start":segment.start,"end":segment.end,
                                 "speakerId":segment.speaker_id,"text":segment.text})
                             })
                             .collect::<Vec<_>>()
@@ -610,6 +618,18 @@ impl<'a> Transaction<'a> {
                     summary["text"] = json!(text);
                 }
                 Ok(json!({"meetingId":id,"summary":summary,"pagination":page}))
+            }
+            "summary_context" => {
+                let source = transcript.as_ref().ok_or_else(|| {
+                    CoreError::InvalidState("요약할 음성 기록이 없습니다.".into())
+                })?;
+                let summary = self.summary(&meeting, Some(source))?;
+                let summary_id = summary
+                    .as_ref()
+                    .and_then(|value| value["id"].as_str())
+                    .map(str::to_owned);
+                let context = SummaryContext::new(source, &meeting.notes, summary_id)?;
+                Ok(json!({"meetingId":id,"context":context}))
             }
             _ => unreachable!(),
         }
@@ -980,12 +1000,13 @@ mod tests {
                 source_sha256: crate::summary::transcript_digest(source).unwrap(),
                 notes_sha256: None,
                 provenance: SummaryProvenance {
-                    model: "fixture".into(),
-                    model_revision: "1".into(),
-                    model_sha256: "0".repeat(64),
-                    runtime: "fixture".into(),
-                    prompt_version: "1".into(),
-                    template: "fixture".into(),
+                    producer: None,
+                    model: Some("fixture".into()),
+                    model_revision: Some("1".into()),
+                    model_sha256: Some("0".repeat(64)),
+                    runtime: Some("fixture".into()),
+                    prompt_version: Some("1".into()),
+                    template: Some("fixture".into()),
                 },
             };
             store::write_json(&self.root, &directory.join("current.json"), &summary).unwrap();
@@ -1091,7 +1112,12 @@ mod tests {
         for method in ["meetings_list", "folders_list", "status"] {
             reader.query(method, json!({})).unwrap();
         }
-        for method in ["meeting_get", "transcript_get", "summary_get"] {
+        for method in [
+            "meeting_get",
+            "transcript_get",
+            "summary_get",
+            "summary_context",
+        ] {
             reader
                 .query(method, json!({"meetingId":fixture.id}))
                 .unwrap();
@@ -1133,6 +1159,7 @@ mod tests {
         assert_eq!(result["pagination"]["total"], 2);
         assert_eq!(result["pagination"]["hasMore"], true);
         assert_eq!(result["segments"][0]["id"], "utterance-1");
+        assert_eq!(result["segments"][0]["reference"], 2);
         assert_eq!(result["segments"][0]["text"], "corrected 1");
         assert_eq!(result["segments"][0]["speakerId"], "speaker-a");
         assert_eq!(result["speakers"][0]["name"], "Speaker A");
@@ -1151,7 +1178,64 @@ mod tests {
             )
             .unwrap();
         assert_eq!(next["segments"][0]["id"], "utterance-2");
+        assert_eq!(next["segments"][0]["reference"], 3);
         assert_eq!(next["pagination"]["hasMore"], false);
+    }
+
+    #[test]
+    fn summary_context_is_compact_and_binds_the_current_transcript_notes_and_summary() {
+        let fixture = Fixture::new();
+        let reader = fixture.reader();
+        let params = json!({"meetingId":fixture.id});
+        let before = tree_hash(&fixture.root);
+        let result = reader.query("summary_context", params.clone()).unwrap();
+        assert_eq!(result["meetingId"], fixture.id);
+        assert!(result.get("pagination").is_none());
+        assert!(result.get("text").is_none());
+        let context: SummaryContext = serde_json::from_value(result["context"].clone()).unwrap();
+        assert_eq!(context.transcript_version, fixture.transcript.version);
+        assert_eq!(
+            context.transcript_sha256,
+            crate::summary::transcript_digest(&fixture.transcript).unwrap()
+        );
+        assert_eq!(
+            context.notes_sha256,
+            crate::summary::notes_digest("note one\nnote two\nnote three")
+        );
+        assert!(context.summary_id.is_some());
+        assert_eq!(before, tree_hash(&fixture.root));
+        assert!(matches!(
+            reader.query(
+                "summary_context",
+                json!({"meetingId":fixture.id,"maxBytes":1})
+            ),
+            Err(CoreError::Reader(ReadError::ResponseTooLarge))
+        ));
+        assert!(reader
+            .query(
+                "summary_context",
+                json!({"meetingId":fixture.id,"offset":1})
+            )
+            .is_err());
+        let mut changed = fixture.transcript.clone();
+        changed.segments[0].text = "a newer corrected transcript".into();
+        fixture.save_transcript(&changed);
+        let latest = reader.query("summary_context", params).unwrap();
+        assert_ne!(
+            result["context"]["transcriptSha256"],
+            latest["context"]["transcriptSha256"]
+        );
+        assert_eq!(
+            result["context"]["summaryId"],
+            latest["context"]["summaryId"]
+        );
+        assert!(matches!(
+            reader.query(
+                "summary_context",
+                json!({"meetingId":fixture.id,"expectedSourceVersion":result["sourceVersion"]})
+            ),
+            Err(CoreError::Reader(ReadError::SourceVersionMismatch))
+        ));
     }
 
     #[test]

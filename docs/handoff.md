@@ -8,13 +8,18 @@ the private installation and evaluation receipts.
 
 ## Release state
 
-Nero 0.0.1 build 25 has signed/notarized macOS arm64 artifacts. The local installation has been replaced without copying user data or models.
-Actual GUI acceptance remains pending because the screen-control tool failed. The new agent
-component is 0.0.1-nero.21; client updates and live tool acceptance are separate from
-app packaging. This personal development build does not establish model quality,
-long-recording, target-hardware or Windows-device qualification, nor start the public
-compatibility baseline. Source commits and artifact hashes are in
-[Release history](release-history.md). Machine-local receipts remain private.
+Nero 0.0.1 build 26 is being prepared with agent component 0.0.1-nero.22.
+External agents can read a summary context and explicitly save their generated
+summary through the running application's writer. Source/notes/current-summary
+checks reject stale output, and prior summaries remain archived. Open summaries
+reload after the external write. Client package updates and live tool acceptance
+remain separate from packaging; existing client configuration is not rewritten.
+
+Build 25 has signed/notarized macOS arm64 artifacts and a local installation.
+Settings panels and the template list/editor were observed in the installed app.
+Native typing/dirty-confirmation acceptance, model quality and Windows-device
+qualification remain separate from the automated checks. Source commits and
+artifact hashes are in [Release history](release-history.md).
 
 ## Native rewrite source
 

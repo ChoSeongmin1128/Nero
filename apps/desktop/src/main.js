@@ -14,7 +14,7 @@ import { mountTemplateSettings } from './template-settings.jsx';
 
 applySystemAppearance();
 const byId = (id) => document.getElementById(id);
-const settingsPanels = ['appearance', 'recording', 'models', 'templates', 'agent'];
+const settingsPanels = [...byId('settings-dialog').querySelectorAll('.app-settings-tabs [role="tab"][data-settings-panel]')].map(tab => tab.dataset.settingsPanel);
 const terminologySettings = { info: null, error: '', request: 0, saving: null };
 const agentConnection = { info: null, loading: false, error: '', request: 0, refresh: 0, timer: null, pending: {}, errors: {} };
 const agentConnectionDialog = mountAgentConnectionDialog({ container: byId('settings-dialog'), fallbackTrigger: () => byId('settings-agent-manual') });
@@ -762,7 +762,7 @@ byId('settings-dialog').addEventListener('cancel', event => {
   if (!templateSettings.isConfirming()) void closeSettings();
 });
 byId('settings-dialog').addEventListener('close', () => { templateSettings.hide(); resetTerminologySettings(); resetAgentConnection(); globalThis.GroveControls.close?.(); (byId(state.settingsReturnId) || byId('settings')).focus({ preventScroll: true }); });
-for (const name of settingsPanels) byId(`settings-${name}-tab`).addEventListener('click', () => { void selectSettingsPanel(name); });
+for (const name of settingsPanels) byId(`settings-${name}-tab`).addEventListener('click', () => { void selectSettingsPanel(name, true); });
 byId('settings-dialog').addEventListener('keydown', event => {
   if (event.isComposing || event.keyCode === 229 || templateSettings.isConfirming()) return;
   const index = settingsPanels.findIndex(name => `settings-${name}-tab` === event.target.id);
@@ -867,6 +867,7 @@ async function onAgentWriteRequest({ requestId } = {}) {
       ready = true;
       await bridge.agentWriteReady(requestId);
       acceptSnapshot(await bridge.readSnapshot());
+      if (currentMeeting()) await loadSummary(state.selectedId);
       refreshMeetingSearch();
     });
   } catch (error) {

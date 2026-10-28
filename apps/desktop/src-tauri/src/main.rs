@@ -1342,7 +1342,7 @@ async fn restore_transcript(
     let processing = state.processing.clone();
     let core = state.core.clone();
     let document = tauri::async_runtime::spawn_blocking(move || {
-        processing.transcript_restore(&meeting_id, || {
+        processing.meeting_idle(&meeting_id, || {
             core.restore_transcript(&meeting_id, expected, target)
         })
     })

@@ -13,12 +13,103 @@ pub const MAX_SUMMARY_CITATION_REFERENCES: usize = 32;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SummaryProvenance {
-    pub model: String,
-    pub model_revision: String,
-    pub model_sha256: String,
-    pub runtime: String,
-    pub prompt_version: String,
-    pub template: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub producer: Option<ExternalSummaryProducer>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_revision: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExternalSummaryProducer {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_revision: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<String>,
+}
+
+impl ExternalSummaryProducer {
+    pub(crate) fn validate(&self) -> Result<()> {
+        for (value, limit) in std::iter::once((Some(&self.name), 128)).chain(
+            [
+                self.model.as_ref(),
+                self.model_revision.as_ref(),
+                self.prompt_version.as_ref(),
+                self.template.as_ref(),
+            ]
+            .into_iter()
+            .map(|value| (value, 256)),
+        ) {
+            if value.is_some_and(|value| {
+                value.trim().is_empty()
+                    || value.len() > limit
+                    || value.chars().any(char::is_control)
+            }) {
+                return Err(CoreError::InvalidInput(
+                    "요약 작성 정보가 올바르지 않습니다.".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SummaryContext {
+    pub transcript_version: TranscriptVersion,
+    pub transcript_sha256: String,
+    pub notes_sha256: String,
+    pub summary_id: Option<String>,
+}
+
+impl SummaryContext {
+    pub(crate) fn new(
+        source: &Transcript,
+        notes: &str,
+        summary_id: Option<String>,
+    ) -> Result<Self> {
+        Ok(Self {
+            transcript_version: source.version.clone(),
+            transcript_sha256: transcript_digest(source)?,
+            notes_sha256: notes_digest(notes),
+            summary_id,
+        })
+    }
+
+    pub(crate) fn validate(&self) -> Result<()> {
+        store::validate_id(&self.transcript_version.id)?;
+        if let Some(id) = &self.summary_id {
+            store::validate_id(id)?;
+        }
+        for digest in [&self.transcript_sha256, &self.notes_sha256] {
+            if digest.len() != 64
+                || !digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            {
+                return Err(CoreError::InvalidInput(
+                    "요약 원본 정보가 올바르지 않습니다.".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -176,6 +267,37 @@ fn location(id: &str) -> Result<PathBuf> {
     store::validate_id(id)?;
     Ok(Path::new("meetings").join(id).join("summaries"))
 }
+
+fn validate_import_references(text: &str, count: usize) -> Result<()> {
+    for part in text.split('[').skip(1) {
+        let Some((reference, _)) = part.split_once(']') else {
+            continue;
+        };
+        if reference.is_empty()
+            || !reference
+                .chars()
+                .all(|c| c.is_ascii_digit() || matches!(c, ',' | '-' | ' ' | '\t'))
+        {
+            continue;
+        }
+        for value in reference
+            .split(|c: char| !c.is_ascii_digit())
+            .filter(|value| !value.is_empty())
+        {
+            if value
+                .parse::<usize>()
+                .ok()
+                .is_none_or(|number| number == 0 || number > count)
+            {
+                return Err(CoreError::InvalidInput(
+                    "요약의 근거 번호가 음성 기록 범위를 벗어났습니다.".into(),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 impl Engine {
     pub fn summary_input(&self, id: &str) -> Result<SummaryInput> {
         self.require_active_meeting(id)?;
@@ -187,6 +309,59 @@ impl Engine {
             notes: self.meetings[id].meeting.notes.clone(),
             expected_id: self.summary(id)?.map(|view| view.document.id),
         })
+    }
+
+    pub(crate) fn validate_summary_context(
+        &self,
+        id: &str,
+        context: &SummaryContext,
+    ) -> Result<SummaryInput> {
+        self.require_active_meeting(id)?;
+        if self.quitting {
+            return Err(CoreError::Unavailable);
+        }
+        if self.capture.is_some() {
+            return Err(CoreError::RecordingBusy);
+        }
+        context.validate()?;
+        let input = self.summary_input(id)?;
+        if SummaryContext::new(&input.source, &input.notes, input.expected_id.clone())? != *context
+        {
+            return Err(CoreError::EditConflict);
+        }
+        Ok(input)
+    }
+
+    pub(crate) fn import_summary(
+        &mut self,
+        id: &str,
+        context: SummaryContext,
+        text: String,
+        producer: ExternalSummaryProducer,
+    ) -> Result<Summary> {
+        producer.validate()?;
+        let input = self.validate_summary_context(id, &context)?;
+        validate_import_references(&text, input.source.segments.len())?;
+        let provenance = SummaryProvenance {
+            model: producer.model.clone(),
+            model_revision: producer.model_revision.clone(),
+            model_sha256: None,
+            runtime: None,
+            prompt_version: producer.prompt_version.clone(),
+            template: producer.template.clone(),
+            producer: Some(producer),
+        };
+        self.commit_summary(
+            id,
+            SummaryDraft {
+                source: input.source,
+                notes: Some(input.notes),
+                expected_id: input.expected_id,
+                text,
+                provenance,
+                receipt: serde_json::json!({"kind":"external_agent_import","context":context}),
+            },
+        )
     }
 
     pub fn summary(&self, id: &str) -> Result<Option<SummaryView>> {
@@ -414,6 +589,193 @@ impl Engine {
 mod tests {
     use super::*;
     use crate::transcript::tests::{output, setup};
+
+    fn external_producer() -> ExternalSummaryProducer {
+        ExternalSummaryProducer {
+            name: "Synthetic agent".into(),
+            model: None,
+            model_revision: None,
+            prompt_version: None,
+            template: Some("custom-minutes".into()),
+        }
+    }
+
+    fn context(engine: &Engine, id: &str) -> SummaryContext {
+        let input = engine.summary_input(id).unwrap();
+        SummaryContext::new(&input.source, &input.notes, input.expected_id).unwrap()
+    }
+
+    fn stored_files(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+        fn visit(root: &Path, directory: &Path, files: &mut BTreeMap<PathBuf, Vec<u8>>) {
+            for entry in std::fs::read_dir(directory).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    visit(root, &path, files);
+                } else {
+                    files.insert(
+                        path.strip_prefix(root).unwrap().into(),
+                        std::fs::read(path).unwrap(),
+                    );
+                }
+            }
+        }
+        let mut files = BTreeMap::new();
+        visit(root, root, &mut files);
+        files
+    }
+
+    #[test]
+    fn external_import_uses_the_writer_and_preserves_sources_history_and_citations() {
+        let (_temp, mut engine, id, _) = setup();
+        let source = engine.commit_transcript(&id, None, output()).unwrap();
+        engine
+            .update_meeting(&id, "회의".into(), "보존할 메모".into())
+            .unwrap();
+        let prior = engine
+            .commit_summary(&id, draft(source, None, "기존 요약 [1]"))
+            .unwrap();
+        let root = engine.store.root.clone();
+        let before = stored_files(&root);
+        let reader = crate::reader::LibraryReader::open(&root).unwrap();
+        let read = reader
+            .query("summary_context", serde_json::json!({"meetingId":id}))
+            .unwrap();
+        assert_eq!(before, stored_files(&root));
+        let context: SummaryContext = serde_json::from_value(read["context"].clone()).unwrap();
+        assert_eq!(context.summary_id.as_deref(), Some(prior.id.as_str()));
+        let request = crate::agent_control::Mutation::parse("summary_import", serde_json::json!({
+            "meetingId":id,"context":context,"text":"에이전트 요약 [1]","producer":external_producer()
+        })).unwrap();
+        let result = crate::agent_control::apply(&mut engine, request.clone()).unwrap();
+        assert_eq!(result["applied"], true);
+        assert!(result.get("text").is_none());
+        let saved = engine.summary(&id).unwrap().unwrap();
+        assert_eq!(result["summaryId"], saved.document.id);
+        assert!(!saved.stale);
+        assert_eq!(
+            saved.document.provenance.producer.as_ref().unwrap().name,
+            "Synthetic agent"
+        );
+        assert!(saved.document.provenance.model.is_none());
+        assert!(saved.document.provenance.model_sha256.is_none());
+        assert!(saved.document.provenance.runtime.is_none());
+        let provenance = serde_json::to_value(&saved.document.provenance).unwrap();
+        assert!(provenance.get("modelSha256").is_none());
+        let citations = engine
+            .summary_citations(&id, &saved.document.id, &[1])
+            .unwrap();
+        assert_eq!(citations.entries[0].reference, 1);
+        assert_eq!(citations.entries[0].segment.text, "원문");
+        let archive: serde_json::Value = store::read_json(
+            &root
+                .join(location(&id).unwrap())
+                .join(&saved.document.id)
+                .join("run.json"),
+        )
+        .unwrap();
+        assert_eq!(archive["notes"], "보존할 메모");
+        assert_eq!(archive["receipt"]["kind"], "external_agent_import");
+        let after = stored_files(&root);
+        for (path, bytes) in before {
+            if path != location(&id).unwrap().join("current.json") {
+                assert_eq!(after.get(&path), Some(&bytes), "{}", path.display());
+            }
+        }
+        assert!(matches!(
+            crate::agent_control::apply(&mut engine, request),
+            Err(CoreError::EditConflict)
+        ));
+        assert_eq!(after, stored_files(&root));
+        drop(engine);
+        let reopened = Engine::open(root).unwrap();
+        assert_eq!(
+            reopened.summary(&id).unwrap().unwrap().document.id,
+            saved.document.id
+        );
+    }
+
+    #[test]
+    fn external_import_rejects_changed_notes_transcript_and_summary_before_archiving() {
+        for change in ["notes", "transcript", "summary"] {
+            let (_temp, mut engine, id, _) = setup();
+            let source = engine.commit_transcript(&id, None, output()).unwrap();
+            let expected = context(&engine, &id);
+            match change {
+                "notes" => {
+                    engine
+                        .update_meeting(&id, "회의".into(), "변경 메모".into())
+                        .unwrap();
+                }
+                "transcript" => {
+                    engine
+                        .edit_transcript(&id, source.version, vec!["변경 원문".into()])
+                        .unwrap();
+                }
+                "summary" => {
+                    engine
+                        .commit_summary(&id, draft(source, None, "먼저 저장한 요약"))
+                        .unwrap();
+                }
+                _ => unreachable!(),
+            }
+            let before = stored_files(&engine.store.root);
+            assert!(
+                matches!(
+                    engine.import_summary(
+                        &id,
+                        expected,
+                        "늦은 요약 [1]".into(),
+                        external_producer()
+                    ),
+                    Err(CoreError::EditConflict)
+                ),
+                "{change}"
+            );
+            assert_eq!(before, stored_files(&engine.store.root), "{change}");
+        }
+    }
+
+    #[test]
+    fn external_import_rejects_invalid_citations_and_trashed_meetings_without_writes() {
+        let (_temp, mut engine, id, _) = setup();
+        engine.commit_transcript(&id, None, output()).unwrap();
+        let expected = context(&engine, &id);
+        let before = stored_files(&engine.store.root);
+        for text in [
+            "잘못된 근거 [0]",
+            "잘못된 근거 [2]",
+            "잘못된 근거 [1,\t999]",
+            "잘못된 근거 [999999999999999999999999999]",
+        ] {
+            assert!(matches!(
+                engine.import_summary(&id, expected.clone(), text.into(), external_producer()),
+                Err(CoreError::InvalidInput(_))
+            ));
+            assert_eq!(before, stored_files(&engine.store.root));
+        }
+        engine.trash_meetings(&[id.clone()]).unwrap();
+        let before = stored_files(&engine.store.root);
+        assert!(matches!(
+            engine.import_summary(&id, expected, "요약 [1]".into(), external_producer()),
+            Err(CoreError::MeetingNotFound)
+        ));
+        assert_eq!(before, stored_files(&engine.store.root));
+    }
+
+    #[test]
+    fn existing_local_summary_provenance_still_deserializes() {
+        let provenance: SummaryProvenance = serde_json::from_value(serde_json::json!({
+            "model":"local-model","modelRevision":"revision","modelSha256":"a".repeat(64),
+            "runtime":"local-runtime","promptVersion":"v1","template":"minutes"
+        }))
+        .unwrap();
+        assert!(provenance.producer.is_none());
+        assert_eq!(provenance.model.as_deref(), Some("local-model"));
+        assert_eq!(
+            provenance.model_sha256.as_deref(),
+            Some("a".repeat(64).as_str())
+        );
+    }
     fn draft(source: Transcript, expected_id: Option<String>, text: &str) -> SummaryDraft {
         SummaryDraft {
             source,
@@ -421,12 +783,13 @@ mod tests {
             expected_id,
             text: text.into(),
             provenance: SummaryProvenance {
-                model: "test".into(),
-                model_revision: "1".into(),
-                model_sha256: "a".repeat(64),
-                runtime: "test".into(),
-                prompt_version: "test".into(),
-                template: "minutes".into(),
+                producer: None,
+                model: Some("test".into()),
+                model_revision: Some("1".into()),
+                model_sha256: Some("a".repeat(64)),
+                runtime: Some("test".into()),
+                prompt_version: Some("test".into()),
+                template: Some("minutes".into()),
             },
             receipt: serde_json::json!({"finish_reason":"stop"}),
         }

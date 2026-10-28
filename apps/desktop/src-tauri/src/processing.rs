@@ -758,7 +758,7 @@ impl Processing {
         Ok(())
     }
 
-    pub fn transcript_restore<T>(
+    pub fn meeting_idle<T>(
         &self,
         meeting_id: &str,
         action: impl FnOnce() -> grove_core::Result<T>,
@@ -782,7 +782,7 @@ impl Processing {
                 .any(|job| job.record.meeting_id.as_deref() == Some(meeting_id))
         {
             return Err(grove_core::CoreError::InvalidState(
-                "이 회의의 처리가 끝난 뒤 이전 기록으로 되돌려 주세요.".into(),
+                "이 회의의 처리가 끝난 뒤 다시 시도해 주세요.".into(),
             ));
         }
         action()
@@ -2356,12 +2356,12 @@ mod tests {
         });
         process.update(|progress| progress.meeting_id = Some("meeting-a".into()));
         assert!(process
-            .transcript_restore("meeting-a", || -> grove_core::Result<()> {
+            .meeting_idle("meeting-a", || -> grove_core::Result<()> {
                 panic!("a related running job must hold restore ownership")
             })
             .is_err());
         assert!(!cancel.load(Ordering::Acquire));
-        assert!(process.transcript_restore("meeting-b", || Ok(())).is_ok());
+        assert!(process.meeting_idle("meeting-b", || Ok(())).is_ok());
         release.send(()).unwrap();
         process
             .running
@@ -2372,10 +2372,10 @@ mod tests {
             .handle
             .join()
             .unwrap();
-        assert!(process.transcript_restore("meeting-a", || Ok(())).is_ok());
+        assert!(process.meeting_idle("meeting-a", || Ok(())).is_ok());
         process.cleanup_failed();
         assert!(process
-            .transcript_restore("meeting-a", || -> grove_core::Result<()> {
+            .meeting_idle("meeting-a", || -> grove_core::Result<()> {
                 panic!("unconfirmed worker termination must block restore")
             })
             .is_err());

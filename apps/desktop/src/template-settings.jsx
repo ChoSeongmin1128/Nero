@@ -35,7 +35,7 @@ function TemplateSettings({ flow, confirm, beforeLeave }) {
       <div className="settings-group template-settings-list">
         {state.items.map(item => <div className="template-settings-row" key={item.id}>
           <div className="template-settings-copy"><div className="template-settings-name"><strong>{item.name}</strong>{item.builtIn && <span>기본</span>}{item.customized && <span>수정됨</span>}</div><p title={item.description}>{item.description}</p></div>
-          <button type="button" className="small" disabled={state.busy} aria-label={`${item.name} ${state.deleted ? '복원' : '열기'}`} onClick={() => { void (state.deleted ? flow.restore(item) : flow.open(item.id)); }}>{state.deleted ? '복원' : '열기'}</button>
+          <button type="button" className="small" disabled={state.busy} aria-label={`${item.name} ${state.deleted ? '복원' : '편집'}`} onClick={() => { void (state.deleted ? flow.restore(item) : flow.open(item.id)); }}>{state.deleted ? '복원' : '편집'}</button>
         </div>)}
       </div>
       {!state.items.length && !state.busy && !state.error && <p className="template-settings-description">{state.deleted ? '삭제된 템플릿이 없습니다.' : '템플릿이 없습니다.'}</p>}
