@@ -23,6 +23,11 @@ Host package updates and actual live tool acceptance remain separate from app pa
 client configuration was not rewritten. Windows-device and model-quality qualification
 remain separate. Source commits and hashes are in [Release history](release-history.md).
 
+Build 28/agent23 has signed/notarized arm64 candidate artifacts. Its source implements
+copy formats, external citation policy, four settings groups, Calendar reminders and
+separate host-installation/session status. Installed-app acceptance remains pending;
+source tests and notarization are not native capture/Calendar/Windows qualification.
+
 ## Native rewrite source
 
 - Meeting lists use direct checkbox/modifier selection without a selection mode.
