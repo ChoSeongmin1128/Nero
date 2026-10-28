@@ -8,6 +8,7 @@ use std::time::Duration;
 
 const MEETING_ID: &str = "11111111-1111-4111-8111-111111111111";
 const PRIVATE_MARKER: &str = "SYNTHETIC_PRIVATE_BODY";
+const FOLDER_ID: &str = "33333333-3333-4333-8333-333333333333";
 
 fn temporary_root() -> tempfile::TempDir {
     tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap()
@@ -322,6 +323,85 @@ impl Drop for McpProcess {
     }
 }
 
+fn tool_data(response: &Value) -> Value {
+    let result = &response["result"];
+    assert!(result.get("structuredContent").is_none());
+    let content = result["content"].as_array().unwrap();
+    assert_eq!(content.len(), 1, "one JSON body, without duplicate content");
+    assert_eq!(content[0]["type"], "text");
+    serde_json::from_str(content[0]["text"].as_str().unwrap()).unwrap()
+}
+
+#[test]
+fn cli_and_mcp_observe_folder_moves_and_renames_on_each_read() {
+    let root = fixture();
+    let library_path = root.path().join("library.json");
+    let mut library = json!({"schemaVersion":1,"folders":{},"placements":{},"pendingPurges":[]});
+    library["folders"][FOLDER_ID] = json!({"id":FOLDER_ID,"name":"Planning"});
+    library["placements"][MEETING_ID] = json!({"folderId":FOLDER_ID,"deletedAt":null});
+    fs::write(&library_path, library.to_string()).unwrap();
+    let output = command(root.path())
+        .args(["--json", "folders", "list"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let cli_folders: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        cli_folders["folders"][0],
+        json!({"id":FOLDER_ID,"name":"Planning"})
+    );
+    let mut process = McpProcess::start(root.path());
+    process.initialize();
+    process.send(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"meetings_list","arguments":{"folderId":FOLDER_ID}}}));
+    assert_eq!(
+        tool_data(&process.result(2))["meetings"][0]["folderId"],
+        FOLDER_ID
+    );
+    library["folders"][FOLDER_ID]["name"] = json!("Renamed planning");
+    library["placements"][MEETING_ID]["folderId"] = Value::Null;
+    fs::write(&library_path, library.to_string()).unwrap();
+    let before = fs::read(&library_path).unwrap();
+    process.send(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"folders_list","arguments":{}}}));
+    let renamed = tool_data(&process.result(3));
+    assert_eq!(renamed["folders"][0]["name"], "Renamed planning");
+    process.send(json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"meetings_list","arguments":{"unfiled":true}}}));
+    let unfiled = tool_data(&process.result(4));
+    assert_eq!(unfiled["pagination"]["total"], 1);
+    assert!(unfiled["meetings"][0]["folderId"].is_null());
+    let output = command(root.path())
+        .args(["--json", "meetings", "list", "--folder-id", FOLDER_ID])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let filtered: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(filtered["pagination"]["total"], 0);
+    assert_eq!(before, fs::read(&library_path).unwrap());
+
+    let added_id = "44444444-4444-4444-8444-444444444444";
+    library["folders"][added_id] = json!({"id":added_id,"name":"Added planning"});
+    fs::write(&library_path, library.to_string()).unwrap();
+    let after_add = fs::read(&library_path).unwrap();
+    process.send(json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"folders_list","arguments":{}}}));
+    let folders = tool_data(&process.result(5));
+    assert_eq!(folders["pagination"]["total"], 2);
+    assert!(folders["folders"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|folder| { folder["id"] == added_id && folder["name"] == "Added planning" }));
+    assert_ne!(folders["sourceVersion"], renamed["sourceVersion"]);
+    let output = command(root.path())
+        .args(["--json", "folders", "list"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let cli_added: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(cli_added["folders"], folders["folders"]);
+    assert_eq!(cli_added["sourceVersion"], folders["sourceVersion"]);
+    assert_eq!(after_add, fs::read(&library_path).unwrap());
+    assert!(!root.path().join("store.lock").exists());
+}
+
 #[test]
 fn stdio_initialization_tools_errors_and_framing_use_the_sdk() {
     let root = fixture();
@@ -345,10 +425,7 @@ fn stdio_initialization_tools_errors_and_framing_use_the_sdk() {
 
     process.send(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"meeting_get","arguments":{"meetingId":MEETING_ID,"offset":1,"limit":1}}}));
     let called = process.result(3);
-    assert_eq!(
-        called["result"]["structuredContent"]["meeting"]["notes"],
-        "second line\n"
-    );
+    assert_eq!(tool_data(&called)["meeting"]["notes"], "second line\n");
     assert_eq!(called["result"]["isError"], false);
 
     process.send(json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"meetings_list","arguments":{"limit":201}}}));
@@ -364,10 +441,7 @@ fn stdio_initialization_tools_errors_and_framing_use_the_sdk() {
     process.send(json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"meeting_get","arguments":{"meetingId":"22222222-2222-4222-8222-222222222222"}}}));
     let missing = process.result(7);
     assert_eq!(missing["result"]["isError"], true);
-    assert_eq!(
-        missing["result"]["structuredContent"]["error"]["code"],
-        "meeting_not_found"
-    );
+    assert_eq!(tool_data(&missing)["error"]["code"], "meeting_not_found");
 
     fs::write(
         root.path()
@@ -380,10 +454,7 @@ fn stdio_initialization_tools_errors_and_framing_use_the_sdk() {
     process.send(json!({"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"meeting_get","arguments":{"meetingId":MEETING_ID}}}));
     let damaged = process.result(8);
     assert_eq!(damaged["result"]["isError"], true);
-    assert_eq!(
-        damaged["result"]["structuredContent"]["error"]["code"],
-        "invalid_document"
-    );
+    assert_eq!(tool_data(&damaged)["error"]["code"], "invalid_document");
     assert!(!damaged.to_string().contains(PRIVATE_MARKER));
     assert!(!damaged
         .to_string()

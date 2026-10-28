@@ -336,13 +336,31 @@ worker's exit is confirmed. New recording cancels/joins inference before capture
 Unconfirmed worker cleanup blocks new processing, recording and successful normal quit.
 Unexpected process/OS termination is not a validated parent-death cleanup guarantee.
 
-The initial context is 8,192 tokens, response allowance 2,048 plus a 128-token input
-margin. The actual rendered template is tokenized. Long transcripts are partitioned by
-whole utterances, all chunks are included, then their summaries are hierarchically merged without dropping late chunks. Merging
-is bounded to eight levels and must reduce the number of parts. Oversized
-utterances/non-reducing merge inputs, incomplete responses and invalid numeric source references
-fail without overwriting a prior summary. Syntactic reference checks do not verify meaning.
-Source numbers link back to the selected transcript; links are disabled after edits.
+The context remains 8,192 tokens with a 128-token input margin. The actual rendered
+system/user template is tokenized before each request. Short input uses a direct
+summary with its remaining output space. Long input uses source-bound fact extraction,
+explicit later-change linking, agenda grouping and complete agenda sections. Each
+structured request reserves 2,048 output tokens; input or output overflow partitions
+only the affected work. Oversized single utterances are divided at UTF-8 boundaries
+without changing their canonical source number or stored transcript.
+
+Every structured result requires a normal stop, schema validation and valid original
+source references. Agenda grouping accounts for every extracted topic; section writing
+requires one sentence under each fixed fact ID. The app retains the extracted fact's
+category and original source references; the writer cannot reassign IDs or promote a
+report into a decision. It assembles completed sections without one final model rewrite. This
+prevents the final document from competing with all intermediate summaries for one
+output window. Structural coverage and a normal stop do not establish factual accuracy
+or guarantee that extraction retained every important statement.
+
+Validated stage responses are checkpointed under each meeting's `summary-work`
+directory. Identity binds the frozen transcript, notes, pinned model/runtime, prompts
+and request settings. Retry reuses matching complete results; changed input invalidates
+reuse. Incomplete or corrupt responses are never reused, and corrupt files are retained
+when replaced. Meeting deletion includes these private intermediate files. The source,
+notes, audio and earlier summary remain untouched until the existing final commit gate.
+References retain original 1-based segment order and are rendered in bounded clickable
+groups. Source changes preserve the frozen archive rather than rebinding old numbers.
 
 OS memory observations are advisory and never block or cancel a summary. macOS reads
 an undocumented pressure sysctl on a best-effort basis; Windows queries the official

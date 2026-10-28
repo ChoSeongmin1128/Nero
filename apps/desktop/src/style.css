@@ -258,6 +258,7 @@ html.recorder-document { background: transparent; }
 .settings-client-status[data-state="connected"]::before { content: ''; flex: none; width: 7px; height: 4px; margin-bottom: 3px; border-left: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); }
 .settings-client-row > .notice { grid-column: 1 / -1; margin: 0; overflow-wrap: anywhere; }
 .settings-client-row button { flex: none; min-width: 62px; }
+.settings-agent-actions { display: flex; margin-top: 12px; }
 .settings-agent-advanced { margin-top: 20px; border-top: 1px solid var(--border); }
 .settings-agent-advanced summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 42px; list-style: none; cursor: pointer; color: var(--text-secondary); font-size: var(--text-label-size); border-radius: var(--radius); }
 .settings-agent-advanced summary::-webkit-details-marker { display: none; }

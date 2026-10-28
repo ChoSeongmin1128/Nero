@@ -302,8 +302,16 @@ Machine-local installation and preservation receipts remain private.
 - Summary records retain source revisions, model/prompt provenance and receipts. Changed
   sources or competing results cannot replace current summaries. The UI reads/copies them
   and links valid references to transcript playback, with stale-source links disabled.
-  Long input uses whole-utterance partitioning and a bounded merge; truncation/unfinished
-  output fails rather than replacing prior content. This does not establish summary quality.
+  Long input uses source-bound fact extraction, bounded global change linking, agenda
+  grouping and complete section writing. The app assembles sections without another
+  whole-document model rewrite. Input/output overflow partitions affected work; every
+  topic/fact must be accounted for and source IDs are app-derived from validated inputs.
+  UTF-8 splits preserve the original source number for oversized utterances. Complete
+  validated responses are checkpointed in meeting-owned summary-work, bound to frozen
+  source/notes/model/runtime/prompts/settings, and reused on retry. Partial/corrupt
+  responses are not reused. Original audio, text, edits and summaries retain the same
+  final CAS/cancellation boundary. Structural coverage does not establish semantic
+  summary quality or Windows/low-memory hardware qualification.
 - Model preparation now resumes validated Range responses and verifies full-file SHA256.
   Existing partial/invalid files are preserved; no automatic preparation or private uploads.
 - Cross-chunk identity matching, Calendar and Notion remain unconnected. Windows has

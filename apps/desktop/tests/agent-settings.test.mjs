@@ -2,23 +2,29 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import vm from 'node:vm';
+import { agentConnectionPrompt } from '../src/agent-connection-prompt.js';
 
 const source = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
 const functions = source.slice(source.indexOf('function renderAgentConnection()'), source.indexOf('function renderSettings()'));
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
-const info = { available: true, executablePath: '/Example App/nero', config: { mcpServers: { nero: { command: '/Example App/nero', args: ['mcp', '--data-dir', '/Example Library'] } } }, cliExample: 'nero meetings list', clients: [{ id: 'claude', state: 'not_connected' }, { id: 'codex', state: 'not_connected' }] };
+const info = { available: true, executablePath: '/Example App/nero', dataDir: '/Example Library', config: { mcpServers: { nero: { command: '/Example App/nero', args: ['mcp', '--data-dir', '/Example Library'] } } }, cliExample: 'nero meetings list', clients: [{ id: 'claude', state: 'not_connected' }, { id: 'codex', state: 'not_connected' }] };
 
 function harness({ load = async () => info, write = async () => {}, connect = async () => info } = {}) {
   const nodes = new Map();
   const byId = id => {
-    if (!nodes.has(id)) nodes.set(id, { textContent: '', dataset: {}, hidden: false, disabled: false, open: id === 'settings-dialog', focus() { throw Error('Unexpected focus'); } });
+    if (!nodes.has(id)) {
+      const classes = new Set();
+      nodes.set(id, { textContent: '', dataset: {}, hidden: false, disabled: false, open: id === 'settings-dialog',
+        classList: { add: value => classes.add(value), remove: value => classes.delete(value), contains: value => classes.has(value) },
+        focus() { throw Error('Unexpected focus'); } });
+    }
     return nodes.get(id);
   };
   const state = { settingsPanel: 'agent' };
   const agentConnection = { info: null, loading: false, error: '', request: 0, refresh: 0, timer: null, pending: {}, errors: {} };
   let calls = 0;
   const copied = [], timers = new Map();
-  const context = vm.createContext({ byId, state, agentConnection, bridge: { agentConnectionInfo: () => { calls += 1; return load(); }, connectAgentClient: connect },
+  const context = vm.createContext({ byId, state, agentConnection, agentConnectionPrompt, bridge: { agentConnectionInfo: () => { calls += 1; return load(); }, connectAgentClient: connect },
     navigator: { clipboard: { writeText: async text => { copied.push(text); await write(text); } } },
     copyFeedbackTimers: new Map(), setTimeout: callback => { const key = {}; timers.set(key, callback); return key; }, clearTimeout: key => timers.delete(key),
   });
@@ -84,12 +90,15 @@ test('copies exact configuration and CLI text with local success and failure fee
   await app.context.copyAgentConnection('config');
   assert.equal(app.copied[0], JSON.stringify(info.config, null, 2));
   assert.equal(app.byId('settings-agent-feedback').textContent, '복사됨');
+  assert.equal(app.byId('settings-agent-feedback').classList.contains('soft'), true);
   await app.context.copyAgentConnection('cli');
   assert.equal(app.copied[1], info.cliExample);
   const failed = harness({ write: async () => { throw Error('clipboard denied'); } });
   await failed.context.loadAgentConnection();
+  failed.byId('settings-agent-feedback').classList.add('soft');
   await failed.context.copyAgentConnection('config');
   assert.match(failed.byId('settings-agent-feedback').textContent, /복사하지 못했습니다/);
+  assert.equal(failed.byId('settings-agent-feedback').classList.contains('soft'), false);
 });
 
 test('closing during a clipboard request discards late feedback', async () => {
@@ -228,4 +237,34 @@ test('client preparation has a visible activity indicator without affecting the 
   pending.resolve(info);
   await connecting;
   assert.equal(app.byId('settings-claude-spinner').hidden, true);
+});
+
+
+test('copies a connection prompt without exposing client registration state', async () => {
+  const app = harness();
+  await app.context.loadAgentConnection();
+  await app.context.copyAgentConnection('prompt');
+  assert.equal(app.copied[0], agentConnectionPrompt(info));
+  assert.equal(app.byId('settings-agent-feedback').textContent, '복사됨');
+});
+
+test('connection prompt remains available when connection information cannot load', async () => {
+  const app = harness({ load: async () => { throw Error('native unavailable'); } });
+  await app.context.loadAgentConnection();
+  await app.context.copyAgentConnection('prompt');
+  assert.equal(app.copied.length, 1);
+  assert.match(app.copied[0], /설치된 Nero 앱/);
+  assert.doesNotMatch(app.copied[0], /Example/);
+  await app.context.copyAgentConnection('config');
+  assert.equal(app.copied.length, 1);
+});
+
+test('prompt copying obeys dialog ownership and reports clipboard failures', async () => {
+  const app = harness({ write: async () => { throw Error('clipboard denied'); } });
+  app.state.settingsPanel = 'appearance';
+  await app.context.copyAgentConnection('prompt');
+  assert.equal(app.copied.length, 0);
+  app.state.settingsPanel = 'agent';
+  await app.context.copyAgentConnection('prompt');
+  assert.match(app.byId('settings-agent-feedback').textContent, /복사하지 못했습니다/);
 });

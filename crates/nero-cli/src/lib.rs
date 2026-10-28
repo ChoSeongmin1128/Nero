@@ -134,13 +134,16 @@ pub fn input_schema(method: &str) -> Map<String, Value> {
         required.push("meetingId");
     }
     if matches!(method, "meetings_list" | "meetings_search") {
-        properties.insert("folderId".into(), id_schema());
+        let mut folder = id_schema();
+        folder["description"] = json!("Folder ID from folders_list. Omit for all folders.");
+        properties.insert("folderId".into(), folder);
+        properties.insert("unfiled".into(), json!({"type":"boolean","description":"Only meetings without a folder. Cannot combine true with folderId."}));
         for field in ["from", "to"] {
             properties.insert(field.into(), json!({"type":"integer","minimum":0,"description":"Unix epoch milliseconds. from is inclusive; to is exclusive."}));
         }
     }
     if method == "meetings_search" {
-        properties.insert("query".into(), json!({"type":"string","minLength":1,"maxLength":4096,"description":"Nonempty literal text, at most 4096 UTF-8 bytes, to find in titles, notes, saved transcripts and summaries."}));
+        properties.insert("query".into(), json!({"type":"string","minLength":1,"maxLength":4096,"description":"Literal text in title, notes, transcript or saved summary. Maximum 4096 UTF-8 bytes."}));
         required.push("query");
     }
     if method == "transcript_get" {
@@ -149,20 +152,18 @@ pub fn input_schema(method: &str) -> Map<String, Value> {
         }
     }
     if method != "status" {
-        let (offset_description, limit_description) = if matches!(
-            method,
-            "meeting_get" | "summary_get"
-        ) {
-            (
-                "Offset in textChunks. Each chunk is at most 4096 UTF-8 bytes and retains original newlines.",
-                "Maximum textChunks to return. Concatenate page text in order to recover the original body.",
-            )
-        } else {
-            (
-                "Number of items to skip.",
-                "Maximum number of items to return.",
-            )
-        };
+        let (offset_description, limit_description) =
+            if matches!(method, "meeting_get" | "summary_get") {
+                (
+                    "Text-chunk offset. Chunks retain newlines and are at most 4096 UTF-8 bytes.",
+                    "Maximum text chunks. Concatenate page text in order.",
+                )
+            } else {
+                (
+                    "Number of items to skip.",
+                    "Maximum number of items to return.",
+                )
+            };
         properties.insert(
             "offset".into(),
             json!({"type":"integer","minimum":0,"default":0,"description":offset_description}),

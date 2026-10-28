@@ -42,6 +42,7 @@ struct Params {
     meeting_id: Option<String>,
     query: Option<String>,
     folder_id: Option<String>,
+    unfiled: Option<bool>,
     from: Option<u64>,
     to: Option<u64>,
     offset: Option<usize>,
@@ -53,8 +54,10 @@ struct Params {
 impl Params {
     fn parse(method: &str, value: Value) -> Result<Self> {
         let allowed: &[&str] = match method {
-            "meetings_list" => &["folderId", "from", "to", "offset", "limit"],
-            "meetings_search" => &["query", "folderId", "from", "to", "offset", "limit"],
+            "meetings_list" => &["folderId", "unfiled", "from", "to", "offset", "limit"],
+            "meetings_search" => &[
+                "query", "folderId", "unfiled", "from", "to", "offset", "limit",
+            ],
             "meeting_get" | "summary_get" => &["meetingId", "offset", "limit"],
             "transcript_get" => &["meetingId", "start", "end", "offset", "limit"],
             "folders_list" => &["offset", "limit"],
@@ -104,6 +107,11 @@ impl Params {
         {
             return Err(CoreError::InvalidInput(
                 "start는 end보다 작아야 합니다.".into(),
+            ));
+        }
+        if params.unfiled == Some(true) && params.folder_id.is_some() {
+            return Err(CoreError::InvalidInput(
+                "미분류와 특정 폴더를 동시에 선택할 수 없습니다.".into(),
             ));
         }
         if let Some(id) = &params.folder_id {
@@ -443,14 +451,22 @@ impl<'a> Transaction<'a> {
                 Ok(json!({"meeting":value,"pagination":page}))
             }
             "transcript_get" => {
-                let segments = transcript.as_ref().map(|doc| {
-                    doc.segments.iter().filter(|segment| params.start.is_none_or(|start| segment.end > start)
-                        && params.end.is_none_or(|end| segment.start < end)).map(|segment| {
-                            let name = doc.speakers.iter().find(|speaker| Some(&speaker.id) == segment.speaker_id.as_ref()).map(|speaker| speaker.name.as_str());
-                            json!({"id":segment.id,"start":segment.start,"end":segment.end,
-                                "speakerId":segment.speaker_id,"speakerName":name,"text":segment.text})
-                        }).collect::<Vec<_>>()
-                }).unwrap_or_default();
+                let segments = transcript
+                    .as_ref()
+                    .map(|doc| {
+                        doc.segments
+                            .iter()
+                            .filter(|segment| {
+                                params.start.is_none_or(|start| segment.end > start)
+                                    && params.end.is_none_or(|end| segment.start < end)
+                            })
+                            .map(|segment| {
+                                json!({"id":segment.id,"start":segment.start,"end":segment.end,
+                                "speakerId":segment.speaker_id,"text":segment.text})
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
                 Ok(
                     json!({"meetingId":id,"version":transcript.as_ref().map(|doc| &doc.version),
                     "speakers":transcript.as_ref().map(|doc| doc.speakers.clone()).unwrap_or_default(),
@@ -500,6 +516,7 @@ impl<'a> Transaction<'a> {
                 .folder_id
                 .as_ref()
                 .is_some_and(|folder| meeting.folder_id.as_ref() != Some(folder))
+                || (params.unfiled == Some(true) && meeting.folder_id.is_some())
                 || params.from.is_some_and(|from| time < from)
                 || params.to.is_some_and(|to| time >= to)
             {
@@ -921,7 +938,9 @@ mod tests {
         assert_eq!(result["pagination"]["hasMore"], true);
         assert_eq!(result["segments"][0]["id"], "utterance-1");
         assert_eq!(result["segments"][0]["text"], "corrected 1");
-        assert_eq!(result["segments"][0]["speakerName"], "Speaker A");
+        assert_eq!(result["segments"][0]["speakerId"], "speaker-a");
+        assert_eq!(result["speakers"][0]["name"], "Speaker A");
+        assert!(result["segments"][0].get("speakerName").is_none());
         assert!(result["segments"][0].get("originalText").is_none());
         assert_eq!(result["version"]["revision"], 1);
         assert!(result["sourceVersion"]
@@ -1034,6 +1053,75 @@ mod tests {
                 Err(CoreError::MeetingNotFound)
             ));
         }
+    }
+
+    #[test]
+    fn folder_queries_observe_library_changes_without_reopening_or_writing() {
+        let fixture = Fixture::new();
+        let reader = fixture.reader();
+        let first = reader.query("folders_list", json!({})).unwrap();
+        assert_eq!(first["folders"][0]["name"], "Synthetic folder");
+        assert_eq!(
+            reader
+                .query("meetings_list", json!({"unfiled":true}))
+                .unwrap()["pagination"]["total"],
+            0
+        );
+        let mut library: Library = store::read_json(&fixture.root.join("library.json")).unwrap();
+        library.folders.get_mut(&fixture.folder).unwrap().name = "Renamed folder".into();
+        library.placements.get_mut(&fixture.id).unwrap().folder_id = None;
+        store::write_json(&fixture.root, Path::new("library.json"), &library).unwrap();
+        let before = tree_hash(&fixture.root);
+        let renamed = reader.query("folders_list", json!({})).unwrap();
+        assert_eq!(renamed["folders"][0]["name"], "Renamed folder");
+        assert_ne!(renamed["sourceVersion"], first["sourceVersion"]);
+        let unfiled = reader
+            .query("meetings_list", json!({"unfiled":true}))
+            .unwrap();
+        assert_eq!(unfiled["pagination"]["total"], 1);
+        assert!(unfiled["meetings"][0]["folderId"].is_null());
+        assert_eq!(
+            reader
+                .query("meetings_list", json!({"folderId":fixture.folder}))
+                .unwrap()["pagination"]["total"],
+            0
+        );
+        assert_eq!(
+            reader
+                .query(
+                    "meetings_search",
+                    json!({"query":"corrected","unfiled":true})
+                )
+                .unwrap()["pagination"]["total"],
+            1
+        );
+        assert!(reader
+            .query(
+                "meetings_list",
+                json!({"folderId":fixture.folder,"unfiled":true})
+            )
+            .is_err());
+        assert!(reader
+            .query("folders_list", json!({"unfiled":true}))
+            .is_err());
+        assert_eq!(tree_hash(&fixture.root), before);
+
+        let mut added = library.folders[&fixture.folder].clone();
+        added.id = uuid::Uuid::new_v4().to_string();
+        added.name = "Added folder".into();
+        let added_id = added.id.clone();
+        library.folders.insert(added_id.clone(), added);
+        store::write_json(&fixture.root, Path::new("library.json"), &library).unwrap();
+        let after_add = tree_hash(&fixture.root);
+        let folders = reader.query("folders_list", json!({})).unwrap();
+        assert_eq!(folders["pagination"]["total"], 2);
+        assert!(folders["folders"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|folder| folder["id"] == added_id && folder["name"] == "Added folder"));
+        assert_ne!(folders["sourceVersion"], renamed["sourceVersion"]);
+        assert_eq!(tree_hash(&fixture.root), after_add);
     }
 
     #[test]

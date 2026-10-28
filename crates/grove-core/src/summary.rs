@@ -8,6 +8,8 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
+pub const MAX_SUMMARY_CITATION_REFERENCES: usize = 32;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SummaryProvenance {
@@ -214,7 +216,7 @@ impl Engine {
         self.require_active_meeting(id)?;
         store::validate_id(id)?;
         store::validate_id(summary_id)?;
-        if references.is_empty() || references.len() > 32 {
+        if references.is_empty() || references.len() > MAX_SUMMARY_CITATION_REFERENCES {
             return Err(CoreError::InvalidInput(
                 "근거 번호는 1개 이상 32개 이하로 요청해 주세요.".into(),
             ));

@@ -8,8 +8,8 @@ pub const HELP: &str = "Nero 읽기 전용 CLI
 
 사용법: nero [--data-dir PATH] [--json] <명령>
 
-  meetings list [--folder-id ID] [--from MS] [--to MS] [--offset N] [--limit N]
-  meetings search QUERY [--folder-id ID] [--from MS] [--to MS] [--offset N] [--limit N]
+  meetings list [--folder-id ID | --unfiled] [--from MS] [--to MS] [--offset N] [--limit N]
+  meetings search QUERY [--folder-id ID | --unfiled] [--from MS] [--to MS] [--offset N] [--limit N]
   meetings get ID [--offset N] [--limit N]
   transcript get ID [--start SECONDS] [--end SECONDS] [--offset N] [--limit N]
   summary get ID [--offset N] [--limit N]
@@ -134,6 +134,15 @@ fn parse_query(group: &str, command: &str, remaining: &[&str]) -> Result<Action,
         let (flag, inline) = argument
             .split_once('=')
             .map_or((argument, None), |(flag, value)| (flag, Some(value)));
+        if flag == "--unfiled" {
+            if !matches!(method, "meetings_list" | "meetings_search")
+                || inline.is_some()
+                || params.insert("unfiled".into(), Value::Bool(true)).is_some()
+            {
+                return Err(QueryError::invalid());
+            }
+            continue;
+        }
         let field = match flag {
             "--offset" => "offset",
             "--limit" => "limit",
@@ -168,6 +177,9 @@ fn parse_query(group: &str, command: &str, remaining: &[&str]) -> Result<Action,
             }
         };
         params.insert(field.into(), value);
+    }
+    if params.get("unfiled") == Some(&Value::Bool(true)) && params.contains_key("folderId") {
+        return Err(QueryError::invalid());
     }
     if params
         .get("from")
@@ -326,7 +338,13 @@ fn render(method: &str, value: &Value) -> String {
                         "[{} - {}] {}\n{}\n",
                         segment["start"],
                         segment["end"],
-                        text(&segment["speakerName"]),
+                        value["speakers"]
+                            .as_array()
+                            .and_then(|speakers| speakers
+                                .iter()
+                                .find(|speaker| speaker["id"] == segment["speakerId"]))
+                            .map(|speaker| text(&speaker["name"]))
+                            .unwrap_or_default(),
                         body(&segment["text"])
                     ));
                 }
@@ -416,6 +434,34 @@ mod tests {
                 params: json!({"meetingId":"id","offset":50,"limit":20})
             }
         );
+    }
+
+    #[test]
+    fn unfiled_filter_is_explicit_and_excludes_a_folder_id() {
+        assert_eq!(
+            args(&["meetings", "list", "--unfiled"]).unwrap().action,
+            Action::Query {
+                method: "meetings_list",
+                params: json!({"unfiled":true})
+            }
+        );
+        assert_eq!(
+            args(&["meetings", "search", "term", "--unfiled"])
+                .unwrap()
+                .action,
+            Action::Query {
+                method: "meetings_search",
+                params: json!({"query":"term","unfiled":true})
+            }
+        );
+        for values in [
+            vec!["meetings", "list", "--unfiled", "--folder-id", "id"],
+            vec!["meetings", "list", "--unfiled", "--unfiled"],
+            vec!["meetings", "list", "--unfiled=true"],
+            vec!["folders", "list", "--unfiled"],
+        ] {
+            assert!(args(&values).is_err());
+        }
     }
 
     #[test]

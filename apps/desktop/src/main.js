@@ -8,6 +8,7 @@ import { createMeetingSearch, mountDocumentSearch } from './meeting-search.js';
 import { mountTranscriptActions } from './transcript-actions.js';
 import { mountMeetingDetail } from './meeting-detail-ui.js';
 import { mountSummaryEvidence } from './summary-evidence.js';
+import { agentConnectionPrompt } from './agent-connection-prompt.js';
 
 applySystemAppearance();
 const byId = (id) => document.getElementById(id);
@@ -546,8 +547,9 @@ function resetAgentConnection() {
 
 async function copyAgentConnection(kind) {
   const info = agentConnection.info;
-  if (!byId('settings-dialog').open || state.settingsPanel !== 'agent' || !info?.available || !info.executablePath || !info.config) return;
-  const text = kind === 'config' ? JSON.stringify(info.config, null, 2) : info.cliExample;
+  if (!agentConnectionActive()) return;
+  if (kind !== 'prompt' && (!info?.available || !info.executablePath || !info.config)) return;
+  const text = kind === 'prompt' ? agentConnectionPrompt(info) : kind === 'config' ? JSON.stringify(info.config, null, 2) : kind === 'cli' ? info.cliExample : '';
   if (!text) return;
   const request = agentConnection.request;
   const feedback = byId('settings-agent-feedback');
@@ -555,9 +557,11 @@ async function copyAgentConnection(kind) {
     await navigator.clipboard.writeText(text);
     if (request !== agentConnection.request) return;
     feedback.textContent = '복사됨';
+    feedback.classList.add('soft');
   } catch {
     if (request !== agentConnection.request) return;
     feedback.textContent = '복사하지 못했습니다. 다시 시도해 주세요.';
+    feedback.classList.remove('soft');
   }
   feedback.hidden = false;
   clearTimeout(copyFeedbackTimers.get('agent'));
@@ -714,7 +718,7 @@ byId('settings-dialog').addEventListener('keydown', event => {
   state.settingsPanel = settingsPanels[event.key === 'Home' ? 0 : event.key === 'End' ? settingsPanels.length - 1 : (index + step + settingsPanels.length) % settingsPanels.length];
   renderSettings(); byId(`settings-${state.settingsPanel}-tab`).focus(); void loadAgentConnection(); void loadTerminologySettings();
 });
-for (const kind of ['config', 'cli']) byId(`settings-agent-copy-${kind}`).addEventListener('click', () => copyAgentConnection(kind));
+for (const kind of ['config', 'cli', 'prompt']) byId(`settings-agent-copy-${kind}`).addEventListener('click', () => copyAgentConnection(kind));
 for (const client of ['claude', 'codex']) byId(`settings-${client}-connect`).addEventListener('click', () => { void connectAgentClient(client); });
 globalThis.addEventListener?.('focus', () => { if (agentConnectionActive()) void loadAgentConnection(true); });
 byId('terminology-enabled').addEventListener('change', changeTerminologyEnabled);

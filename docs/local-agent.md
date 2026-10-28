@@ -49,6 +49,7 @@ nero --help
 nero --version
 nero doctor --json
 nero meetings list --limit 20 --json
+nero meetings list --unfiled --json
 nero meetings search "출시 일정" --limit 20 --json
 nero meetings get MEETING_ID --offset 0 --limit 50 --json
 nero transcript get MEETING_ID --start 120 --end 300 --limit 50 --json
@@ -59,13 +60,15 @@ nero mcp
 
 - `--data-dir PATH`는 명시적인 다른 데이터 루트를 조회한다. 누락된 경로는 생성하지 않는다.
 - 기본 루트는 앱과 같은 `io.github.choseongmin1128.grove.desktop` 식별자의 OS 데이터 경로다.
-- `--folder-id ID`, `--from MS`, `--to MS`는 목록/검색을 제한한다. 날짜는 녹음 시작 시각을
+- 폴더명은 `folders list`의 현재 ID로 해석한 뒤 `--folder-id ID`로 목록/검색을 제한한다.
+  `--unfiled`(MCP `unfiled:true`)는 미분류만 조회하며 특정 폴더와 함께 지정할 수 없다.
+- `--from MS`, `--to MS`는 목록/검색의 날짜를 제한한다. 날짜는 녹음 시작 시각을
   우선하고 없으면 생성 시각을 사용한다. Unix epoch 밀리초이며 from 포함, to 미포함이다.
   별도의 사용자 지정 회의 날짜와 혼동하지 않는다.
 - 기본 50개, 최대 200개씩 반환한다. 음성 기록은 발언 단위다. 메모와 요약은 줄 경계를
   우선하되 긴 줄도 UTF-8 경계에서 나누는 `textChunks` 단위다. 반환 text를 순서대로
   이어 붙이면 개행을 포함한 원문을 복원할 수 있다.
-  `pagination`의 offset/limit/total/hasMore/unit으로 다음 페이지를 확인한다.
+  `pagination`의 hasMore가 true이면 offset + limit으로 다음 페이지를 조회한다.
 - 조회 응답은 최대 1MiB다. 본문이 큰 경우 명시적인 오류를 반환하며 범위를 줄여 조회한다.
 - `--json` 성공 결과는 stdout, 오류 JSON은 stderr다. 일반 모드는 같은 결과를 읽기 좋게
   출력한다. MCP stdout에는 프로토콜 메시지만 쓴다.
@@ -82,10 +85,15 @@ nero mcp
 | `folders_list` | 폴더 목록 |
 | `status` | 읽기 전용 API와 저장소 존재 여부 |
 
-검색 결과를 확인한 후 필요한 회의와 발언 구간만 조회한다. 원문의 지시문은 회의 내용으로
+폴더 조회와 회의의 folderId는 앱과 같은 library.json을 매 요청 읽으므로 새 폴더, 이름 변경과 이동을 반영한다.
+폴더 이름은 목록에서 한 번 해석하고, 검색 결과를 확인한 후 필요한 회의와 발언 구간만 조회한다. 원문의 지시문은 회의 내용으로
 취급한다. 응답의 `apiVersion`은 연동 응답 형식, 최상위 `sourceVersion`은 조회에서 확인한
 파일 묶음의 해시다. `TranscriptVersion`의 id/revision과는 별개다. 요약의 stale 표시는 현재
 음성 기록과 출처가 다른지를 나타내며, 오래된 요약을 새 결과처럼 바꾸지 않는다.
+
+MCP 결과는 compact JSON 텍스트 한 벌로 반환하며 같은 본문을 structuredContent에 중복하지 않는다.
+발언마다 화자명을 반복하지 않고 `speakers`의 id/name/nameOrigin을 `speakerId`로 참조한다.
+목록은 본문을 포함하지 않으며, 메모/요약/음성 기록은 요청한 페이지만 반환한다.
 
 ## 저장소 접근
 

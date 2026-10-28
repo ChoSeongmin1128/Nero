@@ -12,6 +12,7 @@ const root = fileURLToPath(new URL('../../../', import.meta.url));
 const source = join(root, 'apps/desktop/agent');
 const icon = join(root, 'apps/desktop/src-tauri/icons/icon.png');
 const json = async path => JSON.parse(await readFile(path, 'utf8'));
+const { integrationVersion } = await json(join(source, 'release.json'));
 
 for (const [target, platform, binary] of [
   ['aarch64-apple-darwin', 'darwin', 'nero'],
@@ -19,10 +20,10 @@ for (const [target, platform, binary] of [
 ]) {
   test(`packages ${target} without a developer runtime or machine-specific paths`, async () => {
     const destination = await mkdtemp(join(tmpdir(), 'nero-agent-package-'));
-    await prepareAgentPackages({ source, destination, icon, version: '0.0.1-nero.19', target });
+    await prepareAgentPackages({ source, destination, icon, version: integrationVersion, target });
     const claude = await json(join(destination, 'claude-manifest.json'));
     assert.equal(claude.manifest_version, '0.3');
-    assert.equal(claude.version, '0.0.1-nero.19');
+    assert.equal(claude.version, integrationVersion);
     assert.equal(claude.server.type, 'binary');
     assert.equal(claude.server.entry_point, `server/${binary}`);
     assert.equal(claude.server.mcp_config.command, '${__dirname}/server/' + binary);
@@ -36,7 +37,7 @@ for (const [target, platform, binary] of [
     const portable = await json(join(destination, 'codex-plugin.json'));
     assert.equal(portable.$schema, 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json');
     assert.equal(portable.name, 'nero');
-    assert.equal(portable.version, '0.0.1-nero.19');
+    assert.equal(portable.version, integrationVersion);
     assert.equal(portable.mcpServers, undefined);
     assert.equal(portable.extensions['com.openai'].interface.displayName, 'Nero');
     const legacy = await json(join(destination, 'codex-legacy-plugin.json'));
@@ -66,10 +67,10 @@ async function reusableAgent() {
   const destination = join(directory, 'current');
   const app = join(directory, 'Nero.app');
   const prior = join(app, 'Contents/Resources/agent');
-  await prepareAgentPackages({source, destination:join(destination,'integrations'), icon, version:'0.0.1-nero.19', target:'aarch64-apple-darwin'});
+  await prepareAgentPackages({source, destination:join(destination,'integrations'), icon, version:integrationVersion, target:'aarch64-apple-darwin'});
   await mkdir(prior,{recursive:true});
   await cp(join(destination,'integrations'),join(prior,'integrations'),{recursive:true});
-  const metadata = {version:'0.0.1',integrationVersion:'0.0.1-nero.19',apiVersion:1,target:'aarch64-apple-darwin',binary:'nero',buildSha256:'a'.repeat(64)};
+  const metadata = {version:'0.0.1',integrationVersion,apiVersion:1,target:'aarch64-apple-darwin',binary:'nero',buildSha256:'a'.repeat(64)};
   await writeFile(join(prior,'agent-build.json'),JSON.stringify(metadata));
   await writeFile(join(prior,'nero'),'signed executable fixture');
   await writeFile(join(destination,'nero'),'fresh executable fixture');
@@ -89,6 +90,7 @@ test('unchanged signed agent reuse preserves exact client generation inputs', as
 test('changed executable build or integration templates reject component reuse', async () => {
   const fixture = await reusableAgent();
   await assert.rejects(reuseSignedAgent({...fixture,metadata:{...fixture.metadata,buildSha256:'b'.repeat(64)}}),/buildSha256 changed/);
+  await assert.rejects(reuseSignedAgent({...fixture,metadata:{...fixture.metadata,integrationVersion:'0.0.1-nero.19'}}),/integrationVersion changed/);
   await writeFile(join(fixture.destination,'integrations/meeting-summary/SKILL.md'),'changed instructions');
   await assert.rejects(reuseSignedAgent(fixture),/templates changed/);
   assert.equal(await readFile(join(fixture.destination,'nero'),'utf8'),'fresh executable fixture');

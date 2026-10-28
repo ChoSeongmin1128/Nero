@@ -17,6 +17,8 @@ mod speaker_worker;
 mod speech_audio;
 mod storage_space;
 mod summary;
+mod summary_checkpoint;
+mod summary_evidence;
 mod summary_failure;
 mod terminology;
 use grove_core::{
