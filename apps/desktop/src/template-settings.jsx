@@ -25,7 +25,7 @@ function TemplateSettings({ flow, confirm, beforeLeave }) {
         <label>요약 지침<textarea value={draft.prompt} disabled={state.busy} required spellCheck={false} onChange={event => flow.edit('prompt', event.target.value)} /></label>
         <div className="template-settings-actions">
           {state.document?.builtIn && state.document.customized && <button type="button" className="small" disabled={state.busy} onClick={async () => { if (await confirm('기본값으로 복원할까요?', '이 템플릿의 수정 내용이 기본값으로 바뀝니다.', '복원')) void flow.reset(); }}>기본값으로</button>}
-          {state.document && !state.document.builtIn && <button type="button" className="small icon-only" aria-label="템플릿 삭제" title="템플릿 삭제" disabled={state.busy} onClick={async () => { if (await confirm('템플릿을 삭제할까요?', '삭제된 템플릿 목록에서 다시 복원할 수 있습니다.', '삭제')) void flow.remove(); }}><Trash2 size={15} aria-hidden="true" /></button>}
+          {state.document && !state.document.builtIn && <button type="button" className="small icon-only danger" aria-label="템플릿 삭제" title="템플릿 삭제" disabled={state.busy} onClick={async () => { if (await confirm('템플릿을 삭제할까요?', '삭제된 템플릿 목록에서 다시 복원할 수 있습니다.', '삭제', true)) void flow.remove(); }}><Trash2 size={15} aria-hidden="true" /></button>}
           <button type="submit" className="small primary" disabled={state.busy || !draft.name.trim() || !draft.prompt.trim() || (!flow.isDirty() && Boolean(state.document))}>{state.busy ? '처리 중' : '저장'}</button>
         </div>
       </form>
@@ -52,7 +52,7 @@ function Confirmation({ state, container, resolve, finalFocus }) {
   return <Dialog open={Boolean(state)} onOpenChange={open => { if (!open) resolve(false); }}>
     <DialogContent container={container} className="template-settings-confirm" data-nero-ui-owned="" initialFocus={cancel} finalFocus={finalFocus} showCloseButton={false}>
       <DialogHeader><DialogTitle>{state?.title}</DialogTitle><DialogDescription>{state?.description}</DialogDescription></DialogHeader>
-      <DialogFooter><button type="button" ref={cancel} onClick={() => resolve(false)}>취소</button><button type="button" className="primary" onClick={() => resolve(true)}>{state?.action}</button></DialogFooter>
+      <DialogFooter><button type="button" ref={cancel} onClick={() => resolve(false)}>취소</button><button type="button" className={state?.destructive ? 'danger' : 'primary'} onClick={() => resolve(true)}>{state?.action}</button></DialogFooter>
     </DialogContent>
   </Dialog>;
 }
@@ -66,10 +66,10 @@ export function mountTemplateSettings({ container, panel, bridge }) {
   let settle = null;
   let focusOrigin = null;
   const resolve = value => { const finish = settle; settle = null; confirmation = null; confirmPromise = null; render(); finish?.(value); };
-  const confirm = (title, description, action) => {
+  const confirm = (title, description, action, destructive = false) => {
     if (confirmPromise) return confirmPromise;
     focusOrigin = container.ownerDocument.activeElement;
-    confirmation = { title, description, action, trigger: focusOrigin };
+    confirmation = { title, description, action, destructive, trigger: focusOrigin };
     confirmPromise = new Promise(done => { settle = done; });
     render();
     return confirmPromise;
