@@ -129,19 +129,28 @@ if a.dmg_only:
         run('ditto','-x','-k',str(output),temporary)
         if tree(app)!=tree(Path(temporary)/app.name):raise SystemExit('App differs from the preserved ZIP')
 else:
+    agent=app/'Contents/Resources/agent/nero'
+    agent_metadata=json.loads((agent.parent/'agent-build.json').read_text())
+    preserved_agent=agent_metadata.get('reusedSignedBinary')
+    if preserved_agent:
+        if digest(agent)!=preserved_agent.get('sha256'):raise SystemExit('The reused agent binary changed')
+        run('codesign','--verify','--strict',str(agent))
+        if worker_package.signature_metadata(agent)['TeamIdentifier']!=preserved_agent.get('teamIdentifier'):raise SystemExit('The reused agent signing team changed')
     worker=included_worker(app)
     worker_preflight=worker_package.verify_staged(worker,execute_runtime=True) if worker is not None else None
     speech=included_speech(app)
     speech_preflight=speech_package.verify_staged(speech,target='macos-arm64',execute_runtime=True) if speech is not None else None
     for file in files:
         with file.open('rb') as f:magic=f.read(4)
-        if magic in MACHO:
+        if magic in MACHO and not (preserved_agent and file==agent):
             run('codesign','--force','--options','runtime','--timestamp','--sign',identity,str(file))
     for bundle in sorted((p for p in (app/'Contents').rglob('*.bundle') if p.is_dir()),key=lambda p:len(p.parts),reverse=True):
         run('codesign','--force','--options','runtime','--timestamp','--sign',identity,str(bundle))
     run('codesign','--force','--options','runtime','--timestamp','--sign',identity,'--entitlements',str(ROOT/'apps/desktop/src-tauri/Nero.entitlements'),str(app))
     run('codesign','--verify','--deep','--strict',str(app))
     application_identity=worker_package.signature_metadata(app)
+    if preserved_agent:
+        if digest(agent)!=preserved_agent['sha256'] or preserved_agent['teamIdentifier']!=application_identity['TeamIdentifier']:raise SystemExit('The preserved agent differs from the app signing team')
     worker_receipt=worker_package.verify_signed_transition(worker,worker_preflight,application_identity['TeamIdentifier']) if worker is not None else None
     speech_receipt=speech_package.signed_transition(speech,speech_preflight) if speech is not None else None
     output.parent.mkdir(parents=True,exist_ok=True)
@@ -150,6 +159,7 @@ else:
     run('ditto','-c','-k','--keepParent',str(app),str(upload))
     receipt={'bundle_id':info['CFBundleIdentifier'],'version':info['CFBundleShortVersionString'],'build':info['CFBundleVersion'],'source_commit':build_info['sourceCommit'],'source_tree':build_info['sourceTree'],'source_dirty':False,'architecture':subprocess.check_output(['lipo','-archs',str(app/'Contents/MacOS'/info['CFBundleExecutable'])],text=True).strip(),'signed':True,'notarized':False,'app_signature':application_identity,'moss_package':worker_receipt}
     receipt['speech_package']=speech_receipt
+    receipt['preserved_agent']=preserved_agent
     if a.notarize:
         receipt['notary']=notarize(upload,Path(str(output)+'.notarization.json'))
         run('xcrun','stapler','staple',str(app));run('xcrun','stapler','validate',str(app));run('spctl','--assess','--type','execute','--verbose=2',str(app));receipt['notarized']=True

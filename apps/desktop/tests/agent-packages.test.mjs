@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
-import { readFile, mkdtemp } from 'node:fs/promises';
+import { readFile, mkdtemp, mkdir, cp, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { prepareAgentPackages, targetPlatform } from '../scripts/agent-packages.mjs';
+import { reuseSignedAgent } from '../scripts/reuse-signed-agent.mjs';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const source = join(root, 'apps/desktop/agent');
@@ -57,4 +59,45 @@ for (const [target, platform, binary] of [
 test('rejects unknown targets and invalid versions before package creation', async () => {
   assert.throws(() => targetPlatform('universal-apple'), /Unsupported/);
   await assert.rejects(prepareAgentPackages({ source, destination: '/not-used', icon, version: 'invalid', target: 'aarch64-apple-darwin' }), /Invalid/);
+});
+
+async function reusableAgent() {
+  const directory = await mkdtemp(join(tmpdir(), 'nero-agent-reuse-'));
+  const destination = join(directory, 'current');
+  const app = join(directory, 'Nero.app');
+  const prior = join(app, 'Contents/Resources/agent');
+  await prepareAgentPackages({source, destination:join(destination,'integrations'), icon, version:'0.0.1-nero.19', target:'aarch64-apple-darwin'});
+  await mkdir(prior,{recursive:true});
+  await cp(join(destination,'integrations'),join(prior,'integrations'),{recursive:true});
+  const metadata = {version:'0.0.1',integrationVersion:'0.0.1-nero.19',apiVersion:1,target:'aarch64-apple-darwin',binary:'nero',buildSha256:'a'.repeat(64)};
+  await writeFile(join(prior,'agent-build.json'),JSON.stringify(metadata));
+  await writeFile(join(prior,'nero'),'signed executable fixture');
+  await writeFile(join(destination,'nero'),'fresh executable fixture');
+  const signature = 'Authority=Developer ID Application: Fixture\nTeamIdentifier=ABCDEFGHIJ\nflags=0x10000(runtime)\n';
+  return {app,destination,metadata,prior,verify:async()=>signature.repeat(2)};
+}
+
+test('unchanged signed agent reuse preserves exact client generation inputs', async () => {
+  const fixture = await reusableAgent();
+  const receipt = await reuseSignedAgent(fixture);
+  const binary = await readFile(join(fixture.destination,'nero'));
+  assert.deepEqual(binary,await readFile(join(fixture.prior,'nero')));
+  assert.equal(receipt.sha256,createHash('sha256').update(binary).digest('hex'));
+  assert.equal(receipt.teamIdentifier,'ABCDEFGHIJ');
+});
+
+test('changed executable build or integration templates reject component reuse', async () => {
+  const fixture = await reusableAgent();
+  await assert.rejects(reuseSignedAgent({...fixture,metadata:{...fixture.metadata,buildSha256:'b'.repeat(64)}}),/buildSha256 changed/);
+  await writeFile(join(fixture.destination,'integrations/meeting-summary/SKILL.md'),'changed instructions');
+  await assert.rejects(reuseSignedAgent(fixture),/templates changed/);
+  assert.equal(await readFile(join(fixture.destination,'nero'),'utf8'),'fresh executable fixture');
+});
+
+test('invalid signatures and different signing teams cannot reuse a component', async () => {
+  const fixture = await reusableAgent();
+  await assert.rejects(reuseSignedAgent({...fixture,verify:async()=>{throw Error('signature invalid');}}),/signature invalid/);
+  const wrongTeam = 'Authority=Developer ID Application: Fixture\nTeamIdentifier=ABCDEFGHIJ\nflags=runtime\nTeamIdentifier=1234567890\n';
+  await assert.rejects(reuseSignedAgent({...fixture,verify:async()=>wrongTeam}),/Developer ID/);
+  assert.equal(await readFile(join(fixture.destination,'nero'),'utf8'),'fresh executable fixture');
 });

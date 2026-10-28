@@ -17,6 +17,7 @@
 | 저장 스키마 | 제품 버전과 독립. 저장 필드/값/의미가 바뀌는지로 결정하며 제품 번호만 바뀌면 올리지 않음 |
 | 문서 수정 회차 | `TranscriptVersion.revision`은 해당 음성 기록의 편집 회차. 제품/스키마 버전으로 사용하지 않음 |
 | 모델/프롬프트 | 모델 revision/SHA256, 실행기, `promptVersion`, 템플릿을 결과에 보존. 앱 버전으로 대체하지 않음 |
+| CLI/연결 패키지 | `apps/desktop/agent/release.json`의 `integrationVersion`으로 앱 빌드와 별도 관리. CLI, API, 스킬과 패키지 템플릿 변경 시 증가. UI만 변경된 배포에서 동일한 서명 컴포넌트를 검증 후 재사용하면 실제 연결 세대도 유지 |
 
 제품 버전의 정본은 `apps/desktop/package.json`의 `version`이다. `node apps/desktop/scripts/version.mjs set <version> --build <number>`로 Tauri 설정, core/desktop/CLI Rust 패키지와 npm/Cargo 잠금 파일을 함께 갱신하고, `node apps/desktop/scripts/version.mjs check`로 일치 여부를 검사한다.
 

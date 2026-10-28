@@ -65,6 +65,15 @@ rebuilding/resigning the app. The DMG receipt separately records the packaging
 commit. Archive rejected, undistributed containers before reusing an output path;
 never replace an already distributed artifact.
 
+The CLI/integration component version is owned by `agent/release.json`, independently
+of the app build. Advance it when the CLI, protocol, skill or package templates change.
+For a macOS UI-only release, `NERO_REUSE_SIGNED_AGENT_FROM=/path/to/Nero.app` reuses the
+previous signed CLI only when the freshly compiled binary hash, target, API and all
+generated integration files match its signed build metadata. The source app's full
+Developer ID signature is verified; distribution signing preserves the exact CLI
+bytes and requires the same signing team as the new app. Changes reject reuse.
+This preserves actual live connection evidence without weakening generation checks.
+
 `npm run tauri -- dev` starts a development app. `npm run dev` alone serves its
 frontend, whose actions require the native bridge; it does not supply fake meetings.
 `prepare:shared` copies canonical design-system files into generated build inputs.

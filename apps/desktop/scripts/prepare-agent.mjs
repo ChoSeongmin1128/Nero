@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { resolve, join } from 'node:path';
 import { prepareAgentPackages } from './agent-packages.mjs';
+import { reuseSignedAgent } from './reuse-signed-agent.mjs';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const args = process.argv.slice(2);
@@ -36,17 +37,15 @@ await copyFile(source, destination);
 if (process.platform !== 'win32') await chmod(destination, 0o755);
 const bytes = await readFile(destination);
 const version = JSON.parse(await readFile(join(root, 'apps/desktop/package.json'), 'utf8')).version;
-const build = JSON.parse(await readFile(join(root, 'apps/desktop/src-tauri/tauri.conf.json'), 'utf8')).bundle.macOS.bundleVersion;
-if (!/^[1-9]\d*$/.test(build)) throw Error('Invalid app build for integration packages.');
-const integrationVersion = `${version}-nero.${build}`;
-await writeFile(join(directory, 'agent-build.json'), JSON.stringify({
+const { integrationVersion } = JSON.parse(await readFile(join(root, 'apps/desktop/agent/release.json'), 'utf8'));
+const metadata = {
   version,
   integrationVersion,
   apiVersion: 1,
   target,
   binary,
   buildSha256: createHash('sha256').update(bytes).digest('hex'),
-}, null, 2) + '\n');
+};
 await prepareAgentPackages({
   source: join(root, 'apps/desktop/agent'),
   destination: join(directory, 'integrations'),
@@ -54,4 +53,6 @@ await prepareAgentPackages({
   version: integrationVersion,
   target,
 });
+if (process.env.NERO_REUSE_SIGNED_AGENT_FROM) metadata.reusedSignedBinary = await reuseSignedAgent({ app: resolve(process.env.NERO_REUSE_SIGNED_AGENT_FROM), destination: directory, metadata });
+await writeFile(join(directory, 'agent-build.json'), JSON.stringify(metadata, null, 2) + '\n');
 console.log(`Nero read-only agent prepared: ${target}`);
