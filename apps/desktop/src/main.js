@@ -449,8 +449,11 @@ function renderAgentConnection() {
     const pending = Boolean(agentConnection.pending[client]);
     byId(`settings-${client}-spinner`).hidden = !pending && !(agentConnection.loading && !info);
     const labels = { not_connected: '연결 안 됨', waiting: '연결 대기', connected: '연결됨', unavailable: '사용 불가' };
-    byId(`settings-${client}-status`).textContent = pending ? '연결 중' : !info ? (error ? '확인 불가' : '확인 중') : labels[entry?.state] || '사용 불가';
+    const status = byId(`settings-${client}-status`);
+    status.textContent = pending ? '연결 중' : !info ? (error ? '확인 불가' : '확인 중') : labels[entry?.state] || '사용 불가';
+    status.dataset.state = pending ? 'connecting' : !info ? (error ? 'error' : 'loading') : entry?.state || 'unavailable';
     const button = byId(`settings-${client}-connect`);
+    button.hidden = !pending && entry?.state === 'connected';
     button.disabled = pending || !available || !entry || entry.state === 'unavailable' || entry.state === 'connected';
     button.textContent = pending ? '연결 중' : entry?.state === 'waiting' ? '다시 열기' : '연결';
     const errorNode = byId(`settings-${client}-error`);

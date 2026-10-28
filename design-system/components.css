@@ -683,6 +683,25 @@ html[data-appearance-changing] button {
   font-weight: var(--weight-semibold);
 }
 
+.settings-group {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 48px;
+  padding: 12px 14px;
+}
+
+.settings-row + .settings-row {
+  border-top: 1px solid var(--border);
+}
+
 .appearance-options {
   min-width: 0;
   margin: 24px;

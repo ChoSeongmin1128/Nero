@@ -16,6 +16,11 @@ Machine-local installation and preservation receipts remain private.
 
 ## Native rewrite source
 
+- Settings share grouped rows with aligned labels, current values and controls across
+  appearance, recording, models and connections. Confirmed connections omit a redundant
+  connect button and restore it when reconnection is needed. Tab keyboard navigation,
+  focus restoration, native connection evidence and preference persistence are retained.
+  Browser layout validation does not establish installed-app or Windows-device validation.
 - Recording policy is separate from the processing slot/queue. Downloads survive capture
   startup, inference is joined, and persisted jobs never automatically rerun at startup.
   Source-bound retry, durable cancellation intent and uncertain-saving review preserve

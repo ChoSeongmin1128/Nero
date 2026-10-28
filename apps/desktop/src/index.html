@@ -119,15 +119,21 @@
         </nav>
         <div class="app-settings-content">
           <section id="settings-recording-panel" role="tabpanel" aria-labelledby="settings-recording-tab" hidden>
+            <h3 class="settings-panel-title">녹음</h3>
+            <div class="settings-group settings-recording-device">
             <label class="app-settings-label" for="settings-microphone">녹음 마이크</label>
             <div class="settings-microphone-control">
               <select id="settings-microphone" data-field="settings-microphone" aria-label="녹음 마이크"><option value="">시스템 기본 마이크</option></select>
               <button id="settings-refresh-devices" type="button" class="icon" aria-label="마이크 목록 새로고침" title="마이크 목록 새로고침"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 0 1 15.74-6.26L21 8M21 3v5h-5M21 12a9 9 0 0 1-15.74 6.26L3 16M8 16H3v5"/></svg></button>
             </div>
-            <label class="setup-choice settings-auto-recorder"><input id="auto-recorder" type="checkbox" checked><span>녹음 제어창 자동 표시</span></label>
-            <label id="settings-terminology-row" class="setup-choice" hidden><input id="terminology-enabled" type="checkbox" disabled><span>용어 자동 정리</span></label>
+            </div>
+            <div class="settings-group settings-recording-options">
+            <label class="setup-choice settings-row"><span>녹음 제어창 자동 표시</span><input id="auto-recorder" type="checkbox" checked></label>
+            <label id="settings-terminology-row" class="setup-choice settings-row" hidden><span>용어 자동 정리</span><input id="terminology-enabled" type="checkbox" disabled></label>
+            </div>
           </section>
           <section id="settings-appearance-panel" role="tabpanel" aria-labelledby="settings-appearance-tab">
+            <h3 class="settings-panel-title">화면</h3>
             <fieldset class="appearance-options">
               <legend>밝기</legend>
               <div class="brightness-options">
@@ -167,27 +173,34 @@
             </fieldset>
           </section>
           <section id="settings-models-panel" role="tabpanel" aria-labelledby="settings-models-tab" hidden>
-            <dl class="settings-model-status"><div><dt>음성 인식</dt><dd id="settings-speech-state"></dd></div><div><dt>회의 요약</dt><dd id="settings-summary-state"></dd></div></dl>
+            <h3 class="settings-panel-title">모델</h3>
+            <dl class="settings-model-status settings-group"><div class="settings-row"><dt>음성 인식</dt><dd id="settings-speech-state"></dd></div><div class="settings-row"><dt>회의 요약</dt><dd id="settings-summary-state"></dd></div></dl>
             <div class="settings-model-actions"><button id="models" type="button" class="small">모델 관리</button></div>
           </section>
           <section id="settings-agent-panel" role="tabpanel" aria-labelledby="settings-agent-tab" hidden>
-            <p class="app-settings-label">연결</p>
+            <h3 class="settings-panel-title">연결</h3>
+            <div class="settings-group settings-clients">
             <div class="settings-client-row">
-              <div class="settings-client-info"><span class="settings-client-name">Claude</span><div class="settings-client-meta"><span id="settings-claude-spinner" class="activity-spinner" aria-hidden="true" hidden></span><span id="settings-claude-status" class="settings-client-status" role="status">확인 중</span></div><p id="settings-claude-error" class="notice" role="alert" hidden></p></div>
-              <button id="settings-claude-connect" type="button" class="small" aria-label="Claude 연결" disabled>연결</button>
+              <span class="settings-client-name">Claude</span>
+              <div class="settings-client-controls"><div class="settings-client-meta"><span id="settings-claude-spinner" class="activity-spinner" aria-hidden="true" hidden></span><span id="settings-claude-status" class="settings-client-status" role="status">확인 중</span></div><button id="settings-claude-connect" type="button" class="small" aria-label="Claude 연결" disabled>연결</button></div>
+              <p id="settings-claude-error" class="notice" role="alert" hidden></p>
             </div>
             <div class="settings-client-row">
-              <div class="settings-client-info"><span class="settings-client-name">Codex</span><div class="settings-client-meta"><span id="settings-codex-spinner" class="activity-spinner" aria-hidden="true" hidden></span><span id="settings-codex-status" class="settings-client-status" role="status">확인 중</span></div><p id="settings-codex-error" class="notice" role="alert" hidden></p></div>
-              <button id="settings-codex-connect" type="button" class="small" aria-label="Codex 연결" disabled>연결</button>
+              <span class="settings-client-name">Codex</span>
+              <div class="settings-client-controls"><div class="settings-client-meta"><span id="settings-codex-spinner" class="activity-spinner" aria-hidden="true" hidden></span><span id="settings-codex-status" class="settings-client-status" role="status">확인 중</span></div><button id="settings-codex-connect" type="button" class="small" aria-label="Codex 연결" disabled>연결</button></div>
+              <p id="settings-codex-error" class="notice" role="alert" hidden></p>
+            </div>
             </div>
             <p id="settings-agent-status" class="notice" role="status" hidden></p>
             <details id="settings-agent-details" class="settings-agent-advanced" hidden>
-              <summary>고급 설정</summary>
+              <summary><span>고급 설정</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></summary>
+              <div class="settings-agent-advanced-body">
               <dl class="settings-agent-details"><dt>실행 파일</dt><dd id="settings-agent-path"></dd></dl>
               <button id="settings-agent-copy-config" type="button" class="small" disabled>연결 설정 복사</button>
               <p id="settings-agent-cli-label" class="app-settings-label settings-agent-cli-label">CLI 실행 예시</p>
               <pre id="settings-agent-cli" class="settings-agent-code" aria-labelledby="settings-agent-cli-label"></pre>
               <button id="settings-agent-copy-cli" type="button" class="small" disabled>실행 예시 복사</button>
+              </div>
             </details>
             <p id="settings-agent-feedback" class="notice app-settings-message" role="status" hidden></p>
           </section>

@@ -11,7 +11,7 @@ const info = { available: true, executablePath: '/Example App/nero', config: { m
 function harness({ load = async () => info, write = async () => {}, connect = async () => info } = {}) {
   const nodes = new Map();
   const byId = id => {
-    if (!nodes.has(id)) nodes.set(id, { textContent: '', hidden: false, disabled: false, open: id === 'settings-dialog', focus() { throw Error('Unexpected focus'); } });
+    if (!nodes.has(id)) nodes.set(id, { textContent: '', dataset: {}, hidden: false, disabled: false, open: id === 'settings-dialog', focus() { throw Error('Unexpected focus'); } });
     return nodes.get(id);
   };
   const state = { settingsPanel: 'agent' };
@@ -156,6 +156,22 @@ test('an older refresh cannot overwrite a successful connection', async () => {
   pending.resolve(info);
   await refresh;
   assert.equal(app.byId('settings-claude-status').textContent, '연결됨');
+  assert.equal(app.byId('settings-claude-connect').hidden, true);
+  assert.equal(app.byId('settings-claude-status').dataset.state, 'connected');
+});
+
+test('confirmed connections have no redundant action and a lost connection restores it', async () => {
+  let clientState = 'connected';
+  const app = harness({ load: async () => ({ ...info, clients: [{ id: 'claude', state: clientState }, info.clients[1]] }) });
+  await app.context.loadAgentConnection();
+  assert.equal(app.byId('settings-claude-connect').hidden, true);
+  assert.equal(app.byId('settings-codex-connect').hidden, false);
+  clientState = 'waiting';
+  await app.context.loadAgentConnection(true);
+  assert.equal(app.byId('settings-claude-connect').hidden, false);
+  assert.equal(app.byId('settings-claude-connect').disabled, false);
+  assert.equal(app.byId('settings-claude-connect').textContent, '다시 열기');
+  assert.equal(app.byId('settings-claude-status').dataset.state, 'waiting');
 });
 
 
