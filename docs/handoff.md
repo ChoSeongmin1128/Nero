@@ -8,8 +8,8 @@ the private installation and evaluation receipts.
 
 ## Release state
 
-Nero 0.0.1 build 25 has signed/notarized macOS arm64 artifacts. Actual GUI acceptance
-and installation remain pending; the installed app remains build 24. The new agent
+Nero 0.0.1 build 25 has signed/notarized macOS arm64 artifacts. The local installation has been replaced without copying user data or models.
+Actual GUI acceptance remains pending because the screen-control tool failed. The new agent
 component is 0.0.1-nero.21; client updates and live tool acceptance are separate from
 app packaging. This personal development build does not establish model quality,
 long-recording, target-hardware or Windows-device qualification, nor start the public
