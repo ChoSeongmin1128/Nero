@@ -1,3 +1,4 @@
+pub mod agent_control;
 mod capture;
 mod diarization;
 mod engine;
@@ -6,6 +7,7 @@ mod nemotron;
 pub mod reader;
 mod store;
 mod summary;
+pub mod templates;
 pub mod terminology;
 mod transcript;
 pub use diarization::{SpeakerAnalysis, SpeakerAnalysisDraft, SpeakerPosterior};
@@ -49,6 +51,8 @@ pub enum CoreError {
     Storage(String),
     #[error(transparent)]
     Reader(#[from] reader::ReadError),
+    #[error("다른 변경이 저장되었습니다. 최신 정보를 읽고 다시 시도해 주세요.")]
+    EditConflict,
     #[error("이미 이 저장소를 사용하는 Nero가 있습니다.")]
     StoreBusy,
     #[error("Nero가 종료되어 요청을 처리할 수 없습니다.")]
@@ -230,6 +234,14 @@ impl CoreHandle {
             })))
             .map_err(|_| CoreError::Unavailable)?;
         result.recv().map_err(|_| CoreError::Unavailable)?
+    }
+
+    pub fn agent_validate(&self, mutation: agent_control::Mutation) -> Result<()> {
+        self.call(move |engine| agent_control::validate(engine, &mutation))
+    }
+
+    pub fn agent_mutate(&self, mutation: agent_control::Mutation) -> Result<serde_json::Value> {
+        self.call(move |engine| agent_control::apply(engine, mutation))
     }
 
     pub fn list_meetings(&self) -> Result<Vec<Meeting>> {

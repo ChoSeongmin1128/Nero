@@ -89,6 +89,10 @@ impl Engine {
         Ok(())
     }
 
+    pub(crate) fn agent_library_version(&self) -> Result<String> {
+        crate::agent_control::library_edit_version(&self.library)
+    }
+
     pub fn folders(&self) -> Vec<Folder> {
         self.library.folders()
     }

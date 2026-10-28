@@ -184,7 +184,7 @@ fn stored_document_errors_are_actionable_and_do_not_leak_content_or_paths() {
 }
 
 #[test]
-fn response_limits_explain_how_to_read_a_smaller_page() {
+fn adaptive_pages_preserve_text_and_bind_subsequent_reads_to_the_source() {
     let root = fixture();
     let path = root
         .path()
@@ -192,11 +192,61 @@ fn response_limits_explain_how_to_read_a_smaller_page() {
         .join(MEETING_ID)
         .join("meeting.json");
     let mut document: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    document["meeting"]["notes"] = json!("\u{0001}".repeat(1024 * 1024 / 6 + 1));
+    let notes = "\u{0001}".repeat(1024 * 1024 / 6 + 1);
+    document["meeting"]["notes"] = json!(notes);
     let before = serde_json::to_vec(&document).unwrap();
     fs::write(&path, &before).unwrap();
+    let mut offset = 0;
+    let mut version: Option<String> = None;
+    let mut joined = String::new();
+    loop {
+        let mut request = command(root.path());
+        request.args([
+            "--json",
+            "meetings",
+            "get",
+            MEETING_ID,
+            "--max-bytes",
+            "30000",
+            "--offset",
+            &offset.to_string(),
+        ]);
+        if let Some(value) = &version {
+            request.args(["--expected-source-version", value]);
+        }
+        let output = request.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.stderr.is_empty());
+        assert!(output.stdout.len() <= 30001);
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(result["pagination"]["unit"], "textChunks");
+        let current = result["sourceVersion"].as_str().unwrap().to_owned();
+        if let Some(previous) = &version {
+            assert_eq!(&current, previous);
+        } else {
+            version = Some(current);
+        }
+        joined.push_str(result["meeting"]["notes"].as_str().unwrap());
+        if let Some(next) = result["pagination"]["nextOffset"].as_u64() {
+            assert!(next > offset);
+            assert_eq!(
+                next - offset,
+                result["pagination"]["returned"].as_u64().unwrap()
+            );
+            offset = next;
+        } else {
+            assert_eq!(result["pagination"]["hasMore"], false);
+            break;
+        }
+    }
+    assert_eq!(joined, notes);
+    assert_eq!(fs::read(&path).unwrap(), before);
     let output = command(root.path())
-        .args(["--json", "meetings", "get", MEETING_ID])
+        .args(["--json", "meetings", "get", MEETING_ID, "--max-bytes", "1"])
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(1));
@@ -206,17 +256,277 @@ fn response_limits_explain_how_to_read_a_smaller_page() {
     assert!(error["error"]["message"]
         .as_str()
         .unwrap()
-        .contains("limit"));
+        .contains("maxBytes"));
+    document["meeting"]["notes"] = json!("changed");
+    fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
     let output = command(root.path())
-        .args(["--json", "meetings", "get", MEETING_ID, "--limit", "1"])
+        .args([
+            "--json",
+            "meetings",
+            "get",
+            MEETING_ID,
+            "--offset",
+            "1",
+            "--expected-source-version",
+            version.as_deref().unwrap(),
+        ])
         .output()
         .unwrap();
-    assert!(output.status.success());
-    assert!(output.stderr.is_empty());
-    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(result["pagination"]["unit"], "textChunks");
-    assert_eq!(result["pagination"]["hasMore"], true);
-    assert_eq!(fs::read(&path).unwrap(), before);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stderr).unwrap()["error"]["code"],
+        "source_version_mismatch"
+    );
+}
+
+#[test]
+fn calendar_date_filters_match_cli_and_mcp_without_rewriting_epoch_fields() {
+    let root = fixture();
+    let date = jiff::Timestamp::from_second(1793151000)
+        .unwrap()
+        .as_millisecond();
+    let path = root
+        .path()
+        .join("meetings")
+        .join(MEETING_ID)
+        .join("meeting.json");
+    let mut document: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    document["meeting"]["recordedAt"] = json!(date);
+    let before = serde_json::to_vec(&document).unwrap();
+    fs::write(&path, &before).unwrap();
+    let output = command(root.path())
+        .args([
+            "--json",
+            "meetings",
+            "list",
+            "--on",
+            "2026-10-28",
+            "--timezone",
+            "Asia/Seoul",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let cli: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let mcp = nero_cli::dispatch(
+        root.path(),
+        "meetings_list",
+        json!({"on":"2026-10-28","timezone":"Asia/Seoul"}),
+    )
+    .unwrap();
+    assert_eq!(cli, mcp);
+    assert_eq!(cli["meetings"][0]["recordedAt"], date);
+    let plain = command(root.path())
+        .args(["meetings", "list", "--timezone", "Asia/Seoul"])
+        .output()
+        .unwrap();
+    let plain = String::from_utf8(plain.stdout).unwrap();
+    assert!(plain.contains("녹음/생성 시각 (Asia/Seoul)"));
+    assert!(plain.contains("2026-10-28"));
+    let output = command(root.path())
+        .args(["--json", "meetings", "list", "--on", "2026-10-28"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    assert_eq!(fs::read(path).unwrap(), before);
+}
+
+#[test]
+fn template_commands_share_the_local_catalog_and_reject_stale_overwrites() {
+    fn run(root: &Path, args: &[&str]) -> Value {
+        let output = command(root).arg("--json").args(args).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.stderr.is_empty());
+        serde_json::from_slice(&output.stdout).unwrap()
+    }
+    let root = fixture();
+    let inputs = temporary_root();
+    let path = inputs.path().join("template.json");
+    let file = path.to_str().unwrap();
+    let initial = run(root.path(), &["templates", "list"]);
+    assert!(initial["templates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|item| item.get("prompt").is_none()));
+    assert!(!root.path().join("templates").exists());
+    fs::write(&path,json!({"name":"Synthetic interview","description":"Interview notes","prompt":"Keep observations and assumptions separate.\n日本語 한국어"}).to_string()).unwrap();
+    let created = run(root.path(), &["templates", "create", "--file", file]);
+    assert!(created["template"].get("prompt").is_none());
+    let id = created["template"]["id"].as_str().unwrap();
+    let first = created["template"]["revision"].as_str().unwrap();
+    let fetched = run(root.path(), &["templates", "get", id]);
+    assert!(fetched["template"]["prompt"]
+        .as_str()
+        .unwrap()
+        .ends_with("日本語 한국어"));
+    fs::write(&path,json!({"name":"Synthetic interview","description":"Interview notes","prompt":"Updated prompt"}).to_string()).unwrap();
+    let updated = run(
+        root.path(),
+        &[
+            "templates",
+            "update",
+            id,
+            "--expected-revision",
+            first,
+            "--file",
+            file,
+        ],
+    );
+    let latest = updated["template"]["revision"].as_str().unwrap();
+    assert_ne!(latest, first);
+    let stale = command(root.path())
+        .args([
+            "--json",
+            "templates",
+            "update",
+            id,
+            "--expected-revision",
+            first,
+            "--file",
+            file,
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(stale.status.code(), Some(1));
+    assert!(stale.stdout.is_empty());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&stale.stderr).unwrap()["error"]["code"],
+        "template_revision_conflict"
+    );
+    let removed = run(
+        root.path(),
+        &["templates", "delete", id, "--expected-revision", latest],
+    );
+    assert_eq!(removed["template"]["deleted"], true);
+    assert!(!run(root.path(), &["templates", "list"])["templates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["id"] == id));
+    let deleted = run(root.path(), &["templates", "list", "--deleted"]);
+    let deleted = deleted["templates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"] == id)
+        .unwrap();
+    let restored = run(
+        root.path(),
+        &[
+            "templates",
+            "restore",
+            id,
+            "--expected-revision",
+            deleted["revision"].as_str().unwrap(),
+        ],
+    );
+    assert_eq!(restored["template"]["deleted"], false);
+    assert_eq!(
+        run(root.path(), &["templates", "get", id])["template"]["prompt"],
+        "Updated prompt"
+    );
+    let builtin = run(root.path(), &["templates", "get", "meeting"]);
+    let protected = command(root.path())
+        .args([
+            "--json",
+            "templates",
+            "delete",
+            "meeting",
+            "--expected-revision",
+            builtin["template"]["revision"].as_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&protected.stderr).unwrap()["error"]["code"],
+        "template_builtin_protected"
+    );
+    let edited = run(
+        root.path(),
+        &[
+            "templates",
+            "update",
+            "meeting",
+            "--expected-revision",
+            builtin["template"]["revision"].as_str().unwrap(),
+            "--file",
+            file,
+        ],
+    );
+    assert_eq!(edited["template"]["customized"], true);
+    let reset = run(
+        root.path(),
+        &[
+            "templates",
+            "reset",
+            "meeting",
+            "--expected-revision",
+            edited["template"]["revision"].as_str().unwrap(),
+        ],
+    );
+    assert_eq!(reset["template"]["customized"], false);
+    assert_eq!(
+        run(root.path(), &["templates", "get", "meeting"])["template"]["prompt"],
+        builtin["template"]["prompt"]
+    );
+    assert!(!root.path().join("store.lock").exists());
+}
+
+#[test]
+fn meeting_change_commands_require_the_app_and_never_write_library_files_directly() {
+    let root = fixture();
+    let input = temporary_root();
+    let path = input.path().join("changes.json");
+    fs::write(
+        &path,
+        json!({"title":"Changed only through Nero"}).to_string(),
+    )
+    .unwrap();
+    let version = nero_cli::dispatch(root.path(), "meeting_get", json!({"meetingId":MEETING_ID}))
+        .unwrap()["editVersion"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let meeting = root
+        .path()
+        .join("meetings")
+        .join(MEETING_ID)
+        .join("meeting.json");
+    let before = fs::read(&meeting).unwrap();
+    let output = command(root.path())
+        .args([
+            "--json",
+            "meetings",
+            "update",
+            MEETING_ID,
+            "--expected-version",
+            &version,
+            "--file",
+            path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stderr).unwrap()["error"]["code"],
+        "app_not_running"
+    );
+    assert_eq!(before, fs::read(meeting).unwrap());
+    assert!(!root.path().join("store.lock").exists());
+    assert!(!root.path().join("library.json").exists());
+    assert!(!root.path().join("templates").exists());
 }
 
 #[cfg(unix)]
@@ -416,10 +726,28 @@ fn stdio_initialization_tools_errors_and_framing_use_the_sdk() {
     process.send(json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}));
     let listed = process.result(2);
     let tools = listed["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 7);
+    assert_eq!(tools.len(), nero_cli::METHODS.len());
+    let readers = [
+        "meetings_list",
+        "meetings_search",
+        "meeting_get",
+        "transcript_get",
+        "summary_get",
+        "folders_list",
+        "status",
+        "templates_list",
+        "template_get",
+    ];
     for tool in tools {
-        assert_eq!(tool["annotations"]["readOnlyHint"], true);
-        assert_eq!(tool["annotations"]["destructiveHint"], false);
+        let name = tool["name"].as_str().unwrap();
+        assert_eq!(tool["annotations"]["readOnlyHint"], readers.contains(&name));
+        assert_eq!(
+            tool["annotations"]["idempotentHint"],
+            readers.contains(&name)
+        );
+        if matches!(name, "template_delete" | "meetings_trash" | "folder_delete") {
+            assert_eq!(tool["annotations"]["destructiveHint"], true);
+        }
         assert_eq!(tool["annotations"]["openWorldHint"], false);
     }
 
@@ -460,6 +788,24 @@ fn stdio_initialization_tools_errors_and_framing_use_the_sdk() {
         .to_string()
         .contains(&root.path().to_string_lossy().to_string()));
 
+    process.send(json!({"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"templates_list","arguments":{}}}));
+    let catalog = tool_data(&process.result(9));
+    assert!(catalog["templates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|item| item.get("prompt").is_none()));
+    process.send(json!({"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"template_create","arguments":{"name":"Synthetic template","description":"Use","prompt":"Synthetic prompt"}}}));
+    let saved = tool_data(&process.result(10));
+    assert!(saved["template"].get("prompt").is_none());
+    process.send(json!({"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"template_get","arguments":{"templateId":saved["template"]["id"]}}}));
+    assert_eq!(
+        tool_data(&process.result(11))["template"]["prompt"],
+        "Synthetic prompt"
+    );
+    process.send(json!({"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"template_delete","arguments":{"templateId":saved["template"]["id"],"expectedRevision":saved["template"]["revision"]}}}));
+    assert_eq!(tool_data(&process.result(12))["template"]["deleted"], true);
+
     process.stdin.take();
     let _ = process.child.kill();
     let _ = process.child.wait();
@@ -476,4 +822,27 @@ fn stdio_initialization_tools_errors_and_framing_use_the_sdk() {
         "MCP diagnostics must not contain source content"
     );
     assert!(!root.path().join("store.lock").exists());
+}
+
+#[test]
+fn relative_data_directory_works_for_queries_and_templates() {
+    let root = fixture();
+    for args in [
+        vec!["meetings", "list", "--json"],
+        vec!["templates", "list", "--json"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_nero"))
+            .current_dir(root.path().parent().unwrap())
+            .arg("--data-dir")
+            .arg(root.path().file_name().unwrap())
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    assert!(!root.path().join("templates").exists());
 }

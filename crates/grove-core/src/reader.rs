@@ -12,16 +12,18 @@ use std::path::{Component, Path, PathBuf};
 
 const API_VERSION: u32 = 1;
 const MAX_DOCUMENT_BYTES: u64 = 16 * 1024 * 1024;
-const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
+pub const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 const MAX_TEXT_CHUNK_BYTES: usize = 4096;
 const MAX_ATTEMPTS: usize = 3;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ReadError {
-    #[error("조회 응답이 1MiB를 넘습니다. limit 또는 음성 구간을 줄여 다시 조회해 주세요.")]
+    #[error("조회 항목 하나 또는 응답 정보가 maxBytes 한도를 넘습니다. 한도를 늘리거나 limit 또는 음성 구간을 줄여 다시 조회해 주세요.")]
     ResponseTooLarge,
     #[error("조회 중 저장 정보가 변경되었습니다. 잠시 후 다시 조회해 주세요.")]
     SnapshotChanged,
+    #[error("요청한 sourceVersion과 현재 저장 정보가 다릅니다. 이전 페이지와 합치지 말고 처음부터 다시 조회해 주세요.")]
+    SourceVersionMismatch,
     #[error("저장 정보의 JSON이 손상되었거나 필드/연결이 누락되었거나 올바르지 않습니다.")]
     InvalidDocument,
     #[error("지원하지 않는 저장 형식입니다. Nero 앱과 CLI 업데이트가 필요합니다.")]
@@ -43,18 +45,23 @@ struct Params {
     query: Option<String>,
     folder_id: Option<String>,
     unfiled: Option<bool>,
+    trashed: Option<bool>,
     from: Option<u64>,
     to: Option<u64>,
     offset: Option<usize>,
     limit: Option<usize>,
     start: Option<f64>,
     end: Option<f64>,
+    expected_source_version: Option<String>,
+    max_bytes: Option<usize>,
 }
 
 impl Params {
     fn parse(method: &str, value: Value) -> Result<Self> {
         let allowed: &[&str] = match method {
-            "meetings_list" => &["folderId", "unfiled", "from", "to", "offset", "limit"],
+            "meetings_list" => &[
+                "folderId", "unfiled", "trashed", "from", "to", "offset", "limit",
+            ],
             "meetings_search" => &[
                 "query", "folderId", "unfiled", "from", "to", "offset", "limit",
             ],
@@ -71,7 +78,11 @@ impl Params {
         let object = value.as_object().ok_or_else(|| {
             CoreError::InvalidInput("조회 매개변수는 JSON 객체여야 합니다.".into())
         })?;
-        if object.keys().any(|key| !allowed.contains(&key.as_str())) {
+        if object.keys().any(|key| {
+            !allowed.contains(&key.as_str())
+                && !(method != "status"
+                    && matches!(key.as_str(), "expectedSourceVersion" | "maxBytes"))
+        }) {
             return Err(CoreError::InvalidInput(
                 "이 조회에서 지원하지 않는 매개변수가 있습니다.".into(),
             ));
@@ -82,6 +93,30 @@ impl Params {
         if params.limit.is_some_and(|limit| limit == 0 || limit > 200) {
             return Err(CoreError::InvalidInput(
                 "limit은 1 이상 200 이하여야 합니다.".into(),
+            ));
+        }
+        if params
+            .max_bytes
+            .is_some_and(|bytes| bytes == 0 || bytes > MAX_RESPONSE_BYTES)
+        {
+            return Err(CoreError::InvalidInput(
+                "maxBytes는 1 이상 1048576 이하여야 합니다.".into(),
+            ));
+        }
+        if params
+            .expected_source_version
+            .as_ref()
+            .is_some_and(|version| {
+                version.strip_prefix("sha256:").is_none_or(|digest| {
+                    digest.len() != 64
+                        || !digest
+                            .bytes()
+                            .all(|value| value.is_ascii_digit() || (b'a'..=b'f').contains(&value))
+                })
+            })
+        {
+            return Err(CoreError::InvalidInput(
+                "expectedSourceVersion은 조회 응답의 sourceVersion 문자열이어야 합니다.".into(),
             ));
         }
         if params
@@ -137,10 +172,22 @@ impl Params {
     }
 
     fn page(&self, total: usize, unit: &str) -> Value {
+        self.page_with_count(
+            total,
+            unit,
+            total
+                .saturating_sub(self.offset.unwrap_or(0))
+                .min(self.limit.unwrap_or(50)),
+        )
+    }
+
+    fn page_with_count(&self, total: usize, unit: &str, returned: usize) -> Value {
         let offset = self.offset.unwrap_or(0);
         let limit = self.limit.unwrap_or(50);
+        let next = offset.saturating_add(returned);
         json!({"offset": offset, "limit": limit, "total": total,
-            "hasMore": offset.saturating_add(limit) < total, "unit": unit})
+            "returned": returned, "nextOffset": (next < total).then_some(next),
+            "hasMore": next < total, "unit": unit})
     }
 
     fn select<T>(&self, values: impl IntoIterator<Item = T>) -> Vec<T> {
@@ -188,17 +235,82 @@ impl LibraryReader {
                 continue;
             }
             let mut result = result?;
-            result["apiVersion"] = json!(API_VERSION);
-            result["sourceVersion"] = json!(transaction.version());
-            let bytes = serde_json::to_vec(&result)
-                .map_err(|_| CoreError::Storage("조회 응답을 만들 수 없습니다.".into()))?;
-            if bytes.len() > MAX_RESPONSE_BYTES {
-                return Err(ReadError::ResponseTooLarge.into());
+            let version = transaction.version();
+            if params
+                .expected_source_version
+                .as_ref()
+                .is_some_and(|expected| expected != &version)
+            {
+                return Err(ReadError::SourceVersionMismatch.into());
             }
-            return Ok(result);
+            result["apiVersion"] = json!(API_VERSION);
+            result["sourceVersion"] = json!(version);
+            return fit_response(result, method, &params);
         }
         Err(ReadError::SnapshotChanged.into())
     }
+}
+
+fn response_bytes(value: &Value) -> Result<usize> {
+    serde_json::to_vec(value)
+        .map(|bytes| bytes.len())
+        .map_err(|_| CoreError::Storage("조회 응답을 만들 수 없습니다.".into()))
+}
+
+fn response_prefix(value: &Value, method: &str, params: &Params, count: usize) -> Value {
+    let mut prefix = value.clone();
+    match method {
+        "folders_list" => prefix["folders"].as_array_mut().unwrap().truncate(count),
+        "meetings_list" | "meetings_search" => {
+            prefix["meetings"].as_array_mut().unwrap().truncate(count)
+        }
+        "transcript_get" => prefix["segments"].as_array_mut().unwrap().truncate(count),
+        "meeting_get" => {
+            prefix["meeting"]["notes"] =
+                json!(text_chunks(value["meeting"]["notes"].as_str().unwrap())
+                    .into_iter()
+                    .take(count)
+                    .collect::<String>());
+        }
+        "summary_get" => {
+            prefix["summary"]["text"] =
+                json!(text_chunks(value["summary"]["text"].as_str().unwrap())
+                    .into_iter()
+                    .take(count)
+                    .collect::<String>());
+        }
+        _ => unreachable!(),
+    }
+    prefix["pagination"] = params.page_with_count(
+        value["pagination"]["total"].as_u64().unwrap() as usize,
+        value["pagination"]["unit"].as_str().unwrap(),
+        count,
+    );
+    prefix
+}
+
+fn fit_response(value: Value, method: &str, params: &Params) -> Result<Value> {
+    let budget = params.max_bytes.unwrap_or(MAX_RESPONSE_BYTES);
+    if response_bytes(&value)? <= budget {
+        return Ok(value);
+    }
+    let returned = value["pagination"]["returned"].as_u64().unwrap() as usize;
+    let mut minimum = 1;
+    let mut maximum = returned.saturating_sub(1);
+    let mut accepted = None;
+    while minimum <= maximum {
+        let count = minimum + (maximum - minimum) / 2;
+        let candidate = response_prefix(&value, method, params, count);
+        if response_bytes(&candidate)? <= budget {
+            accepted = Some(count);
+            minimum = count + 1;
+        } else {
+            maximum = count - 1;
+        }
+    }
+    accepted
+        .map(|count| response_prefix(&value, method, params, count))
+        .ok_or_else(|| ReadError::ResponseTooLarge.into())
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -322,12 +434,22 @@ impl<'a> Transaction<'a> {
     }
 
     fn meeting(&mut self, id: &str, library: &Library) -> Result<Option<Meeting>> {
+        self.meeting_in_view(id, library, false)
+    }
+
+    fn meeting_in_view(
+        &mut self,
+        id: &str,
+        library: &Library,
+        trashed: bool,
+    ) -> Result<Option<Meeting>> {
         store::validate_id(id)?;
         if library.pending_purges.contains(id)
             || library
                 .placements
                 .get(id)
                 .is_some_and(|placement| placement.deleted_at.is_some())
+                != trashed
         {
             return Ok(None);
         }
@@ -350,7 +472,7 @@ impl<'a> Transaction<'a> {
             store::validate_id(&audio.session_id).map_err(|_| ReadError::InvalidDocument)?;
         }
         library.project(&mut stored.meeting);
-        Ok((stored.meeting.deleted_at.is_none()).then_some(stored.meeting))
+        Ok((stored.meeting.deleted_at.is_some() == trashed).then_some(stored.meeting))
     }
 
     fn transcript(&mut self, meeting: &Meeting) -> Result<Option<Transcript>> {
@@ -432,7 +554,7 @@ impl<'a> Transaction<'a> {
         if method == "folders_list" {
             let folders = library.folders();
             return Ok(
-                json!({"pagination":params.page(folders.len(), "folders"),"folders":params.select(folders)}),
+                json!({"editVersion":crate::agent_control::library_edit_version(&library)?,"pagination":params.page(folders.len(), "folders"),"folders":params.select(folders)}),
             );
         }
         if matches!(method, "meetings_list" | "meetings_search") {
@@ -448,7 +570,9 @@ impl<'a> Transaction<'a> {
                 let mut value = meeting_value(&meeting, transcript.as_ref());
                 let (notes, page) = page_text_chunks(&meeting.notes, params);
                 value["notes"] = json!(notes);
-                Ok(json!({"meeting":value,"pagination":page}))
+                Ok(
+                    json!({"editVersion":crate::agent_control::meeting_edit_version(&meeting)?,"meeting":value,"pagination":page}),
+                )
             }
             "transcript_get" => {
                 let segments = transcript
@@ -508,7 +632,8 @@ impl<'a> Transaction<'a> {
             .to_lowercase();
         let mut meetings = Vec::new();
         for id in names {
-            let Some(meeting) = self.meeting(&id, library)? else {
+            let Some(meeting) = self.meeting_in_view(&id, library, params.trashed == Some(true))?
+            else {
                 continue;
             };
             let time = meeting.recorded_at.unwrap_or(meeting.created_at);
@@ -522,8 +647,18 @@ impl<'a> Transaction<'a> {
             {
                 continue;
             }
-            let transcript = self.transcript(&meeting)?;
+            let trashed = params.trashed == Some(true);
+            let transcript = if trashed {
+                None
+            } else {
+                self.transcript(&meeting)?
+            };
             let mut value = meeting_value(&meeting, transcript.as_ref());
+            value["editVersion"] = json!(crate::agent_control::meeting_edit_version(&meeting)?);
+            if trashed {
+                value["deletedAt"] = json!(meeting.deleted_at);
+                value.as_object_mut().unwrap().remove("transcriptVersion");
+            }
             if method == "meetings_search" {
                 let summary = self.summary(&meeting, transcript.as_ref())?;
                 let mut matches = Vec::new();
@@ -588,7 +723,7 @@ fn meeting_value(meeting: &Meeting, transcript: Option<&Transcript>) -> Value {
         "transcriptVersion":transcript.map(|doc| &doc.version)})
 }
 
-fn page_text_chunks(text: &str, params: &Params) -> (String, Value) {
+fn text_chunks(text: &str) -> Vec<&str> {
     let mut chunks = Vec::new();
     for mut line in text.split_inclusive('\n') {
         while !line.is_empty() {
@@ -600,6 +735,11 @@ fn page_text_chunks(text: &str, params: &Params) -> (String, Value) {
             line = &line[end..];
         }
     }
+    chunks
+}
+
+fn page_text_chunks(text: &str, params: &Params) -> (String, Value) {
+    let chunks = text_chunks(text);
     let page = params.page(chunks.len(), "textChunks");
     (params.select(chunks).concat(), page)
 }
@@ -880,6 +1020,62 @@ mod tests {
             digest.update(bytes);
         }
         format!("{:x}", digest.finalize())
+    }
+
+    #[test]
+    fn edit_versions_match_writer_and_trash_listing_reads_metadata_only() {
+        let fixture = Fixture::new();
+        let reader = fixture.reader();
+        let store = store::Store::open(fixture.root.clone()).unwrap();
+        let stored = store.load().unwrap().remove(&fixture.id).unwrap();
+        let mut library = store.load_library().unwrap();
+        let mut meeting = stored.meeting.clone();
+        library.project(&mut meeting);
+        let detail = reader
+            .query("meeting_get", json!({"meetingId":fixture.id}))
+            .unwrap();
+        assert_eq!(
+            detail["editVersion"],
+            crate::agent_control::meeting_edit_version(&meeting).unwrap()
+        );
+        let folders = reader.query("folders_list", json!({})).unwrap();
+        assert_eq!(
+            folders["editVersion"],
+            crate::agent_control::library_edit_version(&library).unwrap()
+        );
+        library.placements.get_mut(&fixture.id).unwrap().deleted_at = Some(4000);
+        store.save_library(&library).unwrap();
+        library.project(&mut meeting);
+        let transcript_path = fixture
+            .root
+            .join("meetings")
+            .join(&fixture.id)
+            .join("transcripts")
+            .join(&fixture.transcript.version.id)
+            .join("current.json");
+        fs::write(transcript_path, b"invalid transcript").unwrap();
+        assert_eq!(
+            reader.query("meetings_list", json!({})).unwrap()["meetings"],
+            json!([])
+        );
+        assert!(reader
+            .query("meeting_get", json!({"meetingId":fixture.id}))
+            .is_err());
+        let trash = reader
+            .query("meetings_list", json!({"trashed":true}))
+            .unwrap();
+        assert_eq!(trash["meetings"].as_array().unwrap().len(), 1);
+        assert_eq!(trash["meetings"][0]["deletedAt"], 4000);
+        assert_eq!(
+            trash["meetings"][0]["editVersion"],
+            crate::agent_control::meeting_edit_version(&meeting).unwrap()
+        );
+        for key in ["notes", "text", "audio", "transcriptVersion"] {
+            assert!(trash["meetings"][0].get(key).is_none());
+        }
+        assert!(reader
+            .query("meetings_search", json!({"query":"note", "trashed":true}))
+            .is_err());
     }
 
     #[test]
@@ -1280,6 +1476,10 @@ mod tests {
         for params in [
             json!({"limit":201}),
             json!({"limit":0}),
+            json!({"maxBytes":0}),
+            json!({"maxBytes":MAX_RESPONSE_BYTES + 1}),
+            json!({"expectedSourceVersion":"sha256:short"}),
+            json!({"expectedSourceVersion":format!("sha256:{}", "G".repeat(64))}),
             json!({"from":5,"to":4}),
             json!({"unexpected":true}),
         ] {
@@ -1307,13 +1507,306 @@ mod tests {
             &value,
         )
         .unwrap();
-        assert!(matches!(
-            reader.query("meeting_get", json!({"meetingId":fixture.id})),
-            Err(CoreError::Reader(ReadError::ResponseTooLarge))
-        ));
+        let page = reader
+            .query("meeting_get", json!({"meetingId":fixture.id}))
+            .unwrap();
+        assert!(response_bytes(&page).unwrap() <= MAX_RESPONSE_BYTES);
+        assert!(page["pagination"]["returned"].as_u64().unwrap() < 50);
+        assert_eq!(page["pagination"]["hasMore"], true);
         assert!(reader
             .query("meeting_get", json!({"meetingId":fixture.id,"limit":1}))
             .is_ok());
+        assert!(matches!(
+            reader.query("meeting_get", json!({"meetingId":fixture.id,"maxBytes":1})),
+            Err(CoreError::Reader(ReadError::ResponseTooLarge))
+        ));
+        for params in [
+            json!({"maxBytes":512}),
+            json!({"expectedSourceVersion":format!("sha256:{}", "0".repeat(64))}),
+        ] {
+            assert!(matches!(
+                reader.query("status", params),
+                Err(CoreError::InvalidInput(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn byte_bounded_pages_preserve_ids_ranges_versions_and_read_only_storage() {
+        let fixture = Fixture::new();
+        let mut transcript = fixture.transcript.clone();
+        transcript.segments = (0..9)
+            .map(|index| {
+                let mut segment = fixture.transcript.segments[0].clone();
+                segment.id = format!("bounded-{index}");
+                segment.start = index as f64 * 2.0;
+                segment.end = segment.start + 1.0;
+                segment.source_index = Some(index);
+                segment.text = format!("발언 {index}: {}", "한글과 English 기록 ".repeat(100));
+                segment
+            })
+            .collect();
+        fixture.save_transcript(&transcript);
+        let reader = fixture.reader();
+        let one = reader
+            .query("transcript_get", json!({"meetingId":fixture.id,"limit":1}))
+            .unwrap();
+        let budget = response_bytes(&one).unwrap() + 32;
+        let version = one["sourceVersion"].clone();
+        let before = tree_hash(&fixture.root);
+        for (start, end, expected) in [(None, None, 0..9), (Some(1), Some(5), 1..3)] {
+            let mut offset = 0;
+            let mut ids = Vec::new();
+            loop {
+                let mut params = json!({"meetingId":fixture.id,"offset":offset,"limit":200,
+                    "maxBytes":budget,"expectedSourceVersion":version});
+                if let Some(start) = start {
+                    params["start"] = json!(start);
+                }
+                if let Some(end) = end {
+                    params["end"] = json!(end);
+                }
+                let page = reader.query("transcript_get", params).unwrap();
+                let returned = page["segments"].as_array().unwrap();
+                assert_eq!(returned.len(), 1);
+                assert_eq!(page["pagination"]["returned"], returned.len());
+                assert_eq!(page["pagination"]["limit"], 200);
+                assert_eq!(page["pagination"]["total"], expected.len());
+                assert_eq!(page["sourceVersion"], version);
+                assert!(response_bytes(&page).unwrap() <= budget);
+                ids.extend(
+                    returned
+                        .iter()
+                        .map(|segment| segment["id"].as_str().unwrap().to_owned()),
+                );
+                match page["pagination"]["nextOffset"].as_u64() {
+                    Some(next) => {
+                        assert_eq!(page["pagination"]["hasMore"], true);
+                        assert_eq!(next as usize, offset + returned.len());
+                        offset = next as usize;
+                    }
+                    None => {
+                        assert_eq!(page["pagination"]["hasMore"], false);
+                        break;
+                    }
+                }
+            }
+            assert_eq!(
+                ids,
+                expected
+                    .map(|index| format!("bounded-{index}"))
+                    .collect::<Vec<_>>()
+            );
+        }
+        assert_eq!(tree_hash(&fixture.root), before);
+    }
+
+    #[test]
+    fn lists_searches_and_folders_follow_the_actual_bounded_page_length() {
+        let fixture = Fixture::new();
+        let store = store::Store::open(fixture.root.clone()).unwrap();
+        for index in 0..4 {
+            store
+                .create(format!("Synthetic meeting {index}"), String::new())
+                .unwrap();
+        }
+        let mut library: Library = store::read_json(&fixture.root.join("library.json")).unwrap();
+        for index in 0..4 {
+            let mut folder = library.folders[&fixture.folder].clone();
+            folder.id = Uuid::new_v4().to_string();
+            folder.name = format!(
+                "Synthetic folder {index}: {}",
+                "한글 ".repeat(10).trim_end()
+            );
+            library.folders.insert(folder.id.clone(), folder);
+        }
+        store::write_json(&fixture.root, Path::new("library.json"), &library).unwrap();
+        let reader = fixture.reader();
+        let before = tree_hash(&fixture.root);
+        for (method, arguments, key) in [
+            ("meetings_list", json!({}), "meetings"),
+            ("meetings_search", json!({"query":"Synthetic"}), "meetings"),
+            ("folders_list", json!({}), "folders"),
+        ] {
+            let full = reader.query(method, arguments.clone()).unwrap();
+            let expected = full[key].as_array().unwrap();
+            let budget = (0..expected.len())
+                .map(|offset| {
+                    let mut params = arguments.clone();
+                    params["offset"] = json!(offset);
+                    params["limit"] = json!(1);
+                    response_bytes(&reader.query(method, params).unwrap()).unwrap()
+                })
+                .max()
+                .unwrap()
+                + 32;
+            let mut restored = Vec::new();
+            let mut offset = 0;
+            loop {
+                let mut params = arguments.clone();
+                params["offset"] = json!(offset);
+                params["limit"] = json!(200);
+                params["maxBytes"] = json!(budget);
+                params["expectedSourceVersion"] = full["sourceVersion"].clone();
+                let page = reader.query(method, params).unwrap();
+                let returned = page[key].as_array().unwrap();
+                assert!(!returned.is_empty());
+                assert_eq!(page["pagination"]["returned"], returned.len());
+                assert_eq!(page["pagination"]["total"], expected.len());
+                assert_eq!(page["sourceVersion"], full["sourceVersion"]);
+                assert!(response_bytes(&page).unwrap() <= budget);
+                restored.extend(returned.iter().cloned());
+                match page["pagination"]["nextOffset"].as_u64() {
+                    Some(next) => {
+                        assert_eq!(next as usize, offset + returned.len());
+                        offset = next as usize;
+                    }
+                    None => break,
+                }
+            }
+            assert_eq!(&restored, expected);
+        }
+        assert_eq!(tree_hash(&fixture.root), before);
+    }
+
+    #[test]
+    fn continuation_rejects_changed_sources_before_returning_a_new_page() {
+        let fixture = Fixture::new();
+        let reader = fixture.reader();
+        let first = reader
+            .query("transcript_get", json!({"meetingId":fixture.id,"limit":1}))
+            .unwrap();
+        let expected = first["sourceVersion"].clone();
+        let second = reader
+            .query(
+                "transcript_get",
+                json!({"meetingId":fixture.id,"offset":1,"limit":1,
+                "expectedSourceVersion":expected}),
+            )
+            .unwrap();
+        assert_eq!(second["sourceVersion"], expected);
+        let mut changed = fixture.transcript.clone();
+        changed.version.revision += 1;
+        changed.segments[1].text = "새 수정 내용".into();
+        fixture.save_transcript(&changed);
+        let before = tree_hash(&fixture.root);
+        assert!(matches!(
+            reader.query(
+                "transcript_get",
+                json!({"meetingId":fixture.id,"offset":1,"limit":1,
+                "expectedSourceVersion":expected,"maxBytes":1})
+            ),
+            Err(CoreError::Reader(ReadError::SourceVersionMismatch))
+        ));
+        assert_eq!(tree_hash(&fixture.root), before);
+        let latest = reader
+            .query(
+                "transcript_get",
+                json!({"meetingId":fixture.id,"offset":1,"limit":1}),
+            )
+            .unwrap();
+        assert_eq!(latest["segments"][0]["text"], "새 수정 내용");
+        assert_ne!(latest["sourceVersion"], expected);
+
+        let folders = reader.query("folders_list", json!({})).unwrap();
+        let mut library: Library = store::read_json(&fixture.root.join("library.json")).unwrap();
+        library.folders.get_mut(&fixture.folder).unwrap().name = "Changed name".into();
+        store::write_json(&fixture.root, Path::new("library.json"), &library).unwrap();
+        assert!(matches!(
+            reader.query(
+                "folders_list",
+                json!({"expectedSourceVersion":folders["sourceVersion"]})
+            ),
+            Err(CoreError::Reader(ReadError::SourceVersionMismatch))
+        ));
+    }
+
+    #[test]
+    fn a_single_oversized_segment_or_empty_page_envelope_is_not_an_empty_success() {
+        let fixture = Fixture::new();
+        let mut transcript = fixture.transcript.clone();
+        transcript.segments.truncate(1);
+        transcript.segments[0].text = "\u{0001}".repeat(MAX_RESPONSE_BYTES / 6 + 1);
+        fixture.save_transcript(&transcript);
+        for params in [
+            json!({"meetingId":fixture.id}),
+            json!({"meetingId":fixture.id,"offset":1,"maxBytes":1}),
+        ] {
+            assert!(matches!(
+                fixture.reader().query("transcript_get", params),
+                Err(CoreError::Reader(ReadError::ResponseTooLarge))
+            ));
+        }
+    }
+
+    #[test]
+    fn byte_bounded_text_pages_reconstruct_unicode_and_newlines() {
+        let fixture = Fixture::new();
+        let text = format!(
+            "{}\r\n\n{}\n끝",
+            "가나다 English ".repeat(1600),
+            "second ".repeat(900)
+        );
+        for (relative, method, field) in [
+            (
+                Path::new("meetings").join(&fixture.id).join("meeting.json"),
+                "meeting_get",
+                "notes",
+            ),
+            (
+                Path::new("meetings")
+                    .join(&fixture.id)
+                    .join("summaries/current.json"),
+                "summary_get",
+                "text",
+            ),
+        ] {
+            let mut document: Value = store::read_json(&fixture.root.join(&relative)).unwrap();
+            if method == "meeting_get" {
+                document["meeting"][field] = json!(text);
+            } else {
+                document[field] = json!(text);
+            }
+            store::write_json(&fixture.root, &relative, &document).unwrap();
+            let reader = fixture.reader();
+            let first = reader
+                .query(method, json!({"meetingId":fixture.id,"limit":1}))
+                .unwrap();
+            let budget = response_bytes(&first).unwrap() + 32;
+            let version = first["sourceVersion"].clone();
+            let before = tree_hash(&fixture.root);
+            let mut restored = String::new();
+            let mut offset = 0;
+            loop {
+                let page = reader
+                    .query(
+                        method,
+                        json!({"meetingId":fixture.id,"offset":offset,"limit":200,
+                    "maxBytes":budget,"expectedSourceVersion":version}),
+                    )
+                    .unwrap();
+                let body = if method == "meeting_get" {
+                    &page["meeting"][field]
+                } else {
+                    &page["summary"][field]
+                };
+                restored.push_str(body.as_str().unwrap());
+                assert_eq!(page["sourceVersion"], version);
+                assert!(response_bytes(&page).unwrap() <= budget);
+                match page["pagination"]["nextOffset"].as_u64() {
+                    Some(next) => {
+                        assert_eq!(
+                            next as usize,
+                            offset + page["pagination"]["returned"].as_u64().unwrap() as usize
+                        );
+                        offset = next as usize;
+                    }
+                    None => break,
+                }
+            }
+            assert_eq!(restored, text);
+            assert_eq!(tree_hash(&fixture.root), before);
+        }
     }
 
     #[test]

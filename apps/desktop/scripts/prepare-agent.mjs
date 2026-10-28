@@ -55,4 +55,4 @@ await prepareAgentPackages({
 });
 if (process.env.NERO_REUSE_SIGNED_AGENT_FROM) metadata.reusedSignedBinary = await reuseSignedAgent({ app: resolve(process.env.NERO_REUSE_SIGNED_AGENT_FROM), destination: directory, metadata });
 await writeFile(join(directory, 'agent-build.json'), JSON.stringify(metadata, null, 2) + '\n');
-console.log(`Nero read-only agent prepared: ${target}`);
+console.log(`Nero local agent prepared: ${target}`);

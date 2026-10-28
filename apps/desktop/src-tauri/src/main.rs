@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod agent_connection;
+mod agent_mutations;
 #[cfg(target_os = "macos")]
 mod app_menu;
 mod asr;
@@ -21,6 +22,7 @@ mod summary_checkpoint;
 mod summary_evidence;
 mod summary_failure;
 mod terminology;
+mod template_settings;
 use grove_core::{
     CoreHandle, Device, Meeting, Snapshot, SummaryCitations, SummaryView, Transcript,
     TranscriptHistory, TranscriptSpeaker, TranscriptVersion,
@@ -37,6 +39,7 @@ use tauri_plugin_dialog::DialogExt;
 
 struct DesktopState {
     core: CoreHandle,
+    agent_mutations: Arc<agent_mutations::AgentMutations>,
     quitting: Arc<AtomicBool>,
     polling: Arc<AtomicBool>,
     processing: Arc<Processing>,
@@ -49,6 +52,20 @@ fn require_main(window: &WebviewWindow) -> Result<(), String> {
     } else {
         Err("본창에서 실행해 주세요.".into())
     }
+}
+
+#[tauri::command]
+async fn agent_write_ready(
+    window: WebviewWindow,
+    state: tauri::State<'_, DesktopState>,
+    request_id: String,
+    error: Option<String>,
+) -> Result<(), String> {
+    require_main(&window)?;
+    let agent = state.agent_mutations.clone();
+    tauri::async_runtime::spawn_blocking(move || agent.ready(&request_id, error))
+        .await
+        .map_err(|_| "수정 준비를 완료하지 못했습니다.".to_string())?
 }
 
 #[tauri::command]
@@ -1408,6 +1425,14 @@ fn main() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
+            agent_write_ready,
+            template_settings::list_templates,
+            template_settings::get_template,
+            template_settings::create_template,
+            template_settings::update_template,
+            template_settings::reset_template,
+            template_settings::delete_template,
+            template_settings::restore_template,
             agent_connection_info,
             agent_connect_client,
             read_snapshot,
@@ -1460,11 +1485,18 @@ fn main() {
         .setup(|app| {
             let root = app.path().app_data_dir()?;
             let core = CoreHandle::open(&root)?;
-            let processing = Processing::new(root, app.path().resource_dir()?);
+            let processing = Processing::new(root.clone(), app.path().resource_dir()?);
             processing.cleanup_removed_meeting_jobs(&core);
             processing.upgrade_transcript_sources(&core);
             let polling = Arc::new(AtomicBool::new(true));
+            let agent_mutations = agent_mutations::AgentMutations::start(
+                app.handle().clone(),
+                &root,
+                core.clone(),
+                processing.clone(),
+            );
             app.manage(DesktopState {
+                agent_mutations,
                 core: core.clone(),
                 quitting: Arc::new(AtomicBool::new(false)),
                 polling: polling.clone(),
@@ -1571,6 +1603,7 @@ fn main() {
             }
         }
         if let tauri::RunEvent::Exit = event {
+            app.state::<DesktopState>().agent_mutations.stop();
             app.state::<DesktopState>()
                 .polling
                 .store(false, Ordering::Release);

@@ -132,12 +132,16 @@ Machine-local installation and preservation receipts remain private.
   flow; advanced manual config/CLI copy remains available. Native host acceptance and
   Windows execution are separate validation gates. See [Local agent integration](local-agent.md).
 
-- Read-only CLI and local stdio MCP share `LibraryReader`, without opening the writer,
-  recovery, migration, microphone or model paths. Queries include active meeting/folder
-  lists, date/folder/content search, corrected transcript ranges, paginated notes and
-  summaries with source/stale metadata. Settings exposes copyable connection configuration.
-  Tauri builds stage the native `nero` executable for macOS and Windows. See
-  [Local agent integration](local-agent.md) for commands, paging and validation boundaries.
+- CLI and stdio MCP queries share `LibraryReader`, without opening the writer,
+  recovery, migration, microphone or model paths. Folder/date filters, IANA timezones,
+  version-bound paging and byte limits keep queries scoped. Template lists return metadata;
+  the selected template returns the current user prompt. Explicit template writes use the
+  catalog lock/revision, and meeting metadata/folder/trash mutations use the running app's
+  authenticated writer bridge with edit-version checks and GUI draft flushing. Meeting
+  deletion is recoverable trash; permanent purge is not exposed. The host client owns tool
+  approval policy. Settings > Summary templates manages defaults and custom prompts for
+  connected agents; this does not select a template for the internal summary pipeline.
+  See [Local agent integration](local-agent.md) for contracts and platform boundaries.
 
 - Rebuilding an existing voice record requires confirmation; verified previous runs are
   available in Previous records. Restore compares both current and target versions,

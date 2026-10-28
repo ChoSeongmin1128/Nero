@@ -3,26 +3,115 @@
   "name": "nero",
   "display_name": "Nero",
   "version": "0.0.1",
-  "description": "Nero 회의 검색, 음성 기록과 요약 조회",
-  "author": { "name": "Nero" },
+  "description": "Nero 회의와 요약 조회, 회의와 요약 템플릿 관리",
+  "author": {
+    "name": "Nero"
+  },
   "icon": "icon.png",
   "server": {
     "type": "binary",
     "entry_point": "server/nero",
     "mcp_config": {
       "command": "${__dirname}/server/nero",
-      "args": ["mcp"],
+      "args": [
+        "mcp"
+      ],
       "env": {}
     }
   },
-  "compatibility": { "platforms": ["darwin"] },
+  "compatibility": {
+    "platforms": [
+      "darwin"
+    ]
+  },
   "tools": [
-    { "name": "meetings_list", "description": "회의 목록 조회" },
-    { "name": "meetings_search", "description": "회의 검색" },
-    { "name": "meeting_get", "description": "회의 정보와 메모 조회" },
-    { "name": "transcript_get", "description": "음성 기록 조회" },
-    { "name": "summary_get", "description": "저장된 요약 조회" },
-    { "name": "folders_list", "description": "폴더 목록 조회" },
-    { "name": "status", "description": "저장소 확인" }
+    {
+      "name": "meetings_list",
+      "description": "회의 목록 조회"
+    },
+    {
+      "name": "meetings_search",
+      "description": "회의 검색"
+    },
+    {
+      "name": "meeting_get",
+      "description": "회의 정보와 메모 조회"
+    },
+    {
+      "name": "transcript_get",
+      "description": "음성 기록 조회"
+    },
+    {
+      "name": "summary_get",
+      "description": "저장된 요약 조회"
+    },
+    {
+      "name": "folders_list",
+      "description": "폴더 목록 조회"
+    },
+    {
+      "name": "status",
+      "description": "저장소 확인"
+    },
+    {
+      "name": "templates_list",
+      "description": "요약 템플릿 목록 조회"
+    },
+    {
+      "name": "template_get",
+      "description": "요약 템플릿 지침 조회"
+    },
+    {
+      "name": "template_create",
+      "description": "요약 템플릿 추가"
+    },
+    {
+      "name": "template_update",
+      "description": "요약 템플릿 수정"
+    },
+    {
+      "name": "template_delete",
+      "description": "사용자 템플릿 삭제"
+    },
+    {
+      "name": "template_reset",
+      "description": "기본 템플릿 복원"
+    },
+    {
+      "name": "template_restore",
+      "description": "삭제된 템플릿 복원"
+    },
+    {
+      "name": "meeting_update",
+      "description": "회의 제목과 메모 수정"
+    },
+    {
+      "name": "meeting_date_set",
+      "description": "회의 날짜 수정"
+    },
+    {
+      "name": "meetings_move",
+      "description": "회의 폴더 이동"
+    },
+    {
+      "name": "meetings_trash",
+      "description": "회의를 휴지통으로 이동"
+    },
+    {
+      "name": "meetings_restore",
+      "description": "휴지통 회의 복원"
+    },
+    {
+      "name": "folder_create",
+      "description": "회의 폴더 추가"
+    },
+    {
+      "name": "folder_rename",
+      "description": "회의 폴더 이름 수정"
+    },
+    {
+      "name": "folder_delete",
+      "description": "회의 폴더 삭제"
+    }
   ]
 }

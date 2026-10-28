@@ -70,7 +70,7 @@ impl Session {
                     .as_array()
                     .unwrap()
                     .len(),
-                7
+                nero_cli::METHODS.len()
             );
             return session;
         }
@@ -83,7 +83,7 @@ impl Session {
                 .as_array()
                 .unwrap()
                 .len(),
-            7
+            nero_cli::METHODS.len()
         );
         session
     }

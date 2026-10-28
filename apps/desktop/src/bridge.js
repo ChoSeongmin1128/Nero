@@ -102,3 +102,16 @@ export const saveSpeakers = (meetingId, expected, speakers, assignments) => call
 
 export const readTranscriptHistory = (meetingId) => call('read_transcript_history', { meetingId });
 export const restoreTranscript = (meetingId, expected, target) => call('restore_transcript', { meetingId, expected, target });
+
+export const listTemplates = (deleted = false) => call('list_templates', { deleted });
+export const getTemplate = id => call('get_template', { id });
+export const createTemplate = content => call('create_template', { content });
+export const updateTemplate = (id, expectedRevision, content) => call('update_template', { id, expectedRevision, content });
+export const resetTemplate = (id, expectedRevision) => call('reset_template', { id, expectedRevision });
+export const deleteTemplate = (id, expectedRevision) => call('delete_template', { id, expectedRevision });
+export const restoreTemplate = (id, expectedRevision) => call('restore_template', { id, expectedRevision });
+export const agentWriteReady = (requestId, error = null) => call('agent_write_ready', { requestId, error });
+export async function subscribeAgentWriteRequest(callback) {
+  if (!isTauri()) return () => {};
+  return listen('grove://agent-write-requested', event => { void callback(event.payload); });
+}

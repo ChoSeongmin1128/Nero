@@ -1,12 +1,20 @@
 import assert from 'node:assert/strict';
-import { readFile, mkdtemp, mkdir, cp, writeFile } from 'node:fs/promises';
+import { readFile, mkdtemp, mkdir, cp, writeFile, rm } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import test from 'node:test';
+import test, { after } from 'node:test';
 import { prepareAgentPackages, targetPlatform } from '../scripts/agent-packages.mjs';
 import { reuseSignedAgent } from '../scripts/reuse-signed-agent.mjs';
+
+const temporaryDirectories = [];
+async function temporary(prefix) {
+  const directory = await mkdtemp(join(tmpdir(), prefix));
+  temporaryDirectories.push(directory);
+  return directory;
+}
+after(async () => { for (const directory of temporaryDirectories) await rm(directory, { recursive: true, force: true }); });
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const source = join(root, 'apps/desktop/agent');
@@ -19,7 +27,7 @@ for (const [target, platform, binary] of [
   ['x86_64-pc-windows-msvc', 'win32', 'nero.exe'],
 ]) {
   test(`packages ${target} without a developer runtime or machine-specific paths`, async () => {
-    const destination = await mkdtemp(join(tmpdir(), 'nero-agent-package-'));
+    const destination = await temporary('nero-agent-package-');
     await prepareAgentPackages({ source, destination, icon, version: integrationVersion, target });
     const claude = await json(join(destination, 'claude-manifest.json'));
     assert.equal(claude.manifest_version, '0.3');
@@ -49,9 +57,10 @@ for (const [target, platform, binary] of [
     for (const text of texts) assert.doesNotMatch(text, /\/Users\/|[A-Z]:\\|python|node_modules|https?:\/\/(?!agent-plugins\.org)/);
     assert.deepEqual(await readFile(join(destination, 'icon.png')), await readFile(icon));
     const skill = await readFile(join(destination, 'meeting-summary/SKILL.md'), 'utf8');
-    assert.match(skill, /pagination\.hasMore/);
+    assert.match(skill, /pagination\.nextOffset/);
     assert.match(skill, /sourceVersion/);
-    assert.match(skill, /읽기 전용/);
+    assert.match(skill, /editVersion/);
+    assert.match(skill, /templates_list/);
     assert.doesNotMatch(skill, /글로랑|AX팀/);
     assert.equal(resolve(destination, claude.server.entry_point), join(destination, 'server', binary));
   });
@@ -63,7 +72,7 @@ test('rejects unknown targets and invalid versions before package creation', asy
 });
 
 async function reusableAgent() {
-  const directory = await mkdtemp(join(tmpdir(), 'nero-agent-reuse-'));
+  const directory = await temporary('nero-agent-reuse-');
   const destination = join(directory, 'current');
   const app = join(directory, 'Nero.app');
   const prior = join(app, 'Contents/Resources/agent');

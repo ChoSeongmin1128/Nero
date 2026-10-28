@@ -134,6 +134,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     ${librarySource.slice(0, librarySource.indexOf('export function mountLibrary')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '')}
     let summaryEvidenceOptions;
     const mountSummaryEvidence = options => { summaryEvidenceOptions = options; return { reset() {}, update() {}, restoreFocus() {} }; };
+    const mountTemplateSettings = () => ({ setActive() {}, beforeLeave: async () => true, isConfirming: () => false, hide() {} });
     const mountAgentConnectionDialog = () => ({ open(...args) { testAgentDialogCalls.push(args); }, update() {}, close() {}, isOpen: () => false });
     const mountLibrary = ({getState}) => ({ render() {}, resetSelection() {}, toggleSelection() {}, handleRowSelection: () => false, show: async () => {}, visibleMeetings() {
       const current = getState(), query = document.getElementById('search').value.trim();
@@ -145,7 +146,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     const bridge = testBridge;
     const { icon, escape, button, duration, recordingStatus, statusMarkup, sessionControls, applySystemAppearance, documentExport } = testUI;
     ${executable}
-    return { state, detail, documentSearch, summaryEvidenceOptions, restoreTranscript: restoreForTest, selectMeeting, saveDraft, finishEditing, onEdit, onQuitRequest, refreshDevices, acceptSnapshot, saveTranscript, loadTranscript, acceptProcessing, loadSummary, renderSummary, createMeeting, openSetup, openSettings, changeMicrophone, changeMeetingDate, render, prepareAudio, exportDocument, editTranscriptRow, completeTranscriptRow, cancelTranscriptRow, cancelProcessing, retryProcessing, acknowledgeProcessing };
+    return { state, detail, documentSearch, summaryEvidenceOptions, restoreTranscript: restoreForTest, selectMeeting, saveDraft, finishEditing, onEdit, onQuitRequest, onAgentWriteRequest, refreshDevices, acceptSnapshot, saveTranscript, loadTranscript, acceptProcessing, loadSummary, renderSummary, createMeeting, openSetup, openSettings, changeMicrophone, changeMeetingDate, render, prepareAudio, exportDocument, editTranscriptRow, completeTranscriptRow, cancelTranscriptRow, cancelProcessing, retryProcessing, acknowledgeProcessing };
   })()`, context);
   await tick();
   return {
@@ -843,7 +844,7 @@ test('settings wait for pending meeting edits and return from model management t
   await opening;
   assert.equal(page.element('settings-dialog').open, true);
   assert.equal(page.saved().notes, '설정을 열기 전 메모');
-  page.element('settings-models-tab').listeners.get('click')();
+  page.element('settings-models-tab').listeners.get('click')(); await tick();
   assert.equal(page.element('settings-models-panel').hidden, false);
   page.element('models').listeners.get('click')(); await tick();
   assert.equal(page.element('settings-dialog').open, false);
@@ -851,7 +852,7 @@ test('settings wait for pending meeting edits and return from model management t
   page.element('setup-back').listeners.get('click')(); await tick();
   assert.equal(page.element('settings-dialog').open, true);
   assert.equal(page.element('settings-models-panel').hidden, false);
-  page.element('settings-close').listeners.get('click')();
+  page.element('settings-close').listeners.get('click')(); await tick();
   assert.equal(page.element('settings-dialog').open, false);
   assert.equal(page.element('settings').id, 'settings');
 });
@@ -879,18 +880,20 @@ test('settings category keyboard navigation includes appearance and leaves editi
   await page.app.openSettings();
   assert.equal(page.app.state.settingsPanel, 'appearance');
   assert.equal(page.element('settings-appearance-panel').hidden, false);
-  const navigate = (id, key) => page.element('settings-dialog').listeners.get('keydown')({ target: { id }, key, preventDefault() {} });
-  navigate('settings-appearance-tab', 'ArrowDown');
+  const navigate = async (id, key) => { page.element('settings-dialog').listeners.get('keydown')({ target: { id }, key, preventDefault() {} }); await tick(); };
+  await navigate('settings-appearance-tab', 'ArrowDown');
   assert.equal(page.app.state.settingsPanel, 'recording');
-  navigate('settings-recording-tab', 'ArrowDown');
+  await navigate('settings-recording-tab', 'ArrowDown');
   assert.equal(page.app.state.settingsPanel, 'models');
-  navigate('settings-models-tab', 'ArrowDown');
+  await navigate('settings-models-tab', 'ArrowDown');
+  assert.equal(page.app.state.settingsPanel, 'templates');
+  await navigate('settings-templates-tab', 'ArrowDown');
   assert.equal(page.app.state.settingsPanel, 'agent');
-  navigate('settings-agent-tab', 'ArrowDown');
+  await navigate('settings-agent-tab', 'ArrowDown');
   assert.equal(page.app.state.settingsPanel, 'appearance');
-  navigate('settings-appearance-tab', 'End');
+  await navigate('settings-appearance-tab', 'End');
   assert.equal(page.app.state.settingsPanel, 'agent');
-  navigate('settings-agent-tab', 'Home');
+  await navigate('settings-agent-tab', 'Home');
   assert.equal(page.app.state.settingsPanel, 'appearance');
   assert.equal(page.updates.length, 0);
 });
@@ -1482,4 +1485,47 @@ test('transcript copy and TXT/Markdown export include the whole saved document d
     assert.equal(page.app.state.transcriptDraft.dirty,false);
     if(!copy) assert.ok(exported[0].name.endsWith(`.${format}`));
   }
+});
+
+
+test('agent writes flush pending edits and reconcile focused metadata before unlocking', async () => {
+  const page = await openApp();
+  page.element('meeting-title').focus();
+  page.edit('저장 전 메모');
+  const ack = deferred();
+  const calls = [];
+  page.bridge.agentWriteReady = async (requestId, error) => { calls.push({ requestId, error }); await ack.promise; };
+  const request = page.app.onAgentWriteRequest({ requestId: '11111111-1111-4111-8111-111111111111' });
+  await tick();
+  assert.equal(calls.length, 0);
+  assert.equal(page.element('meeting-title').readOnly, true);
+  page.updates[0].pending.resolve();
+  await tick();
+  assert.equal(calls.length, 1);
+  assert.equal(page.element('meeting-notes').readOnly, true);
+  page.bridge.readSnapshot = async () => ({ revision: 100, session: null, meetings: [{ ...page.saved(), title: '에이전트 제목', notes: '에이전트 메모' }] });
+  ack.resolve();
+  await request;
+  assert.equal(page.element('meeting-title').value, '에이전트 제목');
+  assert.equal(page.element('meeting-notes').value, '에이전트 메모');
+  assert.equal(page.app.state.draft.savedNotes, '에이전트 메모');
+  assert.equal(page.element('meeting-notes').readOnly, false);
+  page.edit('후속 수정');
+  assert.equal(page.app.state.draft.title, '에이전트 제목');
+});
+
+test('agent request rejects failed draft saves without approving mutation', async () => {
+  const page = await openApp();
+  page.edit('보존할 메모');
+  const calls = [];
+  page.bridge.agentWriteReady = async (requestId, error) => { calls.push({ requestId, error }); };
+  const request = page.app.onAgentWriteRequest({ requestId: '11111111-1111-4111-8111-111111111111' });
+  await tick();
+  page.updates[0].pending.reject(new Error('저장 실패'));
+  await request;
+  assert.equal(calls.length, 1);
+  assert.equal(typeof calls[0].error, 'string');
+  assert.equal(page.app.state.draft.dirty, true);
+  assert.equal(page.app.state.draft.notes, '보존할 메모');
+  assert.equal(page.element('meeting-notes').readOnly, false);
 });

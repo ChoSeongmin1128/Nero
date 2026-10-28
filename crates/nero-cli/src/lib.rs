@@ -1,6 +1,9 @@
 pub mod cli;
 mod connection;
+mod dates;
 pub mod mcp;
+mod mutations;
+mod templates;
 
 use grove_core::{
     reader::{LibraryReader, ReadError},
@@ -10,7 +13,7 @@ use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 
 pub const APP_IDENTIFIER: &str = "io.github.choseongmin1128.grove.desktop";
-pub const METHODS: [&str; 7] = [
+pub const METHODS: [&str; 22] = [
     "meetings_list",
     "meetings_search",
     "meeting_get",
@@ -18,7 +21,51 @@ pub const METHODS: [&str; 7] = [
     "summary_get",
     "folders_list",
     "status",
+    "templates_list",
+    "template_get",
+    "template_create",
+    "template_update",
+    "template_delete",
+    "template_reset",
+    "template_restore",
+    "meeting_update",
+    "meeting_date_set",
+    "meetings_move",
+    "meetings_trash",
+    "meetings_restore",
+    "folder_create",
+    "folder_rename",
+    "folder_delete",
 ];
+
+pub fn is_read_only(method: &str) -> bool {
+    matches!(
+        method,
+        "meetings_list"
+            | "meetings_search"
+            | "meeting_get"
+            | "transcript_get"
+            | "summary_get"
+            | "folders_list"
+            | "status"
+            | "templates_list"
+            | "template_get"
+    )
+}
+
+pub fn is_destructive(method: &str) -> bool {
+    matches!(
+        method,
+        "template_update"
+            | "template_delete"
+            | "template_reset"
+            | "meeting_update"
+            | "meeting_date_set"
+            | "meetings_trash"
+            | "folder_rename"
+            | "folder_delete"
+    )
+}
 
 #[derive(Debug)]
 pub struct QueryError {
@@ -43,8 +90,22 @@ pub fn dispatch(root: &Path, method: &str, params: Value) -> Result<Value, Query
     if !METHODS.contains(&method) {
         return Err(QueryError {
             code: "unsupported_method",
-            message: "지원하지 않는 명령입니다. Nero CLI는 읽기 전용입니다.",
+            message: "지원하지 않는 Nero 명령입니다.",
         });
+    }
+    let root = if root.is_absolute() {
+        root.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|_| QueryError::invalid())?
+            .join(root)
+    };
+    let root = root.as_path();
+    if method.starts_with("template") {
+        return templates::dispatch(root, method, params);
+    }
+    if grove_core::agent_control::METHODS.contains(&method) {
+        return mutations::dispatch(root, method, params);
     }
     if method != "status" && !root.exists() {
         return Err(QueryError {
@@ -52,8 +113,15 @@ pub fn dispatch(root: &Path, method: &str, params: Value) -> Result<Value, Query
             message: "Nero 데이터 폴더가 없습니다. 앱에서 저장한 뒤 다시 시도하거나 --data-dir을 지정해 주세요.",
         });
     }
+    let params = dates::normalize(method, params)?;
     let reader = LibraryReader::open(root).map_err(query_error)?;
-    reader.query(method, params).map_err(query_error)
+    let mut result = reader.query(method, params).map_err(query_error)?;
+    if method == "status" {
+        result["readOnly"] = json!(false);
+        result["capabilities"] =
+            json!({"queriesReadOnly":true,"templateWrites":true,"meetingWritesRequireApp":true});
+    }
+    Ok(result)
 }
 
 fn query_error(error: CoreError) -> QueryError {
@@ -62,7 +130,11 @@ fn query_error(error: CoreError) -> QueryError {
             let (code, message) = match error {
                 ReadError::ResponseTooLarge => (
                     "response_too_large",
-                    "조회 응답이 1MiB를 넘습니다. limit 또는 음성 구간을 줄여 다시 조회해 주세요.",
+                    "조회 응답이 maxBytes 한도를 넘습니다. maxBytes를 늘리거나 limit 또는 음성 구간을 줄여 다시 조회해 주세요.",
+                ),
+                ReadError::SourceVersionMismatch => (
+                    "source_version_mismatch",
+                    "기대했던 원문 버전과 다릅니다. 이전 페이지와 합치지 말고 첫 페이지부터 다시 조회해 주세요.",
                 ),
                 ReadError::SnapshotChanged => (
                     "library_changed",
@@ -88,6 +160,7 @@ fn query_error(error: CoreError) -> QueryError {
             QueryError { code, message }
         }
         CoreError::InvalidInput(_) => QueryError::invalid(),
+        CoreError::EditConflict => QueryError { code:"edit_conflict",message:"다른 변경이 저장되었습니다. 최신 정보를 읽고 다시 시도해 주세요." },
         CoreError::MeetingNotFound => QueryError {
             code: "meeting_not_found",
             message: "회의를 찾을 수 없습니다.",
@@ -127,6 +200,12 @@ fn data_dir_for(
 }
 
 pub fn input_schema(method: &str) -> Map<String, Value> {
+    if method.starts_with("template") {
+        return templates::schema(method);
+    }
+    if grove_core::agent_control::METHODS.contains(&method) {
+        return mutations::schema(method);
+    }
     let mut properties = Map::new();
     let mut required = Vec::new();
     if matches!(method, "meeting_get" | "transcript_get" | "summary_get") {
@@ -139,8 +218,13 @@ pub fn input_schema(method: &str) -> Map<String, Value> {
         properties.insert("folderId".into(), folder);
         properties.insert("unfiled".into(), json!({"type":"boolean","description":"Only meetings without a folder. Cannot combine true with folderId."}));
         for field in ["from", "to"] {
-            properties.insert(field.into(), json!({"type":"integer","minimum":0,"description":"Unix epoch milliseconds. from is inclusive; to is exclusive."}));
+            properties.insert(field.into(), json!({"oneOf":[{"type":"integer","minimum":0},{"type":"string","pattern":"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"}],"description":"Epoch milliseconds or YYYY-MM-DD with explicit timezone. from inclusive, to exclusive."}));
         }
+        properties.insert("on".into(), json!({"type":"string","pattern":"^[0-9]{4}-[0-9]{2}-[0-9]{2}$","description":"One calendar day in explicit timezone. Cannot combine with from/to."}));
+        properties.insert("timezone".into(), json!({"type":"string","description":"IANA zone, for example Asia/Seoul. Required for on or date strings; never inferred from system settings."}));
+    }
+    if method == "meetings_list" {
+        properties.insert("trashed".into(),json!({"type":"boolean","description":"Explicit recoverable trash metadata only, including each editVersion; default false."}));
     }
     if method == "meetings_search" {
         properties.insert("query".into(), json!({"type":"string","minLength":1,"maxLength":4096,"description":"Literal text in title, notes, transcript or saved summary. Maximum 4096 UTF-8 bytes."}));
@@ -152,6 +236,8 @@ pub fn input_schema(method: &str) -> Map<String, Value> {
         }
     }
     if method != "status" {
+        properties.insert("expectedSourceVersion".into(), json!({"type":"string","pattern":"^sha256:[0-9a-f]{64}$","description":"First page sourceVersion for the same method and filters. Rejects changed sources before returning body."}));
+        properties.insert("maxBytes".into(), json!({"type":"integer","minimum":1,"maximum":grove_core::reader::MAX_RESPONSE_BYTES,"description":"Compact JSON payload byte budget. May reduce returned items; follow pagination.nextOffset, not offset+limit."}));
         let (offset_description, limit_description) =
             if matches!(method, "meeting_get" | "summary_get") {
                 (
@@ -228,10 +314,44 @@ mod tests {
     }
 
     #[test]
+    fn schemas_expose_bounded_reads_and_explicit_calendar_dates() {
+        for method in METHODS.into_iter().filter(|method| {
+            is_read_only(method) && *method != "status" && !method.starts_with("template")
+        }) {
+            let schema = Value::Object(input_schema(method));
+            assert_eq!(
+                schema["properties"]["maxBytes"]["maximum"],
+                grove_core::reader::MAX_RESPONSE_BYTES
+            );
+            assert_eq!(
+                schema["properties"]["expectedSourceVersion"]["pattern"],
+                "^sha256:[0-9a-f]{64}$"
+            );
+            assert_eq!(schema["additionalProperties"], false);
+        }
+        let status = Value::Object(input_schema("status"));
+        assert!(status["properties"].get("maxBytes").is_none());
+        for method in ["meetings_list", "meetings_search"] {
+            let schema = Value::Object(input_schema(method));
+            assert!(schema["properties"]["on"].is_object());
+            assert!(schema["properties"]["timezone"].is_object());
+            assert!(schema["properties"]["from"]["oneOf"].is_array());
+        }
+        assert!(Value::Object(input_schema("transcript_get"))["properties"]
+            .get("on")
+            .is_none());
+    }
+
+    #[test]
     fn reader_failures_have_distinct_static_recovery_messages() {
         for (failure, code, hint) in [
             (ReadError::ResponseTooLarge, "response_too_large", "limit"),
             (ReadError::SnapshotChanged, "library_changed", "다시 조회"),
+            (
+                ReadError::SourceVersionMismatch,
+                "source_version_mismatch",
+                "이전 페이지",
+            ),
             (ReadError::InvalidDocument, "invalid_document", "손상"),
             (
                 ReadError::UnsupportedFormat,

@@ -58,11 +58,15 @@ This file applies to the entire repository.
   as an approximate identity. Legacy source upgrades are a separate startup operation,
   with immutable before/after evidence; ordinary reads must not migrate or reconstruct.
   Keep float_roundtrip in the shared workspace JSON dependency for stable persistence.
-- Read-only CLI and stdio MCP share `reader::LibraryReader`. Never call `CoreHandle::open`
+- CLI and stdio MCP queries share `reader::LibraryReader`. Never call `CoreHandle::open`
   from a query tool: opening the writer acquires its lock and runs recovery. Ordinary
   reads must not initialize directories, migrate, load models or start capture. Keep
   paging/source revisions and read-only tool annotations consistent across both entry
-  points. See `docs/local-agent.md`; do not edit another AI client's settings implicitly.
+  points. Explicit meeting mutations use the running app's authenticated local writer
+  bridge and edit-version checks; template mutations use the template catalog lock
+  and revision checks. Host clients own tool approval policy. Meeting deletion means
+  recoverable trash; no permanent purge tool is exposed. See `docs/local-agent.md`;
+  do not edit another AI client's settings implicitly.
 - Model selection will prefer qualified GPU paths and retain CPU compatibility.
   Initial diarization support targets up to eight actual speakers; more attendees
   must not block recording or transcription. Preserve transcription on speaker-stage failure.
@@ -183,6 +187,11 @@ inference, proposals, and unverified items.
   new app is installed. Development bundles stay in `.work/rust-target`.
 - Build/test instructions for the new app are in `apps/desktop/README.md`.
   Never install or launch an archived legacy app as part of rewrite validation.
+- Keep synthetic fixtures in auto-cleaned temporary directories. Never add dummy
+  meetings or templates to the user's library during validation. Reuse model/audio
+  inputs without making copies. After recording the needed result, move obsolete
+  upload ZIPs, intermediate app copies and one-off logs to Trash. Preserve the installed
+  release, necessary rollback, original user data and unique validation evidence.
 - Keep generated native builds, dependencies and preview output under ignored
   `.work/`; a fresh checkout must not depend on this machine's Git excludes.
 

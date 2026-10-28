@@ -10,13 +10,15 @@ import { mountTranscriptActions } from './transcript-actions.js';
 import { mountMeetingDetail } from './meeting-detail-ui.js';
 import { mountSummaryEvidence } from './summary-evidence.js';
 import { mountAgentConnectionDialog } from './agent-connection-dialog.jsx';
+import { mountTemplateSettings } from './template-settings.jsx';
 
 applySystemAppearance();
 const byId = (id) => document.getElementById(id);
-const settingsPanels = ['appearance', 'recording', 'models', 'agent'];
+const settingsPanels = ['appearance', 'recording', 'models', 'templates', 'agent'];
 const terminologySettings = { info: null, error: '', request: 0, saving: null };
 const agentConnection = { info: null, loading: false, error: '', request: 0, refresh: 0, timer: null, pending: {}, errors: {} };
 const agentConnectionDialog = mountAgentConnectionDialog({ container: byId('settings-dialog'), fallbackTrigger: () => byId('settings-agent-manual') });
+const templateSettings = mountTemplateSettings({ container: byId('settings-dialog'), panel: byId('settings-templates-panel'), bridge });
 const microphonePreferenceKey = 'nero.recording.microphone.v1';
 const recorderPreferenceKey = 'nero.recording.autoRecorder.v1';
 function readAutoRecorder() { try { return globalThis.localStorage?.getItem(recorderPreferenceKey) !== 'false'; } catch { return true; } }
@@ -308,6 +310,18 @@ function acceptSnapshot(snapshot) {
   state.snapshotKey = key;
   state.connected = true;
   if (state.selectedId && !snapshot.meetings.some(meeting => meeting.id === state.selectedId && meeting.deletedAt == null)) { state.selectedId = null; state.draft = null; state.transcriptDraft = null; state.summary = null; state.libraryOpen = true; speakers.reset(); state.audioKey = ''; state.audioRequest++; byId('audio-player').pause(); byId('audio-player').removeAttribute('src'); byId('audio-player').load(); }
+  const saved = currentMeeting();
+  const draft = state.draft;
+  if (saved && draft?.id === saved.id && !draft.dirty && !draft.saving && (draft.title !== saved.title || draft.notes !== (saved.notes || ''))) {
+    const notesChanged = draft.savedNotes !== (saved.notes || '');
+    state.draft = { ...draft, title: saved.title, notes: saved.notes || '', savedNotes: saved.notes || '', version: draft.version + 1 };
+    byId('meeting-title').value = saved.title;
+    byId('meeting-notes').value = saved.notes || '';
+    if (notesChanged && state.summary?.document?.notesSha256 != null) {
+      state.summary = { ...state.summary, stale: true };
+      void loadSummary(saved.id);
+    }
+  }
   const first = snapshot.meetings.find(meeting => meeting.deletedAt == null);
   if (!state.selectedId && !state.libraryOpen && modelsReady() && first) { void selectMeeting(first.id); return; }
   if (!changed) return;
@@ -589,6 +603,7 @@ function renderSettings() {
   const recording = state.settingsPanel === 'recording';
   renderAgentConnection();
   renderTerminologySettings();
+  templateSettings.setActive(dialog.open && state.settingsPanel === 'templates');
   for (const name of settingsPanels) {
     const selected = state.settingsPanel === name;
     byId(`settings-${name}-tab`).setAttribute('aria-selected', String(selected));
@@ -724,16 +739,38 @@ byId('create-meeting').addEventListener('click', () => run(createMeeting));
 byId('welcome-create').addEventListener('click', () => run(createMeeting));
 byId('setup-start').addEventListener('click', () => run(createMeeting));
 byId('settings').addEventListener('click', () => openSettings().catch(showError));
-byId('settings-close').addEventListener('click', () => { globalThis.GroveControls.close?.(); byId('settings-dialog').close(); });
-byId('settings-dialog').addEventListener('close', () => { resetTerminologySettings(); resetAgentConnection(); globalThis.GroveControls.close?.(); (byId(state.settingsReturnId) || byId('settings')).focus({ preventScroll: true }); });
-for (const name of settingsPanels) byId(`settings-${name}-tab`).addEventListener('click', () => { globalThis.GroveControls.close?.(); state.settingsPanel = name; renderSettings(); void loadAgentConnection(); void loadTerminologySettings(); });
+async function leaveSettings(action) {
+  if (templateSettings.isConfirming() || !await templateSettings.beforeLeave()) return false;
+  globalThis.GroveControls.close?.();
+  await action();
+  return true;
+}
+async function closeSettings() {
+  return leaveSettings(() => byId('settings-dialog').close());
+}
+async function selectSettingsPanel(name, focus = false) {
+  if (name === state.settingsPanel) return;
+  await leaveSettings(() => {
+    state.settingsPanel = name; renderSettings();
+    if (focus) byId(`settings-${name}-tab`).focus({ preventScroll: true });
+    void loadAgentConnection(); void loadTerminologySettings();
+  });
+}
+byId('settings-close').addEventListener('click', () => { void closeSettings(); });
+byId('settings-dialog').addEventListener('cancel', event => {
+  event.preventDefault();
+  if (!templateSettings.isConfirming()) void closeSettings();
+});
+byId('settings-dialog').addEventListener('close', () => { templateSettings.hide(); resetTerminologySettings(); resetAgentConnection(); globalThis.GroveControls.close?.(); (byId(state.settingsReturnId) || byId('settings')).focus({ preventScroll: true }); });
+for (const name of settingsPanels) byId(`settings-${name}-tab`).addEventListener('click', () => { void selectSettingsPanel(name); });
 byId('settings-dialog').addEventListener('keydown', event => {
+  if (event.isComposing || event.keyCode === 229 || templateSettings.isConfirming()) return;
   const index = settingsPanels.findIndex(name => `settings-${name}-tab` === event.target.id);
   if (index < 0 || !['ArrowDown', 'ArrowUp', 'ArrowRight', 'ArrowLeft', 'Home', 'End'].includes(event.key)) return;
   event.preventDefault();
   const step = ['ArrowUp', 'ArrowLeft'].includes(event.key) ? -1 : 1;
-  state.settingsPanel = settingsPanels[event.key === 'Home' ? 0 : event.key === 'End' ? settingsPanels.length - 1 : (index + step + settingsPanels.length) % settingsPanels.length];
-  renderSettings(); byId(`settings-${state.settingsPanel}-tab`).focus(); void loadAgentConnection(); void loadTerminologySettings();
+  const name = settingsPanels[event.key === 'Home' ? 0 : event.key === 'End' ? settingsPanels.length - 1 : (index + step + settingsPanels.length) % settingsPanels.length];
+  void selectSettingsPanel(name, true);
 });
 for (const kind of ['config', 'cli']) byId(`settings-agent-copy-${kind}`).addEventListener('click', () => copyAgentConnection(kind));
 byId('settings-agent-manual').addEventListener('click', openAgentConnectionPrompt);
@@ -819,6 +856,24 @@ async function finishEditing(action) {
     byId('meeting-notes').readOnly = state.editLocks > 0;
     if (currentMeeting()) renderTranscript(currentMeeting());
     speakers.render();
+  }
+}
+
+async function onAgentWriteRequest({ requestId } = {}) {
+  if (typeof requestId !== 'string' || !/^[a-f0-9-]{36}$/.test(requestId)) return;
+  let ready = false;
+  try {
+    await finishEditing(async () => {
+      ready = true;
+      await bridge.agentWriteReady(requestId);
+      acceptSnapshot(await bridge.readSnapshot());
+      refreshMeetingSearch();
+    });
+  } catch (error) {
+    if (!ready) {
+      await bridge.agentWriteReady(requestId, '현재 편집 내용을 저장하지 못했습니다.').catch(() => {});
+      showError(error, true);
+    }
   }
 }
 
@@ -1273,6 +1328,7 @@ byId('transcript-rows').addEventListener('keydown', event => {
 });
 
 async function onQuitRequest({ sessionId } = {}) {
+  if (!await templateSettings.beforeLeave()) return;
   if (!activeSession()) {
     await run(() => finishEditing(() => bridge.requestQuit(null)));
     return;
@@ -1378,13 +1434,14 @@ byId('audio-player').addEventListener('timeupdate', () => {
 
 try {
   await bridge.subscribeSnapshots(acceptSnapshot);
+  await bridge.subscribeAgentWriteRequest?.(onAgentWriteRequest);
   await bridge.subscribeProcessingError(({ message }) => showError(message));
   await bridge.subscribeProcessing((progress) => { void acceptProcessing(progress).catch(showError); });
   await bridge.setAutoRecorder(state.autoRecorder);
   await acceptProcessing(await bridge.processingStatus());
   await bridge.subscribeOpenMeeting(async (meetingId, error) => { await selectMeeting(meetingId); if (error) showError(error); });
   await bridge.subscribeQuitRequest(onQuitRequest);
-  await bridge.subscribeCloseRequest(() => run(() => finishEditing(() => bridge.hideMain())));
+  await bridge.subscribeCloseRequest(() => run(async () => { if (await templateSettings.beforeLeave()) await finishEditing(() => bridge.hideMain()); }));
   acceptSnapshot(await bridge.readSnapshot());
   await refreshDevices();
 } catch (error) {

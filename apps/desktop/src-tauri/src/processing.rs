@@ -794,6 +794,16 @@ impl Processing {
         ids: &[String],
         action: impl FnOnce() -> grove_core::Result<T>,
     ) -> grove_core::Result<T> {
+        self.meeting_removal_with_preflight(core, ids, || Ok(()), action)
+    }
+
+    pub fn meeting_removal_with_preflight<T>(
+        &self,
+        core: &CoreHandle,
+        ids: &[String],
+        preflight: impl FnOnce() -> grove_core::Result<()>,
+        action: impl FnOnce() -> grove_core::Result<T>,
+    ) -> grove_core::Result<T> {
         let mut running = self.running.lock().unwrap();
         self.worker_ready()
             .map_err(grove_core::CoreError::InvalidState)?;
@@ -820,6 +830,9 @@ impl Processing {
                 "녹음을 마친 뒤 삭제해 주세요.".into(),
             ));
         }
+        // Validate after GUI drafts have been flushed and while new jobs are excluded.
+        // A rejected external edit must not cancel running or queued processing.
+        preflight()?;
         let affected = self
             .progress
             .lock()
@@ -2585,6 +2598,101 @@ mod tests {
             })
             .unwrap();
         assert!(process.running.lock().unwrap().is_none());
+    }
+    #[test]
+    fn stale_removal_after_draft_flush_keeps_running_and_queued_jobs_unchanged() {
+        use grove_core::agent_control::{meeting_edit_version, Mutation};
+
+        let (_temp, process) = setup();
+        let core = CoreHandle::open(&process.root).unwrap();
+        let meeting = core.create_meeting("Meeting", "Initial notes").unwrap();
+        let request = Mutation::parse(
+            "meetings_trash",
+            serde_json::json!({"expectedVersions":{meeting.id.clone():meeting_edit_version(&meeting).unwrap()}}),
+        )
+        .unwrap();
+        core.agent_validate(request.clone()).unwrap();
+        core.update_meeting(&meeting.id, &meeting.title, "Flushed draft")
+            .unwrap();
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (release, released) = std::sync::mpsc::channel();
+        let handle = thread::spawn(move || {
+            let _ = released.recv_timeout(Duration::from_secs(2));
+        });
+        *process.running.lock().unwrap() = Some(Running {
+            id: "running-job".into(),
+            cancel: cancel.clone(),
+            handle,
+            import_existing: None,
+        });
+        process.update(|progress| {
+            progress.meeting_id = Some(meeting.id.clone());
+            progress.kind = "transcribe".into();
+            progress.status = "running".into();
+            progress.message = "Processing".into();
+        });
+        let created_at = now();
+        let queued = JobRecord {
+            schema_version: 1,
+            id: Uuid::new_v4().to_string(),
+            kind: "summary".into(),
+            meeting_id: Some(meeting.id.clone()),
+            source_fingerprint: None,
+            include_summary: false,
+            acknowledged: false,
+            failure_kind: None,
+            status: JobStatus::Queued,
+            phase: None,
+            message: "Queued".into(),
+            created_at,
+            updated_at: created_at,
+        };
+        process.save_job(queued.clone()).unwrap();
+        process.pending.lock().unwrap().push_back(Pending {
+            record: queued.clone(),
+            action: Box::new(|_, _, _| Ok(None)),
+            import_existing: None,
+            validate: None,
+        });
+        let before_progress = process.progress.lock().unwrap().clone();
+        let before_records = process.journal.records().unwrap();
+        let preflight = request.clone();
+        let result = process.meeting_removal_with_preflight(
+            &core,
+            &[meeting.id.clone()],
+            || {
+                assert!(process.running.try_lock().is_err());
+                core.agent_validate(preflight)
+            },
+            || core.agent_mutate(request),
+        );
+        assert!(matches!(result, Err(grove_core::CoreError::EditConflict)));
+        assert!(!cancel.load(Ordering::Acquire));
+        assert_eq!(
+            process.running.lock().unwrap().as_ref().unwrap().id,
+            "running-job"
+        );
+        let pending = process.pending.lock().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].record, queued);
+        drop(pending);
+        assert!(*process.progress.lock().unwrap() == before_progress);
+        assert_eq!(process.journal.records().unwrap(), before_records);
+        let current = core.list_meetings().unwrap().remove(0);
+        assert_eq!(current.notes, "Flushed draft");
+        assert!(current.deleted_at.is_none());
+
+        let _ = release.send(());
+        process
+            .running
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap()
+            .handle
+            .join()
+            .unwrap();
     }
     #[test]
     fn deleting_another_meeting_does_not_cancel_an_unrelated_job() {

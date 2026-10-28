@@ -1,34 +1,62 @@
-use crate::{default_data_dir, dispatch, QueryError};
+use crate::{dates, default_data_dir, dispatch, QueryError};
+use grove_core::reader::MAX_RESPONSE_BYTES;
+use jiff::tz::TimeZone;
 use serde_json::{json, Map, Value};
 use std::ffi::OsString;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::PathBuf;
 
-pub const HELP: &str = "Nero 읽기 전용 CLI
+pub const HELP: &str = "Nero 로컬 CLI
 
 사용법: nero [--data-dir PATH] [--json] <명령>
 
-  meetings list [--folder-id ID | --unfiled] [--from MS] [--to MS] [--offset N] [--limit N]
-  meetings search QUERY [--folder-id ID | --unfiled] [--from MS] [--to MS] [--offset N] [--limit N]
+  meetings list [--trashed] [--folder-id ID | --unfiled] [--from MS|DATE] [--to MS|DATE] [--on DATE] [--timezone IANA] [--offset N] [--limit N]
+  meetings search QUERY [--folder-id ID | --unfiled] [--from MS|DATE] [--to MS|DATE] [--on DATE] [--timezone IANA] [--offset N] [--limit N]
   meetings get ID [--offset N] [--limit N]
   transcript get ID [--start SECONDS] [--end SECONDS] [--offset N] [--limit N]
   summary get ID [--offset N] [--limit N]
   folders list [--offset N] [--limit N]
+  meetings update ID --expected-version HASH --file JSON_PATH
+  meetings date ID --expected-version HASH [--date YYYY-MM-DD | --clear]
+  meetings move --file JSON_PATH
+  meetings trash --file JSON_PATH
+  meetings restore --file JSON_PATH
+  folders create NAME --expected-version HASH
+  folders rename ID NAME --expected-version HASH
+  folders delete ID --expected-version HASH
+  templates list [--deleted]
+  templates get ID
+  templates create --file JSON_PATH
+  templates update ID --expected-revision HASH --file JSON_PATH
+  templates delete ID --expected-revision HASH
+  templates reset ID --expected-revision HASH
+  templates restore ID --expected-revision HASH
   doctor
   mcp
 
 --json              성공 결과를 JSON으로, 오류를 stderr의 JSON으로 출력
---data-dir PATH     앱 데이터 폴더 지정. 폴더나 파일을 생성하지 않음
+--data-dir PATH     앱 데이터 폴더 지정. 조회는 폴더나 파일을 생성하지 않음
 --help, -h          도움말
 --version, -V       버전
+--expected-source-version HASH  같은 조회 첫 페이지의 sourceVersion
+--max-bytes N        JSON payload 예산. 1 이상 1048576 이하
+--timezone IANA      목록 표시/날짜 해석 시간대. 생략한 목록 표시는 UTC
 
-목록과 본문은 기본 50개, 최대 200개씩 조회합니다.
+회의/폴더 목록과 본문은 기본 50개, 최대 200개씩 조회합니다.
 meetings get의 메모와 summary get의 본문은 개행을 보존한 최대 4096바이트 텍스트 조각으로 나눕니다.
 offset/limit은 조각 수이며 페이지의 본문을 순서대로 연결하면 원문이 됩니다.
-날짜 필터는 Unix epoch 밀리초이며 from 포함, to 미포함입니다.
+날짜 필터는 Unix epoch 밀리초 또는 YYYY-MM-DD이며 from 포함, to 미포함입니다.
+문자열 날짜와 --on은 명시 --timezone이 필요합니다. --on과 --from/--to는 함께 쓸 수 없습니다.
+날짜 경계가 없는 날이나 모호한 자정은 거부하며 epoch 경계로 명시할 수 있습니다.
+다음 페이지는 pagination.nextOffset과 첫 sourceVersion을 사용합니다. 예산에 따라 limit보다 적게 반환할 수 있습니다.
 음성 기록 start/end는 초 단위이며 지정 구간과 겹치는 발언을 조회합니다.
 doctor는 저장소가 없는 경우에도 설치 상태를 확인합니다.
 mcp는 stdin/stdout으로 MCP를 제공하며 stdout에 진단 문구를 쓰지 않습니다.
+템플릿 JSON은 name/description/prompt 세 문자열입니다. --file -는 stdin을 읽습니다.
+템플릿 삭제는 휴지통으로 이동하며 기본 템플릿은 삭제 대신 reset을 사용합니다.
+회의 수정은 실행 중인 Nero에 요청합니다. 파일은 update의 title/notes 또는
+일괄 작업의 expectedVersions와 move의 folderId(null=미분류)를 포함합니다.
+회의/폴더 수정본은 조회 응답의 editVersion이며 sourceVersion과 다릅니다.
 ";
 
 #[derive(Debug, PartialEq)]
@@ -36,7 +64,24 @@ enum Action {
     Help,
     Version,
     Mcp,
-    Query { method: &'static str, params: Value },
+    Request {
+        method: &'static str,
+        params: Value,
+    },
+    FileRequest {
+        method: &'static str,
+        params: Value,
+        path: PathBuf,
+        content: FileContent,
+    },
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum FileContent {
+    Template,
+    MeetingUpdate,
+    MeetingMove,
+    MeetingSet,
 }
 
 #[derive(Debug)]
@@ -83,17 +128,20 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Options, QueryError
         [] | ["--help" | "-h" | "help"] => Action::Help,
         ["--version" | "-V"] => Action::Version,
         ["mcp"] => Action::Mcp,
-        ["doctor" | "status"] => Action::Query {
+        ["doctor" | "status"] => Action::Request {
             method: "status",
             params: json!({}),
         },
-        ["meetings" | "transcript" | "summary" | "folders", ..]
+        ["meetings" | "transcript" | "summary" | "folders" | "templates", ..]
             if strings
                 .iter()
                 .any(|value| matches!(*value, "--help" | "-h")) =>
         {
             Action::Help
         }
+        ["templates", command, remaining @ ..] => parse_templates(command, remaining)?,
+        [group @ ("meetings" | "folders"), command @ ("update" | "date" | "move" | "trash" | "restore" | "create" | "rename"
+        | "delete"), remaining @ ..] => parse_mutation(group, command, remaining)?,
         [group, command, remaining @ ..] => parse_query(group, command, remaining)?,
         _ => return Err(QueryError::invalid()),
     };
@@ -134,6 +182,15 @@ fn parse_query(group: &str, command: &str, remaining: &[&str]) -> Result<Action,
         let (flag, inline) = argument
             .split_once('=')
             .map_or((argument, None), |(flag, value)| (flag, Some(value)));
+        if flag == "--trashed" {
+            if method != "meetings_list"
+                || inline.is_some()
+                || params.insert("trashed".into(), Value::Bool(true)).is_some()
+            {
+                return Err(QueryError::invalid());
+            }
+            continue;
+        }
         if flag == "--unfiled" {
             if !matches!(method, "meetings_list" | "meetings_search")
                 || inline.is_some()
@@ -146,9 +203,13 @@ fn parse_query(group: &str, command: &str, remaining: &[&str]) -> Result<Action,
         let field = match flag {
             "--offset" => "offset",
             "--limit" => "limit",
+            "--max-bytes" => "maxBytes",
+            "--expected-source-version" => "expectedSourceVersion",
             "--folder-id" if matches!(method, "meetings_list" | "meetings_search") => "folderId",
             "--from" if matches!(method, "meetings_list" | "meetings_search") => "from",
             "--to" if matches!(method, "meetings_list" | "meetings_search") => "to",
+            "--on" if matches!(method, "meetings_list" | "meetings_search") => "on",
+            "--timezone" if matches!(method, "meetings_list" | "meetings_search") => "timezone",
             "--start" if method == "transcript_get" => "start",
             "--end" if method == "transcript_get" => "end",
             _ => return Err(QueryError::invalid()),
@@ -160,7 +221,11 @@ fn parse_query(group: &str, command: &str, remaining: &[&str]) -> Result<Action,
             .or_else(|| args.next())
             .ok_or_else(QueryError::invalid)?;
         let value = match field {
-            "folderId" => Value::String(value.into()),
+            "folderId" | "on" | "timezone" | "expectedSourceVersion" => Value::String(value.into()),
+            "from" | "to" => match value.parse::<u64>() {
+                Ok(number) => json!(number),
+                Err(_) => Value::String(value.into()),
+            },
             "start" | "end" => {
                 let number = value.parse::<f64>().map_err(|_| QueryError::invalid())?;
                 if !number.is_finite() || number < 0.0 {
@@ -170,7 +235,9 @@ fn parse_query(group: &str, command: &str, remaining: &[&str]) -> Result<Action,
             }
             _ => {
                 let number = value.parse::<u64>().map_err(|_| QueryError::invalid())?;
-                if field == "limit" && !(1..=200).contains(&number) {
+                if (field == "limit" && !(1..=200).contains(&number))
+                    || (field == "maxBytes" && !(1..=MAX_RESPONSE_BYTES as u64).contains(&number))
+                {
                     return Err(QueryError::invalid());
                 }
                 json!(number)
@@ -181,10 +248,11 @@ fn parse_query(group: &str, command: &str, remaining: &[&str]) -> Result<Action,
     if params.get("unfiled") == Some(&Value::Bool(true)) && params.contains_key("folderId") {
         return Err(QueryError::invalid());
     }
-    if params
+    let normalized = dates::normalize(method, Value::Object(params.clone()))?;
+    if normalized
         .get("from")
         .and_then(Value::as_u64)
-        .zip(params.get("to").and_then(Value::as_u64))
+        .zip(normalized.get("to").and_then(Value::as_u64))
         .is_some_and(|(from, to)| from >= to)
     {
         return Err(QueryError::invalid());
@@ -197,10 +265,263 @@ fn parse_query(group: &str, command: &str, remaining: &[&str]) -> Result<Action,
     {
         return Err(QueryError::invalid());
     }
-    Ok(Action::Query {
+    Ok(Action::Request {
         method,
         params: Value::Object(params),
     })
+}
+
+fn parse_templates(command: &str, remaining: &[&str]) -> Result<Action, QueryError> {
+    let method = match command {
+        "list" => "templates_list",
+        "get" => "template_get",
+        "create" => "template_create",
+        "update" => "template_update",
+        "delete" => "template_delete",
+        "reset" => "template_reset",
+        "restore" => "template_restore",
+        _ => return Err(QueryError::invalid()),
+    };
+    let mut params = Map::new();
+    let mut args = remaining.iter().copied();
+    if !matches!(command, "list" | "create") {
+        let id = args
+            .next()
+            .filter(|value| !value.starts_with("--"))
+            .ok_or_else(QueryError::invalid)?;
+        params.insert("templateId".into(), json!(id));
+    }
+    let mut file = None;
+    while let Some(argument) = args.next() {
+        let (flag, inline) = argument
+            .split_once('=')
+            .map_or((argument, None), |(flag, value)| (flag, Some(value)));
+        if flag == "--deleted" && command == "list" && inline.is_none() {
+            if params.insert("deleted".into(), json!(true)).is_some() {
+                return Err(QueryError::invalid());
+            }
+            continue;
+        }
+        let value = inline
+            .or_else(|| args.next())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(QueryError::invalid)?;
+        match flag {
+            "--file" if matches!(command, "create" | "update") && file.is_none() => {
+                file = Some(PathBuf::from(value))
+            }
+            "--expected-revision"
+                if matches!(command, "update" | "delete" | "reset" | "restore")
+                    && !params.contains_key("expectedRevision") =>
+            {
+                params.insert("expectedRevision".into(), json!(value));
+            }
+            _ => return Err(QueryError::invalid()),
+        }
+    }
+    if matches!(command, "update" | "delete" | "reset" | "restore")
+        && !params.contains_key("expectedRevision")
+    {
+        return Err(QueryError::invalid());
+    }
+    if matches!(command, "create" | "update") {
+        Ok(Action::FileRequest {
+            method,
+            params: Value::Object(params),
+            path: file.ok_or_else(QueryError::invalid)?,
+            content: FileContent::Template,
+        })
+    } else {
+        Ok(Action::Request {
+            method,
+            params: Value::Object(params),
+        })
+    }
+}
+
+fn parse_mutation(group: &str, command: &str, remaining: &[&str]) -> Result<Action, QueryError> {
+    let method = match (group, command) {
+        ("meetings", "update") => "meeting_update",
+        ("meetings", "date") => "meeting_date_set",
+        ("meetings", "move") => "meetings_move",
+        ("meetings", "trash") => "meetings_trash",
+        ("meetings", "restore") => "meetings_restore",
+        ("folders", "create") => "folder_create",
+        ("folders", "rename") => "folder_rename",
+        ("folders", "delete") => "folder_delete",
+        _ => return Err(QueryError::invalid()),
+    };
+    let mut args = remaining.iter().copied();
+    let mut params = Map::new();
+    if matches!(
+        method,
+        "meeting_update" | "meeting_date_set" | "folder_rename" | "folder_delete"
+    ) {
+        let id = args
+            .next()
+            .filter(|value| !value.starts_with("--"))
+            .ok_or_else(QueryError::invalid)?;
+        params.insert(
+            if method.starts_with("folder") {
+                "folderId"
+            } else {
+                "meetingId"
+            }
+            .into(),
+            json!(id),
+        );
+    }
+    if matches!(method, "folder_create" | "folder_rename") {
+        let name = args
+            .next()
+            .filter(|value| !value.starts_with("--"))
+            .ok_or_else(QueryError::invalid)?;
+        params.insert("name".into(), json!(name));
+    }
+    let mut file = None;
+    while let Some(argument) = args.next() {
+        let (flag, inline) = argument
+            .split_once('=')
+            .map_or((argument, None), |(flag, value)| (flag, Some(value)));
+        if flag == "--clear"
+            && method == "meeting_date_set"
+            && inline.is_none()
+            && !params.contains_key("meetingDate")
+        {
+            params.insert("meetingDate".into(), Value::Null);
+            continue;
+        }
+        let value = inline
+            .or_else(|| args.next())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(QueryError::invalid)?;
+        match flag {
+            "--expected-version"
+                if !matches!(
+                    method,
+                    "meetings_move" | "meetings_trash" | "meetings_restore"
+                ) && !params.contains_key("expectedVersion") =>
+            {
+                params.insert("expectedVersion".into(), json!(value));
+            }
+            "--date" if method == "meeting_date_set" && !params.contains_key("meetingDate") => {
+                params.insert("meetingDate".into(), json!(value));
+            }
+            "--file"
+                if matches!(
+                    method,
+                    "meeting_update" | "meetings_move" | "meetings_trash" | "meetings_restore"
+                ) && file.is_none() =>
+            {
+                file = Some(PathBuf::from(value))
+            }
+            _ => return Err(QueryError::invalid()),
+        }
+    }
+    let content = match method {
+        "meeting_update" => Some(FileContent::MeetingUpdate),
+        "meetings_move" => Some(FileContent::MeetingMove),
+        "meetings_trash" | "meetings_restore" => Some(FileContent::MeetingSet),
+        _ => None,
+    };
+    if let Some(content) = content {
+        if method == "meeting_update" && !params.contains_key("expectedVersion") {
+            return Err(QueryError::invalid());
+        }
+        Ok(Action::FileRequest {
+            method,
+            params: Value::Object(params),
+            path: file.ok_or_else(QueryError::invalid)?,
+            content,
+        })
+    } else {
+        let params = Value::Object(params);
+        grove_core::agent_control::Mutation::parse(method, params.clone())
+            .map_err(|_| QueryError::invalid())?;
+        Ok(Action::Request { method, params })
+    }
+}
+
+fn read_content_file(
+    path: &std::path::Path,
+    mut params: Value,
+    kind: FileContent,
+) -> Result<Value, QueryError> {
+    let error = || QueryError {
+        code: "invalid_input",
+        message: "요청 파일의 JSON 필드와 1MiB 이하 크기를 확인해 주세요.",
+    };
+    let mut bytes = Vec::new();
+    let mut input: Box<dyn Read> = if path == std::path::Path::new("-") {
+        Box::new(io::stdin().lock())
+    } else {
+        Box::new(std::fs::File::open(path).map_err(|_| error())?)
+    };
+    input
+        .by_ref()
+        .take(MAX_RESPONSE_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| error())?;
+    if bytes.len() > MAX_RESPONSE_BYTES {
+        return Err(error());
+    }
+    let content: Value = serde_json::from_slice(&bytes).map_err(|_| error())?;
+    let content = content.as_object().ok_or_else(error)?;
+    let valid = match kind {
+        FileContent::Template => {
+            content.len() == 3
+                && ["name", "description", "prompt"]
+                    .into_iter()
+                    .all(|key| content.get(key).is_some_and(Value::is_string))
+        }
+        FileContent::MeetingUpdate => {
+            !content.is_empty()
+                && content
+                    .keys()
+                    .all(|key| matches!(key.as_str(), "title" | "notes"))
+                && content.values().all(Value::is_string)
+        }
+        FileContent::MeetingMove => {
+            content.len() == 2
+                && content
+                    .get("expectedVersions")
+                    .is_some_and(Value::is_object)
+                && content
+                    .get("folderId")
+                    .is_some_and(|value| value.is_null() || value.is_string())
+        }
+        FileContent::MeetingSet => {
+            content.len() == 1
+                && content
+                    .get("expectedVersions")
+                    .is_some_and(Value::is_object)
+        }
+    };
+    if !valid {
+        return Err(error());
+    }
+    for (key, value) in content {
+        params
+            .as_object_mut()
+            .ok_or_else(error)?
+            .insert(key.clone(), value.clone());
+    }
+    Ok(params)
+}
+
+fn execute_request(root: &std::path::Path, method: &str, params: Value, json: bool) -> i32 {
+    let timezone = match dates::time_zone(params.get("timezone")) {
+        Ok(zone) => zone,
+        Err(error) => return write_error(&error, json),
+    };
+    match dispatch(root, method, params) {
+        Ok(value) => write_stdout(&if json {
+            format!("{}\n", value)
+        } else {
+            render(method, &value, &timezone)
+        }),
+        Err(error) => write_error(&error, json),
+    }
 }
 
 pub fn run(args: impl IntoIterator<Item = OsString>) -> i32 {
@@ -244,15 +565,14 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> i32 {
                 ),
             }
         }
-        Action::Query { method, params } => match dispatch(&root, method, params) {
-            Ok(value) => {
-                let output = if options.json {
-                    format!("{}\n", value)
-                } else {
-                    render(method, &value)
-                };
-                write_stdout(&output)
-            }
+        Action::Request { method, params } => execute_request(&root, method, params, options.json),
+        Action::FileRequest {
+            method,
+            params,
+            path,
+            content,
+        } => match read_content_file(&path, params, content) {
+            Ok(params) => execute_request(&root, method, params, options.json),
             Err(error) => write_error(&error, options.json),
         },
         _ => unreachable!(),
@@ -281,15 +601,53 @@ fn write_error(error: &QueryError, json: bool) -> i32 {
     }
 }
 
-fn render(method: &str, value: &Value) -> String {
+fn render(method: &str, value: &Value, timezone: &TimeZone) -> String {
     let mut output = String::new();
     match method {
+        "templates_list" => {
+            output.push_str("ID\t이름\t용도\n");
+            if let Some(items) = value["templates"].as_array() {
+                for item in items {
+                    output.push_str(&format!(
+                        "{}\t{}\t{}\n",
+                        text(&item["id"]),
+                        text(&item["name"]),
+                        text(&item["description"])
+                    ));
+                }
+            }
+        }
+        "template_get" => {
+            let template = &value["template"];
+            output.push_str(&format!(
+                "{}\nID: {}\n수정본: {}\n{}\n\n{}\n",
+                text(&template["name"]),
+                text(&template["id"]),
+                text(&template["revision"]),
+                text(&template["description"]),
+                body(&template["prompt"])
+            ));
+        }
+        method if !crate::is_read_only(method) => {
+            output.push_str(&serde_json::to_string_pretty(value).unwrap());
+            output.push('\n');
+        }
         "meetings_list" | "meetings_search" => {
-            output.push_str("ID\t제목\t상태\n");
+            output.push_str(&format!(
+                "녹음/생성 시각 ({})\tID\t제목\t상태\n",
+                timezone.iana_name().unwrap_or("UTC")
+            ));
             if let Some(meetings) = value["meetings"].as_array() {
                 for meeting in meetings {
                     output.push_str(&format!(
-                        "{}\t{}\t{}\n",
+                        "{}\t{}\t{}\t{}\n",
+                        dates::timestamp(
+                            meeting
+                                .get("recordedAt")
+                                .filter(|value| !value.is_null())
+                                .unwrap_or(&meeting["createdAt"]),
+                            timezone
+                        ),
                         text(&meeting["id"]),
                         text(&meeting["title"]),
                         text(&meeting["status"])
@@ -362,7 +720,7 @@ fn render(method: &str, value: &Value) -> String {
             }
         }
         "status" => {
-            output.push_str("읽기 전용: 예\n");
+            output.push_str("조회: 읽기 전용\n템플릿 관리: 가능\n회의 수정: Nero 실행 필요\n");
             output.push_str(if value["rootExists"] == true {
                 "데이터 폴더: 있음\n"
             } else {
@@ -371,15 +729,24 @@ fn render(method: &str, value: &Value) -> String {
         }
         _ => {}
     }
+    if let Some(version) = value["editVersion"].as_str() {
+        output.push_str(&format!("\n수정본: {version}\n"));
+    }
     if let Some(page) = value["pagination"].as_object() {
         output.push_str(&format!(
-            "\n조회: {}부터, 최대 {}, 전체 {}\n",
+            "\n조회: {}부터, 반환 {}, 전체 {}\n",
             page.get("offset").unwrap_or(&Value::Null),
-            page.get("limit").unwrap_or(&Value::Null),
+            page.get("returned").unwrap_or(&Value::Null),
             page.get("total").unwrap_or(&Value::Null)
         ));
         if page.get("hasMore") == Some(&Value::Bool(true)) {
-            output.push_str("다음 내용은 --offset을 늘려 조회해 주세요.\n");
+            output.push_str(&format!(
+                "다음: --offset {} --expected-source-version {}\n",
+                page.get("nextOffset").unwrap_or(&Value::Null),
+                text(&value["sourceVersion"])
+            ));
+        } else {
+            output.push_str("요청한 조회 범위의 끝입니다.\n");
         }
     }
     output
@@ -429,7 +796,7 @@ mod tests {
         assert_eq!(options.root, Some(PathBuf::from("/missing")));
         assert_eq!(
             options.action,
-            Action::Query {
+            Action::Request {
                 method: "summary_get",
                 params: json!({"meetingId":"id","offset":50,"limit":20})
             }
@@ -440,7 +807,7 @@ mod tests {
     fn unfiled_filter_is_explicit_and_excludes_a_folder_id() {
         assert_eq!(
             args(&["meetings", "list", "--unfiled"]).unwrap().action,
-            Action::Query {
+            Action::Request {
                 method: "meetings_list",
                 params: json!({"unfiled":true})
             }
@@ -449,7 +816,7 @@ mod tests {
             args(&["meetings", "search", "term", "--unfiled"])
                 .unwrap()
                 .action,
-            Action::Query {
+            Action::Request {
                 method: "meetings_search",
                 params: json!({"query":"term","unfiled":true})
             }
@@ -477,6 +844,183 @@ mod tests {
         ] {
             assert!(args(&values).is_err(), "{values:?}");
         }
+    }
+
+    #[test]
+    fn date_and_page_arguments_are_explicit_and_method_scoped() {
+        let version = format!("sha256:{}", "a".repeat(64));
+        let parsed = args(&[
+            "meetings",
+            "list",
+            "--on",
+            "2026-10-28",
+            "--timezone",
+            "Asia/Seoul",
+            "--max-bytes",
+            "12000",
+            "--expected-source-version",
+            &version,
+        ])
+        .unwrap();
+        assert_eq!(
+            parsed.action,
+            Action::Request {
+                method: "meetings_list",
+                params: json!({"on":"2026-10-28","timezone":"Asia/Seoul","maxBytes":12000,"expectedSourceVersion":version})
+            }
+        );
+        for arguments in [
+            vec!["meetings", "list", "--from", "2026-10-28"],
+            vec![
+                "meetings",
+                "list",
+                "--on",
+                "2026-10-28",
+                "--timezone",
+                "Invalid/Zone",
+            ],
+            vec![
+                "meetings",
+                "list",
+                "--from",
+                "2026-10-29",
+                "--to",
+                "2026-10-28",
+                "--timezone",
+                "UTC",
+            ],
+            vec![
+                "meetings",
+                "list",
+                "--on",
+                "2026-10-28",
+                "--from",
+                "1",
+                "--timezone",
+                "UTC",
+            ],
+            vec!["meetings", "list", "--max-bytes", "0"],
+            vec!["meetings", "list", "--max-bytes", "1048577"],
+            vec!["transcript", "get", "id", "--timezone", "UTC"],
+            vec!["folders", "list", "--on", "2026-10-28"],
+        ] {
+            assert!(args(&arguments).is_err(), "{arguments:?}");
+        }
+    }
+
+    #[test]
+    fn human_list_displays_the_actual_recording_time_and_next_page_contract() {
+        let output = render(
+            "meetings_list",
+            &json!({"meetings":[{"id":"one","title":"Meeting","status":"draft","createdAt":0,"recordedAt":1000}],"sourceVersion":"sha256:test","pagination":{"offset":0,"limit":50,"returned":1,"total":2,"hasMore":true,"nextOffset":1}}),
+            &TimeZone::UTC,
+        );
+        assert!(output.contains("녹음/생성 시각 (UTC)"));
+        assert!(output.contains("1970-01-01 00:00\tone\tMeeting\tdraft"));
+        assert!(output.contains("--offset 1 --expected-source-version sha256:test"));
+        assert!(!output.contains("--offset 50"));
+    }
+
+    #[test]
+    fn mutation_commands_require_explicit_revisions_and_file_shapes() {
+        let version = format!("sha256:{}", "a".repeat(64));
+        assert!(matches!(
+            args(&[
+                "templates",
+                "update",
+                "meeting",
+                "--expected-revision",
+                &version,
+                "--file",
+                "input.json"
+            ])
+            .unwrap()
+            .action,
+            Action::FileRequest {
+                method: "template_update",
+                content: FileContent::Template,
+                ..
+            }
+        ));
+        assert!(matches!(
+            args(&[
+                "meetings",
+                "update",
+                "11111111-1111-4111-8111-111111111111",
+                "--expected-version",
+                &version,
+                "--file",
+                "input.json"
+            ])
+            .unwrap()
+            .action,
+            Action::FileRequest {
+                method: "meeting_update",
+                content: FileContent::MeetingUpdate,
+                ..
+            }
+        ));
+        assert!(matches!(
+            args(&["meetings", "trash", "--file", "input.json"])
+                .unwrap()
+                .action,
+            Action::FileRequest {
+                method: "meetings_trash",
+                content: FileContent::MeetingSet,
+                ..
+            }
+        ));
+        for arguments in [
+            vec!["templates", "update", "meeting", "--file", "input.json"],
+            vec!["templates", "delete", "meeting"],
+            vec!["templates", "create"],
+            vec!["meetings", "update", "id", "--file", "input.json"],
+            vec![
+                "meetings",
+                "date",
+                "11111111-1111-4111-8111-111111111111",
+                "--expected-version",
+                &version,
+                "--date",
+                "2026-10-28",
+                "--clear",
+            ],
+            vec!["folders", "create", "Folder"],
+            vec!["templates", "get", "meeting", "--deleted"],
+        ] {
+            assert!(args(&arguments).is_err(), "{arguments:?}");
+        }
+    }
+
+    #[test]
+    fn input_files_cannot_override_the_target_or_expected_revision() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("content.json");
+        std::fs::write(
+            &path,
+            serde_json::to_vec(
+                &json!({"name":"Title","description":"Use","prompt":"Text","templateId":"other"}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(read_content_file(
+            &path,
+            json!({"templateId":"meeting","expectedRevision":"fixed"}),
+            FileContent::Template
+        )
+        .is_err());
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&json!({"notes":"Text","expectedVersion":"other"})).unwrap(),
+        )
+        .unwrap();
+        assert!(read_content_file(
+            &path,
+            json!({"meetingId":"one","expectedVersion":"fixed"}),
+            FileContent::MeetingUpdate
+        )
+        .is_err());
     }
 
     #[test]
