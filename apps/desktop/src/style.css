@@ -175,7 +175,7 @@ html.recorder-document { background: transparent; }
 #summary-message:not(:empty), #transcript-message:not(:empty) { margin-bottom: 12px; }
 #transcript-rows { margin-top: 0; }
 .summary-section { border: 0; }
-.summary-content { overflow-wrap: anywhere; max-width: 72ch; }
+.summary-content { min-width: 0; overflow-wrap: anywhere; }
 
 :root { --setup-width: 520px; --meeting-content-width: 768px; }
 .setup-screen { display: flex; flex-direction: column; flex: 1; overflow: auto; padding: 28px 32px; }

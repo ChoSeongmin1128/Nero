@@ -13,8 +13,10 @@ function harness({ load = async () => info, write = async () => {}, connect = as
   const byId = id => {
     if (!nodes.has(id)) {
       const classes = new Set();
+      const attributes = new Map();
       nodes.set(id, { textContent: '', dataset: {}, hidden: false, disabled: false, open: id === 'settings-dialog',
         classList: { add: value => classes.add(value), remove: value => classes.delete(value), contains: value => classes.has(value) },
+        setAttribute(name, value) { attributes.set(name, String(value)); }, getAttribute: name => attributes.get(name) ?? null,
         focus() { throw Error('Unexpected focus'); } });
     }
     return nodes.get(id);
@@ -23,7 +25,7 @@ function harness({ load = async () => info, write = async () => {}, connect = as
   const agentConnection = { info: null, loading: false, error: '', request: 0, refresh: 0, timer: null, pending: {}, errors: {} };
   let calls = 0;
   const copied = [], timers = new Map();
-  const dialog = { opened: [], updates: [], closed: [], open: value => dialog.opened.push(value), update: value => dialog.updates.push(value), close: value => dialog.closed.push(value) };
+  const dialog = { opened: [], triggers: [], updates: [], closed: [], open(value, trigger) { dialog.opened.push(value); dialog.triggers.push(trigger); }, update: value => dialog.updates.push(value), close: value => dialog.closed.push(value) };
   const context = vm.createContext({ byId, state, agentConnection, agentConnectionDialog: dialog, bridge: { agentConnectionInfo: () => { calls += 1; return load(); }, connectAgentClient: connect },
     navigator: { clipboard: { writeText: async text => { copied.push(text); await write(text); } } },
     copyFeedbackTimers: new Map(), setTimeout: callback => { const key = {}; timers.set(key, callback); return key; }, clearTimeout: key => timers.delete(key),
@@ -128,6 +130,200 @@ test('connection is per client and only native evidence can mark it connected', 
   assert.notEqual(app.byId('settings-claude-status').textContent, '연결됨');
 });
 
+for (const client of ['claude', 'codex']) {
+  test(`${client} exposes an update action and preserves native recovery detail`, async () => {
+    const detail = '새 연결 도구를 설치해 주세요.';
+    const app = harness({ load: async () => ({ ...info, clients: info.clients.map(entry => entry.id === client ? { ...entry, state: 'update_required', detail } : entry) }) });
+    await app.context.loadAgentConnection();
+    assert.equal(app.byId(`settings-${client}-status`).textContent, '업데이트 필요');
+    assert.equal(app.byId(`settings-${client}-status`).dataset.state, 'update_required');
+    assert.equal(app.byId(`settings-${client}-connect`).textContent, '업데이트');
+    assert.equal(app.byId(`settings-${client}-connect`).getAttribute('aria-label'), `${client === 'claude' ? 'Claude' : 'Codex'} 업데이트`);
+    assert.equal(app.byId(`settings-${client}-connect`).disabled, false);
+    assert.equal(app.byId(`settings-${client}-connect`).hidden, false);
+    assert.equal(app.byId(`settings-${client}-error`).textContent, detail);
+    assert.equal(app.byId(`settings-${client}-error`).hidden, false);
+    assert.equal(app.byId(`settings-${client}-error`).className, 'settings-client-note');
+    assert.equal(app.byId(`settings-${client}-error`).getAttribute('role'), 'status');
+    const other = client === 'claude' ? 'codex' : 'claude';
+    assert.equal(app.byId(`settings-${other}-status`).textContent, '연결 안 됨');
+    assert.equal(app.byId(`settings-${other}-connect`).textContent, '연결');
+  });
+}
+
+for (const [result, label, action] of [
+  ['update_required', '업데이트 필요', '업데이트'],
+  ['waiting', '연결 대기', '다시 열기'],
+  ['connected', '연결됨', '연결'],
+]) {
+  test(`update completion uses native ${result} evidence without inventing success`, async () => {
+    const pending = deferred();
+    let current = { ...info, clients: [info.clients[0], { ...info.clients[1], state: 'update_required' }] };
+    let requests = 0;
+    const app = harness({ load: async () => current, connect: () => { requests += 1; return pending.promise; } });
+    await app.context.loadAgentConnection();
+    const updating = app.context.connectAgentClient('codex');
+    await app.context.connectAgentClient('codex');
+    assert.equal(requests, 1);
+    assert.equal(app.byId('settings-codex-status').textContent, '업데이트 중');
+    assert.equal(app.byId('settings-codex-status').dataset.state, 'updating');
+    assert.equal(app.byId('settings-codex-connect').textContent, '업데이트 중');
+    assert.equal(app.byId('settings-codex-connect').getAttribute('aria-label'), 'Codex 업데이트 중');
+    assert.equal(app.byId('settings-codex-connect').disabled, true);
+    assert.equal(app.byId('settings-codex-spinner').hidden, false);
+    assert.equal(app.byId('settings-claude-status').textContent, '연결 안 됨');
+    assert.equal(app.byId('settings-claude-connect').disabled, false);
+    assert.equal(app.byId('settings-claude-spinner').hidden, true);
+    current = { ...current, clients: [current.clients[0], { ...current.clients[1], state: 'waiting' }] };
+    await app.context.loadAgentConnection(true);
+    assert.equal(app.byId('settings-codex-status').textContent, '업데이트 중');
+    assert.equal(app.byId('settings-codex-connect').textContent, '업데이트 중');
+    current = { ...current, clients: [current.clients[0], { ...current.clients[1], state: result }] };
+    pending.resolve(current);
+    await updating;
+    assert.equal(app.byId('settings-codex-status').textContent, label);
+    assert.equal(app.byId('settings-codex-status').dataset.state, result);
+    assert.equal(app.byId('settings-codex-connect').textContent, action);
+    assert.equal(app.byId('settings-codex-connect').hidden, result === 'connected');
+    assert.equal(app.byId('settings-codex-connect').disabled, result === 'connected');
+    assert.equal(app.byId('settings-codex-spinner').hidden, true);
+  });
+}
+
+for (const client of ['claude', 'codex']) {
+  test(`${client} metadata errors offer a read-only check without disabling the other client`, async () => {
+    const detail = '연결 상태를 읽지 못했습니다. 잠시 후 다시 확인해 주세요.';
+    const current = { ...info, clients: info.clients.map(entry => entry.id === client ? { ...entry, state: 'error', detail } : entry) };
+    const app = harness({ load: async () => current });
+    await app.context.loadAgentConnection();
+    assert.equal(app.byId(`settings-${client}-status`).textContent, '확인 불가');
+    assert.equal(app.byId(`settings-${client}-status`).dataset.state, 'error');
+    assert.equal(app.byId(`settings-${client}-connect`).textContent, '다시 확인');
+    assert.equal(app.byId(`settings-${client}-connect`).getAttribute('aria-label'), `${client === 'claude' ? 'Claude' : 'Codex'} 다시 확인`);
+    assert.equal(app.byId(`settings-${client}-connect`).disabled, false);
+    assert.equal(app.byId(`settings-${client}-error`).textContent, detail);
+    assert.equal(app.byId(`settings-${client}-error`).hidden, false);
+    assert.equal(app.byId(`settings-${client}-error`).className, 'notice');
+    assert.equal(app.byId(`settings-${client}-error`).getAttribute('role'), 'alert');
+    const other = client === 'claude' ? 'codex' : 'claude';
+    assert.equal(app.byId(`settings-${other}-status`).textContent, '연결 안 됨');
+    assert.equal(app.byId(`settings-${other}-connect`).disabled, false);
+  });
+}
+
+for (const [result, label, action] of [
+  ['error', '확인 불가', '다시 확인'],
+  ['update_required', '업데이트 필요', '업데이트'],
+  ['waiting', '연결 대기', '다시 열기'],
+  ['connected', '연결됨', '연결'],
+]) {
+  test(`metadata recheck uses only one read and retains native ${result} state`, async () => {
+    const pending = deferred();
+    const initialInfo = { ...info, clients: [info.clients[0], { ...info.clients[1], state: 'error' }] };
+    let reads = 0, installs = 0;
+    const app = harness({ load: () => ++reads === 1 ? Promise.resolve(initialInfo) : pending.promise, connect: async () => { installs += 1; return info; } });
+    await app.context.loadAgentConnection();
+    const checking = app.context.connectAgentClient('codex');
+    await app.context.connectAgentClient('codex');
+    assert.equal(reads, 2);
+    assert.equal(installs, 0);
+    assert.equal(app.byId('settings-codex-status').textContent, '확인 중');
+    assert.equal(app.byId('settings-codex-status').dataset.state, 'checking');
+    assert.equal(app.byId('settings-codex-connect').textContent, '확인 중');
+    assert.equal(app.byId('settings-codex-connect').disabled, true);
+    assert.equal(app.byId('settings-codex-spinner').hidden, false);
+    assert.equal(app.byId('settings-claude-status').textContent, '연결 안 됨');
+    assert.equal(app.byId('settings-claude-connect').disabled, false);
+    assert.equal(app.byId('settings-claude-spinner').hidden, true);
+    const detail = result === 'error' ? '연결 상태를 읽지 못했습니다. 다시 확인해 주세요.' : '';
+    pending.resolve({ ...info, clients: [info.clients[0], { ...info.clients[1], state: result, detail }] });
+    await checking;
+    assert.equal(reads, 2);
+    assert.equal(installs, 0);
+    assert.equal(app.byId('settings-codex-status').textContent, label);
+    assert.equal(app.byId('settings-codex-status').dataset.state, result);
+    assert.equal(app.byId('settings-codex-connect').textContent, action);
+    assert.equal(app.byId('settings-codex-connect').hidden, result === 'connected');
+    assert.equal(app.byId('settings-codex-connect').disabled, result === 'connected');
+    assert.equal(app.byId('settings-codex-spinner').hidden, true);
+    assert.equal(app.byId('settings-codex-error').textContent, detail);
+  });
+}
+
+test('metadata recheck cannot downgrade the other client after its connection completes', async () => {
+  const metadata = deferred(), installation = deferred();
+  let current = { ...info, clients: [{ ...info.clients[0], state: 'error' }, info.clients[1]] };
+  let reads = 0;
+  const installs = [];
+  const app = harness({ load: () => ++reads === 2 ? metadata.promise : Promise.resolve(current), connect: client => { installs.push(client); return installation.promise; } });
+  await app.context.loadAgentConnection();
+  const checking = app.context.connectAgentClient('claude');
+  const connecting = app.context.connectAgentClient('codex');
+  assert.deepEqual(installs, ['codex']);
+  assert.equal(app.byId('settings-claude-status').textContent, '확인 중');
+  assert.equal(app.byId('settings-codex-status').textContent, '연결 중');
+  current = { ...current, clients: [current.clients[0], { ...current.clients[1], state: 'connected' }] };
+  installation.resolve(current);
+  await connecting;
+  assert.equal(app.byId('settings-codex-status').textContent, '연결됨');
+  metadata.resolve({ ...info, clients: [{ ...info.clients[0], state: 'not_connected' }, info.clients[1]] });
+  await checking;
+  assert.equal(app.byId('settings-claude-status').textContent, '연결 안 됨');
+  assert.equal(app.byId('settings-codex-status').textContent, '연결됨');
+});
+
+test('metadata recheck invalidates an older polling response', async () => {
+  const old = deferred();
+  const initialInfo = { ...info, clients: [{ ...info.clients[0], state: 'error' }, info.clients[1]] };
+  const checked = { ...info, clients: [{ ...info.clients[0], state: 'update_required' }, info.clients[1]] };
+  let reads = 0, installs = 0;
+  const app = harness({ load: () => { reads += 1; return reads === 1 ? Promise.resolve(initialInfo) : reads === 2 ? old.promise : Promise.resolve(checked); }, connect: async () => { installs += 1; return info; } });
+  await app.context.loadAgentConnection();
+  const polling = app.context.loadAgentConnection(true);
+  await app.context.connectAgentClient('claude');
+  old.resolve(initialInfo);
+  await polling;
+  assert.equal(installs, 0);
+  assert.equal(app.byId('settings-claude-status').dataset.state, 'update_required');
+  assert.equal(app.byId('settings-claude-connect').textContent, '업데이트');
+});
+
+test('metadata recheck keeps pending ownership across reopening and rejects its stale result', async () => {
+  const pending = deferred();
+  const initialInfo = { ...info, clients: [{ ...info.clients[0], state: 'error' }, info.clients[1]] };
+  let reads = 0, installs = 0;
+  const app = harness({ load: () => ++reads === 2 ? pending.promise : Promise.resolve(initialInfo), connect: async () => { installs += 1; return info; } });
+  await app.context.loadAgentConnection();
+  const checking = app.context.connectAgentClient('claude');
+  app.byId('settings-dialog').open = false;
+  app.context.resetAgentConnection();
+  app.byId('settings-dialog').open = true;
+  await app.context.loadAgentConnection();
+  await app.context.connectAgentClient('claude');
+  assert.equal(reads, 3);
+  assert.equal(installs, 0);
+  assert.equal(app.byId('settings-claude-status').textContent, '확인 중');
+  assert.equal(app.byId('settings-claude-connect').disabled, true);
+  pending.resolve({ ...info, clients: [{ ...info.clients[0], state: 'connected' }, info.clients[1]] });
+  await checking;
+  assert.equal(app.byId('settings-claude-status').textContent, '확인 불가');
+  assert.equal(app.byId('settings-claude-connect').textContent, '다시 확인');
+  assert.equal(installs, 0);
+});
+
+test('metadata query rejection preserves the error state and reports a bounded read failure', async () => {
+  let reads = 0, installs = 0;
+  const initialInfo = { ...info, clients: [{ ...info.clients[0], state: 'error' }, info.clients[1]] };
+  const app = harness({ load: async () => { if (++reads === 1) return initialInfo; throw Error('/private/metadata'); }, connect: async () => { installs += 1; return info; } });
+  await app.context.loadAgentConnection();
+  await app.context.connectAgentClient('claude');
+  assert.equal(installs, 0);
+  assert.equal(app.byId('settings-claude-status').dataset.state, 'error');
+  assert.equal(app.byId('settings-claude-connect').textContent, '다시 확인');
+  assert.equal(app.byId('settings-claude-connect').disabled, false);
+  assert.equal(app.byId('settings-claude-error').textContent, '확인하지 못했습니다. 다시 시도해 주세요.');
+});
+
 test('connection errors stay beside the affected client without leaking native messages', async () => {
   const app = harness({ connect: async () => { throw Error('/private/native/path'); } });
   await app.context.loadAgentConnection();
@@ -153,21 +349,24 @@ test('refresh retains rows and stops when switching panels', async () => {
   assert.equal(app.timers.size, 0);
 });
 
-test('an older refresh cannot overwrite a successful connection', async () => {
+for (const initialState of ['not_connected', 'update_required']) {
+test(`an older refresh cannot overwrite a successful ${initialState} request`, async () => {
   const pending = deferred();
   let initial = true;
+  const initialInfo = { ...info, clients: [{ ...info.clients[0], state: initialState }, info.clients[1]] };
   const connected = { ...info, clients: [{ id: 'claude', state: 'connected' }, info.clients[1]] };
-  const app = harness({ load: () => initial ? Promise.resolve(info) : pending.promise, connect: async () => connected });
+  const app = harness({ load: () => initial ? Promise.resolve(initialInfo) : pending.promise, connect: async () => connected });
   await app.context.loadAgentConnection();
   initial = false;
   const refresh = app.context.loadAgentConnection(true);
   await app.context.connectAgentClient('claude');
-  pending.resolve(info);
+  pending.resolve(initialInfo);
   await refresh;
   assert.equal(app.byId('settings-claude-status').textContent, '연결됨');
   assert.equal(app.byId('settings-claude-connect').hidden, true);
   assert.equal(app.byId('settings-claude-status').dataset.state, 'connected');
 });
+}
 
 test('confirmed connections have no redundant action and a lost connection restores it', async () => {
   let clientState = 'connected';
@@ -184,10 +383,12 @@ test('confirmed connections have no redundant action and a lost connection resto
 });
 
 
-test('closing and reopening during connection preserves pending ownership and rejects stale replies', async () => {
+for (const initialState of ['not_connected', 'update_required']) {
+test(`closing and reopening a ${initialState} request preserves ownership and rejects stale replies`, async () => {
   const pending = deferred();
   let connects = 0;
-  const app = harness({ connect: () => { connects += 1; return pending.promise; } });
+  const initialInfo = { ...info, clients: [{ ...info.clients[0], state: initialState }, info.clients[1]] };
+  const app = harness({ load: async () => initialInfo, connect: () => { connects += 1; return pending.promise; } });
   await app.context.loadAgentConnection();
   const connecting = app.context.connectAgentClient('claude');
   app.byId('settings-dialog').open = false;
@@ -197,10 +398,13 @@ test('closing and reopening during connection preserves pending ownership and re
   await app.context.connectAgentClient('claude');
   assert.equal(connects, 1);
   assert.equal(app.byId('settings-claude-connect').disabled, true);
+  assert.equal(app.byId('settings-claude-status').textContent, initialState === 'update_required' ? '업데이트 중' : '연결 중');
   pending.resolve({ ...info, clients: [{ id: 'claude', state: 'connected' }] });
   await connecting;
   assert.notEqual(app.byId('settings-claude-status').textContent, '연결됨');
+  assert.equal(app.byId('settings-claude-status').dataset.state, initialState);
 });
+}
 
 
 test('waiting describes an unconfirmed live connection without assuming approval is pending', async () => {
@@ -245,6 +449,7 @@ test('manual connection opens instructions with the current information', async 
   await app.context.loadAgentConnection();
   app.context.openAgentConnectionPrompt();
   assert.equal(app.dialog.opened[0], info);
+  assert.equal(app.dialog.triggers[0], app.byId('settings-agent-manual'));
   assert.equal(app.copied.length, 0);
 });
 
@@ -254,6 +459,7 @@ test('manual connection instructions remain available when native information ca
   app.context.openAgentConnectionPrompt();
   assert.equal(app.dialog.opened.length, 1);
   assert.equal(app.dialog.opened[0], null);
+  assert.equal(app.dialog.triggers[0], app.byId('settings-agent-manual'));
   await app.context.copyAgentConnection('config');
   assert.equal(app.copied.length, 0);
 });

@@ -109,10 +109,10 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     requestQuit() { const pending = deferred(); exits.push({ type: 'quit', pending }); return pending.promise; },
     hideMain() { const pending = deferred(); exits.push({ type: 'close', pending }); return pending.promise; },
   };
-  const copied = [];
+  const copied = [], agentDialogCalls = [];
   const context = vm.createContext({
     navigator: { clipboard: { writeText: async text => { copied.push(text); } } },
-    document, testBridge: bridge, localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
+    document, testBridge: bridge, testAgentDialogCalls: agentDialogCalls, localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
     GroveControls: { enhanceAll() {} },
     setTimeout: () => 1, clearTimeout() {}, requestAnimationFrame: (callback) => callback(),
   });
@@ -134,7 +134,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     ${librarySource.slice(0, librarySource.indexOf('export function mountLibrary')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '')}
     let summaryEvidenceOptions;
     const mountSummaryEvidence = options => { summaryEvidenceOptions = options; return { reset() {}, update() {}, restoreFocus() {} }; };
-    const mountAgentConnectionDialog = () => ({ open() {}, update() {}, close() {}, isOpen: () => false });
+    const mountAgentConnectionDialog = () => ({ open(...args) { testAgentDialogCalls.push(args); }, update() {}, close() {}, isOpen: () => false });
     const mountLibrary = () => ({ render() {}, resetSelection() {}, toggleSelection() {}, show: async () => {} });
     const mountSpeakers = ({getState}) => ({render() {}, reset() {}, open: async () => {}, label: segment => getState().transcriptDraft?.doc?.speakers?.find(speaker=>speaker.id === segment.speakerId)?.name || '화자 미지정'});
 
@@ -145,7 +145,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
   })()`, context);
   await tick();
   return {
-    app, element, updates, exits, bridge, copied, transcriptUpdates, savedTranscript: () => transcript,
+    app, element, updates, exits, bridge, copied, agentDialogCalls, transcriptUpdates, savedTranscript: () => transcript,
     focused: () => document.activeElement?.id,
     editTranscript(text) {
       const target = element('transcript-rows').querySelector('[data-segment="0"]') || { dataset: { segment: '0' } };
@@ -158,6 +158,18 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     edit(notes) { element('meeting-notes').value = notes; app.onEdit(); },
   };
 }
+
+test('manual connection click passes its trigger even when clicking does not move focus', async () => {
+  const page = await openApp();
+  await page.app.openSettings('agent');
+  page.element('settings-close').focus();
+  const trigger = page.element('settings-agent-manual');
+  trigger.listeners.get('click')({ currentTarget: trigger, target: trigger });
+  assert.equal(page.focused(), 'settings-close');
+  assert.equal(page.agentDialogCalls.length, 1);
+  assert.equal(page.agentDialogCalls[0][1], trigger);
+  assert.notEqual(page.agentDialogCalls[0][1], page.element('settings-close'));
+});
 
 test('meeting transition preserves edits arriving while earlier saves are pending', async () => {
   const page = await openApp();

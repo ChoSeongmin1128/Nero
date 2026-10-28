@@ -66,11 +66,11 @@ fn agent_connection_info(
         .app_data_dir()
         .map_err(|error| error.to_string())?;
     let connections = connection_directory(&app)?;
-    Ok(agent_connection::connection_info(
-        &resources,
-        &root,
-        &connections,
-    ))
+    let observations = agent_connection::observe_connection_state(&resources, &root, &connections);
+    Ok(
+        agent_connection::connection_info(&resources, &root, &connections)
+            .with_observation_errors(observations),
+    )
 }
 
 fn connection_directory(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
@@ -100,11 +100,12 @@ async fn agent_connect_client(
         let action =
             agent_connection::prepare_connection(&resources, &root, &connections, &client)?;
         open_connection(&action)?;
-        Ok(agent_connection::connection_info(
-            &resources,
-            &root,
-            &connections,
-        ))
+        let observations =
+            agent_connection::observe_connection_state(&resources, &root, &connections);
+        Ok(
+            agent_connection::connection_info(&resources, &root, &connections)
+                .with_observation_errors(observations),
+        )
     })
     .await
     .map_err(|_| "연결 화면을 열지 못했습니다. 다시 시도해 주세요.".to_string())?

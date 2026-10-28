@@ -30,6 +30,15 @@ Machine-local installation and preservation receipts remain private.
   evidence. Other agents open a connection dialog with the full prompt, copy action
   and paste destination together. Its code area scrolls independently of the instruction;
   copy failure and unavailable connection metadata have explicit recovery states.
+- Connection preparation and verified initialization are separate. Updates remain
+  required until a current live session is observed; a durable observation retains
+  that confirmation after disconnect. Client-specific observation errors do not block
+  the other row, and retrying an observation never runs installation. Codex uses a
+  stable catalog location pointing at preserved generation-specific executables.
+  Catalog metadata alone does not establish a running client's installed version.
+- Summary-only reading uses the available detail width and shrinks when its inspector
+  opens. Shared neutral surfaces use the previous warm gray palette; accent variants
+  remain independent of the large background planes.
 - Settings share grouped rows with aligned labels, current values and controls across
   appearance, recording, models and connections. Confirmed connections omit a redundant
   connect button and restore it when reconnection is needed. Tab keyboard navigation,

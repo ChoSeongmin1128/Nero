@@ -168,13 +168,18 @@ Settings / Screen exposes six color themes and independent Light / Dark / System
 brightness. The main app and compact recorder use the same shared appearance code
 and app-local preference. System follows the OS; an explicit brightness remains fixed.
 Theme changes do not change meetings or model preparation.
-Large surfaces remain neutral across accent colors. Recent meetings show recording
+Large surfaces retain a warm neutral tone across accent colors. Recent meetings show recording
 or creation time; opening a detail selects only that meeting in the recent list.
 Returning to the library restores its previous folder filter.
 
 Settings / Connections offers direct Claude/Codex installation and a separate action
 for other agents. The latter opens a dialog containing the full connection prompt,
 copy action and destination instruction. It does not change external client settings.
+An existing integration that needs a newer package shows an update action. Preparing
+the package does not complete the update; a verified current initialization does.
+Nero retains that observation independently of a live connection. Codex catalog paths
+stay stable while older generation executables remain readable. Client metadata
+observation failures have a query-only retry and do not block another integration.
 
 ## Recording and dates
 
@@ -209,6 +214,7 @@ files are not assigned an inferred original recording time.
 Completed meetings open on the summary. Header actions open the full voice record or
 notes alongside it in a non-modal inspector. The voice record remains one continuous
 editable document with its existing search, speaker/history, copy and export controls.
+The summary uses its available width rather than a fixed character-width cap.
 The inspector starts at the detail header; closing it preserves the summary position.
 Narrow available detail space uses a single surface with a return action and shared
 playback control rather than dimming the summary behind a modal.

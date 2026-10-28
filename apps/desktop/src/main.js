@@ -452,19 +452,22 @@ function renderAgentConnection() {
   for (const client of ['claude', 'codex']) {
     const entry = info?.clients?.find(item => item.id === client);
     const pending = Boolean(agentConnection.pending[client]);
+    const pendingLabel = { updating: '업데이트 중', checking: '확인 중', connecting: '연결 중' }[agentConnection.pending[client]];
     byId(`settings-${client}-spinner`).hidden = !pending && !(agentConnection.loading && !info);
-    const labels = { not_connected: '연결 안 됨', waiting: '연결 대기', connected: '연결됨', unavailable: '사용 불가' };
+    const labels = { not_connected: '연결 안 됨', update_required: '업데이트 필요', waiting: '연결 대기', connected: '연결됨', error: '확인 불가', unavailable: '사용 불가' };
     const status = byId(`settings-${client}-status`);
-    status.textContent = pending ? '연결 중' : !info ? (error ? '확인 불가' : '확인 중') : labels[entry?.state] || '사용 불가';
-    status.dataset.state = pending ? 'connecting' : !info ? (error ? 'error' : 'loading') : entry?.state || 'unavailable';
+    status.textContent = pending ? pendingLabel : !info ? (error ? '확인 불가' : '확인 중') : labels[entry?.state] || '사용 불가';
+    status.dataset.state = pending ? agentConnection.pending[client] : !info ? (error ? 'error' : 'loading') : entry?.state || 'unavailable';
     const button = byId(`settings-${client}-connect`);
     button.hidden = !pending && entry?.state === 'connected';
     button.disabled = pending || !available || !entry || entry.state === 'unavailable' || entry.state === 'connected';
-    button.textContent = pending ? '연결 중' : entry?.state === 'waiting' ? '다시 열기' : '연결';
+    button.textContent = pending ? pendingLabel : entry?.state === 'waiting' ? '다시 열기' : entry?.state === 'update_required' ? '업데이트' : entry?.state === 'error' ? '다시 확인' : '연결';
+    button.setAttribute?.('aria-label', `${client === 'claude' ? 'Claude' : 'Codex'} ${button.textContent}`);
     const errorNode = byId(`settings-${client}-error`);
+    const failed = Boolean(agentConnection.errors[client]) || entry?.state === 'error';
     errorNode.textContent = agentConnection.errors[client] || entry?.detail || '';
-    errorNode.className = agentConnection.errors[client] ? 'notice' : 'settings-client-note';
-    errorNode.setAttribute?.('role', agentConnection.errors[client] ? 'alert' : 'status');
+    errorNode.className = failed ? 'notice' : 'settings-client-note';
+    errorNode.setAttribute?.('role', failed ? 'alert' : 'status');
     errorNode.hidden = !errorNode.textContent;
   }
   byId('settings-agent-details').hidden = !available;
@@ -513,25 +516,26 @@ async function connectAgentClient(client) {
   const entry = agentConnection.info?.clients?.find(item => item.id === client);
   if (!agentConnectionActive() || agentConnection.pending[client] || !agentConnection.info?.available || !entry || ['unavailable', 'connected'].includes(entry.state)) return;
   const request = agentConnection.request;
-  agentConnection.pending[client] = true;
+  const checking = entry.state === 'error';
+  agentConnection.pending[client] = checking ? 'checking' : entry.state === 'update_required' ? 'updating' : 'connecting';
   agentConnection.errors[client] = '';
   agentConnection.refresh += 1;
   renderAgentConnection();
   try {
-    const info = await bridge.connectAgentClient(client);
+    const info = await (checking ? bridge.agentConnectionInfo() : bridge.connectAgentClient(client));
     if (request !== agentConnection.request || !agentConnectionActive()) return;
     const updated = info.clients?.find(item => item.id === client);
     if (updated) agentConnection.info = { ...agentConnection.info, clients: agentConnection.info.clients.map(item => item.id === client ? updated : item) };
   } catch (error) {
     const message = typeof error === 'string' ? error : error?.message;
-    const reason = typeof message === 'string' && message.length <= 160 && !/[\r\n]/.test(message) && /[가-힣]/.test(message) ? message : '연결하지 못했습니다. 다시 시도해 주세요.';
+    const reason = typeof message === 'string' && message.length <= 160 && !/[\r\n]/.test(message) && /[가-힣]/.test(message) ? message : checking ? '확인하지 못했습니다. 다시 시도해 주세요.' : '연결하지 못했습니다. 다시 시도해 주세요.';
     if (request === agentConnection.request && agentConnectionActive()) agentConnection.errors[client] = reason;
   } finally {
     delete agentConnection.pending[client];
     agentConnection.refresh += 1;
     if (agentConnectionActive()) {
       renderAgentConnection();
-      void loadAgentConnection(true);
+      if (!checking) void loadAgentConnection(true);
     }
   }
 }
@@ -576,7 +580,7 @@ async function copyAgentConnection(kind) {
 }
 
 function openAgentConnectionPrompt() {
-  if (agentConnectionActive()) agentConnectionDialog.open(agentConnection.info);
+  if (agentConnectionActive()) agentConnectionDialog.open(agentConnection.info, byId('settings-agent-manual'));
 }
 
 function renderSettings() {
