@@ -288,7 +288,14 @@ fn fingerprint(value: &impl Serialize) -> Result<String> {
 }
 
 pub fn meeting_edit_version(meeting: &Meeting) -> Result<String> {
-    fingerprint(meeting)
+    // These fields can be hydrated from a capture manifest without editing the
+    // meeting document. They must not invalidate a reader's metadata edit token.
+    // Keep source/audio identities, status and all editable fields protected.
+    let mut protected = meeting.clone();
+    protected.warning = None;
+    protected.capture_quality = None;
+    protected.recorded_at = None;
+    fingerprint(&protected)
 }
 pub(crate) fn library_edit_version(library: &Library) -> Result<String> {
     fingerprint(library)
@@ -781,6 +788,52 @@ mod tests {
             response["editVersion"],
             meeting_edit_version(&current).unwrap()
         );
+    }
+
+    #[test]
+    fn metadata_edit_version_ignores_hydrated_diagnostics_but_protects_edits_and_sources() {
+        let (_directory, _core, meeting) = fixture();
+        let version = meeting_edit_version(&meeting).unwrap();
+        let mut hydrated = meeting.clone();
+        hydrated.warning = Some("Synthetic diagnostic".into());
+        hydrated.capture_quality = Some(crate::CaptureQuality {
+            xrun_count: 1,
+            ..Default::default()
+        });
+        hydrated.recorded_at = Some(1234);
+        assert_eq!(meeting_edit_version(&hydrated).unwrap(), version);
+
+        let mut changes = Vec::new();
+        let mut changed = meeting.clone();
+        changed.title.push_str(" changed");
+        changes.push(changed);
+        let mut changed = meeting.clone();
+        changed.notes.push_str(" changed");
+        changes.push(changed);
+        let mut changed = meeting.clone();
+        changed.meeting_date = Some("2026-10-29".into());
+        changes.push(changed);
+        let mut changed = meeting.clone();
+        changed.folder_id = Some(uuid::Uuid::new_v4().to_string());
+        changes.push(changed);
+        let mut changed = meeting.clone();
+        changed.deleted_at = Some(1234);
+        changes.push(changed);
+        let mut changed = meeting.clone();
+        changed.transcript_id = Some(uuid::Uuid::new_v4().to_string());
+        changes.push(changed);
+        let mut changed = meeting.clone();
+        changed.audio = Some(crate::AudioArtifact {
+            session_id: uuid::Uuid::new_v4().to_string(),
+            relative_path: "synthetic/audio.wav".into(),
+            frames: 16000,
+            sample_rate: 16000,
+            channels: 1,
+        });
+        changes.push(changed);
+        for changed in changes {
+            assert_ne!(meeting_edit_version(&changed).unwrap(), version);
+        }
     }
 
     #[test]

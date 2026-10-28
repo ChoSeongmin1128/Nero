@@ -158,11 +158,43 @@ struct SummaryArchive {
     _receipt: serde_json::Value,
 }
 
+fn validated_summary_archive(active: &Summary, bytes: &[u8]) -> Result<SummaryArchive> {
+    let archive: SummaryArchive = serde_json::from_slice(bytes).map_err(|_| invalid_citations())?;
+    if serde_json::to_value(&archive.document).map_err(|_| invalid_citations())?
+        != serde_json::to_value(active).map_err(|_| invalid_citations())?
+        || archive.source.version != active.source_version
+        || transcript_digest(&archive.source)? != active.source_sha256
+        || active.notes_sha256.as_ref().is_some_and(|expected| {
+            archive
+                .notes
+                .as_deref()
+                .is_none_or(|notes| notes_digest(notes) != *expected)
+        })
+    {
+        return Err(invalid_citations());
+    }
+    validate_citation_source(&archive.source)?;
+    Ok(archive)
+}
+
+pub(crate) fn summary_reference_count(
+    meeting_id: &str,
+    active: &Summary,
+    read: impl FnOnce(&Path) -> Result<Option<Vec<u8>>>,
+) -> Option<usize> {
+    store::validate_id(&active.id).ok()?;
+    let path = location(meeting_id).ok()?.join(&active.id).join("run.json");
+    let bytes = read(&path).ok()??;
+    validated_summary_archive(active, &bytes)
+        .ok()
+        .map(|archive| archive.source.segments.len())
+}
+
 fn invalid_citations() -> CoreError {
     CoreError::Storage("요약에 사용한 음성 기록의 연결을 확인할 수 없습니다.".into())
 }
 
-fn citation_bytes(root: &Path, relative: &Path) -> Result<Vec<u8>> {
+pub(crate) fn citation_bytes(root: &Path, relative: &Path) -> Result<Vec<u8>> {
     let path = store::checked_path(root, relative)?;
     let file = store::open_read(&path)?;
     const LIMIT: u64 = 16 * 1024 * 1024;
@@ -405,25 +437,13 @@ impl Engine {
                 "요약이 변경되었습니다. 다시 열어 주세요.".into(),
             ));
         }
-        let archive: SummaryArchive = serde_json::from_slice(&citation_bytes(
-            &self.store.root,
-            &directory.join(summary_id).join("run.json"),
-        )?)
-        .map_err(|_| invalid_citations())?;
-        if serde_json::to_value(&archive.document).map_err(|_| invalid_citations())?
-            != serde_json::to_value(&active).map_err(|_| invalid_citations())?
-            || archive.source.version != active.source_version
-            || transcript_digest(&archive.source)? != active.source_sha256
-            || active.notes_sha256.as_ref().is_some_and(|expected| {
-                archive
-                    .notes
-                    .as_deref()
-                    .is_none_or(|notes| notes_digest(notes) != *expected)
-            })
-        {
-            return Err(invalid_citations());
-        }
-        validate_citation_source(&archive.source)?;
+        let archive = validated_summary_archive(
+            &active,
+            &citation_bytes(
+                &self.store.root,
+                &directory.join(summary_id).join("run.json"),
+            )?,
+        )?;
         if references
             .iter()
             .any(|reference| *reference == 0 || *reference as usize > archive.source.segments.len())
@@ -603,6 +623,59 @@ mod tests {
     fn context(engine: &Engine, id: &str) -> SummaryContext {
         let input = engine.summary_input(id).unwrap();
         SummaryContext::new(&input.source, &input.notes, input.expected_id).unwrap()
+    }
+
+    #[test]
+    fn presentation_reference_count_uses_only_the_validated_frozen_source() {
+        let (_temp, mut engine, id, _) = setup();
+        let source = engine.commit_transcript(&id, None, output()).unwrap();
+        let summary = engine
+            .commit_summary(&id, draft(source.clone(), None, "결정 [1]"))
+            .unwrap();
+        let root = engine.store.root.clone();
+        let relative = location(&id).unwrap().join(&summary.id).join("run.json");
+        let original = citation_bytes(&root, &relative).unwrap();
+        let count =
+            || summary_reference_count(&id, &summary, |path| citation_bytes(&root, path).map(Some));
+        assert_eq!(count(), Some(source.segments.len()));
+        engine
+            .edit_transcript(&id, source.version, vec!["다시 편집한 발언".into()])
+            .unwrap();
+        assert_eq!(count(), Some(source.segments.len()));
+        let exported = engine
+            .export_document(
+                &id,
+                crate::DocumentKind::Summary,
+                crate::DocumentFormat::Md,
+                false,
+            )
+            .unwrap();
+        assert!(exported.stale);
+        assert!(!exported.text.contains("[1]"));
+        for changed in ["document", "source_version", "source_hash"] {
+            let mut archive: serde_json::Value = serde_json::from_slice(&original).unwrap();
+            match changed {
+                "document" => archive["document"]["text"] = serde_json::json!("다른 본문"),
+                "source_version" => {
+                    archive["source"]["version"]["revision"] = serde_json::json!(999)
+                }
+                "source_hash" => {
+                    archive["source"]["segments"][0]["text"] = serde_json::json!("다른 발언")
+                }
+                _ => unreachable!(),
+            }
+            store::write_json(&root, &relative, &archive).unwrap();
+            assert_eq!(count(), None, "{changed}");
+            let exported = engine
+                .export_document(
+                    &id,
+                    crate::DocumentKind::Summary,
+                    crate::DocumentFormat::Md,
+                    false,
+                )
+                .unwrap();
+            assert!(exported.text.contains("[1]"), "{changed}");
+        }
     }
 
     fn stored_files(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {

@@ -50,34 +50,100 @@ pub(crate) enum CapturePhase {
     Interrupted,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+// Bound callback diagnostics while retaining overflow counts and observation ranges.
+pub(crate) const MAX_CAPTURE_QUALITY_EVENTS: usize = 64;
+pub(crate) const CAPTURE_QUALITY_EVENT_KINDS: usize = 8;
+pub(crate) const CAPTURE_QUALITY_INDIVIDUAL_EVENTS: usize =
+    MAX_CAPTURE_QUALITY_EVENTS - CAPTURE_QUALITY_EVENT_KINDS;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+#[repr(u8)]
+pub enum CaptureQualityEventKind {
+    Xrun,
+    RealtimeDenied,
+    RouteChanged,
+    QueueOverflow,
+    DeviceFailure,
+    WriterFailure,
+    FormatChanged,
+    CaptureInterrupted,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct CaptureQuality {
+pub struct CaptureQualityEvent {
+    pub kind: CaptureQualityEventKind,
+    pub count: u64,
+    pub first_observed_at_ms: u64,
+    pub last_observed_at_ms: u64,
+    pub first_saved_frame: u64,
+    pub last_saved_frame: u64,
+    pub first_queued_frame: u64,
+    pub last_queued_frame: u64,
+    pub coalesced: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+pub struct CaptureQuality {
     pub xrun_count: u64,
     pub realtime_denied_count: u64,
     pub route_changed_count: u64,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub events: Vec<CaptureQualityEvent>,
 }
 
 impl CaptureQuality {
     pub fn warning(&self) -> Option<String> {
-        let mut warnings = Vec::new();
+        let mut warnings: Vec<String> = Vec::new();
         if self.xrun_count != 0 {
-            warnings.push(format!(
-                "오디오 처리 지연이 {}회 감지되었습니다. 일부 음성이 누락되었을 수 있습니다.",
-                self.xrun_count
-            ));
-        }
-        if self.realtime_denied_count != 0 {
             warnings.push(
-                "오디오 처리 우선순위를 확보하지 못했습니다. 입력이 끊길 수 있습니다.".into(),
+                "오디오 입력의 불안정 신호가 감지되었습니다. 녹음 내용을 들어 확인해 주세요."
+                    .into(),
             );
         }
         if self.route_changed_count != 0 {
-            warnings
-                .push("녹음 중 오디오 장치가 변경되었습니다. 녹음 내용을 확인해 주세요.".into());
+            warnings.push(
+                "녹음 중 오디오 입력 경로가 변경되었습니다. 녹음 내용을 들어 확인해 주세요.".into(),
+            );
         }
         (!warnings.is_empty()).then(|| warnings.join(" "))
     }
+
+    pub(crate) fn validate(&self) -> Result<()> {
+        if self.events.len() > MAX_CAPTURE_QUALITY_EVENTS
+            || self.events.iter().any(|event| {
+                event.count == 0
+                    || (!event.coalesced && event.count != 1)
+                    || event.first_observed_at_ms > event.last_observed_at_ms
+                    || event.first_saved_frame > event.last_saved_frame
+                    || event.first_queued_frame > event.last_queued_frame
+                    || event.first_saved_frame > event.first_queued_frame
+                    || event.last_saved_frame > event.last_queued_frame
+            })
+        {
+            return Err(CoreError::Storage(
+                "녹음 진단 정보의 형식이 올바르지 않습니다.".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+pub(crate) fn deserialize_optional_capture_quality<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<CaptureQuality>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    // Diagnostic damage is independent of capture/audio integrity. Decode only
+    // this optional subtree tolerantly; the enclosing document and its required
+    // metadata still use their ordinary strict deserialization and validation.
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value::<CaptureQuality>(value)
+        .ok()
+        .filter(|quality| quality.validate().is_ok()))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,7 +163,11 @@ pub(crate) struct Manifest {
     pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub warning: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_capture_quality"
+    )]
     pub quality: Option<CaptureQuality>,
 }
 
@@ -152,6 +222,9 @@ impl Manifest {
                 "녹음 정보의 형식이 올바르지 않습니다.".into(),
             ));
         }
+        if let Some(quality) = &self.quality {
+            quality.validate()?;
+        }
         Ok(())
     }
 }
@@ -162,6 +235,17 @@ pub(crate) struct StoredMeeting {
     pub schema_version: u32,
     pub meeting: Meeting,
     pub capture_id: Option<String>,
+}
+
+pub(crate) fn hydrate_capture_metadata(meeting: &mut Meeting, manifest: &Manifest) {
+    if meeting.recorded_at.is_none() && manifest.device_id != "import" {
+        meeting.recorded_at = Some(manifest.started_at);
+    }
+    meeting.warning = match &manifest.quality {
+        Some(quality) => quality.warning(),
+        None => manifest.warning.clone(),
+    };
+    meeting.capture_quality = manifest.quality.clone();
 }
 
 pub(crate) struct Store {
@@ -276,6 +360,7 @@ impl Store {
             audio: None,
             error: None,
             warning: None,
+            capture_quality: None,
             transcript_id: None,
             folder_id: None,
             deleted_at: None,
@@ -345,15 +430,19 @@ impl Store {
     pub fn recover(&self, meetings: &mut BTreeMap<String, StoredMeeting>) -> Result<()> {
         for stored in meetings.values_mut() {
             let previous = stored.meeting.clone();
-            if let Err(error) = self.recover_meeting(stored) {
-                stored.meeting.status = MeetingStatus::Interrupted;
-                if self.audio_path(&stored.meeting).is_err() {
-                    stored.meeting.audio = None;
+            let hydration = match self.recover_meeting(stored) {
+                Ok(hydration) => hydration,
+                Err(error) => {
+                    stored.meeting.status = MeetingStatus::Interrupted;
+                    if self.audio_path(&stored.meeting).is_err() {
+                        stored.meeting.audio = None;
+                    }
+                    stored.meeting.error = Some(format!(
+                        "녹음 정보를 확인할 수 없어 자동 복구하지 못했습니다: {error}"
+                    ));
+                    None
                 }
-                stored.meeting.error = Some(format!(
-                    "녹음 정보를 확인할 수 없어 자동 복구하지 못했습니다: {error}"
-                ));
-            }
+            };
             if stored.meeting != previous {
                 if stored.meeting.status != previous.status
                     || stored.meeting.audio != previous.audio
@@ -363,11 +452,16 @@ impl Store {
                 }
                 self.save(stored)?;
             }
+            // Reading a completed capture must not rewrite its meeting document merely
+            // to expose diagnostics or metadata added by a newer application build.
+            if let Some(manifest) = hydration {
+                hydrate_capture_metadata(&mut stored.meeting, &manifest);
+            }
         }
         Ok(())
     }
 
-    fn recover_meeting(&self, stored: &mut StoredMeeting) -> Result<()> {
+    fn recover_meeting(&self, stored: &mut StoredMeeting) -> Result<Option<Manifest>> {
         let Some(session_id) = stored.capture_id.clone() else {
             if matches!(
                 stored.meeting.status,
@@ -377,7 +471,7 @@ impl Store {
                     "녹음 정보가 누락된 회의가 있습니다.".into(),
                 ));
             }
-            return Ok(());
+            return Ok(None);
         };
         let relative = Path::new("meetings")
             .join(&stored.meeting.id)
@@ -392,13 +486,6 @@ impl Store {
                 "회의와 녹음 정보가 일치하지 않습니다.".into(),
             ));
         }
-        if stored.meeting.recorded_at.is_none() && manifest.device_id != "import" {
-            stored.meeting.recorded_at = Some(manifest.started_at);
-        }
-        if manifest.warning.is_none() {
-            manifest.warning = manifest.quality.as_ref().and_then(CaptureQuality::warning);
-        }
-        stored.meeting.warning = manifest.warning.clone();
         let unfinished = matches!(
             manifest.phase,
             CapturePhase::Prepared | CapturePhase::Recording | CapturePhase::Paused
@@ -410,8 +497,10 @@ impl Store {
             || manifest.phase == CapturePhase::Interrupted;
         let playback_needs_repair = interrupted && self.audio_path(&stored.meeting).is_err();
         if !unfinished && !playback_needs_repair {
-            return Ok(());
+            return Ok(Some(manifest));
         }
+        hydrate_capture_metadata(&mut stored.meeting, &manifest);
+        manifest.warning = stored.meeting.warning.clone();
         let raw = checked_path(&self.root, &manifest.relative_dir().join("audio.pcm"))
             .and_then(|path| open_read(&path));
         let raw = match raw {
@@ -422,7 +511,7 @@ impl Store {
                 stored.meeting.error = Some(format!(
                     "원본 녹음을 읽을 수 없어 복구하지 못했습니다: {error}"
                 ));
-                return Ok(());
+                return Ok(None);
             }
         };
         manifest.phase = CapturePhase::Interrupted;
@@ -442,7 +531,7 @@ impl Store {
                 stored.meeting.error = Some(format!("녹음이 중단되었습니다. 원본은 보관되지만 재생 파일을 만들지 못했습니다: {error}"));
             }
         }
-        Ok(())
+        Ok(None)
     }
 
     pub fn audio_path(&self, meeting: &Meeting) -> Result<PathBuf> {

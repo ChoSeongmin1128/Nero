@@ -18,6 +18,7 @@ export default defineConfig({
       input: {
         main: `${here}src/index.html`,
         recorder: `${here}src/recorder.html`,
+        calendar: `${here}src/calendar.html`,
       },
     },
   },

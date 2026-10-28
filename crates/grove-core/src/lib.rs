@@ -4,6 +4,7 @@ mod diarization;
 mod engine;
 mod library;
 mod nemotron;
+pub mod presentation;
 pub mod reader;
 mod store;
 mod summary;
@@ -12,6 +13,8 @@ pub mod terminology;
 mod transcript;
 pub use diarization::{SpeakerAnalysis, SpeakerAnalysisDraft, SpeakerPosterior};
 pub use library::Folder;
+pub use presentation::{DocumentFormat, DocumentKind, ExportedDocument};
+pub use store::{CaptureQuality, CaptureQualityEvent, CaptureQualityEventKind};
 pub use summary::{
     ExternalSummaryProducer, Summary, SummaryCitation, SummaryCitations, SummaryContext,
     SummaryDraft, SummaryInput, SummaryProvenance, SummaryView, MAX_SUMMARY_CITATION_REFERENCES,
@@ -111,6 +114,12 @@ pub struct Meeting {
     pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub warning: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "store::deserialize_optional_capture_quality"
+    )]
+    pub capture_quality: Option<CaptureQuality>,
     #[serde(default)]
     pub transcript_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -142,6 +151,12 @@ pub struct SessionSnapshot {
     pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub warning: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "store::deserialize_optional_capture_quality"
+    )]
+    pub capture_quality: Option<CaptureQuality>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -371,6 +386,16 @@ impl CoreHandle {
         let id = id.to_owned();
         self.call(move |engine| engine.summary(&id))
     }
+    pub fn export_document(
+        &self,
+        meeting_id: &str,
+        kind: DocumentKind,
+        format: DocumentFormat,
+        include_citations: bool,
+    ) -> Result<ExportedDocument> {
+        let id = meeting_id.to_owned();
+        self.call(move |engine| engine.export_document(&id, kind, format, include_citations))
+    }
     pub fn summary_citations(
         &self,
         id: &str,
@@ -406,6 +431,19 @@ impl CoreHandle {
     pub fn start(&self, meeting_id: &str, device_id: &str) -> Result<Snapshot> {
         let (meeting_id, device_id) = (meeting_id.to_owned(), device_id.to_owned());
         self.call(move |engine| engine.start(&meeting_id, &device_id))
+    }
+
+    /// Creates an explicitly requested recording without a gap between the busy
+    /// check and creation. A failed capture preserves the requested draft.
+    pub fn create_recording(&self, title: &str, notes: &str, device_id: &str) -> Result<Snapshot> {
+        let (title, notes, device_id) = (title.to_owned(), notes.to_owned(), device_id.to_owned());
+        self.call(move |engine| {
+            if engine.capture.is_some() {
+                return Err(CoreError::RecordingBusy);
+            }
+            let meeting = engine.create_meeting(title, notes)?;
+            engine.start(&meeting.id, &device_id)
+        })
     }
 
     pub fn pause(&self, session_id: &str) -> Result<Snapshot> {

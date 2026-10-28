@@ -10,7 +10,6 @@ pub struct RecorderPolicy {
     background: bool,
     dismissed: bool,
     shown: bool,
-    presented: bool,
     failed: bool,
     last_moved: Option<std::time::Instant>,
 }
@@ -23,7 +22,6 @@ impl Default for RecorderPolicy {
             background: false,
             dismissed: false,
             shown: false,
-            presented: false,
             failed: false,
             last_moved: None,
         }
@@ -54,7 +52,6 @@ impl RecorderPolicy {
 
     pub fn show_failed(&mut self) {
         self.shown = false;
-        self.presented = false;
         self.failed = true;
     }
 
@@ -62,20 +59,12 @@ impl RecorderPolicy {
         if self.session.as_deref() != session {
             self.dismissed = false;
             self.failed = false;
-            self.presented = false;
         } else if self.background != background {
             self.failed = false;
         }
         self.session = session.map(str::to_owned);
         self.background = background;
-        let visible = self.automatic
-            && session.is_some()
-            && (background || self.presented)
-            && !self.dismissed
-            && !self.failed;
-        if visible {
-            self.presented = true;
-        }
+        let visible = self.automatic && session.is_some() && !self.dismissed && !self.failed;
         if visible == self.shown {
             return None;
         }
@@ -93,17 +82,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn first_background_presentation_stays_visible_until_recording_ends() {
+    fn every_recording_shows_immediately_and_stays_visible_until_it_ends() {
         let mut policy = RecorderPolicy::default();
         assert_eq!(policy.update(None, true), None);
-        assert_eq!(policy.update(Some("a"), false), None);
-        assert_eq!(policy.update(Some("a"), true), Some(Presentation::Show));
+        assert_eq!(policy.update(Some("a"), false), Some(Presentation::Show));
+        assert_eq!(policy.update(Some("a"), true), None);
         assert_eq!(policy.update(Some("a"), true), None);
         assert_eq!(policy.update(Some("a"), false), None);
         assert_eq!(policy.update(Some("a"), true), None);
         assert_eq!(policy.update(Some("a"), false), None);
         assert_eq!(policy.update(None, true), Some(Presentation::Hide));
-        assert_eq!(policy.update(Some("b"), false), None);
+        assert_eq!(policy.update(Some("b"), false), Some(Presentation::Show));
     }
 
     #[test]
@@ -153,8 +142,8 @@ mod tests {
         assert!(!policy.shown);
         assert_eq!(policy.update(Some("a"), true), None);
         assert_eq!(policy.update(Some("a"), true), None);
-        assert_eq!(policy.update(Some("a"), false), None);
-        assert_eq!(policy.update(Some("a"), true), Some(Presentation::Show));
+        assert_eq!(policy.update(Some("a"), false), Some(Presentation::Show));
+        assert_eq!(policy.update(Some("a"), true), None);
         policy.show_failed();
         policy.set_automatic(true);
         assert_eq!(policy.update(Some("a"), true), Some(Presentation::Show));

@@ -47,6 +47,7 @@ impl Engine {
                 .find(|meeting| meeting.id == capture.manifest.meeting_id)
             {
                 meeting.warning = capture.signals.warning();
+                meeting.capture_quality = capture.signals.quality();
             }
         }
         meetings.sort_by(|a, b| {
@@ -400,6 +401,7 @@ impl Engine {
         stored.meeting.status = MeetingStatus::Recording;
         stored.meeting.error = None;
         stored.meeting.warning = capture.signals.warning();
+        stored.meeting.capture_quality = capture.signals.quality();
         stored.meeting.updated_at = store::now();
         self.store.save(&stored)?;
         capture.begin();
@@ -467,6 +469,10 @@ impl Engine {
             .capture
             .as_ref()
             .and_then(|capture| capture.signals.warning());
+        stored.meeting.capture_quality = self
+            .capture
+            .as_ref()
+            .and_then(|capture| capture.signals.quality());
         stored.meeting.updated_at = store::now();
         self.store.save(&stored)?;
         self.meetings.insert(id.into(), stored);
@@ -493,6 +499,7 @@ impl Engine {
                     stored.meeting.status = MeetingStatus::Interrupted;
                     stored.meeting.error = Some(message);
                     stored.meeting.warning = last.warning.clone();
+                    stored.meeting.capture_quality = last.capture_quality.clone();
                     stored.meeting.updated_at = store::now();
                     let _ = self.store.save(stored);
                 }
@@ -513,6 +520,7 @@ impl Engine {
         stored.meeting.audio = outcome.audio;
         stored.meeting.error = outcome.manifest.error.clone();
         stored.meeting.warning = outcome.manifest.warning.clone();
+        stored.meeting.capture_quality = outcome.manifest.quality.clone();
         stored.meeting.updated_at = store::now();
         let mut last = session_snapshot(&outcome.manifest, outcome.manifest.saved_frames);
         let saved = self.store.save(&stored);
@@ -603,6 +611,7 @@ impl Drop for Engine {
 fn capture_snapshot(capture: &Capture) -> SessionSnapshot {
     let mut snapshot = session_snapshot(&capture.manifest, capture.frames());
     snapshot.warning = capture.signals.warning();
+    snapshot.capture_quality = capture.signals.quality();
     snapshot
 }
 
@@ -624,6 +633,7 @@ fn session_snapshot(manifest: &Manifest, frames: u64) -> SessionSnapshot {
         channels: manifest.channels,
         error: manifest.error.clone(),
         warning: manifest.warning.clone(),
+        capture_quality: manifest.quality.clone(),
     }
 }
 
@@ -692,9 +702,12 @@ mod tests {
         assert!(engine.capture.is_some());
         let snapshot = engine.snapshot();
         let warning = snapshot.session.as_ref().unwrap().warning.clone();
+        let quality = snapshot.session.as_ref().unwrap().capture_quality.clone();
         assert!(warning.is_some());
+        assert_eq!(quality.as_ref().unwrap().xrun_count, 1);
         assert_eq!(snapshot.session.unwrap().state, SessionState::Recording);
         assert_eq!(snapshot.meetings[0].warning, warning);
+        assert_eq!(snapshot.meetings[0].capture_quality, quality);
         sink.write(&[0.25_f32.to_le_bytes(); 10].concat());
         engine.pause(&session_id).unwrap();
         let saved: StoredMeeting = serde_json::from_slice(
@@ -710,6 +723,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(saved.meeting.warning, warning);
+        assert_eq!(saved.meeting.capture_quality, quality);
         engine.resume(&session_id).unwrap();
         sink.write(&[0.5_f32.to_le_bytes(); 10].concat());
         let snapshot = engine.stop(&session_id).unwrap();
@@ -722,6 +736,7 @@ mod tests {
         assert_eq!(finished.status, MeetingStatus::Completed);
         assert!(finished.error.is_none());
         assert_eq!(finished.warning, warning);
+        assert_eq!(finished.capture_quality, quality);
         assert_eq!(finished.audio.as_ref().unwrap().frames, 20);
         let root = engine.store.root.clone();
         drop(sink);
@@ -787,6 +802,7 @@ mod tests {
             xrun_count: 2,
             realtime_denied_count: 0,
             route_changed_count: 1,
+            ..Default::default()
         };
         let warning = quality.warning();
         let mut session_paths = Vec::new();
@@ -854,6 +870,231 @@ mod tests {
         for id in ids {
             assert_eq!(reopened.meetings[&id].meeting.warning, warning);
         }
+    }
+
+    #[test]
+    fn completed_legacy_diagnostics_hydrate_without_rewriting_meeting_manifest_or_audio() {
+        let (_temporary, mut engine) = engine();
+        let meeting = engine.create_meeting("회의".into(), "메모".into()).unwrap();
+        let mut manifest = Manifest::new(
+            &meeting.id,
+            "synthetic",
+            "시험 입력",
+            1000,
+            1,
+            Encoding::F32,
+        );
+        let mut raw = engine.store.prepare_capture(&manifest).unwrap();
+        raw.write_all(&[0.25_f32.to_le_bytes(); 10].concat())
+            .unwrap();
+        raw.sync_all().unwrap();
+        drop(raw);
+        manifest.phase = CapturePhase::Completed;
+        manifest.quality = Some(store::CaptureQuality {
+            realtime_denied_count: 1,
+            ..Default::default()
+        });
+        manifest.warning = Some("Legacy priority warning".into());
+        let audio = store::finalize_audio(&engine.store.root, &mut manifest).unwrap();
+        let stored = engine.meetings.get_mut(&meeting.id).unwrap();
+        stored.capture_id = Some(manifest.session_id.clone());
+        stored.meeting.status = MeetingStatus::Completed;
+        stored.meeting.audio = audio;
+        engine.store.save(stored).unwrap();
+        let root = engine.store.root.clone();
+        let paths = [
+            root.join("meetings").join(&meeting.id).join("meeting.json"),
+            root.join(manifest.relative_dir()).join("manifest.json"),
+            root.join(manifest.relative_dir()).join("audio.pcm"),
+            root.join(manifest.relative_dir()).join("audio.wav"),
+        ];
+        let before = paths.each_ref().map(|path| fs::read(path).unwrap());
+        let expected_edit_version =
+            crate::agent_control::meeting_edit_version(&stored.meeting).unwrap();
+        drop(engine);
+
+        let reopened = Engine::open(root.clone()).unwrap();
+        let hydrated = &reopened.meetings[&meeting.id].meeting;
+        assert_eq!(hydrated.recorded_at, Some(manifest.started_at));
+        assert!(hydrated.warning.is_none());
+        assert_eq!(hydrated.capture_quality, manifest.quality);
+        assert_eq!(
+            crate::agent_control::meeting_edit_version(hydrated).unwrap(),
+            expected_edit_version
+        );
+        let reader = crate::reader::LibraryReader::open(&root).unwrap();
+        let details = reader
+            .query("meeting_get", serde_json::json!({"meetingId":meeting.id}))
+            .unwrap();
+        assert_eq!(
+            details["meeting"]["captureQuality"]["realtimeDeniedCount"],
+            1
+        );
+        assert!(details["meeting"]["captureQuality"].get("events").is_none());
+        assert_eq!(
+            details["meeting"]["captureQualityMeaning"]["audioLossVerified"],
+            false
+        );
+        assert_eq!(details["editVersion"], expected_edit_version);
+        let listed = reader
+            .query("meetings_list", serde_json::json!({}))
+            .unwrap();
+        assert!(listed["meetings"][0].get("captureQuality").is_none());
+        assert_eq!(listed["meetings"][0]["editVersion"], expected_edit_version);
+        assert_eq!(paths.each_ref().map(|path| fs::read(path).unwrap()), before);
+        drop(reopened);
+        let reopened = Engine::open(root).unwrap();
+        assert!(reopened.meetings[&meeting.id].meeting.warning.is_none());
+        assert_eq!(paths.each_ref().map(|path| fs::read(path).unwrap()), before);
+    }
+
+    #[test]
+    fn optional_capture_diagnostic_damage_preserves_completed_meetings_and_all_file_bytes() {
+        use serde_json::json;
+        let valid = json!({
+            "xrunCount": 1,
+            "realtimeDeniedCount": 0,
+            "routeChangedCount": 0,
+            "events": [{
+                "kind": "xrun", "count": 1,
+                "firstObservedAtMs": 1000, "lastObservedAtMs": 1000,
+                "firstSavedFrame": 5, "lastSavedFrame": 5,
+                "firstQueuedFrame": 10, "lastQueuedFrame": 10,
+                "coalesced": false
+            }]
+        });
+        let mut unknown_kind = valid.clone();
+        unknown_kind["events"][0]["kind"] = json!("xurn");
+        let mut missing_field = valid.clone();
+        missing_field["events"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("count");
+        let mut invalid_range = valid.clone();
+        invalid_range["events"][0]["firstSavedFrame"] = json!(11);
+        let mut wrong_events_type = valid.clone();
+        wrong_events_type["events"] = json!("invalid events");
+        let mut too_many_events = valid.clone();
+        too_many_events["events"] = json!(vec![valid["events"][0].clone(); 65]);
+        for diagnostic in [
+            unknown_kind,
+            missing_field,
+            invalid_range,
+            wrong_events_type,
+            too_many_events,
+            json!("invalid quality"),
+        ] {
+            for target in ["meeting", "manifest", "both"] {
+                let (_temporary, mut engine) = engine();
+                let meeting = engine.create_meeting("회의".into(), "메모".into()).unwrap();
+                let mut manifest = Manifest::new(
+                    &meeting.id,
+                    "synthetic",
+                    "시험 입력",
+                    1000,
+                    1,
+                    Encoding::F32,
+                );
+                manifest.quality = Some(serde_json::from_value(valid.clone()).unwrap());
+                let mut raw = engine.store.prepare_capture(&manifest).unwrap();
+                raw.write_all(&[0.25_f32.to_le_bytes(); 10].concat())
+                    .unwrap();
+                raw.sync_all().unwrap();
+                drop(raw);
+                manifest.phase = CapturePhase::Completed;
+                let audio = store::finalize_audio(&engine.store.root, &mut manifest).unwrap();
+                let stored = engine.meetings.get_mut(&meeting.id).unwrap();
+                stored.capture_id = Some(manifest.session_id.clone());
+                stored.meeting.status = MeetingStatus::Completed;
+                stored.meeting.audio = audio.clone();
+                stored.meeting.capture_quality = manifest.quality.clone();
+                engine.store.save(stored).unwrap();
+                let root = engine.store.root.clone();
+                let paths = [
+                    root.join("meetings").join(&meeting.id).join("meeting.json"),
+                    root.join(manifest.relative_dir()).join("manifest.json"),
+                    root.join(manifest.relative_dir()).join("audio.pcm"),
+                    root.join(manifest.relative_dir()).join("audio.wav"),
+                ];
+                drop(engine);
+                if matches!(target, "meeting" | "both") {
+                    let mut value: serde_json::Value =
+                        serde_json::from_slice(&fs::read(&paths[0]).unwrap()).unwrap();
+                    value["meeting"]["captureQuality"] = diagnostic.clone();
+                    fs::write(&paths[0], serde_json::to_vec(&value).unwrap()).unwrap();
+                }
+                if matches!(target, "manifest" | "both") {
+                    let mut value: serde_json::Value =
+                        serde_json::from_slice(&fs::read(&paths[1]).unwrap()).unwrap();
+                    value["quality"] = diagnostic.clone();
+                    fs::write(&paths[1], serde_json::to_vec(&value).unwrap()).unwrap();
+                }
+                let before = paths.each_ref().map(|path| fs::read(path).unwrap());
+                let expected_quality =
+                    (target == "meeting").then(|| manifest.quality.clone().unwrap());
+                let reopened = Engine::open(root.clone()).unwrap();
+                let hydrated = &reopened.meetings[&meeting.id].meeting;
+                assert_eq!(
+                    hydrated.status,
+                    MeetingStatus::Completed,
+                    "{target}: {diagnostic}"
+                );
+                assert!(hydrated.error.is_none(), "{target}: {diagnostic}");
+                assert_eq!(hydrated.audio, audio);
+                assert_eq!(hydrated.capture_quality, expected_quality);
+                let reader = crate::reader::LibraryReader::open(&root).unwrap();
+                let details = reader
+                    .query("meeting_get", json!({"meetingId":meeting.id}))
+                    .unwrap();
+                assert_eq!(details["meeting"]["status"], "completed");
+                assert!(details["meeting"].get("error").is_none());
+                if target == "meeting" {
+                    assert_eq!(details["meeting"]["captureQuality"], valid);
+                } else {
+                    assert!(details["meeting"].get("captureQuality").is_none());
+                    assert!(details["meeting"].get("captureQualityMeaning").is_none());
+                }
+                let listed = reader.query("meetings_list", json!({})).unwrap();
+                assert!(listed["meetings"][0].get("captureQuality").is_none());
+                assert_eq!(paths.each_ref().map(|path| fs::read(path).unwrap()), before);
+                drop(reopened);
+                let reopened = Engine::open(root).unwrap();
+                assert_eq!(
+                    reopened.meetings[&meeting.id].meeting.status,
+                    MeetingStatus::Completed
+                );
+                assert_eq!(paths.each_ref().map(|path| fs::read(path).unwrap()), before);
+            }
+        }
+    }
+
+    #[test]
+    fn optional_diagnostic_tolerance_does_not_accept_invalid_capture_metadata() {
+        use serde_json::json;
+        let manifest = Manifest::new(
+            &uuid::Uuid::new_v4().to_string(),
+            "synthetic",
+            "시험 입력",
+            1000,
+            1,
+            Encoding::F32,
+        );
+        let mut value = serde_json::to_value(&manifest).unwrap();
+        value["quality"] = json!("invalid optional diagnostic");
+        let decoded: Manifest = serde_json::from_value(value.clone()).unwrap();
+        assert!(decoded.quality.is_none());
+        decoded.validate().unwrap();
+        value["sampleRate"] = json!(0);
+        let decoded: Manifest = serde_json::from_value(value.clone()).unwrap();
+        assert!(decoded.validate().is_err());
+        value["sampleRate"] = json!("invalid required metadata");
+        assert!(serde_json::from_value::<Manifest>(value).is_err());
+        let (_temporary, mut engine) = engine();
+        let meeting = engine.create_meeting("회의".into(), "메모".into()).unwrap();
+        let mut value = serde_json::to_value(&meeting).unwrap();
+        value["captureQuality"] = json!("invalid optional diagnostic");
+        value["notes"] = json!(false);
+        assert!(serde_json::from_value::<Meeting>(value).is_err());
     }
 
     #[test]

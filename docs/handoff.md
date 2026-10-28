@@ -44,9 +44,9 @@ remain separate. Source commits and hashes are in [Release history](release-hist
   evidence. Other agents open a connection dialog with the full prompt, copy action
   and paste destination together. Its code area scrolls independently of the instruction;
   copy failure and unavailable connection metadata have explicit recovery states.
-- Connection preparation and verified initialization are separate. Updates remain
-  required until a current live session is observed; a durable observation retains
-  that confirmation after disconnect. Client-specific observation errors do not block
+- Connection preparation and verified initialization are separate. Host installation freshness and live-session freshness are separate. A current
+  installed package with an older or inactive session requests a connection recheck,
+  not another update. Explicit status checks refresh bounded host observations. Client-specific observation errors do not block
   the other row, and retrying an observation never runs installation. Codex uses a
   stable catalog location pointing at preserved generation-specific executables.
   Catalog metadata alone does not establish a running client's installed version.
@@ -54,10 +54,23 @@ remain separate. Source commits and hashes are in [Release history](release-hist
   opens. Shared neutral surfaces use the previous warm gray palette; accent variants
   remain independent of the large background planes.
 - Settings share grouped rows with aligned labels, current values and controls across
-  appearance, recording, models and connections. Confirmed connections omit a redundant
+  general, recording, integrations and summary templates. Optional summary preparation
+  is an inline general-setting row. Confirmed connections omit a redundant
   connect button and restore it when reconnection is needed. Tab keyboard navigation,
   focus restoration, native connection evidence and preference persistence are retained.
   Browser layout validation does not establish installed-app or Windows-device validation.
+- Whole voice records and summaries share native TXT/Markdown copy/export formatting. Summary
+  output omits validated internal numeric citations by default; users can include them.
+  Canonical summaries, citation sources and spoken numeric text remain intact. External
+  template context carries the same output policy independently of user-edited instructions.
+- Calendar integrations use a desktop public-client PKCE grant and the platform credential
+  store. Selected Google calendars supply a compact five-minute reminder while Nero runs.
+  Recording starts only from an explicit reminder action; no helper wakes a quit app.
+  Calendar-state corruption is isolated from the meeting library.
+- Recording controls remain visible throughout capture when enabled, including while
+  the main window is foreground. Closing the control hides it for that capture only.
+  Bounded capture diagnostics record observed writer progress rather than inventing a
+  lost-audio interval. Malformed optional diagnostics do not corrupt completed meetings.
 - Recording policy is separate from the processing slot/queue. Downloads survive capture
   startup, inference is joined, and persisted jobs never automatically rerun at startup.
   Source-bound retry, durable cancellation intent and uncertain-saving review preserve
@@ -234,8 +247,8 @@ remain separate. Source commits and hashes are in [Release history](release-hist
   leaves ASR/diarization unavailable; a retained MOSS package cannot substitute for it.
   Windows builds do not require the unsupported MOSS runtime.
 
-- Settings contains Screen / Recording / Models / Connections. Shared appearance behavior is packaged
-  for both windows, with six colors and independent Light / Dark / System brightness.
+- Settings contains General / Recording / Integrations / Summary templates. Shared appearance behavior is packaged
+  for the main, recorder and reminder windows, with six colors and independent Light / Dark / System brightness.
   The native app uses its own saved preference instead of forcing green on every launch.
   Meeting title/notes autosave without a permanent Saved label or manual Save button;
   pending feedback and failed-save recovery remain available.

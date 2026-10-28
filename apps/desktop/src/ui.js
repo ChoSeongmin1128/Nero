@@ -31,27 +31,3 @@ export function sessionControls(session, busy = false) {
 export function applySystemAppearance() {
   globalThis.GroveAppearance?.apply();
 }
-
-export function documentExport(meeting, transcript, summary, kind, format = 'txt') {
-  if (!['transcript', 'summary'].includes(kind) || !['txt', 'md'].includes(format)) throw new Error('지원하지 않는 파일 형식입니다.');
-  const heading = kind === 'transcript' ? '음성 기록' : '회의록';
-  const title = meeting.title.trim() || '제목 없는 회의';
-  const safeName = title.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').replace(/[. ]+$/g, '').slice(0, 80) || '회의';
-  const markdown = text => text.replace(/[\\`*_{}\[\]<>#!|]/g, '\\$&');
-  let body;
-  if (kind === 'transcript') {
-    if (!transcript?.segments?.length) throw new Error('내보낼 음성 기록이 없습니다.');
-    body = transcript.segments.map(segment => {
-      const timestamp = duration(segment.start * 1000);
-      const name = transcript.speakers?.find(speaker => speaker.id === segment.speakerId)?.name;
-      const label = name ? `${timestamp} ${name}` : timestamp;
-      return format === 'md' ? `**${markdown(label)}**\n\n${markdown(segment.text)}` : `[${label}] ${segment.text}`;
-    }).join('\n\n');
-  } else {
-    if (!summary?.document?.text) throw new Error('내보낼 요약이 없습니다.');
-    body = summary.document.text;
-    if (summary.stale) body = `이전 내용으로 만든 요약\n\n${body}`;
-  }
-  const header = format === 'md' ? `# ${markdown(title)}\n\n## ${heading}` : `${title}\n${heading}`;
-  return { name: `${safeName}-${heading}.${format}`, text: `${header}\n\n${body}\n` };
-}

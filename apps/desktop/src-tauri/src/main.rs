@@ -5,6 +5,8 @@ mod agent_mutations;
 #[cfg(target_os = "macos")]
 mod app_menu;
 mod asr;
+mod calendar;
+mod calendar_desktop;
 mod diarization;
 mod downloads;
 mod export;
@@ -21,11 +23,12 @@ mod summary;
 mod summary_checkpoint;
 mod summary_evidence;
 mod summary_failure;
-mod terminology;
 mod template_settings;
+mod terminology;
 use grove_core::{
-    CoreHandle, Device, Meeting, Snapshot, SummaryCitations, SummaryView, Transcript,
-    TranscriptHistory, TranscriptSpeaker, TranscriptVersion,
+    CoreHandle, Device, DocumentFormat, DocumentKind, ExportedDocument, Meeting, Snapshot,
+    SummaryCitations, SummaryView, Transcript, TranscriptHistory, TranscriptSpeaker,
+    TranscriptVersion,
 };
 use processing::{Processing, Progress};
 use serde::Serialize;
@@ -69,9 +72,10 @@ async fn agent_write_ready(
 }
 
 #[tauri::command]
-fn agent_connection_info(
+async fn agent_connection_info(
     app: tauri::AppHandle,
     window: WebviewWindow,
+    force_host_refresh: Option<bool>,
 ) -> Result<agent_connection::ConnectionInfo, String> {
     require_main(&window)?;
     let resources = app
@@ -83,11 +87,29 @@ fn agent_connection_info(
         .app_data_dir()
         .map_err(|error| error.to_string())?;
     let connections = connection_directory(&app)?;
-    let observations = agent_connection::observe_connection_state(&resources, &root, &connections);
-    Ok(
-        agent_connection::connection_info(&resources, &root, &connections)
-            .with_observation_errors(observations),
-    )
+    let home = app
+        .path()
+        .home_dir()
+        .map_err(|_| "사용자 경로를 확인하지 못했습니다.".to_string())?;
+    let config = app
+        .path()
+        .config_dir()
+        .map_err(|_| "설정 경로를 확인하지 못했습니다.".to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let observations =
+            agent_connection::observe_connection_state(&resources, &root, &connections);
+        agent_connection::connection_info_with_hosts(
+            &resources,
+            &root,
+            &connections,
+            &home,
+            &config,
+            force_host_refresh.unwrap_or(false),
+        )
+        .with_observation_errors(observations)
+    })
+    .await
+    .map_err(|_| "연결 상태를 확인하지 못했습니다. 다시 시도해 주세요.".to_string())
 }
 
 fn connection_directory(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
@@ -113,16 +135,52 @@ async fn agent_connect_client(
         .app_data_dir()
         .map_err(|_| "연결 경로를 확인하지 못했습니다.".to_string())?;
     let connections = connection_directory(&app)?;
+    let home = app
+        .path()
+        .home_dir()
+        .map_err(|_| "사용자 경로를 확인하지 못했습니다.".to_string())?;
+    let config = app
+        .path()
+        .config_dir()
+        .map_err(|_| "설정 경로를 확인하지 못했습니다.".to_string())?;
     tauri::async_runtime::spawn_blocking(move || {
+        let before = agent_connection::connection_info_with_hosts(
+            &resources,
+            &root,
+            &connections,
+            &home,
+            &config,
+            true,
+        );
+        let attempt = before.connection_attempt(&client);
+        if attempt == agent_connection::ConnectionAttempt::Recheck {
+            return Ok(before);
+        }
         let action =
             agent_connection::prepare_connection(&resources, &root, &connections, &client)?;
-        open_connection(&action)?;
+        let installed = if attempt == agent_connection::ConnectionAttempt::Install {
+            agent_connection::install_prepared_connection(&home, &connections, &client)
+        } else {
+            Ok(false)
+        };
+        if matches!(&installed, Ok(false)) {
+            open_connection(&action)?;
+        }
         let observations =
             agent_connection::observe_connection_state(&resources, &root, &connections);
-        Ok(
-            agent_connection::connection_info(&resources, &root, &connections)
-                .with_observation_errors(observations),
+        let info = agent_connection::connection_info_with_hosts(
+            &resources,
+            &root,
+            &connections,
+            &home,
+            &config,
+            false,
         )
+        .with_observation_errors(observations);
+        Ok(match installed {
+            Ok(_) => info,
+            Err(detail) => info.with_action_error(&client, detail),
+        })
     })
     .await
     .map_err(|_| "연결 화면을 열지 못했습니다. 다시 시도해 주세요.".to_string())?
@@ -252,6 +310,13 @@ fn snapshot_changed(previous: Option<&Snapshot>, snapshot: &Snapshot) -> bool {
 
 fn show_recorder_window(app: &tauri::AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("recorder") {
+        window
+            .set_always_on_top(true)
+            .map_err(recorder_window_error)?;
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        window
+            .set_visible_on_all_workspaces(true)
+            .map_err(recorder_window_error)?;
         return window.show().map_err(recorder_window_error);
     }
     let mut builder =
@@ -265,6 +330,10 @@ fn show_recorder_window(app: &tauri::AppHandle) -> Result<(), String> {
             .always_on_top(true)
             .skip_taskbar(true)
             .focused(false);
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        builder = builder.visible_on_all_workspaces(true);
+    }
     if let Some(monitor) = app
         .get_webview_window("main")
         .and_then(|main| main.current_monitor().ok().flatten())
@@ -934,6 +1003,22 @@ async fn audio_file(
 }
 
 #[tauri::command]
+async fn export_document(
+    window: WebviewWindow,
+    state: tauri::State<'_, DesktopState>,
+    meeting_id: String,
+    kind: DocumentKind,
+    format: DocumentFormat,
+    include_citations: bool,
+) -> Result<ExportedDocument, String> {
+    require_main(&window)?;
+    on_core(state.core.clone(), move |core| {
+        core.export_document(&meeting_id, kind, format, include_citations)
+    })
+    .await
+}
+
+#[tauri::command]
 async fn export_text(
     window: WebviewWindow,
     app: tauri::AppHandle,
@@ -1426,13 +1511,23 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             agent_write_ready,
+            calendar_desktop::read_calendar_settings,
+            calendar_desktop::begin_calendar_connect,
+            calendar_desktop::finish_calendar_connect,
+            calendar_desktop::cancel_calendar_connect,
+            calendar_desktop::disconnect_calendar,
+            calendar_desktop::select_calendars,
+            calendar_desktop::sync_calendar,
+            calendar_desktop::read_calendar_reminder,
+            calendar_desktop::calendar_reminder_ready,
+            calendar_desktop::dismiss_calendar_reminder,
+            calendar_desktop::start_calendar_recording,
             template_settings::list_templates,
             template_settings::get_template,
             template_settings::create_template,
             template_settings::update_template,
             template_settings::reset_template,
             template_settings::delete_template,
-            template_settings::restore_template,
             agent_connection_info,
             agent_connect_client,
             read_snapshot,
@@ -1454,6 +1549,7 @@ fn main() {
             stop_recording,
             audio_file,
             export_text,
+            export_document,
             hide_recorder,
             set_auto_recorder,
             drag_recorder,
@@ -1503,6 +1599,7 @@ fn main() {
                 recorder: Mutex::new(recorder_policy::RecorderPolicy::default()),
                 processing: processing.clone(),
             });
+            calendar_desktop::install(app.handle(), root.clone());
             let menu = tauri::menu::Menu::with_items(
                 app,
                 &[
@@ -1552,6 +1649,9 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            if calendar_desktop::handle_window_event(window, event) {
+                return;
+            }
             if window.label() == "recorder" && matches!(event, tauri::WindowEvent::Moved(_)) {
                 window
                     .app_handle()

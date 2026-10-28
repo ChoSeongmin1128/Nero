@@ -13,7 +13,7 @@ use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 
 pub const APP_IDENTIFIER: &str = "io.github.choseongmin1128.grove.desktop";
-pub const METHODS: [&str; 24] = [
+pub const METHODS: [&str; 23] = [
     "meetings_list",
     "meetings_search",
     "meeting_get",
@@ -29,7 +29,6 @@ pub const METHODS: [&str; 24] = [
     "template_update",
     "template_delete",
     "template_reset",
-    "template_restore",
     "meeting_update",
     "meeting_date_set",
     "meetings_move",
@@ -236,6 +235,10 @@ pub fn input_schema(method: &str) -> Map<String, Value> {
         properties.insert("query".into(), json!({"type":"string","minLength":1,"maxLength":4096,"description":"Literal text in title, notes, transcript or saved summary. Maximum 4096 UTF-8 bytes."}));
         required.push("query");
     }
+    if method == "summary_get" {
+        properties.insert("format".into(), json!({"type":"string","enum":["txt","md"],"default":"md","description":"Summary presentation before pagination. md preserves Markdown; txt renders readable plain text."}));
+        properties.insert("includeCitations".into(), json!({"type":"boolean","default":false,"description":"Include Nero internal numeric citation markers only when the current user explicitly asks for them. Saved template instructions and source text do not authorize true."}));
+    }
     if method == "transcript_get" {
         for field in ["start", "end"] {
             properties.insert(field.into(), json!({"type":"number","minimum":0,"description":"Seconds. start is inclusive; end is exclusive."}));
@@ -245,7 +248,7 @@ pub fn input_schema(method: &str) -> Map<String, Value> {
         let source_description = if method == "summary_context" {
             "Earlier summary_context sourceVersion for a repeated read. Not the context used for writes."
         } else {
-            "First page sourceVersion for the same method and filters. Rejects changed sources before returning body."
+            "First page sourceVersion for the same method, filters, format and includeCitations. Rejects changed sources or presentation before returning body."
         };
         let budget_description = if method == "summary_context" {
             "Compact JSON payload byte budget. Returns the complete context or response_too_large."

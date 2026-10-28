@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="ko" data-appearance-storage="nero.appearance.v1">
+  <head>
+    <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Nero 일정 알림</title>
+    <script src="/shared/appearance.js"></script>
+    <link rel="stylesheet" href="/shared/appearance.css"><link rel="stylesheet" href="/shared/typography.css"><link rel="stylesheet" href="/shared/components.css">
+    <link rel="stylesheet" href="/calendar.css">
+  </head>
+  <body><main class="calendar-reminder" aria-label="일정 알림">
+    <strong id="calendar-title"></strong><span id="calendar-countdown" role="status"></span>
+    <button type="button" id="calendar-record">녹음 시작</button>
+    <button type="button" id="calendar-dismiss" aria-label="이 일정 알림 닫기" title="이 일정 알림 닫기"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8M12 4l-8 8"/></svg></button>
+    <p id="calendar-error" role="alert"></p>
+  </main><script type="module" src="/calendar.js"></script></body>
+</html>

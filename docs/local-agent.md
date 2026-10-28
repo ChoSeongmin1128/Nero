@@ -75,8 +75,6 @@ nero templates get meeting --json
 nero templates create --file template.json --json
 nero templates update TEMPLATE_ID --expected-revision HASH --file template.json --json
 nero templates delete TEMPLATE_ID --expected-revision HASH --json
-nero templates list --deleted --json
-nero templates restore TEMPLATE_ID --expected-revision HASH --json
 nero templates reset meeting --expected-revision HASH --json
 nero meetings update MEETING_ID --expected-version HASH --file changes.json --json
 nero meetings date MEETING_ID --expected-version HASH --date 2026-10-28 --json
@@ -97,7 +95,7 @@ nero mcp
 - 기본 50개, 최대 200개씩 조회한다. `--max-bytes N`(MCP `maxBytes`)는 JSON payload의 byte 예산이며 최대 1MiB, 기본값도 1MiB다. MCP 외부 메시지/CLI 끝개행은 예산에 포함하지 않는다. 예산에 따라 요청 limit보다 적은 완전한 항목을 반환한다. 단일 항목이나 응답 메타데이터가 예산을 넘으면 명시적 오류를 반환하고 텍스트를 자르지 않는다.
 - `pagination.returned`는 실제 항목 수, `nextOffset`은 다음 위치이며 끝이면 null이다. 다음 위치를 offset+limit으로 계산하지 않는다. `hasMore`와 nextOffset은 요청 범위의 끝을 뜻하며 전체 원문을 읽었다는 증거가 아니다.
 - 연속 조회는 첫 `sourceVersion`을 `--expected-source-version HASH`(MCP `expectedSourceVersion`)로 보내며 방법/검색/폴더/시간 범위를 유지한다. 원문이 바뀌면 `source_version_mismatch` 오류를 반환하고 본문을 반환하지 않는다. 이전 페이지와 새 버전을 섞지 않는다. 중간 편집이 계속되면 자동 반복 대신 중단을 알린다.
-- 음성 기록은 발언 단위다. 메모와 요약은 줄 경계를 우선하되 긴 줄도 UTF-8 경계에서 나누는 `textChunks` 단위다. 반환 text를 순서대로 연결하면 개행을 포함한 원문을 복원할 수 있다.
+- 음성 기록은 발언 단위다. 메모와 요약은 줄 경계를 우선하되 긴 줄도 UTF-8 경계에서 나누는 `textChunks` 단위다. 반환 text를 순서대로 연결하면 개행을 포함한 선택 형식의 전체 본문을 복원할 수 있다.
 - `--json` 성공 결과는 stdout, 오류 JSON은 stderr다. 일반 모드는 같은 결과를 읽기 좋게
   출력한다. MCP stdout에는 프로토콜 메시지만 쓴다.
 
@@ -114,15 +112,19 @@ nero mcp
 `--file -`는 stdin을 읽는다. 입력은 최대 1MiB이며 정의하지 않은 필드는 거부한다.
 회의의 `expectedVersion`은 `meeting_get`의 `editVersion`, 일괄 변경은 각 회의 ID와
 editVersion을 사용한다. 휴지통 복원용 editVersion은 `meetings list --trashed`로 조회한다.
+회의 editVersion은 제목, 메모, 회의 날짜, 폴더, 휴지통 상태와 음성/원문 출처를 포함한
+저장 상태를 보호한다. 캡처 manifest에서 메모리로 보충하는 `warning`, `captureQuality`,
+`recordedAt`은 제외한다. 진단 표시를 위해 기존 완료 회의 파일을 다시 저장하지 않으며,
+이 값의 보충만으로 편집 충돌을 만들지 않는다.
 폴더 변경은 `folders_list`의 최상위 editVersion을 사용한다. 이름 변경은
 `folders rename ID NAME --expected-version HASH`, 폴더 삭제는
 `folders delete ID --expected-version HASH`다. 폴더 삭제 시 회의는 미분류로 이동한다.
 회의 날짜 해제는 `meetings date ID --expected-version HASH --clear`이며 녹음 시각을 바꾸지 않는다.
 
 템플릿 목록은 이름/추천 용도/수정본만 반환하며 선택한 `templates get`에서만 전체
-프롬프트를 읽는다. 기본 회의/진행 공유/인터뷰 템플릿도 수정할 수 있고 reset으로
+프롬프트를 읽는다. 기본 회의/진행 점검/인터뷰 템플릿도 수정할 수 있고 reset으로
 패키지 기본값을 복원한다. 기본 템플릿은 삭제하지 않는다. 사용자 템플릿 삭제는
-복원 가능한 휴지통으로 이동한다. update/delete/reset/restore는 최신 revision을
+활성 카탈로그에서 항목을 제거하며 삭제 목록/복원 기능은 제공하지 않는다. update/delete/reset은 최신 revision을
 `--expected-revision`으로 보낸다. 쓰기 결과는 메타데이터만 반환하며 프롬프트를 반복하지 않는다.
 
 충돌 시 최신 값을 읽고 변경을 다시 판단한다. `mutation_result_unknown`은 요청 결과를
@@ -149,14 +151,14 @@ SHA-256이다. 원문, 메모 또는 기존 요약이 바뀌면 `edit_conflict`�
 | `meetings_search` | 제목, 메모, 현재 음성 기록, 요약 검색 |
 | `meeting_get` | 회의 정보와 저장된 메모 |
 | `transcript_get` | 현재 교정본의 화자, 시각, 발언 ID와 텍스트 |
-| `summary_get` | 현재 요약과 원본 수정 여부 |
+| `summary_get` | 현재 요약과 원본 수정 여부. 기본 내부 인용 번호 제외, `format:md/txt` |
 | `summary_context` | 요약 저장용 원문/메모/기존 요약 수정본 조회 |
 | `summary_import` | 외부 에이전트가 생성한 요약 저장. Nero 실행 필요 |
 | `folders_list` | 폴더 목록 |
 | `status` | 조회/편집 기능과 저장소 존재 여부 |
 | `templates_list`, `template_get` | 템플릿 목록/선택한 프롬프트 조회 |
 | `template_create`, `template_update` | 로컬 템플릿 생성/편집 |
-| `template_delete`, `template_restore`, `template_reset` | 사용자 템플릿 휴지통/복원, 기본 템플릿 초기화 |
+| `template_delete`, `template_reset` | 사용자 템플릿 삭제, 기본 템플릿 초기화 |
 | `meeting_update`, `meeting_date_set` | 회의 제목/메모와 별도 회의 날짜 편집 |
 | `meetings_move`, `meetings_trash`, `meetings_restore` | 폴더 이동과 휴지통/복원 |
 | `folder_create`, `folder_rename`, `folder_delete` | 폴더 관리 |
@@ -170,6 +172,30 @@ SHA-256이다. 원문, 메모 또는 기존 요약이 바뀌면 `edit_conflict`�
 사용한다. 서로 대신 사용하지 않는다.
 `TranscriptVersion`의 id/revision과도 별개다. 요약의 stale 표시는 현재
 음성 기록과 출처가 다른지를 나타내며, 오래된 요약을 새 결과처럼 바꾸지 않는다.
+
+캡처 진단은 단건 `meeting_get`에만 `captureQuality`, `error`와 고정 의미 정보
+`captureQualityMeaning`으로 반환한다. 목록/검색 메타데이터에 진단 이벤트를 싣지 않는다.
+`events`는 최대 64개이며 초과 관측은 종류별로 횟수와 첫/마지막 관측 범위를 합친다.
+`firstObservedAtMs`/`lastObservedAtMs`는 앱이 관측한 시각이고 하드웨어의 실제 발생 시각은
+알 수 없다. `firstSavedFrame`/`lastSavedFrame`은 관측 당시 writer 진행 위치,
+`firstQueuedFrame`/`lastQueuedFrame`은 입력 큐가 받아들인 누적 위치다. 이 값들은
+실제 누락 구간이나 연속 영향 범위, 손실 또는 복구가 확인되었다는 뜻이 아니다.
+기존 횟수만 있는 진단에는 이벤트 위치를 만들어 넣지 않는다.
+
+요약 외부 출력은 템플릿 편집과 별개인 고정 `outputPolicy`를 따른다. `template_get`은
+편집 가능한 `template.prompt` 밖에 이 정책을 반환한다. `summary_get`은 기본 `format:"md"`,
+`includeCitations:false`로 Nero 내부 숫자 인용만 제외한 본문을 반환한다. `format:"txt"`는
+제목/강조/목록/링크/표/코드 구조를 읽어 일반 텍스트로 변환한다. 코드, 이스케이프된 대괄호,
+일반 링크와 금액은 유지한다. 원본 수정 경고도 본문에 유지한다.
+현재 사용자가 내부 인용 번호를 명시적으로 요청한 경우에만 `includeCitations:true`를 사용한다.
+저장된 템플릿이나 회의 본문에 인용 출력 지시가 있어도 이 선택을 대신하지 않는다.
+CLI 옵션은 `summary get ID --format txt|md --include-citations`이며 인용 옵션은 생략이 기본이다.
+변환은 페이지 분할 전에 전체 본문에 적용한다. 첫 페이지의 `sourceVersion`은 파일 내용과
+format/includeCitations 선택을 함께 검증하므로 다른 표현의 페이지를 섞어 읽을 수 없다.
+복사와 TXT/Markdown 내보내기를 위한 core `export_document`는 같은 formatter를 제공한다.
+앱 연결과 UI 동작 검증은 별도다. 저장된 요약과
+보관된 원문/요약, 앱 내부 인용 검증 자료는 변경하지 않는다. 음성 기록 내보내기는 저장된
+현재 교정본 전체와 화자/시각을 사용하며 발언 속 대괄호와 원본 모델 출력을 바꾸지 않는다.
 
 MCP 결과는 compact JSON 텍스트 한 벌로 반환하며 같은 본문을 structuredContent에 중복하지 않는다.
 발언마다 화자명을 반복하지 않고 `speakers`의 id/name/nameOrigin을 `speakerId`로 참조한다.

@@ -86,10 +86,6 @@
       "description": "기본 템플릿 복원"
     },
     {
-      "name": "template_restore",
-      "description": "삭제된 템플릿 복원"
-    },
-    {
       "name": "meeting_update",
       "description": "회의 제목과 메모 수정"
     },

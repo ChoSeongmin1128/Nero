@@ -40,12 +40,13 @@ for (const file of ['appearance.css', 'typography.css', 'components.css', 'contr
   assert.ok(copyStep.includes(`'${file}'`), `Native desktop does not package shared ${file}`);
 }
 assert.ok(copyStep.includes("'appearance.js'"), 'Native desktop must package appearance behavior, not only colors');
-for (const entry of ['src/index.html', 'src/recorder.html']) {
+for (const entry of ['src/index.html', 'src/recorder.html', 'src/calendar.html']) {
   const html = desktopRead(entry);
   assert.match(html, /data-appearance-storage="nero\.appearance\.v1"/, `${entry} must share the native appearance preference`);
   assert.ok(html.indexOf('/shared/appearance.js') > 0 && html.indexOf('/shared/appearance.js') < html.indexOf('/shared/appearance.css'), `${entry} must apply saved appearance before paint`);
 }
-for (const name of ['appearance', 'recording', 'models']) assert.ok(desktopHTML.includes(`id="settings-${name}-panel"`), `Native settings missing ${name}`);
+for (const name of ['appearance', 'recording', 'agent', 'templates']) assert.ok(desktopHTML.includes(`id="settings-${name}-panel"`), `Native settings missing ${name}`);
+assert.ok(!desktopHTML.includes('id="settings-models-panel"'), 'Optional feature preparation belongs in General settings');
 for (const [id, variant] of [['meeting-title', 'text-input--title'], ['meeting-notes', 'text-input'], ['search', 'text-input--compact']]) {
   const tag = [...desktopHTML.matchAll(/<(?:input|textarea)\b[^>]*>/g)].map(match => match[0]).find(tag => tag.includes(`id="${id}"`));
   assert.ok(tag?.match(/class="([^"]*)"/)?.[1].split(/\s+/).includes(variant), `${id} must consume shared ${variant}`);

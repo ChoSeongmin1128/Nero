@@ -9,20 +9,10 @@ pub(crate) fn dispatch(root: &Path, method: &str, params: Value) -> Result<Value
     let mut params = params.as_object().ok_or_else(QueryError::invalid)?.clone();
     let store = TemplateStore::new(root);
     if method == "templates_list" {
-        let deleted = params
-            .remove("deleted")
-            .map(|value| value.as_bool().ok_or_else(QueryError::invalid))
-            .transpose()?
-            .unwrap_or(false);
         if !params.is_empty() {
             return Err(QueryError::invalid());
         }
-        let items = if deleted {
-            store.list_deleted()
-        } else {
-            store.list()
-        }
-        .map_err(error)?;
+        let items = store.list().map_err(error)?;
         return Ok(json!({"apiVersion":1,"templates":items}));
     }
     let id = if method == "template_create" {
@@ -40,7 +30,7 @@ pub(crate) fn dispatch(root: &Path, method: &str, params: Value) -> Result<Value
             return Err(QueryError::invalid());
         }
         return Ok(
-            json!({"apiVersion":1,"template":store.get(id.as_deref().unwrap()).map_err(error)?}),
+            json!({"apiVersion":1,"template":store.get(id.as_deref().unwrap()).map_err(error)?,"outputPolicy":grove_core::presentation::output_policy()}),
         );
     }
     let summary = match method {
@@ -59,18 +49,23 @@ pub(crate) fn dispatch(root: &Path, method: &str, params: Value) -> Result<Value
             .map_err(error)?;
             saved.summary()
         }
-        "template_delete" | "template_reset" | "template_restore" => {
+        "template_delete" => {
+            if !params.is_empty() {
+                return Err(QueryError::invalid());
+            }
+            let id = id.as_deref().unwrap();
+            store
+                .delete(id, revision.as_deref().unwrap())
+                .map_err(error)?;
+            return Ok(json!({"apiVersion":1,"templateId":id,"deleted":true}));
+        }
+        "template_reset" => {
             if !params.is_empty() {
                 return Err(QueryError::invalid());
             }
             let id = id.as_deref().unwrap();
             let revision = revision.as_deref().unwrap();
-            match method {
-                "template_delete" => store.delete(id, revision),
-                "template_reset" => store.reset(id, revision).map(|value| value.summary()),
-                _ => store.restore(id, revision).map(|value| value.summary()),
-            }
-            .map_err(error)?
+            store.reset(id, revision).map_err(error)?.summary()
         }
         _ => return Err(QueryError::invalid()),
     };
@@ -93,7 +88,7 @@ fn error(error: TemplateError) -> QueryError {
         ),
         TemplateError::NotFound => (
             "template_not_found",
-            "템플릿을 찾을 수 없습니다. templates list 또는 삭제 목록을 확인해 주세요.",
+            "템플릿을 찾을 수 없습니다. templates list를 확인해 주세요.",
         ),
         TemplateError::Conflict => (
             "template_revision_conflict",
@@ -130,18 +125,13 @@ fn error(error: TemplateError) -> QueryError {
 pub(crate) fn schema(method: &str) -> Map<String, Value> {
     let mut fields = Map::new();
     let mut required = Vec::new();
-    if method == "templates_list" {
-        fields.insert(
-            "deleted".into(),
-            json!({"type":"boolean","description":"Only deleted custom templates; default false."}),
-        );
-    } else {
+    if method != "templates_list" {
         if method != "template_create" {
             fields.insert("templateId".into(),json!({"type":"string","minLength":1,"description":"Built-in template ID or custom UUID returned by templates_list."}));
             required.push("templateId");
         }
         if !matches!(method, "template_get" | "template_create") {
-            fields.insert("expectedRevision".into(),json!({"type":"string","pattern":"^sha256:[0-9a-f]{64}$","description":"Current revision from template_get or deleted templates_list."}));
+            fields.insert("expectedRevision".into(),json!({"type":"string","pattern":"^sha256:[0-9a-f]{64}$","description":"Current revision from template_get."}));
             required.push("expectedRevision");
         }
         if matches!(method, "template_create" | "template_update") {

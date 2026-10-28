@@ -1,6 +1,9 @@
+import { mountCalendarSettings } from './calendar-settings.jsx';
+import { recordingQuality } from './recording-quality.js';
+import { mountDocumentActions } from './document-actions.jsx';
 import '../../../design-system/react-controls.jsx';
 import * as bridge from './bridge.js';
-import { icon, escape, button, duration, recordingStatus, statusMarkup, sessionControls, applySystemAppearance, documentExport } from './ui.js';
+import { icon, escape, button, duration, recordingStatus, statusMarkup, sessionControls, applySystemAppearance } from './ui.js';
 import { processingFeedback } from './processing-feedback.js';
 import { processingJobs, pendingJob, processingResults } from './processing-state.js';
 import { mountLibrary, filterLibraryMeetings } from './library-ui.js';
@@ -19,6 +22,7 @@ const terminologySettings = { info: null, error: '', request: 0, saving: null };
 const agentConnection = { info: null, loading: false, error: '', request: 0, refresh: 0, timer: null, pending: {}, errors: {} };
 const agentConnectionDialog = mountAgentConnectionDialog({ container: byId('settings-dialog'), fallbackTrigger: () => byId('settings-agent-manual') });
 const templateSettings = mountTemplateSettings({ container: byId('settings-dialog'), panel: byId('settings-templates-panel'), bridge });
+const calendarSettings = mountCalendarSettings({ panel: byId('calendar-settings'), bridge });
 const microphonePreferenceKey = 'nero.recording.microphone.v1';
 const recorderPreferenceKey = 'nero.recording.autoRecorder.v1';
 function readAutoRecorder() { try { return globalThis.localStorage?.getItem(recorderPreferenceKey) !== 'false'; } catch { return true; } }
@@ -29,7 +33,7 @@ function readMicrophonePreference() {
   } catch { return { id: null, name: '' }; }
 }
 const microphonePreference = readMicrophonePreference();
-const state = { snapshot: { meetings: [], folders: [], session: null }, libraryOpen: false, libraryFilter: 'all', librarySelection: new Set(), libraryBusy: false, librarySearchIds: null, librarySearchHits: [], pendingSearchIntent: null, setupReturnId: null, librarySearchPending: false, librarySearchUnavailable: 0, selectedId: null, devices: [], devicesLoaded: false, deviceId: microphonePreference.id, deviceName: microphonePreference.name, settingsPanel: 'appearance', settingsKey: '', settingsError: '', settingsReturnId: 'settings', setupFromSettings: false, autoRecorder: readAutoRecorder(), recorderSettingBusy: false, snapshotKey: '', processingKey: '', processingCancellingId: null, transcriptEditing: null, audioRequest: 0, dateSaving: null, dateKey: '', dateError: null, lastError: null, errorIsSave: false, connected: false, busy: false, composing: false, transcriptComposing: false, editLocks: 0, draft: null, saveTimer: null, saveQueue: Promise.resolve(), listKey: '', controlsKey: '', audioKey: '', processing: { status: 'idle', supported: false, modelReady: false }, transcriptDraft: null, transcriptKey: '', transcriptLoadId: 0, transcriptSaveQueue: Promise.resolve(), summary: null, summaryKey: '', summaryLoadId: 0, summaryLoaded: false, transcriptLoaded: false, summaryLoadError: false, transcriptLoadError: false, setupRequested: false };
+const state = { snapshot: { meetings: [], folders: [], session: null }, libraryOpen: false, libraryFilter: 'all', librarySelection: new Set(), libraryBusy: false, librarySearchIds: null, librarySearchHits: [], pendingSearchIntent: null, setupReturnId: null, librarySearchPending: false, librarySearchUnavailable: 0, selectedId: null, devices: [], devicesLoaded: false, deviceId: microphonePreference.id, deviceName: microphonePreference.name, settingsPanel: 'appearance', summaryFeatureError: '', settingsKey: '', settingsError: '', settingsReturnId: 'settings', setupFromSettings: false, autoRecorder: readAutoRecorder(), recorderSettingBusy: false, snapshotKey: '', processingKey: '', processingCancellingId: null, transcriptEditing: null, audioRequest: 0, audioLoading: null, dateSaving: null, dateKey: '', dateError: null, lastError: null, errorIsSave: false, connected: false, busy: false, composing: false, transcriptComposing: false, editLocks: 0, draft: null, saveTimer: null, saveQueue: Promise.resolve(), listKey: '', controlsKey: '', audioKey: '', processing: { status: 'idle', supported: false, modelReady: false }, transcriptDraft: null, transcriptKey: '', transcriptLoadId: 0, transcriptSaveQueue: Promise.resolve(), summary: null, summaryKey: '', summaryLoadId: 0, summaryLoaded: false, transcriptLoaded: false, summaryLoadError: false, transcriptLoadError: false, setupRequested: false };
 const fullDate = new Intl.DateTimeFormat('ko-KR', { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 const calendarDay = value => { const date = new Date(value); return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`; };
 const meetingDay = meeting => meeting.meetingDate || calendarDay(meeting.recordedAt ?? meeting.createdAt);
@@ -40,7 +44,6 @@ let pendingQuitSessionId = null;
 let selectionRequest = 0;
 let speakerReplay = null;
 let summaryEvidence = null;
-const copyFeedbackTimers = new Map();
 const processingActions = new Map();
 const processingErrors = new Map();
 let processingFocus = null;
@@ -142,15 +145,28 @@ function renderRecording(meeting) {
     controls.querySelectorAll('button').forEach(node => { node.dataset.unavailable = String(node.disabled); });
   }
   byId('recording-controls').querySelectorAll('button').forEach(node => { node.disabled = state.busy || node.dataset.unavailable === 'true'; });
-  const message = ownSession?.error || meeting.error || ownSession?.warning || meeting.warning || (phase === 'interrupted' ? '녹음이 중단되었습니다. 저장된 음성을 확인하세요.' : session && !ownSession ? '다른 회의에서 녹음하고 있습니다.' : !meeting.audio && !ownSession && modelsReady() && state.devicesLoaded ? microphoneIssue() : '');
+  const quality = ownSession?.captureQuality || meeting.captureQuality;
+  const message = ownSession?.error || meeting.error || (!quality && (ownSession?.warning || meeting.warning)) || (phase === 'interrupted' ? '녹음이 중단되었습니다. 저장된 음성을 확인하세요.' : session && !ownSession ? '다른 회의에서 녹음하고 있습니다.' : !meeting.audio && !ownSession && modelsReady() && state.devicesLoaded ? microphoneIssue() : '');
   byId('recording-message').textContent = message;
   byId('recording-message').hidden = !message;
+  const review = recordingQuality(quality, ownSession?.sampleRate || meeting.audio?.sampleRate, ownSession?.savedFrames ?? meeting.audio?.frames);
+  const qualityNode = byId('recording-quality');
+  qualityNode.hidden = !review.visible;
+  const qualityKey = JSON.stringify([meeting.id, review, Boolean(ownSession), Boolean(meeting.audio)]);
+  if (qualityNode.dataset.key !== qualityKey) {
+    qualityNode.dataset.key = qualityKey;
+    const opened = qualityNode.querySelector('details')?.open;
+    const playable = Boolean(meeting.audio && !ownSession);
+    const actions = review.locations.map(item => `<li><span>${escape(item.label)}</span>${item.seconds == null ? '' : `<button type="button" class="quiet small" data-quality-seek="${item.seconds}"${playable ? '' : ' disabled'}>저장 위치 ${duration(item.seconds * 1000)} 듣기</button>`}</li>`).join('');
+    qualityNode.innerHTML = `<details${opened ? ' open' : ''}><summary>녹음 상태 확인 필요</summary><p class="type-caption muted">${ownSession ? '녹음을 마친 뒤 아래 저장 위치 근처를 들어 확인하세요.' : '입력 이상이 감지됐을 때의 저장 위치입니다. 주변 녹음을 확인하세요.'}</p>${actions ? `<ul>${actions}</ul>` : `<button type="button" class="quiet small" data-quality-seek="0"${playable ? '' : ' disabled'}>녹음 듣기</button>`}</details>`;
+  }
+
   prepareAudio(meeting, Boolean(ownSession));
 }
 
 async function prepareAudio(meeting, recording, force = false) {
   const key = recording || !meeting.audio ? '' : `${meeting.id}:${meeting.audio.relativePath}:${meeting.audio.frames}`;
-  if (state.audioKey === key && !force) return;
+  if (state.audioKey === key && !force) return state.audioLoading;
   const request = ++state.audioRequest;
   byId('retry-audio').hidden = true;
   state.audioKey = key;
@@ -159,9 +175,10 @@ async function prepareAudio(meeting, recording, force = false) {
   player.removeAttribute('src');
   player.load();
   byId('audio-region').hidden = !key;
-  if (!key) return;
+  if (!key) { state.audioLoading = null; return; }
   byId('audio-message').dataset.state = 'loading';
   byId('audio-message').textContent = '녹음 파일을 여는 중입니다.';
+  const loading = (async () => {
   try {
     const url = await bridge.audioUrl(meeting.id);
     if (state.audioKey !== key || state.audioRequest !== request) return;
@@ -177,6 +194,9 @@ async function prepareAudio(meeting, recording, force = false) {
       showError(error);
     }
   }
+  })();
+  state.audioLoading = loading;
+  try { await loading; } finally { if (state.audioLoading === loading) state.audioLoading = null; }
 }
 
 const modelsReady = () => state.processing.supported && state.processing.modelReady;
@@ -187,7 +207,7 @@ function renderSetup() {
   const running = ['queued', 'running'].includes(job.status) && ['setup','model','summary-model'].includes(job.kind);
   const visible = state.connected && !activeSession() && (state.setupRequested || (!state.selectedId && (!ready || (running && job.kind === 'setup'))));
   byId('setup-screen').hidden = !visible;
-  byId('setup-title').textContent = state.setupFromSettings ? '모델' : ready && state.selectedId ? '회의 요약' : '초기 설정';
+  byId('setup-title').textContent = state.setupFromSettings ? '추가 기능' : ready && state.selectedId ? '회의 요약' : '초기 설정';
   document.querySelector('.workspace').dataset.onboarding = String(visible && state.snapshot.meetings.length === 0);
   byId('setup-speech-state').textContent = !state.connected ? '확인 중' : job.modelReady ? '준비됨' : !job.supported ? '지원되지 않음' : running && job.modelStage === 'speech' ? '준비 중' : '';
   byId('setup-summary-state').textContent = job.summaryReady ? '준비됨' : !job.summarySupported && state.connected ? '지원되지 않음' : running && job.modelStage === 'summary' ? '준비 중' : '';
@@ -248,7 +268,8 @@ function render() {
   renderRecording(meeting);
   renderTranscript(meeting);
   renderSummary(meeting);
-  detail.update({ id: byId('meeting-detail').hidden ? null : meeting.id, recording: Boolean(activeSession()?.meetingId === meeting.id), summaryLoaded: state.summaryLoaded, transcriptLoaded: state.transcriptLoaded, hasSummary: Boolean(state.summary?.document), hasTranscript: Boolean(state.transcriptDraft?.doc?.segments?.length) });
+  const showSummary = Boolean(state.summary?.document || state.transcriptDraft?.doc?.segments?.length || pendingJob(state.processing, { meetingId: meeting.id, kind: 'summary' }) || state.summaryLoadError);
+  detail.update({ showSummary, id: byId('meeting-detail').hidden ? null : meeting.id, recording: Boolean(activeSession()?.meetingId === meeting.id), summaryLoaded: state.summaryLoaded, transcriptLoaded: state.transcriptLoaded, hasSummary: Boolean(state.summary?.document), hasTranscript: Boolean(state.transcriptDraft?.doc?.segments?.length) });
   if (byId('meeting-detail').hidden) summaryEvidence?.reset();
   renderNotesSearch();
   documentSearch.refresh();
@@ -469,14 +490,14 @@ function renderAgentConnection() {
     const pending = Boolean(agentConnection.pending[client]);
     const pendingLabel = { updating: '업데이트 중', checking: '확인 중', connecting: '연결 중' }[agentConnection.pending[client]];
     byId(`settings-${client}-spinner`).hidden = !pending && !(agentConnection.loading && !info);
-    const labels = { not_connected: '연결 안 됨', update_required: '업데이트 필요', waiting: '연결 대기', connected: '연결됨', error: '확인 불가', unavailable: '사용 불가' };
+    const labels = { not_connected: '연결 안 됨', update_required: '업데이트 필요', waiting: '설치됨', reconnect_required: '연결 확인 필요', installation_unknown: '설치 확인 필요', disabled: '사용 안 함', connected: '연결됨', error: '확인 불가', unavailable: '사용 불가' };
     const status = byId(`settings-${client}-status`);
     status.textContent = pending ? pendingLabel : !info ? (error ? '확인 불가' : '확인 중') : labels[entry?.state] || '사용 불가';
     status.dataset.state = pending ? agentConnection.pending[client] : !info ? (error ? 'error' : 'loading') : entry?.state || 'unavailable';
     const button = byId(`settings-${client}-connect`);
     button.hidden = !pending && entry?.state === 'connected';
     button.disabled = pending || !available || !entry || entry.state === 'unavailable' || entry.state === 'connected';
-    button.textContent = pending ? pendingLabel : entry?.state === 'waiting' ? '다시 열기' : entry?.state === 'update_required' ? '업데이트' : entry?.state === 'error' ? '다시 확인' : '연결';
+    button.textContent = pending ? pendingLabel : entry?.action === 'connect' && entry?.state === 'installation_unknown' ? '연결 화면 열기' : entry?.action === 'recheck' || ['waiting', 'reconnect_required', 'installation_unknown', 'disabled'].includes(entry?.state) ? '다시 확인' : entry?.state === 'update_required' ? '업데이트' : entry?.state === 'error' ? '다시 확인' : '연결';
     button.setAttribute?.('aria-label', `${client === 'claude' ? 'Claude' : 'Codex'} ${button.textContent}`);
     const errorNode = byId(`settings-${client}-error`);
     const failed = Boolean(agentConnection.errors[client]) || entry?.state === 'error';
@@ -485,18 +506,14 @@ function renderAgentConnection() {
     errorNode.setAttribute?.('role', failed ? 'alert' : 'status');
     errorNode.hidden = !errorNode.textContent;
   }
-  byId('settings-agent-details').hidden = !available;
-  byId('settings-agent-path').textContent = available ? info.executablePath : '';
-  byId('settings-agent-cli').textContent = available ? info.cliExample || '' : '';
-  byId('settings-agent-copy-config').disabled = !available;
-  byId('settings-agent-copy-cli').disabled = !available || !info.cliExample;
+
 }
 
 function agentConnectionActive() {
   return byId('settings-dialog').open && state.settingsPanel === 'agent';
 }
 
-async function loadAgentConnection(force = false) {
+async function loadAgentConnection(force = false, forceHostRefresh = false) {
   if (!agentConnectionActive()) {
     resetAgentConnection();
     return;
@@ -510,7 +527,7 @@ async function loadAgentConnection(force = false) {
   agentConnection.error = '';
   renderAgentConnection();
   try {
-    const info = await bridge.agentConnectionInfo();
+    const info = await bridge.agentConnectionInfo(forceHostRefresh);
     if (request !== agentConnection.request || refresh !== agentConnection.refresh || !agentConnectionActive()) return;
     agentConnection.info = info;
   } catch {
@@ -531,13 +548,13 @@ async function connectAgentClient(client) {
   const entry = agentConnection.info?.clients?.find(item => item.id === client);
   if (!agentConnectionActive() || agentConnection.pending[client] || !agentConnection.info?.available || !entry || ['unavailable', 'connected'].includes(entry.state)) return;
   const request = agentConnection.request;
-  const checking = entry.state === 'error';
+  const checking = entry.action === 'recheck' || (!entry.action && ['error', 'reconnect_required', 'installation_unknown', 'disabled'].includes(entry.state));
   agentConnection.pending[client] = checking ? 'checking' : entry.state === 'update_required' ? 'updating' : 'connecting';
   agentConnection.errors[client] = '';
   agentConnection.refresh += 1;
   renderAgentConnection();
   try {
-    const info = await (checking ? bridge.agentConnectionInfo() : bridge.connectAgentClient(client));
+    const info = await (checking ? bridge.agentConnectionInfo(true) : bridge.connectAgentClient(client));
     if (request !== agentConnection.request || !agentConnectionActive()) return;
     const updated = info.clients?.find(item => item.id === client);
     if (updated) agentConnection.info = { ...agentConnection.info, clients: agentConnection.info.clients.map(item => item.id === client ? updated : item) };
@@ -565,33 +582,6 @@ function resetAgentConnection() {
   agentConnection.loading = false;
   agentConnection.error = '';
   agentConnection.errors = {};
-  clearTimeout(copyFeedbackTimers.get('agent'));
-  copyFeedbackTimers.delete('agent');
-  byId('settings-agent-feedback').textContent = '';
-  byId('settings-agent-feedback').hidden = true;
-}
-
-async function copyAgentConnection(kind) {
-  const info = agentConnection.info;
-  if (!agentConnectionActive()) return;
-  if (!info?.available || !info.executablePath || !info.config) return;
-  const text = kind === 'config' ? JSON.stringify(info.config, null, 2) : kind === 'cli' ? info.cliExample : '';
-  if (!text) return;
-  const request = agentConnection.request;
-  const feedback = byId('settings-agent-feedback');
-  try {
-    await navigator.clipboard.writeText(text);
-    if (request !== agentConnection.request) return;
-    feedback.textContent = '복사됨';
-    feedback.classList.add('soft');
-  } catch {
-    if (request !== agentConnection.request) return;
-    feedback.textContent = '복사하지 못했습니다. 다시 시도해 주세요.';
-    feedback.classList.remove('soft');
-  }
-  feedback.hidden = false;
-  clearTimeout(copyFeedbackTimers.get('agent'));
-  copyFeedbackTimers.set('agent', setTimeout(() => { feedback.textContent = ''; feedback.hidden = true; copyFeedbackTimers.delete('agent'); }, 1500));
 }
 
 function openAgentConnectionPrompt() {
@@ -604,6 +594,7 @@ function renderSettings() {
   renderAgentConnection();
   renderTerminologySettings();
   templateSettings.setActive(dialog.open && state.settingsPanel === 'templates');
+  calendarSettings.setActive(dialog.open && state.settingsPanel === 'agent');
   for (const name of settingsPanels) {
     const selected = state.settingsPanel === name;
     byId(`settings-${name}-tab`).setAttribute('aria-selected', String(selected));
@@ -624,10 +615,24 @@ function renderSettings() {
   byId('auto-recorder').checked = state.autoRecorder;
   byId('auto-recorder').disabled = state.recorderSettingBusy;
   byId('settings-refresh-devices').disabled = state.busy;
-  byId('models').disabled = !state.connected || state.busy || Boolean(activeSession());
   const job = state.processing;
-  byId('settings-speech-state').textContent = !state.connected ? '확인 중' : !job.supported ? '지원되지 않음' : job.modelReady ? '준비됨' : '다운로드 필요';
-  byId('settings-summary-state').textContent = !state.connected ? '확인 중' : !job.summarySupported ? '지원되지 않음' : job.summaryReady ? '준비됨' : '다운로드 필요';
+  const featureJob = pendingJob(job, { kind: 'summary-model' });
+  const failedFeature = !featureJob && !job.summaryReady && processingJobs(job).filter(item => item.kind === 'summary-model' && item.status === 'failed' && !item.acknowledged).at(-1);
+  const featureError = state.summaryFeatureError || (failedFeature && processingFeedback(failedFeature).detail) || '';
+  byId('settings-summary-error').textContent = featureError;
+  byId('settings-summary-error').hidden = !featureError;
+  byId('settings-summary-state').textContent = !state.connected ? '확인 중' : !job.summarySupported ? '지원되지 않음' : job.summaryReady ? '추가됨' : featureJob ? '다운로드 중' : '';
+  byId('models').hidden = job.summaryReady || !job.summarySupported || Boolean(featureJob);
+  byId('models').disabled = !state.connected || state.busy || Boolean(pendingJob(job, { models: true }));
+  byId('settings-summary-progress').hidden = !featureJob;
+  if (featureJob) {
+    const total = featureJob.totalBytes, completed = featureJob.bytes;
+    const meter = byId('settings-feature-progress');
+    if (total > 0 && Number.isFinite(completed)) { meter.max = total; meter.value = completed; }
+    else meter.removeAttribute('value');
+    byId('settings-feature-stage').textContent = total > 0 && Number.isFinite(completed) ? `${Math.min(100, Math.floor(completed / total * 100))}%` : '준비 중';
+    byId('settings-feature-cancel').disabled = featureJob.status === 'cancelling';
+  }
   const message = recording ? terminologySettings.error || state.settingsError || (activeSession() ? '녹음을 마친 뒤 변경할 수 있습니다.' : recording && state.devicesLoaded ? microphoneIssue() : '') : '';
   byId('settings-message').textContent = message;
   byId('settings-message').hidden = !message;
@@ -647,7 +652,7 @@ async function openSettings(panel = 'appearance', returnId = 'settings') {
     renderSettings();
     globalThis.GroveControls.refresh?.();
     byId(`settings-${panel}-tab`).focus({ preventScroll: true });
-    void loadAgentConnection();
+    void loadAgentConnection(false, true);
     void loadTerminologySettings();
   });
   try { await refreshDevices(); } catch { state.settingsError = '마이크 목록을 불러오지 못했습니다. 다시 시도해 주세요.'; renderSettings(); }
@@ -686,7 +691,7 @@ async function run(action) {
     if (document.activeElement === document.body) {
       const nextAction = focusedAction === 'pause' ? 'resume' : focusedAction === 'resume' ? 'pause' : focusedAction;
       const target = focusedField ? document.querySelector(`button[data-field="${focusedField}"]`) : focusedId ? byId(focusedId) : [...document.querySelectorAll('[data-action]')].find((element) => element.dataset.action === nextAction);
-      if (target && !target.disabled) target.focus({ preventScroll: true });
+      if (target && !target.disabled && !target.hidden) target.focus({ preventScroll: true });
     }
   }
 }
@@ -753,7 +758,7 @@ async function selectSettingsPanel(name, focus = false) {
   await leaveSettings(() => {
     state.settingsPanel = name; renderSettings();
     if (focus) byId(`settings-${name}-tab`).focus({ preventScroll: true });
-    void loadAgentConnection(); void loadTerminologySettings();
+    void loadAgentConnection(false, true); void loadTerminologySettings();
   });
 }
 byId('settings-close').addEventListener('click', () => { void closeSettings(); });
@@ -772,15 +777,24 @@ byId('settings-dialog').addEventListener('keydown', event => {
   const name = settingsPanels[event.key === 'Home' ? 0 : event.key === 'End' ? settingsPanels.length - 1 : (index + step + settingsPanels.length) % settingsPanels.length];
   void selectSettingsPanel(name, true);
 });
-for (const kind of ['config', 'cli']) byId(`settings-agent-copy-${kind}`).addEventListener('click', () => copyAgentConnection(kind));
 byId('settings-agent-manual').addEventListener('click', openAgentConnectionPrompt);
 for (const client of ['claude', 'codex']) byId(`settings-${client}-connect`).addEventListener('click', () => { void connectAgentClient(client); });
 globalThis.addEventListener?.('focus', () => { if (agentConnectionActive()) void loadAgentConnection(true); });
 byId('terminology-enabled').addEventListener('change', changeTerminologyEnabled);
 byId('settings-microphone').addEventListener('change', changeMicrophone);
 byId('settings-refresh-devices').addEventListener('click', async () => { state.settingsError = ''; try { await refreshDevices(); } catch { state.settingsError = '마이크 목록을 불러오지 못했습니다. 다시 시도해 주세요.'; renderSettings(); } });
-byId('models').addEventListener('click', () => run(async () => { globalThis.GroveControls.close?.(); byId('settings-dialog').close(); await openSetup(true); }));
-byId('setup-back').addEventListener('click', () => { const settings = state.setupFromSettings, returnId = state.setupReturnId; state.setupRequested = false; state.setupFromSettings = false; render(); if (settings) void openSettings('models'); else { const origin = byId(returnId || 'settings'); const fallback = !byId('summarize').hidden && !byId('summarize').disabled ? byId('summarize') : byId('detail-transcript-open'); (origin && !origin.hidden && !origin.disabled ? origin : fallback)?.focus({ preventScroll: true }); } });
+byId('models').addEventListener('click', () => run(async () => {
+  const restoreFocus = document.activeElement === byId('models');
+  state.summaryFeatureError = '';
+  try { await acceptProcessing(await bridge.prepareSummaryModel()); }
+  catch (error) { state.summaryFeatureError = error?.message || '회의 요약 기능을 추가하지 못했습니다.'; if (!byId('settings-dialog').open) showError(error); }
+  renderSettings();
+  if (restoreFocus && byId('settings-dialog').open && state.settingsPanel === 'appearance') {
+    (pendingJob(state.processing, { kind: 'summary-model' }) ? byId('settings-feature-cancel') : byId('models').hidden ? byId('settings-summary-control') : byId('models')).focus({ preventScroll: true });
+  }
+}));
+byId('settings-feature-cancel').addEventListener('click', () => { const job = pendingJob(state.processing, { kind: 'summary-model' }); if (job?.id) void cancelProcessing(job.id); });
+byId('setup-back').addEventListener('click', () => { const settings = state.setupFromSettings, returnId = state.setupReturnId; state.setupRequested = false; state.setupFromSettings = false; render(); if (settings) void openSettings('appearance'); else { const origin = byId(returnId || 'settings'); const fallback = !byId('summarize').hidden && !byId('summarize').disabled ? byId('summarize') : byId('detail-transcript-open'); (origin && !origin.hidden && !origin.disabled ? origin : fallback)?.focus({ preventScroll: true }); } });
 byId('setup-download').addEventListener('click', () => run(async () => { state.setupRequested = true; await acceptProcessing(await bridge.prepareMeetingModels(Boolean(byId('setup-summary-option').checked) && !state.processing.summaryReady)); }));
 byId('setup-download-summary').addEventListener('click', () => run(async () => { state.setupRequested = true; await acceptProcessing(await bridge.prepareSummaryModel()); }));
 byId('setup-cancel').addEventListener('click', () => { void cancelProcessing(pendingJob(state.processing, { models: true })?.id); });
@@ -1031,9 +1045,7 @@ function renderTranscript(meeting) {
   byId('transcribe').disabled = !meeting.audio || !job.supported || !job.modelReady || ownJob || state.busy;
   byId('transcribe').textContent = draft?.doc ? '다시 변환' : ['failed', 'cancelled'].includes(job.status) && job.kind === 'transcribe' && job.meetingId === meeting.id ? '다시 시도' : '텍스트로 변환';
   byId('save-transcript').disabled = !draft?.dirty || draft.saving || ownJob;
-  byId('copy-transcript').hidden = !draft?.doc?.segments?.length;
-  byId('copy-transcript').disabled = state.busy || ownJob;
-  byId('transcript-export-menu').hidden = !draft?.doc?.segments?.length;
+  documentActions.transcript.update({ id: meeting.id, available: Boolean(draft?.doc?.segments?.length), busy: state.busy || ownJob });
   let message = '';
   if (!state.transcriptLoaded) message = '음성 기록 불러오는 중';
   else if (state.transcriptLoadError) message = '음성 기록을 불러오지 못했습니다.';
@@ -1147,13 +1159,11 @@ function renderSummary(meeting) {
   byId('prepare-summary').hidden = progress.summaryReady || !progress.summarySupported;
   byId('prepare-summary').disabled = Boolean(pendingJob(progress, { models: true })) || state.busy;
   byId('summarize').hidden = !progress.summaryReady || !progress.summarySupported;
-  byId('copy-summary').hidden = !doc;
   byId('summarize').disabled = !hasTranscript || !progress.summaryReady || !progress.summarySupported || ownJob || state.busy;
   const failed = processingJobs(state.processing).some(job => job.kind === 'summary' && job.status === 'failed' && job.acknowledged !== true && job.meetingId === meeting.id);
   byId('summarize').textContent = failed ? '현재 내용 요약' : doc ? '다시 요약' : '요약하기';
   byId('summarize').className = doc ? 'small quiet' : 'small primary';
-  byId('copy-summary').disabled = !doc;
-  byId('summary-export-menu').hidden = !doc;
+  documentActions.summary.update({ id: meeting.id, available: Boolean(doc), busy: state.busy || ownJob });
   let message = '';
   if (!state.summaryLoaded) message = '회의록 불러오는 중';
   else if (state.summaryLoadError) message = '회의록을 불러오지 못했습니다.';
@@ -1186,40 +1196,29 @@ async function loadSummary(id) {
 }
 byId('prepare-summary').addEventListener('click', () => run(() => openSetup(false, 'prepare-summary')));
 byId('summarize').addEventListener('click', () => run(() => finishEditing(async () => acceptProcessing(await bridge.summarizeMeeting(state.selectedId)))));
-async function exportDocument(kind, format, copy = false) {
-  await finishEditing(async () => {
+async function exportDocument(kind, format, copy = false, includeCitations = false, expectedId = state.selectedId) {
+  return finishEditing(async () => {
     const meeting = currentMeeting();
-    if (!meeting) return;
-    const summary = state.summary && { ...state.summary, stale: summaryIsStale() };
-    const result = documentExport(meeting, state.transcriptDraft?.doc, summary, kind, format);
+    if (!meeting || meeting.id !== expectedId) throw new Error('회의가 바뀌었습니다. 내용을 다시 확인해 주세요.');
+    const result = await bridge.exportDocument(meeting.id, kind, format, includeCitations);
     if (copy) {
       await navigator.clipboard.writeText(result.text);
-      const feedback = byId(`copy-${kind}`);
-      const label = kind === 'summary' ? '요약 복사' : '음성 기록 복사';
-      clearTimeout(copyFeedbackTimers.get(kind));
-      paintIconButton(feedback, 'check', '복사됨');
-      byId('copy-feedback').textContent = `${label}됨`;
-      copyFeedbackTimers.set(kind, setTimeout(() => { paintIconButton(feedback, 'copy', label); byId('copy-feedback').textContent = ''; copyFeedbackTimers.delete(kind); }, 1500));
-    } else await bridge.exportText(result.name, result.text);
+      byId('copy-feedback').textContent = `${kind === 'summary' ? '요약' : '전체 음성 기록'}을 복사했습니다.`;
+      return true;
+    }
+    return bridge.exportText(result.name, result.text);
   });
 }
-for (const kind of ['transcript', 'summary']) {
-  byId(`copy-${kind}`).addEventListener('click', () => run(() => exportDocument(kind, 'txt', true)));
-  const menu = byId(`${kind}-export-menu`);
-  menu.addEventListener('click', event => {
-    const format = event.target.closest('[data-export-format]')?.dataset.exportFormat;
-    if (!format) return;
-    menu.open = false;
-    void run(() => exportDocument(kind, format)).then(() => menu.querySelector('summary')?.focus({ preventScroll: true }));
-  });
-}
-document.addEventListener('click', event => {
-  for (const kind of ['transcript', 'summary']) { const menu = byId(`${kind}-export-menu`); if (!menu.contains(event.target)) menu.open = false; }
+const documentActions = Object.fromEntries(['summary', 'transcript'].map(kind => [kind, mountDocumentActions({ container: byId(`${kind}-document-actions`), kind, onExport: exportDocument })]));
+byId('recording-quality').addEventListener('click', event => {
+  const action = event.target.closest('[data-quality-seek]');
+  const meeting = currentMeeting();
+  if (!action || action.disabled || !meeting?.audio || activeSession()?.meetingId === meeting.id) return;
+  const seconds = Number(action.dataset.qualitySeek);
+  const audioKey = `${meeting.id}:${meeting.audio.relativePath}:${meeting.audio.frames}`;
+  if (Number.isFinite(seconds) && seconds >= 0) void run(async () => { await prepareAudio(meeting, false); if (state.selectedId === meeting.id && state.audioKey === audioKey) seekRecording(seconds); });
 });
-document.addEventListener('keydown', event => {
-  if (event.key !== 'Escape') return;
-  for (const kind of ['transcript', 'summary']) { const menu = byId(`${kind}-export-menu`); if (menu.open) { menu.open = false; menu.querySelector('summary')?.focus({ preventScroll: true }); event.preventDefault(); } }
-});
+
 function seekRecording(seconds) {
   const player = byId('audio-player');
   if (player.getAttribute('src')) { player.currentTime = seconds; player.play().catch(showError); }
@@ -1355,7 +1354,7 @@ byId('quit-dialog').addEventListener('close', () => { pendingQuitSessionId = nul
 const detail = mountMeetingDetail({ byId, finishEditing, onError: showError, onReveal(view) {
   if (view !== 'transcript') summaryEvidence?.reset();
   if (view === 'transcript') byId('transcript-rows').querySelectorAll('textarea').forEach(resizeTranscriptEditor);
-  for (const kind of ['transcript', 'summary']) byId(`${kind}-export-menu`).open = false;
+  for (const actions of Object.values(documentActions)) actions.close();
   globalThis.GroveControls.close?.();
 } });
 summaryEvidence = mountSummaryEvidence({

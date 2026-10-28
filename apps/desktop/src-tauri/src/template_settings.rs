@@ -14,15 +14,10 @@ fn store(app: &AppHandle, window: &WebviewWindow) -> Result<TemplateStore, Strin
 pub fn list_templates(
     app: AppHandle,
     window: WebviewWindow,
-    deleted: Option<bool>,
 ) -> Result<Vec<TemplateSummary>, String> {
-    let store = store(&app, &window)?;
-    if deleted.unwrap_or(false) {
-        store.list_deleted()
-    } else {
-        store.list()
-    }
-    .map_err(|error| error.to_string())
+    store(&app, &window)?
+        .list()
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -78,20 +73,8 @@ pub fn delete_template(
     window: WebviewWindow,
     id: String,
     expected_revision: String,
-) -> Result<TemplateSummary, String> {
+) -> Result<(), String> {
     store(&app, &window)?
         .delete(&id, &expected_revision)
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-pub fn restore_template(
-    app: AppHandle,
-    window: WebviewWindow,
-    id: String,
-    expected_revision: String,
-) -> Result<PromptTemplate, String> {
-    store(&app, &window)?
-        .restore(&id, &expected_revision)
         .map_err(|error| error.to_string())
 }

@@ -73,14 +73,20 @@ test('built-ins cannot be deleted; reset failure preserves local edits', async (
   assert.equal(flow.getSnapshot().draft.prompt, '유지할 내용');
 });
 
-test('deleted list filters active entries and restores with tombstone revision', async () => {
-  const deleted = { id: 'custom', name: '사용자 템플릿', deleted: true, revision: 'deleted-r2' };
+test('custom deletion uses the current revision and refreshes the single template list', async () => {
+  const custom = { ...document, id: 'custom', builtIn: false, revision: 'r2' };
+  let items = [document, custom];
   let args;
-  const flow = await setup({ listTemplates: async () => [document, deleted], restoreTemplate: async (...values) => { args = values; return deleted; } });
-  await flow.showDeleted(true);
-  assert.deepEqual(flow.getSnapshot().items, [deleted]);
-  await flow.restore(deleted);
-  assert.deepEqual(args, ['custom', 'deleted-r2']);
+  const flow = await setup({ listTemplates: async () => items, getTemplate: async () => custom, deleteTemplate: async (...values) => { args = values; items = [document]; } });
+  await flow.open('custom');
+  await flow.remove();
+  assert.deepEqual(args, ['custom', 'r2']);
+  assert.deepEqual(flow.getSnapshot().items, [document]);
+  assert.equal(flow.getSnapshot().document, null);
+  assert.equal(flow.getSnapshot().draft, null);
+  assert.equal('deleted' in flow.getSnapshot(), false);
+  assert.equal('showDeleted' in flow, false);
+  assert.equal('restore' in flow, false);
 });
 
 test('child Escape never reaches the parent and composing Escape does not dismiss', () => {

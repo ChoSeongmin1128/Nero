@@ -6,6 +6,9 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
+#[path = "agent_installation.rs"]
+mod installation;
+
 const CLIENTS: [(&str, &str); 2] = [("claude", "Claude"), ("codex", "Codex")];
 
 #[derive(Serialize)]
@@ -26,6 +29,11 @@ pub struct ClientInfo {
     name: String,
     state: String,
     detail: Option<String>,
+    installation_state: String,
+    session_state: String,
+    action: String,
+    package_version: Option<String>,
+    installed_version: Option<String>,
 }
 
 pub struct ConnectionObservationError {
@@ -33,7 +41,40 @@ pub struct ConnectionObservationError {
     detail: String,
 }
 
+#[derive(Debug, Eq, PartialEq)]
+pub enum ConnectionAttempt {
+    Recheck,
+    OpenScreen,
+    Install,
+}
+
 impl ConnectionInfo {
+    pub fn connection_attempt(&self, client_id: &str) -> ConnectionAttempt {
+        let Some(client) = self.clients.iter().find(|client| client.id == client_id) else {
+            return ConnectionAttempt::Recheck;
+        };
+        match (client.action.as_str(), client.installation_state.as_str()) {
+            ("connect", "not_installed") | ("update", "outdated") => ConnectionAttempt::Install,
+            ("connect", "unknown") => ConnectionAttempt::OpenScreen,
+            _ => ConnectionAttempt::Recheck,
+        }
+    }
+
+    pub fn with_action_error(mut self, client_id: &str, detail: String) -> Self {
+        if let Some(client) = self
+            .clients
+            .iter_mut()
+            .find(|client| client.id == client_id)
+        {
+            if client.installation_state != "current" {
+                client.state = "error".into();
+                client.detail = Some(detail);
+                client.action = "recheck".into();
+            }
+        }
+        self
+    }
+
     pub fn with_observation_errors(mut self, errors: Vec<ConnectionObservationError>) -> Self {
         for error in errors {
             if let Some(client) = self
@@ -43,6 +84,7 @@ impl ConnectionInfo {
             {
                 client.state = "error".into();
                 client.detail = Some(error.detail);
+                client.action = "recheck".into();
             }
         }
         self
@@ -73,12 +115,43 @@ fn executable_name() -> &'static str {
 }
 
 pub fn connection_info(resources: &Path, root: &Path, connections: &Path) -> ConnectionInfo {
+    connection_info_with_installations(resources, root, connections, None)
+}
+
+pub fn connection_info_with_hosts(
+    resources: &Path,
+    root: &Path,
+    connections: &Path,
+    home: &Path,
+    config: &Path,
+    force_host_refresh: bool,
+) -> ConnectionInfo {
+    let installed = installation::probe(home, config, connections, force_host_refresh);
+    connection_info_with_installations(resources, root, connections, Some(&installed))
+}
+
+pub fn install_prepared_connection(
+    home: &Path,
+    connections: &Path,
+    client: &str,
+) -> Result<bool, String> {
+    if client != "codex" {
+        return Ok(false);
+    }
+    installation::install_codex(home, &connections.join("codex"))
+}
+
+fn connection_info_with_installations(
+    resources: &Path,
+    root: &Path,
+    connections: &Path,
+    installed: Option<&installation::HostInstallations>,
+) -> ConnectionInfo {
     let executable = resource_agent_path(resources);
-    let binary = bounded_read(&executable, 64 * 1024 * 1024).ok();
+    let binary = bounded_read(&executable, 64 * 1024 * 1024)
+        .ok()
+        .filter(|bytes| !bytes.is_empty());
     let available = binary.is_some();
-    let current_generation = binary
-        .as_ref()
-        .and_then(|bytes| package_generation(resources, bytes).ok());
     let path = executable.to_string_lossy().into_owned();
     let data_dir = root.to_string_lossy().into_owned();
     let config = if available {
@@ -96,52 +169,35 @@ pub fn connection_info(resources: &Path, root: &Path, connections: &Path) -> Con
     } else {
         String::new()
     };
-    let templates = resources.join("agent/integrations");
     let clients = CLIENTS
         .iter()
         .map(|(id, name)| {
-            let prepared = load_registration(&connections.join(id), root, id).ok();
-            let current_live = prepared.as_ref().is_some_and(|registration| {
-                live_session(
-                    &connections.join(id).join("sessions"),
-                    id,
-                    registration["token"].as_str().unwrap_or(""),
-                    current_generation.as_deref().unwrap_or(""),
-                )
-            });
-            let observation = prepared.as_ref().and_then(|registration| {
-                load_observation(&connections.join(id), id, registration)
-                    .ok()
-                    .flatten()
-            });
-            let update_required = !current_live
-                && prepared
-                    .as_ref()
-                    .zip(current_generation.as_deref())
-                    .is_some_and(|(registration, generation)| {
-                        registration["generation"].as_str() != Some(generation)
-                            || observation.as_ref().is_some_and(|value| {
-                                value.pending_generation.as_deref() == Some(generation)
-                                    && value.verified_generation.as_deref() != Some(generation)
-                            })
-                    });
-            let state = if !available || !templates.is_dir() || current_generation.is_none() {
-                "unavailable"
-            } else if current_live {
-                "connected"
-            } else if update_required {
-                "update_required"
-            } else if prepared.is_some() {
-                "waiting"
-            } else {
-                "not_connected"
-            };
-            ClientInfo {
-                id: (*id).into(),
-                name: (*name).into(),
-                state: state.into(),
-                detail: None,
-            }
+            let directory = connections.join(id);
+            let prepared = load_registration(&directory, root, id).ok();
+            let generation = binary
+                .as_ref()
+                .and_then(|bytes| package_generation(resources, bytes, id).ok());
+            let active = prepared
+                .as_ref()
+                .map(|registration| {
+                    live_generations(
+                        &directory.join("sessions"),
+                        id,
+                        registration["token"].as_str().unwrap_or(""),
+                    )
+                })
+                .unwrap_or_default();
+            installation::client_info(
+                id,
+                name,
+                resources,
+                root,
+                &directory,
+                prepared.as_ref(),
+                generation.as_deref(),
+                &active,
+                installed.and_then(|values| values.get(id)),
+            )
         })
         .collect();
     ConnectionInfo {
@@ -162,11 +218,11 @@ pub fn observe_connection_state(
     let Ok(binary) = bounded_read(&resource_agent_path(resources), 64 * 1024 * 1024) else {
         return Vec::new();
     };
-    let Ok(generation) = package_generation(resources, &binary) else {
-        return Vec::new();
-    };
     let mut errors = Vec::new();
     for (client, _) in CLIENTS {
+        let Ok(generation) = package_generation(resources, &binary, client) else {
+            continue;
+        };
         let directory = connections.join(client);
         if !plain_directory(&directory) || load_registration(&directory, root, client).is_err() {
             continue;
@@ -234,7 +290,7 @@ pub fn prepare_connection(
     if binary.is_empty() {
         return Err("연결 도구가 포함되지 않은 빌드입니다.".into());
     }
-    let generation = package_generation(resources, &binary)?;
+    let generation = package_generation(resources, &binary, client)?;
     let client_directory = connections.join(client);
     private_directory(&client_directory).map_err(|_| "연결 설정을 준비하지 못했습니다.")?;
     let _preparation_lock = lock_preparation(&client_directory)?;
@@ -284,8 +340,6 @@ pub fn prepare_connection(
     let environment = json!({"NERO_CONNECTION_DIR":sessions,"NERO_CONNECTION_CLIENT":client,"NERO_CONNECTION_TOKEN":registration["token"],"NERO_CONNECTION_GENERATION":generation});
     let icon = bounded_read(&templates.join("icon.png"), 4 * 1024 * 1024)
         .map_err(|_| "연결 아이콘을 찾지 못했습니다.")?;
-    let skill = bounded_read(&templates.join("meeting-summary/SKILL.md"), 128 * 1024)
-        .map_err(|_| "회의 안내를 찾지 못했습니다.")?;
     if client == "claude" {
         let mut manifest = read_json(&templates.join("claude-manifest.json"))?;
         manifest["server"]["mcp_config"]["args"] = args;
@@ -304,6 +358,8 @@ pub fn prepare_connection(
             target: path.to_string_lossy().into_owned(),
         });
     }
+    let skill = bounded_read(&templates.join("meeting-summary/SKILL.md"), 128 * 1024)
+        .map_err(|_| "회의 안내를 찾지 못했습니다.")?;
     let plugin = release.join("plugins/nero");
     private_directory(&plugin.join(".codex-plugin"))
         .map_err(|_| "Codex 연결을 준비하지 못했습니다.")?;
@@ -379,24 +435,60 @@ fn codex_marketplace_path(directory: &Path) -> std::io::Result<PathBuf> {
     }
 }
 
-fn package_generation(resources: &Path, binary: &[u8]) -> Result<String, String> {
-    let mut digest = Sha256::new();
-    digest.update(b"nero-ai-package-v2\0");
-    digest.update((binary.len() as u64).to_le_bytes());
-    digest.update(binary);
-    for name in [
-        "claude-manifest.json",
-        "codex-marketplace.json",
-        "codex-plugin.json",
-        "codex-legacy-plugin.json",
-        "meeting-summary/SKILL.md",
-        "icon.png",
-    ] {
-        let bytes = bounded_read(
+fn package_generation(resources: &Path, binary: &[u8], client: &str) -> Result<String, String> {
+    payload_generation(client, binary, |name| {
+        bounded_read(
             &resources.join("agent/integrations").join(name),
             4 * 1024 * 1024,
         )
-        .map_err(|_| "연결 패키지를 확인하지 못했습니다.")?;
+        .map_err(|_| "연결 패키지를 확인하지 못했습니다.".into())
+    })
+}
+
+fn payload_generation(
+    client: &str,
+    binary: &[u8],
+    mut read: impl FnMut(&str) -> Result<Vec<u8>, String>,
+) -> Result<String, String> {
+    let names: &[&str] = match client {
+        "claude" => &["claude-manifest.json", "icon.png"],
+        "codex" => &[
+            "codex-plugin.json",
+            "codex-legacy-plugin.json",
+            "meeting-summary/SKILL.md",
+            "icon.png",
+        ],
+        _ => return Err("지원하지 않는 연결입니다.".into()),
+    };
+    let mut digest = Sha256::new();
+    digest.update(b"nero-ai-package-v3\0");
+    digest.update(client.as_bytes());
+    digest.update([0]);
+    digest.update((binary.len() as u64).to_le_bytes());
+    digest.update(binary);
+    for name in names {
+        let bytes = read(name)?;
+        let bytes = if name.ends_with(".json") {
+            let mut manifest: Value = serde_json::from_slice(&bytes)
+                .map_err(|_| "연결 패키지를 확인하지 못했습니다.".to_string())?;
+            let object = manifest
+                .as_object_mut()
+                .ok_or("연결 패키지를 확인하지 못했습니다.")?;
+            object.remove("version");
+            if client == "claude" {
+                if let Some(config) = manifest
+                    .pointer_mut("/server/mcp_config")
+                    .and_then(Value::as_object_mut)
+                {
+                    config.remove("args");
+                    config.remove("env");
+                }
+            }
+            serde_json::to_vec(&manifest)
+                .map_err(|_| "연결 패키지를 확인하지 못했습니다.".to_string())?
+        } else {
+            bytes
+        };
         digest.update(name.as_bytes());
         digest.update([0]);
         digest.update((bytes.len() as u64).to_le_bytes());
@@ -806,7 +898,7 @@ mod tests {
         .unwrap();
         fs::write(
             integrations.join("claude-manifest.json"),
-            json!({"server":{"mcp_config":{"command":"${__dirname}/server/nero"}}}).to_string(),
+            json!({"name":"nero","version":"0.0.1-nero.22","server":{"mcp_config":{"command":format!("${{__dirname}}/server/{}", executable_name())}}}).to_string(),
         )
         .unwrap();
         fs::write(
@@ -815,7 +907,11 @@ mod tests {
         )
         .unwrap();
         for name in ["codex-plugin.json", "codex-legacy-plugin.json"] {
-            fs::write(integrations.join(name), "{}").unwrap();
+            fs::write(
+                integrations.join(name),
+                json!({"name":"nero","version":"0.0.1-nero.22"}).to_string(),
+            )
+            .unwrap();
         }
         resources
     }
@@ -853,7 +949,7 @@ mod tests {
     }
 
     #[test]
-    fn prepared_update_remains_required_until_an_observed_current_session() {
+    fn preparation_and_observation_do_not_invent_host_installation_evidence() {
         let temp = tempfile::tempdir().unwrap();
         let resources = resources(temp.path());
         let root = temp.path().join("missing library");
@@ -866,7 +962,7 @@ mod tests {
         assert!(initial_observation["pendingGeneration"].is_null());
         assert_eq!(
             connection_info(&resources, &root, &connections).clients[1].state,
-            "waiting"
+            "installation_unknown"
         );
         let old_lock = initialized_receipt(
             &client,
@@ -888,7 +984,7 @@ mod tests {
         assert!(pending["verifiedGeneration"].is_null());
         assert_eq!(
             connection_info(&resources, &root, &connections).clients[1].state,
-            "update_required"
+            "installation_unknown"
         );
         prepare_connection(&resources, &root, &connections, "codex").unwrap();
         assert!(observe_connection_state(&resources, &root, &connections).is_empty());
@@ -916,7 +1012,7 @@ mod tests {
         assert!(observe_connection_state(&resources, &root, &connections).is_empty());
         assert_eq!(
             connection_info(&resources, &root, &connections).clients[1].state,
-            "waiting"
+            "installation_unknown"
         );
         assert_eq!(
             fs::read(client.join("observation.json")).unwrap(),
@@ -953,7 +1049,7 @@ mod tests {
         let registration_bytes = fs::read(client.join("state.json")).unwrap();
         assert_eq!(
             connection_info(&resources, &root, &connections).clients[1].state,
-            "waiting"
+            "installation_unknown"
         );
         assert!(!client.join("observation.json").exists());
 
@@ -964,7 +1060,7 @@ mod tests {
         assert!(observation["verifiedGeneration"].is_null());
         assert_eq!(
             connection_info(&resources, &root, &connections).clients[1].state,
-            "update_required"
+            "installation_unknown"
         );
         assert_eq!(
             fs::read(client.join("state.json")).unwrap(),
@@ -992,7 +1088,7 @@ mod tests {
         assert!(observation["verifiedGeneration"].is_null());
         assert_eq!(
             connection_info(&resources, &root, &connections).clients[1].state,
-            "waiting"
+            "installation_unknown"
         );
     }
 
@@ -1213,7 +1309,7 @@ mod tests {
             fs::read(connections.join("codex/state.json")).unwrap()
         );
         let info = connection_info(&resources, &root, &connections);
-        assert_eq!(info.clients[1].state, "waiting");
+        assert_eq!(info.clients[1].state, "installation_unknown");
         assert_eq!(
             info.config["mcpServers"]["nero"]["args"],
             json!(["--data-dir", root, "mcp"])
@@ -1286,7 +1382,7 @@ mod tests {
         let connections = temp.path().join("connections");
         let client = connections.join("codex");
         let old_generation =
-            package_generation(&resources, b"legacy synthetic executable").unwrap();
+            package_generation(&resources, b"legacy synthetic executable", "codex").unwrap();
         let legacy_release = client.join("releases").join(&old_generation);
         let legacy_server = legacy_release.join("plugins/nero/server");
         fs::create_dir_all(&legacy_server).unwrap();
@@ -1328,7 +1424,7 @@ mod tests {
         );
         assert_eq!(
             connection_info(&resources, &root, &connections).clients[1].state,
-            "update_required"
+            "installation_unknown"
         );
         assert!(!root.exists());
     }
@@ -1443,7 +1539,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             connection_info(&resources, &root, &connections).clients[0].state,
-            "waiting"
+            "installation_unknown"
         );
         let lock = OpenOptions::new()
             .read(true)
@@ -1459,7 +1555,7 @@ mod tests {
         drop(lock);
         assert_eq!(
             connection_info(&resources, &root, &connections).clients[0].state,
-            "waiting"
+            "installation_unknown"
         );
         assert!(!root.exists());
     }
@@ -1477,7 +1573,7 @@ mod tests {
         assert_eq!(permissions >> 16, 0o100755);
     }
     #[test]
-    fn old_live_generation_requires_update_and_reuses_the_registration_token() {
+    fn old_live_generation_needs_host_installation_evidence_and_reuses_registration_token() {
         let temp = tempfile::tempdir().unwrap();
         let resources = resources(temp.path());
         let root = temp.path().join("missing library");
@@ -1503,15 +1599,15 @@ mod tests {
         )
         .unwrap();
         let info = connection_info(&resources, &root, &connections);
-        assert_eq!(info.clients[1].state, "update_required");
-        assert!(info.clients[1].detail.is_none());
+        assert_eq!(info.clients[1].state, "installation_unknown");
+        assert!(info.clients[1].detail.is_some());
         prepare_connection(&resources, &root, &connections, "codex").unwrap();
         let after = load_registration(&connections.join("codex"), &root, "codex").unwrap();
         assert_eq!(before["token"], after["token"]);
         assert_ne!(before["generation"], after["generation"]);
         assert_eq!(
             connection_info(&resources, &root, &connections).clients[1].state,
-            "update_required"
+            "installation_unknown"
         );
         assert!(!root.exists());
     }
@@ -1555,12 +1651,629 @@ mod tests {
         )
         .unwrap();
         let info = connection_info(&resources, &root, &connections);
-        assert_eq!(info.clients[1].state, "update_required");
-        assert!(info.clients[1].detail.is_none());
+        assert_eq!(info.clients[1].state, "installation_unknown");
+        assert!(info.clients[1].detail.is_some());
         prepare_connection(&resources, &root, &connections, "codex").unwrap();
         let after = load_registration(&connections.join("codex"), &root, "codex").unwrap();
         assert_eq!(fs::read(resource_agent_path(&resources)).unwrap(), binary);
         assert_ne!(before["generation"], after["generation"]);
         assert_eq!(before["token"], after["token"]);
+    }
+
+    fn copy_tree(source: &Path, destination: &Path) {
+        fs::create_dir_all(destination).unwrap();
+        for item in fs::read_dir(source).unwrap() {
+            let item = item.unwrap();
+            let target = destination.join(item.file_name());
+            if item.file_type().unwrap().is_dir() {
+                copy_tree(&item.path(), &target);
+            } else {
+                fs::copy(item.path(), target).unwrap();
+            }
+        }
+    }
+
+    fn installed_codex(
+        connections: &Path,
+        root: &Path,
+        target: &Path,
+    ) -> installation::HostInstallation {
+        let registration = load_registration(&connections.join("codex"), root, "codex").unwrap();
+        let source = connections
+            .join("codex/releases")
+            .join(registration["generation"].as_str().unwrap())
+            .join("plugins/nero");
+        copy_tree(&source, target);
+        installation::HostInstallation::Installed {
+            directory: target.into(),
+            version: "0.0.1-nero.22".into(),
+            enabled: true,
+        }
+    }
+
+    fn hosts(codex: installation::HostInstallation) -> installation::HostInstallations {
+        installation::HostInstallations {
+            claude: installation::HostInstallation::Missing,
+            codex,
+        }
+    }
+
+    #[test]
+    fn client_fingerprints_ignore_other_client_files_and_release_labels() {
+        let temp = tempfile::tempdir().unwrap();
+        let resources = resources(temp.path());
+        let binary = fs::read(resource_agent_path(&resources)).unwrap();
+        let claude = package_generation(&resources, &binary, "claude").unwrap();
+        let codex = package_generation(&resources, &binary, "codex").unwrap();
+        let integrations = resources.join("agent/integrations");
+        fs::write(
+            integrations.join("meeting-summary/SKILL.md"),
+            b"changed Codex rules",
+        )
+        .unwrap();
+        assert_eq!(
+            package_generation(&resources, &binary, "claude").unwrap(),
+            claude
+        );
+        assert_ne!(
+            package_generation(&resources, &binary, "codex").unwrap(),
+            codex
+        );
+        let new_codex = package_generation(&resources, &binary, "codex").unwrap();
+        let path = integrations.join("claude-manifest.json");
+        let mut manifest = read_json(&path).unwrap();
+        manifest["description"] = json!("changed Claude tools");
+        fs::write(&path, manifest.to_string()).unwrap();
+        assert_ne!(
+            package_generation(&resources, &binary, "claude").unwrap(),
+            claude
+        );
+        assert_eq!(
+            package_generation(&resources, &binary, "codex").unwrap(),
+            new_codex
+        );
+        let current_claude = package_generation(&resources, &binary, "claude").unwrap();
+        for name in [
+            "claude-manifest.json",
+            "codex-plugin.json",
+            "codex-legacy-plugin.json",
+        ] {
+            let path = integrations.join(name);
+            let mut value = read_json(&path).unwrap();
+            value["version"] = json!("0.0.1-nero.23");
+            fs::write(&path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+        }
+        assert_eq!(
+            package_generation(&resources, &binary, "claude").unwrap(),
+            current_claude
+        );
+        assert_eq!(
+            package_generation(&resources, &binary, "codex").unwrap(),
+            new_codex
+        );
+        fs::write(
+            integrations.join("codex-plugin.json"),
+            b"broken Codex manifest",
+        )
+        .unwrap();
+        assert_eq!(
+            package_generation(&resources, &binary, "claude").unwrap(),
+            current_claude
+        );
+    }
+
+    #[test]
+    fn current_installation_with_old_session_requests_reconnection_without_reinstalling() {
+        let temp = tempfile::tempdir().unwrap();
+        let resources = resources(temp.path());
+        let root = temp.path().join("missing library");
+        let connections = temp.path().join("connections");
+        prepare_connection(&resources, &root, &connections, "codex").unwrap();
+        let old = load_registration(&connections.join("codex"), &root, "codex").unwrap();
+        let _old = initialized_receipt(
+            &connections.join("codex"),
+            &old,
+            old["generation"].as_str().unwrap(),
+            "old",
+        );
+        fs::write(resource_agent_path(&resources), b"new synthetic executable").unwrap();
+        prepare_connection(&resources, &root, &connections, "codex").unwrap();
+        let installed = hosts(installed_codex(
+            &connections,
+            &root,
+            &temp.path().join("installed"),
+        ));
+        let state = fs::read(connections.join("codex/state.json")).unwrap();
+        let observation = fs::read(connections.join("codex/observation.json")).unwrap();
+        let package =
+            fs::read(temp.path().join("installed/server").join(executable_name())).unwrap();
+        for _ in 0..2 {
+            let info = connection_info_with_installations(
+                &resources,
+                &root,
+                &connections,
+                Some(&installed),
+            );
+            assert_eq!(info.clients[1].state, "reconnect_required");
+            assert_eq!(info.clients[1].installation_state, "current");
+            assert_eq!(info.clients[1].session_state, "outdated");
+            assert_eq!(info.clients[1].action, "recheck");
+            assert!(info.clients[1]
+                .detail
+                .as_ref()
+                .unwrap()
+                .contains("다시 시작"));
+        }
+        assert_eq!(
+            fs::read(connections.join("codex/state.json")).unwrap(),
+            state
+        );
+        assert_eq!(
+            fs::read(connections.join("codex/observation.json")).unwrap(),
+            observation
+        );
+        assert_eq!(
+            fs::read(temp.path().join("installed/server").join(executable_name())).unwrap(),
+            package
+        );
+        assert!(!root.exists());
+    }
+
+    #[test]
+    fn latest_catalog_does_not_hide_an_older_installed_cache() {
+        let temp = tempfile::tempdir().unwrap();
+        let resources = resources(temp.path());
+        let root = temp.path().join("missing library");
+        let connections = temp.path().join("connections");
+        prepare_connection(&resources, &root, &connections, "codex").unwrap();
+        let installed = hosts(installed_codex(
+            &connections,
+            &root,
+            &temp.path().join("installed"),
+        ));
+        fs::write(
+            resources.join("agent/integrations/meeting-summary/SKILL.md"),
+            b"new rules",
+        )
+        .unwrap();
+        prepare_connection(&resources, &root, &connections, "codex").unwrap();
+        let info =
+            connection_info_with_installations(&resources, &root, &connections, Some(&installed));
+        assert_eq!(info.clients[1].state, "update_required");
+        assert_eq!(info.clients[1].installation_state, "outdated");
+        assert_eq!(info.clients[1].session_state, "inactive");
+        assert_eq!(info.clients[1].action, "update");
+    }
+
+    #[test]
+    fn legacy_generation_with_current_installed_payload_is_still_current() {
+        let temp = tempfile::tempdir().unwrap();
+        let resources = resources(temp.path());
+        let root = temp.path().join("missing library");
+        let connections = temp.path().join("connections");
+        prepare_connection(&resources, &root, &connections, "codex").unwrap();
+        let installed_path = temp.path().join("installed");
+        let installed = hosts(installed_codex(&connections, &root, &installed_path));
+        let legacy = "a".repeat(64);
+        copy_tree(
+            &installed_path,
+            &connections
+                .join("codex/releases")
+                .join(&legacy)
+                .join("plugins/nero"),
+        );
+        for name in [".mcp.json", "mcp.json"] {
+            let path = installed_path.join(name);
+            let mut value = read_json(&path).unwrap();
+            value["mcpServers"]["nero"]["env"]["NERO_CONNECTION_GENERATION"] = json!(legacy);
+            if name == ".mcp.json" {
+                value["mcpServers"]["nero"]["command"] = json!(connections
+                    .join("codex/releases")
+                    .join(&legacy)
+                    .join("plugins/nero/server")
+                    .join(executable_name()));
+            }
+            fs::write(path, value.to_string()).unwrap();
+        }
+        let registration = load_registration(&connections.join("codex"), &root, "codex").unwrap();
+        let _live =
+            initialized_receipt(&connections.join("codex"), &registration, &legacy, "legacy");
+        let info =
+            connection_info_with_installations(&resources, &root, &connections, Some(&installed));
+        assert_eq!(info.clients[1].state, "connected");
+        assert_eq!(info.clients[1].installation_state, "current");
+        assert_eq!(info.clients[1].session_state, "current");
+        assert_eq!(info.clients[1].action, "none");
+    }
+
+    #[test]
+    fn current_installation_without_session_does_not_require_update() {
+        let temp = tempfile::tempdir().unwrap();
+        let resources = resources(temp.path());
+        let root = temp.path().join("missing library");
+        let connections = temp.path().join("connections");
+        prepare_connection(&resources, &root, &connections, "codex").unwrap();
+        let installed = hosts(installed_codex(
+            &connections,
+            &root,
+            &temp.path().join("installed"),
+        ));
+        let info =
+            connection_info_with_installations(&resources, &root, &connections, Some(&installed));
+        assert_eq!(info.clients[1].state, "waiting");
+        assert_eq!(info.clients[1].installation_state, "current");
+        assert_eq!(info.clients[1].session_state, "inactive");
+        assert_eq!(info.clients[1].action, "recheck");
+    }
+
+    #[test]
+    fn installed_current_payload_overrides_legacy_pending_update_receipts() {
+        for (session, expected_state, expected_session, expected_action) in [
+            (None, "waiting", "inactive", "recheck"),
+            (Some("older"), "reconnect_required", "outdated", "recheck"),
+            (Some("installed"), "connected", "current", "none"),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let resources = resources(temp.path());
+            let root = temp.path().join("missing library");
+            let connections = temp.path().join("connections");
+            prepare_connection(&resources, &root, &connections, "codex").unwrap();
+            let directory = connections.join("codex");
+            let registration = load_registration(&directory, &root, "codex").unwrap();
+            let generation = registration["generation"].as_str().unwrap();
+            let installed_path = temp.path().join("installed");
+            let installed = hosts(installed_codex(&connections, &root, &installed_path));
+            let legacy = "a".repeat(64);
+            let older = "b".repeat(64);
+            copy_tree(
+                &installed_path,
+                &directory
+                    .join("releases")
+                    .join(&legacy)
+                    .join("plugins/nero"),
+            );
+            for name in [".mcp.json", "mcp.json"] {
+                let path = installed_path.join(name);
+                let mut value = read_json(&path).unwrap();
+                value["mcpServers"]["nero"]["env"]["NERO_CONNECTION_GENERATION"] = json!(legacy);
+                if name == ".mcp.json" {
+                    value["mcpServers"]["nero"]["command"] = json!(directory
+                        .join("releases")
+                        .join(&legacy)
+                        .join("plugins/nero/server")
+                        .join(executable_name()));
+                }
+                fs::write(path, value.to_string()).unwrap();
+            }
+            let mut legacy_registration = registration.clone();
+            legacy_registration["generation"] = json!(legacy);
+            fs::write(
+                directory.join("state.json"),
+                legacy_registration.to_string(),
+            )
+            .unwrap();
+            let mut observation = new_observation("codex", &legacy_registration);
+            observation.verified_generation = Some(older.clone());
+            observation.pending_generation = Some(generation.into());
+            save_observation(&directory, None, &observation).unwrap();
+            let _live = session.map(|kind| {
+                initialized_receipt(
+                    &directory,
+                    &legacy_registration,
+                    if kind == "installed" { &legacy } else { &older },
+                    kind,
+                )
+            });
+            let before = ["state.json", "observation.json"]
+                .map(|name| fs::read(directory.join(name)).unwrap());
+            for _ in 0..2 {
+                let info = connection_info_with_installations(
+                    &resources,
+                    &root,
+                    &connections,
+                    Some(&installed),
+                );
+                assert_eq!(info.clients[1].installation_state, "current");
+                assert_eq!(info.clients[1].state, expected_state);
+                assert_eq!(info.clients[1].session_state, expected_session);
+                assert_eq!(info.clients[1].action, expected_action);
+                assert_eq!(
+                    ["state.json", "observation.json"]
+                        .map(|name| fs::read(directory.join(name)).unwrap()),
+                    before
+                );
+            }
+            assert!(!root.exists());
+        }
+    }
+
+    #[test]
+    fn installed_cache_cannot_hide_changed_runtime_or_connection_settings() {
+        for changed in ["runtime", "cache", "environment", "transport", "source"] {
+            let temp = tempfile::tempdir().unwrap();
+            let resources = resources(temp.path());
+            let root = temp.path().join("missing library");
+            let connections = temp.path().join("connections");
+            prepare_connection(&resources, &root, &connections, "codex").unwrap();
+            let installed_path = temp.path().join("installed");
+            let installed = hosts(installed_codex(&connections, &root, &installed_path));
+            let state = load_registration(&connections.join("codex"), &root, "codex").unwrap();
+            match changed {
+                "runtime" => {
+                    fs::write(
+                        connections
+                            .join("codex/releases")
+                            .join(state["generation"].as_str().unwrap())
+                            .join("plugins/nero/server")
+                            .join(executable_name()),
+                        b"different runtime",
+                    )
+                    .unwrap();
+                }
+                "cache" => {
+                    fs::write(
+                        installed_path.join("server").join(executable_name()),
+                        b"different cache",
+                    )
+                    .unwrap();
+                }
+                "environment" | "source" => {
+                    let path = installed_path.join(".mcp.json");
+                    let mut config = read_json(&path).unwrap();
+                    if changed == "source" {
+                        config["mcpServers"]["nero"]["command"] =
+                            json!(temp.path().join("other executable"));
+                    } else {
+                        config["mcpServers"]["nero"]["env"]["ADDITIONAL_SETTING"] =
+                            json!("changed");
+                    }
+                    fs::write(path, config.to_string()).unwrap();
+                }
+                "transport" => {
+                    let path = installed_path.join("mcp.json");
+                    let mut config = read_json(&path).unwrap();
+                    config["mcpServers"]["nero"]["type"] = json!("http");
+                    fs::write(path, config.to_string()).unwrap();
+                }
+                _ => unreachable!(),
+            }
+            let before = fs::read(connections.join("codex/state.json")).unwrap();
+            let info = connection_info_with_installations(
+                &resources,
+                &root,
+                &connections,
+                Some(&installed),
+            );
+            assert_eq!(info.clients[1].state, "installation_unknown", "{changed}");
+            assert_eq!(info.clients[1].installation_state, "unknown", "{changed}");
+            assert_eq!(info.clients[1].action, "recheck", "{changed}");
+            assert_eq!(
+                fs::read(connections.join("codex/state.json")).unwrap(),
+                before
+            );
+            assert!(!root.exists());
+        }
+    }
+
+    #[test]
+    fn current_package_and_manifest_changes_do_not_report_an_installed_cache_as_current() {
+        for changed in ["binary", "manifest", "empty binary", "invalid manifest"] {
+            let temp = tempfile::tempdir().unwrap();
+            let resources = resources(temp.path());
+            let root = temp.path().join("missing library");
+            let connections = temp.path().join("connections");
+            prepare_connection(&resources, &root, &connections, "codex").unwrap();
+            let installed = hosts(installed_codex(
+                &connections,
+                &root,
+                &temp.path().join("installed"),
+            ));
+            let path = resources.join("agent/integrations/codex-plugin.json");
+            match changed {
+                "binary" => fs::write(resource_agent_path(&resources), b"new binary").unwrap(),
+                "empty binary" => fs::write(resource_agent_path(&resources), b"").unwrap(),
+                "invalid manifest" => fs::write(path, b"invalid JSON").unwrap(),
+                "manifest" => {
+                    let mut value = read_json(&path).unwrap();
+                    value["description"] = json!("new instructions");
+                    fs::write(path, value.to_string()).unwrap();
+                }
+                _ => unreachable!(),
+            }
+            let info = connection_info_with_installations(
+                &resources,
+                &root,
+                &connections,
+                Some(&installed),
+            );
+            if matches!(changed, "empty binary" | "invalid manifest") {
+                assert_eq!(info.clients[1].state, "unavailable", "{changed}");
+                assert_eq!(info.clients[1].action, "none", "{changed}");
+            } else {
+                assert_eq!(info.clients[1].state, "update_required", "{changed}");
+                assert_eq!(info.clients[1].action, "update", "{changed}");
+            }
+        }
+    }
+
+    #[test]
+    fn unknown_host_with_current_session_keeps_the_session_evidence() {
+        let temp = tempfile::tempdir().unwrap();
+        let resources = resources(temp.path());
+        let root = temp.path().join("missing library");
+        let connections = temp.path().join("connections");
+        prepare_connection(&resources, &root, &connections, "codex").unwrap();
+        let directory = connections.join("codex");
+        let registration = load_registration(&directory, &root, "codex").unwrap();
+        let _live = initialized_receipt(
+            &directory,
+            &registration,
+            registration["generation"].as_str().unwrap(),
+            "current",
+        );
+        let installed = hosts(installation::HostInstallation::Unknown(
+            "설치 정보를 읽지 못했습니다.",
+        ));
+        let info =
+            connection_info_with_installations(&resources, &root, &connections, Some(&installed));
+        assert_eq!(info.clients[1].state, "connected");
+        assert_eq!(info.clients[1].installation_state, "unknown");
+        assert_eq!(info.clients[1].session_state, "current");
+        assert_eq!(info.clients[1].action, "none");
+    }
+
+    #[test]
+    fn unknown_host_without_local_registration_keeps_explicit_initial_connection_available() {
+        let temp = tempfile::tempdir().unwrap();
+        let resources = resources(temp.path());
+        let root = temp.path().join("missing library");
+        let connections = temp.path().join("connections");
+        let installed = hosts(installation::HostInstallation::Unknown(
+            "Codex CLI를 찾지 못했습니다.",
+        ));
+        let info =
+            connection_info_with_installations(&resources, &root, &connections, Some(&installed));
+        assert_eq!(info.clients[1].state, "not_connected");
+        assert_eq!(info.clients[1].action, "connect");
+        assert_eq!(info.clients[1].installation_state, "unknown");
+        assert_eq!(
+            info.connection_attempt("codex"),
+            ConnectionAttempt::OpenScreen
+        );
+        assert!(!connections.exists());
+        prepare_connection(&resources, &root, &connections, "codex").unwrap();
+        let prepared = fs::read(connections.join("codex/state.json")).unwrap();
+        for _ in 0..2 {
+            let info = connection_info_with_installations(
+                &resources,
+                &root,
+                &connections,
+                Some(&installed),
+            );
+            assert_eq!(info.clients[1].state, "installation_unknown");
+            assert_eq!(info.clients[1].action, "connect");
+            assert_eq!(
+                info.connection_attempt("codex"),
+                ConnectionAttempt::OpenScreen
+            );
+        }
+        assert_eq!(
+            fs::read(connections.join("codex/state.json")).unwrap(),
+            prepared
+        );
+
+        let installed = hosts(installed_codex(
+            &connections,
+            &root,
+            &temp.path().join("installed"),
+        ));
+        let fresh =
+            connection_info_with_installations(&resources, &root, &connections, Some(&installed));
+        assert_eq!(
+            fresh.connection_attempt("codex"),
+            ConnectionAttempt::Recheck
+        );
+        let missing = hosts(installation::HostInstallation::Missing);
+        let fresh =
+            connection_info_with_installations(&resources, &root, &connections, Some(&missing));
+        assert_eq!(
+            fresh.connection_attempt("codex"),
+            ConnectionAttempt::Install
+        );
+        fs::write(
+            resources.join("agent/integrations/meeting-summary/SKILL.md"),
+            b"new instructions",
+        )
+        .unwrap();
+        let fresh =
+            connection_info_with_installations(&resources, &root, &connections, Some(&installed));
+        assert_eq!(
+            fresh.connection_attempt("codex"),
+            ConnectionAttempt::Install
+        );
+    }
+
+    #[test]
+    fn explicit_installation_errors_keep_verified_results_and_isolate_uncertain_rows() {
+        let temp = tempfile::tempdir().unwrap();
+        let resources = resources(temp.path());
+        let root = temp.path().join("missing library");
+        let connections = temp.path().join("connections");
+        prepare_connection(&resources, &root, &connections, "codex").unwrap();
+        let installed = hosts(installed_codex(
+            &connections,
+            &root,
+            &temp.path().join("installed"),
+        ));
+        let confirmed =
+            connection_info_with_installations(&resources, &root, &connections, Some(&installed))
+                .with_action_error("codex", "결과를 다시 확인해 주세요.".into());
+        assert_eq!(confirmed.clients[1].state, "waiting");
+        assert_eq!(confirmed.clients[1].installation_state, "current");
+        fs::write(resource_agent_path(&resources), b"new executable").unwrap();
+        let uncertain =
+            connection_info_with_installations(&resources, &root, &connections, Some(&installed))
+                .with_action_error("codex", "결과를 다시 확인해 주세요.".into());
+        assert_eq!(uncertain.clients[1].state, "error");
+        assert_eq!(uncertain.clients[1].installation_state, "outdated");
+        assert_eq!(uncertain.clients[1].action, "recheck");
+        assert_eq!(uncertain.clients[0].state, "not_connected");
+        let rechecked =
+            connection_info_with_installations(&resources, &root, &connections, Some(&installed));
+        assert_eq!(rechecked.clients[1].state, "update_required");
+        assert_eq!(rechecked.clients[1].action, "update");
+    }
+
+    #[test]
+    fn missing_unknown_disabled_and_mismatched_installations_stay_distinct() {
+        let temp = tempfile::tempdir().unwrap();
+        let resources = resources(temp.path());
+        let root = temp.path().join("missing library");
+        let connections = temp.path().join("connections");
+        prepare_connection(&resources, &root, &connections, "codex").unwrap();
+        let missing = hosts(installation::HostInstallation::Missing);
+        let info =
+            connection_info_with_installations(&resources, &root, &connections, Some(&missing));
+        assert_eq!(info.clients[1].installation_state, "not_installed");
+        assert_eq!(info.clients[1].action, "connect");
+        let unknown = hosts(installation::HostInstallation::Unknown(
+            "설치 정보를 읽지 못했습니다.",
+        ));
+        let info =
+            connection_info_with_installations(&resources, &root, &connections, Some(&unknown));
+        assert_eq!(info.clients[1].state, "installation_unknown");
+        assert_eq!(info.clients[1].action, "connect");
+        assert_eq!(
+            info.connection_attempt("codex"),
+            ConnectionAttempt::OpenScreen
+        );
+        let installed_path = temp.path().join("installed");
+        let installed = installed_codex(&connections, &root, &installed_path);
+        let installation::HostInstallation::Installed {
+            directory, version, ..
+        } = installed
+        else {
+            unreachable!();
+        };
+        let disabled = hosts(installation::HostInstallation::Installed {
+            directory,
+            version,
+            enabled: false,
+        });
+        let info =
+            connection_info_with_installations(&resources, &root, &connections, Some(&disabled));
+        assert_eq!(info.clients[1].installation_state, "disabled");
+        assert_eq!(info.clients[1].action, "recheck");
+        assert_eq!(info.connection_attempt("codex"), ConnectionAttempt::Recheck);
+        let path = installed_path.join(".mcp.json");
+        let mut config = read_json(&path).unwrap();
+        config["mcpServers"]["nero"]["env"]["NERO_CONNECTION_TOKEN"] = json!("other registration");
+        fs::write(path, config.to_string()).unwrap();
+        let info =
+            connection_info_with_installations(&resources, &root, &connections, Some(&disabled));
+        assert_eq!(info.clients[1].state, "installation_unknown");
+        assert_eq!(info.clients[1].installation_state, "unknown");
+        assert_eq!(info.clients[1].action, "recheck");
+        assert_eq!(info.connection_attempt("codex"), ConnectionAttempt::Recheck);
     }
 }

@@ -43,8 +43,8 @@ records source hashes and distribution status. Generated `build-info.json` recor
 the exact Git commit/tree, dirty state, version/build and build host. It is packaged
 as an app resource; signing a distribution refuses a dirty or mismatched source.
 
-For macOS distribution, build `app` from a clean commit with prepared workers, copy
-the resulting bundle to a new work directory, then use:
+For macOS distribution, build `app` from a clean commit with prepared workers and
+sign the canonical bundle in place, then use:
 
 ```sh
 python3 apps/desktop/scripts/sign-macos.py --app WORK/Nero.app \
@@ -151,7 +151,8 @@ frontend, whose actions require the native bridge; it does not supply fake meeti
 
 The application identifier is `io.github.choseongmin1128.grove.desktop`.
 Tauri resolves its own OS application data directory. No automatic legacy migration,
-Keychain access, automatic model installation or account connection occurs.
+automatic model installation or account connection occurs. An explicit Google Calendar
+connection stores its grant in the platform credential store.
 
 ## First use
 
@@ -261,8 +262,8 @@ input is available. The device ID/name preference persists in the app webview's
 local storage; it is separate from meeting data and never written to the repository.
 A missing explicit selection blocks the next recording instead of silently switching
 to another device. Recording start refreshes availability. Existing capture keeps its
-input and disables preference changes until it ends. Settings / Models links to the
-existing preparation screen without duplicating download logic.
+input and disables preference changes until it ends. Settings / General provides inline
+optional summary preparation and download progress without a separate model page.
 
 ## Brand assets
 
@@ -353,7 +354,7 @@ A missing system Vulkan loader selects the CPU route without installing a GPU dr
 Windows includes separate Vulkan and CPU bundles; unsupported architectures
 remain unavailable. A runtime build does not prove Windows execution or GPU support.
 
-In the app, prepare the optional `요약 모델 다운로드` in Settings / Models, then
+In the app, add the optional `회의 요약` feature in Settings / General, then
 select `요약하기` on a meeting with an existing voice record.
 `models/summary.json` pins the exact Gemma 4 E4B QAT Q4_0 revision, size and SHA256.
 Weights are kept in the app's own data directory. No recording or transcript is sent

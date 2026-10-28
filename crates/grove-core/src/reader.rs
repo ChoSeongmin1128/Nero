@@ -1,4 +1,5 @@
 use crate::library::Library;
+use crate::presentation::{format_summary, DocumentFormat};
 use crate::store::{self, StoredMeeting};
 use crate::{CoreError, Meeting, Result, Summary, SummaryContext, Transcript};
 use serde::de::DeserializeOwned;
@@ -54,6 +55,8 @@ struct Params {
     end: Option<f64>,
     expected_source_version: Option<String>,
     max_bytes: Option<usize>,
+    format: Option<DocumentFormat>,
+    include_citations: Option<bool>,
 }
 
 impl Params {
@@ -65,7 +68,8 @@ impl Params {
             "meetings_search" => &[
                 "query", "folderId", "unfiled", "from", "to", "offset", "limit",
             ],
-            "meeting_get" | "summary_get" => &["meetingId", "offset", "limit"],
+            "meeting_get" => &["meetingId", "offset", "limit"],
+            "summary_get" => &["meetingId", "offset", "limit", "format", "includeCitations"],
             "summary_context" => &["meetingId"],
             "transcript_get" => &["meetingId", "start", "end", "offset", "limit"],
             "folders_list" => &["offset", "limit"],
@@ -239,7 +243,17 @@ impl LibraryReader {
                 continue;
             }
             let mut result = result?;
-            let version = transaction.version();
+            let version = if method == "summary_get" {
+                let identity = serde_json::to_vec(&(
+                    transaction.version(),
+                    params.format.unwrap_or_default(),
+                    params.include_citations.unwrap_or(false),
+                ))
+                .map_err(|error| CoreError::Storage(error.to_string()))?;
+                format!("sha256:{:x}", Sha256::digest(identity))
+            } else {
+                transaction.version()
+            };
             if params
                 .expected_source_version
                 .as_ref()
@@ -345,11 +359,7 @@ impl<'a> Transaction<'a> {
         relative: &Path,
         schema: bool,
     ) -> Result<Option<T>> {
-        let content = read_content(self.root, relative)?;
-        self.observations.insert(
-            relative.to_path_buf(),
-            Observation::File(content.as_ref().map(|bytes| Sha256::digest(bytes).into())),
-        );
+        let content = self.content(relative)?;
         let Some(content) = content else {
             return Ok(None);
         };
@@ -365,6 +375,15 @@ impl<'a> Transaction<'a> {
         serde_json::from_value(value)
             .map(Some)
             .map_err(|_| ReadError::InvalidDocument.into())
+    }
+
+    fn content(&mut self, relative: &Path) -> Result<Option<Vec<u8>>> {
+        let content = read_content(self.root, relative)?;
+        self.observations.insert(
+            relative.to_path_buf(),
+            Observation::File(content.as_ref().map(|bytes| Sha256::digest(bytes).into())),
+        );
+        Ok(content)
     }
 
     fn directory(&mut self, relative: &Path) -> Result<Vec<String>> {
@@ -440,8 +459,13 @@ impl<'a> Transaction<'a> {
         Ok(library)
     }
 
-    fn meeting(&mut self, id: &str, library: &Library) -> Result<Option<Meeting>> {
-        self.meeting_in_view(id, library, false)
+    fn meeting(
+        &mut self,
+        id: &str,
+        library: &Library,
+        capture_details: bool,
+    ) -> Result<Option<Meeting>> {
+        self.meeting_in_view(id, library, false, capture_details)
     }
 
     fn meeting_in_view(
@@ -449,6 +473,7 @@ impl<'a> Transaction<'a> {
         id: &str,
         library: &Library,
         trashed: bool,
+        capture_details: bool,
     ) -> Result<Option<Meeting>> {
         store::validate_id(id)?;
         if library.pending_purges.contains(id)
@@ -477,6 +502,29 @@ impl<'a> Transaction<'a> {
         }
         if let Some(audio) = &stored.meeting.audio {
             store::validate_id(&audio.session_id).map_err(|_| ReadError::InvalidDocument)?;
+        }
+        if capture_details {
+            if let Some(capture_id) = &stored.capture_id {
+                store::validate_id(capture_id).map_err(|_| ReadError::InvalidDocument)?;
+                let relative = Path::new("meetings")
+                    .join(id)
+                    .join("sessions")
+                    .join(capture_id)
+                    .join("manifest.json");
+                let manifest: store::Manifest = self
+                    .document(&relative, true)?
+                    .ok_or(ReadError::InvalidDocument)?;
+                manifest
+                    .validate()
+                    .map_err(|_| ReadError::InvalidDocument)?;
+                if manifest.meeting_id != id || &manifest.session_id != capture_id {
+                    return Err(ReadError::InvalidDocument.into());
+                }
+                store::hydrate_capture_metadata(&mut stored.meeting, &manifest);
+            }
+            if let Some(quality) = &stored.meeting.capture_quality {
+                quality.validate().map_err(|_| ReadError::InvalidDocument)?;
+            }
         }
         library.project(&mut stored.meeting);
         Ok((stored.meeting.deleted_at.is_some() == trashed).then_some(stored.meeting))
@@ -532,7 +580,7 @@ impl<'a> Transaction<'a> {
         &mut self,
         meeting: &Meeting,
         transcript: Option<&Transcript>,
-    ) -> Result<Option<Value>> {
+    ) -> Result<Option<(Value, Option<usize>)>> {
         let relative = Path::new("meetings")
             .join(&meeting.id)
             .join("summaries/current.json");
@@ -550,10 +598,15 @@ impl<'a> Transaction<'a> {
             return Err(ReadError::InvalidDocument.into());
         }
         let stale = crate::summary::is_stale(&summary, transcript, &meeting.notes)?;
-        Ok(Some(
+        let reference_count =
+            crate::summary::summary_reference_count(&meeting.id, &summary, |relative| {
+                self.content(relative)
+            });
+        Ok(Some((
             json!({"id":summary.id,"text":summary.text,"createdAt":summary.created_at,
             "sourceVersion":summary.source_version,"stale":stale}),
-        ))
+            reference_count,
+        )))
     }
 
     fn query(&mut self, method: &str, params: &Params) -> Result<Value> {
@@ -569,12 +622,28 @@ impl<'a> Transaction<'a> {
         }
         let id = params.meeting_id.as_deref().unwrap();
         let meeting = self
-            .meeting(id, &library)?
+            .meeting(id, &library, method == "meeting_get")?
             .ok_or(CoreError::MeetingNotFound)?;
         let transcript = self.transcript(&meeting)?;
         match method {
             "meeting_get" => {
                 let mut value = meeting_value(&meeting, transcript.as_ref());
+                if let Some(quality) = &meeting.capture_quality {
+                    quality.validate().map_err(|_| ReadError::InvalidDocument)?;
+                    value["captureQuality"] = json!(quality);
+                    value["captureQualityMeaning"] = json!({
+                        "framePosition":"writerProgressAtObservation",
+                        "audioSampleRate":meeting.audio.as_ref().map(|audio| audio.sample_rate),
+                        "hardwareEventTimeKnown":false,
+                        "affectedAudioRangeKnown":false,
+                        "audioLossVerified":false,
+                        "gapRecoveryVerified":false,
+                        "coalescedRangeIsContinuous":false
+                    });
+                }
+                if let Some(error) = &meeting.error {
+                    value["error"] = json!(error);
+                }
                 let (notes, page) = page_text_chunks(&meeting.notes, params);
                 value["notes"] = json!(notes);
                 Ok(
@@ -607,17 +676,24 @@ impl<'a> Transaction<'a> {
             }
             "summary_get" => {
                 let mut summary = self.summary(&meeting, transcript.as_ref())?;
-                let (text, page) = page_text_chunks(
-                    summary
-                        .as_ref()
-                        .and_then(|value| value["text"].as_str())
-                        .unwrap_or_default(),
-                    params,
-                );
-                if let Some(summary) = &mut summary {
+                let formatted = summary.as_ref().map(|(summary, reference_count)| {
+                    format_summary(
+                        summary["text"].as_str().unwrap(),
+                        params.format.unwrap_or_default(),
+                        params.include_citations.unwrap_or(false),
+                        summary["stale"] == true,
+                        *reference_count,
+                    )
+                });
+                let (text, page) =
+                    page_text_chunks(formatted.as_deref().unwrap_or_default(), params);
+                if let Some((summary, _)) = &mut summary {
                     summary["text"] = json!(text);
                 }
-                Ok(json!({"meetingId":id,"summary":summary,"pagination":page}))
+                Ok(
+                    json!({"meetingId":id,"summary":summary.map(|(summary, _)| summary),"pagination":page,
+                    "format":params.format.unwrap_or_default(),"includeCitations":params.include_citations.unwrap_or(false)}),
+                )
             }
             "summary_context" => {
                 let source = transcript.as_ref().ok_or_else(|| {
@@ -626,7 +702,7 @@ impl<'a> Transaction<'a> {
                 let summary = self.summary(&meeting, Some(source))?;
                 let summary_id = summary
                     .as_ref()
-                    .and_then(|value| value["id"].as_str())
+                    .and_then(|(value, _)| value["id"].as_str())
                     .map(str::to_owned);
                 let context = SummaryContext::new(source, &meeting.notes, summary_id)?;
                 Ok(json!({"meetingId":id,"context":context}))
@@ -652,7 +728,8 @@ impl<'a> Transaction<'a> {
             .to_lowercase();
         let mut meetings = Vec::new();
         for id in names {
-            let Some(meeting) = self.meeting_in_view(&id, library, params.trashed == Some(true))?
+            let Some(meeting) =
+                self.meeting_in_view(&id, library, params.trashed == Some(true), false)?
             else {
                 continue;
             };
@@ -702,10 +779,15 @@ impl<'a> Transaction<'a> {
                         }
                     }
                 }
-                if let Some(summary) = summary {
-                    if let Some(text) =
-                        excerpt(summary["text"].as_str().unwrap_or_default(), &query)
-                    {
+                if let Some((summary, reference_count)) = summary {
+                    let external_text = format_summary(
+                        summary["text"].as_str().unwrap_or_default(),
+                        DocumentFormat::Md,
+                        false,
+                        false,
+                        reference_count,
+                    );
+                    if let Some(text) = excerpt(&external_text, &query) {
                         if matches.len() == 20 {
                             matches_truncated = true;
                         } else {
@@ -1236,6 +1318,153 @@ mod tests {
             ),
             Err(CoreError::Reader(ReadError::SourceVersionMismatch))
         ));
+    }
+
+    #[test]
+    fn legacy_summary_without_frozen_archive_is_read_without_writes_or_citation_guessing() {
+        let fixture = Fixture::new();
+        let relative = Path::new("meetings")
+            .join(&fixture.id)
+            .join("summaries/current.json");
+        let mut summary: Summary = store::read_json(&fixture.root.join(&relative)).unwrap();
+        summary.text = "legacy 결정 [1].".into();
+        store::write_json(&fixture.root, &relative, &summary).unwrap();
+        let before = tree_hash(&fixture.root);
+        let reader = fixture.reader();
+        let result = reader
+            .query("summary_get", json!({"meetingId":fixture.id}))
+            .unwrap();
+        assert_eq!(result["summary"]["text"], summary.text);
+        let search = reader
+            .query("meetings_search", json!({"query":"legacy"}))
+            .unwrap();
+        assert!(search["meetings"][0]["matches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|hit| hit["field"] == "summary" && hit["text"].as_str().unwrap().contains("[1]")));
+        assert_eq!(before, tree_hash(&fixture.root));
+    }
+
+    #[test]
+    fn summary_paging_binds_formatted_representation_and_preserves_saved_sources() {
+        let fixture = Fixture::new();
+        let mut frozen_source = fixture.transcript.clone();
+        for segment in &mut frozen_source.segments {
+            segment.id = Uuid::new_v4().to_string();
+        }
+        fixture.save_transcript(&frozen_source);
+        let relative = Path::new("meetings")
+            .join(&fixture.id)
+            .join("summaries/current.json");
+        let mut summary: Summary = store::read_json(&fixture.root.join(&relative)).unwrap();
+        summary.source_sha256 = crate::summary::transcript_digest(&frozen_source).unwrap();
+        summary.text = format!(
+            "## 결정\n\n{} [1]\n\n```text\n[2] **literal**\n```\n",
+            "**항목** ".repeat(900)
+        );
+        store::write_json(&fixture.root, &relative, &summary).unwrap();
+        let frozen = Path::new("meetings")
+            .join(&fixture.id)
+            .join("summaries")
+            .join(&summary.id)
+            .join("run.json");
+        fs::create_dir_all(fixture.root.join(frozen.parent().unwrap())).unwrap();
+        store::write_json(
+            &fixture.root,
+            &frozen,
+            &json!({"document":summary,"source":frozen_source,"receipt":{}}),
+        )
+        .unwrap();
+        let reader = fixture.reader();
+        let before = tree_hash(&fixture.root);
+        let first = reader
+            .query("summary_get", json!({"meetingId":fixture.id,"limit":1}))
+            .unwrap();
+        assert_eq!(first["format"], "md");
+        assert_eq!(first["includeCitations"], false);
+        let version = first["sourceVersion"].clone();
+        for overrides in [json!({"format":"txt"}), json!({"includeCitations":true})] {
+            let mut params =
+                json!({"meetingId":fixture.id,"expectedSourceVersion":version,"offset":1});
+            params
+                .as_object_mut()
+                .unwrap()
+                .extend(overrides.as_object().unwrap().clone());
+            assert!(matches!(
+                reader.query("summary_get", params),
+                Err(CoreError::Reader(ReadError::SourceVersionMismatch))
+            ));
+        }
+        for (format, citations) in [("md", false), ("txt", false), ("md", true)] {
+            let mut restored = String::new();
+            let mut offset = 0;
+            let mut version: Option<Value> = None;
+            loop {
+                let mut params = json!({"meetingId":fixture.id,"format":format,"includeCitations":citations,"offset":offset,"limit":1});
+                if let Some(version) = &version {
+                    params["expectedSourceVersion"] = version.clone();
+                }
+                let page = reader.query("summary_get", params).unwrap();
+                version = Some(page["sourceVersion"].clone());
+                restored.push_str(page["summary"]["text"].as_str().unwrap());
+                match page["pagination"]["nextOffset"].as_u64() {
+                    Some(next) => offset = next,
+                    None => break,
+                }
+            }
+            let selected = if format == "md" {
+                DocumentFormat::Md
+            } else {
+                DocumentFormat::Txt
+            };
+            assert_eq!(
+                restored,
+                format_summary(
+                    &summary.text,
+                    selected,
+                    citations,
+                    false,
+                    Some(fixture.transcript.segments.len())
+                )
+            );
+        }
+        assert_eq!(before, tree_hash(&fixture.root));
+        let mut changed = fixture.transcript.clone();
+        changed.version.revision += 1;
+        fixture.save_transcript(&changed);
+        assert!(matches!(
+            reader.query(
+                "summary_get",
+                json!({"meetingId":fixture.id,"expectedSourceVersion":version})
+            ),
+            Err(CoreError::Reader(ReadError::SourceVersionMismatch))
+        ));
+        let stale = reader
+            .query(
+                "summary_get",
+                json!({"meetingId":fixture.id,"format":"txt"}),
+            )
+            .unwrap();
+        assert_eq!(stale["summary"]["stale"], true);
+        assert!(stale["summary"]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with(crate::presentation::STALE_SUMMARY_WARNING));
+        assert!(!stale["summary"]["text"].as_str().unwrap().contains("[1]"));
+        let mut archive: Value = store::read_json(&fixture.root.join(&frozen)).unwrap();
+        archive["source"]["segments"][0]["text"] = json!("손상된 frozen source");
+        store::write_json(&fixture.root, &frozen, &archive).unwrap();
+        assert!(matches!(reader.query("summary_get", json!({"meetingId":fixture.id,"format":"txt","expectedSourceVersion":stale["sourceVersion"]})), Err(CoreError::Reader(ReadError::SourceVersionMismatch))));
+        let before = tree_hash(&fixture.root);
+        let preserved = reader
+            .query("summary_get", json!({"meetingId":fixture.id}))
+            .unwrap();
+        assert!(preserved["summary"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("[1]"));
+        assert_eq!(before, tree_hash(&fixture.root));
     }
 
     #[test]

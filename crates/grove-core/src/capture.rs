@@ -1,4 +1,7 @@
-use crate::store::{self, CapturePhase, CaptureQuality, Encoding, Manifest};
+use crate::store::{
+    self, CapturePhase, CaptureQuality, CaptureQualityEvent, CaptureQualityEventKind, Encoding,
+    Manifest, CAPTURE_QUALITY_EVENT_KINDS, CAPTURE_QUALITY_INDIVIDUAL_EVENTS,
+};
 use crate::{AudioArtifact, CoreError, Device, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use rtrb::{Consumer, Producer, RingBuffer};
@@ -18,31 +21,176 @@ const CHECKPOINT_INTERVAL: Duration = Duration::from_secs(1);
 const MAX_QUEUE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_DEVICE_DIAGNOSTIC_CHARS: usize = 512;
 
+struct EventSlot {
+    kind: AtomicU8,
+    observed_at_ms: AtomicU64,
+    saved_frame: AtomicU64,
+    queued_frame: AtomicU64,
+}
+
+impl EventSlot {
+    fn new() -> Self {
+        Self {
+            kind: AtomicU8::new(0),
+            observed_at_ms: AtomicU64::new(0),
+            saved_frame: AtomicU64::new(0),
+            queued_frame: AtomicU64::new(0),
+        }
+    }
+
+    fn record(&self, kind: CaptureQualityEventKind, at: u64, saved: u64, queued: u64) {
+        self.observed_at_ms.store(at, Ordering::Relaxed);
+        self.saved_frame.store(saved, Ordering::Relaxed);
+        self.queued_frame.store(queued, Ordering::Relaxed);
+        self.kind.store(kind as u8 + 1, Ordering::Release);
+    }
+
+    fn snapshot(&self) -> Option<CaptureQualityEvent> {
+        let kind = event_kind(self.kind.load(Ordering::Acquire).checked_sub(1)?)?;
+        let observed_at_ms = self.observed_at_ms.load(Ordering::Relaxed);
+        let saved_frame = self.saved_frame.load(Ordering::Relaxed);
+        let queued_frame = self.queued_frame.load(Ordering::Relaxed);
+        Some(CaptureQualityEvent {
+            kind,
+            count: 1,
+            first_observed_at_ms: observed_at_ms,
+            last_observed_at_ms: observed_at_ms,
+            first_saved_frame: saved_frame,
+            last_saved_frame: saved_frame,
+            first_queued_frame: queued_frame,
+            last_queued_frame: queued_frame,
+            coalesced: false,
+        })
+    }
+}
+
+struct EventRange {
+    count: AtomicU64,
+    first_at_ms: AtomicU64,
+    last_at_ms: AtomicU64,
+    first_saved_frame: AtomicU64,
+    last_saved_frame: AtomicU64,
+    first_queued_frame: AtomicU64,
+    last_queued_frame: AtomicU64,
+}
+
+impl EventRange {
+    fn new() -> Self {
+        Self {
+            count: AtomicU64::new(0),
+            first_at_ms: AtomicU64::new(u64::MAX),
+            last_at_ms: AtomicU64::new(0),
+            first_saved_frame: AtomicU64::new(u64::MAX),
+            last_saved_frame: AtomicU64::new(0),
+            first_queued_frame: AtomicU64::new(u64::MAX),
+            last_queued_frame: AtomicU64::new(0),
+        }
+    }
+
+    fn record(&self, at: u64, saved: u64, queued: u64) {
+        self.first_at_ms.fetch_min(at, Ordering::Relaxed);
+        self.last_at_ms.fetch_max(at, Ordering::Relaxed);
+        self.first_saved_frame.fetch_min(saved, Ordering::Relaxed);
+        self.last_saved_frame.fetch_max(saved, Ordering::Relaxed);
+        self.first_queued_frame.fetch_min(queued, Ordering::Relaxed);
+        self.last_queued_frame.fetch_max(queued, Ordering::Relaxed);
+        self.count.fetch_add(1, Ordering::Release);
+    }
+
+    fn snapshot(&self, kind: CaptureQualityEventKind) -> Option<CaptureQualityEvent> {
+        let count = self.count.load(Ordering::Acquire);
+        if count == 0 {
+            return None;
+        }
+        let first_saved_frame = self.first_saved_frame.load(Ordering::Relaxed);
+        let last_saved_frame = self.last_saved_frame.load(Ordering::Relaxed);
+        Some(CaptureQualityEvent {
+            kind,
+            count,
+            first_observed_at_ms: self.first_at_ms.load(Ordering::Relaxed),
+            last_observed_at_ms: self.last_at_ms.load(Ordering::Relaxed),
+            first_saved_frame,
+            last_saved_frame,
+            first_queued_frame: self
+                .first_queued_frame
+                .load(Ordering::Relaxed)
+                .max(first_saved_frame),
+            last_queued_frame: self
+                .last_queued_frame
+                .load(Ordering::Relaxed)
+                .max(last_saved_frame),
+            coalesced: true,
+        })
+    }
+}
+
+fn event_kind(index: u8) -> Option<CaptureQualityEventKind> {
+    use CaptureQualityEventKind::*;
+    Some(match index {
+        0 => Xrun,
+        1 => RealtimeDenied,
+        2 => RouteChanged,
+        3 => QueueOverflow,
+        4 => DeviceFailure,
+        5 => WriterFailure,
+        6 => FormatChanged,
+        7 => CaptureInterrupted,
+        _ => return None,
+    })
+}
+
 pub(crate) struct Signals {
     accepting: AtomicBool,
     callbacks: AtomicUsize,
     fault: AtomicU8,
     device_diagnostic: Mutex<Option<String>>,
-    xrun_count: AtomicU64,
-    realtime_denied_count: AtomicU64,
-    route_changed_count: AtomicU64,
+    clock: Instant,
+    clock_origin_ms: u64,
+    frame_bytes: u64,
+    event_count: AtomicUsize,
+    event_totals: [AtomicU64; CAPTURE_QUALITY_EVENT_KINDS],
+    event_slots: [EventSlot; CAPTURE_QUALITY_INDIVIDUAL_EVENTS],
+    event_overflow: [EventRange; CAPTURE_QUALITY_EVENT_KINDS],
+    failure_kinds: AtomicU8,
     saved_bytes: AtomicU64,
+    queued_bytes: AtomicU64,
     phase: AtomicU8,
 }
 
 impl Signals {
-    fn new() -> Self {
+    fn new(frame_bytes: usize) -> Self {
         Self {
             accepting: AtomicBool::new(false),
             callbacks: AtomicUsize::new(0),
             fault: AtomicU8::new(0),
             device_diagnostic: Mutex::new(None),
-            xrun_count: AtomicU64::new(0),
-            realtime_denied_count: AtomicU64::new(0),
-            route_changed_count: AtomicU64::new(0),
+            clock: Instant::now(),
+            clock_origin_ms: store::now(),
+            frame_bytes: frame_bytes as u64,
+            event_count: AtomicUsize::new(0),
+            event_totals: std::array::from_fn(|_| AtomicU64::new(0)),
+            event_slots: std::array::from_fn(|_| EventSlot::new()),
+            event_overflow: std::array::from_fn(|_| EventRange::new()),
+            failure_kinds: AtomicU8::new(0),
             saved_bytes: AtomicU64::new(0),
+            queued_bytes: AtomicU64::new(0),
             phase: AtomicU8::new(0),
         }
+    }
+
+    fn record_event(&self, kind: CaptureQualityEventKind) {
+        let at = self
+            .clock_origin_ms
+            .saturating_add(self.clock.elapsed().as_millis().min(u64::MAX as u128) as u64);
+        let saved = self.saved_bytes.load(Ordering::Acquire) / self.frame_bytes;
+        let queued = self.queued_bytes.load(Ordering::Acquire) / self.frame_bytes;
+        let slot = self.event_count.fetch_add(1, Ordering::Relaxed);
+        if let Some(slot) = self.event_slots.get(slot) {
+            slot.record(kind, at, saved, queued);
+        } else {
+            self.event_overflow[kind as usize].record(at, saved, queued);
+        }
+        self.event_totals[kind as usize].fetch_add(1, Ordering::Release);
     }
 
     fn fail(&self, code: u8) {
@@ -50,6 +198,22 @@ impl Signals {
             .fault
             .compare_exchange(0, code, Ordering::AcqRel, Ordering::Acquire);
         self.accepting.store(false, Ordering::Release);
+        let bit = 1 << code;
+        if self.failure_kinds.fetch_or(bit, Ordering::AcqRel) & bit == 0 {
+            let kind = match code {
+                FAULT_OVERFLOW => CaptureQualityEventKind::QueueOverflow,
+                FAULT_DEVICE => CaptureQualityEventKind::DeviceFailure,
+                FAULT_WRITER => CaptureQualityEventKind::WriterFailure,
+                _ => CaptureQualityEventKind::FormatChanged,
+            };
+            self.record_event(kind);
+        }
+    }
+
+    fn interrupted(&self) {
+        if self.fault.load(Ordering::Acquire) == 0 {
+            self.record_event(CaptureQualityEventKind::CaptureInterrupted);
+        }
     }
 
     fn fail_device(&self, error: cpal::Error) {
@@ -84,25 +248,42 @@ impl Signals {
     }
 
     pub(crate) fn device_event(&self, error: cpal::Error) {
+        self.callbacks.fetch_add(1, Ordering::SeqCst);
         match error.kind() {
-            cpal::ErrorKind::Xrun => {
-                self.xrun_count.fetch_add(1, Ordering::Relaxed);
-            }
+            cpal::ErrorKind::Xrun => self.record_event(CaptureQualityEventKind::Xrun),
             cpal::ErrorKind::RealtimeDenied => {
-                self.realtime_denied_count.fetch_add(1, Ordering::Relaxed);
+                self.record_event(CaptureQualityEventKind::RealtimeDenied)
             }
             cpal::ErrorKind::DeviceChanged => {
-                self.route_changed_count.fetch_add(1, Ordering::Relaxed);
+                self.record_event(CaptureQualityEventKind::RouteChanged)
             }
             _ => self.fail_device(error),
         }
+        self.callbacks.fetch_sub(1, Ordering::SeqCst);
     }
 
-    fn quality(&self) -> Option<CaptureQuality> {
+    pub(crate) fn quality(&self) -> Option<CaptureQuality> {
+        let mut events: Vec<_> = self
+            .event_slots
+            .iter()
+            .filter_map(EventSlot::snapshot)
+            .collect();
+        events.extend(
+            self.event_overflow
+                .iter()
+                .enumerate()
+                .filter_map(|(index, range)| range.snapshot(event_kind(index as u8)?)),
+        );
+        events.sort_by_key(|event| (event.first_observed_at_ms, event.kind as u8));
         let quality = CaptureQuality {
-            xrun_count: self.xrun_count.load(Ordering::Relaxed),
-            realtime_denied_count: self.realtime_denied_count.load(Ordering::Relaxed),
-            route_changed_count: self.route_changed_count.load(Ordering::Relaxed),
+            xrun_count: self.event_totals[CaptureQualityEventKind::Xrun as usize]
+                .load(Ordering::Acquire),
+            realtime_denied_count: self.event_totals
+                [CaptureQualityEventKind::RealtimeDenied as usize]
+                .load(Ordering::Acquire),
+            route_changed_count: self.event_totals[CaptureQualityEventKind::RouteChanged as usize]
+                .load(Ordering::Acquire),
+            events,
         };
         (quality != CaptureQuality::default()).then_some(quality)
     }
@@ -161,6 +342,9 @@ impl CallbackSink {
                         let split = first.len();
                         first.copy_from_slice(&input[..split]);
                         second.copy_from_slice(&input[split..]);
+                        self.signals
+                            .queued_bytes
+                            .fetch_add(input.len() as u64, Ordering::Release);
                         chunk.commit_all();
                     }
                     Err(_) => self.signals.fail(FAULT_OVERFLOW),
@@ -219,7 +403,7 @@ impl Capture {
                 .map_err(|_| CoreError::Audio("녹음 입력 버퍼를 준비하지 못했습니다.".into()))?
                 .commit_all();
         }
-        let signals = Arc::new(Signals::new());
+        let signals = Arc::new(Signals::new(manifest.frame_bytes()));
         let (control, commands) = mpsc::channel();
         let root = root.to_path_buf();
         let writer_manifest = manifest.clone();
@@ -332,6 +516,9 @@ impl Capture {
     ) -> Result<CaptureOutcome> {
         self.signals.quiesce();
         self.stream.take();
+        if phase == CapturePhase::Interrupted {
+            self.signals.interrupted();
+        }
         let _ = self.control.send(WriterCommand::Finish(phase, error));
         let writer = self.writer.take().ok_or(CoreError::Unavailable)?;
         writer.join().map_err(|_| {
@@ -539,10 +726,11 @@ fn writer_loop(
             }
             Ok(WriterCommand::Finish(phase, error)) => break (phase, error),
             Err(mpsc::TryRecvError::Disconnected) => {
+                signals.interrupted();
                 break (
                     CapturePhase::Interrupted,
                     Some("녹음 제어가 종료되었습니다.".into()),
-                )
+                );
             }
             Err(mpsc::TryRecvError::Empty) => {}
         }
@@ -567,12 +755,14 @@ fn writer_loop(
     }
     if !pending.write_failed {
         if let Err(write_error) = pending.write_to(&mut raw, &signals, manifest.frame_bytes()) {
+            signals.fail(FAULT_WRITER);
             error = Some(format!(
                 "녹음의 마지막 구간을 저장하지 못했습니다: {write_error}"
             ));
         }
     }
     if let Err(sync_error) = raw.sync_all() {
+        signals.fail(FAULT_WRITER);
         error = Some(format!("녹음 저장을 확인하지 못했습니다: {sync_error}"));
     }
     manifest.saved_frames = raw
@@ -593,11 +783,15 @@ fn writer_loop(
     manifest.quality = signals.quality();
     manifest.warning = manifest.quality.as_ref().and_then(CaptureQuality::warning);
     if manifest.phase == CapturePhase::Completed && manifest.saved_frames == 0 {
+        signals.interrupted();
+        manifest.quality = signals.quality();
         manifest.phase = CapturePhase::Interrupted;
         manifest.error = Some("녹음된 오디오가 없습니다.".into());
     }
     let audio = if phase == CapturePhase::Prepared {
         if let Err(error) = store::write_manifest(&root, &manifest) {
+            signals.fail(FAULT_WRITER);
+            manifest.quality = signals.quality();
             manifest.error = Some(error.to_string());
         }
         None
@@ -605,6 +799,8 @@ fn writer_loop(
         match store::finalize_audio(&root, &mut manifest) {
             Ok(audio) => audio,
             Err(error) => {
+                signals.fail(FAULT_WRITER);
+                manifest.quality = signals.quality();
                 manifest.phase = CapturePhase::Interrupted;
                 manifest.error = Some(format!(
                     "원본은 보관했지만 재생 파일을 만들지 못했습니다: {error}"
@@ -620,7 +816,7 @@ fn writer_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::Store;
+    use crate::store::{Store, MAX_CAPTURE_QUALITY_EVENTS};
     use std::fs;
 
     fn setup(capacity: usize) -> (tempfile::TempDir, Store, Capture, CallbackSink) {
@@ -640,6 +836,149 @@ mod tests {
         let (capture, sink) =
             Capture::prepare_with_capacity(&store.root, manifest, raw, capacity).unwrap();
         (temporary, store, capture, sink)
+    }
+
+    #[test]
+    fn observed_position_uses_saved_and_queued_frames_without_inventing_a_gap() {
+        let signals = Signals::new(4);
+        signals.saved_bytes.store(40, Ordering::Release);
+        signals.queued_bytes.store(80, Ordering::Release);
+        signals.device_event(cpal::ErrorKind::Xrun.into());
+        let quality = signals.quality().unwrap();
+        assert_eq!(quality.xrun_count, 1);
+        assert_eq!(quality.events.len(), 1);
+        let event = &quality.events[0];
+        assert_eq!(event.kind, CaptureQualityEventKind::Xrun);
+        assert_eq!((event.first_saved_frame, event.last_saved_frame), (10, 10));
+        assert_eq!(
+            (event.first_queued_frame, event.last_queued_frame),
+            (20, 20)
+        );
+        assert!(event.first_observed_at_ms >= signals.clock_origin_ms);
+        assert_eq!(event.first_observed_at_ms, event.last_observed_at_ms);
+        assert!(!event.coalesced);
+        assert!(signals.error().is_none());
+        assert!(!signals.warning().unwrap().contains("누락"));
+    }
+
+    #[test]
+    fn realtime_priority_diagnostic_alone_does_not_warn_or_interrupt() {
+        let signals = Signals::new(4);
+        signals.device_event(cpal::ErrorKind::RealtimeDenied.into());
+        let quality = signals.quality().unwrap();
+        assert_eq!(quality.realtime_denied_count, 1);
+        assert_eq!(
+            quality.events[0].kind,
+            CaptureQualityEventKind::RealtimeDenied
+        );
+        assert!(signals.warning().is_none());
+        assert!(signals.error().is_none());
+    }
+
+    #[test]
+    fn bounded_observations_coalesce_overflow_without_losing_counts_or_terminal_faults() {
+        let signals = Signals::new(4);
+        let total = CAPTURE_QUALITY_INDIVIDUAL_EVENTS + 100;
+        for frame in 0..total {
+            signals
+                .saved_bytes
+                .store(frame as u64 * 4, Ordering::Release);
+            signals
+                .queued_bytes
+                .store(frame as u64 * 4 + 16, Ordering::Release);
+            signals.device_event(cpal::ErrorKind::Xrun.into());
+        }
+        signals.fail(FAULT_WRITER);
+        signals.fail(FAULT_WRITER);
+        let quality = signals.quality().unwrap();
+        assert_eq!(quality.xrun_count, total as u64);
+        assert!(quality.events.len() <= MAX_CAPTURE_QUALITY_EVENTS);
+        assert_eq!(
+            quality
+                .events
+                .iter()
+                .filter(|event| event.kind == CaptureQualityEventKind::Xrun)
+                .map(|event| event.count)
+                .sum::<u64>(),
+            total as u64
+        );
+        let overflow = quality
+            .events
+            .iter()
+            .find(|event| event.kind == CaptureQualityEventKind::Xrun && event.coalesced)
+            .unwrap();
+        assert_eq!(overflow.count, 100);
+        assert_eq!(
+            overflow.first_saved_frame,
+            CAPTURE_QUALITY_INDIVIDUAL_EVENTS as u64
+        );
+        assert_eq!(overflow.last_saved_frame, total as u64 - 1);
+        let failures: Vec<_> = quality
+            .events
+            .iter()
+            .filter(|event| event.kind == CaptureQualityEventKind::WriterFailure)
+            .collect();
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].count, 1);
+        quality.validate().unwrap();
+    }
+
+    #[test]
+    fn concurrent_event_sources_keep_all_observations_with_bounded_storage() {
+        let signals = Arc::new(Signals::new(4));
+        let threads: Vec<_> = (0..4)
+            .map(|_| {
+                let signals = signals.clone();
+                thread::spawn(move || {
+                    for _ in 0..100 {
+                        signals.device_event(cpal::ErrorKind::Xrun.into());
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        let quality = signals.quality().unwrap();
+        assert_eq!(quality.xrun_count, 400);
+        assert_eq!(
+            quality.events.iter().map(|event| event.count).sum::<u64>(),
+            400
+        );
+        assert!(quality.events.len() <= MAX_CAPTURE_QUALITY_EVENTS);
+        quality.validate().unwrap();
+    }
+
+    #[test]
+    fn every_kind_retains_an_overflow_range_inside_the_total_event_bound() {
+        let signals = Signals::new(4);
+        for _ in 0..CAPTURE_QUALITY_INDIVIDUAL_EVENTS {
+            signals.record_event(CaptureQualityEventKind::Xrun);
+        }
+        for index in 0..CAPTURE_QUALITY_EVENT_KINDS {
+            for _ in 0..2 {
+                signals.record_event(event_kind(index as u8).unwrap());
+            }
+        }
+        let quality = signals.quality().unwrap();
+        assert_eq!(quality.events.len(), MAX_CAPTURE_QUALITY_EVENTS);
+        assert_eq!(
+            quality
+                .events
+                .iter()
+                .filter(|event| event.coalesced)
+                .count(),
+            CAPTURE_QUALITY_EVENT_KINDS
+        );
+        assert!(quality
+            .events
+            .iter()
+            .filter(|event| event.coalesced)
+            .all(|event| event.count == 2));
+        quality.validate().unwrap();
+        let mut oversized = quality;
+        oversized.events.push(oversized.events[0].clone());
+        assert!(oversized.validate().is_err());
     }
 
     #[test]
@@ -711,10 +1050,14 @@ mod tests {
         let outcome = capture.finish(CapturePhase::Completed, None).unwrap();
         assert_eq!(outcome.manifest.phase, CapturePhase::Interrupted);
         assert!(outcome.manifest.error.is_some());
+        assert_eq!(
+            outcome.manifest.quality.as_ref().unwrap().events[0].kind,
+            CaptureQualityEventKind::QueueOverflow
+        );
     }
 
     #[test]
-    fn recoverable_device_events_keep_recording_and_persist_quality_at_checkpoints() {
+    fn nonterminal_device_events_keep_recording_and_persist_observations_at_checkpoints() {
         let (_temporary, store, mut capture, mut sink) = setup(4096);
         capture.begin();
         let diagnostic_lock = capture.signals.device_diagnostic.lock().unwrap();
@@ -748,7 +1091,7 @@ mod tests {
             .warning
             .as_ref()
             .unwrap()
-            .contains("누락되었을 수"));
+            .contains("녹음 내용을 들어 확인"));
         capture.resume().unwrap();
         capture.signals.device_event(cpal::ErrorKind::Xrun.into());
         sink.write(&[0.5_f32.to_le_bytes(); 10].concat());
@@ -785,7 +1128,23 @@ mod tests {
             .unwrap()
             .contains("DeviceNotAvailable"));
         assert!(outcome.manifest.warning.is_some());
-        assert_eq!(outcome.manifest.quality.as_ref().unwrap().xrun_count, 1);
+        let quality = outcome.manifest.quality.as_ref().unwrap();
+        assert_eq!(quality.xrun_count, 1);
+        assert_eq!(
+            quality
+                .events
+                .iter()
+                .map(|event| event.kind)
+                .collect::<Vec<_>>(),
+            vec![
+                CaptureQualityEventKind::Xrun,
+                CaptureQualityEventKind::DeviceFailure
+            ]
+        );
+        assert!(quality
+            .events
+            .iter()
+            .all(|event| event.first_saved_frame == 10));
     }
 
     #[test]
@@ -817,7 +1176,7 @@ mod tests {
 
     #[test]
     fn device_diagnostic_is_one_bounded_unicode_line() {
-        let signals = Signals::new();
+        let signals = Signals::new(4);
         signals.fail_device(cpal::Error::with_message(
             cpal::ErrorKind::BackendError,
             format!("first\nsecond\r\n{}", "오류".repeat(512)),
@@ -831,7 +1190,7 @@ mod tests {
 
     #[test]
     fn later_device_event_does_not_replace_writer_failure() {
-        let signals = Signals::new();
+        let signals = Signals::new(4);
         signals.fail(FAULT_WRITER);
         signals.device_event(cpal::Error::with_message(
             cpal::ErrorKind::Xrun,
@@ -902,7 +1261,7 @@ mod tests {
         first.copy_from_slice(&input[..split]);
         second.copy_from_slice(&input[split..]);
         chunk.commit_all();
-        let signals = Signals::new();
+        let signals = Signals::new(4);
         let mut pending = PendingAudio::new(consumer);
         let mut writer = OnceFailWriter {
             file: raw,

@@ -25,7 +25,7 @@ function TemplateSettings({ flow, confirm, beforeLeave }) {
         <label>요약 지침<textarea value={draft.prompt} disabled={state.busy} required spellCheck={false} onChange={event => flow.edit('prompt', event.target.value)} /></label>
         <div className="template-settings-actions">
           {state.document?.builtIn && state.document.customized && <button type="button" className="small" disabled={state.busy} onClick={async () => { if (await confirm('기본값으로 복원할까요?', '이 템플릿의 수정 내용이 기본값으로 바뀝니다.', '복원')) void flow.reset(); }}>기본값으로</button>}
-          {state.document && !state.document.builtIn && <button type="button" className="small icon-only danger" aria-label="템플릿 삭제" title="템플릿 삭제" disabled={state.busy} onClick={async () => { if (await confirm('템플릿을 삭제할까요?', '삭제된 템플릿 목록에서 다시 복원할 수 있습니다.', '삭제', true)) void flow.remove(); }}><Trash2 size={15} aria-hidden="true" /></button>}
+          {state.document && !state.document.builtIn && <button type="button" className="small icon-only danger" aria-label="템플릿 삭제" title="템플릿 삭제" disabled={state.busy} onClick={async () => { if (await confirm('템플릿을 삭제할까요?', '이 템플릿을 삭제합니다.', '삭제', true)) void flow.remove(); }}><Trash2 size={15} aria-hidden="true" /></button>}
           <button type="submit" className="small primary" disabled={state.busy || !draft.name.trim() || !draft.prompt.trim() || (!flow.isDirty() && Boolean(state.document))}>{state.busy ? '처리 중' : '저장'}</button>
         </div>
       </form>
@@ -35,11 +35,11 @@ function TemplateSettings({ flow, confirm, beforeLeave }) {
       <div className="settings-group template-settings-list">
         {state.items.map(item => <div className="template-settings-row" key={item.id}>
           <div className="template-settings-copy"><div className="template-settings-name"><strong>{item.name}</strong>{item.builtIn && <span>기본</span>}{item.customized && <span>수정됨</span>}</div><p title={item.description}>{item.description}</p></div>
-          <button type="button" className="small" disabled={state.busy} aria-label={`${item.name} ${state.deleted ? '복원' : '편집'}`} onClick={() => { void (state.deleted ? flow.restore(item) : flow.open(item.id)); }}>{state.deleted ? '복원' : '편집'}</button>
+          <button type="button" className="small" disabled={state.busy} aria-label={`${item.name} 편집`} onClick={() => { void flow.open(item.id); }}>편집</button>
         </div>)}
       </div>
-      {!state.items.length && !state.busy && !state.error && <p className="template-settings-description">{state.deleted ? '삭제된 템플릿이 없습니다.' : '템플릿이 없습니다.'}</p>}
-      <div className="template-settings-list-actions"><button type="button" className="small" disabled={state.busy} onClick={() => { void flow.showDeleted(!state.deleted); }}>{state.deleted ? '현재 템플릿 보기' : '삭제된 템플릿 보기'}</button><button type="button" className="small" disabled={state.busy} onClick={() => { void reload(); }}>새로고침</button></div>
+      {!state.items.length && !state.busy && !state.error && <p className="template-settings-description">템플릿이 없습니다.</p>}
+      <div className="template-settings-list-actions"><button type="button" className="small" disabled={state.busy} onClick={() => { void reload(); }}>새로고침</button></div>
     </>}
     {state.busy && <p className="notice" role="status"><span className="activity-spinner" aria-hidden="true" /> 처리 중</p>}
     {state.message && <p className="notice" role="status">{state.message}</p>}

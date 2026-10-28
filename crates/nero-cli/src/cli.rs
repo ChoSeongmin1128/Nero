@@ -14,7 +14,7 @@ pub const HELP: &str = "Nero 로컬 CLI
   meetings search QUERY [--folder-id ID | --unfiled] [--from MS|DATE] [--to MS|DATE] [--on DATE] [--timezone IANA] [--offset N] [--limit N]
   meetings get ID [--offset N] [--limit N]
   transcript get ID [--start SECONDS] [--end SECONDS] [--offset N] [--limit N]
-  summary get ID [--offset N] [--limit N]
+  summary get ID [--format txt|md] [--include-citations] [--offset N] [--limit N]
   summary context ID
   summary import ID --file JSON_PATH
   folders list [--offset N] [--limit N]
@@ -26,13 +26,12 @@ pub const HELP: &str = "Nero 로컬 CLI
   folders create NAME --expected-version HASH
   folders rename ID NAME --expected-version HASH
   folders delete ID --expected-version HASH
-  templates list [--deleted]
+  templates list
   templates get ID
   templates create --file JSON_PATH
   templates update ID --expected-revision HASH --file JSON_PATH
   templates delete ID --expected-revision HASH
   templates reset ID --expected-revision HASH
-  templates restore ID --expected-revision HASH
   doctor
   mcp
 
@@ -46,7 +45,9 @@ pub const HELP: &str = "Nero 로컬 CLI
 
 회의/폴더 목록과 본문은 기본 50개, 최대 200개씩 조회합니다.
 meetings get의 메모와 summary get의 본문은 개행을 보존한 최대 4096바이트 텍스트 조각으로 나눕니다.
-offset/limit은 조각 수이며 페이지의 본문을 순서대로 연결하면 원문이 됩니다.
+offset/limit은 조각 수이며 페이지의 본문을 순서대로 연결하면 선택한 형식의 전체 본문이 됩니다.
+요약은 기본 Markdown이며 내부 인용 번호를 제외합니다. --format txt는 일반 텍스트로 변환합니다.
+--include-citations는 현재 사용자가 내부 인용 번호를 명시적으로 요청한 경우에만 사용합니다.
 날짜 필터는 Unix epoch 밀리초 또는 YYYY-MM-DD이며 from 포함, to 미포함입니다.
 문자열 날짜와 --on은 명시 --timezone이 필요합니다. --on과 --from/--to는 함께 쓸 수 없습니다.
 날짜 경계가 없는 날이나 모호한 자정은 거부하며 epoch 경계로 명시할 수 있습니다.
@@ -55,7 +56,7 @@ offset/limit은 조각 수이며 페이지의 본문을 순서대로 연결하�
 doctor는 저장소가 없는 경우에도 설치 상태를 확인합니다.
 mcp는 stdin/stdout으로 MCP를 제공하며 stdout에 진단 문구를 쓰지 않습니다.
 템플릿 JSON은 name/description/prompt 세 문자열입니다. --file -는 stdin을 읽습니다.
-템플릿 삭제는 휴지통으로 이동하며 기본 템플릿은 삭제 대신 reset을 사용합니다.
+사용자 템플릿은 삭제하며 기본 템플릿은 삭제 대신 reset을 사용합니다.
 회의 수정은 실행 중인 Nero에 요청합니다. 파일은 update의 title/notes 또는
 일괄 작업의 expectedVersions와 move의 folderId(null=미분류)를 포함합니다.
 회의/폴더 수정본은 조회 응답의 editVersion이며 sourceVersion과 다릅니다.
@@ -189,6 +190,17 @@ fn parse_query(group: &str, command: &str, remaining: &[&str]) -> Result<Action,
         let (flag, inline) = argument
             .split_once('=')
             .map_or((argument, None), |(flag, value)| (flag, Some(value)));
+        if flag == "--include-citations" {
+            if method != "summary_get"
+                || inline.is_some()
+                || params
+                    .insert("includeCitations".into(), Value::Bool(true))
+                    .is_some()
+            {
+                return Err(QueryError::invalid());
+            }
+            continue;
+        }
         if flag == "--trashed" {
             if method != "meetings_list"
                 || inline.is_some()
@@ -211,6 +223,7 @@ fn parse_query(group: &str, command: &str, remaining: &[&str]) -> Result<Action,
             "--offset" if method != "summary_context" => "offset",
             "--limit" if method != "summary_context" => "limit",
             "--max-bytes" => "maxBytes",
+            "--format" if method == "summary_get" => "format",
             "--expected-source-version" => "expectedSourceVersion",
             "--folder-id" if matches!(method, "meetings_list" | "meetings_search") => "folderId",
             "--from" if matches!(method, "meetings_list" | "meetings_search") => "from",
@@ -229,6 +242,8 @@ fn parse_query(group: &str, command: &str, remaining: &[&str]) -> Result<Action,
             .ok_or_else(QueryError::invalid)?;
         let value = match field {
             "folderId" | "on" | "timezone" | "expectedSourceVersion" => Value::String(value.into()),
+            "format" if matches!(value, "txt" | "md") => Value::String(value.into()),
+            "format" => return Err(QueryError::invalid()),
             "from" | "to" => match value.parse::<u64>() {
                 Ok(number) => json!(number),
                 Err(_) => Value::String(value.into()),
@@ -286,7 +301,6 @@ fn parse_templates(command: &str, remaining: &[&str]) -> Result<Action, QueryErr
         "update" => "template_update",
         "delete" => "template_delete",
         "reset" => "template_reset",
-        "restore" => "template_restore",
         _ => return Err(QueryError::invalid()),
     };
     let mut params = Map::new();
@@ -303,12 +317,6 @@ fn parse_templates(command: &str, remaining: &[&str]) -> Result<Action, QueryErr
         let (flag, inline) = argument
             .split_once('=')
             .map_or((argument, None), |(flag, value)| (flag, Some(value)));
-        if flag == "--deleted" && command == "list" && inline.is_none() {
-            if params.insert("deleted".into(), json!(true)).is_some() {
-                return Err(QueryError::invalid());
-            }
-            continue;
-        }
         let value = inline
             .or_else(|| args.next())
             .filter(|value| !value.is_empty())
@@ -318,7 +326,7 @@ fn parse_templates(command: &str, remaining: &[&str]) -> Result<Action, QueryErr
                 file = Some(PathBuf::from(value))
             }
             "--expected-revision"
-                if matches!(command, "update" | "delete" | "reset" | "restore")
+                if matches!(command, "update" | "delete" | "reset")
                     && !params.contains_key("expectedRevision") =>
             {
                 params.insert("expectedRevision".into(), json!(value));
@@ -326,8 +334,7 @@ fn parse_templates(command: &str, remaining: &[&str]) -> Result<Action, QueryErr
             _ => return Err(QueryError::invalid()),
         }
     }
-    if matches!(command, "update" | "delete" | "reset" | "restore")
-        && !params.contains_key("expectedRevision")
+    if matches!(command, "update" | "delete" | "reset") && !params.contains_key("expectedRevision")
     {
         return Err(QueryError::invalid());
     }
@@ -654,11 +661,12 @@ fn render(method: &str, value: &Value, timezone: &TimeZone) -> String {
         "template_get" => {
             let template = &value["template"];
             output.push_str(&format!(
-                "{}\nID: {}\n수정본: {}\n{}\n\n{}\n",
+                "{}\nID: {}\n수정본: {}\n{}\n\n외부 출력 정책: {}\n\n프롬프트:\n{}\n",
                 text(&template["name"]),
                 text(&template["id"]),
                 text(&template["revision"]),
                 text(&template["description"]),
+                body(&value["outputPolicy"]["instruction"]),
                 body(&template["prompt"])
             ));
         }
@@ -746,9 +754,6 @@ fn render(method: &str, value: &Value, timezone: &TimeZone) -> String {
             if value["summary"].is_null() {
                 output.push_str("저장된 요약이 없습니다.\n");
             } else {
-                if value["summary"]["stale"] == true {
-                    output.push_str("음성 기록 수정 전의 요약입니다.\n\n");
-                }
                 output.push_str(&body(&value["summary"]["text"]));
                 output.push('\n');
             }

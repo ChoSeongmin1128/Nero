@@ -26,7 +26,7 @@ function harness({ load = async () => info, write = async () => {}, connect = as
   let calls = 0;
   const copied = [], timers = new Map();
   const dialog = { opened: [], triggers: [], updates: [], closed: [], open(value, trigger) { dialog.opened.push(value); dialog.triggers.push(trigger); }, update: value => dialog.updates.push(value), close: value => dialog.closed.push(value) };
-  const context = vm.createContext({ byId, state, agentConnection, agentConnectionDialog: dialog, bridge: { agentConnectionInfo: () => { calls += 1; return load(); }, connectAgentClient: connect },
+  const context = vm.createContext({ byId, state, agentConnection, agentConnectionDialog: dialog, bridge: { agentConnectionInfo: force => { calls += 1; return load(force); }, connectAgentClient: connect },
     navigator: { clipboard: { writeText: async text => { copied.push(text); await write(text); } } },
     copyFeedbackTimers: new Map(), setTimeout: callback => { const key = {}; timers.set(key, callback); return key; }, clearTimeout: key => timers.delete(key),
   });
@@ -45,27 +45,26 @@ test('loads only while the agent panel is open and deduplicates renders and tab 
   await app.context.loadAgentConnection();
   app.context.renderAgentConnection();
   assert.equal(app.calls, 1);
-  assert.equal(app.byId('settings-agent-copy-config').disabled, true);
+  assert.equal(app.byId('settings-claude-connect').disabled, true);
   pending.resolve(info);
   await first;
   await app.context.loadAgentConnection();
   assert.equal(app.calls, 1);
-  assert.equal(app.byId('settings-agent-path').textContent, info.executablePath);
-  assert.equal(app.byId('settings-agent-copy-config').disabled, false);
+  assert.equal(app.agentConnection.info.executablePath, info.executablePath);
+  assert.equal(app.byId('settings-claude-connect').disabled, false);
 });
 
 test('missing binaries and rejected requests never expose usable configuration', async () => {
   const missing = harness({ load: async () => ({ ...info, available: false }) });
   await missing.context.loadAgentConnection();
   assert.equal(missing.byId('settings-agent-status').textContent, '연결 도구가 포함되지 않은 빌드입니다.');
-  assert.equal(missing.byId('settings-agent-copy-config').disabled, true);
+  assert.equal(missing.byId('settings-claude-connect').disabled, true);
   assert.equal(missing.byId('settings-agent-path').textContent, '');
-  await missing.context.copyAgentConnection('config');
   assert.equal(missing.copied.length, 0);
   const failed = harness({ load: async () => { throw Error('native unavailable'); } });
   await failed.context.loadAgentConnection();
   assert.match(failed.byId('settings-agent-status').textContent, /불러오지 못했습니다/);
-  assert.equal(failed.byId('settings-agent-copy-cli').disabled, true);
+  assert.equal(failed.byId('settings-claude-connect').disabled, true);
 });
 
 test('late native replies cannot replace a reopened dialog or move focus', async () => {
@@ -82,40 +81,18 @@ test('late native replies cannot replace a reopened dialog or move focus', async
   await app.context.loadAgentConnection();
   old.resolve({ available: false });
   await first;
-  assert.equal(app.byId('settings-agent-copy-config').disabled, false);
+  assert.equal(app.byId('settings-claude-connect').disabled, false);
   assert.equal(app.agentConnection.info, info);
 });
 
-test('copies exact configuration and CLI text with local success and failure feedback', async () => {
-  const app = harness();
-  await app.context.loadAgentConnection();
-  await app.context.copyAgentConnection('config');
-  assert.equal(app.copied[0], JSON.stringify(info.config, null, 2));
-  assert.equal(app.byId('settings-agent-feedback').textContent, '복사됨');
-  assert.equal(app.byId('settings-agent-feedback').classList.contains('soft'), true);
-  await app.context.copyAgentConnection('cli');
-  assert.equal(app.copied[1], info.cliExample);
-  const failed = harness({ write: async () => { throw Error('clipboard denied'); } });
-  await failed.context.loadAgentConnection();
-  failed.byId('settings-agent-feedback').classList.add('soft');
-  await failed.context.copyAgentConnection('config');
-  assert.match(failed.byId('settings-agent-feedback').textContent, /복사하지 못했습니다/);
-  assert.equal(failed.byId('settings-agent-feedback').classList.contains('soft'), false);
+test('manual setup owns configuration instructions and settings has no advanced code controls', async () => {
+  const app = harness(); await app.context.loadAgentConnection();
+  assert.equal(typeof app.context.copyAgentConnection, 'undefined');
+  const html = await readFile(new URL('../src/index.html', import.meta.url), 'utf8');
+  assert.doesNotMatch(html, /settings-agent-details|settings-agent-copy-config|settings-agent-copy-cli|settings-agent-path/);
+  app.context.openAgentConnectionPrompt();
+  assert.equal(app.dialog.opened[0], info);
 });
-
-test('closing during a clipboard request discards late feedback', async () => {
-  const pending = deferred();
-  const app = harness({ write: () => pending.promise });
-  await app.context.loadAgentConnection();
-  const copy = app.context.copyAgentConnection('config');
-  app.byId('settings-dialog').open = false;
-  app.context.resetAgentConnection();
-  pending.resolve();
-  await copy;
-  assert.equal(app.byId('settings-agent-feedback').hidden, true);
-  assert.equal(app.timers.size, 0);
-});
-
 
 test('connection is per client and only native evidence can mark it connected', async () => {
   const pending = deferred();
@@ -153,7 +130,7 @@ for (const client of ['claude', 'codex']) {
 
 for (const [result, label, action] of [
   ['update_required', '업데이트 필요', '업데이트'],
-  ['waiting', '연결 대기', '다시 열기'],
+  ['waiting', '설치됨', '다시 확인'],
   ['connected', '연결됨', '연결'],
 ]) {
   test(`update completion uses native ${result} evidence without inventing success`, async () => {
@@ -214,7 +191,7 @@ for (const client of ['claude', 'codex']) {
 for (const [result, label, action] of [
   ['error', '확인 불가', '다시 확인'],
   ['update_required', '업데이트 필요', '업데이트'],
-  ['waiting', '연결 대기', '다시 열기'],
+  ['waiting', '설치됨', '다시 확인'],
   ['connected', '연결됨', '연결'],
 ]) {
   test(`metadata recheck uses only one read and retains native ${result} state`, async () => {
@@ -378,7 +355,7 @@ test('confirmed connections have no redundant action and a lost connection resto
   await app.context.loadAgentConnection(true);
   assert.equal(app.byId('settings-claude-connect').hidden, false);
   assert.equal(app.byId('settings-claude-connect').disabled, false);
-  assert.equal(app.byId('settings-claude-connect').textContent, '다시 열기');
+  assert.equal(app.byId('settings-claude-connect').textContent, '다시 확인');
   assert.equal(app.byId('settings-claude-status').dataset.state, 'waiting');
 });
 
@@ -410,7 +387,7 @@ test(`closing and reopening a ${initialState} request preserves ownership and re
 test('waiting describes an unconfirmed live connection without assuming approval is pending', async () => {
   const app = harness({ load: async () => ({ ...info, clients: [{ id: 'claude', state: 'waiting', detail: 'Claude에서 Nero 연결을 확인해 주세요.' }, info.clients[1]] }) });
   await app.context.loadAgentConnection();
-  assert.equal(app.byId('settings-claude-status').textContent, '연결 대기');
+  assert.equal(app.byId('settings-claude-status').textContent, '설치됨');
   assert.equal(app.byId('settings-claude-error').textContent, 'Claude에서 Nero 연결을 확인해 주세요.');
   assert.equal(app.byId('settings-claude-connect').disabled, false);
 });
@@ -460,7 +437,6 @@ test('manual connection instructions remain available when native information ca
   assert.equal(app.dialog.opened.length, 1);
   assert.equal(app.dialog.opened[0], null);
   assert.equal(app.dialog.triggers[0], app.byId('settings-agent-manual'));
-  await app.context.copyAgentConnection('config');
   assert.equal(app.copied.length, 0);
 });
 
@@ -473,4 +449,30 @@ test('manual connection obeys parent ownership and closes when leaving settings'
   app.context.openAgentConnectionPrompt();
   app.context.resetAgentConnection();
   assert.equal(app.dialog.closed.at(-1).restoreFocus, false);
+});
+
+for (const state of ['reconnect_required', 'installation_unknown', 'disabled']) {
+  test(`${state} rechecks host evidence without invoking installation`, async () => {
+    let installs = 0; const flags = [];
+    const app = harness({ load: async force => { flags.push(force); return { ...info, clients: [info.clients[0], { ...info.clients[1], state, action: 'recheck' }] }; }, connect: async () => { installs++; return info; } });
+    await app.context.loadAgentConnection();
+    await app.context.connectAgentClient('codex');
+    assert.equal(installs, 0);
+    assert.equal(flags.at(-1), true);
+    assert.equal(app.byId('settings-codex-connect').textContent, '다시 확인');
+    assert.notEqual(app.byId('settings-codex-status').textContent, '업데이트 필요');
+  });
+}
+
+test('cancelled setup with unknown host installation can reopen the connection screen', async () => {
+  const current = { ...info, clients: [info.clients[0], { ...info.clients[1], state: 'installation_unknown', installationState: 'unknown', sessionState: 'inactive', action: 'connect' }] };
+  let opens = 0;
+  const app = harness({ load: async () => current, connect: async () => { opens++; return current; } });
+  await app.context.loadAgentConnection();
+  assert.equal(app.byId('settings-codex-connect').textContent, '연결 화면 열기');
+  await app.context.connectAgentClient('codex');
+  await app.context.connectAgentClient('codex');
+  assert.equal(opens, 2);
+  assert.equal(app.byId('settings-codex-connect').textContent, '연결 화면 열기');
+  assert.notEqual(app.byId('settings-codex-status').textContent, '업데이트 필요');
 });

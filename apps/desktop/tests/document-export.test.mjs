@@ -1,41 +1,95 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
 import test from 'node:test';
-import vm from 'node:vm';
+import { createDocumentActionsFlow } from '../src/document-actions-flow.js';
 
-const source = await readFile(new URL('../src/ui.js', import.meta.url), 'utf8');
-const context = vm.createContext({ GroveUI: { escape: String } });
-const documentExport = vm.runInContext(`(() => { ${source.replace(/^export /gm, '')}; return documentExport; })()`, context);
-const meeting = { title: '분기/검토: 회의' };
-const transcript = { segments: [{ start: 65, text: '오늘 결정은 [보류]입니다.', originalText: '수정 전 원문' }, { start: 3601, text: '다음 회의에서 다시 확인합니다.' }] };
+const setup = (onExport, kind = 'summary') => {
+  const flow = createDocumentActionsFlow({ kind, onExport, schedule: () => 1, cancel() {} });
+  flow.update({ id: 'meeting-a', available: true, busy: false });
+  return flow;
+};
+const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 
-test('TXT export preserves Korean corrections, times and line breaks without exposing the model original', () => {
-  const output = documentExport(meeting, transcript, null, 'transcript', 'txt');
-  assert.equal(output.name, '분기_검토_ 회의-음성 기록.txt');
-  assert.match(output.text, /\[01:05\] 오늘 결정은 \[보류\]입니다\./);
-  assert.match(output.text, /\[1:00:01\]/);
-  assert.doesNotMatch(output.text, /수정 전 원문/);
+test('TXT and Markdown copies and file exports omit citations by default', async () => {
+  const calls = [];
+  const flow = setup(async (...args) => { calls.push(args); });
+  for (const copy of [true, false]) for (const format of ['txt', 'md']) {
+    flow.open(copy ? 'copy' : 'export');
+    await flow.perform(format, copy);
+  }
+  assert.deepEqual(calls, [
+    ['summary', 'txt', true, false, 'meeting-a'], ['summary', 'md', true, false, 'meeting-a'],
+    ['summary', 'txt', false, false, 'meeting-a'], ['summary', 'md', false, false, 'meeting-a'],
+  ]);
 });
 
-test('Markdown export keeps utterance text literal and summary export uses its own content', () => {
-  const output = documentExport(meeting, transcript, null, 'transcript', 'md');
-  assert.match(output.text, /^# 분기\/검토: 회의\n\n## 음성 기록/);
-  assert.ok(output.text.includes('\\[보류\\]'));
-  const summary = documentExport(meeting, transcript, { document: { text: '## 결정\n보류 [1]' }, stale: true }, 'summary', 'md');
-  assert.match(summary.name, /회의록\.md$/);
-  assert.match(summary.text, /이전 내용으로 만든 요약/);
-  assert.match(summary.text, /## 결정\n보류 \[1\]/);
-  assert.doesNotMatch(summary.text, /다음 회의에서/);
+test('citation opt-in applies only to this meeting and never to transcript text', async () => {
+  const calls = [];
+  const flow = setup(async (...args) => { calls.push(args); });
+  flow.include(true); await flow.perform('md', true);
+  flow.update({ id: 'meeting-b', available: true, busy: false });
+  await flow.perform('md', true);
+  const transcript = setup(async (...args) => { calls.push(args); }, 'transcript');
+  transcript.include(true); await transcript.perform('txt', true);
+  assert.deepEqual(calls.map(call => [call[0], call[3], call[4]]), [['summary', true, 'meeting-a'], ['summary', false, 'meeting-b'], ['transcript', false, 'meeting-a']]);
 });
 
-test('empty results and unsupported formats fail before a save dialog is requested', () => {
-  assert.throws(() => documentExport(meeting, null, null, 'transcript', 'txt'), /음성 기록이 없습니다/);
-  assert.throws(() => documentExport(meeting, null, null, 'summary', 'md'), /요약이 없습니다/);
-  assert.throws(() => documentExport(meeting, transcript, null, 'transcript', 'html'), /지원하지 않는/);
+test('duplicate clicks are blocked and a clipboard failure retains the menu for retry', async () => {
+  const pending = deferred(), calls = [];
+  const flow = setup(async (...args) => { calls.push(args); return pending.promise; });
+  flow.open('copy'); const action = flow.perform('txt', true);
+  await flow.perform('md', true); assert.equal(calls.length, 1);
+  pending.reject(Error('복사 권한을 확인해 주세요.')); await action;
+  assert.equal(flow.getSnapshot().pending, false);
+  assert.equal(flow.getSnapshot().open, 'copy');
+  assert.match(flow.getSnapshot().error, /권한/);
+  assert.equal(flow.getSnapshot().copied, false);
 });
 
-test('voice export includes the current speaker names without exposing original model labels', () => {
-  const doc = { speakers: [{id:'S1',name:'진행자 [수정]'}], segments:[{start:10,speakerId:'S1',text:'현재 내용',originalText:'수정 전'}] };
-  assert.match(documentExport(meeting,doc,null,'transcript','txt').text,/\[00:10 진행자 \[수정\]\] 현재 내용/);
-  assert.ok(documentExport(meeting,doc,null,'transcript','md').text.includes('진행자 \\[수정\\]'));
+test('changing meetings ignores a late response and resets citation choice', async () => {
+  const pending = deferred(), flow = setup(() => pending.promise);
+  flow.include(true); flow.open('copy'); const action = flow.perform('md', true);
+  flow.update({ id: 'meeting-b', available: true, busy: false });
+  pending.resolve(true); await action;
+  assert.deepEqual(flow.getSnapshot(), { open: null, pending: false, copied: false, includeCitations: false, error: '' });
+});
+
+test('unavailable or processing documents cannot start copy/export', async () => {
+  let calls = 0;
+  const flow = setup(async () => { calls++; });
+  for (const context of [{ id: 'a', available: false, busy: false }, { id: 'a', available: true, busy: true }]) {
+    flow.update(context); flow.open('copy'); await flow.perform('txt', true);
+    assert.equal(flow.getSnapshot().open, null);
+  }
+  assert.equal(calls, 0);
+});
+
+
+test('copy popover exposes both formats, keeps citations opt-in, and Escape restores focus', async t => {
+  const { build } = await import('esbuild');
+  const { Window } = await import('happy-dom');
+  const { fileURLToPath } = await import('node:url');
+  const app = fileURLToPath(new URL('../', import.meta.url));
+  const bundled = await build({ entryPoints: [app + 'src/document-actions.jsx'], bundle: true, write: false, format: 'iife', globalName: 'NeroDocumentActions', nodePaths: [app + 'node_modules'], define: { 'process.env.NODE_ENV': '"production"' }, jsx: 'automatic' });
+  const window = new Window({ url: 'http://nero.test', settings: { enableJavaScriptEvaluation: true, suppressInsecureJavaScriptEnvironmentWarning: true } });
+  t.after(() => window.happyDOM.abort());
+  window.document.body.innerHTML = '<div id="actions"></div>';
+  window.eval(bundled.outputFiles[0].text);
+  const calls = [];
+  const actions = window.NeroDocumentActions.mountDocumentActions({ container: window.document.getElementById('actions'), kind: 'summary', onExport: async (...args) => { calls.push(args); return true; } });
+  const wait = async predicate => { for (let attempt=0;attempt<100;attempt++) { if(predicate()) return; await new Promise(resolve=>setTimeout(resolve,5)); } assert.fail('Expected document action state was not rendered'); };
+  actions.update({ id: 'meeting-a', available: true, busy: false });
+  await wait(() => window.document.querySelector('[aria-label="요약 복사"]'));
+  const trigger = window.document.querySelector('[aria-label="요약 복사"]');
+  trigger.focus(); trigger.click();
+  await wait(() => window.document.querySelector('[data-slot="popover-content"]'));
+  const buttons = [...window.document.querySelectorAll('[data-slot="popover-content"] button')];
+  assert.deepEqual(buttons.map(button=>button.textContent), ['텍스트로 복사', '마크다운으로 복사']);
+  assert.equal(window.document.querySelector('[data-slot="popover-content"] input').checked, false);
+  window.document.activeElement.dispatchEvent(new window.KeyboardEvent('keydown', { key:'Escape', code:'Escape', bubbles:true }));
+  await wait(() => trigger.getAttribute('aria-expanded') === 'false');
+  await wait(() => window.document.activeElement === trigger);
+  trigger.click(); await wait(() => trigger.getAttribute('aria-expanded') === 'true');
+  [...window.document.querySelectorAll('[data-slot="popover-content"] button')].find(button=>button.textContent === '마크다운으로 복사').click();
+  await wait(() => calls.length === 1);
+  assert.deepEqual(calls[0], ['summary','md',true,false,'meeting-a']);
 });

@@ -1,3 +1,4 @@
+export * from './calendar-bridge.js';
 import { invoke, convertFileSrc, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 
@@ -17,7 +18,7 @@ function accept(snapshot) {
 }
 
 export const readSnapshot = () => call('read_snapshot').then(accept);
-export const agentConnectionInfo = () => call('agent_connection_info');
+export const agentConnectionInfo = (forceHostRefresh = false) => call('agent_connection_info', { forceHostRefresh });
 export const connectAgentClient = (client) => call('agent_connect_client', { client });
 export const createMeeting = (title, notes = '') => call('create_meeting', { title, notes });
 export const updateMeeting = (id, title, notes) => call('update_meeting', { id, title, notes });
@@ -37,6 +38,7 @@ export const openMeeting = (meetingId, error = null) => call('open_meeting', { m
 export const requestQuit = (sessionId = null) => call('request_quit', { sessionId });
 export const audioUrl = async (meetingId) => convertFileSrc(await call('audio_file', { meetingId }));
 export const exportText = (suggestedName, contents) => call('export_text', { suggestedName, contents });
+export const exportDocument = (meetingId, kind, format, includeCitations = false) => call('export_document', { meetingId, kind, format, includeCitations });
 
 export async function subscribeSnapshots(callback) {
   if (!isTauri()) return () => {};
@@ -103,13 +105,12 @@ export const saveSpeakers = (meetingId, expected, speakers, assignments) => call
 export const readTranscriptHistory = (meetingId) => call('read_transcript_history', { meetingId });
 export const restoreTranscript = (meetingId, expected, target) => call('restore_transcript', { meetingId, expected, target });
 
-export const listTemplates = (deleted = false) => call('list_templates', { deleted });
+export const listTemplates = () => call('list_templates');
 export const getTemplate = id => call('get_template', { id });
 export const createTemplate = content => call('create_template', { content });
 export const updateTemplate = (id, expectedRevision, content) => call('update_template', { id, expectedRevision, content });
 export const resetTemplate = (id, expectedRevision) => call('reset_template', { id, expectedRevision });
 export const deleteTemplate = (id, expectedRevision) => call('delete_template', { id, expectedRevision });
-export const restoreTemplate = (id, expectedRevision) => call('restore_template', { id, expectedRevision });
 export const agentWriteReady = (requestId, error = null) => call('agent_write_ready', { requestId, error });
 export async function subscribeAgentWriteRequest(callback) {
   if (!isTauri()) return () => {};

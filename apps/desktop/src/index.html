@@ -57,7 +57,7 @@
         <section id="welcome" class="welcome" hidden><div class="welcome-icon" aria-hidden="true"></div><h1>회의를 시작하세요</h1><p id="welcome-message">새 회의를 만들어 녹음하고 메모를 남기세요.</p><button id="welcome-create" class="primary with-icon" type="button" disabled>새 회의</button></section>
         <section id="meeting-detail" class="meeting-detail" tabindex="-1" hidden aria-label="회의 내용">
           <div class="detail-primary">
-          <header class="detail-header"><div class="detail-library-actions"><div class="detail-return"><button id="library-back" type="button" class="quiet small">회의 목록</button><span class="detail-path-divider" aria-hidden="true">/</span><span class="sr-only">보관 폴더: </span><span id="meeting-folder-context" class="detail-folder-context"></span></div><div class="row"><button id="detail-transcript-open" type="button" class="quiet small with-icon" aria-controls="detail-inspector" aria-expanded="false"><span data-detail-icon="notebook-tabs" aria-hidden="true"></span><span>음성 기록</span></button><button id="detail-notes-open" type="button" class="quiet small with-icon" aria-controls="detail-inspector" aria-expanded="false"><span data-detail-icon="notebook-pen" aria-hidden="true"></span><span>메모</span></button><button id="document-search-toggle" type="button" class="quiet small icon" aria-expanded="false" aria-controls="document-search" data-ui-icon="search" aria-label="내용 검색" title="내용 검색"><span class="sr-only">내용 검색</span></button><button id="copy-summary" type="button" class="small quiet icon" disabled data-ui-icon="copy" aria-label="요약 복사" title="요약 복사"><span class="sr-only">요약 복사</span></button><details id="summary-export-menu" class="document-export document-export--icon" hidden><summary aria-label="요약 내보내기" title="요약 내보내기"><span data-detail-icon="download" aria-hidden="true"></span><span class="sr-only">요약 내보내기</span></summary><div><button type="button" data-export-format="txt">텍스트 (.txt)</button><button type="button" data-export-format="md">Markdown (.md)</button></div></details><details class="meeting-menu detail-more" data-meeting-menu><summary aria-label="회의 더보기" title="회의 더보기"><span data-detail-icon="ellipsis" aria-hidden="true"></span></summary><div class="action-menu"><button id="meeting-move" type="button" class="quiet small">폴더 이동</button><button id="meeting-trash" type="button" class="quiet small danger-text">휴지통으로 이동</button></div></details></div></div>
+          <header class="detail-header"><div class="detail-library-actions"><div class="detail-return"><button id="library-back" type="button" class="quiet small">회의 목록</button><span class="detail-path-divider" aria-hidden="true">/</span><span class="sr-only">보관 폴더: </span><span id="meeting-folder-context" class="detail-folder-context"></span></div><div class="row"><button id="detail-transcript-open" type="button" class="quiet small with-icon" aria-controls="detail-inspector" aria-expanded="false"><span data-detail-icon="notebook-tabs" aria-hidden="true"></span><span>음성 기록</span></button><button id="detail-notes-open" type="button" class="quiet small with-icon" aria-controls="detail-inspector" aria-expanded="false"><span data-detail-icon="notebook-pen" aria-hidden="true"></span><span>메모</span></button><button id="document-search-toggle" type="button" class="quiet small icon" aria-expanded="false" aria-controls="document-search" data-ui-icon="search" aria-label="내용 검색" title="내용 검색"><span class="sr-only">내용 검색</span></button><span id="summary-document-actions"></span><details class="meeting-menu detail-more" data-meeting-menu><summary aria-label="회의 더보기" title="회의 더보기"><span data-detail-icon="ellipsis" aria-hidden="true"></span></summary><div class="action-menu"><button id="meeting-move" type="button" class="quiet small">폴더 이동</button><button id="meeting-trash" type="button" class="quiet small danger-text">휴지통으로 이동</button></div></details></div></div>
             <div class="detail-title-row"><label class="sr-only" for="meeting-title">회의 제목</label><input id="meeting-title" class="text-input text-input--title meeting-title" type="text" placeholder="회의 제목" maxlength="200" autocomplete="off"><span id="meeting-status"></span></div>
             <div class="detail-context"><div class="meeting-day-field"><label class="sr-only" for="meeting-day">회의 날짜</label><input id="meeting-day" data-field="meeting-day" type="date"></div><div class="meeting-timestamps muted type-caption"><span id="recorded-at" hidden></span></div><div class="detail-actions"><span id="save-spinner" class="activity-spinner" aria-hidden="true" hidden></span><span id="save-status" class="muted type-caption" role="status" hidden></span></div></div>
             <span id="meeting-date-message" class="meeting-date-message type-caption" role="status" hidden></span>
@@ -65,6 +65,7 @@
           <section class="recording-section" aria-label="녹음">
             <div class="recording-toolbar"><div class="recording-heading"><span id="recording-icon" aria-hidden="true"></span><h2>녹음</h2><span id="recording-time" class="type-timer" hidden>00:00</span></div><div class="recording-actions"><div id="recording-controls" class="recording-controls"></div></div></div>
             <p id="recording-message" class="muted type-caption" hidden></p>
+            <div id="recording-quality" class="recording-quality" hidden></div>
             <div id="audio-region" class="audio-region" hidden>
               <audio id="audio-player" preload="metadata" aria-label="회의 녹음" hidden disableRemotePlayback></audio>
               <div class="audio-controls" role="group" aria-label="녹음 재생">
@@ -98,7 +99,7 @@
             <p id="inspector-audio-status" class="inspector-audio-status muted type-caption" role="status" hidden></p>
             <div id="summary-evidence" class="summary-evidence" hidden></div>
             <section id="transcript-section" class="transcript-section detail-panel" role="region" aria-label="음성 기록" tabindex="0" hidden>
-              <div class="section-heading transcript-heading detail-panel-toolbar"><h2 class="sr-only">음성 기록</h2><div class="row"><button id="speakers-button" type="button" class="small quiet" hidden>화자 편집</button><button id="transcribe" type="button" class="small primary" disabled>텍스트로 변환</button><button id="transcript-history" type="button" class="small quiet" hidden>이전 기록</button><button id="save-transcript" type="button" class="small" disabled>수정 저장</button><button id="copy-transcript" type="button" class="small quiet icon" hidden data-ui-icon="copy" aria-label="음성 기록 복사" title="음성 기록 복사"><span class="sr-only">음성 기록 복사</span></button><details id="transcript-export-menu" class="document-export" hidden><summary>내보내기</summary><div><button type="button" data-export-format="txt">텍스트 (.txt)</button><button type="button" data-export-format="md">Markdown (.md)</button></div></details></div></div>
+              <div class="section-heading transcript-heading detail-panel-toolbar"><h2 class="sr-only">음성 기록</h2><div class="row"><button id="speakers-button" type="button" class="small quiet" hidden>화자 편집</button><button id="transcribe" type="button" class="small primary" disabled>텍스트로 변환</button><button id="transcript-history" type="button" class="small quiet" hidden>이전 기록</button><button id="save-transcript" type="button" class="small" disabled>수정 저장</button><span id="transcript-document-actions"></span></div></div>
               <div id="transcript-scroll" class="transcript-scroll" tabindex="0"><p id="transcript-message" class="muted type-caption"></p><div id="transcript-rows"></div></div>
             </section>
             <section id="notes-section" class="notes-section detail-panel" role="region" aria-label="메모" tabindex="0" hidden><div class="section-heading"><h2 class="sr-only"><label for="meeting-notes">메모</label></h2></div><div id="notes-search-preview" class="notes-search-preview" role="region" tabindex="0" aria-label="메모 검색 결과" hidden></div><textarea id="meeting-notes" class="text-input" placeholder="안건이나 기억할 내용을 적어 두세요." spellcheck="false"></textarea></section>
@@ -111,10 +112,9 @@
       <header class="settings-header"><h2 id="settings-title">설정</h2><button id="settings-close" class="quiet small icon" type="button" data-ui-icon="x" aria-label="설정 닫기" title="설정 닫기"><span class="sr-only">설정 닫기</span></button></header>
       <div class="app-settings-body">
         <nav class="app-settings-tabs settings-navigation" role="tablist" aria-label="설정 분류" aria-orientation="vertical">
-          <button id="settings-appearance-tab" type="button" role="tab" data-settings-panel="appearance" aria-selected="true" aria-controls="settings-appearance-panel">화면</button>
+          <button id="settings-appearance-tab" type="button" role="tab" data-settings-panel="appearance" aria-selected="true" aria-controls="settings-appearance-panel">일반</button>
           <button id="settings-recording-tab" type="button" role="tab" data-settings-panel="recording" aria-selected="false" aria-controls="settings-recording-panel" tabindex="-1">녹음</button>
-          <button id="settings-models-tab" type="button" role="tab" data-settings-panel="models" aria-selected="false" aria-controls="settings-models-panel" tabindex="-1">모델</button>
-          <button id="settings-agent-tab" type="button" role="tab" data-settings-panel="agent" aria-selected="false" aria-controls="settings-agent-panel" tabindex="-1">연결</button>
+          <button id="settings-agent-tab" type="button" role="tab" data-settings-panel="agent" aria-selected="false" aria-controls="settings-agent-panel" tabindex="-1">연동</button>
           <button id="settings-templates-tab" type="button" role="tab" data-settings-panel="templates" aria-selected="false" aria-controls="settings-templates-panel" tabindex="-1">요약 템플릿</button>
         </nav>
         <div class="app-settings-content">
@@ -128,12 +128,12 @@
             </div>
             </div>
             <div class="settings-group settings-recording-options">
-            <label class="setup-choice settings-row"><span>녹음 제어창 자동 표시</span><input id="auto-recorder" type="checkbox" checked></label>
+            <label class="setup-choice settings-row"><span>녹음 중 제어창 항상 표시</span><input id="auto-recorder" type="checkbox" checked></label>
             <label id="settings-terminology-row" class="setup-choice settings-row" hidden><span>용어 자동 정리</span><input id="terminology-enabled" type="checkbox" disabled></label>
             </div>
           </section>
           <section id="settings-appearance-panel" role="tabpanel" aria-labelledby="settings-appearance-tab">
-            <h3 class="settings-panel-title">화면</h3>
+            <h3 class="settings-panel-title">일반</h3>
             <fieldset class="appearance-options">
               <legend>밝기</legend>
               <div class="brightness-options">
@@ -171,14 +171,16 @@
                 </label>
               </div>
             </fieldset>
-          </section>
-          <section id="settings-models-panel" role="tabpanel" aria-labelledby="settings-models-tab" hidden>
-            <h3 class="settings-panel-title">모델</h3>
-            <dl class="settings-model-status settings-group"><div class="settings-row"><dt>음성 인식</dt><dd id="settings-speech-state"></dd></div><div class="settings-row"><dt>회의 요약</dt><dd id="settings-summary-state"></dd></div></dl>
-            <div class="settings-model-actions"><button id="models" type="button" class="small">모델 관리</button></div>
+            <section class="settings-feature-section" aria-labelledby="settings-features-title">
+              <h4 id="settings-features-title" class="settings-subtitle">추가 기능</h4>
+              <div class="settings-group"><div class="settings-row"><span>회의 요약</span><span id="settings-summary-control" class="settings-feature-control" tabindex="-1"><span id="settings-summary-state" class="muted type-caption"></span><button id="models" type="button" class="small">추가</button></span></div></div>
+              <p id="settings-summary-error" class="notice type-caption" role="alert" hidden></p>
+              <div id="settings-summary-progress" class="settings-feature-progress" hidden><progress id="settings-feature-progress" aria-label="회의 요약 기능 다운로드"></progress><span id="settings-feature-stage" class="muted type-caption" role="status"></span><button id="settings-feature-cancel" type="button" class="quiet small">취소</button></div>
+            </section>
           </section>
           <section id="settings-agent-panel" role="tabpanel" aria-labelledby="settings-agent-tab" hidden>
-            <h3 class="settings-panel-title">연결</h3>
+            <h3 class="settings-panel-title">연동</h3>
+            <h4 class="settings-subtitle">AI 에이전트</h4>
             <div class="settings-group settings-clients">
             <div class="settings-client-row">
               <span class="settings-client-name">Claude</span>
@@ -196,17 +198,7 @@
             </div>
             </div>
             <p id="settings-agent-status" class="notice" role="status" hidden></p>
-            <details id="settings-agent-details" class="settings-agent-advanced" hidden>
-              <summary><span>고급 설정</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></summary>
-              <div class="settings-agent-advanced-body">
-              <dl class="settings-agent-details"><dt>실행 파일</dt><dd id="settings-agent-path"></dd></dl>
-              <button id="settings-agent-copy-config" type="button" class="small" disabled>연결 설정 복사</button>
-              <p id="settings-agent-cli-label" class="app-settings-label settings-agent-cli-label">CLI 실행 예시</p>
-              <pre id="settings-agent-cli" class="settings-agent-code" aria-labelledby="settings-agent-cli-label"></pre>
-              <button id="settings-agent-copy-cli" type="button" class="small" disabled>실행 예시 복사</button>
-              </div>
-            </details>
-            <p id="settings-agent-feedback" class="notice app-settings-message" role="status" hidden></p>
+            <div id="calendar-settings"></div>
           </section>
           <section id="settings-templates-panel" role="tabpanel" aria-labelledby="settings-templates-tab" hidden></section>
           <p id="settings-message" class="notice app-settings-message" role="status" hidden></p>

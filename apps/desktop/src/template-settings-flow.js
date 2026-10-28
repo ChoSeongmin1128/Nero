@@ -3,7 +3,7 @@ const emptyContent = () => ({ name: '', description: '', prompt: '' });
 
 export function createTemplateSettingsFlow({ bridge }) {
   let epoch = 0;
-  let state = { active: false, items: [], deleted: false, document: null, draft: null, busy: false, error: '', message: '' };
+  let state = { active: false, items: [], document: null, draft: null, busy: false, error: '', message: '' };
   const listeners = new Set();
   const publish = changes => { state = { ...state, ...changes }; listeners.forEach(listener => listener()); };
   const dirty = () => state.draft !== null && JSON.stringify(state.draft) !== JSON.stringify(state.document ? contentOf(state.document) : emptyContent());
@@ -33,12 +33,7 @@ export function createTemplateSettingsFlow({ bridge }) {
     },
     reload() {
       if (state.document) return run(() => bridge.getTemplate(state.document.id), document => ({ document, draft: contentOf(document) }));
-      return run(() => bridge.listTemplates(state.deleted), items => ({ items: items.filter(item => Boolean(item.deleted) === state.deleted), draft: null }));
-    },
-    showDeleted(deleted) {
-      if (state.busy || dirty()) return;
-      publish({ deleted, document: null, draft: null });
-      return flow.reload();
+      return run(() => bridge.listTemplates(), items => ({ items, draft: null }));
     },
     open(id) {
       if (dirty()) return;
@@ -72,11 +67,6 @@ export function createTemplateSettingsFlow({ bridge }) {
       const removed = await run(() => bridge.deleteTemplate(document.id, document.revision), () => ({ document: null, draft: null }));
       if (removed) await flow.reload();
       return removed;
-    },
-    async restore(item) {
-      const restored = await run(() => bridge.restoreTemplate(item.id, item.revision), () => ({}));
-      if (restored) await flow.reload();
-      return restored;
     },
     dispose() { epoch += 1; listeners.clear(); state = { ...state, active: false }; },
   };

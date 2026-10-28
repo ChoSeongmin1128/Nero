@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use uuid::Uuid;
 
@@ -67,7 +67,6 @@ pub struct TemplateSummary {
     pub built_in: bool,
     pub customized: bool,
     pub default_revision: Option<String>,
-    pub deleted: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -81,7 +80,6 @@ pub struct PromptTemplate {
     pub built_in: bool,
     pub customized: bool,
     pub default_revision: Option<String>,
-    pub deleted: bool,
 }
 
 impl PromptTemplate {
@@ -94,7 +92,6 @@ impl PromptTemplate {
             built_in: self.built_in,
             customized: self.customized,
             default_revision: self.default_revision.clone(),
-            deleted: self.deleted,
         }
     }
 
@@ -138,7 +135,8 @@ struct Defaults {
 struct StoredTemplate {
     content: Option<TemplateContent>,
     nonce: String,
-    deleted: bool,
+    #[serde(rename = "deleted", default, skip_serializing_if = "is_false")]
+    legacy_deleted: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -157,13 +155,6 @@ impl Default for Catalog {
     }
 }
 
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct History {
-    version: u32,
-    template: PromptTemplate,
-}
-
 pub struct TemplateStore {
     root: PathBuf,
     defaults: String,
@@ -178,31 +169,18 @@ impl TemplateStore {
     }
 
     pub fn list(&self) -> Result<Vec<TemplateSummary>> {
-        self.list_state(false)
-    }
-
-    pub fn list_deleted(&self) -> Result<Vec<TemplateSummary>> {
-        self.list_state(true)
-    }
-
-    fn list_state(&self, deleted: bool) -> Result<Vec<TemplateSummary>> {
         let builtins = self.builtins()?;
         let catalog = self.read_catalog(&builtins)?;
         let mut values = Vec::new();
-        if !deleted {
-            for builtin in &builtins {
-                values.push(self.effective(&catalog, &builtins, &builtin.id)?.summary());
-            }
+        for builtin in &builtins {
+            values.push(self.effective(&catalog, &builtins, &builtin.id)?.summary());
         }
         let mut custom = Vec::new();
-        for id in catalog.templates.keys() {
-            if builtins.iter().any(|builtin| &builtin.id == id) {
+        for (id, stored) in &catalog.templates {
+            if stored.legacy_deleted || builtins.iter().any(|builtin| &builtin.id == id) {
                 continue;
             }
-            let value = self.effective(&catalog, &builtins, id)?;
-            if value.deleted == deleted {
-                custom.push(value.summary());
-            }
+            custom.push(self.effective(&catalog, &builtins, id)?.summary());
         }
         custom.sort_by(|a, b| a.name.cmp(&b.name).then(a.id.cmp(&b.id)));
         values.extend(custom);
@@ -212,11 +190,8 @@ impl TemplateStore {
     pub fn get(&self, id: &str) -> Result<PromptTemplate> {
         let builtins = self.builtins()?;
         validate_id(id, &builtins)?;
-        let value = self.effective(&self.read_catalog(&builtins)?, &builtins, id)?;
-        if value.deleted {
-            return Err(TemplateError::NotFound);
-        }
-        Ok(value)
+        let catalog = self.read_catalog(&builtins)?;
+        self.effective(&catalog, &builtins, id)
     }
 
     pub fn create(&self, content: TemplateContent) -> Result<PromptTemplate> {
@@ -228,10 +203,10 @@ impl TemplateStore {
                 StoredTemplate {
                     content: Some(content),
                     nonce: Uuid::new_v4().to_string(),
-                    deleted: false,
+                    legacy_deleted: false,
                 },
             );
-            Ok((self.effective(catalog, builtins, &id)?, None))
+            self.effective(catalog, builtins, &id)
         })
     }
 
@@ -248,21 +223,18 @@ impl TemplateStore {
             validate_id(id, builtins)?;
             let previous = self.effective(catalog, builtins, id)?;
             require_revision(&previous, expected_revision)?;
-            if previous.deleted {
-                return Err(TemplateError::NotFound);
-            }
             if previous.content() == content {
-                return Ok((previous, None));
+                return Ok(previous);
             }
             catalog.templates.insert(
                 id.into(),
                 StoredTemplate {
                     content: Some(content),
                     nonce: Uuid::new_v4().to_string(),
-                    deleted: false,
+                    legacy_deleted: false,
                 },
             );
-            Ok((self.effective(catalog, builtins, id)?, Some(previous)))
+            self.effective(catalog, builtins, id)
         })
     }
 
@@ -277,21 +249,21 @@ impl TemplateStore {
                 return Err(TemplateError::InvalidInput);
             }
             if !previous.customized {
-                return Ok((previous, None));
+                return Ok(previous);
             }
             catalog.templates.insert(
                 id.into(),
                 StoredTemplate {
                     content: None,
                     nonce: Uuid::new_v4().to_string(),
-                    deleted: false,
+                    legacy_deleted: false,
                 },
             );
-            Ok((self.effective(catalog, builtins, id)?, Some(previous)))
+            self.effective(catalog, builtins, id)
         })
     }
 
-    pub fn delete(&self, id: &str, expected_revision: &str) -> Result<TemplateSummary> {
+    pub fn delete(&self, id: &str, expected_revision: &str) -> Result<()> {
         validate_revision(expected_revision)?;
         validate_id(id, &self.builtins()?)?;
         self.mutate(|catalog, builtins| {
@@ -301,42 +273,11 @@ impl TemplateStore {
             if previous.built_in {
                 return Err(TemplateError::BuiltinProtected);
             }
-            if previous.deleted {
-                return Ok((previous.summary(), None));
-            }
-            let stored = catalog
+            catalog
                 .templates
-                .get_mut(id)
+                .remove(id)
                 .ok_or(TemplateError::NotFound)?;
-            stored.deleted = true;
-            stored.nonce = Uuid::new_v4().to_string();
-            Ok((
-                self.effective(catalog, builtins, id)?.summary(),
-                Some(previous),
-            ))
-        })
-    }
-
-    pub fn restore(&self, id: &str, expected_revision: &str) -> Result<PromptTemplate> {
-        validate_revision(expected_revision)?;
-        validate_id(id, &self.builtins()?)?;
-        self.mutate(|catalog, builtins| {
-            validate_id(id, builtins)?;
-            let previous = self.effective(catalog, builtins, id)?;
-            require_revision(&previous, expected_revision)?;
-            if previous.built_in {
-                return Err(TemplateError::InvalidInput);
-            }
-            if !previous.deleted {
-                return Ok((previous, None));
-            }
-            let stored = catalog
-                .templates
-                .get_mut(id)
-                .ok_or(TemplateError::NotFound)?;
-            stored.deleted = false;
-            stored.nonce = Uuid::new_v4().to_string();
-            Ok((self.effective(catalog, builtins, id)?, Some(previous)))
+            Ok(())
         })
     }
 
@@ -388,7 +329,7 @@ impl TemplateStore {
                     .as_ref()
                     .is_some_and(|content| validate_content(content).is_err())
                 || value.content.is_none() && !builtins.iter().any(|builtin| &builtin.id == id)
-                || value.deleted && builtins.iter().any(|builtin| &builtin.id == id)
+                || value.legacy_deleted && builtins.iter().any(|builtin| &builtin.id == id)
             {
                 return Err(TemplateError::InvalidDocument);
             }
@@ -404,18 +345,20 @@ impl TemplateStore {
     ) -> Result<PromptTemplate> {
         let builtin = builtins.iter().find(|builtin| builtin.id == id);
         let stored = catalog.templates.get(id);
+        if stored.is_some_and(|value| value.legacy_deleted) {
+            return Err(TemplateError::NotFound);
+        }
         let base = builtin.map(Builtin::content);
         let content = stored
             .and_then(|value| value.content.clone())
             .or_else(|| base.clone())
             .ok_or(TemplateError::NotFound)?;
         let default_revision = base.as_ref().map(|content| digest(&(id, content)));
-        let deleted = stored.is_some_and(|value| value.deleted);
         let revision = digest(&(
             id,
             &content,
             &default_revision,
-            deleted,
+            false,
             stored.map(|value| value.nonce.as_str()),
         ));
         let customized = base.as_ref().is_some_and(|base| base != &content);
@@ -428,26 +371,19 @@ impl TemplateStore {
             built_in: builtin.is_some(),
             customized,
             default_revision,
-            deleted,
         })
     }
 
-    fn mutate<T>(
-        &self,
-        action: impl FnOnce(&mut Catalog, &[Builtin]) -> Result<(T, Option<PromptTemplate>)>,
-    ) -> Result<T> {
+    fn mutate<T>(&self, action: impl FnOnce(&mut Catalog, &[Builtin]) -> Result<T>) -> Result<T> {
         let builtins = self.builtins()?;
         let _lock = self.lock()?;
         let original = self.read_catalog(&builtins)?;
         let mut catalog = original.clone();
-        let (result, previous) = action(&mut catalog, &builtins)?;
+        let result = action(&mut catalog, &builtins)?;
         if catalog != original {
             let bytes = serde_json::to_vec(&catalog).map_err(|_| TemplateError::InvalidDocument)?;
             if bytes.len() + 1 > MAX_DOCUMENT_BYTES {
                 return Err(TemplateError::InvalidInput);
-            }
-            if let Some(previous) = previous {
-                self.archive(previous)?;
             }
             self.validate_root()?;
             store::write_json(&self.root, Path::new("templates/catalog.json"), &catalog)?;
@@ -489,37 +425,10 @@ impl TemplateStore {
         validate_optional_file(&path)?;
         Ok(file)
     }
+}
 
-    fn archive(&self, template: PromptTemplate) -> Result<()> {
-        let folder = self.root.join("templates/history");
-        validate_directory(&folder)?;
-        store::ensure_directory(&folder)?;
-        let relative =
-            Path::new("templates/history").join(format!("{}.json", &template.revision[7..]));
-        let path = self.root.join(&relative);
-        if let Some(bytes) = read_optional(&path)? {
-            let previous: History =
-                serde_json::from_slice(&bytes).map_err(|_| TemplateError::InvalidDocument)?;
-            if previous.version != FORMAT_VERSION || previous.template != template {
-                return Err(TemplateError::InvalidDocument);
-            }
-            return Ok(());
-        }
-        let mut file = store::create_new(&path)?;
-        serde_json::to_writer(
-            &mut file,
-            &History {
-                version: FORMAT_VERSION,
-                template,
-            },
-        )
-        .map_err(|_| TemplateError::Storage)?;
-        file.write_all(b"\n")?;
-        file.sync_all()?;
-        #[cfg(unix)]
-        File::open(&folder)?.sync_all()?;
-        Ok(())
-    }
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 fn digest(value: &impl Serialize) -> String {
@@ -699,15 +608,6 @@ mod tests {
         }
     }
 
-    fn history(root: &Path, revision: &str) -> PromptTemplate {
-        let bytes = fs::read(
-            root.join("templates/history")
-                .join(format!("{}.json", &revision[7..])),
-        )
-        .unwrap();
-        serde_json::from_slice::<History>(&bytes).unwrap().template
-    }
-
     #[test]
     fn missing_library_reads_bundled_defaults_without_creating_anything() {
         let temp = temporary();
@@ -720,17 +620,17 @@ mod tests {
         assert!(!list[0].customized);
         let encoded = serde_json::to_value(&list).unwrap();
         assert!(encoded[0].get("prompt").is_none());
+        assert!(encoded[0].get("deleted").is_none());
         assert_eq!(
             store.get("meeting").unwrap().prompt,
             "사실과 결정을 구분합니다."
         );
-        assert!(store.list_deleted().unwrap().is_empty());
         assert!(!root.exists());
         assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 0);
     }
 
     #[test]
-    fn custom_changes_share_cas_and_delete_can_be_restored_without_losing_content() {
+    fn custom_changes_share_cas_and_deletion_removes_the_catalog_entry() {
         let temp = temporary();
         let root = temp.path().join("library");
         let first = fixture(&root);
@@ -749,44 +649,66 @@ mod tests {
             )
             .unwrap();
         assert_ne!(edited.revision, created.revision);
-        assert_eq!(history(&root, &created.revision), created);
         let before = fs::read(root.join("templates/catalog.json")).unwrap();
         assert!(matches!(
             first.update(&created.id, &created.revision, content("오래된 편집")),
+            Err(TemplateError::Conflict)
+        ));
+        assert!(matches!(
+            first.delete(&created.id, &created.revision),
             Err(TemplateError::Conflict)
         ));
         assert_eq!(
             before,
             fs::read(root.join("templates/catalog.json")).unwrap()
         );
-        let deleted = first.delete(&edited.id, &edited.revision).unwrap();
-        assert!(deleted.deleted);
-        assert_ne!(deleted.revision, edited.revision);
+        first.delete(&edited.id, &edited.revision).unwrap();
         assert!(matches!(
             second.get(&edited.id),
             Err(TemplateError::NotFound)
         ));
-        assert_eq!(second.list().unwrap().len(), 2);
-        assert_eq!(second.list_deleted().unwrap(), vec![deleted.clone()]);
-        assert_eq!(history(&root, &edited.revision), edited);
         assert!(matches!(
-            second.restore(&created.id, &edited.revision),
-            Err(TemplateError::Conflict)
+            second.delete(&edited.id, &edited.revision),
+            Err(TemplateError::NotFound)
         ));
-        let restored = second.restore(&created.id, &deleted.revision).unwrap();
-        assert!(!restored.deleted);
-        assert_eq!(restored.prompt, "  수정한 사용자 프롬프트\n");
-        assert_ne!(restored.revision, edited.revision);
-        assert!(first.list_deleted().unwrap().is_empty());
-        assert!(history(&root, &deleted.revision).deleted);
-        assert_eq!(first.list().unwrap().len(), 3);
+        assert_eq!(second.list().unwrap().len(), 2);
+        let catalog: serde_json::Value =
+            serde_json::from_slice(&fs::read(root.join("templates/catalog.json")).unwrap())
+                .unwrap();
+        assert!(catalog["templates"].get(&edited.id).is_none());
         assert!(!root.join("store.lock").exists());
         assert!(!root.join("meetings").exists());
         assert!(!root.join("models").exists());
+        assert!(!root.join("templates/history").exists());
     }
 
     #[test]
-    fn builtin_reset_preserves_the_edit_and_prevents_aba_overwrites() {
+    fn legacy_deleted_entries_remain_unchanged_until_explicit_migration() {
+        let temp = temporary();
+        let store = fixture(temp.path());
+        let created = store.create(content("보존할 삭제 전 원문")).unwrap();
+        let path = temp.path().join("templates/catalog.json");
+        let mut catalog: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        catalog["templates"][&created.id]["deleted"] = json!(true);
+        let bytes = serde_json::to_vec(&catalog).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        assert_eq!(store.list().unwrap().len(), 2);
+        assert!(matches!(
+            store.get(&created.id),
+            Err(TemplateError::NotFound)
+        ));
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        store.create(content("다른 항목")).unwrap();
+        let after: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(
+            after["templates"][&created.id],
+            catalog["templates"][&created.id]
+        );
+    }
+
+    #[test]
+    fn builtin_reset_restores_defaults_and_prevents_aba_overwrites() {
         let temp = temporary();
         let store = fixture(temp.path());
         let original = store.get("meeting").unwrap();
@@ -809,12 +731,12 @@ mod tests {
         assert!(!reset.customized);
         assert_ne!(reset.revision, original.revision);
         assert_ne!(reset.revision, edited.revision);
-        assert_eq!(history(temp.path(), &edited.revision), edited);
         assert!(matches!(
             store.update("meeting", &original.revision, content("오래된 편집")),
             Err(TemplateError::Conflict)
         ));
         assert_eq!(store.reset("meeting", &reset.revision).unwrap(), reset);
+        assert!(!temp.path().join("templates/history").exists());
     }
 
     #[test]
@@ -834,7 +756,7 @@ mod tests {
             .update("meeting", &original.revision, content("사용자 형식 유지"))
             .unwrap();
         let after_upgrade = next.get("meeting").unwrap();
-        assert_eq!(after_upgrade.prompt, changed.prompt);
+        assert_eq!(after_upgrade.content(), changed.content());
         assert_ne!(after_upgrade.revision, changed.revision);
         let reset = next.reset("meeting", &after_upgrade.revision).unwrap();
         assert_eq!(reset.prompt, "새 기본값");
@@ -914,7 +836,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn linked_roots_catalogs_locks_and_history_are_rejected() {
+    fn linked_roots_catalogs_and_locks_are_rejected() {
         use std::os::unix::fs::symlink;
         let temp = temporary();
         let real = temp.path().join("real");
@@ -953,15 +875,6 @@ mod tests {
             fixture(&lock_root).create(content("편집")),
             Err(TemplateError::UnsafePath)
         ));
-
-        let store = fixture(&real);
-        let initial = store.create(content("초기 입력")).unwrap();
-        symlink(temp.path(), real.join("templates/history")).unwrap();
-        assert!(matches!(
-            store.update(&initial.id, &initial.revision, content("변경")),
-            Err(TemplateError::UnsafePath)
-        ));
-        assert_eq!(store.get(&initial.id).unwrap(), initial);
 
         let hard_root = temp.path().join("hard-library");
         fs::create_dir_all(hard_root.join("templates")).unwrap();

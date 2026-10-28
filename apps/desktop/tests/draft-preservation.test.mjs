@@ -5,6 +5,7 @@ import vm from 'node:vm';
 import { Window } from 'happy-dom';
 
 const source = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+const qualitySource = await readFile(new URL('../src/recording-quality.js', import.meta.url), 'utf8');
 const uiSource = await readFile(new URL('../src/ui.js', import.meta.url), 'utf8');
 const librarySource = await readFile(new URL('../src/library-ui.js', import.meta.url), 'utf8');
 const searchSource = await readFile(new URL('../src/meeting-search.js', import.meta.url), 'utf8');
@@ -97,6 +98,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
   const bridge = {
     setAutoRecorder: async () => {}, subscribeProcessingError: async () => () => {},
     readSummary: async () => null,
+    exportDocument: async (id, kind, format, includeCitations) => ({ name: `회의-음성 기록.${format}`, text: id === 'a' && kind === 'transcript' ? transcript.segments.map(segment => segment.text).join('\n') : 'native summary result', kind, format, includeCitations }),
     subscribeProcessing: async () => () => {}, processingStatus: async () => structuredClone(readiness), readTranscript: async (id) => id === 'a' ? structuredClone(transcript) : null,
     saveTranscript(id, expected, texts) {
       const pending = deferred();
@@ -132,10 +134,11 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
   vm.runInContext(componentsSource, context);
   context.testUI = vm.runInContext(`(() => {
     ${uiSource.replace(/^export /gm, '')}
-    return { icon, escape, button, duration, recordingStatus, statusMarkup, sessionControls, documentExport, applySystemAppearance() {} };
+    return { icon, escape, button, duration, recordingStatus, statusMarkup, sessionControls, applySystemAppearance() {} };
   })()`, context);
   const executable = source.replace(/^import .*;\n/gm, '');
   const app = await vm.runInContext(`(async () => {
+    ${qualitySource.replace(/^export /gm, '')}
     ${detailSource.replace(/^export /gm, '')}
     ${feedbackSource.replace(/^export /gm, '')}
     ${processingStateSource.replace(/^export /gm, '')}
@@ -148,6 +151,8 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     let summaryEvidenceOptions;
     const mountSummaryEvidence = options => { summaryEvidenceOptions = options; return { reset() {}, update() {}, restoreFocus() {} }; };
     const mountTemplateSettings = () => testTemplateSettings;
+    const mountCalendarSettings = () => ({ setActive() {} });
+    const mountDocumentActions = () => ({ update() {}, close() {} });
     const mountAgentConnectionDialog = () => ({ open(...args) { testAgentDialogCalls.push(args); }, update() {}, close() {}, isOpen: () => false });
     const mountLibrary = ({getState}) => ({ render() {}, resetSelection() {}, toggleSelection() {}, handleRowSelection: () => false, show: async () => {}, visibleMeetings() {
       const current = getState(), query = document.getElementById('search').value.trim();
@@ -157,7 +162,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     const mountSpeakers = ({getState}) => ({render() {}, reset() {}, open: async () => {}, label: segment => getState().transcriptDraft?.doc?.speakers?.find(speaker=>speaker.id === segment.speakerId)?.name || '화자 미지정'});
 
     const bridge = testBridge;
-    const { icon, escape, button, duration, recordingStatus, statusMarkup, sessionControls, applySystemAppearance, documentExport } = testUI;
+    const { icon, escape, button, duration, recordingStatus, statusMarkup, sessionControls, applySystemAppearance } = testUI;
     ${executable}
     return { state, detail, documentSearch, summaryEvidenceOptions, restoreTranscript: restoreForTest, selectMeeting, saveDraft, finishEditing, onEdit, onQuitRequest, onAgentWriteRequest, refreshDevices, acceptSnapshot, saveTranscript, loadTranscript, acceptProcessing, loadSummary, renderSummary, createMeeting, openSetup, openSettings, changeMicrophone, changeMeetingDate, render, prepareAudio, exportDocument, editTranscriptRow, completeTranscriptRow, cancelTranscriptRow, cancelProcessing, retryProcessing, acknowledgeProcessing };
   })()`, context);
@@ -847,27 +852,24 @@ test('starting a recording rechecks device availability and uses the saved prefe
 });
 
 
-test('settings wait for pending meeting edits and return from model management to the right category', async () => {
-  const page = await openApp();
+test('settings flush edits and prepare optional summaries inline without replacing the meeting', async () => {
+  const page = await openApp(null, { status: 'idle', supported: true, modelReady: true, summarySupported: true, summaryReady: false });
   page.edit('설정을 열기 전 메모');
-  const opening = page.app.openSettings();
-  await tick();
+  const opening = page.app.openSettings(); await tick();
   assert.equal(Boolean(page.element('settings-dialog').open), false);
-  page.updates[0].pending.resolve();
-  await opening;
-  assert.equal(page.element('settings-dialog').open, true);
+  page.updates[0].pending.resolve(); await opening;
   assert.equal(page.saved().notes, '설정을 열기 전 메모');
-  page.element('settings-models-tab').listeners.get('click')(); await tick();
-  assert.equal(page.element('settings-models-panel').hidden, false);
+  assert.equal(page.app.state.settingsPanel, 'appearance');
+  let prepared = 0;
+  page.bridge.prepareSummaryModel = async () => { prepared++; return { revision: 2, id: 'summary-download', kind: 'summary-model', status: 'running', supported: true, modelReady: true, summarySupported: true, summaryReady: false, bytes: 50, totalBytes: 100 }; };
   page.element('models').listeners.get('click')(); await tick();
-  assert.equal(page.element('settings-dialog').open, false);
-  assert.equal(page.element('setup-title').textContent, '모델');
-  page.element('setup-back').listeners.get('click')(); await tick();
+  assert.equal(prepared, 1);
   assert.equal(page.element('settings-dialog').open, true);
-  assert.equal(page.element('settings-models-panel').hidden, false);
+  assert.equal(page.element('setup-screen').hidden, true);
+  assert.equal(page.element('settings-feature-progress').value, 50);
+  assert.equal(page.element('settings-feature-stage').textContent, '50%');
   page.element('settings-close').listeners.get('click')(); await tick();
   assert.equal(page.element('settings-dialog').open, false);
-  assert.equal(page.element('settings').id, 'settings');
 });
 
 test('summary preparation returns to its meeting and focuses summary when the original preparation button disappears', async () => {
@@ -1621,4 +1623,42 @@ test('agent summary writes reload the open summary before releasing edit ownersh
   assert.equal(page.app.state.summary.document.id, 'new');
   assert.equal(page.app.state.summary.document.text, '에이전트가 저장한 요약');
   assert.equal(page.element('meeting-notes').readOnly, false);
+});
+
+
+test('a fresh meeting keeps summary hidden through inspector navigation until text is available', async () => {
+  const page = await openApp();
+  assert.equal(page.element('summary-section').hidden, true);
+  await page.app.detail.select('notes');
+  assert.equal(page.element('summary-section').hidden, true);
+  await page.app.detail.select('summary');
+  assert.equal(page.element('summary-section').hidden, true);
+  page.app.state.transcriptDraft = { id:'a', doc:transcriptDocument(), dirty:false, savedTexts:[] };
+  page.app.render();
+  assert.equal(page.element('summary-section').hidden, false);
+});
+
+
+test('quality playback waits for the existing audio request and rejects a replaced source', async () => {
+  const page = await openApp();
+  const pending = deferred(); let reads = 0;
+  page.bridge.audioUrl = async () => { reads++; return pending.promise; };
+  const meeting = page.app.state.snapshot.meetings[0];
+  meeting.audio = { relativePath:'sessions/a/audio.wav',frames:32000,sampleRate:16000 };
+  const first = page.app.prepareAudio(meeting, false);
+  let ready = false;
+  const second = page.app.prepareAudio(meeting, false).then(() => { ready = true; });
+  await tick(); assert.equal(reads,1); assert.equal(ready,false);
+  pending.resolve('asset://audio-a'); await Promise.all([first,second]);
+  assert.equal(page.element('audio-player').src,'asset://audio-a');
+  assert.equal(ready,true);
+});
+
+test('summary download failures remain visible inside General settings', async () => {
+  const page = await openApp(null, { revision:1,status:'idle',supported:true,modelReady:true,summarySupported:true,summaryReady:false });
+  await page.app.openSettings();
+  await page.app.acceptProcessing({ revision:2,id:'download',kind:'summary-model',status:'failed',message:'저장 공간이 부족합니다.',supported:true,modelReady:true,summarySupported:true,summaryReady:false });
+  assert.equal(page.element('settings-summary-error').hidden,false);
+  assert.match(page.element('settings-summary-error').textContent,/공간이 부족/);
+  assert.equal(page.element('settings-dialog').open,true);
 });
