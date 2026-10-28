@@ -65,6 +65,19 @@ rebuilding/resigning the app. The DMG receipt separately records the packaging
 commit. Archive rejected, undistributed containers before reusing an output path;
 never replace an already distributed artifact.
 
+For local replacement, use the canonical installer after normal application exit:
+
+```sh
+python3 -B apps/desktop/scripts/install-macos.py --app WORK/Nero.app \
+  --dmg WORK/Nero.dmg --work WORK/installation
+```
+
+The installer verifies the release and idle writer, then renames apps on the same
+filesystem with one rollback slot. It records data hashes and model metadata without
+copying recordings, models or the data directory. After installed-app acceptance,
+retire the rollback app and retain only current/previous notarized DMGs and small
+release receipts. Unshared older builds do not require full binary archives.
+
 The CLI/integration component version is owned by `agent/release.json`, independently
 of the app build. Advance it when the CLI, protocol, skill or package templates change.
 For a macOS UI-only release, `NERO_REUSE_SIGNED_AGENT_FROM=/path/to/Nero.app` reuses the

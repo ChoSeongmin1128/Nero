@@ -38,8 +38,13 @@ def notarize(path,receipt_path):
     print('Submitting '+path.name+' for notarization...',flush=True)
     result=json.loads(subprocess.check_output(args,text=True))
     write_receipt(receipt_path,result)
-    if result.get('status')!='Accepted':raise SystemExit('Notarization not accepted. Preserve the upload and inspect its log.')
+    if result.get('status')!='Accepted':raise SystemExit('Notarization not accepted. Preserve the signed app and receipt, then inspect its log.')
     return result
+def notarize_bundle(app,output):
+    with tempfile.TemporaryDirectory(prefix='.nero-notary-',dir=output.parent) as temporary:
+        upload=Path(temporary)/output.name
+        run('ditto','-c','-k','--keepParent',str(app),str(upload))
+        return notarize(upload,Path(str(output)+'.notarization.json'))
 def tree(path):
     result={}
     for file in sorted(path.rglob('*')):
@@ -97,7 +102,7 @@ if a.dmg_only and not dmg:raise SystemExit('--dmg-only requires --dmg-output')
 if dmg and (dmg.suffix!='.dmg' or dmg.exists()):raise SystemExit('A new .dmg output path is required')
 builder=shutil.which(a.dmg_builder) if dmg else None
 if dmg and not builder:raise SystemExit('Install the dmgbuild build tool or pass --dmg-builder')
-new_artifacts=[] if a.dmg_only else [Path(str(output)+'.receipt.json'),Path(str(output)+'.notarization.json'),output.with_suffix('.notary-upload.zip')]
+new_artifacts=[] if a.dmg_only else [Path(str(output)+'.receipt.json'),Path(str(output)+'.notarization.json')]
 if dmg:new_artifacts.extend([Path(str(dmg)+'.receipt.json'),Path(str(dmg)+'.notarization.json')])
 if any(path.exists() or path.is_symlink() for path in new_artifacts):raise SystemExit('A release receipt or upload path exists; preserve or move it first')
 identity=os.environ['NERO_SIGN_IDENTITY']
@@ -154,14 +159,11 @@ else:
     worker_receipt=worker_package.verify_signed_transition(worker,worker_preflight,application_identity['TeamIdentifier']) if worker is not None else None
     speech_receipt=speech_package.signed_transition(speech,speech_preflight) if speech is not None else None
     output.parent.mkdir(parents=True,exist_ok=True)
-    upload=output.with_suffix('.notary-upload.zip')
-    if upload.exists():raise SystemExit('Notary upload path exists; preserve or move it first')
-    run('ditto','-c','-k','--keepParent',str(app),str(upload))
     receipt={'bundle_id':info['CFBundleIdentifier'],'version':info['CFBundleShortVersionString'],'build':info['CFBundleVersion'],'source_commit':build_info['sourceCommit'],'source_tree':build_info['sourceTree'],'source_dirty':False,'architecture':subprocess.check_output(['lipo','-archs',str(app/'Contents/MacOS'/info['CFBundleExecutable'])],text=True).strip(),'signed':True,'notarized':False,'app_signature':application_identity,'moss_package':worker_receipt}
     receipt['speech_package']=speech_receipt
     receipt['preserved_agent']=preserved_agent
     if a.notarize:
-        receipt['notary']=notarize(upload,Path(str(output)+'.notarization.json'))
+        receipt['notary']=notarize_bundle(app,output)
         run('xcrun','stapler','staple',str(app));run('xcrun','stapler','validate',str(app));run('spctl','--assess','--type','execute','--verbose=2',str(app));receipt['notarized']=True
     run('ditto','-c','-k','--keepParent',str(app),str(output))
     verify_preserved_worker(app,receipt,application_identity)

@@ -178,7 +178,8 @@ inference, proposals, and unverified items.
   begin with the first build actually shared with users; record that baseline.
   Preserve existing personal meeting data through explicit migration or separate archival
   when a development change affects it. Do not initialize or discard it implicitly.
-  Preserve historical commits, tags and artifacts rather than rewriting their labels.
+  Preserve historical commits, tags and release metadata rather than rewriting labels.
+  Undistributed development binaries follow the bounded retention rules below.
 - Record release source commits in `docs/release-history.md`. A dirty build must not
   be attributed to its HEAD alone. Distribution bundles require clean source provenance;
   keep generated binaries, signing/notary receipts and private compatibility evidence in `.work/`.
@@ -187,6 +188,19 @@ inference, proposals, and unverified items.
   new app is installed. Development bundles stay in `.work/rust-target`.
 - Build/test instructions for the new app are in `apps/desktop/README.md`.
   Never install or launch an archived legacy app as part of rewrite validation.
+- Ordinary app replacement does not authorize a full library snapshot. Do not copy
+  the user's audio, models or complete data directory for each build. A schema/data
+  migration must declare its affected paths and preserve only the data it changes.
+  Verify an app-only replacement with the writer lock, data hashes and model metadata.
+- Use the canonical `apps/desktop/scripts/install-macos.py` installer. On one filesystem,
+  move the verified candidate and previous app by rename, with one rollback slot.
+  After GUI/data verification, retire that rollback app; keep the current and immediately
+  previous notarized DMGs plus small provenance receipts. Older undistributed app/ZIP/DMG
+  copies are disposable after their source/hash history is recorded. Do not accumulate
+  per-release `.app` copies, `data-before` folders or standalone installer clones.
+- Use `.work/rust-target` as the single Cargo target cache. Retire temporary alternate
+  targets when their experiment is finished. Temporary notary upload archives belong
+  to an auto-cleaned temporary directory and are not retained beside final artifacts.
 - Keep synthetic fixtures in auto-cleaned temporary directories. Never add dummy
   meetings or templates to the user's library during validation. Reuse model/audio
   inputs without making copies. After recording the needed result, move obsolete
