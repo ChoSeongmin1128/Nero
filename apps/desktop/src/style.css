@@ -240,9 +240,7 @@ html.recorder-document { background: transparent; }
 .app-settings-dialog .settings-header h2 { font-size: var(--text-subtitle-size); }
 .app-settings-body { display: grid; flex: 1; grid-template-columns: 124px minmax(0, 1fr); min-height: 0; }
 .app-settings-tabs { display: flex; flex-direction: column; gap: 4px; min-height: 0; overflow-y: auto; padding: 16px 10px; border-right: 1px solid var(--border); background: var(--surface-secondary); }
-.app-settings-tabs button { min-height: 34px; padding: 6px 10px; border-color: transparent; background: transparent; text-align: left; white-space: nowrap; font-size: var(--text-label-size); color: var(--text-secondary); }
-.app-settings-tabs button:hover { color: var(--text); background: var(--hover); }
-.app-settings-tabs button[aria-selected="true"] { color: var(--text); border-color: var(--border); background: var(--surface); font-weight: var(--weight-semibold); }
+.app-settings-tabs button { min-height: 34px; padding: 6px 10px; text-align: left; white-space: nowrap; font-size: var(--text-label-size); }
 .app-settings-content { min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 22px 20px; }
 .settings-panel-title { margin: 0 0 18px; font-size: var(--text-subtitle-size); font-weight: var(--weight-semibold); }
 .app-settings-content .appearance-options { margin: 0; }
@@ -300,9 +298,6 @@ html.recorder-document { background: transparent; }
   .app-settings-content .theme-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .settings-client-row { padding-inline: 10px; gap: 8px; }
   .settings-client-controls { gap: 8px; flex-wrap: wrap; }
-}
-@media (forced-colors: active) {
-  .app-settings-tabs button[aria-selected="true"] { border-color: Highlight; }
 }
 
 .meeting-timestamps:has(#recorded-at[hidden]) { display: none; }

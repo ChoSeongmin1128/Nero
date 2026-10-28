@@ -281,6 +281,13 @@ input[type="checkbox"] {
   overflow-y: hidden;
 }
 
+.settings-navigation [role="tab"] { color: var(--text-secondary); border-color: transparent; background: transparent; }
+.settings-navigation [role="tab"]:hover:not(:disabled):not([aria-selected="true"]) { color: var(--text); border-color: transparent; background: var(--hover); }
+.settings-navigation [role="tab"][aria-selected="true"] { color: var(--accent); border-color: var(--selection-border); background: var(--accent-subtle); font-weight: var(--weight-semibold); }
+@media (forced-colors: active) {
+  .settings-navigation [role="tab"][aria-selected="true"] { color: Highlight; border-color: Highlight; }
+}
+
 .content-tabs [role="tab"] {
   display: inline-flex;
   align-items: center;
