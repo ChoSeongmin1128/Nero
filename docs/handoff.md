@@ -8,12 +8,12 @@ the private installation and evaluation receipts.
 
 ## Release state
 
-Nero 0.0.1 build 26 is being prepared with agent component 0.0.1-nero.22.
+Nero 0.0.1 build 26 has signed/notarized macOS arm64 artifacts and is locally installed with agent component 0.0.1-nero.22.
 External agents can read a summary context and explicitly save their generated
 summary through the running application's writer. Source/notes/current-summary
 checks reject stale output, and prior summaries remain archived. Open summaries
 reload after the external write. Client package updates and live tool acceptance
-remain separate from packaging; existing client configuration is not rewritten.
+remain separate from packaging; existing client configuration is not rewritten. Final installed GUI acceptance is pending while macOS is locked; one prior-app rollback slot is retained. Existing data hashes, model metadata and connection state were preserved without a full snapshot.
 
 Build 25 has signed/notarized macOS arm64 artifacts and a local installation.
 Settings panels and the template list/editor were observed in the installed app.
