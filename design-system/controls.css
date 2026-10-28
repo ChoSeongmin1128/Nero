@@ -1,5 +1,6 @@
 .grove-select,
-.grove-date {
+.grove-date,
+.grove-control-root {
   display: inline-flex;
   position: relative;
   min-width: 0;
@@ -7,7 +8,7 @@
   vertical-align: middle;
   font: inherit;
 }
-
+.grove-control-root { flex: 1; isolation: isolate; }
 .grove-select-trigger,
 .grove-date-trigger {
   display: inline-flex;
@@ -16,184 +17,83 @@
   gap: 10px;
   min-width: 0;
   width: 100%;
-  min-height: 35px;
-  padding: 7px 10px;
+  min-height: var(--control-height, 32px);
+  padding: var(--control-padding-block, 5px) var(--control-padding-inline, 10px);
   border: 1px solid var(--border-control);
-  border-radius: 7px;
+  border-radius: var(--control-radius, 6px);
   background: var(--surface);
   color: var(--text);
   font: inherit;
   text-align: left;
   cursor: pointer;
 }
-
 .field .grove-select-trigger,
 .field .grove-date-trigger {
   font: var(--weight-regular) var(--text-body-size)/var(--leading-ui) var(--font-ui);
   letter-spacing: var(--tracking-ui);
 }
-
+.grove-select-trigger svg,
+.grove-date-trigger svg { flex: none; color: var(--text-secondary); pointer-events: none; }
 .grove-select-trigger:hover,
-.grove-date-trigger:hover {
-  background: var(--hover);
-  border-color: var(--border-control);
-}
-
-.grove-select-trigger[aria-expanded="true"],
-.grove-date-trigger[aria-expanded="true"] {
-  background: var(--accent-subtle);
-  border-color: var(--selection-border);
-}
-
+.grove-date-trigger:hover { background: var(--hover); }
+.grove-select-trigger[data-popup-open],
+.grove-date-trigger[data-popup-open] { border-color: var(--selection-border); }
 .grove-select-trigger:focus-visible,
-.grove-date-trigger:focus-visible {
-  outline: 3px solid var(--focus);
-  outline-offset: 3px;
-}
-
+.grove-date-trigger:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .grove-select-trigger:disabled,
-.grove-date-trigger:disabled {
-  opacity: .45;
-  cursor: not-allowed;
-}
-
-.grove-select-value {
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.grove-select-chevron {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 14px;
-  color: var(--text-secondary);
-}
-
-.grove-select-chevron svg {
-  width: 14px;
-  height: 14px;
-}
-
-.grove-select-chevron:empty::after {
-  content: "";
-  width: 5px;
-  height: 5px;
-  border-right: 1.5px solid currentColor;
-  border-bottom: 1.5px solid currentColor;
-  transform: translateY(-2px) rotate(45deg);
-}
-
+.grove-date-trigger:disabled { opacity: .45; cursor: not-allowed; }
+.grove-select-value { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.grove-control-positioner { z-index: 1000; isolation: isolate; outline: none; }
 .grove-select-popover,
-.grove-calendar {
-  position: fixed;
-  inset: auto;
+.grove-popover {
   margin: 0;
-  padding: 5px;
-  max-width: calc(100vw - 24px);
+  padding: 4px;
+  max-width: calc(100vw - 16px);
+  max-height: min(340px, var(--available-height, calc(100dvh - 24px)));
   overflow: auto;
   overscroll-behavior: contain;
   background: var(--surface);
   color: var(--text);
-  border: 1px solid var(--border-control);
-  border-radius: 10px;
-  box-shadow: 0 8px 28px var(--shadow-modal);
-  font: var(--text-caption-size)/var(--leading-ui) var(--font-ui);
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 8px);
+  box-shadow: 0 6px 20px var(--shadow-modal);
+  font: var(--text-body-size)/var(--leading-ui) var(--font-ui);
   scrollbar-width: thin;
   scrollbar-color: var(--border-control) transparent;
+  outline: none;
 }
-
-.grove-select-popover::backdrop,
-.grove-calendar::backdrop {
-  background: transparent;
-}
-
+.grove-select-popover { min-width: 160px; width: var(--anchor-width, 160px); }
 .grove-select-option {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 18px;
-  width: 100%;
   min-width: 0;
-  min-height: 34px;
-  margin: 0;
-  padding: 7px 10px;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  background: transparent;
+  min-height: var(--control-height, 32px);
+  padding: 5px 8px;
+  border-radius: var(--control-radius, 6px);
   color: var(--text);
   font: inherit;
   text-align: left;
   overflow-wrap: anywhere;
-  cursor: pointer;
+  cursor: default;
+  outline: none;
 }
-
-.grove-select-option::after {
-  content: "";
-  flex: 0 0 10px;
-  width: 10px;
-  height: 6px;
-  border-left: 1.5px solid currentColor;
-  border-bottom: 1.5px solid currentColor;
-  transform: translateY(-2px) rotate(-45deg);
-  visibility: hidden;
-}
-
-.grove-select-option.is-selected,
-.grove-select-option[aria-selected="true"] {
-  background: var(--accent-subtle);
-  color: var(--accent);
-  font-weight: var(--weight-semibold);
-}
-
-.grove-select-option.is-selected::after,
-.grove-select-option[aria-selected="true"]::after {
-  visibility: visible;
-}
-
-.grove-select-option:hover:not([aria-disabled="true"]) {
-  background: var(--hover);
-}
-
-.grove-select-option.is-active {
-  outline: 2px solid var(--focus);
-  outline-offset: -2px;
-}
-
-.grove-select-option:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: -2px;
-}
-
-.grove-select-option[aria-disabled="true"] {
-  opacity: .45;
-  cursor: not-allowed;
-}
-
-.grove-calendar {
-  width: 286px;
-  padding: 12px;
-}
-
-.grove-calendar-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 12px;
-}
-
-.grove-calendar-month {
-  flex: 1;
-  font-size: var(--text-label-size);
-  font-weight: var(--weight-semibold);
-  text-align: center;
-  color: var(--text);
-}
-
-.grove-calendar-heading button {
+.grove-select-option > [data-slot] { min-width: 0; }
+.grove-select-option[data-selected] { color: var(--accent); font-weight: var(--weight-semibold); }
+.grove-select-option[data-highlighted] { background: var(--hover); }
+.grove-select-option[data-disabled] { opacity: .4; cursor: not-allowed; }
+.grove-select-indicator { display: inline-flex; flex: none; }
+.grove-select-scroll { display: flex; align-items: center; justify-content: center; height: 20px; background: var(--surface); color: var(--text-secondary); }
+.grove-calendar { width: 286px; padding: 12px; max-height: var(--available-height, calc(100dvh - 24px)); }
+.grove-day-picker { position: relative; width: 100%; font: var(--text-caption-size)/var(--leading-ui) var(--font-ui); }
+.grove-day-picker .rdp-months,
+.grove-day-picker .rdp-month { position: relative; width: 100%; }
+.grove-day-picker .rdp-month_caption { display: flex; align-items: center; justify-content: center; height: 32px; padding: 0 32px; }
+.grove-day-picker .rdp-caption_label { font-size: var(--text-label-size); font-weight: var(--weight-semibold); }
+.grove-day-picker .rdp-nav { position: absolute; inset: 0 0 auto; z-index: 1; display: flex; justify-content: space-between; pointer-events: none; }
+.grove-day-picker .rdp-button_previous,
+.grove-day-picker .rdp-button_next {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -201,175 +101,53 @@
   width: 30px;
   min-height: 30px;
   height: 30px;
-  padding: 5px;
-  border: 1px solid transparent;
-  border-radius: 6px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--control-radius, 6px);
   background: transparent;
   color: var(--text-secondary);
-  font: inherit;
+  pointer-events: auto;
 }
-
-.grove-calendar-heading button:hover {
-  background: var(--hover);
-  color: var(--text);
-}
-
-.grove-calendar-heading button svg {
-  width: 15px;
-  height: 15px;
-}
-
-.grove-calendar-weekdays,
-.grove-calendar-grid {
-  display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
-  gap: 3px;
-}
-
-.grove-calendar-weekdays {
-  margin-bottom: 6px;
-  color: var(--text-secondary);
-  font-size: var(--text-caption-size);
-  text-align: center;
-}
-
-.grove-calendar-weekdays > * {
+.grove-day-picker .rdp-button_previous:hover,
+.grove-day-picker .rdp-button_next:hover { background: var(--hover); }
+.grove-day-picker .rdp-month_grid { width: 100%; table-layout: fixed; border-collapse: separate; border-spacing: 2px 3px; }
+.grove-day-picker .rdp-weekday { padding: 6px 0; color: var(--text-secondary); font-size: var(--text-caption-size); font-weight: var(--weight-regular); text-align: center; }
+.grove-day-picker .rdp-day { padding: 0; text-align: center; }
+.grove-day-picker .rdp-day_button {
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 25px;
-}
-
-.grove-calendar-grid button {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+  width: 100%;
   min-width: 0;
   min-height: 32px;
   height: 32px;
   padding: 0;
-  border: 1px solid transparent;
-  border-radius: 6px;
+  border: 0;
+  border-radius: var(--control-radius, 6px);
   background: transparent;
-  color: var(--text);
-  font: var(--text-caption-size)/var(--leading-ui) var(--font-ui);
-  font-variant-numeric: tabular-nums;
-  cursor: pointer;
-}
-
-.grove-calendar-grid button:hover:not(:disabled) {
-  background: var(--hover);
-  border-color: transparent;
-}
-
-.grove-calendar-grid button.is-outside {
-  color: var(--text-secondary);
-}
-
-.grove-calendar-grid button.is-today::after {
-  content: "";
-  position: absolute;
-  bottom: 3px;
-  width: 10px;
-  height: 2px;
-  border-radius: 2px;
-  background: currentColor;
-}
-
-.grove-calendar-grid button.is-selected {
-  background: var(--accent-fill);
-  color: var(--on-accent);
-  font-weight: var(--weight-semibold);
-}
-
-.grove-calendar-grid button.is-selected:hover:not(:disabled) {
-  background: var(--accent-fill-hover);
-}
-
-.grove-calendar-grid button:disabled {
-  opacity: .35;
-  cursor: not-allowed;
-}
-
-.grove-calendar-grid button:focus-visible,
-.grove-calendar-grid button.is-active {
-  outline: 2px solid var(--focus);
-  outline-offset: -2px;
-}
-
-.grove-calendar footer,
-.grove-calendar-footer {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
-  padding-top: 10px;
-  margin-top: 10px;
-  border-top: 1px solid var(--border);
-}
-
-.grove-calendar-clear,
-.grove-calendar-today {
-  min-height: 29px;
-  padding: 5px 8px;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--accent);
-  font: var(--text-caption-size)/var(--leading-ui) var(--font-ui);
-}
-
-.grove-calendar-clear:hover,
-.grove-calendar-today:hover {
-  background: var(--hover);
-}
-
-.grove-calendar-time {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 12px;
-  padding-top: 12px;
-  border-top: 1px solid var(--border);
-  font-size: var(--text-caption-size);
-  color: var(--text-secondary);
-}
-
-.grove-calendar-time label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.grove-calendar-time input {
-  width: 54px;
-  min-height: 32px;
-  padding: 6px 8px;
-  border: 1px solid var(--border-control);
-  border-radius: 6px;
-  background: var(--surface);
   color: var(--text);
   font: inherit;
   font-variant-numeric: tabular-nums;
 }
-
-.grove-calendar-time .grove-select-trigger {
-  min-height: 32px;
-  padding: 5px 8px;
-}
-
-.field > .grove-date,
-.field > .grove-select {
-  display: flex;
-  width: 100%;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .grove-select-trigger, .grove-date-trigger {
-    transition: none;
-  }
-
-}
+.grove-day-picker .rdp-day_button:hover { background: var(--hover); }
+.grove-day-picker .rdp-today:not(.rdp-selected) .rdp-day_button { color: var(--accent); font-weight: var(--weight-heading); }
+.grove-day-picker .rdp-outside:not(.rdp-selected) .rdp-day_button { color: var(--text-secondary); }
+.grove-day-picker .rdp-selected .rdp-day_button { background: var(--accent-fill); color: var(--on-accent); font-weight: var(--weight-semibold); }
+.grove-day-picker .rdp-disabled { opacity: .35; }
+.grove-day-picker .rdp-hidden { visibility: hidden; }
+.grove-day-picker button:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.grove-calendar-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+.grove-calendar-footer > div { display: flex; align-items: center; gap: 6px; }
+.grove-calendar-time { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-top: 10px; margin-top: 8px; border-top: 1px solid var(--border); color: var(--text-secondary); }
+.grove-calendar-time input { width: 70px; min-height: var(--control-height, 32px); padding: 5px 8px; border: 1px solid var(--border-control); border-radius: var(--control-radius, 6px); background: var(--surface); color: var(--text); font: inherit; font-variant-numeric: tabular-nums; }
+.grove-calendar-error { margin: 8px 0 0; color: var(--danger-text); font-size: var(--text-caption-size); }
+.field > .grove-select,
+.field > .grove-date { display: flex; width: 100%; }
+.nero-dialog-overlay { position: fixed; inset: 0; z-index: 1100; background: var(--overlay); }
+.nero-dialog-content { position: fixed; top: 50%; left: 50%; z-index: 1101; transform: translate(-50%, -50%); width: min(520px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); padding: 20px; overflow: auto; border: 1px solid var(--border); border-radius: var(--radius, 8px); background: var(--surface); color: var(--text); box-shadow: 0 12px 36px var(--shadow-modal); outline: none; }
+.nero-dialog-header { display: flex; flex-direction: column; gap: 8px; padding-right: 24px; }
+.nero-dialog-title { margin: 0; color: var(--text); font: var(--weight-heading) var(--text-heading-size)/var(--leading-heading) var(--font-ui); }
+.nero-dialog-description { margin: 0; color: var(--text-secondary); font: var(--text-body-size)/var(--leading-ui) var(--font-ui); word-break: keep-all; overflow-wrap: anywhere; }
+.nero-dialog-close { position: absolute; top: 12px; right: 12px; display: flex; align-items: center; justify-content: center; width: 28px; min-height: 28px; padding: 0; border: 0; background: transparent; color: var(--text-secondary); }
+.nero-dialog-close:hover { background: var(--hover); }
+.nero-dialog-footer { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 18px; }

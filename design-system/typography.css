@@ -10,9 +10,9 @@
   --text-aux-size: 11px;
   --text-subtitle-size: 15px;
   --text-reading-size: 16px;
-  --text-heading-size: 19px;
+  --text-heading-size: 18px;
   --text-title-size: 24px;
-  --text-display-size: 27px;
+  --text-display-size: 26px;
   --weight-regular: 400;
   --weight-medium: 500;
   --weight-semibold: 600;
@@ -21,8 +21,8 @@
   --leading-heading: 1.35;
   --leading-reading: 1.75;
   --tracking-ui: 0;
-  --tracking-heading: -.4px;
-  --tracking-title: -.9px;
+  --tracking-heading: -.2px;
+  --tracking-title: -.6px;
 }
 
 :root:lang(ko) { word-break: keep-all; overflow-wrap: anywhere; }

@@ -158,10 +158,23 @@ the current complete meeting pipeline therefore still requires Apple silicon/mac
 
 ## Appearance
 
+The shared design-system adapts pinned shadcn/ui Base UI primitives for select,
+date/popover and the agent connection dialog. React owns these dedicated roots;
+the native input events and existing app controllers remain the interface for saving,
+recording and processing. The component catalog builds the same source. Upstream MIT
+and runtime license notices are included in the generated app assets.
+
 Settings / Screen exposes six color themes and independent Light / Dark / System
 brightness. The main app and compact recorder use the same shared appearance code
 and app-local preference. System follows the OS; an explicit brightness remains fixed.
 Theme changes do not change meetings or model preparation.
+Large surfaces remain neutral across accent colors. Recent meetings show recording
+or creation time; opening a detail selects only that meeting in the recent list.
+Returning to the library restores its previous folder filter.
+
+Settings / Connections offers direct Claude/Codex installation and a separate action
+for other agents. The latter opens a dialog containing the full connection prompt,
+copy action and destination instruction. It does not change external client settings.
 
 ## Recording and dates
 

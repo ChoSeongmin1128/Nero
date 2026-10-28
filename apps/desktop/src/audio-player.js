@@ -32,16 +32,20 @@ export function connectAudioPlayer(document, icons = globalThis.GroveIcons, cont
     get('audio-duration').textContent = formatAudioTime(duration);
     const label = playing ? '일시정지' : audio.ended && ready ? '다시 재생' : '재생';
     get('audio-toggle-label').textContent = label;
+    toggle.setAttribute('aria-label', label);
+    toggle.setAttribute('title', label);
     if (inspectorToggle) { inspectorToggle.disabled = !ready; inspectorToggle.textContent = label; inspectorToggle.setAttribute('aria-label', `녹음 ${label}`); }
     if (inspectorStatus) { inspectorStatus.textContent = status.textContent; inspectorStatus.hidden = status.hidden; }
     const icon = playing ? 'pause' : 'play';
     if (lastIcon !== icon) { get('audio-toggle-icon').innerHTML = icons?.(icon) || ''; lastIcon = icon; }
     mute.setAttribute('aria-pressed', String(audio.muted));
     mute.setAttribute('aria-label', audio.muted ? '음소거 해제' : '음소거');
-    mute.textContent = audio.muted ? '소리 켜기' : '음소거';
+    const muteLabel = audio.muted ? '음소거 해제' : '음소거';
+    mute.innerHTML = `${icons?.(audio.muted ? 'volume-x' : 'volume-2') || ''}<span class="sr-only">${muteLabel}</span>`;
+    mute.setAttribute('title', muteLabel);
     if (playbackRates.includes(audio.playbackRate)) speed.value = String(audio.playbackRate);
   }
-  function renderControls() { render(); controls?.refresh(); }
+  function renderControls() { render(); (controls || globalThis.GroveControls)?.refresh(); }
   function reset() { generation += 1; metadataReady = false; clearStatus(); renderControls(); }
   for (const name of ['emptied', 'loadstart']) audio.addEventListener(name, reset);
   for (const name of ['loadedmetadata', 'durationchange']) audio.addEventListener(name, () => {

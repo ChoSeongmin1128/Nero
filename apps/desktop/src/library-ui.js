@@ -9,12 +9,19 @@ export function filterLibraryMeetings(meetings, filter = 'all', query = '') {
   });
 }
 
+export function recentLibraryMeetings(meetings) {
+  return meetings.filter(meeting => meeting.deletedAt == null)
+    .sort((a, b) => (b.recordedAt ?? b.createdAt ?? 0) - (a.recordedAt ?? a.createdAt ?? 0) || a.id.localeCompare(b.id))
+    .slice(0, 5);
+}
+const recentDate = new Intl.DateTimeFormat('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+
 export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnapshot, selectMeeting, render: renderApp, showError, escape, icon, onViewChanged }) {
   const dialog = byId('library-dialog');
   const dialogBody = byId('library-dialog-body');
   const owner = dialog.ownerDocument;
   const dragPreview = createDragPreview(owner);
-  let folderKey = '', pending = null, returnFocus = null, dragSources = [];
+  let folderKey = '', recentKey = '', pending = null, returnFocus = null, dragSources = [];
   let activeMenu = null, dropTarget = null;
   const state = () => getState();
   const selection = () => state().librarySelection ||= new Set();
@@ -222,13 +229,23 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     const filter = state().libraryFilter;
     const disabled = Boolean(state().libraryBusy || !state().connected);
     const navigation = [{ id: 'all', name: '전체 회의', icon: 'notebook-pen' }, { id: 'unfiled', name: '미분류', icon: 'inbox' }, ...folders.map(folder => ({ ...folder, icon: 'folder' })), { id: 'trash', name: '휴지통', icon: 'trash-2' }];
-    const key = JSON.stringify([filter, folders, disabled, snapshot.meetings.map(meeting => [meeting.id, meeting.folderId, meeting.deletedAt])]);
+    const key = JSON.stringify([filter, state().libraryOpen, folders, disabled, snapshot.meetings.map(meeting => [meeting.id, meeting.folderId, meeting.deletedAt])]);
     if (key !== folderKey) {
       clearDropTarget();
       folderKey = key;
       const focused = dialog.ownerDocument?.activeElement?.dataset?.libraryFilter;
-      byId('folder-list').innerHTML = navigation.map(item => `<div class="library-folder-item"><button type="button" class="quiet library-folder-link" data-library-filter="${escape(item.id)}"${filter === item.id ? ' aria-current="page"' : ''}${disabled ? ' disabled' : ''}>${icon(item.icon)}<span class="library-folder-name" title="${escape(item.name)}">${escape(item.name)}</span><span class="library-folder-count">${filterLibraryMeetings(snapshot.meetings, item.id).length}</span></button>${folders.some(folder => folder.id === item.id) ? `<details class="library-folder-menu"><summary aria-label="${escape(item.name)} 폴더 메뉴">${icon('ellipsis')}</summary><div class="action-menu"><button type="button" data-folder-rename="${escape(item.id)}"${disabled ? ' disabled' : ''}>이름 변경</button><button type="button" class="danger" data-folder-delete="${escape(item.id)}"${disabled ? ' disabled' : ''}>폴더 삭제</button></div></details>` : ''}</div>`).join('');
+      byId('folder-list').innerHTML = navigation.map(item => `<div class="library-folder-item"><button type="button" class="quiet library-folder-link" data-library-filter="${escape(item.id)}"${state().libraryOpen && filter === item.id ? ' aria-current="page"' : ''}${disabled ? ' disabled' : ''}>${icon(item.icon)}<span class="library-folder-name" title="${escape(item.name)}">${escape(item.name)}</span><span class="library-folder-count">${filterLibraryMeetings(snapshot.meetings, item.id).length}</span></button>${folders.some(folder => folder.id === item.id) ? `<details class="library-folder-menu"><summary aria-label="${escape(item.name)} 폴더 메뉴">${icon('ellipsis')}</summary><div class="action-menu"><button type="button" data-folder-rename="${escape(item.id)}"${disabled ? ' disabled' : ''}>이름 변경</button><button type="button" class="danger" data-folder-delete="${escape(item.id)}"${disabled ? ' disabled' : ''}>폴더 삭제</button></div></details>` : ''}</div>`).join('');
       if (focused) [...byId('folder-list').querySelectorAll('[data-library-filter]')].find(node => node.dataset.libraryFilter === focused)?.focus({ preventScroll: true });
+    }
+    const recent = recentLibraryMeetings(snapshot.meetings);
+    const activeId = state().libraryOpen ? null : state().selectedId;
+    const nextRecentKey = JSON.stringify([disabled, activeId, recent.map(meeting => [meeting.id, meeting.title, meeting.recordedAt, meeting.createdAt])]);
+    byId('recent-section').hidden = !recent.length;
+    if (recentKey !== nextRecentKey) {
+      recentKey = nextRecentKey;
+      const focused = owner.activeElement?.dataset?.recentMeeting;
+      byId('recent-meetings').innerHTML = recent.map(meeting => `<button type="button" class="quiet recent-meeting" data-recent-meeting="${escape(meeting.id)}"${activeId === meeting.id ? ' aria-current="page"' : ''}${disabled ? ' disabled' : ''}><strong title="${escape(meeting.title)}">${escape(meeting.title)}</strong><time>${escape(recentDate.format(meeting.recordedAt ?? meeting.createdAt ?? 0))}</time></button>`).join('');
+      if (focused) [...byId('recent-meetings').querySelectorAll('[data-recent-meeting]')].find(node => node.dataset.recentMeeting === focused)?.focus({ preventScroll: true });
     }
     byId('library-title').textContent = navigation.find(item => item.id === filter)?.name || '회의';
     byId('library-count').innerHTML = state().libraryBusy ? '<span class="activity-spinner" aria-hidden="true"></span><span role="status">처리 중</span>' : `${visible.length}개`;
@@ -338,12 +355,18 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     if (remove) deleteFolder(remove.dataset.folderDelete);
     if (rename || remove) event.target.closest('details')?.removeAttribute('open');
   });
+  byId('recent-meetings').addEventListener('click', event => {
+    const target = event.target.closest('[data-recent-meeting]');
+    const meeting = target && current(target.dataset.recentMeeting);
+    if (!meeting || meeting.deletedAt != null || state().libraryBusy || !state().connected) return;
+    void selectMeeting(meeting.id);
+  });
   byId('library-back').addEventListener('click', () => void show(state().libraryFilter));
   byId('library-select-toggle').addEventListener('click', () => { if (state().libraryBusy) return; if (state().librarySelecting) resetSelection(); else state().librarySelecting = true; renderApp(); });
   byId('library-select-all').addEventListener('click', () => { if (state().libraryBusy) return; visibleMeetings().forEach(meeting => selection().add(meeting.id)); renderApp(); });
   byId('library-selection-clear').addEventListener('click', () => { selection().clear(); renderApp(); });
   for (const action of ['move', 'trash', 'restore', 'purge']) byId(`library-${action}`).addEventListener('click', () => actionFor(action, selectedIds()));
-  for (const action of ['move', 'trash']) byId(`meeting-${action}`).addEventListener('click', () => actionFor(action, [state().selectedId].filter(Boolean)));
+  for (const action of ['move', 'trash']) byId(`meeting-${action}`).addEventListener('click', () => { closeMenu(activeMenu, true); actionFor(action, [state().selectedId].filter(Boolean)); });
   byId('meeting-list').addEventListener('click', event => {
     const toggle = event.target.closest('[data-library-toggle]');
     const action = event.target.closest('[data-library-action]');

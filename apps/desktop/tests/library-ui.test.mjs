@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { filterLibraryMeetings, mountLibrary } from '../src/library-ui.js';
+import { filterLibraryMeetings, recentLibraryMeetings, mountLibrary } from '../src/library-ui.js';
 
 const meetings = () => [
   { id: 'one', title: '주간 회의', notes: '', folderId: 'project', deletedAt: null },
@@ -309,15 +309,16 @@ test('folder navigation flushes edits and clears the previous selection', async 
   assert.equal(app.byId('library-title').textContent, '미분류');
 });
 
-test('opening a meeting preserves the selected navigation scope and shows its actual folder separately', () => {
+test('detail selection moves from the preserved navigation scope to the open recent meeting', () => {
   const app = harness();
   app.state.libraryFilter = 'all';
   app.controller.render();
   const navigation = app.byId('folder-list').innerHTML;
   app.state.libraryOpen = false;
   app.controller.render();
-  assert.equal(app.byId('folder-list').innerHTML, navigation);
   assert.match(navigation, /data-library-filter="all" aria-current="page"/);
+  assert.doesNotMatch(app.byId('folder-list').innerHTML, /aria-current/);
+  assert.match(app.byId('recent-meetings').innerHTML, /data-recent-meeting="one" aria-current="page"/);
   assert.equal(app.state.libraryFilter, 'all');
   assert.equal(app.byId('meeting-folder-context').textContent, '프로젝트');
   assert.equal(app.byId('meeting-folder-context').title, '프로젝트');
@@ -327,8 +328,12 @@ test('opening a meeting preserves the selected navigation scope and shows its ac
   assert.equal(app.state.libraryFilter, 'all');
   app.state.libraryFilter = 'project';
   app.controller.render();
-  assert.match(app.byId('folder-list').innerHTML, /data-library-filter="project" aria-current="page"/);
+  assert.doesNotMatch(app.byId('folder-list').innerHTML, /aria-current/);
   assert.equal(app.byId('meeting-folder-context').textContent, '미분류');
+  app.state.libraryOpen = true;
+  app.controller.render();
+  assert.match(app.byId('folder-list').innerHTML, /data-library-filter="project" aria-current="page"/);
+  assert.doesNotMatch(app.byId('recent-meetings').innerHTML, /aria-current/);
 });
 
 test('renamed folders update detail context and long names keep an escaped full title', () => {
@@ -628,4 +633,30 @@ test('empty trash respects recording protection before opening and at confirmati
   await app.submit();
   assert.equal(app.calls.some(call => call.name === 'purge'), false);
   assert.match(app.byId('library-dialog-error').textContent, /녹음을 종료/);
+});
+
+
+test('recent meetings exclude trash, use recording chronology and do not reorder the source', () => {
+  const source = Array.from({length: 8}, (_, index) => ({id: String(index), title: '회의', createdAt: index * 10, updatedAt: 999 - index, deletedAt: index === 7 ? 1 : null}));
+  source[0].recordedAt = 65;
+  const before = JSON.stringify(source);
+  assert.deepEqual(recentLibraryMeetings(source).map(item => item.id), ['0', '6', '5', '4', '3']);
+  assert.equal(JSON.stringify(source), before);
+});
+
+test('recent navigation opens current meetings and ignores a deleted target without changing filters', async () => {
+  const opened = [];
+  const app = harness({}, {selectMeeting(id) { opened.push(id); }});
+  const target = {dataset: {recentMeeting: 'two'}};
+  app.byId('recent-meetings').listeners.click({target: {closest: () => target}});
+  await settle();
+  assert.deepEqual(opened, ['two']);
+  assert.equal(app.state.libraryFilter, 'all');
+  target.dataset.recentMeeting = 'three';
+  app.byId('recent-meetings').listeners.click({target: {closest: () => target}});
+  app.state.connected = false;
+  target.dataset.recentMeeting = 'one';
+  app.byId('recent-meetings').listeners.click({target: {closest: () => target}});
+  await settle();
+  assert.deepEqual(opened, ['two']);
 });

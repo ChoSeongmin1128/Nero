@@ -2,6 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const assert = require('node:assert/strict');
+const { execFileSync } = require('node:child_process');
 const { build } = require('./catalog/build-tokens.cjs');
 
 const markerName = '.grove-design-system-preview.json';
@@ -61,8 +62,11 @@ function main() {
     const target = path.join(output, file);
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.copyFileSync(input, target);
-    const bytes = fs.readFileSync(input);
-    manifest.files.push({ file, bytes: bytes.length, sha256: hash(bytes) });
+    if (file === 'controls.js') {
+      execFileSync(process.execPath, [path.join(source, '../apps/desktop/scripts/build-controls.mjs'), target], { stdio: 'inherit' });
+    }
+    const bytes = fs.readFileSync(target);
+    manifest.files.push({ file, bytes: bytes.length, sha256: hash(bytes), ...(file === 'controls.js' ? { sourceSha256: hash(fs.readFileSync(input)), entry: 'react-controls.jsx' } : {}) });
   }
   fs.writeFileSync(path.join(output, manifestName), JSON.stringify(manifest, null, 2) + '\n');
   console.log(`Built ${files.length} files: ${output}`);

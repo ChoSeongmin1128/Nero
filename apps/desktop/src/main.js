@@ -1,3 +1,4 @@
+import '../../../design-system/react-controls.jsx';
 import * as bridge from './bridge.js';
 import { icon, escape, button, duration, recordingStatus, statusMarkup, sessionControls, applySystemAppearance, documentExport } from './ui.js';
 import { processingFeedback } from './processing-feedback.js';
@@ -8,13 +9,14 @@ import { createMeetingSearch, mountDocumentSearch } from './meeting-search.js';
 import { mountTranscriptActions } from './transcript-actions.js';
 import { mountMeetingDetail } from './meeting-detail-ui.js';
 import { mountSummaryEvidence } from './summary-evidence.js';
-import { agentConnectionPrompt } from './agent-connection-prompt.js';
+import { mountAgentConnectionDialog } from './agent-connection-dialog.jsx';
 
 applySystemAppearance();
 const byId = (id) => document.getElementById(id);
 const settingsPanels = ['appearance', 'recording', 'models', 'agent'];
 const terminologySettings = { info: null, error: '', request: 0, saving: null };
 const agentConnection = { info: null, loading: false, error: '', request: 0, refresh: 0, timer: null, pending: {}, errors: {} };
+const agentConnectionDialog = mountAgentConnectionDialog({ container: byId('settings-dialog'), fallbackTrigger: () => byId('settings-agent-manual') });
 const microphonePreferenceKey = 'nero.recording.microphone.v1';
 const recorderPreferenceKey = 'nero.recording.autoRecorder.v1';
 function readAutoRecorder() { try { return globalThis.localStorage?.getItem(recorderPreferenceKey) !== 'false'; } catch { return true; } }
@@ -52,6 +54,7 @@ function paintIconButton(node, name = node.dataset.uiIcon, label = node.getAttri
   node.setAttribute('title', label);
 }
 document.querySelectorAll('[data-ui-icon]').forEach(node => paintIconButton(node));
+document.querySelectorAll('[data-detail-icon]').forEach(node => { node.innerHTML = icon(node.dataset.detailIcon); });
 
 byId('create-meeting').innerHTML = `${icon('plus')}<span>새 회의</span>`;
 byId('welcome-create').innerHTML = `${icon('plus')}<span>새 회의</span>`;
@@ -441,6 +444,7 @@ async function changeTerminologyEnabled() {
 
 function renderAgentConnection() {
   const { info, error } = agentConnection;
+  agentConnectionDialog.update(info);
   const available = Boolean(info?.available && info.executablePath && info.config);
   const message = error || (info && !available ? '연결 도구가 포함되지 않은 빌드입니다.' : '');
   byId('settings-agent-status').textContent = message;
@@ -459,6 +463,8 @@ function renderAgentConnection() {
     button.textContent = pending ? '연결 중' : entry?.state === 'waiting' ? '다시 열기' : '연결';
     const errorNode = byId(`settings-${client}-error`);
     errorNode.textContent = agentConnection.errors[client] || entry?.detail || '';
+    errorNode.className = agentConnection.errors[client] ? 'notice' : 'settings-client-note';
+    errorNode.setAttribute?.('role', agentConnection.errors[client] ? 'alert' : 'status');
     errorNode.hidden = !errorNode.textContent;
   }
   byId('settings-agent-details').hidden = !available;
@@ -531,6 +537,7 @@ async function connectAgentClient(client) {
 }
 
 function resetAgentConnection() {
+  agentConnectionDialog.close({ restoreFocus: false });
   agentConnection.request += 1;
   agentConnection.refresh += 1;
   clearTimeout(agentConnection.timer);
@@ -548,8 +555,8 @@ function resetAgentConnection() {
 async function copyAgentConnection(kind) {
   const info = agentConnection.info;
   if (!agentConnectionActive()) return;
-  if (kind !== 'prompt' && (!info?.available || !info.executablePath || !info.config)) return;
-  const text = kind === 'prompt' ? agentConnectionPrompt(info) : kind === 'config' ? JSON.stringify(info.config, null, 2) : kind === 'cli' ? info.cliExample : '';
+  if (!info?.available || !info.executablePath || !info.config) return;
+  const text = kind === 'config' ? JSON.stringify(info.config, null, 2) : kind === 'cli' ? info.cliExample : '';
   if (!text) return;
   const request = agentConnection.request;
   const feedback = byId('settings-agent-feedback');
@@ -566,6 +573,10 @@ async function copyAgentConnection(kind) {
   feedback.hidden = false;
   clearTimeout(copyFeedbackTimers.get('agent'));
   copyFeedbackTimers.set('agent', setTimeout(() => { feedback.textContent = ''; feedback.hidden = true; copyFeedbackTimers.delete('agent'); }, 1500));
+}
+
+function openAgentConnectionPrompt() {
+  if (agentConnectionActive()) agentConnectionDialog.open(agentConnection.info);
 }
 
 function renderSettings() {
@@ -718,7 +729,8 @@ byId('settings-dialog').addEventListener('keydown', event => {
   state.settingsPanel = settingsPanels[event.key === 'Home' ? 0 : event.key === 'End' ? settingsPanels.length - 1 : (index + step + settingsPanels.length) % settingsPanels.length];
   renderSettings(); byId(`settings-${state.settingsPanel}-tab`).focus(); void loadAgentConnection(); void loadTerminologySettings();
 });
-for (const kind of ['config', 'cli', 'prompt']) byId(`settings-agent-copy-${kind}`).addEventListener('click', () => copyAgentConnection(kind));
+for (const kind of ['config', 'cli']) byId(`settings-agent-copy-${kind}`).addEventListener('click', () => copyAgentConnection(kind));
+byId('settings-agent-manual').addEventListener('click', openAgentConnectionPrompt);
 for (const client of ['claude', 'codex']) byId(`settings-${client}-connect`).addEventListener('click', () => { void connectAgentClient(client); });
 globalThis.addEventListener?.('focus', () => { if (agentConnectionActive()) void loadAgentConnection(true); });
 byId('terminology-enabled').addEventListener('change', changeTerminologyEnabled);
@@ -1077,6 +1089,7 @@ function renderSummary(meeting) {
   byId('summarize').disabled = !hasTranscript || !progress.summaryReady || !progress.summarySupported || ownJob || state.busy;
   const failed = processingJobs(state.processing).some(job => job.kind === 'summary' && job.status === 'failed' && job.acknowledged !== true && job.meetingId === meeting.id);
   byId('summarize').textContent = failed ? '현재 내용 요약' : doc ? '다시 요약' : '요약하기';
+  byId('summarize').className = doc ? 'small quiet' : 'small primary';
   byId('copy-summary').disabled = !doc;
   byId('summary-export-menu').hidden = !doc;
   let message = '';

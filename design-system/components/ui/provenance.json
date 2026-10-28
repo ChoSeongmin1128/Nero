@@ -1,0 +1,31 @@
+{
+  "commit": "96da9cc7f1aa10580a3741664e2a77c721206c00",
+  "date": "2026-10-28",
+  "files": [
+    {
+      "name": "select",
+      "path": "apps/v4/registry/bases/base/ui/select.tsx",
+      "sha256": "6348d30035b68867d5efffe9b0b1611718226bef9fdeef9554349d6b98252110"
+    },
+    {
+      "name": "popover",
+      "path": "apps/v4/registry/bases/base/ui/popover.tsx",
+      "sha256": "935bab728b60fd867384ebc6097d6a46c937423e015503e0251999b686f38bb7"
+    },
+    {
+      "name": "dialog",
+      "path": "apps/v4/registry/bases/base/ui/dialog.tsx",
+      "sha256": "aba6df6cbf51a1edcc22e415a3a46a666fc8cb66729e47b3ed2ecd97f166adff"
+    },
+    {
+      "name": "calendar",
+      "path": "apps/v4/registry/bases/base/ui/calendar.tsx",
+      "sha256": "0a492edf3888b88a5505786c48165159285cfde7e6c52eb5e4c2fdc44b09ba21"
+    },
+    {
+      "name": "button",
+      "path": "apps/v4/registry/bases/base/ui/button.tsx",
+      "sha256": "74f982d7ad7a764e3c95a519fc063a671e66ad758ea31dc89d747838e20c2487"
+    }
+  ]
+}

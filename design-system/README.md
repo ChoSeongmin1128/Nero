@@ -2,6 +2,8 @@
 
 재작성 UI의 공통 글자 규칙, 컨트롤, 반복 뷰와 브라우저 예제를 관리한다. 이 디렉터리가 정본이며 legacy Swift 앱과 사용자 라이브러리는 사용하지 않는다. Tauri 앱은 `apps/desktop/scripts/prepare-shared.mjs`로 공통 소스를 `.generated/shared`에 복사해 빌드한다. 생성본은 수정하지 않는다. 브라우저 예제는 네이티브 기능 검증을 대신하지 않는다.
 
+넓은 배경, 본문, 보조 글자와 테두리는 모든 강조색에서 같은 중립색을 사용한다. 색상 선택은 주요 동작, 선택 표시와 작은 강조 면에 적용하며 화면 전체를 착색하지 않는다. light/dark의 명암 구분과 오류/녹음 상태 색상은 강조색 선택과 독립적으로 유지한다.
+
 ## 책임
 
 | 파일/경로 | 소유하는 것 |
@@ -10,7 +12,7 @@
 | `typography.css` | 시스템/한글/코드 글꼴, 크기/굵기/줄간격/자간 역할 |
 | `components.css` | 버튼, 입력, 필드, 배지, 선택, 내용 탭, 오류, 모달, 설정 선택의 기본 스타일 |
 | `components.js` | 버튼/상태/회의 행/사람 행/참석자 항목/전사 발언/회의록 읽기/모달 내용 생성 |
-| `controls.css`, `controls.js` | 선택 메뉴와 날짜/시간의 열기/닫기/선택/초점/키보드 동작 |
+| `controls.css`, `controls.js`, `react-controls.jsx`, `components/ui/` | shadcn/ui Base 레지스트리에서 조정한 React/Base UI 선택/Popover/Dialog와 한국어 React DayPicker. 원래 native 입력의 값/이벤트 어댑터와 DOM 수명 관리 |
 | `style.css`, `prototype/` | 브라우저 제품 예제의 배치와 기능 상태 |
 | `../apps/desktop/src/style.css` | 네이티브 앱 배치와 기능별 크기. 입력 테두리/배경/안쪽 여백은 공통 스타일 사용 |
 | `desktop-preview-*`, `windows-preview/` | 각 플랫폼의 창/알림/녹음 표시와 공통 상태 연결 |
@@ -30,19 +32,23 @@
 | aux | 11px | 1.5 | 제품 밖의 검토 도구 메타 정보 |
 | subtitle | 15px | 1.5 | 소제목 |
 | reading | 16px | 1.75 | 별도의 읽기 강조 역할 |
-| heading | 19px | 1.35 | 구역 제목 |
+| heading | 18px | 1.35 | 구역 제목 |
 | title | 24px | 1.35 | 회의 제목 |
-| display | 27px | 1.35 | 페이지 제목 |
+| display | 26px | 1.35 | 페이지 제목 |
 | timer | 13px | 1.5 | UI 글꼴과 `tabular-nums` |
 | code | 12px | 1.5 | 코드 글꼴 |
 
 UI 글꼴은 OS의 `system-ui`와 한글 대체 글꼴을 같은 계약으로 사용한다. 코드 이외의 본문과 타이머에 고정폭 글꼴을 쓰지 않는다. 기존 `--body/--display/--mono`는 호환 alias다. 전사/회의록은 기존 읽기 밀도를 유지해 body 크기와 reading 줄간격을 조합한다. 역할의 실제 계산값은 카탈로그에서 확인한다.
+
+일반 컨트롤 높이는 `--control-height` 32px, 작은 동작은 `--control-height-small` 28px를 사용한다. 공통 컨트롤 반경은 6px, 묶음/대화창 반경은 8px다. 긴 문구가 줄바꿈되면 최소 높이보다 늘어날 수 있으며 글자를 잘라 높이를 강제하지 않는다. 편집하지 않는 회의 제목은 입력 테두리를 숨기고 hover/focus에서 편집 경계를 드러낸다.
 
 ## 공통 뷰
 
 `GroveUI`는 HTML을 반환하고 이벤트는 소비 화면에 남긴다. 일반 사용자 문자열은 `text`나 지정된 데이터 속성으로 전달한다. `html/contentHTML/bodyHTML/actionsHTML`은 앱이 만든 신뢰 가능한 조합에만 사용하고, 그 안의 사용자 문자열은 `GroveUI.escape()`로 처리한다. 속성 이름은 허용된 HTML/ARIA/data 목록만 받는다.
 
 카탈로그와 제품은 `meetingRow/personRow/personOption/utterance/minutes/dialogContent`를 함께 사용한다. 기능별 시간/수정/참석자 선택의 기존 `data-action/data-field/id`를 유지한다. 선택 메뉴와 달력도 같은 `GroveControls`를 사용한다.
+
+선택/날짜는 같은 canonical React 소스를 사용한다. 앱은 Vite import로 기능 모달과 React 런타임을 공유하고, 정적 카탈로그/시안은 `build-controls.mjs`로 같은 엔트리를 standalone `controls.js`로 묶는다. 원본 `controls.js`는 빌드 입력이므로 소스 폴더를 그대로 HTTP에 올리지 말고 `build-preview.cjs`의 결과를 사용한다. React는 전용 host만 소유하며 소비 화면의 원래 native 입력, 저장, 녹음 상태를 소유하지 않는다. 출처/고정 커밋/원본 해시/MIT 고지는 `components/ui/`에 있고 앱에도 라이선스를 포함한다.
 
 휴지통 이동과 삭제는 `.danger-text` 또는 `button.danger`를 사용한다. `--danger-text`와
 `--danger-surface`가 테마와 밝기에 맞는 위험 동작 색상을 소유하며, 일반 버튼/헤더 색상이

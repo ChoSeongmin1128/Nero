@@ -3,6 +3,10 @@ import { fileURLToPath } from 'node:url';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 export default defineConfig({
+  resolve: {
+    alias: Object.fromEntries(['react-dom', 'react', '@base-ui/react', 'react-day-picker', 'lucide-react', 'clsx', 'tailwind-merge'].map(name => [name, `${here}node_modules/${name}`])),
+    dedupe: ['react', 'react-dom'],
+  },
   root: `${here}src`,
   publicDir: `${here}.generated`,
   clearScreen: false,

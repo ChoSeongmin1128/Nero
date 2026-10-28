@@ -16,6 +16,20 @@ Machine-local installation and preservation receipts remain private.
 
 ## Native rewrite source
 
+- The shared UI foundation uses pinned React/Base UI primitives adapted from the
+  MIT shadcn/ui registry, with Korean DayPicker calendars and Nero's semantic tokens.
+  React owns dedicated select/date/dialog roots; existing recording, persistence,
+  processing, revision and playback controllers retain their ownership. The app and
+  static catalog build the same canonical source rather than maintaining two controls.
+- Neutral surfaces are independent of the six accent colors. Recent meetings use
+  recording/creation order; detail navigation selects only the current recent meeting,
+  retaining the previous folder filter for returning to the list. The summary remains
+  the primary document beside a non-modal voice record, with compact playback and
+  labeled icon actions. No unimplemented summary-template selector is displayed.
+- Settings > Connections keeps direct Claude/Codex installation and actual connection
+  evidence. Other agents open a connection dialog with the full prompt, copy action
+  and paste destination together. Its code area scrolls independently of the instruction;
+  copy failure and unavailable connection metadata have explicit recovery states.
 - Settings share grouped rows with aligned labels, current values and controls across
   appearance, recording, models and connections. Confirmed connections omit a redundant
   connect button and restore it when reconnection is needed. Tab keyboard navigation,

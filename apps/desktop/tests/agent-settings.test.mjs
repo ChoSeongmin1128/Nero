@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import vm from 'node:vm';
-import { agentConnectionPrompt } from '../src/agent-connection-prompt.js';
 
 const source = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
 const functions = source.slice(source.indexOf('function renderAgentConnection()'), source.indexOf('function renderSettings()'));
@@ -24,12 +23,13 @@ function harness({ load = async () => info, write = async () => {}, connect = as
   const agentConnection = { info: null, loading: false, error: '', request: 0, refresh: 0, timer: null, pending: {}, errors: {} };
   let calls = 0;
   const copied = [], timers = new Map();
-  const context = vm.createContext({ byId, state, agentConnection, agentConnectionPrompt, bridge: { agentConnectionInfo: () => { calls += 1; return load(); }, connectAgentClient: connect },
+  const dialog = { opened: [], updates: [], closed: [], open: value => dialog.opened.push(value), update: value => dialog.updates.push(value), close: value => dialog.closed.push(value) };
+  const context = vm.createContext({ byId, state, agentConnection, agentConnectionDialog: dialog, bridge: { agentConnectionInfo: () => { calls += 1; return load(); }, connectAgentClient: connect },
     navigator: { clipboard: { writeText: async text => { copied.push(text); await write(text); } } },
     copyFeedbackTimers: new Map(), setTimeout: callback => { const key = {}; timers.set(key, callback); return key; }, clearTimeout: key => timers.delete(key),
   });
   vm.runInContext(functions, context);
-  return { byId, state, agentConnection, copied, timers, context, get calls() { return calls; } };
+  return { byId, state, agentConnection, copied, timers, context, dialog, get calls() { return calls; } };
 }
 
 test('loads only while the agent panel is open and deduplicates renders and tab visits', async () => {
@@ -240,31 +240,31 @@ test('client preparation has a visible activity indicator without affecting the 
 });
 
 
-test('copies a connection prompt without exposing client registration state', async () => {
+test('manual connection opens instructions with the current information', async () => {
   const app = harness();
   await app.context.loadAgentConnection();
-  await app.context.copyAgentConnection('prompt');
-  assert.equal(app.copied[0], agentConnectionPrompt(info));
-  assert.equal(app.byId('settings-agent-feedback').textContent, '복사됨');
+  app.context.openAgentConnectionPrompt();
+  assert.equal(app.dialog.opened[0], info);
+  assert.equal(app.copied.length, 0);
 });
 
-test('connection prompt remains available when connection information cannot load', async () => {
+test('manual connection instructions remain available when native information cannot load', async () => {
   const app = harness({ load: async () => { throw Error('native unavailable'); } });
   await app.context.loadAgentConnection();
-  await app.context.copyAgentConnection('prompt');
-  assert.equal(app.copied.length, 1);
-  assert.match(app.copied[0], /설치된 Nero 앱/);
-  assert.doesNotMatch(app.copied[0], /Example/);
+  app.context.openAgentConnectionPrompt();
+  assert.equal(app.dialog.opened.length, 1);
+  assert.equal(app.dialog.opened[0], null);
   await app.context.copyAgentConnection('config');
-  assert.equal(app.copied.length, 1);
+  assert.equal(app.copied.length, 0);
 });
 
-test('prompt copying obeys dialog ownership and reports clipboard failures', async () => {
-  const app = harness({ write: async () => { throw Error('clipboard denied'); } });
+test('manual connection obeys parent ownership and closes when leaving settings', async () => {
+  const app = harness();
   app.state.settingsPanel = 'appearance';
-  await app.context.copyAgentConnection('prompt');
-  assert.equal(app.copied.length, 0);
+  app.context.openAgentConnectionPrompt();
+  assert.equal(app.dialog.opened.length, 0);
   app.state.settingsPanel = 'agent';
-  await app.context.copyAgentConnection('prompt');
-  assert.match(app.byId('settings-agent-feedback').textContent, /복사하지 못했습니다/);
+  app.context.openAgentConnectionPrompt();
+  app.context.resetAgentConnection();
+  assert.equal(app.dialog.closed.at(-1).restoreFocus, false);
 });

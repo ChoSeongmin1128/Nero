@@ -1,5 +1,10 @@
 :root {
-  --radius: 9px;
+  --radius: 8px;
+  --control-radius: 6px;
+  --control-height: 32px;
+  --control-height-small: 28px;
+  --control-padding-inline: 10px;
+  --control-padding-block: 5px;
 }
 
 * {
@@ -24,24 +29,26 @@ select {
 }
 
 button {
+  font: var(--weight-medium) var(--text-label-size)/var(--leading-ui) var(--font-ui);
+  letter-spacing: var(--tracking-ui);
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: var(--control-radius);
   background: var(--surface);
   color: var(--text);
   cursor: pointer;
-  padding: 8px 12px;
-  min-height: 35px;
+  padding: var(--control-padding-block) var(--control-padding-inline);
+  min-height: var(--control-height);
   transition: background 0.14s,
     border-color 0.14s;
 }
 
-button:hover {
+button:hover:not(:disabled) {
   background: var(--hover);
   border-color: var(--border-control);
 }
 
 button:disabled {
-  opacity: 0.45;
+  opacity: 0.55;
   cursor: not-allowed;
 }
 
@@ -50,8 +57,8 @@ a:focus-visible,
 input:focus-visible,
 textarea:focus-visible,
 select:focus-visible {
-  outline: 3px solid var(--focus);
-  outline-offset: 3px;
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
 }
 
 button.primary {
@@ -60,7 +67,7 @@ button.primary {
   border-color: var(--accent-fill);
 }
 
-button.primary:hover {
+button.primary:hover:not(:disabled) {
   background: var(--accent-fill-hover);
 }
 
@@ -76,14 +83,22 @@ button.quiet:hover:not(:disabled) {
 button.small {
   padding: 4px 8px;
   font-size: var(--text-caption-size);
-  min-height: 29px;
+  min-height: var(--control-height-small);
 }
 
 button.icon {
-  padding: 7px;
+  width: var(--control-height);
+  height: var(--control-height);
+  padding: 6px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+}
+
+button.icon.small {
+  width: var(--control-height-small);
+  height: var(--control-height-small);
+  padding: 4px;
 }
 
 svg {
@@ -107,9 +122,9 @@ select {
   font: var(--weight-regular) var(--text-body-size)/var(--leading-ui) var(--font-ui);
   letter-spacing: var(--tracking-ui);
   border: 1px solid var(--border-control);
-  border-radius: 7px;
+  border-radius: var(--control-radius);
   background: var(--surface);
-  padding: 10px;
+  padding: 6px var(--control-padding-inline);
   color: var(--text);
 }
 
@@ -120,10 +135,10 @@ textarea {
 }
 
 .text-input {
-  min-height: 36px;
-  padding: 8px 10px;
+  min-height: 34px;
+  padding: 5px var(--control-padding-inline);
   border: 1px solid var(--border-control);
-  border-radius: 7px;
+  border-radius: var(--control-radius);
   background: var(--surface);
   color: var(--text);
 }
@@ -140,14 +155,14 @@ textarea.text-input {
 }
 
 .text-input--compact {
-  min-height: 34px;
-  padding: 6px 9px;
+  min-height: var(--control-height);
+  padding: 5px 9px;
+  font-size: var(--text-label-size);
 }
 
 .text-input--title {
   padding: 4px 8px;
   border-color: transparent;
-  border-bottom-color: var(--border-control);
   border-radius: 4px;
   background: transparent;
   font-size: var(--text-title-size);
@@ -160,10 +175,15 @@ textarea.text-input {
   border-color: var(--text-secondary);
 }
 
+.text-input--title:hover:not(:disabled):not([readonly]):not(:focus) {
+  border-color: transparent;
+  border-bottom-color: var(--border-control);
+}
+
 .text-input:focus {
   border-color: var(--focus);
-  outline: 3px solid var(--focus);
-  outline-offset: 3px;
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
 }
 
 .text-input--title:focus {
@@ -218,7 +238,7 @@ input[type="checkbox"] {
 }
 
 .badge {
-  padding: 4px 7px;
+  padding: 3px 6px;
   background: var(--accent-subtle);
   color: var(--accent);
   border-radius: 5px;
@@ -303,7 +323,7 @@ input[type="checkbox"] {
 }
 
 .notice {
-  padding: 12px 14px;
+  padding: 10px 12px;
   background: var(--warning-surface);
   color: var(--warning-text);
   font-size: var(--text-caption-size);
@@ -442,7 +462,7 @@ input[type="checkbox"] {
 }
 
 .summary-document h3 {
-  font-size: var(--text-heading-size);
+  font-size: var(--text-subtitle-size);
   line-height: var(--leading-heading);
   font-weight: var(--weight-heading);
   letter-spacing: var(--tracking-heading);
@@ -451,7 +471,7 @@ input[type="checkbox"] {
 .summary-document h4,
 .summary-document h5,
 .summary-document h6 {
-  font-size: var(--text-reading-size);
+  font-size: var(--text-body-size);
   line-height: var(--leading-ui);
   font-weight: var(--weight-semibold);
 }
@@ -483,15 +503,6 @@ input[type="checkbox"] {
   white-space: pre-wrap;
 }
 
-.summary-document .source-reference {
-  display: inline;
-  padding: 0 3px;
-  min-height: 24px;
-  vertical-align: baseline;
-  font-size: var(--text-caption-size);
-  line-height: var(--leading-ui);
-}
-
 @media (hover: none), (pointer: coarse) {
   .transcript-row-actions { opacity: 1; }
 }
@@ -509,9 +520,10 @@ input[type="checkbox"] {
   max-height: 90%;
   overflow: auto;
   background: var(--surface);
-  border-radius: 15px;
-  box-shadow: 0 24px 80px var(--shadow-modal);
-  padding: 27px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 40px var(--shadow-modal);
+  padding: 24px;
 }
 
 .modal.wide {
@@ -522,7 +534,7 @@ input[type="checkbox"] {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 24px;
+  margin-bottom: 20px;
 }
 
 .modal-head h2 {
@@ -542,8 +554,8 @@ input[type="checkbox"] {
 .field {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  margin-bottom: 18px;
+  gap: 6px;
+  margin-bottom: 16px;
   font-size: var(--text-caption-size);
 }
 
@@ -558,8 +570,8 @@ button.with-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 5px 9px;
-  border-radius: 20px;
+  padding: 3px 6px;
+  border-radius: 5px;
   font-size: var(--text-caption-size);
   color: var(--text-secondary);
   background: var(--surface-secondary);
@@ -661,8 +673,8 @@ html[data-appearance-changing] button {
   color: var(--text);
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 16px;
-  box-shadow: 0 24px 80px var(--shadow-modal);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 40px var(--shadow-modal);
 }
 
 .settings-dialog::backdrop {
@@ -673,7 +685,7 @@ html[data-appearance-changing] button {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 20px 24px;
+  padding: 16px 20px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -693,9 +705,9 @@ html[data-appearance-changing] button {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 12px;
   min-height: 48px;
-  padding: 12px 14px;
+  padding: 10px 12px;
 }
 
 .settings-row + .settings-row {
@@ -718,7 +730,7 @@ html[data-appearance-changing] button {
 .theme-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
+  gap: 12px;
 }
 
 .theme-option {
@@ -728,7 +740,7 @@ html[data-appearance-changing] button {
   padding: 5px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius);
   cursor: pointer;
 }
 
@@ -871,7 +883,7 @@ html[data-appearance-changing] button {
   padding: 4px;
   background: var(--surface-secondary);
   border: 1px solid var(--border);
-  border-radius: 9px;
+  border-radius: var(--radius);
 }
 
 .brightness-choice {
@@ -943,7 +955,7 @@ html[data-appearance-changing] button {
 .transcript-row.has-speaker.is-editing { grid-template-columns: 56px 108px minmax(0, 1fr); }
 .transcript-speaker { max-width: 108px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; color: var(--text-secondary); }
 .folder-list { flex: 1; min-height: 0; overflow: auto; padding: 4px 8px; }
-.library-dialog, .speaker-dialog { width: min(640px, calc(100vw - 48px)); max-height: min(760px, calc(100vh - 48px)); border: 1px solid var(--border-control); border-radius: var(--radius); padding: 24px; color: var(--text); background: var(--surface); overflow: auto; }
+.library-dialog, .speaker-dialog { width: min(640px, calc(100vw - 48px)); max-height: min(760px, calc(100vh - 48px)); border: 1px solid var(--border); border-radius: var(--radius); padding: 24px; color: var(--text); background: var(--surface); overflow: auto; }
 .library-dialog::backdrop, .speaker-dialog::backdrop { background: var(--overlay); }
 .library-dialog h2, .speaker-dialog h2 { font-size: var(--text-heading-size); }
 .library-dialog p { margin-top: 12px; color: var(--text-secondary); }
@@ -991,7 +1003,7 @@ button.danger:hover:not(:disabled), button.danger-text:hover:not(:disabled) { co
 .library-folder-menu { grid-column: 2; justify-self: center; position: relative; }
 .library-folder-menu summary { cursor: pointer; display: flex; padding: 4px; list-style: none; border-radius: 4px; color: var(--text-secondary); }
 .library-folder-menu summary::-webkit-details-marker { display: none; }
-.library-folder-menu .action-menu { position: absolute; top: 100%; left: 0; z-index: 10; min-width: 135px; padding: 4px; border: 1px solid var(--border-control); border-radius: var(--radius); background: var(--surface); box-shadow: 0 8px 24px var(--shadow-modal); }
+.library-folder-menu .action-menu { position: absolute; top: 100%; left: 0; z-index: 10; min-width: 135px; padding: 4px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); box-shadow: 0 8px 24px var(--shadow-modal); }
 .library-folder-menu .action-menu button { width: 100%; text-align: left; border-color: transparent; }
 .library-form .dialog-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .library-folder-choices { display: grid; gap: 6px; margin-top: 16px; }
@@ -1013,13 +1025,13 @@ button.danger:hover:not(:disabled), button.danger-text:hover:not(:disabled) { co
 }
 
 /* Linked evidence remains within the transcript workspace. */
-.summary-document .source-reference { display: inline-flex; align-items: center; justify-content: center; vertical-align: middle; min-height: 24px; width: 24px; padding: 3px; position: relative; margin-inline: 3px; color: var(--text-secondary); white-space: nowrap; }
-.summary-document .source-reference:hover, .summary-document .source-reference[aria-pressed="true"] { color: var(--text); background: var(--hover); }
+.summary-document .source-reference { display: inline-flex; align-items: center; justify-content: center; vertical-align: middle; min-height: 24px; min-width: 24px; width: auto; padding: 3px 6px; position: relative; margin-inline: 3px; border-color: transparent; color: var(--accent); background: var(--accent-subtle); font-size: var(--text-caption-size); line-height: var(--leading-ui); white-space: nowrap; }
+.summary-document .source-reference:hover, .summary-document .source-reference[aria-pressed="true"] { color: var(--accent-strong); border-color: var(--selection-border); background: var(--accent-subtle); }
 .summary-evidence { flex: none; min-width: 0; padding: 0 16px 12px; color: var(--text); overflow-wrap: anywhere; }
 .summary-evidence[hidden] { display: none; }
 .summary-evidence-navigation { display: flex; align-items: center; gap: 4px; font-size: var(--text-caption-size); color: var(--text-secondary); }
 .summary-evidence-navigation > span { margin-right: auto; }
-.summary-evidence-entry { max-height: 180px; overflow: auto; padding: 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+.summary-evidence-entry { max-height: 180px; overflow: auto; padding: 10px 12px; border: 0; border-left: 2px solid var(--selection-border); border-radius: 0 var(--control-radius) var(--control-radius) 0; background: var(--surface); }
 .summary-evidence-entry strong, .summary-evidence-meta { font-size: var(--text-caption-size); color: var(--text-secondary); }
 .summary-evidence-text { margin-top: 6px; white-space: pre-wrap; line-height: var(--leading-reading); }
 .summary-evidence-message { color: var(--text-secondary); }

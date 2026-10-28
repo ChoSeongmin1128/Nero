@@ -1,0 +1,26 @@
+.settings-agent-alternative { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 14px; border-top: 1px solid var(--border); }
+.settings-agent-alternative-copy { display: grid; gap: 2px; min-width: 0; }
+.settings-agent-alternative-copy strong { font-size: var(--text-label-size); font-weight: var(--weight-medium); }
+.settings-agent-alternative-copy span { color: var(--text-secondary); font-size: var(--text-caption-size); }
+.settings-agent-alternative button { flex: none; min-width: 62px; }
+.settings-client-note { grid-column: 1 / -1; margin: 0; color: var(--text-secondary); font-size: var(--text-caption-size); overflow-wrap: anywhere; }
+.app-settings-dialog .nero-dialog-overlay { position: absolute; inset: 0; z-index: 5; }
+.agent-prompt-dialog { position: absolute; z-index: 6; inset: 0; transform: none; width: 100%; height: 100%; max-height: 100%; display: flex; flex-direction: column; overflow: hidden; padding: 0; border: 0; border-radius: inherit; box-shadow: none; }
+.agent-prompt-dialog .nero-dialog-header { flex: none; padding: 20px 48px 16px 20px; border-bottom: 1px solid var(--border); }
+.agent-prompt-dialog .nero-dialog-title { margin: 0; font-size: var(--text-heading-size); line-height: var(--leading-heading); }
+.agent-prompt-dialog .nero-dialog-description { margin: 8px 0 0; font-size: var(--text-label-size); line-height: var(--leading-ui); color: var(--text-secondary); word-break: keep-all; overflow-wrap: anywhere; }
+.agent-prompt-body { display: flex; flex: 1; flex-direction: column; min-height: 0; overflow: hidden; padding: 18px 20px 20px; }
+.agent-prompt-code { display: flex; flex: 1; flex-direction: column; min-height: 0; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--surface-secondary); }
+.agent-prompt-code-header { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 10px 8px 12px; border-bottom: 1px solid var(--border); font-size: var(--text-caption-size); color: var(--text-secondary); }
+.agent-prompt-code-header button { flex: none; min-height: 30px; }
+.agent-prompt-code pre { flex: 1; min-height: 0; margin: 0; overflow: auto; padding: 12px; color: var(--text); font-family: var(--font-code); font-size: var(--text-caption-size); line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
+.agent-prompt-code pre:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.agent-prompt-code code { font: inherit; }
+.agent-prompt-instruction { flex: none; margin: 14px 0 0; font-size: var(--text-label-size); line-height: var(--leading-ui); color: var(--text-secondary); word-break: keep-all; overflow-wrap: anywhere; }
+.agent-prompt-feedback { flex: none; margin: 10px 0 0; font-size: var(--text-caption-size); line-height: var(--leading-ui); color: var(--text-secondary); }
+.agent-prompt-feedback[role="alert"] { color: var(--danger-text); }
+@media (max-width: 540px) {
+  .settings-agent-alternative { padding-inline: 10px; gap: 8px; }
+  .agent-prompt-dialog .nero-dialog-header { padding: 16px 44px 14px 16px; }
+  .agent-prompt-body { padding: 14px 16px 16px; }
+}

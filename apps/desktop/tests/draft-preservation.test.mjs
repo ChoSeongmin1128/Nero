@@ -134,6 +134,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     ${librarySource.slice(0, librarySource.indexOf('export function mountLibrary')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '')}
     let summaryEvidenceOptions;
     const mountSummaryEvidence = options => { summaryEvidenceOptions = options; return { reset() {}, update() {}, restoreFocus() {} }; };
+    const mountAgentConnectionDialog = () => ({ open() {}, update() {}, close() {}, isOpen: () => false });
     const mountLibrary = () => ({ render() {}, resetSelection() {}, toggleSelection() {}, show: async () => {} });
     const mountSpeakers = ({getState}) => ({render() {}, reset() {}, open: async () => {}, label: segment => getState().transcriptDraft?.doc?.speakers?.find(speaker=>speaker.id === segment.speakerId)?.name || '화자 미지정'});
 
