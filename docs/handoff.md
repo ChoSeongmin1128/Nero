@@ -8,7 +8,7 @@ the private installation and evaluation receipts.
 
 ## Release state
 
-Nero 0.0.1 build 23 has signed/notarized macOS arm64 artifacts and has replaced the
+Nero 0.0.1 build 24 has signed/notarized macOS arm64 artifacts and has replaced the
 local installation with existing data and connection registrations preserved. This
 is a personal development build; it does not establish long-recording quality,
 target-hardware or Windows-device qualification, nor start the public compatibility
@@ -17,6 +17,11 @@ baseline. Release source commits and artifact hashes are in
 Machine-local installation and preservation receipts remain private.
 
 ## Native rewrite source
+
+- Meeting lists use direct checkbox/modifier selection without a selection mode.
+  Visible order owns range selection; selection count owns the header actions.
+  Toolbar icon controls, contextual deletion names and confirmation boundaries
+  follow the shared design-system rules.
 
 - The shared UI foundation uses pinned React/Base UI primitives adapted from the
   MIT shadcn/ui registry, with Korean DayPicker calendars and Nero's semantic tokens.
