@@ -203,6 +203,9 @@ inference, proposals, and unverified items.
 - Use `.work/rust-target` as the single Cargo target cache. Retire temporary alternate
   targets when their experiment is finished. Temporary notary upload archives belong
   to an auto-cleaned temporary directory and are not retained beside final artifacts.
+- During macOS GUI/release verification, keep a bounded temporary display/idle/user-active
+  assertion while working and release it when finished. Do not change persistent
+  screen-lock, power or security settings.
 - Keep synthetic fixtures in auto-cleaned temporary directories. Never add dummy
   meetings or templates to the user's library during validation. Reuse model/audio
   inputs without making copies. After recording the needed result, move obsolete
