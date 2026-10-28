@@ -22,7 +22,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
   const owner = dialog.ownerDocument;
   const dragPreview = createDragPreview(owner);
   let folderKey = '', recentKey = '', pending = null, returnFocus = null, dragSources = [];
-  let activeMenu = null, dropTarget = null;
+  let activeMenu = null, dropTarget = null, selectionAnchor = null;
   const state = () => getState();
   const selection = () => state().librarySelection ||= new Set();
   const selectedIds = () => [...selection()];
@@ -54,11 +54,12 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     const meetings = filterLibraryMeetings(state().snapshot.meetings, state().libraryFilter);
     const found = state().librarySearchIds;
     const ids = found != null ? new Set(found) : null;
-    return query() && ids ? meetings.filter(meeting => ids.has(meeting.id)) : filterLibraryMeetings(meetings, state().libraryFilter, query());
+    const visible = query() && ids ? meetings.filter(meeting => ids.has(meeting.id)) : filterLibraryMeetings(meetings, state().libraryFilter, query());
+    return visible.sort((a, b) => (b.recordedAt ?? b.createdAt ?? 0) - (a.recordedAt ?? a.createdAt ?? 0) || (b.createdAt ?? 0) - (a.createdAt ?? 0));
   }
   function resetSelection() {
     selection().clear();
-    state().librarySelecting = false;
+    selectionAnchor = null;
   }
   async function show(filter = 'all') {
     try {
@@ -72,10 +73,33 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
       if (changed || query()) await onViewChanged?.(filter);
     } catch (error) { showError(error); }
   }
-  function toggleSelection(id) {
-    if (state().libraryBusy || !visibleMeetings().some(meeting => meeting.id === id)) return;
-    state().librarySelecting = true;
-    if (selection().has(id)) selection().delete(id); else selection().add(id);
+  function toggleSelection(id, event = {}) {
+    if (state().libraryBusy || !state().connected) return;
+    const ids = visibleMeetings().map(meeting => meeting.id);
+    const target = ids.indexOf(id);
+    if (target < 0) return;
+    if (event.shiftKey) {
+      let anchor = ids.indexOf(selectionAnchor);
+      if (anchor < 0) { anchor = target; selectionAnchor = id; }
+      if (!event.metaKey && !event.ctrlKey) selection().clear();
+      ids.slice(Math.min(anchor, target), Math.max(anchor, target) + 1).forEach(value => selection().add(value));
+    } else {
+      if (selection().has(id)) selection().delete(id); else selection().add(id);
+      selectionAnchor = selection().size ? id : null;
+    }
+    renderApp();
+  }
+  function handleRowSelection(id, event = {}) {
+    if (!event.shiftKey && !event.metaKey && !event.ctrlKey) return false;
+    event.preventDefault?.();
+    toggleSelection(id, event);
+    return true;
+  }
+  function selectAll() {
+    if (state().libraryBusy || !state().connected) return;
+    const visible = visibleMeetings();
+    visible.forEach(meeting => selection().add(meeting.id));
+    if (visible.length && !selectionAnchor) selectionAnchor = visible[0].id;
     renderApp();
   }
   function setDialogBusy(busy) {
@@ -226,6 +250,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     const visible = visibleMeetings();
     const visibleIds = new Set(visible.map(meeting => meeting.id));
     for (const id of selection()) if (!visibleIds.has(id)) selection().delete(id);
+    if (!selection().size || !visibleIds.has(selectionAnchor)) selectionAnchor = null;
     const filter = state().libraryFilter;
     const disabled = Boolean(state().libraryBusy || !state().connected);
     const navigation = [{ id: 'all', name: '전체 회의', icon: 'notebook-pen' }, { id: 'unfiled', name: '미분류', icon: 'inbox' }, ...folders.map(folder => ({ ...folder, icon: 'folder' })), { id: 'trash', name: '휴지통', icon: 'trash-2' }];
@@ -250,16 +275,14 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     byId('library-title').textContent = navigation.find(item => item.id === filter)?.name || '회의';
     byId('library-count').innerHTML = state().libraryBusy ? '<span class="activity-spinner" aria-hidden="true"></span><span role="status">처리 중</span>' : `${visible.length}개`;
     const count = selection().size;
-    byId('library-batch').hidden = !state().librarySelecting;
+    byId('library-batch').hidden = !count;
     byId('library-selected-count').textContent = `${count}개 선택`;
-    byId('library-select-toggle').textContent = state().librarySelecting ? '선택 취소' : '선택';
-    byId('library-select-toggle').disabled = disabled || !visible.length;
     for (const id of ['library-move', 'library-trash', 'library-restore', 'library-purge']) byId(id).disabled = disabled || !count;
     byId('library-move').hidden = filter === 'trash';
     byId('library-trash').hidden = filter === 'trash';
     byId('library-restore').hidden = filter !== 'trash';
     byId('library-purge').hidden = filter !== 'trash';
-    byId('library-empty-trash').hidden = filter !== 'trash';
+    byId('library-empty-trash').hidden = filter !== 'trash' || count > 0;
     byId('library-empty-trash').disabled = disabled || !filterLibraryMeetings(snapshot.meetings, 'trash').length;
     byId('library-select-all').disabled = disabled || !visible.length;
     byId('library-selection-clear').disabled = disabled || !count;
@@ -362,17 +385,26 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     void selectMeeting(meeting.id);
   });
   byId('library-back').addEventListener('click', () => void show(state().libraryFilter));
-  byId('library-select-toggle').addEventListener('click', () => { if (state().libraryBusy) return; if (state().librarySelecting) resetSelection(); else state().librarySelecting = true; renderApp(); });
-  byId('library-select-all').addEventListener('click', () => { if (state().libraryBusy) return; visibleMeetings().forEach(meeting => selection().add(meeting.id)); renderApp(); });
-  byId('library-selection-clear').addEventListener('click', () => { selection().clear(); renderApp(); });
+  byId('library-select-all').addEventListener('click', selectAll);
+  byId('library-selection-clear').addEventListener('click', () => { if (state().libraryBusy || !state().connected) return; resetSelection(); renderApp(); });
   for (const action of ['move', 'trash', 'restore', 'purge']) byId(`library-${action}`).addEventListener('click', () => actionFor(action, selectedIds()));
   for (const action of ['move', 'trash']) byId(`meeting-${action}`).addEventListener('click', () => { closeMenu(activeMenu, true); actionFor(action, [state().selectedId].filter(Boolean)); });
   byId('meeting-list').addEventListener('click', event => {
     const toggle = event.target.closest('[data-library-toggle]');
     const action = event.target.closest('[data-library-action]');
-    if (toggle) { event.preventDefault(); event.stopPropagation(); toggleSelection(toggle.dataset.libraryToggle); }
+    if (toggle) { event.preventDefault(); event.stopPropagation(); toggleSelection(toggle.dataset.libraryToggle, event); }
     if (action) { event.preventDefault(); event.stopPropagation(); actionFor(action.dataset.libraryAction, [action.dataset.libraryTarget]); action.closest('details')?.removeAttribute('open'); }
   });
+  function handleSelectionKeydown(event) {
+    if (event.defaultPrevented || event.isComposing || event.keyCode === 229 || dialog.open || activeMenu || !state().libraryOpen || state().libraryBusy || !state().connected) return;
+    if (event.target.closest?.('textarea,select,[contenteditable]:not([contenteditable="false"]),input:not([type="checkbox"]):not([type="radio"]):not([type="button"])')) return;
+    if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === 'a') {
+      event.preventDefault(); selectAll();
+    } else if (event.key === 'Escape' && selection().size) {
+      event.preventDefault(); event.stopPropagation(); resetSelection(); renderApp();
+    }
+  }
+  for (const id of ['meeting-list', 'library-batch']) byId(id).addEventListener('keydown', handleSelectionKeydown);
   byId('meeting-list').addEventListener('contextmenu', event => {
     const row = event.target.closest('[data-meeting-id]');
     const menu = row?.querySelector('[data-meeting-menu]');
@@ -428,5 +460,5 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     if (destination.filter === 'trash') trashDialog(sources.map(source => source.id));
     else void mutate(() => moveChecked(sources, destination.destination), resetSelection);
   });
-  return { render, show, resetSelection, toggleSelection, selectedIds, visibleMeetings };
+  return { render, show, resetSelection, toggleSelection, handleRowSelection, selectedIds, visibleMeetings };
 }

@@ -27,7 +27,7 @@ function readMicrophonePreference() {
   } catch { return { id: null, name: '' }; }
 }
 const microphonePreference = readMicrophonePreference();
-const state = { snapshot: { meetings: [], folders: [], session: null }, libraryOpen: false, libraryFilter: 'all', librarySelection: new Set(), librarySelecting: false, libraryBusy: false, librarySearchIds: null, librarySearchHits: [], pendingSearchIntent: null, setupReturnId: null, librarySearchPending: false, librarySearchUnavailable: 0, selectedId: null, devices: [], devicesLoaded: false, deviceId: microphonePreference.id, deviceName: microphonePreference.name, settingsPanel: 'appearance', settingsKey: '', settingsError: '', settingsReturnId: 'settings', setupFromSettings: false, autoRecorder: readAutoRecorder(), recorderSettingBusy: false, snapshotKey: '', processingKey: '', processingCancellingId: null, transcriptEditing: null, audioRequest: 0, dateSaving: null, dateKey: '', dateError: null, lastError: null, errorIsSave: false, connected: false, busy: false, composing: false, transcriptComposing: false, editLocks: 0, draft: null, saveTimer: null, saveQueue: Promise.resolve(), listKey: '', controlsKey: '', audioKey: '', processing: { status: 'idle', supported: false, modelReady: false }, transcriptDraft: null, transcriptKey: '', transcriptLoadId: 0, transcriptSaveQueue: Promise.resolve(), summary: null, summaryKey: '', summaryLoadId: 0, summaryLoaded: false, transcriptLoaded: false, summaryLoadError: false, transcriptLoadError: false, setupRequested: false };
+const state = { snapshot: { meetings: [], folders: [], session: null }, libraryOpen: false, libraryFilter: 'all', librarySelection: new Set(), libraryBusy: false, librarySearchIds: null, librarySearchHits: [], pendingSearchIntent: null, setupReturnId: null, librarySearchPending: false, librarySearchUnavailable: 0, selectedId: null, devices: [], devicesLoaded: false, deviceId: microphonePreference.id, deviceName: microphonePreference.name, settingsPanel: 'appearance', settingsKey: '', settingsError: '', settingsReturnId: 'settings', setupFromSettings: false, autoRecorder: readAutoRecorder(), recorderSettingBusy: false, snapshotKey: '', processingKey: '', processingCancellingId: null, transcriptEditing: null, audioRequest: 0, dateSaving: null, dateKey: '', dateError: null, lastError: null, errorIsSave: false, connected: false, busy: false, composing: false, transcriptComposing: false, editLocks: 0, draft: null, saveTimer: null, saveQueue: Promise.resolve(), listKey: '', controlsKey: '', audioKey: '', processing: { status: 'idle', supported: false, modelReady: false }, transcriptDraft: null, transcriptKey: '', transcriptLoadId: 0, transcriptSaveQueue: Promise.resolve(), summary: null, summaryKey: '', summaryLoadId: 0, summaryLoaded: false, transcriptLoaded: false, summaryLoadError: false, transcriptLoadError: false, setupRequested: false };
 const fullDate = new Intl.DateTimeFormat('ko-KR', { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 const calendarDay = value => { const date = new Date(value); return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`; };
 const meetingDay = meeting => meeting.meetingDate || calendarDay(meeting.recordedAt ?? meeting.createdAt);
@@ -73,14 +73,14 @@ function clearError(saveOnly = false) { if (saveOnly && !state.errorIsSave) retu
 
 function renderList() {
   const query = byId('search').value.trim().toLocaleLowerCase();
-  let meetings = filterLibraryMeetings(state.snapshot.meetings, state.libraryFilter);
-  meetings = meetings.filter(meeting => !query || (state.librarySearchIds ? state.librarySearchIds.includes(meeting.id) : `${meeting.title}\n${meeting.notes}`.toLocaleLowerCase().includes(query)));
-  meetings.sort((a,b) => meetingTimestamp(b) - meetingTimestamp(a) || b.createdAt - a.createdAt);
+  const meetings = library.visibleMeetings();
   byId('meeting-count').textContent = String(state.snapshot.meetings.filter(meeting => meeting.deletedAt == null).length);
-  const key = JSON.stringify([query, state.selectedId, state.librarySelecting, [...state.librarySelection], state.libraryBusy, state.libraryFilter, state.librarySearchHits, meetings.map(meeting => [meeting.id, meeting.title, meeting.audio, meeting.createdAt, meeting.recordedAt, meetingDay(meeting), stateFor(meeting), meeting.deletedAt])]);
+  const key = JSON.stringify([query, state.selectedId, [...state.librarySelection], state.libraryBusy, state.libraryFilter, state.librarySearchHits, meetings.map(meeting => [meeting.id, meeting.title, meeting.audio, meeting.createdAt, meeting.recordedAt, meetingDay(meeting), stateFor(meeting), meeting.deletedAt])]);
   if (key === state.listKey) return;
   state.listKey = key;
-  const focused = document.activeElement?.closest?.('[data-meeting-id]')?.dataset.meetingId;
+  const active = document.activeElement;
+  const focused = active?.closest?.('[data-meeting-id]')?.dataset.meetingId;
+  const focusSelector = active?.matches?.('[data-library-toggle]') ? '[data-library-toggle]' : active?.matches?.('summary') ? 'summary' : '[data-open-meeting]';
   const scroll = byId('meeting-list').scrollTop;
   byId('meeting-list').innerHTML = meetings.map(meeting => {
     const phase = stateFor(meeting), timestamp = meetingTimestamp(meeting);
@@ -89,16 +89,17 @@ function renderList() {
     const selected = state.librarySelection.has(meeting.id);
     const actions = meeting.deletedAt != null ? [['restore','복원'],['purge','영구 삭제']] : [['rename','이름 변경'],['move','폴더로 이동'],['trash','휴지통으로 이동']];
     const more = `<details class="meeting-menu document-export" data-meeting-menu="${escape(meeting.id)}"><summary aria-label="${escape(meeting.title)} 더보기">${icon('ellipsis')}</summary><div>${actions.map(([action,label]) => `<button type="button" class="${['trash', 'purge'].includes(action) ? 'danger-text' : ''}" aria-label="${escape(label)}" data-library-action="${action}" data-library-target="${escape(meeting.id)}"${state.libraryBusy ? ' disabled' : ''}>${escape(label)}</button>`).join('')}</div></details>`;
-    const checkbox = `<input type="checkbox" class="meeting-selection" data-library-toggle="${escape(meeting.id)}" aria-label="${escape(meeting.title)} 선택"${selected ? ' checked' : ''}${!state.librarySelecting ? ' hidden' : ''}${state.libraryBusy ? ' disabled' : ''}>`;
+    const checkbox = `<span class="meeting-select-control"><span class="meeting-select-symbol" aria-hidden="true">${icon(['recording','paused'].includes(phase) ? 'mic' : meeting.audio ? 'audio-lines' : 'file-text')}</span><input type="checkbox" class="meeting-selection" data-library-toggle="${escape(meeting.id)}" aria-label="${escape(meeting.title)} 선택"${selected ? ' checked' : ''}${state.libraryBusy || !state.connected ? ' disabled' : ''}><span class="meeting-select-check" aria-hidden="true">${icon('check')}</span></span>`;
     const length = meeting.audio?.sampleRate ? duration(meeting.audio.frames / meeting.audio.sampleRate * 1000) : '';
     const hit = state.librarySearchHits.find(hit => hit.meetingId === meeting.id);
     const matchLabel = { notes: '메모', transcript: '음성 기록', speaker: '화자', summary: '요약' }[hit?.kind];
     const snippet = query && matchLabel ? `<span class="meeting-item-match"><span>${matchLabel}</span> ${globalThis.GroveUI.highlightText(hit.text, query)}</span>` : '';
-    const content = `${icon(['recording','paused'].includes(phase) ? 'mic' : meeting.audio ? 'audio-lines' : 'file-text')}<span class="meeting-item-content"><strong>${escape(meeting.title || '제목 없는 회의')}</strong><span class="meeting-item-meta"><span class="meeting-item-time" title="${escape(timestampDescription)}" aria-label="${escape(timestampDescription)}">${escape(timestampLabel)}</span>${length ? `<span>${escape(length)}</span>` : ''}</span>${snippet}</span><span class="meeting-item-state ${['recording','paused'].includes(phase) ? 'recording' : ''}">${escape(recordingStatus(phase))}</span>`;
+    const content = `<span class="meeting-item-content"><strong>${escape(meeting.title || '제목 없는 회의')}</strong><span class="meeting-item-meta"><span class="meeting-item-time" title="${escape(timestampDescription)}" aria-label="${escape(timestampDescription)}">${escape(timestampLabel)}</span>${length ? `<span>${escape(length)}</span>` : ''}</span>${snippet}</span><span class="meeting-item-state ${['recording','paused'].includes(phase) ? 'recording' : ''}">${escape(recordingStatus(phase))}</span>`;
     return `<article class="meeting-entry${selected ? ' is-selected' : ''}" data-meeting-id="${escape(meeting.id)}"${meeting.deletedAt == null ? ' draggable="true"' : ''}>${checkbox}${globalThis.GroveUI.button({ className: 'meeting-item', attrs: { 'data-open-meeting': meeting.id, 'aria-current': String(meeting.id === state.selectedId), title: meeting.title }, html: content })}${more}</article>`;
   }).join('') || `<p class="list-empty">${query ? '검색 결과가 없습니다.' : state.libraryFilter === 'trash' ? '휴지통이 비어 있습니다.' : '회의가 없습니다.'}</p>`;
+  byId('meeting-list').classList.toggle('has-selection', state.librarySelection.size > 0);
   byId('meeting-list').scrollTop = scroll;
-  if (focused) [...byId('meeting-list').querySelectorAll('[data-open-meeting]')].find(node => node.dataset.openMeeting === focused)?.focus({ preventScroll: true });
+  if (focused) [...byId('meeting-list').querySelectorAll('[data-meeting-id]')].find(node => node.dataset.meetingId === focused)?.querySelector(focusSelector)?.focus({ preventScroll: true });
 }
 
 
@@ -716,7 +717,8 @@ byId('meeting-list').addEventListener('click', event => {
   const id = event.target.closest('[data-meeting-id]')?.dataset.meetingId;
   if (!id) return;
   const meeting = state.snapshot.meetings.find(item => item.id === id);
-  if (state.librarySelecting || meeting?.deletedAt != null) library.toggleSelection(id); else { const hit = state.librarySearchHits.find(hit => hit.meetingId === id); void selectMeeting(id, hit && hit.kind !== 'title' ? { query: byId('search').value.trim(), hit } : null); }
+  if (library.handleRowSelection(id, event)) { event.preventDefault(); return; }
+  if (meeting?.deletedAt != null) library.toggleSelection(id, event); else { const hit = state.librarySearchHits.find(hit => hit.meetingId === id); void selectMeeting(id, hit && hit.kind !== 'title' ? { query: byId('search').value.trim(), hit } : null); }
 });
 byId('create-meeting').addEventListener('click', () => run(createMeeting));
 byId('welcome-create').addEventListener('click', () => run(createMeeting));

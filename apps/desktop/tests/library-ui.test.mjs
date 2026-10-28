@@ -11,7 +11,7 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
 
 function harness(overrides = {}, options = {}) {
   const nodes = new Map(), calls = [], errors = [], dragImages = [], frames = new Map();
-  const state = { snapshot: { meetings: meetings(), folders: [{ id: 'project', name: '프로젝트' }], session: null }, selectedId: 'one', connected: true, libraryFilter: 'all', libraryOpen: true, librarySelection: new Set(), librarySelecting: false, libraryBusy: false, processing: { status: 'idle' } };
+  const state = { snapshot: { meetings: meetings(), folders: [{ id: 'project', name: '프로젝트' }], session: null }, selectedId: 'one', connected: true, libraryFilter: 'all', libraryOpen: true, librarySelection: new Set(), libraryBusy: false, processing: { status: 'idle' } };
   let locked = false, owner, frameId = 0;
   class Node {
     constructor(id) { this.id = id; this.listeners = {}; this.dataset = {}; this.value = ''; this.open = false; this.hidden = false; this.disabled = false; this.isConnected = true; this.ownerDocument = owner; this.style = {}; this.children = []; }
@@ -70,10 +70,10 @@ function harness(overrides = {}, options = {}) {
     ...options,
   });
   controller.render();
-  const click = (id, target = { closest: () => null }) => byId(id).listeners.click({ target, preventDefault() {}, stopPropagation() {} });
+  const click = (id, target = { closest: () => null }, event = {}) => byId(id).listeners.click({ target, preventDefault() {}, stopPropagation() {}, ...event });
   const target = (dataset, selectors) => ({ dataset, closest: selector => selectors.some(part => selector.includes(part)) ? targetNode : null });
   let targetNode;
-  const delegated = (id, dataset, selectors) => { targetNode = target(dataset, selectors); click(id, targetNode); };
+  const delegated = (id, dataset, selectors, event = {}) => { targetNode = target(dataset, selectors); click(id, targetNode, event); };
   const submit = async () => { byId('library-dialog').listeners.submit({ preventDefault() {} }); await settle(); };
   const drag = (id, { image = 'supported', failData = false, clientX = 500, clientY = 350 } = {}) => {
     const payload = new Map();
@@ -239,7 +239,6 @@ test('dragging a meeting onto a folder flushes edits and moves its ID without to
 test('selected meetings drag together while all/same-folder/external drops remain invalid', async () => {
   const app = harness();
   app.state.librarySelection = new Set(['one', 'two']);
-  app.state.librarySelecting = true;
   const transfer = app.drag('one');
   assert.equal(app.dragEvent('dragover', transfer, app.destination('all')), false);
   const folder = app.destination('project');
@@ -300,12 +299,11 @@ test('library scopes exclude trash and do not confuse unfiled with a folder', ()
 test('folder navigation flushes edits and clears the previous selection', async () => {
   const app = harness();
   app.state.librarySelection.add('one');
-  app.state.librarySelecting = true;
   await app.controller.show('unfiled');
   assert.equal(app.calls[0].name, 'flush');
   assert.equal(app.state.libraryFilter, 'unfiled');
   assert.equal(app.state.librarySelection.size, 0);
-  assert.equal(app.state.librarySelecting, false);
+  assert.equal(app.byId('library-batch').hidden, true);
   assert.equal(app.byId('library-title').textContent, '미분류');
 });
 
@@ -659,4 +657,135 @@ test('recent navigation opens current meetings and ignores a deleted target with
   app.byId('recent-meetings').listeners.click({target: {closest: () => target}});
   await settle();
   assert.deepEqual(opened, ['two']);
+});
+
+
+function listKey(app, key, options = {}) {
+  const event = { key, target: { closest: () => null }, defaultPrevented: false, propagationStopped: false,
+    preventDefault() { this.defaultPrevented = true; }, stopPropagation() { this.propagationStopped = true; }, ...options };
+  app.documentEvent('keydown', event);
+  if (!event.propagationStopped) app.byId('meeting-list').listeners.keydown(event);
+  return event;
+}
+function orderedMeetings(app) {
+  app.state.snapshot.meetings = [
+    { id: 'early', title: '이전 회의', createdAt: 1, recordedAt: 10 },
+    { id: 'late', title: '최근 회의', createdAt: 2, recordedAt: 40 },
+    { id: 'middle', title: '중간 회의', createdAt: 3, recordedAt: 20 },
+    { id: 'tie', title: '동일 시각 회의', createdAt: 4, recordedAt: 40 },
+  ];
+  app.controller.render();
+}
+test('selection uses no mode and bulk actions exist only when there is a selection', () => {
+  const app = harness();
+  assert.equal(app.nodes.has('library-select-toggle'), false);
+  assert.equal(app.byId('library-batch').hidden, true);
+  assert.equal(app.controller.handleRowSelection('one', {}), false);
+  assert.deepEqual(app.controller.selectedIds(), []);
+  assert.equal(app.controller.handleRowSelection('one', { metaKey: true }), true);
+  assert.equal(app.controller.handleRowSelection('two', { ctrlKey: true }), true);
+  assert.deepEqual(app.controller.selectedIds(), ['one', 'two']);
+  assert.equal(app.byId('library-batch').hidden, false);
+  assert.equal(app.byId('library-selected-count').textContent, '2개 선택');
+  app.click('library-selection-clear');
+  assert.equal(app.byId('library-batch').hidden, true);
+  assert.equal(app.calls.some(call => ['trash', 'purge', 'move'].includes(call.name)), false);
+});
+test('shift range follows visible recorded timestamps with creation tie-breaking', () => {
+  const app = harness(); orderedMeetings(app);
+  assert.deepEqual(app.controller.visibleMeetings().map(meeting => meeting.id), ['tie', 'late', 'middle', 'early']);
+  app.controller.toggleSelection('late');
+  app.controller.handleRowSelection('early', { shiftKey: true });
+  assert.deepEqual(app.controller.selectedIds(), ['late', 'middle', 'early']);
+  app.controller.handleRowSelection('middle', { shiftKey: true });
+  assert.deepEqual(app.controller.selectedIds(), ['late', 'middle']);
+  app.controller.handleRowSelection('tie', { shiftKey: true, ctrlKey: true });
+  assert.deepEqual(new Set(app.controller.selectedIds()), new Set(['tie', 'late', 'middle']));
+});
+test('checkbox shift-click supports ranges and clearing selection resets its anchor', () => {
+  const app = harness(); orderedMeetings(app);
+  app.delegated('meeting-list', { libraryToggle: 'late' }, ['[data-library-toggle]']);
+  app.delegated('meeting-list', { libraryToggle: 'early' }, ['[data-library-toggle]'], { shiftKey: true });
+  assert.deepEqual(app.controller.selectedIds(), ['late', 'middle', 'early']);
+  app.controller.resetSelection();
+  app.controller.handleRowSelection('early', { shiftKey: true });
+  assert.deepEqual(app.controller.selectedIds(), ['early']);
+});
+test('search pruning clears an unavailable anchor and selected trash hides empty-all', () => {
+  const app = harness(); orderedMeetings(app); app.controller.toggleSelection('late');
+  app.byId('search').value = '기록에서 찾기'; app.state.librarySearchIds = ['middle', 'early'];
+  app.controller.render();
+  assert.deepEqual(app.controller.selectedIds(), []);
+  assert.equal(app.byId('library-batch').hidden, true);
+  app.controller.handleRowSelection('early', { shiftKey: true });
+  assert.deepEqual(app.controller.selectedIds(), ['early']);
+  app.state.snapshot.meetings.find(meeting => meeting.id === 'early').deletedAt = 100;
+  app.controller.render(); assert.deepEqual(app.controller.selectedIds(), []);
+  app.byId('search').value = ''; app.state.libraryFilter = 'trash'; app.controller.render();
+  assert.equal(app.byId('library-empty-trash').hidden, false);
+  app.controller.toggleSelection('early');
+  assert.equal(app.byId('library-empty-trash').hidden, true);
+  app.click('library-selection-clear');
+  assert.equal(app.byId('library-empty-trash').hidden, false);
+});
+test('list shortcuts preserve editor, composition and modal ownership', () => {
+  const app = harness();
+  assert.equal(listKey(app, 'a', { metaKey: true }).defaultPrevented, true);
+  assert.deepEqual(app.controller.selectedIds(), ['one', 'two']);
+  for (const options of [{ isComposing: true }, { keyCode: 229 }, { target: { closest: () => ({}) } }]) {
+    assert.equal(listKey(app, 'Escape', options).defaultPrevented, false);
+    assert.equal(app.state.librarySelection.size, 2);
+  }
+  app.byId('library-dialog').open = true;
+  assert.equal(listKey(app, 'Escape').defaultPrevented, false);
+  assert.equal(app.state.librarySelection.size, 2);
+  app.byId('library-dialog').open = false;
+  assert.equal(listKey(app, 'Escape').defaultPrevented, true);
+  assert.equal(app.byId('library-batch').hidden, true);
+  assert.equal(listKey(app, 'Escape').defaultPrevented, false);
+  app.state.libraryOpen = false;
+  assert.equal(listKey(app, 'a', { ctrlKey: true }).defaultPrevented, false);
+  assert.deepEqual(app.controller.selectedIds(), []);
+});
+test('Escape consumes the open menu first and a second Escape clears the selection', () => {
+  const app = harness(); app.controller.toggleSelection('one');
+  const trigger = { focus() {}, getBoundingClientRect: () => ({ right: 200, top: 30, bottom: 50 }) };
+  const content = { style: {}, getBoundingClientRect: () => ({ width: 180, height: 80 }) };
+  const menu = { open: true, isConnected: true, matches: () => true, classList: { add() {}, remove() {} },
+    querySelector: selector => selector === ':scope > div' ? content : trigger };
+  app.documentEvent('toggle', { target: menu });
+  assert.equal(listKey(app, 'Escape').defaultPrevented, true);
+  assert.equal(menu.open, false);
+  assert.deepEqual(app.controller.selectedIds(), ['one']);
+  listKey(app, 'Escape');
+  assert.deepEqual(app.controller.selectedIds(), []);
+});
+test('disconnected or busy libraries ignore selection changes and scoped shortcuts', () => {
+  const app = harness(); app.state.connected = false;
+  app.controller.toggleSelection('one'); app.click('library-select-all');
+  assert.deepEqual(app.controller.selectedIds(), []);
+  assert.equal(listKey(app, 'a', { ctrlKey: true }).defaultPrevented, false);
+  app.state.connected = true; app.controller.toggleSelection('one'); app.state.libraryBusy = true;
+  app.controller.handleRowSelection('two', { ctrlKey: true }); app.click('library-selection-clear');
+  assert.deepEqual(app.controller.selectedIds(), ['one']);
+  assert.equal(listKey(app, 'Escape').defaultPrevented, false);
+});
+
+
+test('bulk toolbar focus retains list-wide select-all and Escape behavior', () => {
+  const app = harness(); app.controller.toggleSelection('one');
+  const key = (value, options = {}) => {
+    const event = { key: value, target: { closest: () => null }, defaultPrevented: false,
+      preventDefault() { this.defaultPrevented = true; }, stopPropagation() {}, ...options };
+    app.byId('library-batch').listeners.keydown(event);
+    return event;
+  };
+  assert.equal(key('a', { ctrlKey: true }).defaultPrevented, true);
+  assert.deepEqual(app.controller.selectedIds(), ['one', 'two']);
+  assert.equal(key('Escape', { isComposing: true }).defaultPrevented, false);
+  assert.equal(key('Escape', { target: { closest: () => ({}) } }).defaultPrevented, false);
+  assert.equal(app.byId('library-batch').hidden, false);
+  assert.equal(key('Escape').defaultPrevented, true);
+  assert.deepEqual(app.controller.selectedIds(), []);
+  assert.equal(app.byId('library-batch').hidden, true);
 });

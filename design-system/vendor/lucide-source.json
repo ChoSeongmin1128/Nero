@@ -66,5 +66,16 @@
     "filter": "list-filter",
     "more-horizontal": "ellipsis"
   },
-  "runtime": "local SVG subset, no CDN or external request"
+  "runtime": "local SVG subset, no CDN or external request",
+  "additionalIconSources": [
+    {
+      "source": "lucide-react@1.63.0",
+      "file": "dist/cjs/lucide-react.js",
+      "icons": [
+        "undo-2",
+        "folder-input"
+      ],
+      "license": "ISC; existing vendor/lucide/LICENSE"
+    }
+  ]
 }

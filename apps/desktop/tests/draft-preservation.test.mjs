@@ -135,7 +135,11 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     let summaryEvidenceOptions;
     const mountSummaryEvidence = options => { summaryEvidenceOptions = options; return { reset() {}, update() {}, restoreFocus() {} }; };
     const mountAgentConnectionDialog = () => ({ open(...args) { testAgentDialogCalls.push(args); }, update() {}, close() {}, isOpen: () => false });
-    const mountLibrary = () => ({ render() {}, resetSelection() {}, toggleSelection() {}, show: async () => {} });
+    const mountLibrary = ({getState}) => ({ render() {}, resetSelection() {}, toggleSelection() {}, handleRowSelection: () => false, show: async () => {}, visibleMeetings() {
+      const current = getState(), query = document.getElementById('search').value.trim();
+      const ids = current.librarySearchIds == null ? null : new Set(current.librarySearchIds);
+      return filterLibraryMeetings(current.snapshot.meetings, current.libraryFilter, query && !ids ? query : '').filter(meeting => !query || !ids || ids.has(meeting.id)).sort((a,b) => (b.recordedAt ?? b.createdAt ?? 0) - (a.recordedAt ?? a.createdAt ?? 0) || (b.createdAt ?? 0) - (a.createdAt ?? 0));
+    } });
     const mountSpeakers = ({getState}) => ({render() {}, reset() {}, open: async () => {}, label: segment => getState().transcriptDraft?.doc?.speakers?.find(speaker=>speaker.id === segment.speakerId)?.name || '화자 미지정'});
 
     const bridge = testBridge;
