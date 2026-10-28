@@ -8,18 +8,20 @@ the private installation and evaluation receipts.
 
 ## Release state
 
-Nero 0.0.1 build 26 has signed/notarized macOS arm64 artifacts and is locally installed with agent component 0.0.1-nero.22.
-External agents can read a summary context and explicitly save their generated
-summary through the running application's writer. Source/notes/current-summary
-checks reject stale output, and prior summaries remain archived. Open summaries
-reload after the external write. Client package updates and live tool acceptance
-remain separate from packaging; existing client configuration is not rewritten. Final installed GUI acceptance is pending while macOS is locked; one prior-app rollback slot is retained. Existing data hashes, model metadata and connection state were preserved without a full snapshot.
+Nero 0.0.1 build 27 has signed/notarized macOS arm64 artifacts and is locally installed.
+Agent component 0.0.1-nero.22 reuses the exact signed CLI and integration files from
+build 26. Existing library hashes, model metadata and connection state were preserved
+without copying user audio, models or a full data snapshot. Native settings navigation,
+template draft cancellation and selection/hover distinction have been observed in the
+installed app. The rollback app was retired after acceptance; current/previous DMGs
+and small provenance receipts are retained.
 
-Build 25 has signed/notarized macOS arm64 artifacts and a local installation.
-Settings panels and the template list/editor were observed in the installed app.
-Native typing/dirty-confirmation acceptance, model quality and Windows-device
-qualification remain separate from the automated checks. Source commits and
-artifact hashes are in [Release history](release-history.md).
+External agents can read a summary context and explicitly save their generated summary
+through the running application's writer. Source/notes/current-summary checks reject
+stale output, prior summaries remain archived and open summaries reload after writes.
+Host package updates and actual live tool acceptance remain separate from app packaging;
+client configuration was not rewritten. Windows-device and model-quality qualification
+remain separate. Source commits and hashes are in [Release history](release-history.md).
 
 ## Native rewrite source
 
