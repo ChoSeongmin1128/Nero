@@ -14,7 +14,7 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
   const read = () => { try { return (storage ?? globalThis.localStorage)?.getItem(storageKey); } catch { return null; } };
   let pinned = read() === 'true', temporary = false, timer, renderedState;
   const brand = aside.querySelector('.navigation-brand') || aside.querySelector('.brand');
-  const rail = shell.querySelector('.navigation-rail');
+  const edge = shell.querySelector('.navigation-edge');
   const triggerHome = trigger.parentElement;
   const unavailable = () => shell.dataset.onboarding === 'true';
   function render() {
@@ -31,10 +31,9 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
     trigger.setAttribute('aria-expanded', String(open));
     const destination = open ? brand : triggerHome;
     if (trigger.parentElement !== destination) destination.append(trigger);
-    if (rail) rail.inert = unavailable() || open;
-    trigger.setAttribute('aria-label', pinned ? '사이드바 접기' : temporary ? '사이드바 고정' : '사이드바 열기');
+    trigger.setAttribute('aria-label', pinned ? '사이드바 접기' : temporary ? '사이드바 펼쳐두기' : '사이드바 열기');
     trigger.title = trigger.getAttribute('aria-label');
-    trigger.innerHTML = icons?.(temporary && !pinned ? 'pin' : pinned ? 'panel-left-close' : 'panel-left') || '';
+    trigger.innerHTML = icons?.(pinned ? 'panel-left-close' : 'panel-left') || '';
     if (backdrop) backdrop.hidden = true;
   }
   function reveal() { if (unavailable()) return; clearTimeout(timer); if (!pinned) temporary = true; render(); }
@@ -43,7 +42,7 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
     timer = setTimeout(() => {
       const focused = document.activeElement;
       const interacting = aside.contains(focused) && (focused.matches('input,textarea') || focused.matches(':focus-visible'));
-      if (!interacting && !rail?.matches(':hover') && !trigger.matches(':hover') && !aside.matches(':hover')) { temporary = false; render(); }
+      if (!interacting && !edge?.matches(':hover') && !trigger.matches(':hover') && !aside.matches(':hover')) { temporary = false; render(); }
     }, 180);
   }
   function pin(value) {
@@ -53,11 +52,9 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
     render(); trigger.focus({ preventScroll: true });
   }
   const hover = event => { if (event.pointerType === 'mouse') reveal(); };
-  rail?.addEventListener('pointerenter', hover);
-  rail?.addEventListener('pointerleave', hide);
-  rail?.addEventListener('focusout', hide);
-  trigger.addEventListener('pointerenter', hover);
-  trigger.addEventListener('pointerleave', hide);
+  edge?.addEventListener('pointerenter', hover);
+  edge?.addEventListener('pointerleave', hide);
+  edge?.addEventListener('focusout', hide);
   aside.addEventListener('pointerenter', () => clearTimeout(timer));
   aside.addEventListener('pointerleave', hide);
   aside.addEventListener('focusout', hide);
@@ -65,10 +62,10 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
     if (unavailable()) return;
     if (pinned) pin(false);
     else if (temporary) pin(true);
-    else { temporary = true; render(); trigger.focus(); }
+    else pin(true);
   });
   document.addEventListener('pointerdown', event => {
-    if (temporary && !aside.contains(event.target) && !rail?.contains(event.target) && !trigger.contains(event.target)) { temporary = false; render(); }
+    if (temporary && !aside.contains(event.target) && !edge?.contains(event.target) && !trigger.contains(event.target)) { temporary = false; render(); }
   });
   document.addEventListener('keydown', event => {
     const popup = event.target.closest?.('dialog[open],[role="dialog"],[role="alertdialog"],[role="menu"],[role="listbox"]')

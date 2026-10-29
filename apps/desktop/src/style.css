@@ -453,4 +453,3 @@ html.recorder-document { background: transparent; }
 .new-meeting-menu .action-menu button { display: flex; align-items: center; gap: 8px; }
 .library-header .new-meeting-menu .action-menu button { justify-content: flex-start; }
 .library-header .new-meeting-menu .action-menu button svg { width: 16px; height: 16px; }
-.navigation-rail > button > span { display: flex; }

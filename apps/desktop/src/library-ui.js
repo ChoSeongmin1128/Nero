@@ -267,8 +267,6 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
   }
   function render() {
     sidebar?.render();
-    byId('rail-new-meeting').disabled = !state().connected || state().busy;
-    byId('rail-library').disabled = Boolean(state().libraryBusy || !state().connected);
     const snapshot = state().snapshot;
     const folders = snapshot.folders || [];
     if (!['all', 'unfiled', 'trash'].includes(state().libraryFilter) && !folders.some(folder => folder.id === state().libraryFilter)) state().libraryFilter = 'unfiled';
@@ -381,9 +379,6 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
   owner?.addEventListener?.('click', event => {
     if (event.target.closest?.('#create-calendar-meeting')) closeMenu(byId('new-meeting-menu'), true);
   }, true);
-  byId('rail-new-meeting').addEventListener('click', () => { sidebar?.navigate(); byId('create-meeting').click(); });
-  byId('rail-settings').addEventListener('click', () => { sidebar?.navigate(); byId('settings').click(); });
-  byId('rail-library').addEventListener('click', () => void show('all'));
   owner?.addEventListener?.('drop', () => { clearDropTarget(); dragPreview.clear(); }, true);
   owner?.addEventListener?.('dragend', clearDrag);
   dialog.addEventListener('submit', event => {

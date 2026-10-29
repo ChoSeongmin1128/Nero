@@ -22,20 +22,18 @@ test('hover reveals the sidebar without duplicate controls; the same button pins
   const trigger=doc.getElementById('toggleNav'), shell=doc.getElementById('shell');
   assert.equal(doc.querySelectorAll('#toggleNav').length,1);
   assert.equal(doc.getElementById('closeNav'),null);
-  doc.querySelector('.navigation-rail').dispatchEvent(new window.PointerEvent('pointerenter',{pointerType:'mouse'}));
+  doc.querySelector('.navigation-edge').dispatchEvent(new window.PointerEvent('pointerenter',{pointerType:'mouse'}));
   assert.ok(shell.classList.contains('nav-peek'));
   assert.equal(trigger.parentElement.className,'brand');
-  assert.equal(doc.querySelector('.navigation-rail').inert,true);
-  assert.equal(trigger.getAttribute('aria-label'),'사이드바 고정');
+  assert.equal(trigger.getAttribute('aria-label'),'사이드바 펼쳐두기');
   assert.equal(doc.querySelector('main').inert,false);
   trigger.click();
   assert.ok(shell.classList.contains('nav-pinned'));
   assert.equal(window.localStorage.getItem('nero-proposal-sidebar-pinned'),'true');
   trigger.click();
   assert.ok(shell.classList.contains('collapsed'));
-  assert.equal(trigger.parentElement.className,'navigation-rail-head');
-  assert.equal(doc.querySelector('.navigation-rail').inert,false);
-  doc.querySelector('.navigation-rail').dispatchEvent(new window.PointerEvent('pointerenter',{pointerType:'touch'}));
+  assert.equal(trigger.parentElement.className,'navigation-toggle-slot');
+  doc.querySelector('.navigation-edge').dispatchEvent(new window.PointerEvent('pointerenter',{pointerType:'touch'}));
   assert.equal(shell.classList.contains('nav-peek'),false);
 });
 
@@ -57,7 +55,7 @@ test('folder and meeting breadcrumbs navigate to the actual parent and preserve 
 
 test('temporary sidebar closes after pointer exit but stays while entering a search',async t=>{
   const window=await setup(t),doc=window.document,shell=doc.getElementById('shell');
-  const edge=doc.querySelector('.navigation-rail'),aside=doc.querySelector('aside');
+  const edge=doc.querySelector('.navigation-edge'),aside=doc.querySelector('aside');
   edge.dispatchEvent(new window.PointerEvent('pointerenter',{pointerType:'mouse'}));
   aside.dispatchEvent(new window.PointerEvent('pointerleave',{pointerType:'mouse'}));
   await new Promise(resolve=>setTimeout(resolve,220));
@@ -69,26 +67,41 @@ test('temporary sidebar closes after pointer exit but stays while entering a sea
   assert.equal(shell.classList.contains('nav-peek'),true);
 });
 
- test('prototype feedback belongs to the selected meeting and supports retry and dismissal', async t => {
+test('notifications retain retry and dismissal outside the document without changing job state', async t => {
   const window = await setup(t), doc = window.document;
+  const notify=()=>doc.querySelector('[data-filter="notifications"]').click();
   doc.querySelector('[data-state="cancelled"]').click();
-  assert.match(doc.querySelector('.meeting-status').textContent, /음성 기록 변환을 취소/);
-  doc.querySelector('[data-retry]').click();
-  assert.equal(doc.querySelector('.meeting-status').dataset.status, 'processing');
-  doc.querySelector('[data-cancel]').click();
-  assert.equal(doc.querySelector('.meeting-status').dataset.status, 'cancelled');
-  doc.querySelector('[data-recent-meeting="2"]').click();
   assert.equal(doc.querySelector('.meeting-status'), null);
+  assert.equal(doc.getElementById('notification-count').textContent,'1');
+  notify();
+  assert.equal(doc.querySelector('h1').textContent,'알림');
+  assert.equal(doc.getElementById('notifications-open').getAttribute('aria-current'),'page');
+  assert.match(doc.querySelector('.notification-item').textContent,/취소됨/);
+  doc.querySelector('[data-job-retry="1"]').click();
+  assert.match(doc.querySelector('.notification-item').textContent,/변환 중/);
+  assert.equal(doc.activeElement.dataset.jobCancel,'1');
+  doc.querySelector('[data-job-cancel="1"]').click();
+  doc.querySelector('[data-notification-dismiss="1"]').click();
+  assert.equal(doc.querySelector('.notification-item'),null);
+  assert.equal(doc.activeElement,doc.querySelector('#page h1'));
   doc.querySelector('[data-recent-meeting="1"]').click();
-  assert.equal(doc.querySelector('.meeting-status').dataset.status, 'cancelled');
-  doc.querySelector('[data-dismiss]').click();
-  assert.equal(doc.querySelector('.meeting-status'), null);
+  assert.equal(doc.querySelector('[data-state="cancelled"]').getAttribute('aria-pressed'),'true');
+  assert.equal(doc.querySelector('.meeting-status'),null);
+  doc.querySelector('[data-state="normal"]').click();notify();
+  assert.equal(doc.querySelector('.notification-item'),null);
+  doc.querySelector('[data-recent-meeting="1"]').click();
+  doc.querySelector('[data-state="processing"]').click();
+  assert.equal(doc.querySelector('.meeting-status').dataset.status,'processing');
+  doc.querySelector('[data-recent-meeting="2"]').click();
+  assert.equal(doc.querySelector('.meeting-status'),null);
+  notify();
+  assert.match(doc.querySelector('.notification-item').textContent,/제품 검토/);
 });
 
 
 test('recent right click operates on the targeted meeting without navigating or changing another meeting', async t => {
   const window=await setup(t),doc=window.document;
-  doc.querySelector('.navigation-rail').dispatchEvent(new window.PointerEvent('pointerenter',{pointerType:'mouse'}));
+  doc.querySelector('.navigation-edge').dispatchEvent(new window.PointerEvent('pointerenter',{pointerType:'mouse'}));
   doc.getElementById('toggleNav').click();
   const row=()=>doc.querySelector('[data-recent-row="2"]');
   const open=()=>{const event=new window.MouseEvent('contextmenu',{bubbles:true,cancelable:true});row().dispatchEvent(event);assert.equal(event.defaultPrevented,true);};
@@ -121,7 +134,7 @@ test('recent right click operates on the targeted meeting without navigating or 
 
 test('recent context menu supports keyboard navigation, Escape and outside dismissal',async t=>{
   const window=await setup(t),doc=window.document;
-  doc.querySelector('.navigation-rail').dispatchEvent(new window.PointerEvent('pointerenter',{pointerType:'mouse'}));
+  doc.querySelector('.navigation-edge').dispatchEvent(new window.PointerEvent('pointerenter',{pointerType:'mouse'}));
   doc.getElementById('toggleNav').click();
   const row=doc.querySelector('[data-recent-row="1"]'),trigger=row.querySelector('summary');
   const recent=row.querySelector('[data-recent-meeting]');recent.focus();
@@ -145,4 +158,16 @@ test('recent metadata and breadcrumb paths use layout and chevrons instead of sl
  assert.doesNotMatch(doc.querySelector('#breadcrumbs').textContent,/\//);
  assert.equal(doc.querySelectorAll('#breadcrumbs .breadcrumb-separator svg[data-icon="chevron-right"]').length,2);
  assert.equal(doc.querySelector('.recent-meeting-meta').querySelectorAll('span').length,2);
+});
+
+
+test('collapsed navigation has no separate action rail or pin icon',async t=>{
+ const window=await setup(t),doc=window.document;
+ assert.equal(doc.querySelector('.navigation-rail'),null);
+ assert.equal(doc.querySelectorAll('#new').length,1);
+ assert.ok(doc.querySelector('[data-filter="trash"] svg[data-icon="trash-2"]'));
+ assert.equal(doc.querySelector('#notifications-open svg[data-icon="trash-2"]'),null);
+ doc.querySelector('.navigation-edge').dispatchEvent(new window.PointerEvent('pointerenter',{pointerType:'mouse'}));
+ assert.equal(doc.querySelector('svg[data-icon="pin"]'),null);
+ assert.equal(doc.querySelectorAll('#toggleNav').length,1);
 });

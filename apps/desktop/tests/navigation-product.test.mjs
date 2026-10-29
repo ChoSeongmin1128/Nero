@@ -26,17 +26,15 @@ async function setup(t, preferences = {}) {
 test('product shares hover, pin and close navigation without hiding the meeting content', async t => {
   const { window, document } = await setup(t);
   const shell = document.querySelector('.workspace'), trigger = document.getElementById('navigation-toggle');
-  document.querySelector('.navigation-rail').dispatchEvent(new window.PointerEvent('pointerenter', { pointerType: 'mouse' }));
+  document.querySelector('.navigation-edge').dispatchEvent(new window.PointerEvent('pointerenter', { pointerType: 'mouse' }));
   assert.equal(shell.classList.contains('nav-peek'), true);
   assert.equal(trigger.parentElement.className, 'navigation-brand');
-  assert.equal(document.querySelector('.navigation-rail').inert, true);
   assert.equal(document.querySelector('main').inert, false);
   trigger.click();
   assert.equal(window.localStorage.getItem('nero.sidebar.pinned'), 'true');
   trigger.click();
   assert.equal(shell.classList.contains('collapsed'), true);
-  assert.equal(trigger.parentElement.className, 'navigation-rail-head');
-  assert.equal(document.querySelector('.navigation-rail').inert, false);
+  assert.equal(trigger.parentElement.className, 'navigation-toggle-slot');
   assert.equal(document.querySelectorAll('#navigation-toggle').length, 1);
 });
 
@@ -90,7 +88,7 @@ test('initial setup suppresses navigation while preserving the saved pin prefere
   const { window, document, library } = await setup(t, { 'nero.sidebar.pinned': 'true' });
   const shell = document.querySelector('.workspace'), trigger = document.getElementById('navigation-toggle');
   shell.dataset.onboarding = 'true'; library.render();
-  document.querySelector('.navigation-rail').dispatchEvent(new window.PointerEvent('pointerenter', { pointerType: 'mouse' }));
+  document.querySelector('.navigation-edge').dispatchEvent(new window.PointerEvent('pointerenter', { pointerType: 'mouse' }));
   trigger.click();
   document.dispatchEvent(new window.KeyboardEvent('keydown', { code: 'Backslash', ctrlKey: true, bubbles: true }));
   assert.equal(trigger.getAttribute('aria-expanded'), 'false');
@@ -160,22 +158,20 @@ test('split new meeting keeps the primary action direct and calendar/import sepa
   document.getElementById('settings').addEventListener('click', () => openedSettings++);
   primary.click(); assert.equal(created, 1); assert.equal(fromCalendar, 0);
   const trigger = document.getElementById('create-meeting-options'), menu = document.getElementById('new-meeting-menu');
-  document.querySelector('.navigation-rail').dispatchEvent(new window.PointerEvent('pointerenter', { pointerType: 'mouse' }));
+  document.querySelector('.navigation-edge').dispatchEvent(new window.PointerEvent('pointerenter', { pointerType: 'mouse' }));
   trigger.click(); await settle(); assert.equal(menu.open, false);
   trigger.setAttribute('aria-disabled', 'false');
   trigger.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
   assert.equal(menu.open, true); assert.equal(document.activeElement, calendar);
   calendar.click(); assert.equal(fromCalendar, 1); assert.equal(menu.open, false); assert.equal(created, 1);
   assert.equal(menu.contains(document.getElementById('import-audio')), false);
-  document.getElementById('rail-new-meeting').click(); assert.equal(created, 2);
-  document.getElementById('rail-settings').click(); assert.equal(openedSettings, 1);
-  assert.equal(document.querySelectorAll('.navigation-rail [data-recent-meeting]').length, 0);
+  assert.equal(document.querySelectorAll('.navigation-edge [data-recent-meeting]').length, 0);
 });
 
 
-test('closing a recent-action dialog returns to the rail after temporary navigation closes', async t => {
+test('closing a recent-action dialog returns to the header after temporary navigation closes', async t => {
   const { window, document } = await setup(t);
-  document.querySelector('.navigation-rail').dispatchEvent(new window.PointerEvent('pointerenter', { pointerType: 'mouse' }));
+  document.querySelector('.navigation-edge').dispatchEvent(new window.PointerEvent('pointerenter', { pointerType: 'mouse' }));
   const row = document.querySelector('[data-recent-row="unfiled"]');
   row.dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2 }));
   row.querySelector('[data-library-action="rename"]').click();
@@ -231,7 +227,7 @@ for (const popup of [
 
 test('open shared menus retain shortcut priority and Escape closes only the menu', async t => {
   const { window, document } = await setup(t);
-  document.querySelector('.navigation-rail').dispatchEvent(new window.PointerEvent('pointerenter', { pointerType: 'mouse' }));
+  document.querySelector('.navigation-edge').dispatchEvent(new window.PointerEvent('pointerenter', { pointerType: 'mouse' }));
   const row = document.querySelector('[data-recent-row="filed"]');
   row.dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2 }));
   const menu = row.querySelector('details'), button = menu.querySelector('button');
