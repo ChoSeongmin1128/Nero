@@ -19,6 +19,7 @@ on:
       - 'apps/desktop/**'
       - 'design-system/**'
       - 'scripts/native-summary/**'
+      - 'scripts/audio-prepare/**'
       - 'scripts/native-moss-harness/**'
 
 permissions:
