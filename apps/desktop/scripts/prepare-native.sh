@@ -16,8 +16,8 @@ if [[ $# -eq 0 ]]; then
 fi
 python3 "$root/scripts/native-diarization/prepare.py" --verify-staged "$output/diarization" --target macos-arm64 --optional
 xcrun swiftc -O -parse-as-library -target "$(uname -m)-apple-macos26.0" \
-  "$root/Sources/GroveInference/InferenceConfiguration.swift" \
-  "$root/Sources/GroveInference/AnalysisAudioPreparer.swift" \
+  "$root/scripts/audio-prepare/AudioPreparationError.swift" \
+  "$root/scripts/audio-prepare/AnalysisAudioPreparer.swift" \
   "$root/scripts/audio-prepare/AudioPrepare.swift" -o "$output/AudioPrepare"
 codesign --force --sign - "$output/AudioPrepare"
 if [[ $# -eq 0 ]]; then

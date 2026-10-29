@@ -8,7 +8,7 @@ import test from 'node:test';
 const tracked = [
   'apps/desktop/package.json', 'apps/desktop/package-lock.json',
   'apps/desktop/src-tauri/tauri.conf.json', 'apps/desktop/src-tauri/Cargo.toml',
-  'crates/grove-core/Cargo.toml', 'Cargo.lock',
+  'crates/nero-core/Cargo.toml', 'Cargo.lock',
   'crates/nero-cli/Cargo.toml',
 ];
 
@@ -19,12 +19,12 @@ async function fixture() {
   await copyFile(new URL('../scripts/version.mjs', import.meta.url), script);
   const json = value => `${JSON.stringify(value, null, 2)}\n`;
   const files = [
-    json({ name: 'grove-desktop', version: '0.0.1', private: true }),
+    json({ name: 'nero-desktop', version: '0.0.1', private: true }),
     json({ version: '0.0.1', packages: { '': { version: '0.0.1' }, 'node_modules/example': { version: '0.1.0' } } }),
     json({ version: '0.0.1', identifier: 'stable-app-id', bundle: { macOS: { bundleVersion: '1' } } }),
-    '[package]\nname = "grove-desktop"\nversion = "0.0.1"\n\n[dependencies]\nexample = "0.1.0"\n',
-    '[package]\nname = "grove-core"\nversion = "0.0.1"\n\n[dependencies]\nexample = "0.1.0"\n',
-    'version = 4\n\n[[package]]\nname = "example"\nversion = "0.1.0"\nsource = "registry+example"\n\n[[package]]\nname = "grove-desktop"\nversion = "0.0.1"\ndependencies = ["example"]\n\n[[package]]\nname = "grove-core"\nversion = "0.0.1"\n\n[[package]]\nname = "nero-cli"\nversion = "0.0.1"\n',
+    '[package]\nname = "nero-desktop"\nversion = "0.0.1"\n\n[dependencies]\nexample = "0.1.0"\n',
+    '[package]\nname = "nero-core"\nversion = "0.0.1"\n\n[dependencies]\nexample = "0.1.0"\n',
+    'version = 4\n\n[[package]]\nname = "example"\nversion = "0.1.0"\nsource = "registry+example"\n\n[[package]]\nname = "nero-desktop"\nversion = "0.0.1"\ndependencies = ["example"]\n\n[[package]]\nname = "nero-core"\nversion = "0.0.1"\n\n[[package]]\nname = "nero-cli"\nversion = "0.0.1"\n',
     '[package]\nname = "nero-cli"\nversion = "0.0.1"\n\n[dependencies]\nexample = "0.1.0"\n',
   ];
   for (let index = 0; index < tracked.length; index++) {
@@ -73,7 +73,7 @@ test('version CLI allows rebuilds but rejects malformed versions, rollback and r
 test('a mismatched late manifest blocks check and all release writes', async () => {
   const project = await fixture();
   const target = path.join(project.root, 'Cargo.lock');
-  await writeFile(target, (await readFile(target, 'utf8')).replace('name = "grove-core"\nversion = "0.0.1"', 'name = "grove-core"\nversion = "0.0.3"'));
+  await writeFile(target, (await readFile(target, 'utf8')).replace('name = "nero-core"\nversion = "0.0.1"', 'name = "nero-core"\nversion = "0.0.3"'));
   const before = await project.files();
   assert.notEqual(project.run('check').status, 0);
   assert.notEqual(project.run('set', '0.0.2', '--build', '2').status, 0);

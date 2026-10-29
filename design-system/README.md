@@ -45,9 +45,9 @@ UI 글꼴은 OS의 `system-ui`와 한글 대체 글꼴을 같은 계약으로 �
 
 ## 공통 뷰
 
-`GroveUI`는 HTML을 반환하고 이벤트는 소비 화면에 남긴다. 일반 사용자 문자열은 `text`나 지정된 데이터 속성으로 전달한다. `html/contentHTML/bodyHTML/actionsHTML`은 앱이 만든 신뢰 가능한 조합에만 사용하고, 그 안의 사용자 문자열은 `GroveUI.escape()`로 처리한다. 속성 이름은 허용된 HTML/ARIA/data 목록만 받는다.
+`NeroUI`는 HTML을 반환하고 이벤트는 소비 화면에 남긴다. 일반 사용자 문자열은 `text`나 지정된 데이터 속성으로 전달한다. `html/contentHTML/bodyHTML/actionsHTML`은 앱이 만든 신뢰 가능한 조합에만 사용하고, 그 안의 사용자 문자열은 `NeroUI.escape()`로 처리한다. 속성 이름은 허용된 HTML/ARIA/data 목록만 받는다.
 
-카탈로그와 제품은 `meetingRow/personRow/personOption/utterance/minutes/dialogContent`를 함께 사용한다. 기능별 시간/수정/참석자 선택의 기존 `data-action/data-field/id`를 유지한다. 선택 메뉴와 달력도 같은 `GroveControls`를 사용한다.
+카탈로그와 제품은 `meetingRow/personRow/personOption/utterance/minutes/dialogContent`를 함께 사용한다. 기능별 시간/수정/참석자 선택의 기존 `data-action/data-field/id`를 유지한다. 선택 메뉴와 달력도 같은 `NeroControls`를 사용한다.
 
 선택/날짜는 같은 canonical React 소스를 사용한다. 앱은 Vite import로 기능 모달과 React 런타임을 공유하고, 정적 카탈로그/시안은 `build-controls.mjs`로 같은 엔트리를 standalone `controls.js`로 묶는다. 원본 `controls.js`는 빌드 입력이므로 소스 폴더를 그대로 HTTP에 올리지 말고 `build-preview.cjs`의 결과를 사용한다. React는 전용 host만 소유하며 소비 화면의 원래 native 입력, 저장, 녹음 상태를 소유하지 않는다. 출처/고정 커밋/원본 해시/MIT 고지는 `components/ui/`에 있고 앱에도 라이선스를 포함한다.
 
@@ -80,7 +80,7 @@ UI 글꼴은 OS의 `system-ui`와 한글 대체 글꼴을 같은 계약으로 �
 
 ## 사용과 검사
 
-Grove 저장소 루트에서 실행한다.
+Nero 저장소 루트에서 실행한다.
 
 ```sh
 node design-system/checks/check-design-contracts.cjs
@@ -94,7 +94,7 @@ python3 -m http.server 8792 --bind 127.0.0.1 --directory .work/design-system-pre
 
 `/catalog/`, `/prototype/`, `/windows-preview/`에서 검토한다. 소스 변경 후 생성 토큰을 검토하고 다시 만든다. `tokens.json`을 직접 편집하지 않는다. 생성기는 원본 아래 출력, 심볼릭 링크, 소유 표식 없는 기존 출력과 무관한 파일이 있는 출력을 거부한다.
 
-브라우저 예제 저장은 `grove-design-system-v1-*` 전용 namespace다. 실제 앱은 `nero.appearance.v1`의 독립 색상/밝기를 같은 `appearance.js`로 초기 적용하며 메인/작은 창이 공유한다. 원래 v3 시안의 데이터를 자동으로 가져오지 않는다. 카탈로그는 페이지 메모리, Windows는 분리된 시연 세션을 사용한다. 실제 마이크/외부 계정/OS 알림은 사용하지 않는다.
+브라우저 예제 저장은 `nero-design-system-v1-*` 전용 namespace다. 실제 앱은 `nero.appearance.v1`의 독립 색상/밝기를 같은 `appearance.js`로 초기 적용하며 메인/작은 창이 공유한다. 원래 v3 시안의 데이터를 자동으로 가져오지 않는다. 카탈로그는 페이지 메모리, Windows는 분리된 시연 세션을 사용한다. 실제 마이크/외부 계정/OS 알림은 사용하지 않는다.
 
 ## 목록 선택과 삭제 동작
 

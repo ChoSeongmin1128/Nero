@@ -86,7 +86,7 @@ nero mcp
 ```
 
 - `--data-dir PATH`는 명시적인 다른 데이터 루트를 조회한다. 누락된 경로는 생성하지 않는다.
-- 기본 루트는 앱과 같은 `io.github.choseongmin1128.grove.desktop` 식별자의 OS 데이터 경로다.
+- 기본 루트는 앱과 같은 `io.github.choseongmin1128.nero.desktop` 식별자의 OS 데이터 경로다.
 - 폴더명은 `folders list`의 현재 ID로 해석한 뒤 `--folder-id ID`로 목록/검색을 제한한다.
   `--unfiled`(MCP `unfiled:true`)는 미분류만 조회하며 특정 폴더와 함께 지정할 수 없다.
 - `--from MS|YYYY-MM-DD`, `--to MS|YYYY-MM-DD`는 from 포함/to 미포함이다. `--on YYYY-MM-DD`는 해당 하루를 뜻하며 from/to와 함께 지정하지 않는다. 날짜 문자열과 on은 `--timezone Asia/Seoul` 같은 명시적인 IANA 시간대가 필요하다. MCP도 `from`/`to`의 날짜 문자열과 `on`/`timezone`을 같은 방식으로 받는다.
@@ -266,7 +266,7 @@ CLI와 템플릿을 재사용할 수 있으며 클라이언트 업데이트를 �
 ## 빌드와 검증
 
 ```sh
-cargo test -p grove-core --locked -- --test-threads=1
+cargo test -p nero-core --locked -- --test-threads=1
 cargo test -p nero-cli --locked -- --test-threads=1
 npm --prefix apps/desktop test
 npm --prefix apps/desktop run prepare:agent

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/grove-core", "crates/nero-cli", "apps/desktop/src-tauri"]
+members = ["crates/nero-core", "crates/nero-cli", "apps/desktop/src-tauri"]
 resolver = "2"
 
 [workspace.dependencies]

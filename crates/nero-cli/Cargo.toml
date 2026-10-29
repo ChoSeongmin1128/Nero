@@ -10,7 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 fs2 = "0.4.3"
-grove-core = { path = "../grove-core" }
+nero-core = { path = "../nero-core" }
 jiff = "=0.2.38"
 rmcp = { version = "=3.5.1", default-features = false, features = ["server", "transport-io"] }
 serde_json.workspace = true

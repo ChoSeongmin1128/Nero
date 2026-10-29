@@ -289,5 +289,5 @@
   meetingFixture.variedCases = Object.freeze(variedCases);
   if (typeof module === "object" && module.exports)
     module.exports = meetingFixture;
-  else root.GroveMeetingFixture = meetingFixture;
+  else root.NeroMeetingFixture = meetingFixture;
 })(typeof globalThis === "object" ? globalThis : this);

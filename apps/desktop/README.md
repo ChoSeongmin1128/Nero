@@ -20,7 +20,7 @@ npm run tauri -- build --debug --bundles app --ci -- --locked
 
 On Windows use `--bundles nsis` instead of `--bundles app`. Build outputs are under
 the workspace's `.work/rust-target`. Run Rust tests from the repository root with
-`cargo test -p grove-core --locked`. Build/test one native target at a time.
+`cargo test -p nero-core --locked`. Build/test one native target at a time.
 
 For a macOS local test bundle, apply ad hoc signing after bundling and then run
 `codesign --verify --deep --strict` on that bundle. This does not provide Developer ID
@@ -159,7 +159,7 @@ frontend, whose actions require the native bridge; it does not supply fake meeti
 - Hide the main window without ending recording. Explicit quit flushes notes and
   finalizes the active recording after confirmation.
 
-The application identifier is `io.github.choseongmin1128.grove.desktop`.
+The application identifier is `io.github.choseongmin1128.nero.desktop`.
 Tauri resolves its own OS application data directory. No automatic legacy migration,
 automatic model installation or account connection occurs. An explicit Google Calendar
 connection stores its grant in the platform credential store.

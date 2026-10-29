@@ -119,7 +119,7 @@ function build() {
   };
   const colorIds = setValues('colors');
   const preferenceModes = setValues('modes');
-  const labels = { green: 'Grove', blue: 'Slate', purple: 'Iris', mono: 'Mono', amber: 'Ochre', rose: 'Rose' };
+  const labels = { green: 'Nero', blue: 'Slate', purple: 'Iris', mono: 'Mono', amber: 'Ochre', rose: 'Rose' };
   const tokens = declarations.filter((item) => item.property.startsWith('--')).map(({ property, ...item }) => ({
     ...item,
     name: property,

@@ -25,7 +25,7 @@ cannot be saved through the desktop's new-recognition path.
 The retained dependency lock pins MLXAudio 0.1.3 and MLX Swift 0.31.6.
 The runtime identity is `mlx-audio-swift-v0.1.3+nero-moss-whole-v2`; its processing
 policy remains `whole-recording-v1`. The app's expected model snapshot is configured
-separately in the [shared MOSS manifest](../../Sources/GroveApp/Resources/Models/moss.json),
+separately in the [shared MOSS manifest](../../crates/nero-core/resources/models/moss.json),
 which the desktop processing route and core also consume.
 Use the matching model/tokenizer/configuration files and do not substitute unpinned weights.
 

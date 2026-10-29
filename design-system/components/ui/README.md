@@ -8,4 +8,4 @@ Upstream source: https://github.com/shadcn-ui/ui/tree/96da9cc7f1aa10580a3741664e
 
 The application imports the canonical React entry through Vite and shares its React runtime with React feature dialogs. `build-controls.mjs` emits the same source as a standalone bundle for the static component catalog and prototypes. Do not edit generated controls.js under `.generated` or `.work`.
 
-The imperative `GroveControls` adapter alone owns native select/date enhancement, event forwarding and cleanup. Each React root owns only its dedicated host, never the original native form element or the consuming screen state.
+The imperative `NeroControls` adapter alone owns native select/date enhancement, event forwarding and cleanup. Each React root owns only its dedicated host, never the original native form element or the consuming screen state.

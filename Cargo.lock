@@ -1555,7 +1555,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "grove-core"
+name = "nero-core"
 version = "0.0.1"
 dependencies = [
  "cpal",
@@ -1573,13 +1573,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "grove-desktop"
+name = "nero-desktop"
 version = "0.0.1"
 dependencies = [
  "base64 0.22.1",
  "block2",
  "fs2",
- "grove-core",
+ "nero-core",
  "hound",
  "jiff",
  "keyring",
@@ -2458,7 +2458,7 @@ name = "nero-cli"
 version = "0.0.1"
 dependencies = [
  "fs2",
- "grove-core",
+ "nero-core",
  "jiff",
  "rmcp",
  "serde_json",

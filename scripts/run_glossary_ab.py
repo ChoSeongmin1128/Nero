@@ -195,11 +195,11 @@ def main() -> None:
 
     run_arguments: list[tuple[str, str, Path]] = []
     if not args.skip_apple:
-        run(["swift", "build", "-c", "release"])
+        run(["swift", "build", "--package-path", str(ROOT / "legacy/swift"), "--scratch-path", str(ROOT / ".work/legacy-swift/swift-build"), "-c", "release"])
         for condition in CONDITIONS:
             output = raw_dir / f"apple-{condition}.jsonl"
             command = [
-                str(ROOT / ".build/release/grove-apple-benchmark"),
+                str(ROOT / ".work/legacy-swift/swift-build/release/grove-apple-benchmark"),
                 "--audio-dir",
                 str(audio_dir),
                 "--output",

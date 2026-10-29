@@ -98,7 +98,7 @@
     const wasConfirm = !!element("desktop-stop-dialog"), view = { ...engine.snapshot(), showControlInApp, menuOrigin };
     const previousTitle = element("desktop-view").querySelector("[data-desktop-title-preview]");
     const titleState = previousTitle && { key: previousTitle.dataset.titleKey, dismissed: previousTitle.dataset.titleDismissed, hovered: previousTitle.dataset.titleHovered, scroll: previousTitle.querySelector("#desktop-full-meeting-title")?.scrollTop || 0 };
-    patchView(root.GroveDesktopView.render(view));
+    patchView(root.NeroDesktopView.render(view));
     const titlePreview = element("desktop-view").querySelector("[data-desktop-title-preview]");
     if (titlePreview) {
       const meeting = view.notification === "finished" ? view.capture : view.meeting;
@@ -150,7 +150,7 @@
     if (!adapter) return;
     if (opened) { if (scenario) action("scenario", scenario); return; }
     opener = document.activeElement;
-    engine = root.GroveDesktopModel.create(adapter.model, { now: Date.now() });
+    engine = root.NeroDesktopModel.create(adapter.model, { now: Date.now() });
     if (scenario) engine.apply("scenario", scenario);
     adapter.begin(engine.store);
     const host = element("desktop-app-host");
@@ -353,7 +353,7 @@
     window.addEventListener("blur", () => { if (opened) { pointer = { x: -1, y: -1 }; cancelDrag(); scheduleCollapse(); } });
     window.addEventListener("resize", layoutPanels);
     document.addEventListener("keydown", (event) => {
-      if (!opened || event.isComposing || event.keyCode === 229 || adapter.hasModal() || element("settings-dialog")?.open || root.GroveControls?.isOpen()) return;
+      if (!opened || event.isComposing || event.keyCode === 229 || adapter.hasModal() || element("settings-dialog")?.open || root.NeroControls?.isOpen()) return;
       if (event.key === "Escape") {
         event.preventDefault(); event.stopImmediatePropagation();
         const titlePreview = desktop.querySelector("[data-desktop-title-preview]");
@@ -373,5 +373,5 @@
       }
     }, true);
   }
-  root.GroveDesktopController = { attach, open, close, action, sync, beforeRecordingStart, elapsed: (id) => opened && engine.snapshot().capture.id === id ? engine.snapshot().capture.elapsedLabel : "00:00" };
+  root.NeroDesktopController = { attach, open, close, action, sync, beforeRecordingStart, elapsed: (id) => opened && engine.snapshot().capture.id === id ? engine.snapshot().capture.elapsedLabel : "00:00" };
 })(typeof globalThis === "object" ? globalThis : this);

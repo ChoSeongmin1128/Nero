@@ -1,4 +1,4 @@
-# Grove core
+# Nero core
 
 Development recorder for the cross-platform rewrite. This crate does not load the
 legacy Swift library, migrate recordings, run models, connect accounts, or capture
@@ -29,7 +29,7 @@ faulty or stalled drivers require separate native acceptance testing.
 
 ## API
 
-Methods return `grove_core::Result<T>` and block the caller until the command finishes.
+Methods return `nero_core::Result<T>` and block the caller until the command finishes.
 A UI host should call them off its event/render thread.
 
 | Method | Result |

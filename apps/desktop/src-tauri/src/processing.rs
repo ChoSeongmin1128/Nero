@@ -1,5 +1,5 @@
 use crate::job_journal::{JobRecord, JobStatus, Journal};
-use grove_core::{CoreHandle, SessionState, Snapshot};
+use nero_core::{CoreHandle, SessionState, Snapshot};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -225,9 +225,9 @@ fn agent_job_view(record: &JobRecord) -> serde_json::Value {
 fn check_agent_job_version(
     record: &JobRecord,
     expected: Option<&str>,
-) -> Result<(), grove_core::agent_control::ControlError> {
+) -> Result<(), nero_core::agent_control::ControlError> {
     if expected.is_some_and(|version| version != agent_job_version(record)) {
-        return Err(grove_core::agent_control::ControlError::new(
+        return Err(nero_core::agent_control::ControlError::new(
             "edit_conflict",
             "작업 상태가 변경되었습니다. 다시 조회해 주세요.",
         ));
@@ -632,9 +632,9 @@ impl Processing {
         meeting_id: Option<&str>,
         offset: usize,
         limit: usize,
-    ) -> Result<serde_json::Value, grove_core::agent_control::ControlError> {
+    ) -> Result<serde_json::Value, nero_core::agent_control::ControlError> {
         if limit == 0 || limit > 200 {
-            return Err(grove_core::agent_control::ControlError::invalid());
+            return Err(nero_core::agent_control::ControlError::invalid());
         }
         let records = self.records.lock().unwrap();
         let mut matching = records
@@ -662,7 +662,7 @@ impl Processing {
         &self,
         id: &str,
         expected_version: &str,
-    ) -> Result<serde_json::Value, grove_core::agent_control::ControlError> {
+    ) -> Result<serde_json::Value, nero_core::agent_control::ControlError> {
         self.cancel_checked(id, Some(expected_version))?;
         let records = self.records.lock().unwrap();
         let record = records.iter().find(|record| record.id == id);
@@ -677,8 +677,8 @@ impl Processing {
         &self,
         id: &str,
         expected_version: Option<&str>,
-    ) -> Result<(), grove_core::agent_control::ControlError> {
-        use grove_core::agent_control::ControlError;
+    ) -> Result<(), nero_core::agent_control::ControlError> {
+        use nero_core::agent_control::ControlError;
         let invalid_state = |message: &str| ControlError::new("invalid_state", message);
         let storage_error = |message: String| ControlError::new("storage_error", message);
         let running = self.running.lock().unwrap();
@@ -759,7 +759,7 @@ impl Processing {
     fn checkpoint_transcript<T>(
         &self,
         cancel: &AtomicBool,
-        commit: impl FnOnce() -> grove_core::Result<T>,
+        commit: impl FnOnce() -> nero_core::Result<T>,
     ) -> Result<T, String> {
         self.checkpoint_transcript_following(cancel, commit, |_, _| Ok(()))
     }
@@ -767,7 +767,7 @@ impl Processing {
     fn checkpoint_transcript_following<T>(
         &self,
         cancel: &AtomicBool,
-        commit: impl FnOnce() -> grove_core::Result<T>,
+        commit: impl FnOnce() -> nero_core::Result<T>,
         following: impl FnOnce(&mut Progress, &T) -> Result<(), String>,
     ) -> Result<T, String> {
         // cancel() takes running -> progress. This checkpoint takes only progress,
@@ -782,15 +782,15 @@ impl Processing {
         progress.phase = Some("saving".into());
         let result = commit();
         let rejection = match &result {
-            Err(grove_core::CoreError::InvalidInput(_)) => Some((
+            Err(nero_core::CoreError::InvalidInput(_)) => Some((
                 "outputRejected",
                 crate::summary_failure::FailureKind::Output,
             )),
-            Err(grove_core::CoreError::InvalidState(_)) => Some((
+            Err(nero_core::CoreError::InvalidState(_)) => Some((
                 "sourceChanged",
                 crate::summary_failure::FailureKind::SourceChanged,
             )),
-            Err(grove_core::CoreError::MeetingNotFound) => Some((
+            Err(nero_core::CoreError::MeetingNotFound) => Some((
                 "meetingUnavailable",
                 crate::summary_failure::FailureKind::MeetingUnavailable,
             )),
@@ -866,14 +866,14 @@ impl Processing {
     pub fn meeting_idle<T>(
         &self,
         meeting_id: &str,
-        action: impl FnOnce() -> grove_core::Result<T>,
-    ) -> grove_core::Result<T> {
+        action: impl FnOnce() -> nero_core::Result<T>,
+    ) -> nero_core::Result<T> {
         // Hold the same ownership gate used by new jobs and capture startup through commit.
         let running = self.running.lock().unwrap();
         self.worker_ready()
-            .map_err(grove_core::CoreError::InvalidState)?;
+            .map_err(nero_core::CoreError::InvalidState)?;
         if self.shutting_down.load(Ordering::Acquire) {
-            return Err(grove_core::CoreError::Unavailable);
+            return Err(nero_core::CoreError::Unavailable);
         }
         if running
             .as_ref()
@@ -886,7 +886,7 @@ impl Processing {
                 .iter()
                 .any(|job| job.record.meeting_id.as_deref() == Some(meeting_id))
         {
-            return Err(grove_core::CoreError::InvalidState(
+            return Err(nero_core::CoreError::InvalidState(
                 "이 회의의 처리가 끝난 뒤 다시 시도해 주세요.".into(),
             ));
         }
@@ -897,8 +897,8 @@ impl Processing {
         &self,
         core: &CoreHandle,
         ids: &[String],
-        action: impl FnOnce() -> grove_core::Result<T>,
-    ) -> grove_core::Result<T> {
+        action: impl FnOnce() -> nero_core::Result<T>,
+    ) -> nero_core::Result<T> {
         self.meeting_removal_with_preflight(core, ids, || Ok(()), action)
     }
 
@@ -906,14 +906,14 @@ impl Processing {
         &self,
         core: &CoreHandle,
         ids: &[String],
-        preflight: impl FnOnce() -> grove_core::Result<()>,
-        action: impl FnOnce() -> grove_core::Result<T>,
-    ) -> grove_core::Result<T> {
+        preflight: impl FnOnce() -> nero_core::Result<()>,
+        action: impl FnOnce() -> nero_core::Result<T>,
+    ) -> nero_core::Result<T> {
         let mut running = self.running.lock().unwrap();
         self.worker_ready()
-            .map_err(grove_core::CoreError::InvalidState)?;
+            .map_err(nero_core::CoreError::InvalidState)?;
         if self.shutting_down.load(Ordering::Acquire) {
-            return Err(grove_core::CoreError::InvalidState(
+            return Err(nero_core::CoreError::InvalidState(
                 "앱을 종료하고 있습니다.".into(),
             ));
         }
@@ -923,7 +923,7 @@ impl Processing {
                 .iter()
                 .any(|id| !snapshot.meetings.iter().any(|meeting| &meeting.id == id))
         {
-            return Err(grove_core::CoreError::MeetingNotFound);
+            return Err(nero_core::CoreError::MeetingNotFound);
         }
         if snapshot.session.as_ref().is_some_and(|session| {
             matches!(
@@ -931,7 +931,7 @@ impl Processing {
                 SessionState::Recording | SessionState::Paused
             ) && ids.contains(&session.meeting_id)
         }) {
-            return Err(grove_core::CoreError::InvalidState(
+            return Err(nero_core::CoreError::InvalidState(
                 "녹음을 마친 뒤 삭제해 주세요.".into(),
             ));
         }
@@ -960,7 +960,7 @@ impl Processing {
                 job.cancel.store(true, Ordering::Release);
                 self.update(|progress| progress.message = "취소 중".into());
                 job.handle.join().map_err(|_| {
-                    grove_core::CoreError::InvalidState(
+                    nero_core::CoreError::InvalidState(
                         "음성 처리 종료를 확인하지 못했습니다. 다시 시도해 주세요.".into(),
                     )
                 })?;
@@ -981,7 +981,7 @@ impl Processing {
                     record.message = "회의가 삭제되어 작업을 취소했습니다.".into();
                     record.updated_at = now().max(record.updated_at);
                     self.save_job(record)
-                        .map_err(grove_core::CoreError::Storage)?;
+                        .map_err(nero_core::CoreError::Storage)?;
                     pending.remove(index);
                 } else {
                     index += 1;
@@ -989,7 +989,7 @@ impl Processing {
             }
         }
         self.worker_ready()
-            .map_err(grove_core::CoreError::InvalidState)?;
+            .map_err(nero_core::CoreError::InvalidState)?;
         action()
     }
 
@@ -1043,7 +1043,7 @@ impl Processing {
         Ok(format!("{:x}", hash.finalize()))
     }
 
-    pub fn bind_legacy_jobs(&self, core: &CoreHandle) -> grove_core::Result<()> {
+    pub fn bind_legacy_jobs(&self, core: &CoreHandle) -> nero_core::Result<()> {
         let mut owners: HashMap<String, Option<String>> = HashMap::new();
         for meeting in core.list_meetings()? {
             let path = self
@@ -1088,7 +1088,7 @@ impl Processing {
         if !path.exists() {
             return Ok(());
         }
-        let path = directory(&self.root, "processing").map_err(grove_core::CoreError::Storage)?;
+        let path = directory(&self.root, "processing").map_err(nero_core::CoreError::Storage)?;
         for entry in fs::read_dir(path)? {
             let entry = entry?;
             if !entry.file_type()?.is_dir()
@@ -1104,19 +1104,19 @@ impl Processing {
                 continue;
             };
             if let Some(Some(meeting_id)) = owners.get(&hash) {
-                Self::bind_job(&path, meeting_id).map_err(grove_core::CoreError::Storage)?;
+                Self::bind_job(&path, meeting_id).map_err(nero_core::CoreError::Storage)?;
             }
         }
         Ok(())
     }
 
-    fn owned_jobs(&self) -> grove_core::Result<Vec<(PathBuf, JobOwner)>> {
+    fn owned_jobs(&self) -> nero_core::Result<Vec<(PathBuf, JobOwner)>> {
         let mut jobs = Vec::new();
         let root = self.root.join("processing");
         if !root.exists() {
             return Ok(jobs);
         }
-        let root = directory(&self.root, "processing").map_err(grove_core::CoreError::Storage)?;
+        let root = directory(&self.root, "processing").map_err(nero_core::CoreError::Storage)?;
         for entry in fs::read_dir(root)? {
             let entry = entry?;
             if Uuid::parse_str(&entry.file_name().to_string_lossy()).is_err()
@@ -1143,7 +1143,7 @@ impl Processing {
         Ok(jobs)
     }
 
-    pub fn purge_meeting_jobs(&self, ids: &[String]) -> grove_core::Result<()> {
+    pub fn purge_meeting_jobs(&self, ids: &[String]) -> nero_core::Result<()> {
         for (path, owner) in self.owned_jobs()? {
             if ids.contains(&owner.meeting_id) {
                 fs::remove_dir_all(path)?;
@@ -1159,7 +1159,7 @@ impl Processing {
 
     pub fn cleanup_removed_meeting_jobs(&self, core: &CoreHandle) {
         let canonical_cleanup = core.retry_purge_cleanup();
-        let result = (|| -> grove_core::Result<()> {
+        let result = (|| -> nero_core::Result<()> {
             let existing = core
                 .list_meetings()?
                 .into_iter()
@@ -1198,7 +1198,7 @@ impl Processing {
 
     fn record_transcript_upgrade(
         &self,
-        result: grove_core::Result<grove_core::TranscriptUpgradeReport>,
+        result: nero_core::Result<nero_core::TranscriptUpgradeReport>,
     ) {
         if result.is_ok_and(|report| report.unavailable == 0) {
             return;
@@ -2108,7 +2108,7 @@ impl Processing {
                 if core.snapshot().map_err(message)?.session.is_some_and(|s| {
                     matches!(
                         s.state,
-                        grove_core::SessionState::Recording | grove_core::SessionState::Paused
+                        nero_core::SessionState::Recording | nero_core::SessionState::Paused
                     )
                 }) {
                     return Err("녹음을 마친 뒤 음성 인식을 시작해 주세요.".into());
@@ -2202,7 +2202,7 @@ impl Processing {
         progress: &mut Progress,
         core: &CoreHandle,
         meeting_id: &str,
-        source: &grove_core::Transcript,
+        source: &nero_core::Transcript,
     ) -> Result<(), String> {
         let snapshot = core.snapshot().map_err(message)?;
         let meeting = snapshot
@@ -2247,7 +2247,7 @@ impl Processing {
         &self,
         core: &CoreHandle,
         meeting_id: &str,
-        source: &grove_core::Transcript,
+        source: &nero_core::Transcript,
     ) -> Result<(), String> {
         let fingerprint = Self::source_fingerprint(core, meeting_id, "diarize")?;
         let progress = self.progress.lock().unwrap();
@@ -2279,8 +2279,8 @@ impl Processing {
         core: &CoreHandle,
         meeting_id: &str,
         cancel: &AtomicBool,
-        commit: impl FnOnce() -> grove_core::Result<Option<grove_core::Transcript>>,
-    ) -> Result<Option<grove_core::Transcript>, String> {
+        commit: impl FnOnce() -> nero_core::Result<Option<nero_core::Transcript>>,
+    ) -> Result<Option<nero_core::Transcript>, String> {
         self.checkpoint_transcript_following(cancel, commit, |progress, result| {
             if let Some(source) = result {
                 self.bind_speaker_continuation(progress, core, meeting_id, source)?;
@@ -2423,7 +2423,7 @@ mod tests {
         .unwrap()
     }
 
-    fn edited_baseline(process: &Processing) -> (CoreHandle, String, grove_core::Transcript) {
+    fn edited_baseline(process: &Processing) -> (CoreHandle, String, nero_core::Transcript) {
         let core = CoreHandle::open(&process.root).unwrap();
         let input = process.root.join("synthetic-input.wav");
         let data_size = 16000u32 * 2;
@@ -2635,7 +2635,7 @@ mod tests {
         });
         process.update(|progress| progress.meeting_id = Some("meeting-a".into()));
         assert!(process
-            .meeting_idle("meeting-a", || -> grove_core::Result<()> {
+            .meeting_idle("meeting-a", || -> nero_core::Result<()> {
                 panic!("a related running job must hold restore ownership")
             })
             .is_err());
@@ -2654,7 +2654,7 @@ mod tests {
         assert!(process.meeting_idle("meeting-a", || Ok(())).is_ok());
         process.cleanup_failed();
         assert!(process
-            .meeting_idle("meeting-a", || -> grove_core::Result<()> {
+            .meeting_idle("meeting-a", || -> nero_core::Result<()> {
                 panic!("unconfirmed worker termination must block restore")
             })
             .is_err());
@@ -2716,7 +2716,7 @@ mod tests {
         });
         process.update(|p| p.meeting_id = Some(meeting.id.clone()));
         assert!(process
-            .meeting_removal(&core, &[meeting.id], || -> grove_core::Result<()> {
+            .meeting_removal(&core, &[meeting.id], || -> nero_core::Result<()> {
                 panic!("removal must not run after unconfirmed termination")
             })
             .is_err());
@@ -2880,7 +2880,7 @@ mod tests {
     }
     #[test]
     fn stale_removal_after_draft_flush_keeps_running_and_queued_jobs_unchanged() {
-        use grove_core::agent_control::{meeting_edit_version, Mutation};
+        use nero_core::agent_control::{meeting_edit_version, Mutation};
 
         let (_temp, process) = setup();
         let core = CoreHandle::open(&process.root).unwrap();
@@ -2948,7 +2948,7 @@ mod tests {
             },
             || core.agent_mutate(request),
         );
-        assert!(matches!(result, Err(grove_core::CoreError::EditConflict)));
+        assert!(matches!(result, Err(nero_core::CoreError::EditConflict)));
         assert!(!cancel.load(Ordering::Acquire));
         assert_eq!(
             process.running.lock().unwrap().as_ref().unwrap().id,
@@ -3150,7 +3150,7 @@ mod tests {
     #[test]
     fn successful_source_upgrade_does_not_add_a_startup_notice() {
         let (_temp, process) = setup();
-        process.record_transcript_upgrade(Ok(grove_core::TranscriptUpgradeReport {
+        process.record_transcript_upgrade(Ok(nero_core::TranscriptUpgradeReport {
             upgraded: 1,
             unchanged: 1,
             unavailable: 0,
@@ -3161,7 +3161,7 @@ mod tests {
     #[test]
     fn unavailable_source_upgrade_remains_nonblocking_and_can_be_delivered_once() {
         let (_temp, process) = setup();
-        process.record_transcript_upgrade(Ok(grove_core::TranscriptUpgradeReport {
+        process.record_transcript_upgrade(Ok(nero_core::TranscriptUpgradeReport {
             upgraded: 1,
             unchanged: 0,
             unavailable: 1,
@@ -3200,7 +3200,7 @@ mod tests {
         std::os::unix::fs::symlink(temp.path(), process.root.join("processing")).unwrap();
         process.cleanup_removed_meeting_jobs(&core);
         let cleanup = process.progress.lock().unwrap().clone();
-        process.record_transcript_upgrade(Err(grove_core::CoreError::Storage(
+        process.record_transcript_upgrade(Err(nero_core::CoreError::Storage(
             "private/source/path".into(),
         )));
         assert!(process.progress.lock().unwrap().clone() == cleanup);

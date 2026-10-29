@@ -12,11 +12,11 @@ function DocumentActions({ flow, available, busy, kind }) {
       <PopoverTrigger className="quiet small icon" disabled={busy || state.pending} aria-label={`${label} ${action === 'copy' ? '복사' : '내보내기'}`} title={`${label} ${action === 'copy' ? '복사' : '내보내기'}`}>
         {action === 'copy' ? state.copied ? <Check size={17} aria-hidden="true" /> : <Copy size={17} aria-hidden="true" /> : <Download size={17} aria-hidden="true" />}
       </PopoverTrigger>
-      <PopoverContent align="end" className="grove-action-popover" data-nero-ui-owned="">
+      <PopoverContent align="end" className="nero-action-popover" data-nero-ui-owned="">
         <PopoverTitle className="sr-only">{label} {action === 'copy' ? '복사' : '내보내기'}</PopoverTitle>
         <button className="quiet small" disabled={state.pending} onClick={() => { void flow.perform('txt', action === 'copy'); }}>{action === 'copy' ? '텍스트로 복사' : '텍스트 (.txt)'}</button>
         <button className="quiet small" disabled={state.pending} onClick={() => { void flow.perform('md', action === 'copy'); }}>{action === 'copy' ? '마크다운으로 복사' : '마크다운 (.md)'}</button>
-        {kind === 'summary' && <label className="grove-action-option"><input type="checkbox" checked={state.includeCitations} disabled={state.pending} onChange={event => flow.include(event.target.checked)} /><span>인용 번호 포함</span></label>}
+        {kind === 'summary' && <label className="nero-action-option"><input type="checkbox" checked={state.includeCitations} disabled={state.pending} onChange={event => flow.include(event.target.checked)} /><span>인용 번호 포함</span></label>}
         {state.pending && <span className="processing-inline type-caption" role="status"><span className="activity-spinner" aria-hidden="true" />준비 중</span>}
         {state.error && <p className="notice type-caption" role="alert">{state.error}</p>}
       </PopoverContent>

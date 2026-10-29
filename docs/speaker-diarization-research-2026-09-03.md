@@ -25,7 +25,7 @@ These are application settings and model-capacity limits, not measured meeting r
   quality. A model's supported capacity is distinct from correct speaker recovery.
 
 See [engine/count options](ultra8-option-and-speaker-count.md) and
-[app inference configuration](../Sources/GroveInference/InferenceConfiguration.swift).
+[app inference configuration](../legacy/swift/Sources/GroveInference/InferenceConfiguration.swift).
 
 ## Distinct responsibilities
 

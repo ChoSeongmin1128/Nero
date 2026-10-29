@@ -28,7 +28,7 @@ test('calendar picker renders one explicit selection and keeps linked metadata s
   tomorrow.setDate(tomorrow.getDate() + 1);
   const tomorrowKey = `${tomorrow.getFullYear()}-${String(tomorrow.getMonth() + 1).padStart(2, '0')}-${String(tomorrow.getDate()).padStart(2, '0')}`;
   const tomorrowLabel = `${tomorrow.getFullYear()}년 ${tomorrow.getMonth() + 1}월 ${tomorrow.getDate()}일 ${['일요일', '월요일', '화요일', '수요일', '목요일', '금요일', '토요일'][tomorrow.getDay()]}`;
-  window.document.querySelector('.calendar-meeting-date .grove-date-trigger').click();
+  window.document.querySelector('.calendar-meeting-date .nero-date-trigger').click();
   await wait(() => window.document.querySelector(`button[aria-label="${tomorrowLabel}"]`));
   const tomorrowButton = window.document.querySelector(`button[aria-label="${tomorrowLabel}"]`);
   tomorrowButton.dispatchEvent(new window.PointerEvent('pointerdown', { bubbles: true, pointerType: 'mouse', button: 0 }));
@@ -38,11 +38,11 @@ test('calendar picker renders one explicit selection and keeps linked metadata s
   tomorrowButton.dispatchEvent(new window.MouseEvent('mouseup', { bubbles: true, button: 0 }));
   tomorrowButton.click();
   await wait(() => queries.length === 2 && queries[1].day === tomorrowKey && window.document.querySelector('input[type="radio"]'));
-  assert.match(window.document.querySelector('.calendar-meeting-date .grove-date-trigger').getAttribute('aria-label'), new RegExp(`${tomorrow.getDate()}일`));
+  assert.match(window.document.querySelector('.calendar-meeting-date .nero-date-trigger').getAttribute('aria-label'), new RegExp(`${tomorrow.getDate()}일`));
   window.document.querySelector('[aria-label="이전 날짜"]').click();
   await wait(() => queries.length === 3 && window.document.querySelector('input[type="radio"]'));
   assert.equal(queries[2].day, initialDay);
-  window.document.querySelector('.calendar-meeting-date .grove-date-trigger').click();
+  window.document.querySelector('.calendar-meeting-date .nero-date-trigger').click();
   await wait(() => window.document.querySelector('[aria-label="다음 달"]'));
   const caption = window.document.querySelector('.rdp-month_caption').textContent;
   window.document.querySelector('[aria-label="다음 달"]').click();

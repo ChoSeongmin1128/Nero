@@ -1,1 +1,1 @@
-export { GroveControls } from './react-controls.jsx';
+export { NeroControls } from './react-controls.jsx';

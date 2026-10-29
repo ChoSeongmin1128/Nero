@@ -499,7 +499,7 @@ impl MossOutput {
             source_session_id: session_id.into(),
             model: output.model,
             model_revision: serde_json::from_str::<serde_json::Value>(include_str!(
-                "../../../Sources/GroveApp/Resources/Models/moss.json"
+                "../resources/models/moss.json"
             ))
             .map_err(|e| CoreError::Storage(e.to_string()))?["revision"]
                 .as_str()

@@ -2,6 +2,7 @@
 import argparse
 import fcntl
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -13,9 +14,12 @@ import time
 
 ROOT = Path(__file__).resolve().parents[3]
 TARGET = Path('/Applications/Nero.app')
-DATA = Path.home() / 'Library/Application Support/io.github.choseongmin1128.grove.desktop'
+DATA = Path.home() / 'Library/Application Support/io.github.choseongmin1128.nero.desktop'
+LEGACY_IDENTIFIER = 'io.github.choseongmin1128.grove.desktop'
+LEGACY_DATA = DATA.with_name(LEGACY_IDENTIFIER)
+MIGRATION_RECEIPT = '.nero-identity-migration.json'
 CONNECTIONS = Path.home() / 'Library/Application Support/Nero/connections'
-IDENTIFIER = 'io.github.choseongmin1128.grove.desktop'
+IDENTIFIER = 'io.github.choseongmin1128.nero.desktop'
 
 
 def require(condition, reason):
@@ -84,7 +88,7 @@ def inventory(folder):
             require_directory(current / name)
         for name in names:
             path = current / name
-            if path == folder / 'store.lock':
+            if path in (folder / 'store.lock', folder / MIGRATION_RECEIPT):
                 continue
             metadata = regular_file(path)
             result[str(path.relative_to(folder))] = {'bytes': metadata.st_size, 'sha256': sha(path)}
@@ -103,8 +107,8 @@ def connection_states():
     return result
 
 
-def model_metadata():
-    folder = DATA / 'models'
+def model_metadata(data=None):
+    folder = (DATA if data is None else data) / 'models'
     if not folder.exists():
         require(not folder.is_symlink(), 'Unexpected model directory link')
         return {}
@@ -133,19 +137,24 @@ def installed_version(info):
     return tuple(int(part) for part in version.split('.')), int(build)
 
 
-def require_stopped():
+def require_stopped(check_agents=False, other_apps=()):
     processes = run('ps', '-axo', 'pid=,comm=').stdout.splitlines()
-    require(not any(str(TARGET / 'Contents/MacOS/') in line for line in processes),
+    require(not any(str(app / 'Contents/MacOS/') in line
+                    for app in (TARGET, *other_apps) for line in processes),
             'Close Nero through its normal application UI; no process will be stopped by this installer')
+    require(not check_agents or not any(str(CONNECTIONS / client / 'releases') in line
+                                       for client in ('claude', 'codex') for line in processes),
+            'Close active Nero agent sessions before installation; no process will be stopped')
 
 
-def idle_snapshot():
+def idle_snapshot(data=None):
+    data = DATA if data is None else data
     cli = TARGET / 'Contents/Resources/agent/nero'
     offset = 0
     version = None
     meetings = []
     for _ in range(10000):
-        page = json.loads(run(str(cli), '--data-dir', str(DATA), 'meetings', 'list',
+        page = json.loads(run(str(cli), '--data-dir', str(data), 'meetings', 'list',
                               '--offset', str(offset), '--limit', '200', '--json').stdout)
         require(isinstance(page.get('meetings'), list), 'Meeting list is not valid')
         page_version = page.get('sourceVersion')
@@ -166,7 +175,7 @@ def idle_snapshot():
         offset += pagination['limit']
     else:
         raise RuntimeError('Meeting pagination exceeded the review limit')
-    processing = DATA / 'processing'
+    processing = data / 'processing'
     jobs = {}
     if processing.exists():
         require_directory(processing)
@@ -285,12 +294,66 @@ def verify_release(app, dmg, archive=None):
     return info, receipt, expected_tree
 
 
+def migration_source(migrating):
+    old_exists = LEGACY_DATA.exists() or LEGACY_DATA.is_symlink()
+    new_exists = DATA.exists() or DATA.is_symlink()
+    require(not (old_exists and new_exists), 'Both identity data directories exist; preserve both for review')
+    source = LEGACY_DATA if migrating else DATA
+    require_directory(source)
+    if migrating:
+        require(not new_exists, 'New identity data path already exists')
+        require(source.parent.stat().st_dev == DATA.parent.stat().st_dev,
+                'Identity data migration must use a same-filesystem rename')
+        require(not (source / MIGRATION_RECEIPT).exists() and not (source / MIGRATION_RECEIPT).is_symlink(),
+                'Preserve the existing identity migration attempt')
+    else:
+        require(not old_exists, 'Old identity data remains; complete its explicit migration first')
+        validate_completed_migration_receipt()
+    return source
+
+
+def migration_receipt(source, status):
+    return {'schemaVersion': 1, 'fromIdentifier': LEGACY_IDENTIFIER, 'toIdentifier': IDENTIFIER,
+            'sourceData': str(source), 'destinationData': str(DATA), 'status': status}
+
+
+def validate_completed_migration_receipt():
+    path = DATA / MIGRATION_RECEIPT
+    if not path.exists() and not path.is_symlink():
+        return
+    require(regular_file(path).st_size <= 4096, 'Identity migration receipt exceeds the read limit')
+    def unique_fields(pairs):
+        value = {}
+        for key, item in pairs:
+            require(key not in value, 'Identity migration receipt contains duplicate fields')
+            value[key] = item
+        return value
+    try:
+        with path.open('rb') as stream:
+            raw = stream.read(4097)
+        require(len(raw) <= 4096, 'Identity migration receipt exceeds the read limit')
+        value = json.loads(raw.decode('utf-8'), object_pairs_hook=unique_fields)
+    except (UnicodeError, ValueError) as error:
+        raise RuntimeError('Identity migration receipt is invalid; preserve it for recovery') from error
+    require(isinstance(value, dict) and type(value.get('schemaVersion')) is int
+            and value == migration_receipt(LEGACY_DATA, 'completed'),
+            'Identity migration is incomplete or its receipt differs; preserve it for recovery')
+
+
+def connection_migration_module():
+    spec = importlib.util.spec_from_file_location(
+        'migrate_agent_connections', Path(__file__).with_name('migrate-agent-connections.py'))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def install(app, dmg, work, archive=None):
     require_directory(work)
-    require_directory(DATA)
     require_directory(TARGET)
     for path in (app, dmg, work) + ((archive,) if archive is not None else ()):
         require(not path.resolve().is_relative_to(DATA.resolve())
+                and not path.resolve().is_relative_to(LEGACY_DATA.resolve())
                 and not path.resolve().is_relative_to(CONNECTIONS.resolve()),
                 'Installation artifacts must stay outside user data and connection state')
     require(app.suffix == '.app' and dmg.suffix == '.dmg'
@@ -303,14 +366,18 @@ def install(app, dmg, work, archive=None):
     pending_path = work / 'installation.pending.json'
     require(app != stage and not app.is_relative_to(previous), 'Candidate uses a reserved installation path')
     current_info = plistlib.loads((TARGET / 'Contents/Info.plist').read_bytes())
-    require(current_info.get('CFBundleIdentifier') == IDENTIFIER, 'Unexpected installed app identity')
+    current_identifier = current_info.get('CFBundleIdentifier')
+    require(current_identifier in (IDENTIFIER, LEGACY_IDENTIFIER), 'Unexpected installed app identity')
+    migrating = current_identifier == LEGACY_IDENTIFIER
+    source_data = migration_source(migrating)
+    data = source_data
     current_version = installed_version(current_info)
     candidate = app if app.exists() or app.is_symlink() else TARGET
     info, receipt, expected_tree = verify_release(candidate, dmg, archive)
     release_version = installed_version(info)
     require(current_version <= release_version, 'A newer Nero is already installed; downgrade refused')
     source = receipt['source_commit']
-    if current_version == release_version:
+    if current_version == release_version and not migrating:
         require(installation_path.exists(), 'This build is already present without this installation receipt')
         installed = load(installation_path)
         require(installed.get('build') == info['CFBundleVersion'] and installed.get('sourceCommit') == source
@@ -324,17 +391,20 @@ def install(app, dmg, work, archive=None):
     device = TARGET.parent.stat().st_dev
     require(all(path.stat().st_dev == device for path in (TARGET, app, work)),
             'App, installation and rollback directory must share a device; copying is not permitted')
+    require(not migrating or source_data.stat().st_dev == work.stat().st_dev,
+            'Identity migration receipts and data must share a device; copying is not permitted')
     for path in (stage, previous, work / 'data-before', work / 'data-before-manifest.json',
                  work / 'connection-state-before.json', work / 'model-metadata-before.json',
-                 work / 'idle-before.json', installation_path, pending_path, work / 'installation-events.jsonl'):
+                 work / 'idle-before.json', installation_path, pending_path, work / 'installation-events.jsonl',
+                 work / 'identity-migration.completed.json', work / 'identity-migration.failed.json'):
         require(not path.exists() and not path.is_symlink(), 'Preserve an existing installation attempt: ' + str(path))
-    require_stopped()
-    first_idle = idle_snapshot()
+    require_stopped(migrating, (previous, stage))
+    first_idle = idle_snapshot(data)
     time.sleep(2)
-    require_stopped()
-    second_idle = idle_snapshot()
+    require_stopped(migrating, (previous, stage))
+    second_idle = idle_snapshot(data)
     require(first_idle == second_idle, 'Library/job state changed during idle confirmation')
-    lock_path = DATA / 'store.lock'
+    lock_path = data / 'store.lock'
     metadata = regular_file(lock_path)
     with os.fdopen(os.open(lock_path, os.O_RDWR | os.O_NOFOLLOW), 'r+') as lock:
         require(os.fstat(lock.fileno()).st_ino == metadata.st_ino, 'Writer-lock file changed before opening')
@@ -346,69 +416,109 @@ def install(app, dmg, work, archive=None):
                 if attempt == 99:
                     raise RuntimeError('Nero still holds the writer lock; no installation changes made')
                 time.sleep(0.1)
-        require_stopped()
-        require(idle_snapshot() == second_idle, 'Recording or jobs changed before acquiring the writer lock')
-        before = inventory(DATA)
+        require_stopped(migrating, (previous, stage))
+        require(idle_snapshot(data) == second_idle, 'Recording or jobs changed before acquiring the writer lock')
+        before = inventory(data)
         connections_before = connection_states()
-        models_before = model_metadata()
-        require(inventory(DATA) == before, 'Data changed while preparing its manifest')
+        models_before = model_metadata(data)
+        require(inventory(data) == before, 'Data changed while preparing its manifest')
         require(connection_states() == connections_before, 'Connection state changed while preparing installation')
-        require(model_metadata() == models_before, 'Model files changed while preparing installation')
+        require(model_metadata(data) == models_before, 'Model files changed while preparing installation')
+        connections_expected = connections_before
         write_new(work / 'data-before-manifest.json', before)
         write_new(work / 'connection-state-before.json', connections_before)
         write_new(work / 'model-metadata-before.json', models_before)
         write_new(work / 'idle-before.json', second_idle)
+        data_moved = False
+        migration_marked = False
         staged = False
         moved_previous = False
         promoted = False
+        connection_migration = connection_migration_module() if migrating else None
+        connection_plan = connection_migration.prepare(CONNECTIONS, source_data, DATA) if migrating else None
         try:
             require(not stage.exists() and not stage.is_symlink(), 'Installation stage already exists')
             os.rename(app, stage)
             staged = True
             require(app_tree(stage) == expected_tree, 'Staged app differs from the release')
             verify_signature(stage, receipt)
-            require_stopped()
-            require(inventory(DATA) == before and connection_states() == connections_before
-                    and model_metadata() == models_before, 'Data, connection state or models changed before app replacement')
+            require_stopped(migrating, (previous, stage))
+            require(inventory(data) == before and connection_states() == connections_before
+                    and model_metadata(data) == models_before, 'Data, connection state or models changed before app replacement')
             ledger(work, 'prepared', sourceCommit=source, oldVersion=current_info['CFBundleShortVersionString'],
                    oldBuild=current_info['CFBundleVersion'], dataFiles=len(before))
             require(not previous.exists() and not previous.is_symlink(), 'A rollback app already exists')
             os.rename(TARGET, previous)
             moved_previous = True
+            require_stopped(migrating, (previous, stage))
+            if migrating:
+                require(migration_source(True) == source_data, 'Migration source changed')
+                migration_marked = True
+                write_new(source_data / MIGRATION_RECEIPT, migration_receipt(source_data, 'pending'))
+                os.rename(source_data, DATA)
+                data_moved = True
+                data = DATA
+                require(inventory(data) == before and model_metadata(data) == models_before,
+                        'Data or model metadata changed during identity migration')
+                connection_migration.apply(connection_plan)
+                connection_migration.verify(connection_plan)
+                connections_expected = connection_states()
             os.rename(stage, TARGET)
             promoted = True
             require(app_tree(TARGET) == expected_tree, 'Installed app differs from the release')
             verify_signature(TARGET, receipt)
-            require_stopped()
-            require(inventory(DATA) == before, 'Existing data changed during installation')
+            require_stopped(migrating, (previous, stage))
+            require(inventory(data) == before, 'Existing data changed during installation')
             connections_after = connection_states()
-            require(connections_after == connections_before, 'Existing connection state changed during installation')
-            require(model_metadata() == models_before, 'Model files changed during installation')
+            require(connections_after == connections_expected, 'Connection state changed outside the identity migration')
+            require(model_metadata(data) == models_before, 'Model files changed during installation')
             result = {
                 'build': info['CFBundleVersion'], 'version': info['CFBundleShortVersionString'], 'sourceCommit': source,
                 'installedApp': str(TARGET), 'previousApp': str(previous),
                 'appTreeSha256': receipt['app_tree_sha256'],
                 'dataFilesPreserved': len(before), 'dataUnchanged': True,
                 'dataUnchangedWhileAppStopped': True, 'dataManifestSha256': tree_hash(before),
-                'userDataCopiedOrMoved': False, 'dataBackupCreated': False, 'writerLockHeld': True,
+                'userDataCopiedOrMoved': migrating, 'dataBackupCreated': False, 'writerLockHeld': True,
+                'identityMigration': migrating, 'dataRenamedWithoutCopy': migrating,
                 'connectionStateHashesBefore': connections_before,
-                'connectionStateHashesAfter': connections_after, 'connectionStatesUnchanged': True,
+                'connectionStateHashesAfter': connections_after, 'connectionStatesUnchanged': not migrating,
+                'agentConnectionMigration': connection_migration.public_receipt(connection_plan) if migrating else None,
                 'clientConfigurationsChanged': False,
-                'modelMetadataUnchanged': True, 'modelRelocations': [], 'modelWeightsCopiedOrMoved': False,
+                'modelMetadataUnchanged': True,
+                'modelRelocations': [{'from': str(source_data / 'models'), 'to': str(DATA / 'models')}]
+                    if migrating and models_before else [],
+                'modelWeightsCopiedOrMoved': migrating and bool(models_before), 'modelWeightsCopied': False,
+                'modelRootRenamedWithoutCopy': migrating and bool(models_before),
                 'candidateAppMoved': True, 'appCopied': False,
                 'guiVerified': False, 'idleConfirmations': 3, 'appWasStoppedAtReplacement': True,
                 'installedAt': time.time(),
             }
+            if migrating:
+                require(not LEGACY_DATA.exists() and not LEGACY_DATA.is_symlink(),
+                        'Old identity data reappeared; preserve both directories for recovery')
+                completed = work / 'identity-migration.completed.json'
+                write_new(completed, migration_receipt(source_data, 'completed'))
+                os.replace(completed, data / MIGRATION_RECEIPT)
             write_new(pending_path, result)
             ledger(work, 'validated', sourceCommit=source, build=info['CFBundleVersion'],
-                   dataUnchanged=True, connectionStatesUnchanged=True)
+                   dataUnchanged=True, connectionStatesUnchanged=not migrating)
             os.rename(pending_path, installation_path)
         except BaseException as error:
             rollback = []
             try:
-                require_stopped()
+                require_stopped(migrating, (previous, stage))
                 if promoted:
                     os.rename(TARGET, stage)
+                if connection_plan is not None:
+                    connection_migration.rollback(connection_plan)
+                if migration_marked:
+                    marker = data / MIGRATION_RECEIPT
+                    if marker.exists() or marker.is_symlink():
+                        os.rename(marker, work / 'identity-migration.failed.json')
+                if data_moved:
+                    require(not source_data.exists() and not source_data.is_symlink(), 'Migration source exists during rollback')
+                    os.rename(DATA, source_data)
+                    data = source_data
                 if moved_previous:
                     os.rename(previous, TARGET)
                 if staged:
@@ -421,6 +531,9 @@ def install(app, dmg, work, archive=None):
                 raise RuntimeError('Installation failed; preserve the stage and rollback app for recovery: '
                                    + '; '.join(rollback)) from error
             raise
+        finally:
+            if connection_plan is not None:
+                connection_migration.release(connection_plan)
     return {key: result[key] for key in ('build', 'sourceCommit', 'dataFilesPreserved',
                                         'dataUnchanged', 'connectionStatesUnchanged', 'guiVerified')}
 

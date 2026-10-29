@@ -1,7 +1,7 @@
 use crate::processing::{cancelled, directory, message, plain_file, Processing};
 use crate::summary::{run_structured, StructuredRequest};
 use crate::summary_failure::FailureKind;
-use grove_core::{
+use nero_core::{
     discover_candidates, CoreError, CoreHandle, TerminologyCandidate, TerminologyDecision,
     TerminologyDraft, TerminologyKind, TerminologyOutcome, TerminologyProfile, TerminologyRule,
     Transcript,
@@ -207,7 +207,7 @@ fn decision(candidate: &TerminologyCandidate, reason: &str) -> DecisionAudit {
 fn context<'a>(
     candidate: &TerminologyCandidate,
     source: &'a Transcript,
-) -> &'a [grove_core::TranscriptSegment] {
+) -> &'a [nero_core::TranscriptSegment] {
     let first = candidate.segment_index.saturating_sub(1);
     let last = (candidate.segment_index + 2).min(source.segments.len());
     &source.segments[first..last]
@@ -290,7 +290,7 @@ fn parse_decision(
     }
     let (outcome, reason) = match result.decision {
         ModelOutcome::Accept
-            if grove_core::terminology::has_literal_evidence(
+            if nero_core::terminology::has_literal_evidence(
                 candidate,
                 source,
                 &result.evidence_segment_ids,
@@ -329,7 +329,7 @@ pub(super) fn correct(
         "schemaVersion":1,
         "policyVersion":POLICY,
         "sourceVersion":source.version,
-        "sourceSha256":grove_core::terminology::transcript_digest(&source).map_err(message)?
+        "sourceSha256":nero_core::terminology::transcript_digest(&source).map_err(message)?
     });
     let snapshot = match snapshot {
         Ok(Some(snapshot)) => snapshot,

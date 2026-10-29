@@ -420,7 +420,7 @@ fn three_hour_template_pipeline_preserves_all_facts_and_invalidates_changed_prom
     let fixture = scripted_server(temporary.path(), tokenize, respond);
     let (process, cache) = prepare(temporary.path());
     let source = source();
-    let template = grove_core::templates::TemplateStore::new(process.root.canonicalize().unwrap())
+    let template = nero_core::templates::TemplateStore::new(process.root.canonicalize().unwrap())
         .get("interview")
         .unwrap();
     let (text, receipt) = runtime()

@@ -503,12 +503,31 @@ fn load_registration(directory: &Path, root: &Path, client: &str) -> Result<Valu
     let token = state["token"].as_str().unwrap_or("");
     if state["schemaVersion"] != 1
         || state["client"] != client
-        || state["dataDir"].as_str() != root.to_str()
+        || !connection_root_matches(&state["dataDir"], root)
         || !valid_token(token)
     {
         return Err("연결 설정이 일치하지 않습니다.".into());
     }
     Ok(state)
+}
+
+fn connection_root_matches(value: &Value, root: &Path) -> bool {
+    let Some(path) = value.as_str() else {
+        return false;
+    };
+    if Path::new(path) == root {
+        return true;
+    }
+    nero_core::identity::migrated_data_dir(Path::new(path)).is_some_and(|resolved| resolved == root)
+}
+
+fn connection_args_match(value: &Value, root: &Path) -> bool {
+    value.as_array().is_some_and(|args| {
+        args.len() == 3
+            && args[0] == "--data-dir"
+            && connection_root_matches(&args[1], root)
+            && args[2] == "mcp"
+    })
 }
 
 fn valid_token(token: &str) -> bool {
@@ -712,7 +731,7 @@ fn historical_release(
     let entry = &config["mcpServers"]["nero"];
     let environment = &entry["env"];
     entry["command"] == json!(executable)
-        && entry["args"] == json!(["--data-dir", root, "mcp"])
+        && connection_args_match(&entry["args"], root)
         && environment["NERO_CONNECTION_CLIENT"] == client
         && environment["NERO_CONNECTION_TOKEN"] == registration["token"]
         && environment["NERO_CONNECTION_GENERATION"] == generation
@@ -915,6 +934,32 @@ mod tests {
             .unwrap();
         }
         resources
+    }
+
+    #[test]
+    fn registered_paths_accept_only_receipted_identity_migration() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("io.github.choseongmin1128.grove.desktop");
+        let root = temp.path().join(nero_core::identity::APP_IDENTIFIER);
+        fs::create_dir(&root).unwrap();
+        let args = json!(["--data-dir", source, "mcp"]);
+        assert!(!connection_args_match(&args, &root));
+        let receipt = json!({"schemaVersion":1,
+            "fromIdentifier":source.file_name().unwrap().to_str().unwrap(),
+            "toIdentifier":nero_core::identity::APP_IDENTIFIER,"sourceData":source,
+            "destinationData":root,"status":"completed"});
+        fs::write(
+            root.join(".nero-identity-migration.json"),
+            receipt.to_string(),
+        )
+        .unwrap();
+        assert!(connection_args_match(&args, &root));
+        assert!(!connection_args_match(
+            &json!(["--data-dir", source, "mcp", "extra"]),
+            &root
+        ));
+        fs::create_dir(&source).unwrap();
+        assert!(!connection_args_match(&args, &root));
     }
 
     #[test]

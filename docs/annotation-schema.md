@@ -10,10 +10,10 @@ beta.8의 문서 schema5에는 **화자 배정 확인용** 근거와 undo 명령
 이는 아래의 전체 annotation/correction-head/audio-hash/snapshot 계약을 구현한 것이 아닙니다.
 [현재 UI 확인 계약](transcript-library-ux.md)을 별도로 참고하십시오.
 
-- [DocumentUtterance](../Sources/GroveApp/TranscriptDocument.swift#L11)는 Double 시각, rawText/editedText, 원래 ID·채널·군집·단일 parent ID를 가집니다. `displayedText`는 editedText 우선이며 **그 수정의 목적을 기록하지 않습니다**.
-- [TranscriptDocument](../Sources/GroveApp/TranscriptDocument.swift#L82)는 schema 3–4를 읽고 `revisionID`, 실제 엔진 정보, undo/redo를 보관합니다. [commit](../Sources/GroveApp/TranscriptDocument.swift#L234)은 매 편집마다 `revisionID`를 바꾸지 않습니다.
-- [InferenceResult](../Sources/GroveInference/InferenceOutput.swift#L66)의 jobID/기계 초안과 [단일 채널 변환](../Sources/GroveApp/InferenceDocumentBridge.swift#L22)의 document revisionID는 현재 공유될 수 있습니다. 이를 새 교정 커밋 ID나 dataset snapshotID라고 해석하지 않습니다.
-- [Storage](../Sources/GroveApp/TranscriptDocumentStorage.swift#L35)는 이전 전사 archive와 원시 engine result를 따로 보존합니다. `ArchivedTranscript.id` 역시 데이터셋 snapshotID가 아닙니다.
+- [DocumentUtterance](../legacy/swift/Sources/GroveApp/TranscriptDocument.swift#L11)는 Double 시각, rawText/editedText, 원래 ID·채널·군집·단일 parent ID를 가집니다. `displayedText`는 editedText 우선이며 **그 수정의 목적을 기록하지 않습니다**.
+- [TranscriptDocument](../legacy/swift/Sources/GroveApp/TranscriptDocument.swift#L82)는 schema 3–4를 읽고 `revisionID`, 실제 엔진 정보, undo/redo를 보관합니다. [commit](../legacy/swift/Sources/GroveApp/TranscriptDocument.swift#L234)은 매 편집마다 `revisionID`를 바꾸지 않습니다.
+- [InferenceResult](../legacy/swift/Sources/GroveInference/InferenceOutput.swift#L66)의 jobID/기계 초안과 [단일 채널 변환](../legacy/swift/Sources/GroveApp/InferenceDocumentBridge.swift#L22)의 document revisionID는 현재 공유될 수 있습니다. 이를 새 교정 커밋 ID나 dataset snapshotID라고 해석하지 않습니다.
+- [Storage](../legacy/swift/Sources/GroveApp/TranscriptDocumentStorage.swift#L35)는 이전 전사 archive와 원시 engine result를 따로 보존합니다. `ArchivedTranscript.id` 역시 데이터셋 snapshotID가 아닙니다.
 
 ## 분리할 객체와 식별자
 

@@ -118,5 +118,5 @@
   }
   if (typeof module === "object" && module.exports)
     module.exports = createViewState;
-  else root.GroveViewState = createViewState;
+  else root.NeroViewState = createViewState;
 })(typeof globalThis === "object" ? globalThis : this);

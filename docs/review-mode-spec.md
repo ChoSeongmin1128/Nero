@@ -23,11 +23,11 @@ Grove 안에서 원음을 듣고 전사 초안을 교정하고, 나중에 검수
 
 | 현재 코드 근거 | 확인한 현재 동작 | 추가 계약이 필요한 부분 |
 |---|---|---|
-| [TranscriptDocument](../Sources/GroveApp/TranscriptDocument.swift#L11) | `rawText`와 `editedText`, ID, 채널, 기계 군집을 분리 | 실제 발화 교정문의 의미, 독립 활동 구간, 검수 증거 |
-| [편집·분할](../Sources/GroveApp/TranscriptDocument.swift#L188) | 텍스트 수정·화자 배정·분할과 undo/redo | 추가·삭제·경계·다중 원본 병합, 검수 무효화 |
-| [문서 저장](../Sources/GroveApp/TranscriptDocumentStorage.swift#L92) | 이전 파일 백업 후 원자적 현재 문서 쓰기 | 내용·검수·undo의 단일 저장 단위, 실패/재시작 복구 검증 |
-| [편집 발행](../Sources/GroveApp/GroveStore.swift#L367) | 저장 성공 후 화면용 문서 갱신 | 새 검수 명령에서도 이 순서 유지 |
-| [현재 구간 재생](../Sources/GroveApp/AudioPlayerController.swift#L104) | 앞뒤 0.2초 문맥, 100ms 간격 종료 확인 | 정밀 재생과 문맥 재생 분리, 실제 경계 오차 측정 |
+| [TranscriptDocument](../legacy/swift/Sources/GroveApp/TranscriptDocument.swift#L11) | `rawText`와 `editedText`, ID, 채널, 기계 군집을 분리 | 실제 발화 교정문의 의미, 독립 활동 구간, 검수 증거 |
+| [편집·분할](../legacy/swift/Sources/GroveApp/TranscriptDocument.swift#L188) | 텍스트 수정·화자 배정·분할과 undo/redo | 추가·삭제·경계·다중 원본 병합, 검수 무효화 |
+| [문서 저장](../legacy/swift/Sources/GroveApp/TranscriptDocumentStorage.swift#L92) | 이전 파일 백업 후 원자적 현재 문서 쓰기 | 내용·검수·undo의 단일 저장 단위, 실패/재시작 복구 검증 |
+| [편집 발행](../legacy/swift/Sources/GroveApp/GroveStore.swift#L367) | 저장 성공 후 화면용 문서 갱신 | 새 검수 명령에서도 이 순서 유지 |
+| [현재 구간 재생](../legacy/swift/Sources/GroveApp/AudioPlayerController.swift#L104) | 앞뒤 0.2초 문맥, 100ms 간격 종료 확인 | 정밀 재생과 문맥 재생 분리, 실제 경계 오차 측정 |
 
 기존 원자적 파일 쓰기를 새 검수 저장 전체의 트랜잭션/복구 검증 완료로 해석하지 않습니다.
 

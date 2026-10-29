@@ -5,14 +5,14 @@ pub mod mcp;
 mod mutations;
 mod templates;
 
-use grove_core::{
+use nero_core::{
     reader::{LibraryReader, ReadError},
     CoreError,
 };
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 
-pub const APP_IDENTIFIER: &str = "io.github.choseongmin1128.grove.desktop";
+pub use nero_core::identity::APP_IDENTIFIER;
 pub const METHODS: [&str; 25] = [
     "jobs_list",
     "job_cancel",
@@ -100,19 +100,13 @@ pub fn dispatch(root: &Path, method: &str, params: Value) -> Result<Value, Query
             message: "지원하지 않는 Nero 명령입니다.",
         });
     }
-    let root = if root.is_absolute() {
-        root.to_path_buf()
-    } else {
-        std::env::current_dir()
-            .map_err(|_| QueryError::invalid())?
-            .join(root)
-    };
+    let root = canonical_data_dir(root)?;
     let root = root.as_path();
     if method.starts_with("template") {
         return templates::dispatch(root, method, params);
     }
-    if grove_core::agent_control::METHODS.contains(&method)
-        || grove_core::agent_control::JOB_METHODS.contains(&method)
+    if nero_core::agent_control::METHODS.contains(&method)
+        || nero_core::agent_control::JOB_METHODS.contains(&method)
     {
         return mutations::dispatch(root, method, params);
     }
@@ -130,6 +124,26 @@ pub fn dispatch(root: &Path, method: &str, params: Value) -> Result<Value, Query
         result["capabilities"] = json!({"queriesReadOnly":true,"templateWrites":true,"meetingWritesRequireApp":true,"summaryImportsRequireApp":true,"jobQueriesRequireApp":true,"jobCancellationRequireApp":true});
     }
     Ok(result)
+}
+
+pub fn canonical_data_dir(root: &Path) -> Result<PathBuf, QueryError> {
+    let root = if root.is_absolute() {
+        root.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|_| QueryError::invalid())?
+            .join(root)
+    };
+    if let Some(destination) = nero_core::identity::migrated_data_dir(&root) {
+        return Ok(destination);
+    }
+    if nero_core::identity::legacy_path(&root) && !root.exists() {
+        return Err(QueryError {
+            code: "library_not_found",
+            message: "이전 데이터 경로의 이전 완료를 확인할 수 없습니다. Nero 앱에서 데이터 이전 상태를 확인해 주세요.",
+        });
+    }
+    Ok(root)
 }
 
 fn query_error(error: CoreError) -> QueryError {
@@ -211,8 +225,8 @@ pub fn input_schema(method: &str) -> Map<String, Value> {
     if method.starts_with("template") {
         return templates::schema(method);
     }
-    if grove_core::agent_control::METHODS.contains(&method)
-        || grove_core::agent_control::JOB_METHODS.contains(&method)
+    if nero_core::agent_control::METHODS.contains(&method)
+        || nero_core::agent_control::JOB_METHODS.contains(&method)
     {
         return mutations::schema(method);
     }
@@ -264,7 +278,7 @@ pub fn input_schema(method: &str) -> Map<String, Value> {
             "Compact JSON payload byte budget. May reduce returned items; follow pagination.nextOffset, not offset+limit."
         };
         properties.insert("expectedSourceVersion".into(), json!({"type":"string","pattern":"^sha256:[0-9a-f]{64}$","description":source_description}));
-        properties.insert("maxBytes".into(), json!({"type":"integer","minimum":1,"maximum":grove_core::reader::MAX_RESPONSE_BYTES,"description":budget_description}));
+        properties.insert("maxBytes".into(), json!({"type":"integer","minimum":1,"maximum":nero_core::reader::MAX_RESPONSE_BYTES,"description":budget_description}));
         if method != "summary_context" {
             let (offset_description, limit_description) =
                 if matches!(method, "meeting_get" | "summary_get") {
@@ -305,6 +319,50 @@ fn id_schema() -> Value {
 mod tests {
     use super::*;
     use std::ffi::OsString;
+
+    #[test]
+    fn incomplete_identity_migration_cannot_initialize_the_missing_source() {
+        let temporary = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let source = temporary
+            .path()
+            .join("io.github.choseongmin1128.grove.desktop");
+        let target = temporary.path().join(APP_IDENTIFIER);
+        let meeting = {
+            let core = nero_core::CoreHandle::open(&source).unwrap();
+            core.create_meeting("Synthetic migration meeting", "Preserved notes")
+                .unwrap()
+        };
+        std::fs::rename(&source, &target).unwrap();
+        assert_eq!(
+            dispatch(&source, "templates_list", json!({}))
+                .unwrap_err()
+                .code,
+            "library_not_found"
+        );
+        assert!(!source.exists());
+        let receipt = json!({"schemaVersion":1,
+            "fromIdentifier":source.file_name().unwrap().to_str().unwrap(),
+            "toIdentifier":APP_IDENTIFIER,"sourceData":source,
+            "destinationData":target,"status":"completed"});
+        std::fs::write(
+            target.join(".nero-identity-migration.json"),
+            receipt.to_string(),
+        )
+        .unwrap();
+        assert_eq!(canonical_data_dir(&source).unwrap(), target);
+        assert_eq!(
+            dispatch(&source, "status", json!({})).unwrap()["rootExists"],
+            true
+        );
+        let meetings = dispatch(&source, "meetings_list", json!({})).unwrap();
+        assert_eq!(meetings["meetings"].as_array().unwrap().len(), 1);
+        assert_eq!(meetings["meetings"][0]["id"], meeting.id);
+        assert_eq!(
+            meetings["meetings"][0]["title"],
+            "Synthetic migration meeting"
+        );
+        assert!(!source.exists());
+    }
 
     #[test]
     fn platform_paths_use_the_native_identifier_without_legacy_fallback() {
@@ -352,7 +410,7 @@ mod tests {
             let schema = Value::Object(input_schema(method));
             assert_eq!(
                 schema["properties"]["maxBytes"]["maximum"],
-                grove_core::reader::MAX_RESPONSE_BYTES
+                nero_core::reader::MAX_RESPONSE_BYTES
             );
             assert_eq!(
                 schema["properties"]["expectedSourceVersion"]["pattern"],

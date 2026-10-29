@@ -10,6 +10,7 @@ mod calendar_desktop;
 mod diarization;
 mod downloads;
 mod export;
+mod identity_migration;
 mod job_journal;
 mod memory;
 mod microphone_permission;
@@ -26,7 +27,7 @@ mod summary_failure;
 mod summary_template;
 mod template_settings;
 mod terminology;
-use grove_core::{
+use nero_core::{
     CoreHandle, Device, DocumentFormat, DocumentKind, ExportedDocument, Meeting, Snapshot,
     SummaryCitations, SummaryView, Transcript, TranscriptHistory, TranscriptSpeaker,
     TranscriptVersion,
@@ -266,7 +267,7 @@ fn require_local_window(window: &WebviewWindow) -> Result<(), String> {
 
 async fn on_core<T: Send + 'static>(
     core: CoreHandle,
-    action: impl FnOnce(CoreHandle) -> Result<T, grove_core::CoreError> + Send + 'static,
+    action: impl FnOnce(CoreHandle) -> Result<T, nero_core::CoreError> + Send + 'static,
 ) -> Result<T, String> {
     tauri::async_runtime::spawn_blocking(move || action(core))
         .await
@@ -275,7 +276,7 @@ async fn on_core<T: Send + 'static>(
 }
 
 fn publish(app: &tauri::AppHandle, snapshot: &Snapshot) {
-    let _ = app.emit("grove://snapshot", snapshot);
+    let _ = app.emit("nero://snapshot", snapshot);
     sync_recorder(app, snapshot);
 }
 
@@ -376,14 +377,14 @@ mod snapshot_tests {
         })).unwrap());
         assert!(snapshot_changed(Some(&initial), &next));
         let mut paused = next.clone();
-        paused.session.as_mut().unwrap().state = grove_core::SessionState::Paused;
+        paused.session.as_mut().unwrap().state = nero_core::SessionState::Paused;
         assert!(snapshot_changed(Some(&next), &paused));
         let mut elapsed = paused.clone();
         elapsed.session.as_mut().unwrap().elapsed_ms += 1;
         assert!(snapshot_changed(Some(&paused), &elapsed));
         assert!(snapshot_changed(Some(&paused), &initial));
         let mut next = initial.clone();
-        next.folders.push(grove_core::Folder {
+        next.folders.push(nero_core::Folder {
             id: "folder".into(),
             name: "Project".into(),
         });
@@ -412,7 +413,7 @@ fn sync_recorder(app: &tauri::AppHandle, snapshot: &Snapshot) {
                     .show_failed();
                 let _ = app.emit_to(
                     "main",
-                    "grove://processing-error",
+                    "nero://processing-error",
                     ProcessingError {
                         meeting_id: snapshot
                             .session
@@ -539,7 +540,7 @@ fn active_session(snapshot: &Snapshot) -> Option<&str> {
         .filter(|session| {
             matches!(
                 session.state,
-                grove_core::SessionState::Recording | grove_core::SessionState::Paused
+                nero_core::SessionState::Recording | nero_core::SessionState::Paused
             )
         })
         .map(|session| session.id.as_str())
@@ -975,7 +976,7 @@ async fn stop_recording(
     .await
     {
         Ok(Ok(Some(progress))) => {
-            let _ = app.emit_to("main", "grove://processing", progress);
+            let _ = app.emit_to("main", "nero://processing", progress);
         }
         Ok(Ok(None)) => (),
         result => {
@@ -985,7 +986,7 @@ async fn stop_recording(
             };
             let _ = app.emit_to(
                 "main",
-                "grove://processing-error",
+                "nero://processing-error",
                 ProcessingError {
                     meeting_id: snapshot
                         .session
@@ -1136,7 +1137,7 @@ async fn open_meeting(
     show_main(&app);
     app.emit_to(
         "main",
-        "grove://open-meeting",
+        "nero://open-meeting",
         OpenMeeting {
             meeting_id,
             error: error.map(|text| text.chars().take(2048).collect()),
@@ -1158,7 +1159,7 @@ fn ask_quit(app: &tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         if let Ok(snapshot) = on_core(core, |core| core.snapshot()).await {
             let session_id = active_session(&snapshot).map(str::to_string);
-            let _ = app.emit_to("main", "grove://quit-requested", QuitRequest { session_id });
+            let _ = app.emit_to("main", "nero://quit-requested", QuitRequest { session_id });
         }
     });
 }
@@ -1208,7 +1209,7 @@ fn processing_status(
     state.processing.notify_startup_issues(|issues| {
         app.emit_to(
             "main",
-            "grove://processing-error",
+            "nero://processing-error",
             ProcessingError {
                 meeting_id: None,
                 message: issues
@@ -1612,6 +1613,7 @@ fn main() {
         ])
         .setup(|app| {
             let root = app.path().app_data_dir()?;
+            identity_migration::validate_startup(&root)?;
             let core = CoreHandle::open(&root)?;
             let processing = Processing::new(root.clone(), app.path().resource_dir()?);
             processing.cleanup_removed_meeting_jobs(&core);
@@ -1640,7 +1642,7 @@ fn main() {
                     &tauri::menu::MenuItem::with_id(app, "quit", "종료", true, None::<&str>)?,
                 ],
             )?;
-            tauri::tray::TrayIconBuilder::with_id("grove")
+            tauri::tray::TrayIconBuilder::with_id("nero")
                 .icon(tray_icon(
                     app.get_webview_window("main")
                         .and_then(|window| window.theme().ok())
@@ -1672,7 +1674,7 @@ fn main() {
                     }
                     let progress = processing.snapshot();
                     if previous_progress.as_ref() != Some(&progress) {
-                        let _ = handle.emit_to("main", "grove://processing", &progress);
+                        let _ = handle.emit_to("main", "nero://processing", &progress);
                         previous_progress = Some(progress);
                     }
                     std::thread::sleep(Duration::from_millis(750));
@@ -1704,7 +1706,7 @@ fn main() {
             #[cfg(target_os = "windows")]
             if let tauri::WindowEvent::ThemeChanged(theme) = event {
                 if window.label() == "main" {
-                    if let Some(tray) = window.app_handle().tray_by_id("grove") {
+                    if let Some(tray) = window.app_handle().tray_by_id("nero") {
                         let _ = tray.set_icon(Some(tray_icon(*theme)));
                     }
                 }
@@ -1712,7 +1714,7 @@ fn main() {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 if window.label() == "main" {
-                    let _ = window.emit("grove://close-requested", ());
+                    let _ = window.emit("nero://close-requested", ());
                 } else {
                     window
                         .app_handle()

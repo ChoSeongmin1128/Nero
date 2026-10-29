@@ -5,7 +5,7 @@ use crate::processing::{
 };
 use crate::speech_audio::AnalysisAudio;
 use crate::summary_failure::{Failure, FailureKind};
-use grove_core::{
+use nero_core::{
     CoreHandle, SpeakerAnalysisDraft, SpeakerPosterior, Transcript, TranscriptVersion,
 };
 use serde::Deserialize;
@@ -517,10 +517,10 @@ fn directory_for_attempt(path: &Path, attempt: u8) -> Result<PathBuf, Failure> {
     directory(path, &format!("diarization-{attempt}")).map_err(|_| failure(FailureKind::Storage))
 }
 
-fn source_failure(error: grove_core::CoreError) -> Failure {
+fn source_failure(error: nero_core::CoreError) -> Failure {
     failure(match error {
-        grove_core::CoreError::MeetingNotFound => FailureKind::MeetingUnavailable,
-        grove_core::CoreError::InvalidState(_) => FailureKind::SourceChanged,
+        nero_core::CoreError::MeetingNotFound => FailureKind::MeetingUnavailable,
+        nero_core::CoreError::InvalidState(_) => FailureKind::SourceChanged,
         _ => FailureKind::Storage,
     })
 }
@@ -541,7 +541,7 @@ fn check_source(
     if snapshot.session.is_some_and(|session| {
         matches!(
             session.state,
-            grove_core::SessionState::Recording | grove_core::SessionState::Paused
+            nero_core::SessionState::Recording | nero_core::SessionState::Paused
         )
     }) {
         return Err(failure(FailureKind::RecordingActive));
@@ -589,9 +589,9 @@ pub(super) fn analyze_recording(
         .commit_transcript_result(cancel, || {
             core.apply_diarization(meeting_id, draft).map_err(|error| {
                 commit_failure = Some(match error {
-                    grove_core::CoreError::InvalidState(_) => FailureKind::SourceChanged,
-                    grove_core::CoreError::MeetingNotFound => FailureKind::MeetingUnavailable,
-                    grove_core::CoreError::InvalidInput(_) => FailureKind::Output,
+                    nero_core::CoreError::InvalidState(_) => FailureKind::SourceChanged,
+                    nero_core::CoreError::MeetingNotFound => FailureKind::MeetingUnavailable,
+                    nero_core::CoreError::InvalidInput(_) => FailureKind::Output,
                     _ => FailureKind::Storage,
                 });
                 error.to_string()
@@ -799,7 +799,7 @@ mod tests {
                 core.transcript_history(&meeting_id).unwrap().entries.len(),
                 2
             );
-            let reader = grove_core::reader::LibraryReader::open(&process.root).unwrap();
+            let reader = nero_core::reader::LibraryReader::open(&process.root).unwrap();
             let mut read_segments = Vec::new();
             for offset in (0..after.segments.len()).step_by(200) {
                 let page = reader

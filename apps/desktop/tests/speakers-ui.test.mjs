@@ -75,7 +75,7 @@ function openController(doc = documentForTest()) {
       resolve({ ...structuredClone(current), version: { ...current.version, revision: current.version.revision + 1 }, speakers: plain(speakers), segments: current.segments.map((segment, index) => ({ ...segment, speakerId: assignments[index] })) });
     } }));
   } };
-  const context = vm.createContext({ escape, duration: value => `00:${String(Math.floor(value / 1000)).padStart(2, '0')}`, icon: () => '', TextEncoder, document, requestAnimationFrame: callback => callback(), crypto: { randomUUID: () => 'generated-id' }, GroveControls: { enhanceAll() {}, refresh() {}, close() {} } });
+  const context = vm.createContext({ escape, duration: value => `00:${String(Math.floor(value / 1000)).padStart(2, '0')}`, icon: () => '', TextEncoder, document, requestAnimationFrame: callback => callback(), crypto: { randomUUID: () => 'generated-id' }, NeroControls: { enhanceAll() {}, refresh() {}, close() {} } });
   const functions = vm.runInContext(`${processingStateSource.replace(/^export /gm, '')}\n${source.replace(/^import .*;\n/gm, '').replace(/^export /gm, '')}\n({ mountSpeakers, speakerLabel, copyWorking, assignSelected, mergeSpeakers, nextSpeakerName, validateNames })`, context);
   const controller = functions.mountSpeakers({ bridge, getState: () => state, finishEditing: async action => {
     flushes.push(true); state.editLocks += 1;

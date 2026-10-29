@@ -99,7 +99,7 @@ export function mountSpeakers({ bridge, getState, finishEditing, onUpdated, onPr
 
   function focusField(id) {
     const input = byId(id);
-    const node = input?.closest?.('.grove-select')?.querySelector('button') || input;
+    const node = input?.closest?.('.nero-select')?.querySelector('button') || input;
     if (node && !node.disabled) node.focus({ preventScroll: true });
     return node;
   }
@@ -123,7 +123,7 @@ export function mountSpeakers({ bridge, getState, finishEditing, onUpdated, onPr
   }
 
   function close() {
-    globalThis.GroveControls?.close();
+    globalThis.NeroControls?.close();
     stopListening();
     editing = null;
     composing = false;
@@ -154,8 +154,8 @@ export function mountSpeakers({ bridge, getState, finishEditing, onUpdated, onPr
     const merge = byId('speaker-merge-apply');
     if (merge) merge.disabled = saving || stale || blocked(view) || !byId('speaker-merge-target')?.value;
     if (stale) message('음성 기록이 변경되었습니다. 수정을 취소하고 화자 편집을 다시 열어 주세요.', true);
-    globalThis.GroveControls?.enhanceAll(body);
-    body.querySelectorAll('select').forEach(input => globalThis.GroveControls?.refresh(input));
+    globalThis.NeroControls?.enhanceAll(body);
+    body.querySelectorAll('select').forEach(input => globalThis.NeroControls?.refresh(input));
     syncPlayback();
   }
 
@@ -180,11 +180,11 @@ export function mountSpeakers({ bridge, getState, finishEditing, onUpdated, onPr
     const analysisReady = view?.state.processing?.speakerReady === true;
     const analysis = single || !view?.state.processing?.speakerSupported ? '' : `<section class="speaker-assignment"><div class="speaker-assignment-controls"><button type="button" id="speaker-analyze" class="small">${view.doc.speakerAnalysis?.scope === 'recording' ? '다시 구분' : '화자 구분'}</button><span id="speaker-analysis-note" class="muted type-caption" hidden>화자 수정을 저장한 뒤 실행해 주세요.</span></div>${editing.analysisConfirm ? `<p class="type-caption">${analysisReady ? '녹음 전체를 분석해 화자를 다시 구분합니다. 현재 화자 이름과 발언 배정이 새 결과로 바뀝니다. 음성 기록의 내용은 유지됩니다.' : '화자 구분 모델을 다운로드합니다. 준비가 끝나면 화자 구분을 실행할 수 있습니다.'}</p><div class="speaker-assignment-controls"><button type="button" id="speaker-analysis-confirm" class="primary small">${analysisReady ? '구분하기' : '준비하기'}</button><button type="button" id="speaker-analysis-cancel" class="quiet small">취소</button></div>` : ''}</section>`;
     const assignment = mode === 'names' ? '' : `<section class="speaker-assignment" aria-labelledby="speaker-assignment-title"><div class="speaker-selection-header"><h3 id="speaker-assignment-title">${single ? '변경할 화자' : '선택한 발언 <span id="speaker-selected-count">' + selected.size + '개</span>'}</h3>${single ? '' : '<button type="button" class="quiet small" data-speaker-select-all>전체 선택</button><button type="button" class="quiet small" data-speaker-clear>선택 해제</button>'}</div><div class="speaker-assignment-controls"><label for="speaker-assignment-target" class="sr-only">${single ? '이 발언의 화자' : '선택한 발언의 화자'}</label><select id="speaker-assignment-target" data-field="speaker-assignment-target"><option value=""${editing.assignmentTarget === '' ? ' selected' : ''}>화자 미지정</option>${options}<option value="${newSpeakerValue}"${editing.assignmentTarget === newSpeakerValue ? ' selected' : ''}>새 화자</option></select><label for="speaker-new-name" class="sr-only">새 화자 이름</label><input class="text-input" id="speaker-new-name" placeholder="새 화자 이름" value="${escape(editing.newName)}" maxlength="256" autocomplete="off"${editing.assignmentTarget === newSpeakerValue ? '' : ' hidden'}>${single ? '' : '<button type="button" id="speaker-assign">선택 발언에 적용</button>'}</div></section>`;
-    globalThis.GroveControls?.close();
+    globalThis.NeroControls?.close();
     body.innerHTML = `<header class="speaker-dialog-header"><h2 id="speaker-dialog-title">${single ? '발언 화자 변경' : '화자 관리'}</h2><button type="button" id="speaker-close" class="icon-button quiet" data-speaker-close aria-label="닫기">${icon('x')}</button></header>${single ? '' : `<nav class="speaker-editor-views" aria-label="화자 관리 보기"><button type="button" id="speaker-view-names" class="quiet small" data-speaker-view="names" aria-pressed="${mode === 'names'}">이름과 병합</button><button type="button" id="speaker-view-utterances" class="quiet small" data-speaker-view="utterances" aria-pressed="${mode === 'utterances'}">발언별 변경</button></nav>`}
       ${analysis}${mode === 'utterances' ? assignment : ''}<div id="speaker-editor-scroll" class="speaker-dialog-scroll">${single ? singleContext : mode === 'names' ? names : utterances}</div>${single ? assignment : ''}
       <p id="speaker-editor-message" class="speaker-editor-message type-caption" role="status" hidden></p><footer class="speaker-dialog-actions"><button type="button" id="speaker-undo" class="quiet small">이전 수정 되돌리기</button><button type="button" id="speaker-cancel" data-speaker-close>취소</button><button type="button" id="speaker-save" class="primary">저장</button></footer>`;
-    globalThis.GroveControls?.enhanceAll(body);
+    globalThis.NeroControls?.enhanceAll(body);
     controls();
     const viewport = byId('speaker-editor-scroll');
     if (viewport) viewport.scrollTop = scroll ?? position.scroll;
@@ -322,7 +322,7 @@ export function mountSpeakers({ bridge, getState, finishEditing, onUpdated, onPr
       speaker.name = event.target.value;
       body.querySelectorAll('option').forEach(option => { if (option.value === id) option.textContent = speaker.name; });
       body.querySelectorAll('[data-speaker-current]').forEach(node => { if (node.dataset.speakerCurrent === id) node.textContent = speaker.name || '화자 미지정'; });
-      body.querySelectorAll('select').forEach(input => globalThis.GroveControls?.refresh(input));
+      body.querySelectorAll('select').forEach(input => globalThis.NeroControls?.refresh(input));
     }
     controls();
   });

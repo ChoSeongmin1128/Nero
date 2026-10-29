@@ -26,7 +26,7 @@
 
 ## 네이티브 구현
 
-새 앱은 `apps/desktop/`의 Tauri와 `crates/grove-core/`의 공통 Rust 코어를 사용한다.
+새 앱은 `apps/desktop/`의 Tauri와 `crates/nero-core/`의 공통 Rust 코어를 사용한다.
 위 플랫폼 표는 브라우저 예제의 계약이다. 첫 네이티브 구현에는 마이크 입력,
 원음 보존, 재생과 compact 제어 창이 있으며 실제 OS 수용 검증은 별도로 남아 있다.
 

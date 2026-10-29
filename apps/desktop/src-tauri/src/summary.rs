@@ -7,7 +7,7 @@ use crate::processing::{
 use crate::summary_failure::{
     classify_worker_failure, recovery, Failure, FailureDetail, FailureKind,
 };
-use grove_core::{CoreHandle, SpeakerNameOrigin, SummaryDraft, SummaryProvenance, Transcript};
+use nero_core::{CoreHandle, SpeakerNameOrigin, SummaryDraft, SummaryProvenance, Transcript};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 #[cfg(test)]
@@ -1273,7 +1273,7 @@ async fn run_summary_with_template(
     path: &Path,
     cache_base: &Path,
     cancel: &AtomicBool,
-    template: Option<&grove_core::templates::PromptTemplate>,
+    template: Option<&nero_core::templates::PromptTemplate>,
 ) -> SummaryResult<(String, Value)> {
     let monitor = MemoryMonitor::new();
     monitor_attempt(
@@ -1295,23 +1295,23 @@ async fn run_summary_with_template(
     .await
 }
 
-fn preflight_core_failure(error: grove_core::CoreError) -> Failure {
+fn preflight_core_failure(error: nero_core::CoreError) -> Failure {
     let kind = match &error {
-        grove_core::CoreError::MeetingNotFound => FailureKind::MeetingUnavailable,
-        grove_core::CoreError::RecordingBusy => FailureKind::RecordingActive,
-        grove_core::CoreError::Storage(_) => FailureKind::Storage,
-        grove_core::CoreError::Unavailable => FailureKind::EngineUnavailable,
+        nero_core::CoreError::MeetingNotFound => FailureKind::MeetingUnavailable,
+        nero_core::CoreError::RecordingBusy => FailureKind::RecordingActive,
+        nero_core::CoreError::Storage(_) => FailureKind::Storage,
+        nero_core::CoreError::Unavailable => FailureKind::EngineUnavailable,
         _ => FailureKind::Input,
     };
     Failure::new(kind, message(error))
 }
 
-fn commit_summary_failure(error: grove_core::CoreError) -> Failure {
+fn commit_summary_failure(error: nero_core::CoreError) -> Failure {
     let kind = match &error {
         // commit_summary uses InvalidState only for source/current-summary CAS failures.
-        grove_core::CoreError::InvalidState(_) => FailureKind::SourceChanged,
-        grove_core::CoreError::MeetingNotFound => FailureKind::MeetingUnavailable,
-        grove_core::CoreError::Storage(_) => FailureKind::Storage,
+        nero_core::CoreError::InvalidState(_) => FailureKind::SourceChanged,
+        nero_core::CoreError::MeetingNotFound => FailureKind::MeetingUnavailable,
+        nero_core::CoreError::Storage(_) => FailureKind::Storage,
         _ => FailureKind::Input,
     };
     Failure::new(kind, message(error))
@@ -1432,8 +1432,8 @@ impl Processing {
                         .is_some_and(|s| {
                             matches!(
                                 s.state,
-                                grove_core::SessionState::Recording
-                                    | grove_core::SessionState::Paused
+                                nero_core::SessionState::Recording
+                                    | nero_core::SessionState::Paused
                             )
                         })
                     {
@@ -1906,23 +1906,23 @@ mod tests {
             assert_eq!(recovery(kind, true, false), None);
         }
         assert_eq!(
-            preflight_core_failure(grove_core::CoreError::InvalidState("준비 상태".into())).kind,
+            preflight_core_failure(nero_core::CoreError::InvalidState("준비 상태".into())).kind,
             FailureKind::Input
         );
         assert_eq!(
-            preflight_core_failure(grove_core::CoreError::RecordingBusy).kind,
+            preflight_core_failure(nero_core::CoreError::RecordingBusy).kind,
             FailureKind::RecordingActive
         );
         assert_eq!(
-            commit_summary_failure(grove_core::CoreError::InvalidState("CAS 충돌".into())).kind,
+            commit_summary_failure(nero_core::CoreError::InvalidState("CAS 충돌".into())).kind,
             FailureKind::SourceChanged
         );
         assert_eq!(
-            commit_summary_failure(grove_core::CoreError::InvalidInput("내용 오류".into())).kind,
+            commit_summary_failure(nero_core::CoreError::InvalidInput("내용 오류".into())).kind,
             FailureKind::Input
         );
         assert_eq!(
-            commit_summary_failure(grove_core::CoreError::Storage("저장 실패".into())).kind,
+            commit_summary_failure(nero_core::CoreError::Storage("저장 실패".into())).kind,
             FailureKind::Storage
         );
     }
@@ -2692,7 +2692,7 @@ mod tests {
         let mut source = Transcript {
             source: None,
             speaker_analysis: None,
-            version: grove_core::TranscriptVersion {
+            version: nero_core::TranscriptVersion {
                 id: "test".into(),
                 revision: 0,
             },
@@ -2701,7 +2701,7 @@ mod tests {
             model_revision: "test".into(),
             speakers: vec![],
             segments: (0..10)
-                .map(|i| grove_core::TranscriptSegment {
+                .map(|i| nero_core::TranscriptSegment {
                     source_index: Some(i),
                     id: i.to_string(),
                     start: i as f64,

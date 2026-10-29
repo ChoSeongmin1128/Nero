@@ -111,9 +111,9 @@ function renderList() {
     const length = meeting.audio?.sampleRate ? duration(meeting.audio.frames / meeting.audio.sampleRate * 1000) : '';
     const hit = state.librarySearchHits.find(hit => hit.meetingId === meeting.id);
     const matchLabel = { notes: '메모', transcript: '음성 기록', speaker: '화자', summary: '요약' }[hit?.kind];
-    const snippet = query && matchLabel ? `<span class="meeting-item-match"><span>${matchLabel}</span> ${globalThis.GroveUI.highlightText(hit.text, query)}</span>` : '';
+    const snippet = query && matchLabel ? `<span class="meeting-item-match"><span>${matchLabel}</span> ${globalThis.NeroUI.highlightText(hit.text, query)}</span>` : '';
     const content = `<span class="meeting-item-content"><strong title="${escape(meeting.title || '제목 없는 회의')}">${escape(meeting.title || '제목 없는 회의')}</strong><span class="meeting-item-meta"><span class="meeting-item-time" title="${escape(timestampDescription)}" aria-label="${escape(timestampDescription)}">${escape(timestampLabel)}</span>${length ? `<span>${escape(length)}</span>` : ''}${state.libraryFilter === 'all' ? `<span>${escape(state.snapshot.folders?.find(folder => folder.id === meeting.folderId)?.name || '미분류')}</span>` : ''}</span>${snippet}</span><span class="meeting-item-state ${['recording','paused'].includes(phase) ? 'recording' : ''}">${escape(recordingStatus(phase))}</span>`;
-    return `<article class="meeting-entry${selected ? ' is-selected' : ''}" data-meeting-id="${escape(meeting.id)}"${meeting.deletedAt == null ? ' draggable="true"' : ''}>${checkbox}${globalThis.GroveUI.button({ className: 'meeting-item', attrs: { 'data-open-meeting': meeting.id, 'aria-current': String(meeting.id === state.selectedId), title: meeting.title }, html: content })}${more}</article>`;
+    return `<article class="meeting-entry${selected ? ' is-selected' : ''}" data-meeting-id="${escape(meeting.id)}"${meeting.deletedAt == null ? ' draggable="true"' : ''}>${checkbox}${globalThis.NeroUI.button({ className: 'meeting-item', attrs: { 'data-open-meeting': meeting.id, 'aria-current': String(meeting.id === state.selectedId), title: meeting.title }, html: content })}${more}</article>`;
   }).join('') || `<p class="list-empty">${query ? '검색 결과가 없습니다.' : state.libraryFilter === 'trash' ? '휴지통이 비어 있습니다.' : '회의가 없습니다.'}</p>`;
   byId('meeting-list').classList.toggle('has-selection', state.librarySelection.size > 0);
   byId('meeting-list').scrollTop = scroll;
@@ -305,7 +305,7 @@ function renderNotesSearch() {
   const query = documentSearch.query();
   byId('meeting-notes').hidden = Boolean(query);
   byId('notes-search-preview').hidden = !query;
-  setHTML('notes-search-preview', query ? globalThis.GroveUI.highlightText(byId('meeting-notes').value, query) : '');
+  setHTML('notes-search-preview', query ? globalThis.NeroUI.highlightText(byId('meeting-notes').value, query) : '');
 }
 
 function renderMeetingDates(meeting) {
@@ -320,8 +320,8 @@ function renderMeetingDates(meeting) {
   state.dateKey = key;
   if (state.dateSaving !== meeting.id) input.value = meetingDay(meeting);
   input.disabled = Boolean(state.dateSaving);
-  globalThis.GroveControls.enhanceAll();
-  globalThis.GroveControls.refresh?.();
+  globalThis.NeroControls.enhanceAll();
+  globalThis.NeroControls.refresh?.();
 }
 
 async function changeMeetingDate() {
@@ -657,8 +657,8 @@ function renderSettings() {
   byId('settings-message').textContent = message;
   byId('settings-message').hidden = !message;
   if (dialog.open) {
-    globalThis.GroveControls.enhanceAll(dialog);
-    if (refresh) globalThis.GroveControls.refresh?.();
+    globalThis.NeroControls.enhanceAll(dialog);
+    if (refresh) globalThis.NeroControls.refresh?.();
   }
 }
 
@@ -670,7 +670,7 @@ async function openSettings(panel = 'appearance', returnId = 'settings') {
     const dialog = byId('settings-dialog');
     if (!dialog.open) dialog.showModal();
     renderSettings();
-    globalThis.GroveControls.refresh?.();
+    globalThis.NeroControls.refresh?.();
     byId(`settings-${panel}-tab`).focus({ preventScroll: true });
     void loadAgentConnection(false, true);
     void loadTerminologySettings();
@@ -766,7 +766,7 @@ byId('setup-start').addEventListener('click', () => run(createMeeting));
 byId('settings').addEventListener('click', () => openSettings().catch(showError));
 async function leaveSettings(action) {
   if (templateSettings.isConfirming() || !await templateSettings.beforeLeave()) return false;
-  globalThis.GroveControls.close?.();
+  globalThis.NeroControls.close?.();
   await action();
   return true;
 }
@@ -786,7 +786,7 @@ byId('settings-dialog').addEventListener('cancel', event => {
   event.preventDefault();
   if (!templateSettings.isConfirming()) void closeSettings();
 });
-byId('settings-dialog').addEventListener('close', () => { templateSettings.hide(); void summaryTemplatePicker.reload(); resetTerminologySettings(); resetAgentConnection(); globalThis.GroveControls.close?.(); returnFocusTarget(byId(state.settingsReturnId) || byId('settings'), byId('navigation-toggle')).focus({ preventScroll: true }); });
+byId('settings-dialog').addEventListener('close', () => { templateSettings.hide(); void summaryTemplatePicker.reload(); resetTerminologySettings(); resetAgentConnection(); globalThis.NeroControls.close?.(); returnFocusTarget(byId(state.settingsReturnId) || byId('settings'), byId('navigation-toggle')).focus({ preventScroll: true }); });
 for (const name of settingsPanels) byId(`settings-${name}-tab`).addEventListener('click', () => { void selectSettingsPanel(name, true); });
 byId('settings-dialog').addEventListener('keydown', event => {
   if (event.isComposing || event.keyCode === 229 || templateSettings.isConfirming()) return;
@@ -1096,7 +1096,7 @@ function renderTranscript(meeting) {
   if (key !== state.transcriptKey) {
     state.transcriptKey = key;
     const scroll = byId('transcript-scroll').scrollTop;
-    byId('transcript-rows').innerHTML = (draft?.doc?.segments || []).map((segment,index) => globalThis.GroveUI.transcriptRow({ index, time: duration(segment.start * 1000), start: segment.start, text: segment.text, originalText: segment.originalText, editing: state.transcriptEditing === index, speaker: speakers.label(segment), speakerVisible: true, searchQuery: documentSearch.query(), disabled: ownJob || state.editLocks > 0 })).join('');
+    byId('transcript-rows').innerHTML = (draft?.doc?.segments || []).map((segment,index) => globalThis.NeroUI.transcriptRow({ index, time: duration(segment.start * 1000), start: segment.start, text: segment.text, originalText: segment.originalText, editing: state.transcriptEditing === index, speaker: speakers.label(segment), speakerVisible: true, searchQuery: documentSearch.query(), disabled: ownJob || state.editLocks > 0 })).join('');
     byId('transcript-rows').querySelectorAll('textarea').forEach(resizeTranscriptEditor);
     byId('transcript-scroll').scrollTop = scroll;
   }
@@ -1212,7 +1212,7 @@ function renderSummary(meeting) {
   const key = JSON.stringify([meeting.id, doc?.id, state.transcriptDraft?.doc?.version, Boolean(stale), documentSearch.query()]);
   if (key !== state.summaryKey) {
     state.summaryKey = key;
-    byId('summary-content').innerHTML = globalThis.GroveUI.summaryDocument(doc?.text || '', {
+    byId('summary-content').innerHTML = globalThis.NeroUI.summaryDocument(doc?.text || '', {
       searchQuery: documentSearch.query(),
     });
   }
@@ -1371,7 +1371,7 @@ async function onQuitRequest({ sessionId } = {}) {
   if (sessionId !== activeSession().id) return;
   pendingQuitSessionId = sessionId;
   const dialog = byId('quit-dialog');
-  dialog.innerHTML = globalThis.GroveUI.dialogContent({ title: '녹음을 종료하고 나갈까요?', titleId: 'quit-title', bodyHTML: '<p>지금까지 녹음한 음성과 메모를 저장한 뒤 앱을 종료합니다.</p>', actionsHTML: button('계속 녹음', 'cancel-quit', null, '') + button('저장하고 종료', 'confirm-quit', null, 'primary') });
+  dialog.innerHTML = globalThis.NeroUI.dialogContent({ title: '녹음을 종료하고 나갈까요?', titleId: 'quit-title', bodyHTML: '<p>지금까지 녹음한 음성과 메모를 저장한 뒤 앱을 종료합니다.</p>', actionsHTML: button('계속 녹음', 'cancel-quit', null, '') + button('저장하고 종료', 'confirm-quit', null, 'primary') });
   if (!dialog.open) dialog.showModal();
   dialog.querySelector('[data-action="cancel-quit"]').focus();
 }
@@ -1390,7 +1390,7 @@ const detail = mountMeetingDetail({ byId, finishEditing, onError: showError, onR
   if (view !== 'transcript') summaryEvidence?.reset();
   if (view === 'transcript') byId('transcript-rows').querySelectorAll('textarea').forEach(resizeTranscriptEditor);
   for (const actions of Object.values(documentActions)) actions.close();
-  globalThis.GroveControls.close?.();
+  globalThis.NeroControls.close?.();
 } });
 summaryEvidence = mountSummaryEvidence({
   container: byId('summary-content'), panel: byId('summary-evidence'),

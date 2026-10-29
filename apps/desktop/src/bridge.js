@@ -43,7 +43,7 @@ export const exportDocument = (meetingId, kind, format, includeCitations = false
 
 export async function subscribeSnapshots(callback) {
   if (!isTauri()) return () => {};
-  return listen('grove://snapshot', (event) => {
+  return listen('nero://snapshot', (event) => {
     const snapshot = event.payload;
     if (latestSnapshot && snapshot.revision < latestSnapshot.revision) return;
     callback(accept(snapshot));
@@ -52,17 +52,17 @@ export async function subscribeSnapshots(callback) {
 
 export async function subscribeOpenMeeting(callback) {
   if (!isTauri()) return () => {};
-  return listen('grove://open-meeting', (event) => callback(event.payload.meetingId, event.payload.error));
+  return listen('nero://open-meeting', (event) => callback(event.payload.meetingId, event.payload.error));
 }
 
 export async function subscribeQuitRequest(callback) {
   if (!isTauri()) return () => {};
-  return listen('grove://quit-requested', (event) => callback(event.payload));
+  return listen('nero://quit-requested', (event) => callback(event.payload));
 }
 
 export async function subscribeCloseRequest(callback) {
   if (!isTauri()) return () => {};
-  return listen('grove://close-requested', () => callback());
+  return listen('nero://close-requested', () => callback());
 }
 
 export const processingStatus = () => call('processing_status');
@@ -77,7 +77,7 @@ export const readTranscript = (meetingId) => call('read_transcript', { meetingId
 export const saveTranscript = (meetingId, expected, texts) => call('save_transcript', { meetingId, expected, texts });
 export async function subscribeProcessing(callback) {
   if (!isTauri()) return () => {};
-  return listen('grove://processing', (event) => callback(event.payload));
+  return listen('nero://processing', (event) => callback(event.payload));
 }
 
 export const prepareSpeakerModel = () => call('prepare_diarization_model');
@@ -90,7 +90,7 @@ export const readSummaryCitations = (meetingId, summaryId, references) => call('
 
 export async function subscribeProcessingError(callback) {
   if (!isTauri()) return () => {};
-  return listen('grove://processing-error', event => callback(event.payload));
+  return listen('nero://processing-error', event => callback(event.payload));
 }
 
 export const createFolder = (name) => call('create_folder', { name }).then(accept);
@@ -115,5 +115,5 @@ export const deleteTemplate = (id, expectedRevision) => call('delete_template', 
 export const agentWriteReady = (requestId, error = null) => call('agent_write_ready', { requestId, error });
 export async function subscribeAgentWriteRequest(callback) {
   if (!isTauri()) return () => {};
-  return listen('grove://agent-write-requested', event => { void callback(event.payload); });
+  return listen('nero://agent-write-requested', event => { void callback(event.payload); });
 }

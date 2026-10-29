@@ -1,5 +1,5 @@
 use crate::QueryError;
-use grove_core::templates::{
+use nero_core::templates::{
     TemplateContent, TemplateError, TemplateStore, MAX_TEMPLATE_PROMPT_BYTES,
 };
 use serde_json::{json, Map, Value};
@@ -30,7 +30,7 @@ pub(crate) fn dispatch(root: &Path, method: &str, params: Value) -> Result<Value
             return Err(QueryError::invalid());
         }
         return Ok(
-            json!({"apiVersion":1,"template":store.get(id.as_deref().unwrap()).map_err(error)?,"outputPolicy":grove_core::presentation::output_policy()}),
+            json!({"apiVersion":1,"template":store.get(id.as_deref().unwrap()).map_err(error)?,"outputPolicy":nero_core::presentation::output_policy()}),
         );
     }
     let summary = match method {

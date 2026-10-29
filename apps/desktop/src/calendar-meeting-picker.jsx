@@ -30,8 +30,8 @@ function CalendarDateControls({ flow, state, container }) {
   return <div className="calendar-meeting-date" aria-label="일정 날짜">
     <button type="button" className="quiet small icon" aria-label="이전 날짜" title="이전 날짜" disabled={state.creating || !moveCalendarDay(state.day, -1)} onClick={() => { void flow.moveDay(-1); }}><ChevronLeft size={16} aria-hidden="true" /></button>
     <Popover open={open} onOpenChange={setOpen} modal="trap-focus">
-      <PopoverTrigger className="grove-date-trigger" disabled={state.creating} aria-label={`일정 날짜: ${label}`} onClick={() => { if (selected) setMonth(selected); }}><span>{label}</span><CalendarDays size={16} aria-hidden="true" /></PopoverTrigger>
-      <PopoverContent container={container} className="grove-calendar" aria-label="일정 날짜 선택">
+      <PopoverTrigger className="nero-date-trigger" disabled={state.creating} aria-label={`일정 날짜: ${label}`} onClick={() => { if (selected) setMonth(selected); }}><span>{label}</span><CalendarDays size={16} aria-hidden="true" /></PopoverTrigger>
+      <PopoverContent container={container} className="nero-calendar" aria-label="일정 날짜 선택">
         <PopoverClose className="sr-only">달력 닫기</PopoverClose>
         {open && <Calendar mode="single" autoFocus selected={selected || undefined} month={month} onMonthChange={setMonth} startMonth={new Date(1970, 0, 1)} disabled={{ before: new Date(1970, 0, 1) }} onSelect={date => {
           if (date) { setOpen(false); void flow.setDay(calendarDay(date)); }
@@ -79,7 +79,7 @@ export function mountCalendarMeetingPicker({ container, bridge, onPrepared, onCo
   let origin = null;
   root.render(<CalendarMeetingPicker flow={flow} container={container} finalFocus={() => returnFocusTarget(origin, document.getElementById('navigation-toggle')) || false} />);
   return {
-    open(trigger = document.activeElement) { origin = trigger; globalThis.GroveControls?.close?.(); flow.open(); },
+    open(trigger = document.activeElement) { origin = trigger; globalThis.NeroControls?.close?.(); flow.open(); },
     close: () => flow.close(),
     isOpen: () => flow.getSnapshot().open,
     dispose() { flow.dispose(); root.unmount(); mount.remove(); },

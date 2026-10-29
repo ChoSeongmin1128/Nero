@@ -4,7 +4,7 @@
     if (!/^(?:id|title|role|name|value|tabindex|type|class|aria-[\w-]+|data-[\w-]+)$/.test(name)) throw new Error("Unsupported component attribute: " + name);
     return value == null ? "" : ` ${name}="${escape(value)}"`;
   }).join("");
-  const icon = (name) => root.GroveIcons?.(name) || "";
+  const icon = (name) => root.NeroIcons?.(name) || "";
   const phaseName = (phase) => ["ready", "recording", "paused", "finished"].includes(phase) ? phase : "ready";
   function highlightText(value, query = "") {
     const text = String(value ?? ""), term = String(query ?? "").trim();
@@ -168,5 +168,5 @@
   }
   const api = { escape, highlightText, button, badge, status, meetingRow, personRow, personOption, utterance, transcriptRow, minutes, summaryDocument, dialogContent };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
-  else root.GroveUI = api;
+  else root.NeroUI = api;
 })(typeof globalThis === "object" ? globalThis : this);

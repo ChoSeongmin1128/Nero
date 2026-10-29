@@ -277,7 +277,7 @@ mod tests {
         let library = work.join("library");
         std::fs::create_dir(&library).unwrap();
         let process = Processing::new(library.clone(), resources);
-        let core = grove_core::CoreHandle::open(&library).unwrap();
+        let core = nero_core::CoreHandle::open(&library).unwrap();
         let meeting = core.import_audio("Acceptance", &audio, &audio).unwrap();
         let job = work.join("job");
         std::fs::create_dir(&job).unwrap();
@@ -326,7 +326,7 @@ mod tests {
         let work = configured("NERO_ACCEPTANCE_WORK");
         let library = work.join("library");
         let process = Processing::new(library.clone(), configured("NERO_ACCEPTANCE_RESOURCES"));
-        let core = grove_core::CoreHandle::open(&library).unwrap();
+        let core = nero_core::CoreHandle::open(&library).unwrap();
         let meeting = core.list_meetings().unwrap().pop().unwrap();
         let source = core.transcript(&meeting.id).unwrap().unwrap();
         assert_eq!(source.model, "nvidia/nemotron-3.5-asr-streaming-0.6b");

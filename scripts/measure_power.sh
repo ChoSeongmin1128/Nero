@@ -60,7 +60,7 @@ sudo powermetrics \
 
 echo "[3/4] Apple SpeechTranscriber 전체 측정"
 measure_command apple \
-  "$project_dir/.build/release/grove-apple-benchmark" \
+  "$project_dir/.work/legacy-swift/swift-build/release/grove-apple-benchmark" \
   --audio-dir "$audio_dir" \
   --output "$run_dir/apple.jsonl" \
   --locale ko-KR

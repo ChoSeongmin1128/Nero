@@ -8,7 +8,7 @@ const paths = [
   'apps/desktop/package-lock.json',
   'apps/desktop/src-tauri/tauri.conf.json',
   'apps/desktop/src-tauri/Cargo.toml',
-  'crates/grove-core/Cargo.toml',
+  'crates/nero-core/Cargo.toml',
   'Cargo.lock',
   'crates/nero-cli/Cargo.toml',
 ];
@@ -60,8 +60,8 @@ function inspect(files) {
     ['tauri.conf.json', tauri.version],
     [paths[3], packageSection(files[3], paths[3])],
     [paths[4], packageSection(files[4], paths[4])],
-    ['Cargo.lock grove-desktop', lockedPackage(files[5], 'grove-desktop')],
-    ['Cargo.lock grove-core', lockedPackage(files[5], 'grove-core')],
+    ['Cargo.lock nero-desktop', lockedPackage(files[5], 'nero-desktop')],
+    ['Cargo.lock nero-core', lockedPackage(files[5], 'nero-core')],
     [paths[6], packageSection(files[6], paths[6])],
     ['Cargo.lock nero-cli', lockedPackage(files[5], 'nero-cli')],
   ];
@@ -94,7 +94,7 @@ async function main(args) {
     stringify(pkg), stringify(lock), stringify(tauri),
     packageSection(files[3], paths[3], args[1]),
     packageSection(files[4], paths[4], args[1]),
-    lockedPackage(lockedPackage(lockedPackage(files[5], 'grove-desktop', args[1]), 'grove-core', args[1]), 'nero-cli', args[1]),
+    lockedPackage(lockedPackage(lockedPackage(files[5], 'nero-desktop', args[1]), 'nero-core', args[1]), 'nero-cli', args[1]),
     packageSection(files[6], paths[6], args[1]),
   ];
   inspect(planned);

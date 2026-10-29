@@ -1,5 +1,5 @@
-export const ui = globalThis.GroveUI;
-export const icon = (name) => globalThis.GroveIcons?.(name) || '';
+export const ui = globalThis.NeroUI;
+export const icon = (name) => globalThis.NeroIcons?.(name) || '';
 export const escape = ui.escape;
 
 export function button(text, action, iconName, className = '', disabled = false) {
@@ -29,5 +29,5 @@ export function sessionControls(session, busy = false) {
 }
 
 export function applySystemAppearance() {
-  globalThis.GroveAppearance?.apply();
+  globalThis.NeroAppearance?.apply();
 }

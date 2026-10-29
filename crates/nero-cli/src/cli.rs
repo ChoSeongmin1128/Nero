@@ -1,6 +1,6 @@
 use crate::{dates, default_data_dir, dispatch, QueryError};
-use grove_core::reader::MAX_RESPONSE_BYTES;
 use jiff::tz::TimeZone;
+use nero_core::reader::MAX_RESPONSE_BYTES;
 use serde_json::{json, Map, Value};
 use std::ffi::OsString;
 use std::io::{self, Read, Write};
@@ -201,7 +201,7 @@ fn parse_jobs(command: &str, remaining: &[&str]) -> Result<Action, QueryError> {
         }
     }
     let params = Value::Object(params);
-    grove_core::agent_control::JobRequest::parse(method, params.clone())
+    nero_core::agent_control::JobRequest::parse(method, params.clone())
         .map_err(|_| QueryError::invalid())?;
     Ok(Action::Request { method, params })
 }
@@ -522,7 +522,7 @@ fn parse_mutation(group: &str, command: &str, remaining: &[&str]) -> Result<Acti
         })
     } else {
         let params = Value::Object(params);
-        grove_core::agent_control::Mutation::parse(method, params.clone())
+        nero_core::agent_control::Mutation::parse(method, params.clone())
             .map_err(|_| QueryError::invalid())?;
         Ok(Action::Request { method, params })
     }
@@ -628,7 +628,12 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> i32 {
         Action::Version => return write_stdout(&format!("nero {}\n", env!("CARGO_PKG_VERSION"))),
         _ => {}
     }
-    let root = match options.root.map(Ok).unwrap_or_else(default_data_dir) {
+    let root = match options
+        .root
+        .map(Ok)
+        .unwrap_or_else(default_data_dir)
+        .and_then(|root| crate::canonical_data_dir(&root))
+    {
         Ok(root) => root,
         Err(error) => return write_error(&error, options.json),
     };

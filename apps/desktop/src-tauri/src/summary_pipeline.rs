@@ -249,7 +249,7 @@ pub(super) async fn run_with_template(
     cache_base: &Path,
     process: &Processing,
     cancel: &AtomicBool,
-    template: Option<&grove_core::templates::PromptTemplate>,
+    template: Option<&nero_core::templates::PromptTemplate>,
 ) -> SummaryResult<(String, Value)> {
     check_cancel(cancel)?;
     let binary_hash = format!(
@@ -700,7 +700,7 @@ async fn write_template_sections(
     title: &str,
     facts: &[Fact],
     notes: &str,
-    template: &grove_core::templates::PromptTemplate,
+    template: &nero_core::templates::PromptTemplate,
 ) -> SummaryResult<Vec<TemplatePoint>> {
     let mut pending = VecDeque::from([(0, facts.len())]);
     let mut output = Vec::new();
@@ -764,7 +764,7 @@ fn render_template(sections: &[(String, Vec<TemplatePoint>)]) -> String {
                 let citations = item
                     .point
                     .sources
-                    .chunks(grove_core::MAX_SUMMARY_CITATION_REFERENCES)
+                    .chunks(nero_core::MAX_SUMMARY_CITATION_REFERENCES)
                     .map(|group| {
                         format!(
                             "[{}]",
@@ -811,7 +811,7 @@ fn render(sections: &[(String, Vec<Section>)]) -> String {
             for point in points {
                 let citations = point
                     .sources
-                    .chunks(grove_core::MAX_SUMMARY_CITATION_REFERENCES)
+                    .chunks(nero_core::MAX_SUMMARY_CITATION_REFERENCES)
                     .map(|group| {
                         format!(
                             "[{}]",

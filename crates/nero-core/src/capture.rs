@@ -409,7 +409,7 @@ impl Capture {
         let writer_manifest = manifest.clone();
         let writer_signals = signals.clone();
         let writer = thread::Builder::new()
-            .name("grove-audio-writer".into())
+            .name("nero-audio-writer".into())
             .spawn(move || {
                 writer_loop(
                     root,

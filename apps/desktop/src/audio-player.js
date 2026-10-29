@@ -11,7 +11,7 @@ function spokenTime(seconds) {
   return `${total >= 3600 ? `${Math.floor(total / 3600)}시간 ` : ''}${total >= 60 ? `${Math.floor(total / 60) % 60}분 ` : ''}${total % 60}초`;
 }
 
-export function connectAudioPlayer(document, icons = globalThis.GroveIcons, controls = globalThis.GroveControls) {
+export function connectAudioPlayer(document, icons = globalThis.NeroIcons, controls = globalThis.NeroControls) {
   const get = id => document.getElementById(id);
   const audio = get('audio-player');
   if (!audio) return;
@@ -45,7 +45,7 @@ export function connectAudioPlayer(document, icons = globalThis.GroveIcons, cont
     mute.setAttribute('title', muteLabel);
     if (playbackRates.includes(audio.playbackRate)) speed.value = String(audio.playbackRate);
   }
-  function renderControls() { render(); (controls || globalThis.GroveControls)?.refresh(); }
+  function renderControls() { render(); (controls || globalThis.NeroControls)?.refresh(); }
   function reset() { generation += 1; metadataReady = false; clearStatus(); renderControls(); }
   for (const name of ['emptied', 'loadstart']) audio.addEventListener(name, reset);
   for (const name of ['loadedmetadata', 'durationchange']) audio.addEventListener(name, () => {

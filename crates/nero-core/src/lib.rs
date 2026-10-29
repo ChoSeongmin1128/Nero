@@ -2,6 +2,7 @@ pub mod agent_control;
 mod capture;
 mod diarization;
 mod engine;
+pub mod identity;
 mod library;
 mod nemotron;
 pub mod presentation;
@@ -218,7 +219,7 @@ impl CoreHandle {
         let (commands, incoming) = mpsc::sync_channel(32);
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let worker = thread::Builder::new()
-            .name("grove-core".into())
+            .name("nero-core".into())
             .spawn(move || {
                 let mut engine = match Engine::open(root) {
                     Ok(engine) => {

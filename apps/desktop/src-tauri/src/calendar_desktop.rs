@@ -1,6 +1,6 @@
 use crate::calendar::{self, CalendarService, CalendarSnapshot, Occurrence};
 use crate::{microphone_permission, DesktopState};
-use grove_core::{CalendarReference, Meeting, SessionState, Snapshot};
+use nero_core::{CalendarReference, Meeting, SessionState, Snapshot};
 use std::path::PathBuf;
 use std::sync::{atomic::Ordering, Arc};
 use std::time::Duration;
@@ -466,7 +466,7 @@ pub async fn start_calendar_recording(
                         .as_ref()
                         .is_some_and(|reference| reference.occurrence_key == event.key)
                         && (meeting.deleted_at.is_some()
-                            || meeting.status != grove_core::MeetingStatus::Draft
+                            || meeting.status != nero_core::MeetingStatus::Draft
                             || meeting.audio.is_some())
                 })
                 .cloned()
@@ -486,7 +486,7 @@ pub async fn start_calendar_recording(
             .then_some("휴지통에 있는 회의입니다. 복원 후 열어 주세요.");
         let _ = app.emit_to(
             "main",
-            "grove://open-meeting",
+            "nero://open-meeting",
             serde_json::json!({"meetingId":meeting.id,"error":error}),
         );
         return Ok(current);
@@ -523,7 +523,7 @@ pub async fn start_calendar_recording(
     crate::show_main(&app);
     let _ = app.emit_to(
         "main",
-        "grove://open-meeting",
+        "nero://open-meeting",
         serde_json::json!({"meetingId":meeting.id,"error":null}),
     );
     Ok(snapshot)

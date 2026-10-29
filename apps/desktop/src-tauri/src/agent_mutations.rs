@@ -1,6 +1,6 @@
 use crate::{processing::Processing, publish};
-use grove_core::agent_control::{ControlError, JobRequest, Mutation, Server};
-use grove_core::CoreHandle;
+use nero_core::agent_control::{ControlError, JobRequest, Mutation, Server};
+use nero_core::CoreHandle;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -195,7 +195,7 @@ impl AgentMutations {
         if app
             .emit_to(
                 "main",
-                "grove://agent-write-requested",
+                "nero://agent-write-requested",
                 serde_json::json!({"requestId":id}),
             )
             .is_err()
@@ -214,19 +214,19 @@ impl AgentMutations {
                 &ids,
                 || {
                     if self.gate.closing.load(Ordering::Acquire) {
-                        return Err(grove_core::CoreError::Unavailable);
+                        return Err(nero_core::CoreError::Unavailable);
                     }
                     core.agent_validate(preflight)
                 },
                 || {
                     if self.gate.closing.load(Ordering::Acquire) {
-                        return Err(grove_core::CoreError::Unavailable);
+                        return Err(nero_core::CoreError::Unavailable);
                     }
                     core.agent_mutate(request)
                 },
             )
         } else if self.gate.closing.load(Ordering::Acquire) {
-            Err(grove_core::CoreError::Unavailable)
+            Err(nero_core::CoreError::Unavailable)
         } else if let Mutation::SummaryImport { meeting_id, .. } = &request {
             let meeting_id = meeting_id.clone();
             processing.meeting_idle(&meeting_id, || core.agent_mutate(request))

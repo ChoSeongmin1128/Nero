@@ -2,11 +2,11 @@
 (() => {
   const windowsDesign = new URLSearchParams(location.search).get("platform") === "windows" && new URLSearchParams(location.search).get("session") === "windows-design";
   const nativeKey = document.documentElement.dataset.appearanceStorage;
-  const key = nativeKey || (windowsDesign ? "grove-prototype-v3-windows-design-appearance" : "grove-design-system-v1-appearance");
+  const key = nativeKey || (windowsDesign ? "nero-prototype-v3-windows-design-appearance" : "nero-design-system-v1-appearance");
   const colors = new Set(["green", "blue", "purple", "mono", "amber", "rose"]);
   const modes = new Set(["light", "dark", "system"]);
   const legacy = {
-    grove: { color: "green", mode: "light" },
+    nero: { color: "green", mode: "light" },
     slate: { color: "blue", mode: "light" },
     forest: { color: "green", mode: "dark" },
     graphite: { color: "purple", mode: "dark" },
@@ -56,7 +56,7 @@
     void root.offsetWidth;
     root.removeAttribute("data-appearance-changing");
   }
-  window.GroveAppearance = { apply };
+  window.NeroAppearance = { apply };
   apply();
   media.addEventListener("change", () => {
     if (preference.mode === "system") apply();

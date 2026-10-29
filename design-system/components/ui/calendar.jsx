@@ -8,7 +8,7 @@ export function Calendar({ className, classNames, components, labels, formatters
   const defaults = getDefaultClassNames();
   return <DayPicker
     showOutsideDays fixedWeeks locale={ko} weekStartsOn={0} captionLayout="label"
-    className={cn('grove-day-picker', className)}
+    className={cn('nero-day-picker', className)}
     classNames={{ ...defaults, ...classNames }}
     labels={{ labelPrevious: () => '이전 달', labelNext: () => '다음 달', labelNav: () => '월 이동', ...labels }}
     formatters={{ formatCaption: date => `${date.getFullYear()}년 ${date.getMonth() + 1}월`, formatWeekdayName: date => ['일', '월', '화', '수', '목', '금', '토'][date.getDay()], ...formatters }}

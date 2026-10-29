@@ -708,15 +708,15 @@ html[data-appearance-changing] button {
   border-radius: var(--radius);
 }
 
-.grove-action-popover {
+.nero-action-popover {
   display: grid;
   gap: 2px;
   min-width: 190px;
   padding: 5px;
 }
-.grove-action-popover > button { justify-content: flex-start; width: 100%; text-align: left; border-color: transparent; }
-.grove-action-option { display: flex; align-items: center; gap: 8px; margin-top: 4px; padding: 9px; border-top: 1px solid var(--border); font-size: var(--text-caption-size); }
-.grove-action-option input { flex: none; margin: 0; }
+.nero-action-popover > button { justify-content: flex-start; width: 100%; text-align: left; border-color: transparent; }
+.nero-action-option { display: flex; align-items: center; gap: 8px; margin-top: 4px; padding: 9px; border-top: 1px solid var(--border); font-size: var(--text-caption-size); }
+.nero-action-option input { flex: none; margin: 0; }
 
 .settings-row {
   display: flex;
@@ -1035,7 +1035,7 @@ button.danger:hover:not(:disabled), button.danger-text:hover:not(:disabled) { co
 .library-folder-choice > span { display: flex; align-items: center; gap: 8px; min-width: 0; overflow-wrap: anywhere; }
 .library-dialog .field-error { color: var(--warning-text); }
 .speaker-selection-header h3 { margin-right: auto; }
-.speaker-assignment-controls .grove-select { min-width: 140px; max-width: 100%; }
+.speaker-assignment-controls .nero-select { min-width: 140px; max-width: 100%; }
 .speaker-assignment-controls > input { flex: 1; min-width: 100px; }
 
 .meeting-menu[open] > div, .library-folder-menu[open] > .action-menu { position: fixed; width: 180px; z-index: 100; }

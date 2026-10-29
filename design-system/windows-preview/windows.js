@@ -1,7 +1,7 @@
 (() => {
   const $ = selector => document.querySelector(selector);
   const $$ = selector => [...document.querySelectorAll(selector)];
-  const icon = window.GroveIcons;
+  const icon = window.NeroIcons;
   const state = {phase:'idle',title:'10월 독서 모임',elapsedLabel:'00:00',error:null,color:'green',mode:'light',toast:'upcoming',notification:'upcoming',countdownLabel:'5분 후',control:true,closed:false,minimized:false,maximized:false,ready:false};
   const system = matchMedia('(prefers-color-scheme: dark)');
   const frame = $('#windows-app-frame');
@@ -13,14 +13,14 @@
   $$('[data-icon]').forEach(node=>node.innerHTML=icon(node.dataset.icon));
   const active = () => ['recording','paused'].includes(state.phase)||!!state.error;
   function feedback(text){$('#windows-feedback').textContent=text;}
-  function send(action,extra={}) { frame.contentWindow?.postMessage({type:'windows-grove:command',action,...extra},location.origin); }
+  function send(action,extra={}) { frame.contentWindow?.postMessage({type:'windows-nero:command',action,...extra},location.origin); }
   function appearance(){const resolved=state.mode==='system'?(system.matches?'dark':'light'):state.mode;document.documentElement.dataset.color=state.color;document.documentElement.dataset.mode=resolved;send('appearance',{color:state.color,mode:state.mode});}
-  function showWindow(){state.closed=false;state.minimized=false;appWindow.hidden=false;$('#window-hidden-note').hidden=true;$('#taskbar-grove').classList.remove('is-minimized');send('open');render();feedback('Grove 창을 열었습니다.');}
-  function hideWindow(closed=false){state.closed=closed;state.minimized=!closed;appWindow.hidden=true;$('#window-hidden-note').hidden=false;$('#taskbar-grove').classList.add('is-minimized');$('#window-hidden-note strong').textContent=closed?'Grove 창이 닫혀 있습니다':'Grove 창이 최소화되어 있습니다';render();$('#taskbar-grove').focus();feedback(active()?'녹음은 계속됩니다. 알림 영역에서 다시 열 수 있습니다.':'알림 영역과 작업 표시줄에서 다시 열 수 있습니다.');}
+  function showWindow(){state.closed=false;state.minimized=false;appWindow.hidden=false;$('#window-hidden-note').hidden=true;$('#taskbar-nero').classList.remove('is-minimized');send('open');render();feedback('Nero 창을 열었습니다.');}
+  function hideWindow(closed=false){state.closed=closed;state.minimized=!closed;appWindow.hidden=true;$('#window-hidden-note').hidden=false;$('#taskbar-nero').classList.add('is-minimized');$('#window-hidden-note strong').textContent=closed?'Nero 창이 닫혀 있습니다':'Nero 창이 최소화되어 있습니다';render();$('#taskbar-nero').focus();feedback(active()?'녹음은 계속됩니다. 알림 영역에서 다시 열 수 있습니다.':'알림 영역과 작업 표시줄에서 다시 열 수 있습니다.');}
   function closeTray(){ $('#tray-flyout').hidden=true;$('#tray-toggle-menu').setAttribute('aria-expanded','false'); }
   function toggleTray(){const opening=$('#tray-flyout').hidden;$('#tray-flyout').hidden=!opening;$('#tray-toggle-menu').setAttribute('aria-expanded',String(opening));if(opening)$('#tray-flyout button:not([hidden])')?.focus();else $('#tray-toggle-menu').focus();}
   function render(){
-    $('#window-title-text').textContent=state.title?`${state.title} - Grove`:'Grove';$('#window-title-text').title=$('#window-title-text').textContent;
+    $('#window-title-text').textContent=state.title?`${state.title} - Nero`:'Nero';$('#window-title-text').title=$('#window-title-text').textContent;
     $('#floating-recorder').hidden=!active()||!state.control||!appWindow.hidden;
     $('#recording-time').textContent=state.elapsedLabel;$('#tray-time').textContent=state.elapsedLabel;
     $('#recorder-title').textContent=state.title;$('#tray-title').textContent=state.title;
@@ -35,7 +35,7 @@
   function requestStop(ownerId=state.ownerId){if(state.error||!ownerId)return;stopOwnerId=ownerId;modalReturnFocus=document.activeElement;dialog.innerHTML='<h2 id="windows-dialog-title">녹음을 종료할까요?</h2><p id="stop-meeting-title"></p><p id="stop-elapsed"></p><footer><button id="stop-cancel">계속 녹음</button><button id="stop-confirm" class="primary">녹음 종료</button></footer>';$('#stop-meeting-title').textContent=state.title;$('#stop-elapsed').textContent=`녹음 시간 ${state.elapsedLabel}`;dialog.showModal();}
   function command(action){ if(action==='open'){showWindow();closeTray();}else if(action==='stop')requestStop();else if(action==='retry'){send('retry');feedback('마이크 다시 연결 예제');}else send(action); }
   document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.command)command(b.dataset.command);if(b.dataset.scenario){$$('[data-scenario]').forEach(n=>n.setAttribute('aria-pressed',String(n===b)));state.control=true;state.toast=['upcoming','long'].includes(b.dataset.scenario)?'upcoming':b.dataset.scenario==='finished'?'finished':null;send('scenario',{value:b.dataset.scenario});closeTray();render();feedback('선택한 상황을 공통 제품 화면에 적용합니다.');}});
-  $('#window-minimize').addEventListener('click',()=>hideWindow());$('#window-close').addEventListener('click',()=>hideWindow(true));$('#taskbar-grove').addEventListener('click',()=>appWindow.hidden?showWindow():hideWindow());
+  $('#window-minimize').addEventListener('click',()=>hideWindow());$('#window-close').addEventListener('click',()=>hideWindow(true));$('#taskbar-nero').addEventListener('click',()=>appWindow.hidden?showWindow():hideWindow());
   function maximize(){state.maximized=!state.maximized;appWindow.classList.toggle('is-maximized',state.maximized);$('#window-maximize').innerHTML=icon(state.maximized?'copy':'square');$('#window-maximize').setAttribute('aria-label',state.maximized?'이전 크기로 복원':'창 최대화');$('#window-maximize').title=state.maximized?'이전 크기로 복원':'최대화';}
   $('#window-maximize').addEventListener('click',maximize);$('#window-titlebar').addEventListener('dblclick',e=>{if(!e.target.closest('button'))maximize();});
   $('#tray-toggle-menu').addEventListener('click',toggleTray);$('#recorder-toggle').addEventListener('click',()=>send(state.phase==='paused'?'resume':'pause'));$('#tray-toggle').addEventListener('click',()=>send(state.phase==='paused'?'resume':'pause'));$('#recorder-stop').addEventListener('click',()=>requestStop());
@@ -52,7 +52,7 @@
   document.addEventListener('pointerdown',e=>{if(!e.target.closest('#tray-flyout,#tray-toggle-menu'))closeTray();});
   document.addEventListener('keydown',e=>{if(e.key==='Escape'){if(!$('#tray-flyout').hidden){closeTray();$('#tray-toggle-menu').focus();}if(!$('#recorder-menu').hidden){$('#recorder-menu').hidden=true;$('#recorder-more').setAttribute('aria-expanded','false');$('#recorder-more').focus();}}if(e.ctrlKey&&e.shiftKey&&e.key.toLowerCase()==='g'){e.preventDefault();showWindow();}});
   $('#tray-flyout').addEventListener('keydown',e=>{if(!['ArrowDown','ArrowUp','Home','End'].includes(e.key))return;const buttons=[...$('#tray-flyout').querySelectorAll('button')].filter(b=>!b.disabled&&!b.closest('[hidden]'));const current=buttons.indexOf(document.activeElement);const index=e.key==='Home'?0:e.key==='End'?buttons.length-1:(current+(e.key==='ArrowDown'?1:-1)+buttons.length)%buttons.length;e.preventDefault();buttons[index]?.focus();});
-  window.addEventListener('message',e=>{if(e.origin!==location.origin||e.source!==frame.contentWindow)return;const data=e.data;if(data?.type==='windows-grove:open-window'){showWindow();}if(data?.type==='windows-grove:request-stop'){requestStop(data.ownerId);}if(data?.type==='windows-grove:ready'){state.ready=true;appearance();send('scenario',{value:'upcoming'});feedback('공통 제품 화면과 Windows 제어기가 연결되었습니다.');}if(data?.type==='windows-grove:state'){const previous=state.phase;const previousNotification=state.notification;for(const key of ['phase','title','elapsedLabel','error','ownerId','notification','countdownLabel'])if(Object.prototype.hasOwnProperty.call(data,key))state[key]=data[key];if(previousNotification!==state.notification)state.toast=['upcoming','finished'].includes(state.notification)?state.notification:null;if(previous!=='finished'&&state.phase==='finished')state.toast='finished';if(['recording','paused'].includes(state.phase)&&state.toast==='upcoming')state.toast=null;render();}});
+  window.addEventListener('message',e=>{if(e.origin!==location.origin||e.source!==frame.contentWindow)return;const data=e.data;if(data?.type==='windows-nero:open-window'){showWindow();}if(data?.type==='windows-nero:request-stop'){requestStop(data.ownerId);}if(data?.type==='windows-nero:ready'){state.ready=true;appearance();send('scenario',{value:'upcoming'});feedback('공통 제품 화면과 Windows 제어기가 연결되었습니다.');}if(data?.type==='windows-nero:state'){const previous=state.phase;const previousNotification=state.notification;for(const key of ['phase','title','elapsedLabel','error','ownerId','notification','countdownLabel'])if(Object.prototype.hasOwnProperty.call(data,key))state[key]=data[key];if(previousNotification!==state.notification)state.toast=['upcoming','finished'].includes(state.notification)?state.notification:null;if(previous!=='finished'&&state.phase==='finished')state.toast='finished';if(['recording','paused'].includes(state.phase)&&state.toast==='upcoming')state.toast=null;render();}});
   frame.addEventListener('load',()=>{send('sync');appearance();});
   render();appearance();
 })();

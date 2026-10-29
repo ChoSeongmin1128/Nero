@@ -528,5 +528,5 @@
     recover,
   };
   if (typeof module !== "undefined") module.exports = api;
-  else root.GroveModel = api;
+  else root.NeroModel = api;
 })(globalThis);

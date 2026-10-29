@@ -6,4 +6,4 @@ The local SVG icon subset in `icons.js` is derived from Lucide. Source SVG files
 
 Copyright and permission notices: `vendor/lucide/LICENSE`.
 
-The Grove app logo is not a Lucide icon and remains undecided.
+The Nero app logo is not a Lucide icon and remains undecided.

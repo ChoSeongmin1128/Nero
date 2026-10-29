@@ -322,7 +322,7 @@ fn commit_persists_saving_before_the_effect_can_run() {
         .unwrap();
 }
 
-fn edited_source(process: &Processing) -> (CoreHandle, String, grove_core::Transcript) {
+fn edited_source(process: &Processing) -> (CoreHandle, String, nero_core::Transcript) {
     let core = CoreHandle::open(&process.root).unwrap();
     let input = process.root.join("synthetic-input.wav");
     let data_size = 16000u32 * 2;
@@ -569,8 +569,8 @@ fn missing_transcript_meeting_is_a_definite_unavailable_failure() {
 #[test]
 fn uncertain_transcript_storage_or_actor_shutdown_still_requires_result_confirmation() {
     for error in [
-        grove_core::CoreError::Storage("저장 결과 불확실".into()),
-        grove_core::CoreError::Unavailable,
+        nero_core::CoreError::Storage("저장 결과 불확실".into()),
+        nero_core::CoreError::Unavailable,
     ] {
         let (_temporary, process) = setup();
         let id = launch(

@@ -11,11 +11,12 @@ case "$configuration" in
 esac
 
 project_root="$(cd "$(dirname "$0")/.." && pwd)"
-app_path="${GROVE_APP_OUTPUT:-$project_root/.work/dist/Grove.app}"
+repository_root="$(cd "$project_root/../.." && pwd)"
+app_path="${GROVE_APP_OUTPUT:-$repository_root/.work/legacy-swift/dist/Grove.app}"
 contents_path="$app_path/Contents"
-build_path="$project_root/.work/swift-build"
+build_path="$repository_root/.work/legacy-swift/swift-build"
 binary_path="$build_path/$configuration/Grove"
-workers_path="${GROVE_NATIVE_WORKERS_DIR:-$project_root/.work/native-workers}"
+workers_path="${GROVE_NATIVE_WORKERS_DIR:-$repository_root/.work/legacy-swift/native-workers}"
 
 # Local beta uses already-qualified native workers, never a Python/Homebrew runtime.
 for worker in Moss/MossHarness Nemotron/bin/nemo-speech; do
@@ -27,8 +28,8 @@ done
 test -f "$workers_path/Moss/mlx-swift_Cmlx.bundle/Contents/Resources/default.metallib"
 
 cd "$project_root"
-export CLANG_MODULE_CACHE_PATH="$project_root/.work/module-cache"
-export SWIFTPM_MODULECACHE_OVERRIDE="$project_root/.work/module-cache"
+export CLANG_MODULE_CACHE_PATH="$repository_root/.work/legacy-swift/module-cache"
+export SWIFTPM_MODULECACHE_OVERRIDE="$repository_root/.work/legacy-swift/module-cache"
 swift build --scratch-path "$build_path" --jobs 2 -c "$configuration" --product Grove
 
 if [[ -e "$app_path" ]]; then
@@ -41,7 +42,7 @@ cp "$binary_path" "$contents_path/MacOS/Grove"
 cp "$project_root/App/Info.plist" "$contents_path/Info.plist"
 cp "$project_root/App/Icon/Grove.icns" "$contents_path/Resources/Grove.icns"
 cp -R "$build_path/$configuration/Grove_GroveApp.bundle" "$contents_path/Resources/"
-cp "$project_root/THIRD_PARTY_NOTICES.md" "$contents_path/Resources/"
+cp "$repository_root/THIRD_PARTY_NOTICES.md" "$contents_path/Resources/"
 moss_contents="$contents_path/Helpers/Moss.bundle/Contents"
 mkdir -p "$moss_contents/MacOS" "$moss_contents/Resources"
 cp "$workers_path/Moss/MossHarness" "$moss_contents/MacOS/MossHarness"

@@ -129,7 +129,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
   const context = vm.createContext({ renderMeetingMenu,
     navigator: { clipboard: { writeText: async text => { copied.push(text); } } },
     document, testBridge: bridge, testAgentDialogCalls: agentDialogCalls, testTemplateSettings: templateSettings, localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
-    GroveControls: { enhanceAll() {} },
+    NeroControls: { enhanceAll() {} },
     setTimeout: () => 1, clearTimeout() {}, requestAnimationFrame: (callback) => callback(),
   });
   vm.runInContext(componentsSource, context);

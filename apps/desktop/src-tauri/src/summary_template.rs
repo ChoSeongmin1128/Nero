@@ -1,4 +1,4 @@
-use grove_core::templates::{PromptTemplate, TemplateStore};
+use nero_core::templates::{PromptTemplate, TemplateStore};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -63,7 +63,7 @@ mod tests {
             .update(
                 &selected.id,
                 &selected.revision,
-                grove_core::templates::TemplateContent {
+                nero_core::templates::TemplateContent {
                     name: original.name,
                     description: original.description,
                     prompt: "수정된 템플릿".into(),
@@ -73,7 +73,7 @@ mod tests {
         assert!(selected.resolve(&root).is_err());
         assert!(select(&root, None).is_ok());
         let custom = store
-            .create(grove_core::templates::TemplateContent {
+            .create(nero_core::templates::TemplateContent {
                 name: "사용자".into(),
                 description: "용도".into(),
                 prompt: "작성 지침".into(),

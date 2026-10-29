@@ -101,7 +101,7 @@
     filter: "list-filter",
     "more-horizontal": "ellipsis",
   };
-  root.GroveIcons = (name) => {
+  root.NeroIcons = (name) => {
     const id = aliases[name] || name;
     return `<svg class="lucide lucide-${id}" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${shapes[id] || shapes["file-text"]}</svg>`;
   };

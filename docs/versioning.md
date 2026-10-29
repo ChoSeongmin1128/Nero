@@ -23,7 +23,7 @@
 
 - macOS는 제품 버전을 표시 버전으로, `bundle.macOS.bundleVersion`을 `CFBundleVersion`으로 사용한다. 이번 제품 기준은 `0.0.1`이며 최종 배포 빌드는 릴리스 이력에서 확인한다.
 - Windows NSIS 설치 버전은 제품 버전 `0.0.1`이다. 독립 빌드 번호는 배포 파일명/영수증에 기록한다. 별도 네 번째 설치 버전 필드가 구현됐다고 가정하지 않는다.
-- 내부 패키지명과 이벤트명이 `grove`인 것은 이름 변경과 별개다.
+- 현재 패키지, 이벤트, 앱 식별자와 새 저장 위치는 Nero 이름을 사용한다. 이전 식별자는 명시적인 개인 데이터 이전 코드와 과거 원본 증거에만 남긴다.
 - 사용자 릴리스 태그는 `nero-v<제품 버전>`으로 최종 릴리스 구성 커밋에 붙인다. 기존 개발 태그를 이동하거나 재사용하지 않으며, 새 개발 빌드마다 제품 버전 태그를 만들 필요는 없다. 이미 공증된 앱을 컨테이너만 다시 포장하면 앱 소스와 포장 도구 커밋을 각각 기록한다. 문서만 후속 커밋으로 보강해도 배포본의 소스 해시는 바꾸지 않는다.
 
 ## 현재 저장 구조
@@ -32,7 +32,7 @@
 
 | 대상 | 현재 계약 |
 |---|---|
-| 앱 식별자 | `io.github.choseongmin1128.grove.desktop` |
+| 앱 식별자 | `io.github.choseongmin1128.nero.desktop` |
 | 저장 루트 | Tauri `app_data_dir()`. macOS는 `~/Library/Application Support/<identifier>`, Windows는 해당 사용자의 앱 데이터 디렉터리. 제품 이름/버전으로 새 경로를 조립하지 않음 |
 | 회의 `meeting.json` / 녹음 `manifest.json` | `store.rs`의 `SCHEMA_VERSION = 1`; 다른 schemaVersion은 현재 읽기 거부 |
 | 음성 기록/회의록 | 별도 schemaVersion 필드 없음. `Transcript`, `TranscriptSegment`, `Summary`의 JSON 구조가 현재 계약이며, 수정 회차/원문 해시는 별도로 저장 |

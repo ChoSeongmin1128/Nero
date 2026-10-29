@@ -55,7 +55,7 @@ export function mountAgentConnectionDialog({ container, fallbackTrigger }) {
     open(info, trigger = container.ownerDocument.activeElement) {
       origin = trigger;
       restoreFocus = true;
-      globalThis.GroveControls?.close?.();
+      globalThis.NeroControls?.close?.();
       flow.open(info);
     },
     update: info => flow.update(info),

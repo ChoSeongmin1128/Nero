@@ -1,4 +1,4 @@
-# Grove Windows 시안
+# Nero Windows 시안
 
 `index.html`은 공통 제품 화면을 iframe으로 재사용하는 Windows 데스크톱 시안이다. 색상과 밝기, 회의, 전사, 메모, 회의록은 공통 화면을 사용한다. Windows 표면은 이 디렉터리가 소유한다.
 
@@ -6,7 +6,7 @@
 
 - 32px 제목 표시줄과 오른쪽 최소화, 최대화/복원, 닫기
 - 제목 영역 드래그와 더블클릭 최대화/복원
-- 작업 표시줄과 알림 영역의 Grove 진입점
+- 작업 표시줄과 알림 영역의 Nero 진입점
 - 알림 영역 메뉴의 녹음 상태, 시간, 일시정지/계속, 종료, 창 복원
 - 노치가 없는 부유 녹음 제어기, 드래그 이동과 숨기기/복원
 - 오른쪽 아래 회의 알림과 준비/미루기/닫기
@@ -21,10 +21,10 @@ iframe은 `../prototype/index.html?platform=windows&session=windows-design`을 �
 
 같은 origin과 iframe source를 확인한 `postMessage`만 처리한다.
 
-- shell → 공통 화면: `{type: "windows-grove:command", action, ...payload}`
-- 공통 화면 → shell: `{type: "windows-grove:ready"}`
-- 공통 화면 → shell: `{type: "windows-grove:state", phase, title, elapsedLabel, error, ownerId, notification, countdownLabel}`
-- 공통 화면에서 종료를 요청하면 `windows-grove:request-stop`의 `ownerId`로 확인창을 열고, 확인 후 동일한 `ownerId`를 stop 명령에 포함한다.
+- shell → 공통 화면: `{type: "windows-nero:command", action, ...payload}`
+- 공통 화면 → shell: `{type: "windows-nero:ready"}`
+- 공통 화면 → shell: `{type: "windows-nero:state", phase, title, elapsedLabel, error, ownerId, notification, countdownLabel}`
+- 공통 화면에서 종료를 요청하면 `windows-nero:request-stop`의 `ownerId`로 확인창을 열고, 확인 후 동일한 `ownerId`를 stop 명령에 포함한다.
 - action: `sync`, `open`, `prepare`, `start`, `pause`, `resume`, `stop`, `retry`, `snooze`, `dismiss`, `advance`
 - `scenario`: `value`가 `upcoming`, `recording`, `paused`, `error`, `finished`, `long`
 - `appearance`: `color`, `mode`

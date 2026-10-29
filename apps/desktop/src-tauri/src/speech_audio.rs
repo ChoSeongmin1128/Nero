@@ -293,7 +293,7 @@ mod tests {
         let audio =
             AnalysisAudio::prepare(&process, &source, &work, &AtomicBool::new(false)).unwrap();
         assert_ne!(audio.path(), source);
-        let core = grove_core::CoreHandle::open(root.join("store")).unwrap();
+        let core = nero_core::CoreHandle::open(root.join("store")).unwrap();
         core.import_audio("Synthetic float", &source, audio.path())
             .unwrap();
     }

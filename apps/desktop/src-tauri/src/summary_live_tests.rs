@@ -25,7 +25,7 @@ fn write_path(name: &str) -> PathBuf {
     );
     assert!(
         !path.components().any(|component| {
-            matches!(component, std::path::Component::Normal(name) if name == "io.github.choseongmin1128.grove.desktop")
+            matches!(component, std::path::Component::Normal(name) if name == "io.github.choseongmin1128.nero.desktop")
         }),
         "{name} cannot write to the active application library"
     );

@@ -19,7 +19,7 @@
     if (!engine) return;
     const view = engine.snapshot();
     document.querySelectorAll(".recordingbar .time").forEach((node) => { node.textContent = view.capture.elapsedLabel; });
-    send({ type: "windows-grove:state", phase: view.capture.phase, title: view.capture.title,
+    send({ type: "windows-nero:state", phase: view.capture.phase, title: view.capture.title,
       elapsedLabel: view.capture.elapsedLabel, ownerId: view.capture.id,
       error: view.error, confirmStop: view.confirmStop, notification: view.notification,
       countdownLabel: view.meeting.countdownLabel, color: document.documentElement.dataset.color,
@@ -32,7 +32,7 @@
   function requestStop() {
     const view = engine.snapshot();
     if (!["recording", "paused"].includes(view.capture.phase)) return;
-    send({ type: "windows-grove:request-stop", ownerId: view.capture.id, title: view.capture.title });
+    send({ type: "windows-nero:request-stop", ownerId: view.capture.id, title: view.capture.title });
   }
   function command(message) {
     if (!engine) return;
@@ -58,14 +58,14 @@
     } else return;
     update();
   }
-  root.GroveDesktopController = {
+  root.NeroDesktopController = {
     attach(value) {
       adapter = value;
-      engine = root.GroveDesktopModel.create(adapter.model, { now: Date.now() });
+      engine = root.NeroDesktopModel.create(adapter.model, { now: Date.now() });
       adapter.begin(engine.store);
       engine.apply("start");
       update();
-      send({ type: "windows-grove:ready" });
+      send({ type: "windows-nero:ready" });
       timer = setInterval(() => { engine.sync(adapter.getState()); engine.advance(1); emit(); }, 1000);
     },
     sync() { if (engine) { engine.sync(adapter.getState()); emit(); } },
@@ -81,13 +81,13 @@
     close() {},
   };
   window.addEventListener("message", (event) => {
-    if (event.source !== parent || event.origin !== location.origin || event.data?.type !== "windows-grove:command") return;
+    if (event.source !== parent || event.origin !== location.origin || event.data?.type !== "windows-nero:command") return;
     command(event.data);
   });
   document.addEventListener("keydown", (event) => {
     if (event.isComposing || event.keyCode === 229 || !event.ctrlKey || !event.shiftKey || event.altKey || event.metaKey || event.key.toLowerCase() !== "g") return;
     event.preventDefault();
-    send({ type: "windows-grove:open-window" });
+    send({ type: "windows-nero:open-window" });
   }, true);
   media.addEventListener("change", () => { if (appearance.mode === "system") applyAppearance(appearance); });
   window.addEventListener("pagehide", () => clearInterval(timer));

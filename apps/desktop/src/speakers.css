@@ -17,7 +17,7 @@
 .speaker-selection-header { align-items: center; margin: 0; gap: 8px; }
 .speaker-selection-header h3 { font-size: var(--text-label-size); }
 .speaker-assignment-controls { margin-top: 8px; }
-.speaker-assignment-controls > .grove-select, .speaker-assignment-controls > select { flex: 1; min-width: 160px; }
+.speaker-assignment-controls > .nero-select, .speaker-assignment-controls > select { flex: 1; min-width: 160px; }
 .speaker-assignment-controls > input { min-width: 120px; }
 .speaker-utterance-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
 .speaker-utterance-meta h3 { font-size: var(--text-label-size); }

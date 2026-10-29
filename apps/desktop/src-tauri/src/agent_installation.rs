@@ -498,7 +498,7 @@ fn installed_payload(
         .as_str()
         .unwrap_or("");
     if !super::valid_generation(generation)
-        || config["args"] != serde_json::json!(["--data-dir", root, "mcp"])
+        || !super::connection_args_match(&config["args"], root)
         || environment["NERO_CONNECTION_CLIENT"] != client
         || environment["NERO_CONNECTION_TOKEN"] != registration["token"]
         || environment["NERO_CONNECTION_DIR"] != serde_json::json!(connection.join("sessions"))

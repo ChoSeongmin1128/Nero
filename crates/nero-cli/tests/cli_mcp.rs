@@ -676,9 +676,9 @@ fn summary_import_requires_app_and_rejects_input_overrides_without_echoing_body(
 
 #[test]
 fn cli_and_mcp_import_through_app_writer_and_reject_stale_contexts() {
-    use grove_core::agent_control::{ControlError, Server};
+    use nero_core::agent_control::{ControlError, Server};
     let root = summary_fixture();
-    let core = grove_core::CoreHandle::open(root.path()).unwrap();
+    let core = nero_core::CoreHandle::open(root.path()).unwrap();
     let writer = core.clone();
     let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let invoked = calls.clone();
@@ -1092,7 +1092,7 @@ fn relative_data_directory_works_for_queries_and_templates() {
 
 #[test]
 fn edited_templates_cannot_override_external_summary_citation_defaults() {
-    use grove_core::{CoreHandle, SummaryDraft, SummaryProvenance};
+    use nero_core::{CoreHandle, SummaryDraft, SummaryProvenance};
 
     fn saved_files(root: &Path) -> std::collections::BTreeMap<std::path::PathBuf, Vec<u8>> {
         fn visit(
@@ -1271,5 +1271,5 @@ fn edited_templates_cannot_override_external_summary_citation_defaults() {
     assert!(stale["summary"]["text"]
         .as_str()
         .unwrap()
-        .starts_with(grove_core::presentation::STALE_SUMMARY_WARNING));
+        .starts_with(nero_core::presentation::STALE_SUMMARY_WARNING));
 }

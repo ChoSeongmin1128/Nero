@@ -1,7 +1,7 @@
 :root { --layer-popover: 1200; --layer-dialog-overlay: 1100; --layer-dialog-content: 1101; }
-.grove-select,
-.grove-date,
-.grove-control-root {
+.nero-select,
+.nero-date,
+.nero-control-root {
   display: inline-flex;
   position: relative;
   min-width: 0;
@@ -9,9 +9,9 @@
   vertical-align: middle;
   font: inherit;
 }
-.grove-control-root { flex: 1; isolation: isolate; }
-.grove-select-trigger,
-.grove-date-trigger {
+.nero-control-root { flex: 1; isolation: isolate; }
+.nero-select-trigger,
+.nero-date-trigger {
   display: inline-flex;
   align-items: center;
   justify-content: space-between;
@@ -28,25 +28,25 @@
   text-align: left;
   cursor: pointer;
 }
-.field .grove-select-trigger,
-.field .grove-date-trigger {
+.field .nero-select-trigger,
+.field .nero-date-trigger {
   font: var(--weight-regular) var(--text-body-size)/var(--leading-ui) var(--font-ui);
   letter-spacing: var(--tracking-ui);
 }
-.grove-select-trigger svg,
-.grove-date-trigger svg { flex: none; color: var(--text-secondary); pointer-events: none; }
-.grove-select-trigger:hover,
-.grove-date-trigger:hover { background: var(--hover); }
-.grove-select-trigger[data-popup-open],
-.grove-date-trigger[data-popup-open] { border-color: var(--selection-border); }
-.grove-select-trigger:focus-visible,
-.grove-date-trigger:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
-.grove-select-trigger:disabled,
-.grove-date-trigger:disabled { opacity: .45; cursor: not-allowed; }
-.grove-select-value { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.grove-control-positioner { z-index: var(--layer-popover); isolation: isolate; outline: none; }
-.grove-select-popover,
-.grove-popover {
+.nero-select-trigger svg,
+.nero-date-trigger svg { flex: none; color: var(--text-secondary); pointer-events: none; }
+.nero-select-trigger:hover,
+.nero-date-trigger:hover { background: var(--hover); }
+.nero-select-trigger[data-popup-open],
+.nero-date-trigger[data-popup-open] { border-color: var(--selection-border); }
+.nero-select-trigger:focus-visible,
+.nero-date-trigger:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.nero-select-trigger:disabled,
+.nero-date-trigger:disabled { opacity: .45; cursor: not-allowed; }
+.nero-select-value { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.nero-control-positioner { z-index: var(--layer-popover); isolation: isolate; outline: none; }
+.nero-select-popover,
+.nero-popover {
   margin: 0;
   padding: 4px;
   max-width: calc(100vw - 16px);
@@ -63,8 +63,8 @@
   scrollbar-color: var(--border-control) transparent;
   outline: none;
 }
-.grove-select-popover { min-width: 160px; width: var(--anchor-width, 160px); }
-.grove-select-option {
+.nero-select-popover { min-width: 160px; width: var(--anchor-width, 160px); }
+.nero-select-option {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -80,21 +80,21 @@
   cursor: default;
   outline: none;
 }
-.grove-select-option > [data-slot] { min-width: 0; }
-.grove-select-option[data-selected] { color: var(--accent); font-weight: var(--weight-semibold); }
-.grove-select-option[data-highlighted] { background: var(--hover); }
-.grove-select-option[data-disabled] { opacity: .4; cursor: not-allowed; }
-.grove-select-indicator { display: inline-flex; flex: none; }
-.grove-select-scroll { display: flex; align-items: center; justify-content: center; height: 20px; background: var(--surface); color: var(--text-secondary); }
-.grove-calendar { width: 286px; padding: 12px; max-height: var(--available-height, calc(100dvh - 24px)); }
-.grove-day-picker { position: relative; width: 100%; font: var(--text-caption-size)/var(--leading-ui) var(--font-ui); }
-.grove-day-picker .rdp-months,
-.grove-day-picker .rdp-month { position: relative; width: 100%; }
-.grove-day-picker .rdp-month_caption { display: flex; align-items: center; justify-content: center; height: 32px; padding: 0 32px; }
-.grove-day-picker .rdp-caption_label { font-size: var(--text-label-size); font-weight: var(--weight-semibold); }
-.grove-day-picker .rdp-nav { position: absolute; inset: 0 0 auto; z-index: 1; display: flex; justify-content: space-between; pointer-events: none; }
-.grove-day-picker .rdp-button_previous,
-.grove-day-picker .rdp-button_next {
+.nero-select-option > [data-slot] { min-width: 0; }
+.nero-select-option[data-selected] { color: var(--accent); font-weight: var(--weight-semibold); }
+.nero-select-option[data-highlighted] { background: var(--hover); }
+.nero-select-option[data-disabled] { opacity: .4; cursor: not-allowed; }
+.nero-select-indicator { display: inline-flex; flex: none; }
+.nero-select-scroll { display: flex; align-items: center; justify-content: center; height: 20px; background: var(--surface); color: var(--text-secondary); }
+.nero-calendar { width: 286px; padding: 12px; max-height: var(--available-height, calc(100dvh - 24px)); }
+.nero-day-picker { position: relative; width: 100%; font: var(--text-caption-size)/var(--leading-ui) var(--font-ui); }
+.nero-day-picker .rdp-months,
+.nero-day-picker .rdp-month { position: relative; width: 100%; }
+.nero-day-picker .rdp-month_caption { display: flex; align-items: center; justify-content: center; height: 32px; padding: 0 32px; }
+.nero-day-picker .rdp-caption_label { font-size: var(--text-label-size); font-weight: var(--weight-semibold); }
+.nero-day-picker .rdp-nav { position: absolute; inset: 0 0 auto; z-index: 1; display: flex; justify-content: space-between; pointer-events: none; }
+.nero-day-picker .rdp-button_previous,
+.nero-day-picker .rdp-button_next {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -109,12 +109,12 @@
   color: var(--text-secondary);
   pointer-events: auto;
 }
-.grove-day-picker .rdp-button_previous:hover,
-.grove-day-picker .rdp-button_next:hover { background: var(--hover); }
-.grove-day-picker .rdp-month_grid { width: 100%; table-layout: fixed; border-collapse: separate; border-spacing: 2px 3px; }
-.grove-day-picker .rdp-weekday { padding: 6px 0; color: var(--text-secondary); font-size: var(--text-caption-size); font-weight: var(--weight-regular); text-align: center; }
-.grove-day-picker .rdp-day { padding: 0; text-align: center; }
-.grove-day-picker .rdp-day_button {
+.nero-day-picker .rdp-button_previous:hover,
+.nero-day-picker .rdp-button_next:hover { background: var(--hover); }
+.nero-day-picker .rdp-month_grid { width: 100%; table-layout: fixed; border-collapse: separate; border-spacing: 2px 3px; }
+.nero-day-picker .rdp-weekday { padding: 6px 0; color: var(--text-secondary); font-size: var(--text-caption-size); font-weight: var(--weight-regular); text-align: center; }
+.nero-day-picker .rdp-day { padding: 0; text-align: center; }
+.nero-day-picker .rdp-day_button {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -130,20 +130,20 @@
   font: inherit;
   font-variant-numeric: tabular-nums;
 }
-.grove-day-picker .rdp-day_button:hover { background: var(--hover); }
-.grove-day-picker .rdp-today:not(.rdp-selected) .rdp-day_button { color: var(--accent); font-weight: var(--weight-heading); }
-.grove-day-picker .rdp-outside:not(.rdp-selected) .rdp-day_button { color: var(--text-secondary); }
-.grove-day-picker .rdp-selected .rdp-day_button { background: var(--accent-fill); color: var(--on-accent); font-weight: var(--weight-semibold); }
-.grove-day-picker .rdp-disabled { opacity: .35; }
-.grove-day-picker .rdp-hidden { visibility: hidden; }
-.grove-day-picker button:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
-.grove-calendar-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
-.grove-calendar-footer > div { display: flex; align-items: center; gap: 6px; }
-.grove-calendar-time { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-top: 10px; margin-top: 8px; border-top: 1px solid var(--border); color: var(--text-secondary); }
-.grove-calendar-time input { width: 70px; min-height: var(--control-height, 32px); padding: 5px 8px; border: 1px solid var(--border-control); border-radius: var(--control-radius, 6px); background: var(--surface); color: var(--text); font: inherit; font-variant-numeric: tabular-nums; }
-.grove-calendar-error { margin: 8px 0 0; color: var(--danger-text); font-size: var(--text-caption-size); }
-.field > .grove-select,
-.field > .grove-date { display: flex; width: 100%; }
+.nero-day-picker .rdp-day_button:hover { background: var(--hover); }
+.nero-day-picker .rdp-today:not(.rdp-selected) .rdp-day_button { color: var(--accent); font-weight: var(--weight-heading); }
+.nero-day-picker .rdp-outside:not(.rdp-selected) .rdp-day_button { color: var(--text-secondary); }
+.nero-day-picker .rdp-selected .rdp-day_button { background: var(--accent-fill); color: var(--on-accent); font-weight: var(--weight-semibold); }
+.nero-day-picker .rdp-disabled { opacity: .35; }
+.nero-day-picker .rdp-hidden { visibility: hidden; }
+.nero-day-picker button:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.nero-calendar-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+.nero-calendar-footer > div { display: flex; align-items: center; gap: 6px; }
+.nero-calendar-time { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-top: 10px; margin-top: 8px; border-top: 1px solid var(--border); color: var(--text-secondary); }
+.nero-calendar-time input { width: 70px; min-height: var(--control-height, 32px); padding: 5px 8px; border: 1px solid var(--border-control); border-radius: var(--control-radius, 6px); background: var(--surface); color: var(--text); font: inherit; font-variant-numeric: tabular-nums; }
+.nero-calendar-error { margin: 8px 0 0; color: var(--danger-text); font-size: var(--text-caption-size); }
+.field > .nero-select,
+.field > .nero-date { display: flex; width: 100%; }
 .nero-dialog-overlay { position: fixed; inset: 0; z-index: var(--layer-dialog-overlay); background: var(--overlay); }
 .nero-dialog-content { position: fixed; top: 50%; left: 50%; z-index: var(--layer-dialog-content); transform: translate(-50%, -50%); width: min(520px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); padding: 20px; overflow: auto; border: 1px solid var(--border); border-radius: var(--radius, 8px); background: var(--surface); color: var(--text); box-shadow: 0 12px 36px var(--shadow-modal); outline: none; }
 .nero-dialog-header { display: flex; flex-direction: column; gap: 8px; padding-right: 24px; }

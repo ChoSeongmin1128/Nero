@@ -1,4 +1,4 @@
-use grove_core::templates::{PromptTemplate, TemplateContent, TemplateStore, TemplateSummary};
+use nero_core::templates::{PromptTemplate, TemplateContent, TemplateStore, TemplateSummary};
 use tauri::{AppHandle, Manager, WebviewWindow};
 
 fn store(app: &AppHandle, window: &WebviewWindow) -> Result<TemplateStore, String> {

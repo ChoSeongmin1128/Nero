@@ -5,9 +5,9 @@ const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
 const { build } = require('./catalog/build-tokens.cjs');
 
-const markerName = '.grove-design-system-preview.json';
+const markerName = '.nero-design-system-preview.json';
 const manifestName = 'preview-manifest.json';
-const marker = { owner: 'grove-design-system-preview', version: 1 };
+const marker = { owner: 'nero-design-system-preview', version: 1 };
 const source = fs.realpathSync(__dirname);
 const hash = (value) => crypto.createHash('sha256').update(value).digest('hex');
 
@@ -50,7 +50,7 @@ function main() {
     if (!fs.statSync(output).isDirectory()) throw new Error('Output is not a directory.');
     const markerPath = path.join(output, markerName);
     if (!fs.existsSync(markerPath)) throw new Error('Refusing existing output without the owned preview marker.');
-    assert.deepEqual(JSON.parse(fs.readFileSync(markerPath, 'utf8')), marker, 'Output is not an owned Grove design-system preview.');
+    assert.deepEqual(JSON.parse(fs.readFileSync(markerPath, 'utf8')), marker, 'Output is not an owned Nero design-system preview.');
     const allowed = new Set([...files, markerName, manifestName]);
     const unrelated = filesAt(output).filter((file) => !allowed.has(file));
     if (unrelated.length) throw new Error(`Refusing output with unrelated or stale files: ${unrelated.join(', ')}. Choose a new directory.`);

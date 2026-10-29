@@ -672,14 +672,14 @@
 
 }
 
-.ds-appearance .grove-select-trigger,
-.ds-controls .grove-select-trigger {
+.ds-appearance .nero-select-trigger,
+.ds-controls .nero-select-trigger {
   min-height: 32px;
   padding: 5px 9px;
   font-size: var(--text-caption-size);
 }
 
-.ds-appearance .grove-select {
+.ds-appearance .nero-select {
   min-width: 88px;
 }
 

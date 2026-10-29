@@ -223,5 +223,5 @@
   }
   const api = { create };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
-  else root.GroveDesktopModel = api;
+  else root.NeroDesktopModel = api;
 })(typeof globalThis === "object" ? globalThis : this);

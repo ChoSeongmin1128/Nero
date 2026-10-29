@@ -733,12 +733,12 @@ dialog .primary {
 
 }
 
-.review-options .grove-select-trigger {
+.review-options .nero-select-trigger {
   min-height: 32px;
   padding: 5px 9px;
   font-size: var(--text-caption-size);
 }
 
-.review-options .grove-select {
+.review-options .nero-select {
   min-width: 80px;
 }

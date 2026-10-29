@@ -23,6 +23,7 @@ class MacOSInstallTests(unittest.TestCase):
         self.target = self.root / 'Applications/Nero.app'
         self.app = self.root / 'candidate/Nero.app'
         self.data = self.root / 'data'
+        self.legacy_data = self.root / 'legacy-data'
         self.connections = self.root / 'connections'
         self.work = self.root / 'installation'
         self.archive = self.root / 'release.zip'
@@ -57,7 +58,8 @@ class MacOSInstallTests(unittest.TestCase):
             'verification': {'embedded_app_matches_source': True},
         }
         self.write_receipts()
-        for name, value in (('TARGET', self.target), ('DATA', self.data), ('CONNECTIONS', self.connections)):
+        for name, value in (('TARGET', self.target), ('DATA', self.data),
+                            ('LEGACY_DATA', self.legacy_data), ('CONNECTIONS', self.connections)):
             mock = patch.object(installer, name, value)
             mock.start()
             self.addCleanup(mock.stop)
@@ -252,6 +254,158 @@ class MacOSInstallTests(unittest.TestCase):
                     inventory(self.data)
             with self.assertRaisesRegex(PermissionError, 'unreadable directory'):
                 installer.model_metadata()
+
+    def use_old_identity(self):
+        self.real_rename(self.data, self.legacy_data)
+        info_path = self.target / 'Contents/Info.plist'
+        info = plistlib.loads(info_path.read_bytes())
+        info['CFBundleIdentifier'] = installer.LEGACY_IDENTIFIER
+        info_path.write_bytes(plistlib.dumps(info))
+        for client in ('claude', 'codex'):
+            (self.connections / client / 'state.json').write_text(json.dumps({
+                'schemaVersion': 1, 'client': client, 'token': '11111111-1111-4111-8111-111111111111',
+                'generation': 'a' * 64, 'dataDir': str(self.legacy_data),
+            }))
+
+    def test_identity_migration_renames_under_lock_without_copying_recordings_or_models(self):
+        self.use_old_identity()
+        before = installer.inventory(self.legacy_data)
+        inode = self.legacy_data.stat().st_ino
+        model = (self.legacy_data / 'models/model.gguf').stat()
+        self.install()
+        self.assertFalse(self.legacy_data.exists())
+        self.assertEqual(self.data.stat().st_ino, inode)
+        self.assertEqual(installer.inventory(self.data), before)
+        self.assertEqual((self.data / 'models/model.gguf').stat().st_ino, model.st_ino)
+        self.assertEqual(installer.load(self.data / installer.MIGRATION_RECEIPT),
+                         installer.migration_receipt(self.legacy_data, 'completed'))
+        receipt = installer.load(self.work / 'installation.json')
+        self.assertTrue(receipt['identityMigration'])
+        self.assertTrue(receipt['dataRenamedWithoutCopy'])
+        self.assertFalse(receipt['dataBackupCreated'])
+
+    def test_identity_migration_refuses_two_roots_and_held_writer_lock(self):
+        self.use_old_identity()
+        self.data.mkdir()
+        with self.assertRaisesRegex(RuntimeError, 'Both identity'):
+            self.install()
+        self.data.rename(self.root / 'conflicting-data-preserved')
+        self.moves.clear()
+        with patch.object(installer.fcntl, 'flock', side_effect=BlockingIOError()):
+            with self.assertRaisesRegex(RuntimeError, 'writer lock'):
+                self.install()
+        self.assertTrue(self.legacy_data.exists())
+        self.assertFalse(self.data.exists())
+        self.assertEqual(self.moves, [])
+
+    def test_identity_migration_rename_failure_retains_old_data_and_returns_candidate(self):
+        self.use_old_identity()
+        before = installer.inventory(self.legacy_data)
+        rename = self.rename
+        def refuse(source, destination):
+            if source == self.legacy_data and destination == self.data:
+                raise OSError('synthetic data rename failure')
+            return rename(source, destination)
+        with patch.object(installer.os, 'rename', side_effect=refuse):
+            with self.assertRaisesRegex(OSError, 'data rename failure'):
+                self.install()
+        self.assertEqual(installer.inventory(self.legacy_data), before)
+        self.assertFalse((self.legacy_data / installer.MIGRATION_RECEIPT).exists())
+        self.assertFalse(self.data.exists())
+        self.assertTrue(self.app.exists())
+
+    def test_failed_new_app_validation_rolls_back_data_identity_and_app(self):
+        self.use_old_identity()
+        before = installer.inventory(self.legacy_data)
+        run = self.run_command
+        def refuse(*args):
+            if args == ('codesign', '--verify', '--deep', '--strict', str(self.target)):
+                raise RuntimeError('synthetic installed verification failure')
+            return run(*args)
+        rename = self.rename
+        restored = []
+        def observe_restore(source, destination):
+            if source == self.work / 'previous-installed.app' and destination == self.target:
+                restored.append(True)
+                self.assertTrue(self.legacy_data.is_dir())
+                self.assertFalse(self.data.exists())
+                for client in ('claude', 'codex'):
+                    self.assertEqual(installer.load(self.connections / client / 'state.json')['dataDir'],
+                                     str(self.legacy_data))
+            return rename(source, destination)
+        with patch.object(installer, 'run', side_effect=refuse), \
+                patch.object(installer.os, 'rename', side_effect=observe_restore):
+            with self.assertRaisesRegex(RuntimeError, 'installed verification failure'):
+                self.install()
+        self.assertEqual(installer.inventory(self.legacy_data), before)
+        self.assertFalse(self.data.exists())
+        self.assertEqual(plistlib.loads((self.target / 'Contents/Info.plist').read_bytes())['CFBundleIdentifier'],
+                         installer.LEGACY_IDENTIFIER)
+        self.assertEqual(restored, [True])
+
+    def test_old_app_cannot_reenter_between_library_rename_and_new_app_promotion(self):
+        self.use_old_identity()
+        rename = self.rename
+        attempts = []
+        def launch_if_available(source, destination):
+            result = rename(source, destination)
+            if source == self.legacy_data and destination == self.data:
+                attempts.append(self.target.exists())
+                if self.target.exists():
+                    self.legacy_data.mkdir()
+                    (self.legacy_data / 'store.lock').write_bytes(b'')
+                self.assertTrue((self.work / 'previous-installed.app').is_dir())
+            return result
+        with patch.object(installer.os, 'rename', side_effect=launch_if_available):
+            self.install()
+        self.assertEqual(attempts, [False])
+        self.assertFalse(self.legacy_data.exists())
+        self.assertTrue(self.data.is_dir())
+
+    def test_pending_or_mismatched_migration_receipt_blocks_normal_and_repeated_installation(self):
+        expected = installer.migration_receipt(self.legacy_data, 'completed')
+        path = self.data / installer.MIGRATION_RECEIPT
+        invalid_values = [dict(expected, status='pending'), dict(expected, sourceData='/other'),
+                          dict(expected, destinationData='/other'), dict(expected, extra=True),
+                          dict(expected, schemaVersion=True)]
+        for value in invalid_values:
+            with self.subTest(value=value):
+                path.write_text(json.dumps(value))
+                with self.assertRaisesRegex(RuntimeError, 'Identity migration'):
+                    self.install()
+                self.assertEqual(self.moves, [])
+        path.write_text(json.dumps(expected)[:-1] + ', "status": "completed"}')
+        with self.assertRaisesRegex(RuntimeError, 'duplicate fields'):
+            self.install()
+        path.write_text(json.dumps(expected))
+        self.install()
+        self.moves.clear()
+        path.write_text(json.dumps(dict(expected, status='pending')))
+        with self.assertRaisesRegex(RuntimeError, 'Identity migration is incomplete'):
+            self.install()
+        self.assertEqual(self.moves, [])
+
+    def test_recreated_old_library_stops_migration_without_merging_or_discarding_either_root(self):
+        self.use_old_identity()
+        run = self.run_command
+        recreated = []
+        def recreate_old_library(*args):
+            if args == ('codesign', '--verify', '--deep', '--strict', str(self.target)):
+                self.legacy_data.mkdir()
+                (self.legacy_data / 'reentered.txt').write_bytes(b'newly created user data')
+                recreated.append(True)
+            return run(*args)
+        with patch.object(installer, 'run', side_effect=recreate_old_library):
+            with self.assertRaisesRegex(RuntimeError, 'preserve the stage and rollback app'):
+                self.install()
+        self.assertEqual(recreated, [True])
+        self.assertEqual((self.legacy_data / 'reentered.txt').read_bytes(), b'newly created user data')
+        self.assertEqual((self.data / 'original.wav').read_bytes(), b'synthetic original audio')
+        self.assertFalse((self.legacy_data / 'original.wav').exists())
+        self.assertFalse((self.data / 'reentered.txt').exists())
+        self.assertTrue((self.work / 'previous-installed.app').is_dir())
+        self.assertTrue(self.target.with_name('.Nero-install.app').is_dir())
+        self.assertFalse(self.target.exists())
 
 
 if __name__ == '__main__':

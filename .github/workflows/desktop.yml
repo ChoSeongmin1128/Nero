@@ -14,7 +14,7 @@ on:
       - '.gitattributes'
       - 'Cargo.toml'
       - 'Cargo.lock'
-      - 'crates/grove-core/**'
+      - 'crates/nero-core/**'
       - 'crates/nero-cli/**'
       - 'apps/desktop/**'
       - 'design-system/**'
@@ -83,7 +83,7 @@ jobs:
         working-directory: apps/desktop
         run: npm run build
       - name: Test recording core with synthetic input
-        run: cargo test -p grove-core --locked -- --test-threads=1
+        run: cargo test -p nero-core --locked -- --test-threads=1
       - name: Test read-only CLI and MCP
         run: cargo test -p nero-cli --locked -- --test-threads=1
       - name: Bundle read-only agent
@@ -100,9 +100,9 @@ jobs:
         if: runner.os == 'macOS'
         run: python3 -m unittest discover -s scripts/native-moss-harness -p 'test_*.py'
       - name: Test native processing
-        run: cargo test -p grove-desktop --locked -- --test-threads=1
+        run: cargo test -p nero-desktop --locked -- --test-threads=1
       - name: Check native desktop host
-        run: cargo check -p grove-desktop --locked
+        run: cargo check -p nero-desktop --locked
       - name: Build Windows installer
         if: runner.os == 'Windows' && github.event_name == 'workflow_dispatch' && inputs.build_windows_installer
         working-directory: apps/desktop

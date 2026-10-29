@@ -1,18 +1,18 @@
-const M = GroveModel,
-  UI = GroveUI,
+const M = NeroModel,
+  UI = NeroUI,
   $ = (q) => document.querySelector(q),
   windowsDesign = new URLSearchParams(location.search).get("platform") === "windows" && new URLSearchParams(location.search).get("session") === "windows-design",
   fixture = new URLSearchParams(location.search).get("meetings"),
   manyMeetings = fixture === "many",
   variedMeetings = fixture === "varied",
-  KEY = windowsDesign ? "grove-design-system-v1-windows-design" : variedMeetings
-    ? "grove-design-system-v1-varied-demo"
+  KEY = windowsDesign ? "nero-design-system-v1-windows-design" : variedMeetings
+    ? "nero-design-system-v1-varied-demo"
     : manyMeetings
-      ? "grove-design-system-v1-library-demo"
-      : "grove-design-system-v1";
+      ? "nero-design-system-v1-library-demo"
+      : "nero-design-system-v1";
 const initialState = () =>
   manyMeetings || variedMeetings
-    ? GroveMeetingFixture(M, variedMeetings ? "varied" : "many")
+    ? NeroMeetingFixture(M, variedMeetings ? "varied" : "many")
     : { ...M.initial(), phase: "finished" };
 let s = initialState();
 try {
@@ -84,7 +84,7 @@ const attendeeSummary = (m) => {
     : ids.map(personLabel).join(", ") || "참석자 미지정";
 };
 const esc = UI.escape;
-const icon = (name) => GroveIcons(name);
+const icon = (name) => NeroIcons(name);
 const btn = (text, action, cls = "", disabled = false) => UI.button({
   html: text, action, className: cls, withIcon: text.includes("<svg"), disabled,
   attrs: action === "close" && cls.split(/\s+/).includes("icon") ? { "aria-label": "닫기", title: "닫기" } : {},
@@ -104,7 +104,7 @@ function toast(text) {
   clearTimeout(toast.timer);
   toast.timer = setTimeout(() => $("#toast").classList.remove("show"), 3000);
 }
-let viewState = GroveViewState(document);
+let viewState = NeroViewState(document);
 let previousLibraryQuery = null,
   previousSourceQuery = null;
 const viewKey = (name, ...parts) => name + "|" + JSON.stringify(parts);
@@ -209,13 +209,13 @@ function render(options = {}) {
   if (sourceQuery !== previousSourceQuery) viewState.forget("source-list|");
   $("#app").innerHTML = shell();
   renderModal();
-  globalThis.GroveControls?.enhanceAll();
+  globalThis.NeroControls?.enhanceAll();
   persist();
   const next = viewBindings();
   viewState.restore(next.regions, next.modal);
   previousLibraryQuery = libraryQuery;
   previousSourceQuery = sourceQuery;
-  globalThis.GroveDesktopController?.sync();
+  globalThis.NeroDesktopController?.sync();
 }
 function beginDesktopPreview(store) {
   if (desktopSession) return;
@@ -225,7 +225,7 @@ function beginDesktopPreview(store) {
   s = store;
   ui = { ...M.clone(ui), modal: null, edit: null, raw: false, companion: "notes", search: "", peopleSearch: "", selectedGroup: "all", sourceFilter: "all", librarySearch: "", libraryStatus: "all", libraryMonth: "all", librarySort: "newest", libraryPage: 0 };
   navigation = { order: "opened", limit: 3, opened: [s.meetingId] };
-  viewState = GroveViewState(document);
+  viewState = NeroViewState(document);
   previousLibraryQuery = previousSourceQuery = null;
 }
 function endDesktopPreview() {
@@ -237,7 +237,7 @@ function endDesktopPreview() {
   render({ capture: false });
 }
 function recordingElapsed(recording) {
-  return desktopSession ? globalThis.GroveDesktopController?.elapsed(recording.meetingId) || "00:00" : recording.emptyMeeting ? "00:00" : "18:42";
+  return desktopSession ? globalThis.NeroDesktopController?.elapsed(recording.meetingId) || "00:00" : recording.emptyMeeting ? "00:00" : "18:42";
 }
 function meetingDate(m) {
   if (!m.startedAt || Number.isNaN(Date.parse(m.startedAt))) return "";
@@ -370,7 +370,7 @@ function meetingLibrary() {
 }
 function shell() {
   const recent = navigation.order === "date" ? orderedMeetings().slice(0, navigation.limit) : navigation.opened.map((id) => orderedMeetings().find((m) => m.meetingId === id)).filter(Boolean).slice(0, navigation.limit);
-  return `<div class="app-shell"><aside class="sidebar"><div class="wordmark">Grove</div>${btn(icon("plus") + "<span>새 회의</span>", "new", "new-button").replace("<button ", '<button aria-label="새 회의" title="새 회의" ')}<nav class="nav" aria-label="주 탐색">${[
+  return `<div class="app-shell"><aside class="sidebar"><div class="wordmark">Nero</div>${btn(icon("plus") + "<span>새 회의</span>", "new", "new-button").replace("<button ", '<button aria-label="새 회의" title="새 회의" ')}<nav class="nav" aria-label="주 탐색">${[
     ["library", "모든 회의", "meeting"],
     ["sources", "자료함", "sources"],
     ["people", "사람과 그룹", "people"],
@@ -731,7 +731,7 @@ document.addEventListener("click", async (e) => {
   }
   const [action, id] = node.dataset.action.split(":");
   if (action === "desktop") {
-    globalThis.GroveDesktopController?.action(id, node.dataset.value);
+    globalThis.NeroDesktopController?.action(id, node.dataset.value);
     return;
   }
   if (action === "library-month" || action === "library-sort") {
@@ -799,7 +799,7 @@ document.addEventListener("click", async (e) => {
   } else if (action === "pause") {
     M.toggleRecording(s);
   } else if (action === "finish") {
-    if (desktopSession) { globalThis.GroveDesktopController.action("stop"); return; }
+    if (desktopSession) { globalThis.NeroDesktopController.action("stop"); return; }
     ui.modal = "finish";
   } else if (action === "finish-confirm") {
     const finishedId = M.finishRecording(s);
@@ -816,7 +816,7 @@ document.addEventListener("click", async (e) => {
     s.tab = "transcript";
     ui.modal = null;
   } else if (action === "record-start") {
-    if (desktopSession && !globalThis.GroveDesktopController.beforeRecordingStart()) return;
+    if (desktopSession && !globalThis.NeroDesktopController.beforeRecordingStart()) return;
     if (!M.beginRecording(s)) toast("진행 중인 녹음을 먼저 종료해 주세요.");
   } else if (action === "companion") ui.companion = id;
   else if (action === "minutes-ref") ui.minutesRef = id;
@@ -1100,8 +1100,8 @@ $("#review").innerHTML =
   '<label>가상 상황 <select id="scenario"><option value="live">녹음 중</option><option value="paused">일시정지</option><option value="final">최종 전사</option><option value="source-failed">자료 일부 실패</option><option value="disconnected">자료 연결 해제</option><option value="uncertain">Notion 결과 불확실</option></select></label><button id="scenario-apply">상황 적용</button><span class="tiny muted">제품 화면 밖의 검토 도구</span><button id="demo-transcript">대화 예시 추가</button><button id="reset-demo">예시 초기화</button>';
 $("#scenario-apply").onclick = () => {
   const v = $("#scenario").value;
-  if (["live", "paused", "final"].includes(v) && globalThis.GroveDesktopController) {
-    globalThis.GroveDesktopController.open({ live: "recording", paused: "paused", final: "finished" }[v]);
+  if (["live", "paused", "final"].includes(v) && globalThis.NeroDesktopController) {
+    globalThis.NeroDesktopController.open({ live: "recording", paused: "paused", final: "finished" }[v]);
     return;
   }
   ui.modal = null;
@@ -1157,7 +1157,7 @@ $("#reset-demo").onclick = () => {
 };
 render();
 for (const input of document.querySelectorAll('[data-field="recent-order"],[data-field="recent-limit"]')) input.checked = String(navigation[input.dataset.field === "recent-order" ? "order" : "limit"]) === input.value;
-globalThis.GroveDesktopController?.attach({
+globalThis.NeroDesktopController?.attach({
   model: M,
   getState: () => s,
   setState: (state) => { s = state; },

@@ -8,11 +8,12 @@ import { fileURLToPath } from 'node:url';
 const prototype = new URL('../../../design-system/prototype/', import.meta.url);
 const bundle = await build({entryPoints:[fileURLToPath(new URL('navigation-review.js',prototype))],bundle:true,write:false,format:'iife'});
 
-async function setup(t) {
+async function setup(t, snapshot) {
   const window = new Window({url:'http://nero.test',settings:{enableJavaScriptEvaluation:true,suppressInsecureJavaScriptEnvironmentWarning:true,disableCSSFileLoading:true,disableJavaScriptFileLoading:true}});
   t.after(()=>window.happyDOM.abort());
   window.document.write(await readFile(new URL('navigation-review.html',prototype),'utf8'));
-  window.GroveIcons=name=>`<svg data-icon="${name}"></svg>`;
+  window.NeroIcons=name=>`<svg data-icon="${name}"></svg>`;
+  if(snapshot)window.sessionStorage.setItem('nero-notification-demo-v1',snapshot);
   window.eval(bundle.outputFiles[0].text);
   return window;
 }
@@ -67,35 +68,72 @@ test('temporary sidebar closes after pointer exit but stays while entering a sea
   assert.equal(shell.classList.contains('nav-peek'),true);
 });
 
-test('notifications retain retry and dismissal outside the document without changing job state', async t => {
-  const window = await setup(t), doc = window.document;
-  const notify=()=>doc.querySelector('[data-filter="notifications"]').click();
-  doc.querySelector('[data-state="cancelled"]').click();
-  assert.equal(doc.querySelector('.meeting-status'), null);
-  assert.equal(doc.getElementById('notification-count').textContent,'1');
-  notify();
-  assert.equal(doc.querySelector('h1').textContent,'알림');
-  assert.equal(doc.getElementById('notifications-open').getAttribute('aria-current'),'page');
-  assert.match(doc.querySelector('.notification-item').textContent,/취소됨/);
-  doc.querySelector('[data-job-retry="1"]').click();
-  assert.match(doc.querySelector('.notification-item').textContent,/변환 중/);
-  assert.equal(doc.activeElement.dataset.jobCancel,'1');
-  doc.querySelector('[data-job-cancel="1"]').click();
-  doc.querySelector('[data-notification-dismiss="1"]').click();
-  assert.equal(doc.querySelector('.notification-item'),null);
-  assert.equal(doc.activeElement,doc.querySelector('#page h1'));
-  doc.querySelector('[data-recent-meeting="1"]').click();
-  assert.equal(doc.querySelector('[data-state="cancelled"]').getAttribute('aria-pressed'),'true');
-  assert.equal(doc.querySelector('.meeting-status'),null);
-  doc.querySelector('[data-state="normal"]').click();notify();
-  assert.equal(doc.querySelector('.notification-item'),null);
-  doc.querySelector('[data-recent-meeting="1"]').click();
-  doc.querySelector('[data-state="processing"]').click();
-  assert.equal(doc.querySelector('.meeting-status').dataset.status,'processing');
-  doc.querySelector('[data-recent-meeting="2"]').click();
-  assert.equal(doc.querySelector('.meeting-status'),null);
-  notify();
-  assert.match(doc.querySelector('.notification-item').textContent,/제품 검토/);
+test('notifications retain retry, acknowledgement and cleanup outside the document', async t => {
+ const window=await setup(t),doc=window.document;
+ const action=name=>doc.querySelector(`[data-flow="${name}"]`).click();
+ action('start');action('cancelled');
+ assert.equal(doc.querySelector('.meeting-status'),null);
+ assert.equal(doc.getElementById('notification-count').textContent,'1');
+ doc.getElementById('notifications-open').click();
+ assert.match(doc.querySelector('.notification-item').textContent,/취소됨/);
+ doc.querySelector('[data-job-retry="1"]').click();
+ assert.equal(doc.activeElement.dataset.jobCancel,'1');
+ assert.match(doc.querySelector('.notification-item').textContent,/준비 중/);
+ doc.querySelector('[data-job-cancel="1"]').click();
+ doc.querySelector('[data-notification-acknowledge="1"]').click();
+ assert.equal(doc.getElementById('notification-count').hidden,true);
+ assert.equal(doc.activeElement.dataset.notificationDismiss,'1');
+ doc.querySelector('[data-notification-dismiss="1"]').click();
+ assert.equal(doc.querySelector('.notification-item'),null);
+ assert.equal(doc.activeElement,doc.querySelector('#page h1'));
+ doc.querySelector('[data-recent-meeting="1"]').click();
+ assert.equal(doc.querySelector('.meeting-status'),null);
+ action('retry');
+ assert.equal(doc.querySelector('.meeting-status').dataset.status,'processing');
+ action('another');
+ assert.equal(doc.querySelector('.meeting-status'),null);
+ doc.getElementById('notifications-open').click();
+ assert.match(doc.querySelector('.notification-item').textContent,/제품 검토/);
+});
+
+test('separate meetings, completion, duplicate and old attempts project one current notification each',async t=>{
+ const window=await setup(t),doc=window.document,action=name=>doc.querySelector(`[data-flow="${name}"]`).click();
+ action('multiple');doc.getElementById('notifications-open').click();
+ assert.equal(doc.querySelectorAll('.notification-item').length,2);
+ action('failed');action('retry');action('stale');
+ assert.equal(doc.querySelector('[data-notification="1"]').dataset.jobStatus,'processing');
+ assert.match(doc.getElementById('flow-status').textContent,/현재 시도와 다른/);
+ action('advance');action('advance');action('completed');action('duplicate');
+ assert.equal(doc.querySelectorAll('.notification-item').length,2);
+ assert.equal(doc.querySelector('[data-notification="1"]').dataset.jobStatus,'completed');
+ assert.equal(doc.querySelector('[data-notification="2"]').dataset.jobStatus,'processing');
+ assert.equal(doc.querySelector('[data-job-retry="1"]'),null);
+ doc.querySelector('[data-notification-acknowledge="1"]').click();
+ doc.querySelector('[data-clear-acknowledged]').click();
+ assert.equal(doc.querySelector('[data-notification="1"]'),null);
+ assert.ok(doc.querySelector('[data-notification="2"]'));
+ action('reload');
+ assert.equal(doc.querySelector('[data-notification="2"]').dataset.jobStatus,'interrupted');
+ assert.ok(doc.querySelector('[data-job-retry="2"]'));
+});
+
+test('reload preserves draft title and notes without inventing generated content',async t=>{
+ const window=await setup(t),doc=window.document;
+ doc.getElementById('new').click();
+ for(const [id,value] of [['draft-title','보존할 제목'],['draft-notes','보존할 메모']]){doc.getElementById(id).value=value;doc.getElementById(id).dispatchEvent(new window.Event('input',{bubbles:true}));}
+ doc.querySelector('[data-flow="start"]').click();
+ const saved=window.sessionStorage.getItem('nero-notification-demo-v1');
+ const restored=new Window({url:'http://nero.test',settings:{enableJavaScriptEvaluation:true,suppressInsecureJavaScriptEnvironmentWarning:true,disableCSSFileLoading:true,disableJavaScriptFileLoading:true}});
+ t.after(()=>restored.happyDOM.abort());
+ restored.document.write(await readFile(new URL('navigation-review.html',prototype),'utf8'));
+ restored.NeroIcons=name=>`<svg data-icon="${name}"></svg>`;
+ restored.sessionStorage.setItem('nero-notification-demo-v1',saved);restored.eval(bundle.outputFiles[0].text);
+ restored.document.querySelector('[data-recent-meeting="5"]').click();
+ assert.equal(restored.document.getElementById('draft-title').value,'보존할 제목');
+ assert.equal(restored.document.getElementById('draft-notes').value,'보존할 메모');
+ assert.equal(restored.document.querySelector('.summary'),null);
+ restored.document.getElementById('notifications-open').click();
+ assert.equal(restored.document.querySelector('[data-notification="5"]').dataset.jobStatus,'interrupted');
 });
 
 
@@ -217,4 +255,28 @@ test('calendar attaches to the same meeting and cancel leaves the draft unchange
  assert.match(doc.querySelector('.draft-heading .metadata').textContent,/2027/);
  doc.getElementById('new').click();doc.getElementById('new').click();
  assert.equal(doc.getElementById('draft-title').value,'새 회의 (1)');
+});
+
+
+test('custom folders survive reload and reset restores only initial folders', async t => {
+ const window=await setup(t),doc=window.document;
+ for(const title of ['보존 폴더','빈 폴더']){
+  doc.querySelector('[data-add-folder]').click();
+  const dialog=doc.querySelector('dialog');dialog.querySelector('input').value=title;
+  dialog.close('confirm');await new Promise(resolve=>setImmediate(resolve));
+ }
+ doc.querySelector('#nav [data-filter="보존 폴더"]').click();
+ doc.getElementById('new').click();
+ const restored=await setup(t,window.sessionStorage.getItem('nero-notification-demo-v1'));
+ const page=restored.document;
+ for(const title of ['보존 폴더','빈 폴더'])assert.ok(page.querySelector(`#nav [data-filter="${title}"]`));
+ page.querySelector('#nav [data-filter="보존 폴더"]').click();
+ assert.ok(page.querySelector('.open[data-open="5"]'));
+ page.querySelector('[data-flow="reset"]').click();
+ assert.equal(page.querySelector('#nav [data-filter="보존 폴더"]'),null);
+ assert.equal(page.querySelector('#nav [data-filter="빈 폴더"]'),null);
+ assert.ok(page.querySelector('#nav [data-filter="제품팀"]'));
+ const saved=JSON.parse(restored.sessionStorage.getItem('nero-notification-demo-v1'));
+ assert.deepEqual(saved.userFolders,['제품팀','인터뷰']);
+ assert.equal(saved.meetings.length,4);
 });

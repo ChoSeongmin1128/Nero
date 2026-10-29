@@ -50,9 +50,9 @@ body { overflow: hidden; }
 .detail-context { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; min-height: 28px; margin-top: 3px; }
 .meeting-day-field { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; }
 .meeting-day-field > label { color: var(--text-secondary); font-size: var(--text-caption-size); white-space: nowrap; }
-.meeting-day-field > .grove-date { min-width: 0; }
-.meeting-day-field .grove-date-trigger { min-height: 28px; padding: 3px 7px; font-size: var(--text-caption-size); }
-.meeting-day-field .grove-date-trigger svg { width: 15px; height: 15px; }
+.meeting-day-field > .nero-date { min-width: 0; }
+.meeting-day-field .nero-date-trigger { min-height: 28px; padding: 3px 7px; font-size: var(--text-caption-size); }
+.meeting-day-field .nero-date-trigger svg { width: 15px; height: 15px; }
 .meeting-timestamps { display: flex; flex-wrap: wrap; gap: 4px 12px; }
 .meeting-date-message { display: block; margin-top: 4px; color: var(--warning-text); }
 .meeting-title { width: 100%; min-width: 0; }
@@ -79,9 +79,9 @@ body { overflow: hidden; }
 .audio-time > span { grid-row: 1; white-space: nowrap; }
 #audio-current { grid-column: 1; }
 #audio-duration { grid-column: 3; }
-.audio-controls > button, .audio-controls > select, .audio-controls > .grove-select { flex: none; }
-.audio-controls > select, .audio-controls .grove-select-trigger { min-height: 29px; padding: 4px 8px; font-size: var(--text-caption-size); }
-.audio-controls > .grove-select { width: auto; }
+.audio-controls > button, .audio-controls > select, .audio-controls > .nero-select { flex: none; }
+.audio-controls > select, .audio-controls .nero-select-trigger { min-height: 29px; padding: 4px 8px; font-size: var(--text-caption-size); }
+.audio-controls > .nero-select { width: auto; }
 .audio-controls #audio-mute[aria-pressed="true"] { color: var(--accent); background: var(--accent-subtle); }
 @media (max-width: 900px) { .audio-controls { flex-wrap: wrap; gap: 8px; } .audio-timeline { flex-basis: 150px; } }
 .audio-region p { margin-top: 9px; }
@@ -240,8 +240,8 @@ html.recorder-document { background: transparent; }
 .app-settings-label { display: block; margin: 0 0 10px; font-size: var(--text-label-size); font-weight: var(--weight-medium); }
 .settings-recording-device { padding: 14px; }
 .settings-microphone-control { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.settings-microphone-control > select, .settings-microphone-control > .grove-select { flex: 1; min-width: 0; width: 100%; }
-.settings-microphone-control .grove-select-trigger { width: 100%; min-width: 0; }
+.settings-microphone-control > select, .settings-microphone-control > .nero-select { flex: 1; min-width: 0; width: 100%; }
+.settings-microphone-control .nero-select-trigger { width: 100%; min-width: 0; }
 .settings-microphone-control > button { flex: none; }
 .settings-recording-options { margin-top: 12px; }
 .settings-recording-options .setup-choice { min-height: 48px; color: var(--text); }

@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 project_root="$(cd "$(dirname "$0")/.." && pwd)"
-app_path="${GROVE_APP_PATH:-$project_root/.work/dist/Grove.app}"
+repository_root="$(cd "$project_root/../.." && pwd)"
+app_path="${GROVE_APP_PATH:-$repository_root/.work/legacy-swift/dist/Grove.app}"
 identity="${GROVE_SIGN_IDENTITY:?Set GROVE_SIGN_IDENTITY to the Developer ID Application certificate SHA1}"
 grove_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app_path/Contents/Info.plist")"
-zip_path="$project_root/.work/dist/Grove-$grove_version-arm64.zip"
+zip_path="$repository_root/.work/legacy-swift/dist/Grove-$grove_version-arm64.zip"
 
 if ! /usr/bin/security find-identity -v -p codesigning | /usr/bin/awk -v identity="$identity" '$2 == identity && /Developer ID Application:/ { found=1 } END { exit !found }'; then
   echo "A valid Developer ID Application identity is required." >&2
@@ -28,8 +29,8 @@ if [[ -n "${GROVE_NOTARY_PROFILE:-}" ]]; then
 else
   notary_arguments=(--key "${GROVE_NOTARY_KEY_PATH:?Set GROVE_NOTARY_KEY_PATH}" --key-id "${GROVE_NOTARY_KEY_ID:?Set GROVE_NOTARY_KEY_ID}" --issuer "${GROVE_NOTARY_ISSUER_ID:?Set GROVE_NOTARY_ISSUER_ID}")
 fi
-/usr/bin/xcrun notarytool submit "$zip_path" "${notary_arguments[@]}" --wait --output-format json > "$project_root/.work/notarization.json"
-python3 - "$project_root/.work/notarization.json" <<'PY'
+/usr/bin/xcrun notarytool submit "$zip_path" "${notary_arguments[@]}" --wait --output-format json > "$repository_root/.work/legacy-swift/notarization.json"
+python3 - "$repository_root/.work/legacy-swift/notarization.json" <<'PY'
 import json,sys
 result=json.load(open(sys.argv[1]))
 print('Notarization:',result.get('status'))

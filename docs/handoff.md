@@ -1,4 +1,4 @@
-# Grove handoff
+# Nero handoff
 
 AI-assisted working document. Current user instructions, live state, source and tests
 take precedence. This public handoff describes code, not a user's installed app,
@@ -309,10 +309,9 @@ close behavior remain separate from successful connection and the callback tests
   Windows tray selects monochrome assets from the reported window theme. Icon
   source/build integration does not establish Windows shell appearance or installation.
 
-- `apps/desktop` is the new Grove Tauri app, with identity
-  `io.github.choseongmin1128.grove.desktop`. It uses only its own application data
-  directory. Legacy app/data archival receipts remain private.
-- `crates/grove-core` owns meetings and recording on a dedicated command thread.
+- `apps/desktop` is the Nero Tauri app, with identity
+  `io.github.choseongmin1128.nero.desktop`. Existing development libraries require explicit installer migration; ordinary reads do not migrate. Original Swift app/data archival receipts remain private.
+- `crates/nero-core` owns meetings and recording on a dedicated command thread.
   A bounded callback queue and separate file writer retain native PCM; finalization
   creates a distinct float32 WAV. Original audio survives conversion failures.
 - Current UI supports meeting creation/content search, folders and trash/restore,
@@ -362,9 +361,10 @@ close behavior remain separate from successful connection and the callback tests
   recovery, transcript version conflicts, cancellation and delayed UI saves. These tests
   do not establish actual microphone capture, power-loss durability, long-duration
   performance or Windows behavior.
-- The current product name is Nero; its existing identifier/data location remains stable.
-  The repository was renamed separately; retaining internal grove crate/event names is
-  intentional compatibility, not a second installed product. The approved mark is 23-B r7 A.
+- Current package, events, frontend globals and storage identity use Nero. The installer
+  moves the previous development library on the same filesystem without copying audio
+  or models and records a strict receipt. Existing signed artifacts and transcript
+  provenance retain their original identities. The approved mark is 23-B r7 A.
 - Packaged llama.cpp b11734 supports explicit preparation of pinned Gemma 4 E4B Q4_0 and
   on-demand local summaries. GPU startup is preferred; confirmed GPU backend unavailability
   permits a bundled CPU fallback.
