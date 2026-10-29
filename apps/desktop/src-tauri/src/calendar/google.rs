@@ -272,57 +272,106 @@ pub async fn events(
     selected: &[CalendarChoice],
     now: u64,
 ) -> Result<Vec<Occurrence>, Failure> {
-    let from = Timestamp::from_millisecond(i64::try_from(now).map_err(|_| invalid())?)
+    events_between(
+        client,
+        token,
+        account,
+        selected,
+        now,
+        now.saturating_add(24 * 60 * 60 * 1000),
+    )
+    .await
+}
+
+pub async fn events_between(
+    client: &Client,
+    token: &str,
+    account: &str,
+    selected: &[CalendarChoice],
+    start_at: u64,
+    end_at: u64,
+) -> Result<Vec<Occurrence>, Failure> {
+    if end_at <= start_at {
+        return Err(invalid());
+    }
+    let from = Timestamp::from_millisecond(i64::try_from(start_at).map_err(|_| invalid())?)
         .map_err(|_| invalid())?
         .to_string();
-    let to = Timestamp::from_millisecond(
-        i64::try_from(now.saturating_add(24 * 60 * 60 * 1000)).map_err(|_| invalid())?,
-    )
-    .map_err(|_| invalid())?
-    .to_string();
+    let to = Timestamp::from_millisecond(i64::try_from(end_at).map_err(|_| invalid())?)
+        .map_err(|_| invalid())?
+        .to_string();
     let mut result = BTreeMap::<String, (u64, Occurrence)>::new();
     for calendar in selected {
-        let mut page_token: Option<String> = None;
-        let mut seen = BTreeSet::new();
-        let mut complete = false;
-        for _ in 0..MAX_PAGES {
-            let mut url = Url::parse(API).unwrap();
-            url.path_segments_mut()
-                .map_err(|_| invalid())?
-                .pop_if_empty()
-                .extend(["calendars", calendar.id.as_str(), "events"]);
-            url.query_pairs_mut().extend_pairs([
-                ("singleEvents", "true"), ("showDeleted", "true"), ("maxResults", "2500"),
-                ("timeMin", from.as_str()), ("timeMax", to.as_str()),
-                ("fields", "items(id,status,summary,start,end,eventType,recurringEventId,originalStartTime,iCalUID,updated,attendees(self,responseStatus),conferenceData(entryPoints(entryPointType,uri))),nextPageToken"),
-            ]);
-            if let Some(token) = &page_token {
-                url.query_pairs_mut().append_pair("pageToken", token);
+        let events = event_pages(account, calendar, start_at, end_at, |page_token| {
+            let url = events_url(calendar, &from, &to, page_token.as_deref());
+            async move { get(client, token, url?).await }
+        })
+        .await?;
+        for (updated, event) in events {
+            if result
+                .get(&event.key)
+                .is_none_or(|(previous, _)| *previous < updated)
+            {
+                result.insert(event.key.clone(), (updated, event));
             }
-            let page = get(client, token, url).await?;
-            for raw in items(&page)? {
-                if let Some((updated, event)) = normalize(account, calendar, raw)? {
-                    if result
-                        .get(&event.key)
-                        .is_none_or(|(previous, _)| *previous < updated)
-                    {
-                        result.insert(event.key.clone(), (updated, event));
-                    }
-                }
-            }
-            page_token = next_page(&page, &mut seen)?;
-            if page_token.is_none() {
-                complete = true;
-                break;
-            }
-        }
-        if !complete {
-            return Err(Failure::Other(
-                "일정이 조회 한도를 넘었습니다. 선택한 캘린더를 줄여 주세요.".into(),
-            ));
         }
     }
     Ok(result.into_values().map(|(_, event)| event).collect())
+}
+
+fn events_url(
+    calendar: &CalendarChoice,
+    from: &str,
+    to: &str,
+    page_token: Option<&str>,
+) -> Result<Url, Failure> {
+    let mut url = Url::parse(API).unwrap();
+    url.path_segments_mut()
+        .map_err(|_| invalid())?
+        .pop_if_empty()
+        .extend(["calendars", calendar.id.as_str(), "events"]);
+    url.query_pairs_mut().extend_pairs([
+        ("singleEvents", "true"), ("showDeleted", "true"), ("maxResults", "2500"),
+        ("timeMin", from), ("timeMax", to),
+        ("fields", "items(id,status,summary,start,end,eventType,recurringEventId,originalStartTime,iCalUID,updated,attendees(self,responseStatus),conferenceData(entryPoints(entryPointType,uri))),nextPageToken"),
+    ]);
+    if let Some(token) = page_token {
+        url.query_pairs_mut().append_pair("pageToken", token);
+    }
+    Ok(url)
+}
+
+async fn event_pages<F, Fut>(
+    account: &str,
+    calendar: &CalendarChoice,
+    start_at: u64,
+    end_at: u64,
+    mut fetch: F,
+) -> Result<Vec<(u64, Occurrence)>, Failure>
+where
+    F: FnMut(Option<String>) -> Fut,
+    Fut: std::future::Future<Output = Result<Value, Failure>>,
+{
+    let mut page_token = None;
+    let mut seen = BTreeSet::new();
+    let mut events = Vec::new();
+    for _ in 0..MAX_PAGES {
+        let page = fetch(page_token).await?;
+        for raw in items(&page)? {
+            if let Some((updated, event)) = normalize(account, calendar, raw)? {
+                if event.end_at > start_at && event.start_at < end_at {
+                    events.push((updated, event));
+                }
+            }
+        }
+        page_token = next_page(&page, &mut seen)?;
+        if page_token.is_none() {
+            return Ok(events);
+        }
+    }
+    Err(Failure::Other(
+        "일정이 조회 한도를 넘었습니다. 선택한 캘린더를 줄여 주세요.".into(),
+    ))
 }
 
 fn event_time(value: &Value) -> Result<u64, Failure> {
@@ -535,5 +584,121 @@ mod tests {
             &json!({"dateTime":"2026-11-01T01:30:00","timeZone":"America/New_York"})
         )
         .is_err());
+    }
+
+    fn timestamp(text: &str) -> u64 {
+        text.parse::<Timestamp>().unwrap().as_millisecond() as u64
+    }
+
+    #[test]
+    fn browse_pages_include_ended_events_and_follow_empty_pages_until_completion() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let mut second = event();
+        second["id"] = json!("other-event");
+        second["iCalUID"] = json!("other-uid");
+        second["start"]["dateTime"] = json!("2026-11-01T19:00:00-05:00");
+        second["end"]["dateTime"] = json!("2026-11-01T20:00:00-05:00");
+        let mut pages = std::collections::VecDeque::from([
+            json!({"items":[event()],"nextPageToken":"page-two"}),
+            json!({"items":[],"nextPageToken":"page-three"}),
+            json!({"items":[second]}),
+        ]);
+        let mut requested = Vec::new();
+        let events = runtime
+            .block_on(event_pages(
+                "account",
+                &calendar(),
+                timestamp("2026-11-01T04:00:00Z"),
+                timestamp("2026-11-02T05:00:00Z"),
+                |token| {
+                    requested.push(token);
+                    let page = pages.pop_front().unwrap();
+                    async move { Ok(page) }
+                },
+            ))
+            .unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(
+            requested,
+            vec![None, Some("page-two".into()), Some("page-three".into())]
+        );
+    }
+
+    #[test]
+    fn incomplete_or_failed_browse_pages_never_return_partial_events() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let mut calls = 0;
+        let result = runtime.block_on(event_pages("account", &calendar(), 1, u64::MAX, |_| {
+            calls += 1;
+            let response = if calls == 1 {
+                Ok(json!({"items":[event()],"nextPageToken":"next"}))
+            } else {
+                Err(Failure::Other("synthetic failure".into()))
+            };
+            async move { response }
+        }));
+        assert!(result.is_err());
+        let mut pages = 0;
+        let result = runtime.block_on(event_pages("account", &calendar(), 1, u64::MAX, |_| {
+            pages += 1;
+            let response = json!({"items":[event()],"nextPageToken":format!("page-{pages}")});
+            async move { Ok(response) }
+        }));
+        assert!(result.is_err());
+        assert_eq!(pages, MAX_PAGES);
+    }
+
+    #[test]
+    fn browse_window_filters_boundary_events_and_preserves_recurrent_occurrence_identity() {
+        let mut first = event();
+        first["recurringEventId"] = json!("series");
+        first["originalStartTime"] = first["start"].clone();
+        let mut moved = first.clone();
+        moved["start"]["dateTime"] = json!("2026-11-03T10:00:00-05:00");
+        moved["end"]["dateTime"] = json!("2026-11-03T11:00:00-05:00");
+        let mut next = first.clone();
+        next["originalStartTime"]["dateTime"] = json!("2026-11-08T01:30:00-05:00");
+        let key = |raw| {
+            normalize("account", &calendar(), raw)
+                .unwrap()
+                .unwrap()
+                .1
+                .key
+        };
+        assert_eq!(key(&first), key(&moved));
+        assert_ne!(key(&first), key(&next));
+        let url = events_url(
+            &calendar(),
+            "2026-11-01T04:00:00Z",
+            "2026-11-02T05:00:00Z",
+            Some("next"),
+        )
+        .unwrap();
+        let params: BTreeMap<_, _> = url.query_pairs().into_owned().collect();
+        assert_eq!(params["timeMin"], "2026-11-01T04:00:00Z");
+        assert_eq!(params["timeMax"], "2026-11-02T05:00:00Z");
+        assert_eq!(params["singleEvents"], "true");
+        assert_eq!(params["pageToken"], "next");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let start = timestamp("2026-11-01T05:45:00Z");
+        let events = runtime
+            .block_on(event_pages(
+                "account",
+                &calendar(),
+                start,
+                timestamp("2026-11-03T15:00:00Z"),
+                |_| {
+                    let page = json!({"items":[first,moved]});
+                    async move { Ok(page) }
+                },
+            ))
+            .unwrap();
+        assert!(events.is_empty());
     }
 }

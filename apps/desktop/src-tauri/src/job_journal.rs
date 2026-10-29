@@ -46,6 +46,8 @@ pub(super) struct JobRecord {
     #[serde(default)]
     pub acknowledged: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_successor_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure_kind: Option<crate::summary_failure::FailureKind>,
     pub status: JobStatus,
     pub phase: Option<String>,
@@ -60,6 +62,8 @@ impl JobRecord {
             || self.id != expected_id
             || !valid_id(&self.id)
             || self.meeting_id.as_ref().is_some_and(|id| !valid_id(id))
+            || self.retry_successor_id.as_ref().is_some_and(|id| !valid_id(id) || id == &self.id)
+            || (self.phase.as_deref() == Some("retryPending") && self.retry_successor_id.is_none())
             || !KINDS.contains(&self.kind.as_str())
             || self.source_fingerprint.as_ref().is_some_and(|value| {
                 value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit())
@@ -186,11 +190,42 @@ impl Journal {
         let _guard = self.gate.lock().map_err(|_| invalid())?;
         let mut records = self.records_locked()?;
         for record in &mut records {
-            if mark_recovered(record) {
+            if self.recover_retry(record)? || mark_recovered(record) {
                 self.write_locked(record)?;
             }
         }
         Ok(records)
+    }
+
+    pub fn retry_successor_exists(&self, record: &JobRecord) -> Result<bool, String> {
+        let id = record.retry_successor_id.as_ref().ok_or_else(invalid)?;
+        if !valid_id(id) || id == &record.id { return Err(invalid()); }
+        Ok(read_job(&self.root.join("processing").join(id), id)?.is_some())
+    }
+
+    fn recover_retry(&self, record: &mut JobRecord) -> Result<bool, String> {
+        if record.phase.as_deref() != Some("retryPending") { return Ok(false); }
+        match self.retry_successor_exists(record) {
+            Ok(true) => {
+                record.status = JobStatus::Cancelled;
+                record.acknowledged = true;
+                record.message = "새 작업으로 다시 시도했습니다.".into();
+            }
+            Ok(false) => {
+                record.status = JobStatus::Cancelled;
+                record.acknowledged = false;
+                record.retry_successor_id = None;
+                record.message = "재시도를 시작하기 전에 앱이 종료되었습니다. 다시 시도할 수 있습니다.".into();
+            }
+            Err(_) => {
+                record.status = JobStatus::NeedsReview;
+                record.acknowledged = false;
+                record.message = "재시도 작업의 상태를 확인하지 못했습니다. 저장된 결과를 확인해 주세요.".into();
+            }
+        }
+        record.phase = None;
+        record.updated_at = now().max(record.updated_at);
+        Ok(true)
     }
 
     pub fn recover_available(&self) -> Result<RecoveryReport, String> {
@@ -204,7 +239,7 @@ impl Journal {
                 let Some(mut record) = read_job(&path, &id)? else {
                     return Ok(None);
                 };
-                if mark_recovered(&mut record) {
+                if self.recover_retry(&mut record)? || mark_recovered(&mut record) {
                     self.write_locked(&record)?;
                 }
                 Ok(Some(record))
@@ -438,6 +473,7 @@ mod tests {
             include_summary: false,
             summary_template_ref: None,
             acknowledged: false,
+            retry_successor_id: None,
             failure_kind: None,
             status,
             phase: Some("recognizing".into()),
@@ -449,6 +485,44 @@ mod tests {
 
     fn states(root: &Path, record: &JobRecord) -> PathBuf {
         root.join("processing").join(&record.id).join("job-state")
+    }
+
+    #[test]
+    fn retry_reservation_recovery_distinguishes_missing_existing_and_corrupt_successors() {
+        for state in ["missing", "queued", "completed", "corrupt"] {
+            let temporary = tempfile::tempdir().unwrap();
+            let journal = Journal::new(temporary.path().into());
+            let mut previous = record(JobStatus::Cancelled);
+            let mut successor = record(JobStatus::Queued);
+            successor.meeting_id = previous.meeting_id.clone();
+            previous.acknowledged = true;
+            previous.phase = Some("retryPending".into());
+            previous.retry_successor_id = Some(successor.id.clone());
+            journal.write(&previous).unwrap();
+            if state != "missing" {
+                if state == "completed" { successor.status = JobStatus::Completed; }
+                journal.write(&successor).unwrap();
+                if state == "corrupt" { fs::write(states(temporary.path(), &successor).join("00000000000000000002.json"), b"invalid").unwrap(); }
+            }
+            let recovered = journal.recover_available().unwrap();
+            let old = recovered.records.iter().find(|value| value.id == previous.id).unwrap();
+            assert_eq!(old.acknowledged, matches!(state, "queued" | "completed"), "{state}");
+            assert_eq!(old.status, if state == "corrupt" { JobStatus::NeedsReview } else { JobStatus::Cancelled }, "{state}");
+            assert_eq!(old.phase, None);
+            if state == "missing" { assert_eq!(old.retry_successor_id, None); }
+            let again = journal.recover_available().unwrap();
+            assert_eq!(again.records.iter().find(|value| value.id == previous.id), Some(old));
+        }
+    }
+
+    #[test]
+    fn legacy_records_without_retry_link_remain_readable_and_keep_acknowledgement() {
+        let original = record(JobStatus::Cancelled);
+        let mut json = serde_json::to_value(&original).unwrap();
+        json.as_object_mut().unwrap().remove("retrySuccessorId");
+        let restored: JobRecord = serde_json::from_value(json).unwrap();
+        assert_eq!(restored.retry_successor_id, None);
+        assert_eq!(restored.acknowledged, original.acknowledged);
     }
 
     #[test]

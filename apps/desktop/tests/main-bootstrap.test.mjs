@@ -31,6 +31,7 @@ test('the real application HTML boots and opens all settings tabs without stale 
   window.document.write(html);
   for (const name of ['appearance', 'icons', 'components']) window.eval(await readFile(new URL(`../../../design-system/${name}.js`, import.meta.url), 'utf8'));
   const calls = [];
+  const subscriptions = {};
   const snapshot = { revision: 1, session: null, meetings: [], folders: [] };
   const stubs = {
     readSnapshot: () => snapshot, listDevices: () => [],
@@ -40,10 +41,14 @@ test('the real application HTML boots and opens all settings tabs without stale 
     agentConnectionInfo: () => ({ available: false, clients: [] }),
     readCalendarSettings: () => ({ revision: 1, configured: false, connected: false, calendars: [], selectedCalendars: [] }),
     listTemplates: () => [],
+    readTranscript: () => null, readSummary: () => null,
+    showRecorder: id => assert.equal(id, 'capture'),
+    acknowledgeProcessing: id => ({ id, status: 'acknowledged', jobs: [{ id, kind: 'transcribe', status: 'cancelled', retryable: false, acknowledged: true }] }),
+    retryProcessing: id => ({ id: 'retry', kind: 'transcribe', status: 'queued', jobs: [{ id, kind: 'transcribe', status: 'cancelled', acknowledged: true }, { id: 'retry', kind: 'transcribe', status: 'queued' }] }),
   };
   window.testBridge = Object.fromEntries(bridgeNames.map(name => [name, async (...args) => {
     calls.push(name);
-    if (name.startsWith('subscribe')) return () => {};
+    if (name.startsWith('subscribe')) { subscriptions[name] = args[0]; return () => {}; }
     assert.ok(Object.hasOwn(stubs, name), `Unexpected native call: ${name}`);
     return stubs[name](...args);
   }]));
@@ -57,7 +62,7 @@ test('the real application HTML boots and opens all settings tabs without stale 
       if (predicate()) return;
       await new Promise(resolve => setTimeout(resolve, 5));
     }
-    assert.fail('Expected settings state was not rendered');
+    assert.fail('Expected UI state was not rendered: ' + window.document.getElementById('error-message').textContent);
   };
   window.document.getElementById('settings').click();
   await wait(() => window.document.getElementById('settings-dialog').open);
@@ -73,4 +78,24 @@ test('the real application HTML boots and opens all settings tabs without stale 
   assert.deepEqual(errors, []);
   assert.equal(window.document.getElementById('error').hidden, true);
   assert.ok(calls.includes('readSnapshot'));
+  const recording = { revision: 2, folders: [], meetings: [{ id: 'one', title: '회의', createdAt: 1, notes: '', status: 'recording' }], session: { id: 'capture', meetingId: 'one', state: 'paused', elapsedMs: 1000 } };
+  subscriptions.subscribeSnapshots(recording);
+  await wait(() => window.document.querySelector('[data-action="show-recorder"]'));
+  const reopen = window.document.querySelector('[data-action="show-recorder"]');
+  assert.equal(reopen.getAttribute('aria-label'), '녹음 제어창 표시');
+  assert.ok(reopen.querySelector('svg'));
+  reopen.click();
+  await wait(() => calls.includes('showRecorder'));
+  await wait(() => !reopen.disabled);
+  const cancelled = id => ({ id, kind: 'transcribe', status: 'cancelled', retryable: true, message: '취소했습니다.', meetingId: 'one' });
+  subscriptions.subscribeProcessing({ ...cancelled('cancel1'), jobs: [cancelled('cancel1')] });
+  await wait(() => !window.document.getElementById('retry-processing').hidden);
+  assert.equal(window.document.getElementById('dismiss-processing').hidden, false);
+  window.document.getElementById('dismiss-processing').click();
+  await wait(() => window.document.getElementById('processing').hidden);
+  subscriptions.subscribeProcessing({ ...cancelled('cancel2'), jobs: [cancelled('cancel2')] });
+  await wait(() => !window.document.getElementById('retry-processing').hidden);
+  window.document.getElementById('retry-processing').click();
+  await wait(() => calls.includes('retryProcessing'));
+  assert.deepEqual(errors, []);
 });

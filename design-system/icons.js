@@ -1,5 +1,8 @@
 (function (root) {
   const shapes = {
+    pin: '<path d="M16 9V4l1-1H7l1 1v5l-3 3v2h14v-2z"/><path d="M12 14v8"/>',
+    "circle-slash": '<circle cx="12" cy="12" r="10"/><path d="m5 5 14 14"/>',
+    "picture-in-picture-2": '<path d="M21 9V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h4"/><rect x="13" y="13" width="8" height="8" rx="2"/>',
     "undo-2": "<path d=\"M9 14 4 9l5-5\"/><path d=\"M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11\"/>",
     "folder-input": "<path d=\"M2 9V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H20a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-1\"/><path d=\"M2 13h10\"/><path d=\"m9 16 3-3-3-3\"/>",
 

@@ -16,7 +16,7 @@ tauri = { version = "2", features = ["tray-icon", "protocol-asset", "macos-priva
 tauri-plugin-single-instance = "2"
 tauri-plugin-dialog = "2"
 reqwest = { version = "0.13", features = ["json"] }
-tokio = { version = "1", features = ["rt", "time", "macros"] }
+tokio = { version = "1", features = ["rt", "time", "macros", "sync"] }
 base64 = "=0.22.1"
 jiff = "=0.2.38"
 keyring = { version = "=3.6.3", default-features = false, features = ["apple-native", "windows-native"] }

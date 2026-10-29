@@ -6,10 +6,10 @@ import { recordingQuality } from './recording-quality.js';
 import { mountDocumentActions } from './document-actions.jsx';
 import '../../../design-system/react-controls.jsx';
 import * as bridge from './bridge.js';
-import { icon, escape, button, duration, recordingStatus, statusMarkup, sessionControls, applySystemAppearance } from './ui.js';
-import { processingFeedback } from './processing-feedback.js';
+import { ui, icon, escape, button, duration, recordingStatus, statusMarkup, sessionControls, applySystemAppearance } from './ui.js';
+import { processingFeedback, canRetryProcessing, canDismissProcessing } from './processing-feedback.js';
 import { processingJobs, pendingJob, processingResults } from './processing-state.js';
-import { mountLibrary, filterLibraryMeetings } from './library-ui.js';
+import { mountLibrary, filterLibraryMeetings, renderMeetingMenu } from './library-ui.js';
 import { mountSpeakers } from './speakers-ui.js';
 import { createMeetingSearch, mountDocumentSearch } from './meeting-search.js';
 import { mountTranscriptActions } from './transcript-actions.js';
@@ -106,8 +106,7 @@ function renderList() {
     const timestampLabel = `${listDate.format(timestamp)} ${listTime.format(timestamp)}`;
     const timestampDescription = `${meeting.recordedAt != null ? '녹음 시작' : '생성'} ${fullDate.format(timestamp)}\n회의 날짜 ${meetingDay(meeting)}`;
     const selected = state.librarySelection.has(meeting.id);
-    const actions = meeting.deletedAt != null ? [['restore','복원'],['purge','영구 삭제']] : [['rename','이름 변경'],['move','폴더로 이동'],['trash','휴지통으로 이동']];
-    const more = `<details class="meeting-menu" data-meeting-menu="${escape(meeting.id)}"><summary aria-label="${escape(meeting.title)} 더보기">${icon('ellipsis')}</summary><div class="action-menu">${actions.map(([action,label]) => `<button type="button" class="${['trash', 'purge'].includes(action) ? 'danger-text' : ''}" aria-label="${escape(label)}" data-library-action="${action}" data-library-target="${escape(meeting.id)}"${state.libraryBusy ? ' disabled' : ''}>${escape(label)}</button>`).join('')}</div></details>`;
+    const more = renderMeetingMenu(meeting, { escape, icon, disabled: state.libraryBusy || !state.connected });
     const checkbox = `<span class="meeting-select-control"><span class="meeting-select-symbol" aria-hidden="true">${icon(['recording','paused'].includes(phase) ? 'mic' : meeting.audio ? 'audio-lines' : 'file-text')}</span><input type="checkbox" class="meeting-selection" data-library-toggle="${escape(meeting.id)}" aria-label="${escape(meeting.title)} 선택"${selected ? ' checked' : ''}${state.libraryBusy || !state.connected ? ' disabled' : ''}><span class="meeting-select-check" aria-hidden="true">${icon('check')}</span></span>`;
     const length = meeting.audio?.sampleRate ? duration(meeting.audio.frames / meeting.audio.sampleRate * 1000) : '';
     const hit = state.librarySearchHits.find(hit => hit.meetingId === meeting.id);
@@ -150,7 +149,7 @@ function renderRecording(meeting) {
   if (key !== state.controlsKey) {
     state.controlsKey = key;
     const controls = byId('recording-controls');
-    if (ownSession) controls.innerHTML = sessionControls(ownSession, false);
+    if (ownSession) controls.innerHTML = sessionControls(ownSession, false) + (['recording', 'paused'].includes(ownSession.state) ? ui.button({ html: icon('picture-in-picture-2'), action: 'show-recorder', className: 'quiet icon-button', attrs: { 'aria-label': '녹음 제어창 표시', title: '녹음 제어창 표시' } }) : '');
     else if (session) controls.innerHTML = button('녹음 중인 회의 열기', 'open-active', 'mic', '', false);
     else if (meeting.audio) controls.innerHTML = '';
     else if (!modelsReady()) controls.innerHTML = button('모델 준비', 'setup', null, 'primary', false);
@@ -261,6 +260,7 @@ async function openSetup(fromSettings = false, returnId = document.activeElement
 
 function render() {
   byId('create-meeting').disabled = !state.connected || state.busy;
+  byId('create-meeting-options').setAttribute('aria-disabled', String(!state.connected || state.busy));
   byId('create-calendar-meeting').disabled = !state.connected || state.busy;
   byId('welcome-create').disabled = !state.connected || state.busy;
   const setupVisible = renderSetup();
@@ -827,6 +827,7 @@ byId('recording-controls').addEventListener('click', (event) => {
   run(async () => {
     if (action === 'recording-settings') return openSettings('recording', 'settings');
     if (action === 'open-active' && session) return selectMeeting(session.meetingId);
+    if (action === 'show-recorder' && session) return bridge.showRecorder(session.id);
     if (action === 'setup') return openSetup();
     if (action === 'start') {
       if (!modelsReady()) return openSetup();
@@ -945,10 +946,10 @@ function renderProcessing() {
   setText('processing-percent', feedback.progress ? `${feedback.progress.percent}%` : '');
   byId('processing-percent').hidden = !feedback.progress;
   if (feedback.progress) { byId('processing-progress').max = feedback.progress.max; byId('processing-progress').value = feedback.progress.value; }
-  byId('retry-processing').hidden = progress.retryable !== true || !['interrupted', 'failed'].includes(progress.status);
+  byId('retry-processing').hidden = !canRetryProcessing(progress);
   byId('retry-processing').disabled = processingActions.has(progress.id);
   byId('open-processing-meeting').hidden = progress.status !== 'needsReview' || !owner;
-  byId('dismiss-processing').hidden = progress.acknowledged === true || !['failed', 'interrupted', 'needsReview'].includes(progress.status);
+  byId('dismiss-processing').hidden = !canDismissProcessing(progress);
   byId('dismiss-processing').disabled = processingActions.has(progress.id);
   for (const [id, action] of [['cancel-processing', 'cancel'], ['retry-processing', 'retry'], ['open-processing-meeting', 'open'], ['dismiss-processing', 'ack']]) {
     byId(id).dataset.jobId = progress.id || '';
@@ -991,7 +992,7 @@ function restoreProcessingFocus() {
 
 function renderProcessingJobs(visibleId) {
   const region = byId('processing-jobs');
-  const jobs = processingJobs(state.processing).filter(job => job.id && job.id !== visibleId && job.acknowledged !== true && ['queued', 'interrupted', 'failed', 'needsReview'].includes(job.status));
+  const jobs = processingJobs(state.processing).filter(job => job.id && job.id !== visibleId && job.acknowledged !== true && (job.status === 'queued' || canDismissProcessing(job)));
   region.hidden = !jobs.length;
   setHTML('processing-jobs', jobs.map(job => {
     const owner = state.snapshot.meetings.find(meeting => meeting.id === job.meetingId);
@@ -999,9 +1000,9 @@ function renderProcessingJobs(visibleId) {
     const feedback = processingFeedback(job, { cancelling: pending === 'cancel' });
     const detail = feedback.detail;
     const action = job.status === 'queued' ? ['cancel', pending === 'cancel' ? '취소 중' : '취소']
-      : ['interrupted', 'failed'].includes(job.status) && job.retryable === true ? ['retry', pending === 'retry' ? '준비 중' : '다시 시도'] : null;
+      : canRetryProcessing(job) ? ['retry', pending === 'retry' ? '준비 중' : '다시 시도'] : null;
     const attrs = `data-job-id="${escape(job.id)}"${pending ? ' disabled' : ''}`;
-    const controls = `${action ? `<button type="button" class="small" data-job-action="${action[0]}" ${attrs}>${action[1]}</button>` : ''}${owner ? `<button type="button" class="quiet small" data-job-action="open" ${attrs}>회의 열기</button>` : ''}${['failed', 'interrupted', 'needsReview'].includes(job.status) ? `<button type="button" class="quiet small" data-job-action="ack" ${attrs}>알림 닫기</button>` : ''}`;
+    const controls = `${action ? `<button type="button" class="small" data-job-action="${action[0]}" ${attrs}>${action[1]}</button>` : ''}${owner ? `<button type="button" class="quiet small" data-job-action="open" ${attrs}>회의 열기</button>` : ''}${canDismissProcessing(job) ? `<button type="button" class="quiet small" data-job-action="ack" ${attrs}>알림 닫기</button>` : ''}`;
     return `<div class="processing-job"><div class="processing-job-copy"><strong>${owner ? escape(owner.title) + ': ' : ''}${escape(feedback.title)}</strong>${detail ? `<p>${escape(detail)}</p>` : ''}${processingErrors.has(job.id) ? `<p class="field-error" role="alert">${escape(processingErrors.get(job.id))}</p>` : ''}</div><div class="processing-job-actions">${controls}</div></div>`;
   }).join(''));
   restoreProcessingFocus();
@@ -1026,7 +1027,7 @@ async function cancelProcessing(jobId = state.processing.id) {
 
 async function retryProcessing(jobId = state.processing.id) {
   const job = processingJobs(state.processing).find(item => item.id === jobId);
-  if (!job || job.acknowledged === true || job.retryable !== true || !['interrupted', 'failed'].includes(job.status) || processingActions.has(job.id)) return;
+  if (!job || !canRetryProcessing(job) || processingActions.has(job.id)) return;
   rememberProcessingFocus();
   processingActions.set(job.id, 'retry');
   processingErrors.delete(job.id);
@@ -1038,7 +1039,7 @@ async function retryProcessing(jobId = state.processing.id) {
 
 async function acknowledgeProcessing(jobId = state.processing.id) {
   const job = processingJobs(state.processing).find(item => item.id === jobId);
-  if (!job || job.acknowledged === true || !['failed', 'interrupted', 'needsReview'].includes(job.status) || processingActions.has(job.id)) return;
+  if (!job || !canDismissProcessing(job) || processingActions.has(job.id)) return;
   rememberProcessingFocus();
   processingActions.set(job.id, 'ack'); processingErrors.delete(job.id); render();
   try { await acceptProcessing(await bridge.acknowledgeProcessing(job.id)); }

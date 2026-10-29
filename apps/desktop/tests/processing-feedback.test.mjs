@@ -1,6 +1,20 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { processingFeedback } from '../src/processing-feedback.js';
+import { processingFeedback, canRetryProcessing, canDismissProcessing } from '../src/processing-feedback.js';
+
+test('cancelled processing exposes recovery and dismissal without a false close icon', () => {
+  const job = { id: 'cancelled', kind: 'transcribe', status: 'cancelled', retryable: true, message: '취소했습니다.' };
+  assert.equal(canRetryProcessing(job), true);
+  assert.equal(canDismissProcessing(job), true);
+  const feedback = processingFeedback(job);
+  assert.equal(feedback.visible, true);
+  assert.equal(feedback.cancelVisible, false);
+  assert.notEqual(feedback.icon, 'x');
+  assert.equal(feedback.detail, '');
+  assert.equal(canRetryProcessing({ ...job, acknowledged: true }), false);
+  assert.equal(canDismissProcessing({ ...job, acknowledged: true }), false);
+  assert.equal(canRetryProcessing({ ...job, kind: 'import', retryable: false }), false);
+});
 
 const running = (kind, extra = {}) => ({ id: 'job', kind, status: 'running', ...extra });
 

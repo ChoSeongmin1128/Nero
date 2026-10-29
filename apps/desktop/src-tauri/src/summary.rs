@@ -1343,7 +1343,7 @@ impl Processing {
         selection: Option<crate::summary_template::TemplateRef>,
     ) -> Result<Progress, String> {
         let (selection, _) = crate::summary_template::select(&self.root, selection)?;
-        self.summarize_bound_with_template(core, meeting_id, None, Some(selection))
+        self.summarize_bound_with_template(core, meeting_id, None, Some(selection), None)
     }
     pub(super) fn summarize_bound_with_template(
         self: &Arc<Self>,
@@ -1351,6 +1351,7 @@ impl Processing {
         meeting_id: String,
         required_fingerprint: Option<String>,
         selection: Option<crate::summary_template::TemplateRef>,
+        requested_id: Option<String>,
     ) -> Result<Progress, String> {
         let template = selection
             .as_ref()
@@ -1374,6 +1375,7 @@ impl Processing {
             &source_core,
             required_fingerprint,
             selection.clone(),
+            requested_id,
             move |process, cancel, path| {
                 let result = (|| -> SummaryResult<Option<String>> {
                     if let Some(value) = &selection {

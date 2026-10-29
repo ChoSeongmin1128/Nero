@@ -453,11 +453,11 @@ pub(super) fn correct(
             .collect(),
         receipt: audit.clone(),
     };
-    let result = process.commit_transcript_result(cancel, || {
+    let result = process.checkpoint_terminology(core, meeting_id, cancel, || {
         match core.commit_terminology(meeting_id, draft) {
             Ok(result) => Ok(Some(result)),
             Err(CoreError::InvalidState(_) | CoreError::MeetingNotFound) => Ok(None),
-            Err(error) => Err(message(error)),
+            Err(error) => Err(error),
         }
     });
     match result {

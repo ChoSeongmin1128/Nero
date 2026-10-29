@@ -19,6 +19,7 @@ fn record(kind: &str) -> JobRecord {
         include_summary: false,
         summary_template_ref: None,
         acknowledged: false,
+        retry_successor_id: None,
         failure_kind: None,
         status: JobStatus::Queued,
         phase: None,
@@ -914,4 +915,339 @@ fn agent_cancel_rejects_queued_version_after_worker_starts() {
     release_tx.send(()).unwrap();
     finish(&process);
     assert_eq!(rejected.unwrap_err().code, "edit_conflict");
+}
+
+#[test]
+fn baseline_checkpoint_publishes_bound_continuation_before_cancellation() {
+    let (_temporary, process) = setup();
+    let (core, meeting_id, original) = edited_source(&process);
+    let audio = core.audio_path(&meeting_id).unwrap();
+    let audio_before = fs::read(&audio).unwrap();
+    let mut job = record("transcribe");
+    job.meeting_id = Some(meeting_id.clone());
+    job.source_fingerprint =
+        Some(Processing::source_fingerprint(&core, &meeting_id, "transcribe").unwrap());
+    let worker_core = core.clone();
+    let worker_meeting = meeting_id.clone();
+    let (saved_tx, saved_rx) = mpsc::channel();
+    let (cancel_tx, cancel_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let id = launch(
+        &process,
+        pending(job, move |this, cancel, _| {
+            let source = this.checkpoint_transcript_following(
+                &cancel,
+                || {
+                    worker_core.edit_transcript(
+                        &worker_meeting,
+                        original.version,
+                        vec!["저장된 인식 결과".into()],
+                    )
+                },
+                |progress, source| {
+                    this.bind_speaker_continuation(progress, &worker_core, &worker_meeting, source)
+                },
+            )?;
+            saved_tx.send(source.version).unwrap();
+            wait_for_cancel_then_release(cancel_tx, release_rx, cancel)
+        }),
+    );
+    let version = saved_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+    process.cancel(&id).unwrap();
+    cancel_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+    release_tx.send(()).unwrap();
+    finish(&process);
+    let saved = process
+        .journal
+        .records()
+        .unwrap()
+        .into_iter()
+        .find(|record| record.id == id)
+        .unwrap();
+    assert_eq!(saved.kind, "diarize");
+    assert_eq!(saved.status, JobStatus::Cancelled);
+    assert_eq!(
+        saved.source_fingerprint,
+        Some(Processing::source_fingerprint(&core, &meeting_id, "diarize").unwrap())
+    );
+    process
+        .retry_with(&core, &id, |record, successor_id| {
+            assert_eq!(record.kind, "diarize");
+            let mut successor = record.clone(); successor.id = successor_id.into(); successor.status = JobStatus::Queued;
+            process.save_job(successor).unwrap();
+            assert_eq!(
+                core.transcript(&meeting_id).unwrap().unwrap().version,
+                version
+            );
+            Ok(())
+        })
+        .unwrap();
+    assert!(process
+        .retry_with(&core, &id, |_, _| panic!("retry cannot be handed off twice"))
+        .is_err());
+    assert_eq!(fs::read(audio).unwrap(), audio_before);
+    assert_eq!(
+        core.transcript(&meeting_id).unwrap().unwrap().version,
+        version
+    );
+}
+
+#[test]
+fn terminology_checkpoint_rebinds_only_the_committed_revision() {
+    let (_temporary, process) = setup();
+    let (core, meeting_id, source) = edited_source(&process);
+    let mut job = record("diarize");
+    job.meeting_id = Some(meeting_id.clone());
+    job.status = JobStatus::Running;
+    job.source_fingerprint =
+        Some(Processing::source_fingerprint(&core, &meeting_id, "diarize").unwrap());
+    let id = job.id.clone();
+    process.save_job(job).unwrap();
+    process.update(|p| {
+        p.id = Some(id.clone());
+        p.kind = "diarize".into();
+        p.status = "running".into();
+        p.meeting_id = Some(meeting_id.clone());
+    });
+    let corrected = process
+        .checkpoint_terminology(&core, &meeting_id, &AtomicBool::new(false), || {
+            core.edit_transcript(&meeting_id, source.version, vec!["용어 교정 결과".into()])
+                .map(Some)
+        })
+        .unwrap()
+        .unwrap();
+    process
+        .verify_speaker_continuation(&core, &meeting_id, &corrected)
+        .unwrap();
+    let bound = process
+        .journal
+        .records()
+        .unwrap()
+        .into_iter()
+        .find(|record| record.id == id)
+        .unwrap();
+    assert_eq!(
+        bound.source_fingerprint,
+        Some(Processing::source_fingerprint(&core, &meeting_id, "diarize").unwrap())
+    );
+    let edited = core
+        .edit_transcript(
+            &meeting_id,
+            corrected.version.clone(),
+            vec!["사용자 후속 수정".into()],
+        )
+        .unwrap();
+    assert!(process
+        .verify_speaker_continuation(&core, &meeting_id, &edited)
+        .is_err());
+    process.update(|p| p.status = "cancelled".into());
+    assert!(process
+        .retry_with(&core, &id, |_, _| panic!("changed source must not run"))
+        .is_err());
+    assert_eq!(
+        core.transcript(&meeting_id).unwrap().unwrap().version,
+        edited.version
+    );
+}
+
+#[test]
+fn continuation_journal_failure_preserves_committed_text_and_blocks_reexecution() {
+    let (_temporary, process) = setup();
+    let (core, meeting_id, source) = edited_source(&process);
+    let mut job = record("transcribe");
+    job.meeting_id = Some(meeting_id.clone());
+    job.status = JobStatus::Running;
+    job.source_fingerprint =
+        Some(Processing::source_fingerprint(&core, &meeting_id, "transcribe").unwrap());
+    let id = job.id.clone();
+    process.save_job(job).unwrap();
+    process.update(|p| {
+        p.id = Some(id.clone());
+        p.kind = "transcribe".into();
+        p.status = "running".into();
+        p.meeting_id = Some(meeting_id.clone());
+    });
+    let result = process.checkpoint_transcript_following(
+        &AtomicBool::new(false),
+        || {
+            let committed =
+                core.edit_transcript(&meeting_id, source.version, vec!["저장 완료된 본문".into()])?;
+            let states = process.root.join("processing").join(&id).join("job-state");
+            fs::write(states.join("99999999999999999999.json"), b"invalid").unwrap();
+            Ok(committed)
+        },
+        |progress, source| process.bind_speaker_continuation(progress, &core, &meeting_id, source),
+    );
+    assert!(result.is_err());
+    assert_eq!(
+        process.progress.lock().unwrap().phase.as_deref(),
+        Some("saving")
+    );
+    assert!(process.journal_error.lock().unwrap().is_some());
+    assert_eq!(
+        core.transcript(&meeting_id).unwrap().unwrap().segments[0].text,
+        "저장 완료된 본문"
+    );
+    assert!(process
+        .retry_with(&core, &id, |_, _| panic!(
+            "uncertain continuation must not run"
+        ))
+        .is_err());
+}
+
+#[test]
+fn concurrent_retry_consumes_one_handoff_and_failed_scheduling_restores_notice() {
+    let (_temporary, process) = setup();
+    let core = CoreHandle::open(&process.root).unwrap();
+    let mut job = record("summary-model");
+    job.status = JobStatus::Cancelled;
+    let id = job.id.clone();
+    process.save_job(job).unwrap();
+    assert!(process
+        .retry_with(&core, &id, |_, _| Err("not ready".into()))
+        .is_err());
+    assert!(
+        !process
+            .records
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|record| record.id == id)
+            .unwrap()
+            .acknowledged
+    );
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let one_process = process.clone();
+    let one_core = core.clone();
+    let one_id = id.clone();
+    let one = thread::spawn(move || {
+        one_process.retry_with(&one_core, &one_id, |record, successor_id| {
+            entered_tx.send(()).unwrap();
+            release_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+            let mut successor = record.clone(); successor.id = successor_id.into(); successor.status = JobStatus::Queued;
+            one_process.save_job(successor).unwrap();
+            Ok(())
+        })
+    });
+    entered_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+    let two_process = process.clone();
+    let two_id = id.clone();
+    let two = thread::spawn(move || {
+        two_process.retry_with(&core, &two_id, |_, _| panic!("already consumed"))
+    });
+    release_tx.send(()).unwrap();
+    assert!(one.join().unwrap().is_ok());
+    assert!(two.join().unwrap().is_err());
+    assert!(
+        process
+            .journal
+            .records()
+            .unwrap()
+            .iter()
+            .find(|record| record.id == id)
+            .unwrap()
+            .acknowledged
+    );
+}
+
+#[test]
+fn retry_reservation_failure_never_schedules_work() {
+    let (_temporary, process) = setup();
+    let core = CoreHandle::open(&process.root).unwrap();
+    let mut job = record("summary-model");
+    job.status = JobStatus::Cancelled;
+    let id = job.id.clone();
+    process.save_job(job).unwrap();
+    let corrupt = process
+        .root
+        .join("processing")
+        .join(&id)
+        .join("job-state/00000000000000000002.json");
+    fs::write(&corrupt, b"invalid").unwrap();
+    assert!(process
+        .retry_with(&core, &id, |_, _| panic!("reservation must be durable first"))
+        .is_err());
+    assert!(
+        !process
+            .records
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|record| record.id == id)
+            .unwrap()
+            .acknowledged
+    );
+    assert_eq!(fs::read(corrupt).unwrap(), b"invalid");
+}
+
+#[test]
+fn legacy_postprocessing_without_bound_continuation_never_repeats_recognition() {
+    let (_temporary, process) = setup();
+    let (core, meeting_id, source) = edited_source(&process);
+    let mut job = record("transcribe");
+    job.meeting_id = Some(meeting_id.clone());
+    job.status = JobStatus::Cancelled;
+    job.phase = Some("postprocessing".into());
+    job.source_fingerprint =
+        Some(Processing::source_fingerprint(&core, &meeting_id, "transcribe").unwrap());
+    let id = job.id.clone();
+    process.save_job(job).unwrap();
+    let preserved = core
+        .edit_transcript(
+            &meeting_id,
+            source.version,
+            vec!["이미 저장된 원문과 수정".into()],
+        )
+        .unwrap();
+    assert!(process
+        .retry_with(&core, &id, |_, _| panic!(
+            "legacy phase alone is not proof of source identity"
+        ))
+        .is_err());
+    assert_eq!(
+        core.transcript(&meeting_id).unwrap().unwrap().version,
+        preserved.version
+    );
+    let record = process
+        .journal
+        .records()
+        .unwrap()
+        .into_iter()
+        .find(|record| record.id == id)
+        .unwrap();
+    assert!(!record.acknowledged);
+    assert_eq!(record.kind, "transcribe");
+}
+
+#[test]
+fn retry_without_a_created_successor_restores_the_original_notice() {
+    let (_temporary, process) = setup();
+    let core = CoreHandle::open(&process.root).unwrap();
+    let mut original = record("summary-model"); original.status = JobStatus::Cancelled;
+    let id = original.id.clone(); process.save_job(original.clone()).unwrap();
+    assert!(process.retry_with(&core, &id, |_, _| Ok(())).is_err());
+    assert_eq!(process.journal.records().unwrap().into_iter().find(|value| value.id == id).unwrap(), original);
+    let recovered = process.journal.recover_available().unwrap();
+    let old = recovered.records.iter().find(|value| value.id == id).unwrap();
+    assert!(!old.acknowledged);
+    assert_eq!(old.retry_successor_id, None);
+}
+
+#[test]
+fn retry_failure_after_successor_publication_does_not_restore_the_predecessor() {
+    let (_temporary, process) = setup();
+    let core = CoreHandle::open(&process.root).unwrap();
+    let mut original = record("summary-model"); original.status = JobStatus::Cancelled;
+    let id = original.id.clone(); process.save_job(original).unwrap();
+    assert!(process.retry_with(&core, &id, |previous, successor_id| {
+        let mut successor = previous.clone(); successor.id = successor_id.into(); successor.status = JobStatus::Failed;
+        process.save_job(successor)?;
+        Err("launch failed after durable job publication".into())
+    }).is_err());
+    let records = process.journal.records().unwrap();
+    let old = records.iter().find(|value| value.id == id).unwrap();
+    assert!(old.acknowledged);
+    assert_eq!(old.phase, None);
+    assert!(records.iter().any(|value| Some(&value.id) == old.retry_successor_id.as_ref()));
 }

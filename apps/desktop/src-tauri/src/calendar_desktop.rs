@@ -322,6 +322,21 @@ pub fn read_calendar_reminder(
 pub struct MeetingOccurrences {
     calendar: CalendarSnapshot,
     occurrences: Vec<Occurrence>,
+    day: String,
+    time_zone: String,
+    scope_revision: u64,
+}
+
+impl From<calendar::MeetingBrowse> for MeetingOccurrences {
+    fn from(browse: calendar::MeetingBrowse) -> Self {
+        Self {
+            calendar: browse.calendar,
+            occurrences: browse.occurrences,
+            day: browse.day,
+            time_zone: browse.time_zone,
+            scope_revision: browse.scope_revision,
+        }
+    }
 }
 
 fn calendar_reference(event: &Occurrence) -> CalendarReference {
@@ -340,23 +355,25 @@ pub async fn read_calendar_meeting_occurrences(
     app: tauri::AppHandle,
     window: WebviewWindow,
     state: tauri::State<'_, CalendarDesktop>,
+    day: String,
+    time_zone: String,
 ) -> Result<MeetingOccurrences, String> {
     crate::require_main(&window)?;
+    calendar::day_bounds(&day, &time_zone)?;
     let calendar = state.snapshot();
     if !calendar.connected {
         return Ok(MeetingOccurrences {
             calendar,
             occurrences: vec![],
+            day,
+            time_zone,
+            scope_revision: 0,
         });
     }
     let service = state.service()?;
-    let result = service.sync_now().await;
+    let result = service.browse_day(day, time_zone, None).await;
     publish(&app);
-    result?;
-    Ok(MeetingOccurrences {
-        calendar: service.snapshot(),
-        occurrences: service.meeting_occurrences(calendar::now_ms())?,
-    })
+    result.map(Into::into)
 }
 
 #[tauri::command]
@@ -366,16 +383,21 @@ pub async fn create_meeting_from_calendar(
     calendar: tauri::State<'_, CalendarDesktop>,
     state: tauri::State<'_, DesktopState>,
     occurrence_key: String,
+    day: String,
+    time_zone: String,
+    scope_revision: u64,
 ) -> Result<Meeting, String> {
     crate::require_main(&window)?;
     state.processing.require_meeting_models()?;
     let service = calendar.service()?;
-    let result = service.sync_now().await;
+    let result = service
+        .browse_day(day, time_zone, Some(scope_revision))
+        .await;
     publish(&app);
-    result?;
+    let browse = result?;
     let core = state.core.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        service.with_current_occurrence(&occurrence_key, calendar::now_ms(), |event| {
+        service.with_browsed_occurrence(&browse, &occurrence_key, |event| {
             core.create_meeting_from_calendar(calendar_reference(event))
                 .map_err(|error| error.to_string())
         })

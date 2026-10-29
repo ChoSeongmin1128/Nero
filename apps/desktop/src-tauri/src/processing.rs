@@ -199,6 +199,7 @@ pub struct Processing {
     records: Mutex<Vec<JobRecord>>,
     journal: Journal,
     journal_error: Mutex<Option<String>>,
+    retry_gate: Mutex<()>,
     recording: AtomicBool,
     interrupted_jobs: Mutex<HashSet<String>>,
     revision: AtomicU64,
@@ -375,6 +376,7 @@ impl Processing {
             records: Mutex::new(records),
             journal,
             journal_error: Mutex::new(journal_error),
+            retry_gate: Mutex::new(()),
             recording: AtomicBool::new(false),
             interrupted_jobs: Mutex::new(HashSet::new()),
             revision: AtomicU64::new(0),
@@ -418,8 +420,11 @@ impl Processing {
                     message: record.message.clone(),
                     acknowledged: record.acknowledged,
                     failure_kind: record.failure_kind,
-                    retryable: matches!(record.status, JobStatus::Interrupted | JobStatus::Failed)
-                        && record.kind != "import",
+                    retryable: matches!(
+                        record.status,
+                        JobStatus::Interrupted | JobStatus::Failed | JobStatus::Cancelled
+                    ) && record.kind != "import"
+                        && !record.acknowledged,
                 })
                 .collect();
             if records
@@ -746,10 +751,20 @@ impl Processing {
         self.commit_result(cancel, false, commit)
     }
 
+    #[cfg(test)]
     fn checkpoint_transcript<T>(
         &self,
         cancel: &AtomicBool,
         commit: impl FnOnce() -> grove_core::Result<T>,
+    ) -> Result<T, String> {
+        self.checkpoint_transcript_following(cancel, commit, |_, _| Ok(()))
+    }
+
+    fn checkpoint_transcript_following<T>(
+        &self,
+        cancel: &AtomicBool,
+        commit: impl FnOnce() -> grove_core::Result<T>,
+        following: impl FnOnce(&mut Progress, &T) -> Result<(), String>,
     ) -> Result<T, String> {
         // cancel() takes running -> progress. This checkpoint takes only progress,
         // then calls the core actor, which never calls back into Processing.
@@ -777,7 +792,8 @@ impl Processing {
             )),
             _ => None,
         };
-        if result.is_ok() {
+        if let Ok(value) = &result {
+            following(&mut progress, value)?;
             self.save_phase(&progress, "postprocessing")?;
             progress.phase = Some("postprocessing".into());
         } else if let Some((phase, kind)) = rejection {
@@ -1241,7 +1257,7 @@ impl Processing {
             + Send
             + 'static,
     ) -> Result<Progress, String> {
-        self.start_scoped(kind, meeting_id, None, None, false, None, action)
+        self.start_scoped(kind, meeting_id, None, None, false, None, None, action)
     }
 
     pub(super) fn start_meeting(
@@ -1254,7 +1270,7 @@ impl Processing {
             + Send
             + 'static,
     ) -> Result<Progress, String> {
-        self.start_meeting_with_template(kind, meeting_id, core, required_fingerprint, None, action)
+        self.start_meeting_with_template(kind, meeting_id, core, required_fingerprint, None, None, action)
     }
 
     pub(super) fn start_meeting_with_template(
@@ -1264,6 +1280,7 @@ impl Processing {
         core: &CoreHandle,
         required_fingerprint: Option<String>,
         template: Option<crate::summary_template::TemplateRef>,
+        requested_id: Option<String>,
         action: impl FnOnce(Arc<Self>, Arc<AtomicBool>, PathBuf) -> Result<Option<String>, String>
             + Send
             + 'static,
@@ -1282,6 +1299,7 @@ impl Processing {
             Some((core.clone(), fingerprint)),
             false,
             template,
+            requested_id,
             action,
         )
     }
@@ -1294,6 +1312,7 @@ impl Processing {
         source: Option<(CoreHandle, String)>,
         include_summary: bool,
         template: Option<crate::summary_template::TemplateRef>,
+        requested_id: Option<String>,
         action: impl FnOnce(Arc<Self>, Arc<AtomicBool>, PathBuf) -> Result<Option<String>, String>
             + Send
             + 'static,
@@ -1337,7 +1356,10 @@ impl Processing {
                     .map_err(message)
             })
             .transpose()?;
-        let id = Uuid::new_v4().to_string();
+        let id = requested_id.unwrap_or_else(|| Uuid::new_v4().to_string());
+        if Uuid::parse_str(&id).is_err() || self.records.lock().unwrap().iter().any(|record| record.id == id) {
+            return Err("작업 ID가 올바르지 않거나 이미 사용되었습니다.".into());
+        }
         let created_at = now();
         let record = JobRecord {
             schema_version: 1,
@@ -1348,6 +1370,7 @@ impl Processing {
             include_summary,
             summary_template_ref: template,
             acknowledged: false,
+            retry_successor_id: None,
             failure_kind: None,
             status: JobStatus::Queued,
             phase: None,
@@ -1509,6 +1532,10 @@ impl Processing {
         self: &Arc<Self>,
         include_summary: bool,
     ) -> Result<Progress, String> {
+        self.prepare_meeting_models_with_id(include_summary, None)
+    }
+
+    fn prepare_meeting_models_with_id(self: &Arc<Self>, include_summary: bool, requested_id: Option<String>) -> Result<Progress, String> {
         if self.shutting_down.load(Ordering::Acquire) {
             return Err("앱을 종료하고 있습니다.".into());
         }
@@ -1535,6 +1562,7 @@ impl Processing {
             None,
             include_summary,
             None,
+            requested_id,
             move |this, cancel, _path| {
                 let progress = this.snapshot();
                 let total = progress.model_bytes
@@ -1577,8 +1605,12 @@ impl Processing {
         kind: &str,
         label: &'static str,
     ) -> Result<Progress, String> {
+        self.prepare_named_model_with_id(manifest, kind, label, None)
+    }
+
+    fn prepare_named_model_with_id(self: &Arc<Self>, manifest: &'static str, kind: &str, label: &'static str, requested_id: Option<String>) -> Result<Progress, String> {
         crate::storage_space::check(&self.root, self.remaining_model_bytes(manifest, label)?)?;
-        self.start(kind, None, move |this, cancel, _path| {
+        self.start_scoped(kind, None, None, None, false, None, requested_id, move |this, cancel, _path| {
             let total = serde_json::from_str::<Model>(manifest)
                 .map_err(message)?
                 .files
@@ -1812,6 +1844,7 @@ impl Processing {
     }
 
     pub fn acknowledge(&self, id: &str) -> Result<Progress, String> {
+        let _retry = self.retry_gate.lock().unwrap();
         let _running = self.running.lock().unwrap();
         let mut record = self
             .records
@@ -1823,7 +1856,10 @@ impl Processing {
             .ok_or("작업을 찾을 수 없습니다.")?;
         if !matches!(
             record.status,
-            JobStatus::Failed | JobStatus::Interrupted | JobStatus::NeedsReview
+            JobStatus::Failed
+                | JobStatus::Interrupted
+                | JobStatus::NeedsReview
+                | JobStatus::Cancelled
         ) {
             return Err("진행 중인 작업의 알림은 닫을 수 없습니다.".into());
         }
@@ -1834,6 +1870,19 @@ impl Processing {
     }
 
     pub fn retry(self: &Arc<Self>, core: CoreHandle, id: &str) -> Result<Progress, String> {
+        self.retry_with(&core, id, |record, successor_id| {
+            self.schedule_retry(core.clone(), record, successor_id)
+        })
+    }
+
+    fn retry_with(
+        &self,
+        core: &CoreHandle,
+        id: &str,
+        schedule: impl FnOnce(&JobRecord, &str) -> Result<(), String>,
+    ) -> Result<Progress, String> {
+        let _retry = self.retry_gate.lock().unwrap();
+        self.job_ready()?;
         let record = self
             .records
             .lock()
@@ -1842,7 +1891,10 @@ impl Processing {
             .find(|r| r.id == id)
             .cloned()
             .ok_or("작업을 찾을 수 없습니다.")?;
-        if !matches!(record.status, JobStatus::Interrupted | JobStatus::Failed)
+        if !matches!(
+            record.status,
+            JobStatus::Interrupted | JobStatus::Failed | JobStatus::Cancelled
+        ) || record.acknowledged
             || record.kind == "import"
         {
             return Err(
@@ -1857,21 +1909,58 @@ impl Processing {
                 return Err("회의 내용이 변경되어 이전 작업을 다시 실행하지 않았습니다. 현재 회의에서 작업을 시작해 주세요.".into());
             }
         }
+        let successor_id = Uuid::new_v4().to_string();
+        let mut handed_off = record.clone();
+        handed_off.status = JobStatus::Cancelled;
+        handed_off.acknowledged = true;
+        handed_off.retry_successor_id = Some(successor_id.clone());
+        handed_off.phase = Some("retryPending".into());
+        handed_off.message = "재시도를 준비하고 있습니다.".into();
+        handed_off.updated_at = now().max(handed_off.updated_at);
+        self.save_job(handed_off.clone())?;
+        let scheduled = schedule(&record, &successor_id);
+        let known_successor = self.records.lock().unwrap().iter().any(|item| item.id == successor_id);
+        let exists = if known_successor { Ok(true) } else { self.journal.retry_successor_exists(&handed_off) }.map_err(|error| {
+            *self.journal_error.lock().unwrap() = Some(error.clone()); error
+        })?;
+        if !exists {
+            self.save_job(record).map_err(|restore_error| {
+                *self.journal_error.lock().unwrap() = Some(restore_error.clone()); restore_error
+            })?;
+            return Err(scheduled.err().unwrap_or_else(|| "재시도 작업이 만들어지지 않았습니다. 현재 상태를 확인해 주세요.".into()));
+        }
+        handed_off.phase = None;
+        handed_off.message = "새 작업으로 다시 시도했습니다.".into();
+        self.save_job(handed_off).map_err(|error| {
+            *self.journal_error.lock().unwrap() = Some(error.clone()); error
+        })?;
+        scheduled?;
+        self.update(|_| ());
+        Ok(self.snapshot())
+    }
+    fn schedule_retry(
+        self: &Arc<Self>,
+        core: CoreHandle,
+        record: &JobRecord,
+        successor_id: &str,
+    ) -> Result<(), String> {
         match record.kind.as_str() {
-            "setup" => self.prepare_meeting_models(record.include_summary)?,
-            "model" => self.prepare_model()?,
-            "summary-model" => self.prepare_summary()?,
-            "speaker-model" => self.prepare_diarization()?,
+            "setup" => self.prepare_meeting_models_with_id(record.include_summary, Some(successor_id.into()))?,
+            "model" => self.prepare_meeting_models_with_id(false, Some(successor_id.into()))?,
+            "summary-model" => self.prepare_named_model_with_id(crate::summary::MANIFEST, "summary-model", "Gemma4-E4B", Some(successor_id.into()))?,
+            "speaker-model" => self.prepare_named_model_with_id(crate::diarization::MANIFEST, "speaker-model", "Nemotron3", Some(successor_id.into()))?,
             "transcribe" => self.transcribe_bound(
                 core,
                 record.meeting_id.clone().ok_or("회의가 없습니다.")?,
                 record.source_fingerprint.clone(),
+                Some(successor_id.into()),
             )?,
             "summary" => self.summarize_bound_with_template(
                 core,
                 record.meeting_id.clone().ok_or("회의가 없습니다.")?,
                 record.source_fingerprint.clone(),
                 record.summary_template_ref.clone(),
+                Some(successor_id.into()),
             )?,
             "diarize" => {
                 let meeting_id = record.meeting_id.clone().ok_or("회의가 없습니다.")?;
@@ -1885,17 +1974,12 @@ impl Processing {
                     meeting_id,
                     expected,
                     record.source_fingerprint.clone(),
+                    Some(successor_id.into()),
                 )?
             }
             _ => return Err("지원하지 않는 작업입니다.".into()),
         };
-        let mut old = record;
-        old.status = JobStatus::Cancelled;
-        old.message = "새 작업으로 다시 시도했습니다.".into();
-        old.updated_at = now().max(old.updated_at);
-        self.save_job(old)?;
-        self.update(|_| ());
-        Ok(self.snapshot())
+        Ok(())
     }
     pub fn import(self: &Arc<Self>, core: CoreHandle, source: PathBuf) -> Result<Progress, String> {
         self.start_scoped(
@@ -1904,6 +1988,7 @@ impl Processing {
             Some(core.clone()),
             None,
             false,
+            None,
             None,
             move |this, cancel, path| {
                 let source = source.canonicalize().map_err(message)?;
@@ -1977,13 +2062,14 @@ impl Processing {
         core: CoreHandle,
         meeting_id: String,
     ) -> Result<Progress, String> {
-        self.transcribe_bound(core, meeting_id, None)
+        self.transcribe_bound(core, meeting_id, None, None)
     }
     fn transcribe_bound(
         self: &Arc<Self>,
         core: CoreHandle,
         meeting_id: String,
         required_fingerprint: Option<String>,
+        requested_id: Option<String>,
     ) -> Result<Progress, String> {
         let audio = core.audio_path(&meeting_id).map_err(message)?;
         let expected = core
@@ -1994,11 +2080,13 @@ impl Processing {
             return Err("먼저 음성 인식 모델을 준비해 주세요.".into());
         }
         let source_core = core.clone();
-        self.start_meeting(
+        self.start_meeting_with_template(
             "transcribe",
             meeting_id.clone(),
             &source_core,
             required_fingerprint,
+            None,
+            requested_id,
             move |this, cancel, path| {
                 if core.audio_path(&meeting_id).map_err(message)? != audio
                     || core
@@ -2063,9 +2151,13 @@ impl Processing {
                     .sync_all()
                     .map_err(crate::storage_space::write_error)?;
                 cancelled(&cancel)?;
-                let source = this.checkpoint_transcript(&cancel, || {
-                    core.commit_nemotron_transcript(&meeting_id, expected, raw)
-                })?;
+                let source = this.checkpoint_transcript_following(
+                    &cancel,
+                    || core.commit_nemotron_transcript(&meeting_id, expected, raw),
+                    |progress, source| {
+                        this.bind_speaker_continuation(progress, &core, &meeting_id, source)
+                    },
+                )?;
                 crate::terminology::correct(
                     &this,
                     &core,
@@ -2081,7 +2173,7 @@ impl Processing {
                     .transcript(&meeting_id)
                     .map_err(message)?
                     .ok_or("음성 기록을 찾을 수 없습니다.")?;
-                this.continue_with_speakers(&core, &meeting_id, &cancel)?;
+                this.verify_speaker_continuation(&core, &meeting_id, &source)?;
                 crate::diarization::analyze_recording(
                     &this,
                     &core,
@@ -2101,16 +2193,24 @@ impl Processing {
         )
     }
 
-    fn continue_with_speakers(
+    fn bind_speaker_continuation(
         &self,
+        progress: &mut Progress,
         core: &CoreHandle,
         meeting_id: &str,
-        cancel: &AtomicBool,
+        source: &grove_core::Transcript,
     ) -> Result<(), String> {
-        let fingerprint = Self::source_fingerprint(core, meeting_id, "diarize")?;
-        let mut progress = self.progress.lock().unwrap();
-        cancelled(cancel)?;
-        self.job_ready()?;
+        let snapshot = core.snapshot().map_err(message)?;
+        let meeting = snapshot
+            .meetings
+            .iter()
+            .find(|meeting| meeting.id == meeting_id && meeting.deleted_at.is_none())
+            .ok_or("회의를 찾을 수 없습니다.")?;
+        let input = serde_json::json!({"audio":meeting.audio,"transcript":source,"summary":null,"notes":null});
+        let fingerprint = format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&input).map_err(message)?)
+        );
         let mut record = self
             .records
             .lock()
@@ -2119,7 +2219,7 @@ impl Processing {
             .find(|record| Some(&record.id) == progress.id.as_ref())
             .cloned()
             .ok_or("음성 처리 작업을 찾을 수 없습니다.")?;
-        if record.kind != "transcribe"
+        if !matches!(record.kind.as_str(), "transcribe" | "diarize")
             || record.status != JobStatus::Running
             || record.meeting_id.as_deref() != Some(meeting_id)
         {
@@ -2127,16 +2227,82 @@ impl Processing {
         }
         record.kind = "diarize".into();
         record.source_fingerprint = Some(fingerprint);
-        record.phase = Some("preparing".into());
-        record.message = "화자 구분 준비 중".into();
+        record.phase = Some("postprocessing".into());
         record.updated_at = now().max(record.updated_at);
-        self.save_job(record)?;
+        self.save_job(record).map_err(|error| {
+            *self.journal_error.lock().unwrap() = Some(error.clone());
+            error
+        })?;
         progress.kind = "diarize".into();
+        progress.committing = false;
+        progress.summary_committing = false;
+        Ok(())
+    }
+
+    fn verify_speaker_continuation(
+        &self,
+        core: &CoreHandle,
+        meeting_id: &str,
+        source: &grove_core::Transcript,
+    ) -> Result<(), String> {
+        let fingerprint = Self::source_fingerprint(core, meeting_id, "diarize")?;
+        let progress = self.progress.lock().unwrap();
+        let records = self.records.lock().unwrap();
+        let record = records
+            .iter()
+            .find(|record| Some(&record.id) == progress.id.as_ref())
+            .ok_or("음성 처리 작업을 찾을 수 없습니다.")?;
+        if record.kind != "diarize"
+            || record.meeting_id.as_deref() != Some(meeting_id)
+            || record.source_fingerprint.as_deref() != Some(&fingerprint)
+            || core
+                .transcript(meeting_id)
+                .map_err(message)?
+                .as_ref()
+                .map(|current| &current.version)
+                != Some(&source.version)
+        {
+            return Err(
+                "음성 기록이 변경되어 화자 구분을 시작하지 않았습니다. 현재 기록을 확인해 주세요."
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+
+    pub(super) fn checkpoint_terminology(
+        &self,
+        core: &CoreHandle,
+        meeting_id: &str,
+        cancel: &AtomicBool,
+        commit: impl FnOnce() -> grove_core::Result<Option<grove_core::Transcript>>,
+    ) -> Result<Option<grove_core::Transcript>, String> {
+        self.checkpoint_transcript_following(cancel, commit, |progress, result| {
+            if let Some(source) = result {
+                self.bind_speaker_continuation(progress, core, meeting_id, source)?;
+            }
+            Ok(())
+        })
+    }
+
+    #[cfg(test)]
+    fn continue_with_speakers(
+        &self,
+        core: &CoreHandle,
+        meeting_id: &str,
+        cancel: &AtomicBool,
+    ) -> Result<(), String> {
+        let source = core
+            .transcript(meeting_id)
+            .map_err(message)?
+            .ok_or("음성 기록을 찾을 수 없습니다.")?;
+        let mut progress = self.progress.lock().unwrap();
+        cancelled(cancel)?;
+        self.job_ready()?;
+        self.bind_speaker_continuation(&mut progress, core, meeting_id, &source)?;
         progress.phase = Some("preparing".into());
         progress.message = "화자 구분 준비 중".into();
         progress.failure_kind = None;
-        progress.committing = false;
-        progress.summary_committing = false;
         progress.revision = self
             .revision
             .fetch_add(1, Ordering::AcqRel)
@@ -2751,6 +2917,7 @@ mod tests {
             include_summary: false,
             summary_template_ref: None,
             acknowledged: false,
+            retry_successor_id: None,
             failure_kind: None,
             status: JobStatus::Queued,
             phase: None,

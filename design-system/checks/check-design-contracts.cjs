@@ -6,6 +6,9 @@ const read = (name) => fs.readFileSync(path.join(root, name), 'utf8');
 const { parseCSS } = require('../catalog/build-tokens.cjs');
 const desktopRoot = path.resolve(root, '../apps/desktop');
 const desktopRead = name => fs.readFileSync(path.join(desktopRoot, name), 'utf8');
+const layerRules = parseCSS(read('controls.css'), 'controls.css');
+const layers = Object.fromEntries(layerRules.filter(rule => rule.selector === ':root' && rule.property.startsWith('--layer-')).map(rule => [rule.property, Number(rule.value)]));
+assert.ok(layers['--layer-popover'] > layers['--layer-dialog-content'] && layers['--layer-dialog-content'] > layers['--layer-dialog-overlay'], 'Nested calendar/select controls must receive pointer input above their modal');
 for (const entry of ['catalog/index.html', 'prototype/index.html', 'prototype/plan.html', 'windows-preview/index.html']) {
   const html = read(entry);
   for (const file of ['typography.css', 'components.css', ...(entry.endsWith('plan.html') ? [] : ['controls.css'])]) {

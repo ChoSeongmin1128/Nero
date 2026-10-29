@@ -80,6 +80,47 @@ pub struct CalendarService {
     generation: AtomicU64,
     syncing: AtomicBool,
     token_gate: Mutex<()>,
+    access_gate: tokio::sync::Mutex<()>,
+}
+
+struct QueryContext {
+    generation: u64,
+    account: String,
+    selected: Vec<String>,
+    token: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeetingBrowse {
+    pub calendar: CalendarSnapshot,
+    pub occurrences: Vec<Occurrence>,
+    pub day: String,
+    pub time_zone: String,
+    pub scope_revision: u64,
+    #[serde(skip)]
+    context: QueryContext,
+}
+
+pub(crate) fn day_bounds(day: &str, time_zone: &str) -> Result<(u64, u64), String> {
+    let invalid = || "날짜와 시간대를 확인해 주세요.".to_string();
+    let date: jiff::civil::Date = day.parse().map_err(|_| invalid())?;
+    if date.to_string() != day {
+        return Err(invalid());
+    }
+    let zone = jiff::tz::TimeZone::get(time_zone).map_err(|_| invalid())?;
+    let start = date.to_zoned(zone.clone()).map_err(|_| invalid())?;
+    let end = date
+        .tomorrow()
+        .map_err(|_| invalid())?
+        .to_zoned(zone)
+        .map_err(|_| invalid())?;
+    let start = u64::try_from(start.timestamp().as_millisecond()).map_err(|_| invalid())?;
+    let end = u64::try_from(end.timestamp().as_millisecond()).map_err(|_| invalid())?;
+    if end <= start {
+        return Err(invalid());
+    }
+    Ok((start, end))
 }
 pub struct ReminderTicket {
     key: String,
@@ -130,10 +171,14 @@ impl CalendarService {
             generation: AtomicU64::new(0),
             syncing: AtomicBool::new(false),
             token_gate: Mutex::new(()),
+            access_gate: tokio::sync::Mutex::new(()),
         })
     }
     pub fn snapshot(&self) -> CalendarSnapshot {
         let inner = self.inner.lock().unwrap();
+        self.snapshot_inner(&inner)
+    }
+    fn snapshot_inner(&self, inner: &Inner) -> CalendarSnapshot {
         CalendarSnapshot {
             revision: inner.state.revision,
             configured: self.config.is_some()
@@ -403,20 +448,42 @@ impl CalendarService {
         {
             inner.auth_ready = false;
             inner.access = None;
+            inner.error = Some(error.message());
+            inner.state.revision += 1;
         }
         error.message()
     }
-    async fn synchronize(&self, generation: u64) -> Result<(), String> {
+    async fn query_error(&self, context: &QueryContext, error: google::Failure) -> String {
+        let _access = self.access_gate.lock().await;
+        let mut inner = self.inner.lock().unwrap();
+        if matches!(error, google::Failure::Reconnect)
+            && context.generation == self.generation.load(Ordering::Acquire)
+            && inner
+                .access
+                .as_ref()
+                .is_some_and(|access| access.token == context.token)
+        {
+            inner.auth_ready = false;
+            inner.access = None;
+            inner.error = Some(error.message());
+            inner.state.revision += 1;
+        }
+        error.message()
+    }
+    async fn query_context(&self, generation: u64) -> Result<QueryContext, String> {
+        let _access = self.access_gate.lock().await;
         let config = self
             .config
             .as_ref()
             .ok_or("이 버전에는 Google 캘린더 연결 정보가 설정되지 않았습니다.")?;
         let (account, selected, token_slot, access) = {
-            let mut inner = self.inner.lock().unwrap();
+            let inner = self.inner.lock().unwrap();
+            if generation != self.generation.load(Ordering::Acquire) {
+                return Err("캘린더 선택이나 연결이 변경되었습니다.".into());
+            }
             if inner.connecting_id.is_some() {
                 return Err("Google 연결을 확인하고 있습니다.".into());
             }
-            inner.last_attempt = Some(now_ms());
             (
                 inner
                     .state
@@ -446,6 +513,7 @@ impl CalendarService {
                 .await
                 .map_err(|error| self.sync_error(generation, error))?;
             let _gate = self.token_gate.lock().unwrap();
+            let mut inner = self.inner.lock().unwrap();
             if generation != self.generation.load(Ordering::Acquire) {
                 return Err("캘린더 선택이나 연결이 변경되었습니다.".into());
             }
@@ -458,15 +526,29 @@ impl CalendarService {
                     token_slot,
                 )?;
             }
-            self.inner.lock().unwrap().access = Some(Access {
+            inner.access = Some(Access {
                 token: response.access_token.clone(),
                 expires_at: now_ms().saturating_add(response.expires_in.saturating_mul(1000)),
             });
             response.access_token
         };
-        let calendars = google::calendars(&self.client, &token)
-            .await
-            .map_err(|error| self.sync_error(generation, error))?;
+        Ok(QueryContext {
+            generation,
+            account,
+            selected,
+            token,
+        })
+    }
+
+    async fn query_calendars(
+        &self,
+        context: &QueryContext,
+    ) -> Result<(Vec<CalendarChoice>, Vec<CalendarChoice>), String> {
+        let (account, selected, token) = (&context.account, &context.selected, &context.token);
+        let calendars = match google::calendars(&self.client, token).await {
+            Ok(calendars) => calendars,
+            Err(error) => return Err(self.query_error(context, error).await),
+        };
         if calendars
             .iter()
             .find(|calendar| calendar.primary)
@@ -488,9 +570,18 @@ impl CalendarService {
                     )
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let events = google::events(&self.client, &token, &account, &choices, now_ms())
-            .await
-            .map_err(|error| self.sync_error(generation, error))?;
+        Ok((calendars, choices))
+    }
+
+    async fn synchronize(&self, generation: u64) -> Result<(), String> {
+        self.inner.lock().unwrap().last_attempt = Some(now_ms());
+        let context = self.query_context(generation).await?;
+        let (calendars, choices) = self.query_calendars(&context).await?;
+        let (token, account) = (&context.token, &context.account);
+        let events = match google::events(&self.client, token, account, &choices, now_ms()).await {
+            Ok(events) => events,
+            Err(error) => return Err(self.query_error(&context, error).await),
+        };
         let mut inner = self.inner.lock().unwrap();
         if generation != self.generation.load(Ordering::Acquire) {
             return Err("캘린더 선택이나 연결이 변경되었습니다.".into());
@@ -506,6 +597,83 @@ impl CalendarService {
         inner.needs_sync = false;
         inner.error = None;
         Ok(())
+    }
+
+    pub async fn browse_day(
+        &self,
+        day: String,
+        time_zone: String,
+        expected_scope: Option<u64>,
+    ) -> Result<MeetingBrowse, String> {
+        let (start_at, end_at) = day_bounds(&day, &time_zone)?;
+        let generation = self.generation.load(Ordering::Acquire);
+        if expected_scope.is_some_and(|expected| expected != generation) {
+            return Err("캘린더 선택이나 연결이 변경되었습니다. 일정을 다시 불러와 주세요.".into());
+        }
+        let context = self.query_context(generation).await?;
+        let (_, choices) = self.query_calendars(&context).await?;
+        let mut occurrences = match google::events_between(
+            &self.client,
+            &context.token,
+            &context.account,
+            &choices,
+            start_at,
+            end_at,
+        )
+        .await
+        {
+            Ok(events) => events,
+            Err(error) => return Err(self.query_error(&context, error).await),
+        };
+        occurrences.sort_by(|a, b| a.start_at.cmp(&b.start_at).then_with(|| a.key.cmp(&b.key)));
+        self.finish_browse(context, day, time_zone, occurrences)
+    }
+
+    fn finish_browse(
+        &self,
+        context: QueryContext,
+        day: String,
+        time_zone: String,
+        occurrences: Vec<Occurrence>,
+    ) -> Result<MeetingBrowse, String> {
+        let inner = self.inner.lock().unwrap();
+        self.require_browse_context(&inner, &context)?;
+        Ok(MeetingBrowse {
+            calendar: self.snapshot_inner(&inner),
+            occurrences,
+            day,
+            time_zone,
+            scope_revision: context.generation,
+            context,
+        })
+    }
+
+    fn require_browse_context(&self, inner: &Inner, context: &QueryContext) -> Result<(), String> {
+        if context.generation != self.generation.load(Ordering::Acquire)
+            || !inner.auth_ready
+            || inner.connecting_id.is_some()
+            || inner.state.account.as_ref() != Some(&context.account)
+            || inner.state.selected != context.selected
+        {
+            return Err("캘린더 선택이나 연결이 변경되었습니다. 일정을 다시 불러와 주세요.".into());
+        }
+        Ok(())
+    }
+
+    pub fn with_browsed_occurrence<T>(
+        &self,
+        browse: &MeetingBrowse,
+        key: &str,
+        action: impl FnOnce(&Occurrence) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let inner = self.inner.lock().unwrap();
+        self.require_browse_context(&inner, &browse.context)?;
+        let event = browse
+            .occurrences
+            .iter()
+            .find(|event| event.key == key)
+            .ok_or("일정이 변경되었거나 삭제되었습니다. 새로고침해 주세요.")?;
+        action(event)
     }
     pub fn tick(&self, now: u64, recording_busy: bool) -> Result<Vec<ReminderChange>, String> {
         let mut inner = self.inner.lock().unwrap();
@@ -593,53 +761,6 @@ impl CalendarService {
         events.sort_by(|a, b| a.start_at.cmp(&b.start_at).then_with(|| a.key.cmp(&b.key)));
         events
     }
-
-    pub fn meeting_occurrences(&self, now: u64) -> Result<Vec<Occurrence>, String> {
-        let inner = self.inner.lock().unwrap();
-        require_current_events(&inner, now)?;
-        let mut events: Vec<_> = inner
-            .state
-            .events
-            .iter()
-            .filter(|event| event.end_at > now && event.end_at > event.start_at)
-            .cloned()
-            .collect();
-        events.sort_by(|a, b| a.start_at.cmp(&b.start_at).then_with(|| a.key.cmp(&b.key)));
-        Ok(events)
-    }
-
-    pub fn with_current_occurrence<T>(
-        &self,
-        key: &str,
-        now: u64,
-        action: impl FnOnce(&Occurrence) -> Result<T, String>,
-    ) -> Result<T, String> {
-        let inner = self.inner.lock().unwrap();
-        require_current_events(&inner, now)?;
-        let event = inner
-            .state
-            .events
-            .iter()
-            .find(|event| event.key == key && event.end_at > now && event.end_at > event.start_at)
-            .ok_or("일정이 변경되었거나 끝났습니다. 새로고침해 주세요.")?;
-        action(event)
-    }
-}
-
-fn require_current_events(inner: &Inner, now: u64) -> Result<(), String> {
-    if !inner.auth_ready
-        || inner.state.account.is_none()
-        || inner.connecting_id.is_some()
-        || inner.needs_sync
-        || inner.error.is_some()
-        || !inner
-            .state
-            .last_synced_at
-            .is_some_and(|last| now >= last && now.saturating_sub(last) <= FRESH_MS)
-    {
-        return Err("현재 일정을 확인하지 못했습니다. 새로고침해 주세요.".into());
-    }
-    Ok(())
 }
 
 fn current_reminder<'a>(inner: &'a Inner, key: &str, now: u64) -> Result<&'a Occurrence, String> {
@@ -1033,37 +1154,108 @@ mod tests {
     }
 
     #[test]
-    fn meeting_picker_uses_current_events_beyond_the_reminder_window_and_never_creates_on_read() {
-        let temp = tempfile::tempdir().unwrap();
-        let service = reminder_service(temp.path());
-        {
-            let mut inner = service.inner.lock().unwrap();
-            inner.state.events[0].start_at = 3_000_000;
-            inner.state.events[0].end_at = 4_000_000;
+    fn browse_day_bounds_follow_local_midnight_and_dst_instead_of_a_fixed_24_hours() {
+        for (day, zone, hours, expected) in [
+            ("2026-03-08", "America/New_York", 23, "2026-03-08T05:00:00Z"),
+            ("2026-11-01", "America/New_York", 25, "2026-11-01T04:00:00Z"),
+            ("2026-10-29", "Asia/Seoul", 24, "2026-10-28T15:00:00Z"),
+        ] {
+            let (start, end) = day_bounds(day, zone).unwrap();
+            assert_eq!(end - start, hours * 60 * 60 * 1000);
+            assert_eq!(
+                start,
+                expected
+                    .parse::<jiff::Timestamp>()
+                    .unwrap()
+                    .as_millisecond() as u64
+            );
         }
-        let events = service.meeting_occurrences(1_000_001).unwrap();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].start_at, 3_000_000);
+        assert!(day_bounds("2026-02-30", "Asia/Seoul").is_err());
+        assert!(day_bounds("2026-10-29", "invalid-zone").is_err());
+        assert!(day_bounds("2011-12-30", "Pacific/Apia").is_err());
+    }
+
+    fn browse_context(service: &CalendarService) -> QueryContext {
+        let inner = service.inner.lock().unwrap();
+        QueryContext {
+            generation: service.generation.load(Ordering::Acquire),
+            account: inner.state.account.clone().unwrap(),
+            selected: inner.state.selected.clone(),
+            token: "synthetic-private-token".into(),
+        }
     }
 
     #[test]
-    fn meeting_picker_creation_rechecks_selection_cancellation_connection_and_freshness() {
-        for changed in ["selection", "cancelled", "connection", "stale"] {
+    fn browsing_finished_events_never_overwrites_the_reminder_cache_or_serializes_authentication() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = reminder_service(temp.path());
+        let before = serde_json::to_vec(&service.inner.lock().unwrap().state).unwrap();
+        let finished = Occurrence {
+            key: "finished".into(),
+            title: "Past schedule".into(),
+            start_at: 1,
+            end_at: 2,
+            calendar_name: "Synthetic".into(),
+            join_urls: vec![],
+        };
+        let browse = service
+            .finish_browse(
+                browse_context(&service),
+                "2026-10-29".into(),
+                "Asia/Seoul".into(),
+                vec![finished.clone()],
+            )
+            .unwrap();
+        assert_eq!(
+            service
+                .with_browsed_occurrence(&browse, "finished", |event| Ok(event.clone()))
+                .unwrap(),
+            finished
+        );
+        let serialized = serde_json::to_string(&browse).unwrap();
+        assert!(!serialized.contains("synthetic-private-token"));
+        assert_eq!(
+            serde_json::to_vec(&service.inner.lock().unwrap().state).unwrap(),
+            before
+        );
+        assert!(service.reminder("current").is_some());
+        assert!(!temp.path().join("calendar").exists());
+    }
+
+    #[test]
+    fn browsing_and_creation_revalidate_the_account_and_selected_calendars() {
+        for changed in ["selection", "connection", "account"] {
             let temp = tempfile::tempdir().unwrap();
             let service = reminder_service(temp.path());
+            let context = browse_context(&service);
+            let browse = service
+                .finish_browse(
+                    browse_context(&service),
+                    "2026-10-29".into(),
+                    "Asia/Seoul".into(),
+                    vec![],
+                )
+                .unwrap();
             match changed {
                 "selection" => {
                     service.set_calendars(vec![]).unwrap();
                 }
-                "cancelled" => service.inner.lock().unwrap().state.events.clear(),
-                "connection" => service.inner.lock().unwrap().auth_ready = false,
-                "stale" => service.inner.lock().unwrap().needs_sync = true,
+                "connection" => service.cancel_connect(),
+                "account" => {
+                    service.inner.lock().unwrap().state.account = Some("other account".into())
+                }
                 _ => unreachable!(),
             }
+            assert!(
+                service
+                    .finish_browse(context, "2026-10-29".into(), "Asia/Seoul".into(), vec![])
+                    .is_err(),
+                "{changed}"
+            );
             let created = AtomicBool::new(false);
             assert!(
                 service
-                    .with_current_occurrence("current", 1_000_001, |_| {
+                    .with_browsed_occurrence(&browse, "current", |_| {
                         created.store(true, Ordering::Release);
                         Ok(())
                     })
@@ -1072,5 +1264,91 @@ mod tests {
             );
             assert!(!created.load(Ordering::Acquire));
         }
+    }
+
+    #[test]
+    fn a_deleted_remote_occurrence_cannot_create_from_the_old_reminder_cache() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = reminder_service(temp.path());
+        let browse = service
+            .finish_browse(
+                browse_context(&service),
+                "2026-10-29".into(),
+                "Asia/Seoul".into(),
+                vec![],
+            )
+            .unwrap();
+        assert!(service.reminder("current").is_some());
+        assert!(service
+            .with_browsed_occurrence(&browse, "current", |_| -> Result<(), String> {
+                panic!("deleted event must not create a meeting")
+            })
+            .is_err());
+    }
+
+    #[test]
+    fn a_late_authentication_failure_cannot_invalidate_a_refreshed_access_token() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = reminder_service(temp.path());
+        let old = browse_context(&service);
+        {
+            let mut inner = service.inner.lock().unwrap();
+            inner.access = Some(Access {
+                token: "synthetic-new-access".into(),
+                expires_at: u64::MAX,
+            });
+        }
+        let before = service.snapshot();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        runtime.block_on(service.query_error(&old, google::Failure::Reconnect));
+        let after = service.snapshot();
+        assert!(after.connected);
+        assert_eq!(after.revision, before.revision);
+        assert_eq!(after.error, before.error);
+        let mut current = browse_context(&service);
+        current.token = service
+            .inner
+            .lock()
+            .unwrap()
+            .access
+            .as_ref()
+            .unwrap()
+            .token
+            .clone();
+        runtime.block_on(service.query_error(&current, google::Failure::Reconnect));
+        assert!(!service.snapshot().connected);
+        assert!(service.inner.lock().unwrap().access.is_none());
+    }
+
+    #[test]
+    fn authentication_failure_waits_for_an_in_flight_token_refresh_before_invalidating_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = reminder_service(temp.path());
+        let old = browse_context(&service);
+        service.inner.lock().unwrap().access = Some(Access {
+            token: old.token.clone(),
+            expires_at: u64::MAX,
+        });
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let refresh = async {
+                let _access = service.access_gate.lock().await;
+                tokio::task::yield_now().await;
+                service.inner.lock().unwrap().access = Some(Access {
+                    token: "synthetic-refreshed-access".into(),
+                    expires_at: u64::MAX,
+                });
+            };
+            tokio::join!(
+                refresh,
+                service.query_error(&old, google::Failure::Reconnect)
+            );
+        });
+        assert!(service.snapshot().connected);
+        assert!(service.snapshot().error.is_none());
     }
 }

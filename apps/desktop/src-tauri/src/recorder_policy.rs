@@ -9,6 +9,7 @@ pub struct RecorderPolicy {
     session: Option<String>,
     background: bool,
     dismissed: bool,
+    requested: bool,
     shown: bool,
     failed: bool,
     last_moved: Option<std::time::Instant>,
@@ -21,6 +22,7 @@ impl Default for RecorderPolicy {
             session: None,
             background: false,
             dismissed: false,
+            requested: false,
             shown: false,
             failed: false,
             last_moved: None,
@@ -47,7 +49,15 @@ impl RecorderPolicy {
 
     pub fn dismiss(&mut self) {
         self.dismissed = true;
+        self.requested = false;
         self.shown = false;
+    }
+
+    pub fn request_show(&mut self, session: &str) {
+        self.session = Some(session.to_owned());
+        self.requested = true;
+        self.dismissed = false;
+        self.failed = false;
     }
 
     pub fn show_failed(&mut self) {
@@ -58,13 +68,17 @@ impl RecorderPolicy {
     pub fn update(&mut self, session: Option<&str>, background: bool) -> Option<Presentation> {
         if self.session.as_deref() != session {
             self.dismissed = false;
+            self.requested = false;
             self.failed = false;
         } else if self.background != background {
             self.failed = false;
         }
         self.session = session.map(str::to_owned);
         self.background = background;
-        let visible = self.automatic && session.is_some() && !self.dismissed && !self.failed;
+        let visible = (self.automatic || self.requested)
+            && session.is_some()
+            && !self.dismissed
+            && !self.failed;
         if visible == self.shown {
             return None;
         }
@@ -80,6 +94,30 @@ impl RecorderPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reopening_a_dismissed_window_does_not_change_the_automatic_preference() {
+        let mut policy = RecorderPolicy::default();
+        policy.set_automatic(false);
+        assert_eq!(policy.update(Some("a"), false), None);
+        policy.request_show("a");
+        assert_eq!(policy.update(Some("a"), false), Some(Presentation::Show));
+        policy.dismiss();
+        assert_eq!(policy.update(Some("a"), true), None);
+        policy.request_show("a");
+        assert_eq!(policy.update(Some("a"), true), Some(Presentation::Show));
+        assert_eq!(policy.update(None, false), Some(Presentation::Hide));
+        assert_eq!(policy.update(Some("b"), false), None);
+    }
+
+    #[test]
+    fn an_explicit_reopen_retries_a_failed_presentation() {
+        let mut policy = RecorderPolicy::default();
+        policy.update(Some("a"), false);
+        policy.show_failed();
+        policy.request_show("a");
+        assert_eq!(policy.update(Some("a"), false), Some(Presentation::Show));
+    }
 
     #[test]
     fn every_recording_shows_immediately_and_stays_visible_until_it_ends() {

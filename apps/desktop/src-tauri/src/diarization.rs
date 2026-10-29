@@ -620,7 +620,7 @@ impl Processing {
         meeting_id: String,
         expected: TranscriptVersion,
     ) -> Result<Progress, String> {
-        self.diarize_bound(core, meeting_id, expected, None)
+        self.diarize_bound(core, meeting_id, expected, None, None)
     }
     pub(super) fn diarize_bound(
         self: &Arc<Self>,
@@ -628,6 +628,7 @@ impl Processing {
         meeting_id: String,
         expected: TranscriptVersion,
         required_fingerprint: Option<String>,
+        requested_id: Option<String>,
     ) -> Result<Progress, String> {
         let source = core
             .transcript(&meeting_id)
@@ -645,11 +646,13 @@ impl Processing {
             return Err("먼저 화자 구분 모델을 준비해 주세요.".into());
         }
         let source_core = core.clone();
-        self.start_meeting(
+        self.start_meeting_with_template(
             "diarize",
             meeting_id.clone(),
             &source_core,
             required_fingerprint,
+            None,
+            requested_id,
             move |this, cancel, path| {
                 let result = analyze_recording(
                     &this,

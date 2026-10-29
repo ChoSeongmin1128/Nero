@@ -4,7 +4,7 @@ body { overflow: hidden; }
 .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .workspace { display: grid; grid-template-columns: 220px minmax(0, 1fr); height: 100%; }
 .library { display: grid; grid-template-rows: max-content max-content max-content minmax(0, 1fr) max-content; min-height: 0; background: var(--surface-secondary); border-right: 1px solid var(--border); }
-.library-header { display: grid; align-content: start; gap: 16px; padding: 20px 16px 8px; }
+.library-header { display: grid; align-content: start; gap: 12px; padding: 20px 16px 8px; }
 .brand { display: inline-flex; align-items: center; gap: 9px; font-size: var(--text-heading-size); font-weight: var(--weight-heading); letter-spacing: var(--tracking-heading); }
 .brand img { display: block; flex: none; }
 .library-header button { justify-content: center; width: 100%; min-height: 34px; padding: 5px 10px; font-size: var(--text-label-size); }
@@ -14,14 +14,9 @@ body { overflow: hidden; }
 .library-navigation { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .library-navigation .folder-list { flex: none; overflow: visible; padding: 4px 10px; }
 .library-heading h2, .recent-section h2 { color: var(--text-secondary); font-size: var(--text-caption-size); font-weight: var(--weight-medium); }
-.recent-section { margin: 14px 10px 10px; padding-top: 16px; border-top: 1px solid var(--border); }
+.recent-section { margin: 8px 10px 8px; padding-top: 8px; border-top: 1px solid var(--border); }
 .recent-section h2 { margin: 0 6px 8px; }
-.recent-meetings { display: grid; grid-auto-rows: max-content; align-content: start; gap: 4px; }
-.recent-meeting { display: flex; flex-direction: column; align-items: stretch; gap: 3px; position: relative; width: 100%; padding: 9px 10px; border-color: transparent; text-align: left; background: transparent; min-width: 0; }
-.recent-meeting strong { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: var(--text-label-size); font-weight: var(--weight-medium); }
-.recent-meeting time { font-size: var(--text-caption-size); color: var(--text-secondary); font-variant-numeric: tabular-nums; }
-.recent-meeting[aria-current="page"] { background: var(--accent-subtle); box-shadow: inset 2px 0 0 var(--accent); }
-.recent-meeting[aria-current="page"] strong { color: var(--accent); }
+.recent-meetings { display: grid; grid-auto-rows: max-content; align-content: start; gap: 1px; }
 .section-heading h2, .recording-heading h2 { font-size: var(--text-subtitle-size); font-weight: var(--weight-semibold); letter-spacing: var(--tracking-ui); }
 .meeting-list { flex: 1; overflow: auto; padding: 0 6px 10px; }
 .meeting-item { display: flex; align-items: flex-start; gap: 8px; width: 100%; min-height: 36px; margin-bottom: 2px; border-color: transparent; background: transparent; padding: 5px 8px; text-align: left; }
@@ -448,3 +443,13 @@ html.recorder-document { background: transparent; }
   .navigation-toolbar { padding-inline: 14px; }
   .navigation-breadcrumbs button { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 }
+
+.new-meeting-split { display: flex; align-items: stretch; min-width: 0; }
+.library-header .new-meeting-split > #create-meeting { flex: 1; width: auto; border-start-end-radius: 0; border-end-end-radius: 0; }
+.new-meeting-menu { flex: none; }
+.new-meeting-menu > #create-meeting-options { width: 30px; height: 34px; padding: 6px; border: 1px solid var(--accent-fill); border-left-color: var(--on-accent-muted, var(--border)); border-radius: 0 var(--control-radius) var(--control-radius) 0; background: var(--accent-fill); color: var(--on-accent); }
+.new-meeting-menu > #create-meeting-options[aria-disabled="true"] { opacity: .5; cursor: default; }
+.new-meeting-menu .action-menu button { display: flex; align-items: center; gap: 8px; }
+.library-header .new-meeting-menu .action-menu button { justify-content: flex-start; }
+.library-header .new-meeting-menu .action-menu button svg { width: 16px; height: 16px; }
+.navigation-rail > button > span { display: flex; }

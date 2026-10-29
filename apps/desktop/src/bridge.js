@@ -33,6 +33,7 @@ export const setTerminologyEnabled = (enabled) => call('set_terminology_enabled'
 export const setAutoRecorder = (enabled) => call('set_auto_recorder', { enabled });
 export const dragRecorder = () => call('drag_recorder');
 export const hideRecorder = () => call('hide_recorder');
+export const showRecorder = sessionId => call('show_recorder', { sessionId });
 export const hideMain = () => call('hide_main');
 export const openMeeting = (meetingId, error = null) => call('open_meeting', { meetingId, error });
 export const requestQuit = (sessionId = null) => call('request_quit', { sessionId });

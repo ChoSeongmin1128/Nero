@@ -27,3 +27,31 @@ replace the current view. `calendarConnectionView` selects labels/actions separa
 Automated checks cover recorded positions, diagnostic severity, interruption recovery,
 late begin/finish results, cancellation failure, reopening and the rendered Calendar controls.
 Microphone/device-load acceptance and real provider authorization remain device checks.
+
+## Recorder visibility
+
+The recorder close action hides the window for the current recording only. The recording
+toolbar provides an explicitly labelled icon to show it again during recording or pause.
+An explicit show validates the current session ID and does not change the saved automatic
+presentation preference. A manual presentation ends with that session.
+
+## Calendar meeting preparation
+
+The picker starts with today, including ended events. Previous/next day and the shared
+calendar select one local civil date; the backend resolves both day boundaries in the
+requested IANA time zone, including daylight-saving transitions. Queries are bounded and
+fully paged. They do not replace the separate reminder cache or change its horizon.
+Preparation refetches the selected occurrence and validates account/calendar generation
+before the core creates or reuses its meeting. Existing recordings and manual fields are
+not replaced, and trashed meetings are not silently restored. A stale API authentication
+response cannot invalidate a refreshed access token.
+
+## Cancelled processing
+
+Cancelled notifications have explicit retry and dismiss actions. Dismissal acknowledges
+the notification; it never deletes audio or results. Import requires selecting the source
+again. Other retries retain source checks, template identity and valid stage caches.
+Recognition's saved baseline and its speaker continuation share the cancellation boundary.
+A cancelled optional terminology pass is skipped on retry; saved text is used for the
+speaker stage. Legacy jobs without a validated continuation retain conflict protection
+and can be replaced by an explicit operation from the meeting.

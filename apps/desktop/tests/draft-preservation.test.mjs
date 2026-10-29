@@ -134,7 +134,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
   vm.runInContext(componentsSource, context);
   context.testUI = vm.runInContext(`(() => {
     ${uiSource.replace(/^export /gm, '')}
-    return { icon, escape, button, duration, recordingStatus, statusMarkup, sessionControls, applySystemAppearance() {} };
+    return { ui, icon, escape, button, duration, recordingStatus, statusMarkup, sessionControls, applySystemAppearance() {} };
   })()`, context);
   const executable = source.replace(/^import .*;\n/gm, '');
   const app = await vm.runInContext(`(async () => {
@@ -166,7 +166,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
 
     const returnFocusTarget = (origin, fallback) => origin || fallback;
     const bridge = testBridge;
-    const { icon, escape, button, duration, recordingStatus, statusMarkup, sessionControls, applySystemAppearance } = testUI;
+    const { ui, icon, escape, button, duration, recordingStatus, statusMarkup, sessionControls, applySystemAppearance } = testUI;
     ${executable}
     return { state, detail, documentSearch, summaryEvidenceOptions, restoreTranscript: restoreForTest, selectMeeting, saveDraft, finishEditing, onEdit, onQuitRequest, onAgentWriteRequest, refreshDevices, acceptSnapshot, saveTranscript, loadTranscript, acceptProcessing, loadSummary, renderSummary, createMeeting, openSetup, openSettings, changeMicrophone, changeMeetingDate, render, prepareAudio, exportDocument, editTranscriptRow, completeTranscriptRow, cancelTranscriptRow, cancelProcessing, retryProcessing, acknowledgeProcessing };
   })()`, context);
@@ -454,10 +454,11 @@ test('queued cancellation targets only its job while the download remains visibl
   assert.equal(page.app.state.processing.id, 'download');
   assert.equal(page.element('processing-spinner').hidden, false);
   await page.app.acceptProcessing({ ...page.app.state.processing, revision: 4, jobs: [{ id: 'waiting', kind: 'summary', meetingId: 'a', status: 'cancelled' }] });
-  assert.equal(page.element('processing-jobs').hidden, true);
+  assert.equal(page.element('processing-jobs').hidden, false);
+  assert.match(page.element('processing-jobs').innerHTML, /data-job-action="ack" data-job-id="waiting"/);
 });
 
-test('saving recovery offers result inspection and never retries cancelled work', async () => {
+test('saving recovery offers result inspection and never retries non-retryable work', async () => {
   const page = await openApp();
   let retries = 0;
   page.bridge.retryProcessing = async () => { retries += 1; };
@@ -468,7 +469,8 @@ test('saving recovery offers result inspection and never retries cancelled work'
   const html = page.element('processing-jobs').innerHTML;
   assert.match(html, /저장된 결과를 확인/);
   assert.match(html, /data-job-action="open" data-job-id="saving"/);
-  assert.doesNotMatch(html, /data-job-action="retry"|data-job-id="cancelled"/);
+  assert.doesNotMatch(html, /data-job-action="retry"/);
+  assert.match(html, /data-job-action="ack" data-job-id="cancelled"/);
   await page.app.retryProcessing('saving');
   await page.app.retryProcessing('cancelled');
   assert.equal(retries, 0);
@@ -553,7 +555,7 @@ test('acknowledging an alert does not take focus from a title edited during the 
 });
 
 for (const action of ['cancel', 'retry']) {
-  test(`${action} restores focus when its recovery row disappears`, async () => {
+  test(`${action} keeps focus on its remaining recovery action or next job`, async () => {
     const page = await openApp();
     const first = { id: 'first', kind: 'summary', meetingId: 'a', status: action === 'cancel' ? 'queued' : 'failed', retryable: action === 'retry' };
     const next = { id: 'next', kind: 'summary', meetingId: 'b', status: 'interrupted', retryable: true };
@@ -568,7 +570,7 @@ for (const action of ['cancel', 'retry']) {
       page.bridge.retryProcessing = async () => updated;
       await page.app.retryProcessing('first');
     }
-    assert.equal(page.element(page.focused()).dataset.jobId, 'next');
+    assert.equal(page.element(page.focused()).dataset.jobId, action === 'cancel' ? 'first' : 'next');
   });
 }
 

@@ -1,4 +1,6 @@
 const modelJobs = new Set(['setup', 'model', 'summary-model', 'speaker-model']);
+export const canRetryProcessing = job => job?.acknowledged !== true && job?.retryable === true && ['interrupted', 'failed', 'cancelled'].includes(job?.status);
+export const canDismissProcessing = job => job?.acknowledged !== true && ['interrupted', 'failed', 'cancelled', 'needsReview'].includes(job?.status);
 const jobTitles = {
   cleanup: '임시 파일 정리',
   setup: '모델 준비',
@@ -83,8 +85,10 @@ export function processingFeedback(job = {}, { cancelling = false } = {}) {
     heading = committing ? summaryStages.saving : summaryStages[job.phase] || '요약 중';
   }
   const speakerPhase = active && (job.kind === 'diarize' || (job.kind === 'transcribe' && job.phase === 'diarizing'));
-  if (speakerPhase && !cancelRequested) heading = committing || job.phase === 'saving' ? '저장 중' : job.phase === 'preparing' ? '화자 구분 준비 중' : '화자 구분 중';
+  if (speakerPhase && !cancelRequested && job.phase === 'postprocessing') heading = '음성 기록 정리 중';
+  else if (speakerPhase && !cancelRequested) heading = committing || job.phase === 'saving' ? '저장 중' : job.phase === 'preparing' ? '화자 구분 준비 중' : '화자 구분 중';
   let message = String(job.message || '').trim();
+  if (job.status === 'cancelled' && ['취소했습니다.', '취소됨'].includes(message)) message = '';
   if (job.status === 'queued') message = message || '앞선 작업이나 녹음이 끝나면 실행합니다.';
   if (job.status === 'interrupted') message = message || '기존 녹음과 결과는 유지됩니다.';
   if (job.status === 'needsReview') message = '회의를 열어 저장된 결과를 확인해 주세요.';
@@ -104,7 +108,7 @@ export function processingFeedback(job = {}, { cancelling = false } = {}) {
     visible: Boolean(job.id) && job.acknowledged !== true && ['running', 'failed', 'cancelled', 'queued', 'interrupted', 'needsReview'].includes(job.status),
     active,
     state: cancelRequested ? 'cancelling' : active ? 'running' : job.status || 'idle',
-    icon: job.status === 'queued' ? 'clock' : ['failed', 'needsReview'].includes(job.status) ? 'triangle-alert' : job.status === 'interrupted' ? 'pause' : 'x',
+    icon: job.status === 'queued' ? 'clock' : ['failed', 'needsReview'].includes(job.status) ? 'triangle-alert' : job.status === 'interrupted' ? 'pause' : 'circle-slash',
     title: heading,
     detail: message && !cancelRequested && !repeated && !['준비 중', '완료', heading].includes(message) ? message : '',
     warning: '',

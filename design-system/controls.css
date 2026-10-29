@@ -1,3 +1,4 @@
+:root { --layer-popover: 1200; --layer-dialog-overlay: 1100; --layer-dialog-content: 1101; }
 .grove-select,
 .grove-date,
 .grove-control-root {
@@ -43,7 +44,7 @@
 .grove-select-trigger:disabled,
 .grove-date-trigger:disabled { opacity: .45; cursor: not-allowed; }
 .grove-select-value { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.grove-control-positioner { z-index: 1000; isolation: isolate; outline: none; }
+.grove-control-positioner { z-index: var(--layer-popover); isolation: isolate; outline: none; }
 .grove-select-popover,
 .grove-popover {
   margin: 0;
@@ -143,8 +144,8 @@
 .grove-calendar-error { margin: 8px 0 0; color: var(--danger-text); font-size: var(--text-caption-size); }
 .field > .grove-select,
 .field > .grove-date { display: flex; width: 100%; }
-.nero-dialog-overlay { position: fixed; inset: 0; z-index: 1100; background: var(--overlay); }
-.nero-dialog-content { position: fixed; top: 50%; left: 50%; z-index: 1101; transform: translate(-50%, -50%); width: min(520px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); padding: 20px; overflow: auto; border: 1px solid var(--border); border-radius: var(--radius, 8px); background: var(--surface); color: var(--text); box-shadow: 0 12px 36px var(--shadow-modal); outline: none; }
+.nero-dialog-overlay { position: fixed; inset: 0; z-index: var(--layer-dialog-overlay); background: var(--overlay); }
+.nero-dialog-content { position: fixed; top: 50%; left: 50%; z-index: var(--layer-dialog-content); transform: translate(-50%, -50%); width: min(520px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); padding: 20px; overflow: auto; border: 1px solid var(--border); border-radius: var(--radius, 8px); background: var(--surface); color: var(--text); box-shadow: 0 12px 36px var(--shadow-modal); outline: none; }
 .nero-dialog-header { display: flex; flex-direction: column; gap: 8px; padding-right: 24px; }
 .nero-dialog-title { margin: 0; color: var(--text); font: var(--weight-heading) var(--text-heading-size)/var(--leading-heading) var(--font-ui); }
 .nero-dialog-description { margin: 0; color: var(--text-secondary); font: var(--text-body-size)/var(--leading-ui) var(--font-ui); word-break: keep-all; overflow-wrap: anywhere; }

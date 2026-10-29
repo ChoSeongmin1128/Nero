@@ -492,6 +492,23 @@ fn recover_recorder_position(window: &WebviewWindow) {
 }
 
 #[tauri::command]
+async fn show_recorder(
+    window: WebviewWindow,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, DesktopState>,
+    session_id: String,
+) -> Result<(), String> {
+    require_main(&window)?;
+    let snapshot = on_core(state.core.clone(), |core| core.snapshot()).await?;
+    let session = active_session(&snapshot)
+        .filter(|id| *id == session_id)
+        .ok_or("녹음이 종료되었습니다.")?;
+    state.recorder.lock().unwrap().request_show(session);
+    sync_recorder(&app, &snapshot);
+    Ok(())
+}
+
+#[tauri::command]
 async fn set_auto_recorder(
     window: WebviewWindow,
     app: tauri::AppHandle,
@@ -1565,6 +1582,7 @@ fn main() {
             export_text,
             export_document,
             hide_recorder,
+            show_recorder,
             set_auto_recorder,
             drag_recorder,
             hide_main,

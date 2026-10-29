@@ -1,5 +1,7 @@
 .calendar-meeting-picker { width: min(600px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); display: flex; flex-direction: column; }
 .calendar-meeting-body { min-height: 0; overflow: auto; padding-block: 8px; }
+.calendar-meeting-date { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding-block: 8px; flex: none; }
+.calendar-meeting-date .grove-date-trigger { min-width: 0; width: auto; }
 .calendar-meeting-empty { display: grid; justify-items: start; gap: 12px; }
 .calendar-meeting-options { border: 1px solid var(--border); border-radius: var(--radius); padding: 0; margin: 0; min-width: 0; }
 .calendar-meeting-option { display: flex; align-items: start; gap: 12px; padding: 14px 16px; cursor: pointer; }

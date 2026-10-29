@@ -2,7 +2,10 @@ import { returnFocusTarget } from './focus-return.js';
 import * as React from 'react';
 import { createRoot } from 'react-dom/client';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '../../../design-system/components/ui/dialog.jsx';
-import { createCalendarMeetingFlow, calendarOccurrenceTime, calendarJoinUrls } from './calendar-meeting-flow.js';
+import { Calendar } from '../../../design-system/components/ui/calendar.jsx';
+import { Popover, PopoverTrigger, PopoverContent, PopoverClose } from '../../../design-system/components/ui/popover.jsx';
+import { CalendarDays, ChevronLeft, ChevronRight } from 'lucide-react';
+import { createCalendarMeetingFlow, calendarOccurrenceTime, calendarJoinUrls, calendarDay, parseCalendarDay, moveCalendarDay } from './calendar-meeting-flow.js';
 import './calendar-meeting-picker.css';
 
 function CalendarLinks({ reference }) {
@@ -18,6 +21,28 @@ function CalendarLinks({ reference }) {
   </div>)}<span className="type-caption" role="status">{feedback}</span></div>;
 }
 
+function CalendarDateControls({ flow, state, container }) {
+  const [open, setOpen] = React.useState(false);
+  const [month, setMonth] = React.useState(() => new Date());
+  const selected = parseCalendarDay(state.day);
+  React.useEffect(() => { if (selected) setMonth(selected); }, [state.day]);
+  const label = selected ? new Intl.DateTimeFormat('ko-KR', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'short' }).format(selected) : '날짜 선택';
+  return <div className="calendar-meeting-date" aria-label="일정 날짜">
+    <button type="button" className="quiet small icon" aria-label="이전 날짜" title="이전 날짜" disabled={state.creating || !moveCalendarDay(state.day, -1)} onClick={() => { void flow.moveDay(-1); }}><ChevronLeft size={16} aria-hidden="true" /></button>
+    <Popover open={open} onOpenChange={setOpen} modal="trap-focus">
+      <PopoverTrigger className="grove-date-trigger" disabled={state.creating} aria-label={`일정 날짜: ${label}`} onClick={() => { if (selected) setMonth(selected); }}><span>{label}</span><CalendarDays size={16} aria-hidden="true" /></PopoverTrigger>
+      <PopoverContent container={container} className="grove-calendar" aria-label="일정 날짜 선택">
+        <PopoverClose className="sr-only">달력 닫기</PopoverClose>
+        {open && <Calendar mode="single" autoFocus selected={selected || undefined} month={month} onMonthChange={setMonth} startMonth={new Date(1970, 0, 1)} disabled={{ before: new Date(1970, 0, 1) }} onSelect={date => {
+          if (date) { setOpen(false); void flow.setDay(calendarDay(date)); }
+        }} />}
+      </PopoverContent>
+    </Popover>
+    <button type="button" className="quiet small icon" aria-label="다음 날짜" title="다음 날짜" disabled={state.creating || !moveCalendarDay(state.day, 1)} onClick={() => { void flow.moveDay(1); }}><ChevronRight size={16} aria-hidden="true" /></button>
+    <button type="button" className="quiet small" disabled={state.creating} onClick={() => { void flow.today(); }}>오늘</button>
+  </div>;
+}
+
 function CalendarMeetingPicker({ flow, container, finalFocus }) {
   const state = React.useSyncExternalStore(flow.subscribe, flow.getSnapshot);
   const selected = state.occurrences.find(event => event.key === state.selectedKey);
@@ -25,15 +50,16 @@ function CalendarMeetingPicker({ flow, container, finalFocus }) {
   const calendar = state.calendar;
   return <Dialog open={state.open} onOpenChange={open => { if (!open) flow.close(); }}>
     <DialogContent container={container} className="calendar-meeting-picker" data-nero-ui-owned="" finalFocus={finalFocus} showCloseButton={!state.creating}>
-      <DialogHeader><DialogTitle>일정에서 회의 준비</DialogTitle><DialogDescription>선택한 캘린더의 진행 중인 일정과 앞으로 24시간의 일정</DialogDescription></DialogHeader>
+      <DialogHeader><DialogTitle>일정에서 회의 준비</DialogTitle><DialogDescription>선택한 날짜의 캘린더 일정</DialogDescription></DialogHeader>
+      <CalendarDateControls flow={flow} state={state} container={container} />
       <div className="calendar-meeting-body" aria-busy={busy}>
         {state.loading && <p className="muted" role="status">일정을 불러오는 중</p>}
         {!state.loading && calendar && !calendar.connected && <div className="calendar-meeting-empty"><p>{calendar.restoring ? 'Google 연결을 확인하고 있습니다.' : 'Google Calendar를 연결해 주세요.'}</p><button type="button" onClick={() => flow.configure()}>캘린더 설정</button></div>}
         {!state.loading && calendar?.connected && !calendar.selectedCalendars.length && <div className="calendar-meeting-empty"><p>캘린더를 선택해 주세요.</p><button type="button" onClick={() => flow.configure()}>캘린더 설정</button></div>}
-        {!state.loading && calendar?.connected && calendar.selectedCalendars.length > 0 && !state.occurrences.length && !state.error && <p className="muted">선택할 일정이 없습니다.</p>}
+        {!state.loading && calendar?.connected && calendar.selectedCalendars.length > 0 && !state.occurrences.length && !state.error && <p className="muted">이 날짜에 선택할 일정이 없습니다.</p>}
         {!state.loading && state.occurrences.length > 0 && <fieldset className="calendar-meeting-options" disabled={state.creating}><legend className="sr-only">회의 일정</legend>{state.occurrences.map(event => <label className="calendar-meeting-option" key={event.key}>
           <input type="radio" name="calendar-meeting" checked={state.selectedKey === event.key} onChange={() => flow.select(event.key)} />
-          <span><strong>{event.title}</strong><span>{calendarOccurrenceTime(event)}</span><span>{event.calendarName}</span></span>
+          <span><strong>{event.title}</strong><span>{calendarOccurrenceTime(event, state.timeZone)}</span><span>{event.calendarName}</span></span>
         </label>)}</fieldset>}
         {selected && <CalendarLinks reference={{ ...selected, occurrenceKey: selected.key }} />}
         {state.error && <p className="notice" role="alert">{state.error}</p>}

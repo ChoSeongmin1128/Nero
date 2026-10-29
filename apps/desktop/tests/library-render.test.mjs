@@ -3,6 +3,7 @@ import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { Window } from 'happy-dom';
+import { renderMeetingMenu } from '../src/library-ui.js';
 
 test('list selection preserves the checkbox and menu focus through a row refresh', () => {
   const window = new Window();
@@ -10,7 +11,7 @@ test('list selection preserves the checkbox and menu focus through a row refresh
   document.body.innerHTML = '<input id="search"><nav id="meeting-list"></nav><span id="meeting-count"></span>';
   const meetings = [{ id: 'one', title: '검토 회의', notes: '', createdAt: 1, deletedAt: null }];
   const state = { snapshot: { meetings }, librarySelection: new Set(), librarySearchHits: [], selectedId: null, connected: true, libraryBusy: false, libraryFilter: 'all', listKey: '' };
-  const context = vm.createContext({ document, state, library: { visibleMeetings: () => meetings }, byId: id => document.getElementById(id),
+  const context = vm.createContext({ document, state, renderMeetingMenu, library: { visibleMeetings: () => meetings }, byId: id => document.getElementById(id),
     escape: value => String(value ?? ''), icon: () => '<svg aria-hidden="true"></svg>', stateFor: () => 'ready',
     meetingTimestamp: meeting => meeting.createdAt, meetingDay: () => '2026-10-28',
     listDate: { format: () => '10. 28.' }, listTime: { format: () => '10:00' }, fullDate: { format: () => '2026년 10월 28일 10:00' }, recordingStatus: () => '녹음 전', duration: () => '',

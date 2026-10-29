@@ -22,9 +22,9 @@ test('hover reveals the sidebar without duplicate controls; the same button pins
   const trigger=doc.getElementById('toggleNav'), shell=doc.getElementById('shell');
   assert.equal(doc.querySelectorAll('#toggleNav').length,1);
   assert.equal(doc.getElementById('closeNav'),null);
-  doc.querySelector('.nav-hover-edge').dispatchEvent(new window.PointerEvent('pointerenter',{pointerType:'mouse'}));
+  doc.querySelector('.navigation-rail').dispatchEvent(new window.PointerEvent('pointerenter',{pointerType:'mouse'}));
   assert.ok(shell.classList.contains('nav-peek'));
-  assert.equal(trigger.parentElement.className,'brand');
+  assert.equal(trigger.parentElement.className,'navigation-rail-head');
   assert.equal(trigger.getAttribute('aria-label'),'사이드바 고정');
   assert.equal(doc.querySelector('main').inert,false);
   trigger.click();
@@ -32,8 +32,8 @@ test('hover reveals the sidebar without duplicate controls; the same button pins
   assert.equal(window.localStorage.getItem('nero-proposal-sidebar-pinned'),'true');
   trigger.click();
   assert.ok(shell.classList.contains('collapsed'));
-  assert.equal(trigger.parentElement.className,'toolbar');
-  doc.querySelector('.nav-hover-edge').dispatchEvent(new window.PointerEvent('pointerenter',{pointerType:'touch'}));
+  assert.equal(trigger.parentElement.className,'navigation-rail-head');
+  doc.querySelector('.navigation-rail').dispatchEvent(new window.PointerEvent('pointerenter',{pointerType:'touch'}));
   assert.equal(shell.classList.contains('nav-peek'),false);
 });
 
@@ -54,7 +54,7 @@ test('folder and meeting breadcrumbs navigate to the actual parent and preserve 
 
 test('temporary sidebar closes after pointer exit but stays while entering a search',async t=>{
   const window=await setup(t),doc=window.document,shell=doc.getElementById('shell');
-  const edge=doc.querySelector('.nav-hover-edge'),aside=doc.querySelector('aside');
+  const edge=doc.querySelector('.navigation-rail'),aside=doc.querySelector('aside');
   edge.dispatchEvent(new window.PointerEvent('pointerenter',{pointerType:'mouse'}));
   aside.dispatchEvent(new window.PointerEvent('pointerleave',{pointerType:'mouse'}));
   await new Promise(resolve=>setTimeout(resolve,220));

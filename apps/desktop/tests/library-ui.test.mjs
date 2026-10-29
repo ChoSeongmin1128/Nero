@@ -646,15 +646,15 @@ test('recent navigation opens current meetings and ignores a deleted target with
   const opened = [];
   const app = harness({}, {selectMeeting(id) { opened.push(id); }});
   const target = {dataset: {recentMeeting: 'two'}};
-  app.byId('recent-meetings').listeners.click({target: {closest: () => target}});
+  app.byId('recent-meetings').listeners.click({target: {closest: selector => selector === '[data-recent-meeting]' ? target : null}});
   await settle();
   assert.deepEqual(opened, ['two']);
   assert.equal(app.state.libraryFilter, 'all');
   target.dataset.recentMeeting = 'three';
-  app.byId('recent-meetings').listeners.click({target: {closest: () => target}});
+  app.byId('recent-meetings').listeners.click({target: {closest: selector => selector === '[data-recent-meeting]' ? target : null}});
   app.state.connected = false;
   target.dataset.recentMeeting = 'one';
-  app.byId('recent-meetings').listeners.click({target: {closest: () => target}});
+  app.byId('recent-meetings').listeners.click({target: {closest: selector => selector === '[data-recent-meeting]' ? target : null}});
   await settle();
   assert.deepEqual(opened, ['two']);
 });
