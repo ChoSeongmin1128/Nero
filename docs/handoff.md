@@ -391,7 +391,9 @@ close behavior remain separate from successful connection and the callback tests
   summary quality or Windows/low-memory hardware qualification.
 - Model preparation now resumes validated Range responses and verifies full-file SHA256.
   Existing partial/invalid files are preserved; no automatic preparation or private uploads.
-- Cross-chunk identity matching, Calendar and Notion remain unconnected. Windows has
+- Registered voice identity and native Notion publishing remain unconnected. Google
+  Calendar authorization/sync is implemented above; reminder delivery requires device
+  acceptance. Windows has
   pinned Vulkan/CPU speech runtime packages, but the current AudioPrepare path requires
   Apple silicon/macOS 26. End-to-end Windows recognition is currently unavailable;
   native acceptance remains unqualified. No weights are downloaded automatically.
