@@ -7,9 +7,14 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
   const toolbar = trigger.parentElement;
   const edge = document.createElement('div');
   edge.className = 'nav-hover-edge'; edge.setAttribute('aria-hidden', 'true'); shell.append(edge);
-  let timer;
+  let timer, renderedState;
+  const unavailable = () => shell.dataset.onboarding === 'true';
   function render() {
-    const open = pinned || temporary;
+    if (unavailable()) temporary = false;
+    const open = !unavailable() && (pinned || temporary);
+    const nextState = `${pinned}:${temporary}:${unavailable()}`;
+    if (renderedState === nextState) return;
+    renderedState = nextState;
     shell.classList.toggle('collapsed', !pinned);
     shell.classList.toggle('nav-peek', temporary && !pinned);
     shell.classList.toggle('nav-pinned', pinned);
@@ -24,10 +29,10 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
     trigger.setAttribute('aria-label', pinned ? '사이드바 접기' : temporary ? '사이드바 고정' : '사이드바 열기');
     trigger.title = trigger.getAttribute('aria-label');
     trigger.innerHTML = icons?.(temporary && !pinned ? 'chevrons-right' : open ? 'panel-left-close' : 'panel-left') || '';
-    edge.hidden = open;
+    edge.hidden = open || unavailable();
     if (backdrop) backdrop.hidden = true;
   }
-  function reveal() { clearTimeout(timer); if (!pinned) temporary = true; render(); }
+  function reveal() { if (unavailable()) return; clearTimeout(timer); if (!pinned) temporary = true; render(); }
   function hide() {
     clearTimeout(timer);
     timer = setTimeout(() => {
@@ -37,6 +42,7 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
     }, 180);
   }
   function pin(value) {
+    if (unavailable()) return;
     clearTimeout(timer); pinned = value; temporary = false;
     try { (storage ?? globalThis.localStorage)?.setItem(storageKey, String(pinned)); } catch {}
     render(); trigger.focus({ preventScroll: true });
@@ -50,6 +56,7 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
   aside.addEventListener('pointerleave', hide);
   aside.addEventListener('focusout', hide);
   trigger.addEventListener('click', () => {
+    if (unavailable()) return;
     if (pinned) pin(false);
     else if (temporary) pin(true);
     else { temporary = true; render(); trigger.focus(); }
@@ -60,7 +67,7 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
   };
   document.addEventListener('pointerdown', outside);
   function escape(event) {
-    if (event.defaultPrevented || event.target.closest?.('dialog[open]')) return;
+    if (unavailable() || event.defaultPrevented || event.target.closest?.('dialog[open]')) return;
     if (event.key === 'Escape' && temporary) { temporary = false; render(); trigger.focus(); }
     if ((event.metaKey || event.ctrlKey) && event.code === 'Backslash') { event.preventDefault(); pin(!pinned); }
   }

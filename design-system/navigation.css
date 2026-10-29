@@ -11,3 +11,9 @@
   .navigation-shell.nav-pinned { grid-template-columns: 0 minmax(0, 1fr); }
   .navigation-shell.nav-pinned > .navigation-sidebar { position: absolute; inset: 8px auto 8px 8px; width: var(--navigation-width); z-index: 6; border: 1px solid var(--border); border-radius: var(--radius); box-shadow: 0 12px 32px var(--overlay); }
 }
+
+.navigation-shell[data-onboarding="true"] { grid-template-columns: minmax(0, 1fr); }
+.navigation-shell[data-onboarding="true"] > .navigation-content { grid-column: 1 / -1; }
+.navigation-shell[data-onboarding="true"] > .navigation-sidebar,
+.navigation-shell[data-onboarding="true"] > .nav-hover-edge,
+.navigation-shell[data-onboarding="true"] .navigation-toolbar { display: none; }

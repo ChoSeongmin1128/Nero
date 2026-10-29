@@ -263,13 +263,13 @@ function render() {
   byId('create-meeting').disabled = !state.connected || state.busy;
   byId('create-calendar-meeting').disabled = !state.connected || state.busy;
   byId('welcome-create').disabled = !state.connected || state.busy;
+  const setupVisible = renderSetup();
   library.render();
   renderList();
   speakers.render();
   renderSearchStatus();
   renderSettings();
   renderProcessing();
-  const setupVisible = renderSetup();
   const meeting = currentMeeting();
   calendarReference.render(meeting);
   byId('library-screen').hidden = setupVisible || !state.connected || (!state.libraryOpen && !modelsReady() && !state.snapshot.meetings.length) || (!state.libraryOpen && Boolean(meeting));

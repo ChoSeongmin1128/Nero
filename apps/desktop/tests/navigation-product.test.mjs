@@ -82,3 +82,20 @@ test('title and playback have one shared owner outside the narrow inspector repl
   assert.equal(document.querySelector('.detail-inspector').contains(document.getElementById('transcript-section')), true);
   assert.equal(document.getElementById('audio-speed').selectedOptions[0].textContent, '1x');
 });
+
+
+test('initial setup suppresses navigation while preserving the saved pin preference', async t => {
+  const { window, document, library } = await setup(t, { 'nero.sidebar.pinned': 'true' });
+  const shell = document.querySelector('.workspace'), trigger = document.getElementById('navigation-toggle');
+  shell.dataset.onboarding = 'true'; library.render();
+  document.querySelector('.nav-hover-edge').dispatchEvent(new window.PointerEvent('pointerenter', { pointerType: 'mouse' }));
+  trigger.click();
+  document.dispatchEvent(new window.KeyboardEvent('keydown', { code: 'Backslash', ctrlKey: true, bubbles: true }));
+  assert.equal(trigger.getAttribute('aria-expanded'), 'false');
+  assert.equal(document.getElementById('navigation-sidebar').inert, true);
+  assert.equal(window.localStorage.getItem('nero.sidebar.pinned'), 'true');
+  shell.dataset.onboarding = 'false'; library.render();
+  assert.equal(trigger.getAttribute('aria-expanded'), 'true');
+  assert.equal(document.getElementById('navigation-sidebar').inert, false);
+  assert.equal(shell.classList.contains('nav-pinned'), true);
+});

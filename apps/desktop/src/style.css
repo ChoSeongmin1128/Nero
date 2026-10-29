@@ -201,8 +201,6 @@ html.recorder-document { background: transparent; }
 #setup-back { order: -1; margin-right: auto; }
 #save-transcript:disabled { display: none; }
 @media (max-width: 900px) { .workspace { grid-template-columns: 200px minmax(0, 1fr); } .setup-screen { padding: 24px; } .detail-primary { padding: 16px 24px 0; } }
-.workspace[data-onboarding="true"] { grid-template-columns: minmax(0, 1fr); }
-.workspace[data-onboarding="true"] .library { display: none; }
 .setup-summary-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-left: auto; }
 .setup-choice { display: flex; align-items: center; gap: 8px; min-height: 30px; font-size: var(--text-label-size); color: var(--text-secondary); cursor: pointer; }
 .setup-choice:hover { color: var(--text); }

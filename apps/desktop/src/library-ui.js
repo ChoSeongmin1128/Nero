@@ -259,6 +259,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     resetSelection();
   }
   function render() {
+    sidebar?.render();
     const snapshot = state().snapshot;
     const folders = snapshot.folders || [];
     if (!['all', 'unfiled', 'trash'].includes(state().libraryFilter) && !folders.some(folder => folder.id === state().libraryFilter)) state().libraryFilter = 'unfiled';
