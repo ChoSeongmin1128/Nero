@@ -13,8 +13,11 @@ python3 scripts/native-diarization/prepare.py --verify-staged apps/desktop/.gene
 ```
 
 On native Windows builds use `--target windows-x64`. Packaging includes Vulkan
-and CPU executables with app-local Microsoft C++ runtime DLLs, following the
-summary worker's redistributable discovery. macOS builds the Metal runtime,
+and CPU executables with the app-local Microsoft C++ runtime DLLs already present
+in the hash-verified official archives. They are never replaced by an older local
+Visual Studio toolchain. An incomplete pinned archive is rejected instead of
+mixing CRT versions. `--msvc-redist` is retained as an ignored compatibility input
+for this speech preparer; the separate summary preparer has its own contract. macOS builds the Metal runtime,
 whose executable also supports CPU operation. Source preparation requires Python
 3.12+, CMake, Xcode command-line tools and Git on the developer machine. If CMake
 is installed as a Python module, `--cmake-python /path/to/python` selects it.

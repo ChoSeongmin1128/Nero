@@ -149,5 +149,37 @@ class SourceProvenanceTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     build.verify_staged(root)
 
+class WindowsCrtTests(unittest.TestCase):
+    def fixture(self, root, missing=None):
+        files = {"bin/nemo-speech.exe":b"binary", "share/licenses/nemo-speech/LICENSE":b"license"}
+        for name in ("msvcp140.dll","vcruntime140.dll","vcruntime140_1.dll"):
+            if name != missing: files["bin/"+name] = ("pinned-"+name).encode()
+        cache = root/"cache";cache.mkdir()
+        archive = cache/"worker.zip"
+        with zipfile.ZipFile(archive,"w") as bundle:
+            for name,data in files.items():bundle.writestr("worker/"+name,data)
+        spec = {"repository":"test/worker","version":"v1","commit":"pinned", "assets":{"windows-x64":[{
+            "backend":"cpu","name":archive.name,"bytes":archive.stat().st_size,"sha256":build.sha(archive)}]}}
+        return spec,cache,files
+
+    def test_pinned_crt_is_not_replaced_by_an_older_external_toolchain(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            spec,cache,files = self.fixture(root)
+            old = root/"older-crt";old.mkdir()
+            for name in ("msvcp140.dll","vcruntime140.dll","vcruntime140_1.dll"):(old/name).write_bytes(b"old")
+            with patch.object(build,"SPEC",spec), patch.object(build.importlib.util,"spec_from_file_location",side_effect=AssertionError("external CRT discovery")):
+                build.prepare("windows-x64",cache,root/"out",old)
+                build.verify_staged(root/"out","windows-x64")
+                for name,data in files.items():self.assertEqual((root/"out/cpu"/name).read_bytes(),data)
+
+    def test_incomplete_official_crt_fails_instead_of_mixing_libraries(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            spec,cache,_ = self.fixture(root,missing="vcruntime140_1.dll")
+            with patch.object(build,"SPEC",spec):
+                with self.assertRaises(ValueError):build.prepare("windows-x64",cache,root/"out")
+            self.assertFalse((root/"out").exists())
+
 if __name__ == "__main__":
     unittest.main()

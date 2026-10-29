@@ -70,6 +70,9 @@ def package_receipt(root, target=None):
         binary = "nemo-speech.exe" if receipt["target"].startswith("windows") else "nemo-speech"
         if f"{backend}/bin/{binary}" not in names or f"{backend}/share/licenses/nemo-speech/LICENSE" not in names:
             raise ValueError("Speech executable or license is missing")
+        if receipt["target"].startswith("windows") and not all(
+                f"{backend}/bin/{name}" in names for name in ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll")):
+            raise ValueError("Speech package is missing its pinned app-local C++ runtime")
     return receipt
 
 
@@ -160,13 +163,8 @@ def extract(archive, destination, item):
 
 def prepare(target, cache, output, redist=None, cmake=None):
     cmake = cmake or ["cmake"]
-    crt = {}
-    if target.startswith("windows"):
-        # The existing summary packager owns the app-local MSVC redistributable contract.
-        spec = importlib.util.spec_from_file_location("nero_summary_build", ROOT / "scripts/native-summary/prepare.py")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        crt = module.windows_crt(redist)
+    if target.startswith("windows") and redist is not None:
+        print("Using the verified archives' app-local C++ runtime; external CRT files are not substituted.")
     if output.exists():
         raise ValueError("Destination exists; preserve it and use a new destination")
     cache.mkdir(parents=True, exist_ok=True)
@@ -204,8 +202,10 @@ def prepare(target, cache, output, redist=None, cmake=None):
                 raise ValueError("Missing diarization executable")
             if not (destination / "share/licenses/nemo-speech/LICENSE").is_file():
                 raise ValueError("Missing runtime license")
-            for name, source in crt.items():
-                shutil.copyfile(source, destination / "bin" / name)
+            if target.startswith("windows"):
+                required = {"msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"}
+                if not all((destination / "bin" / name).is_file() for name in required):
+                    raise ValueError("Pinned speech archive is missing its app-local C++ runtime")
         receipt = {
             "target": target,
             "runtime": SPEC,
@@ -224,7 +224,7 @@ if __name__ == "__main__":
     parser.add_argument("--target", choices=SPEC["assets"])
     parser.add_argument("--cache", type=Path, default=ROOT / ".work/diarization-runtime-downloads")
     parser.add_argument("--output", type=Path, default=ROOT / "apps/desktop/.generated/native/diarization")
-    parser.add_argument("--msvc-redist", type=Path)
+    parser.add_argument("--msvc-redist", type=Path, help="Compatibility argument; the verified speech archives own their CRT files")
     parser.add_argument("--cmake", default="cmake")
     parser.add_argument("--cmake-python", type=Path)
     parser.add_argument("--verify-staged", type=Path)
