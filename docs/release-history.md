@@ -1,5 +1,13 @@
 # Nero 릴리스 이력
 
+## 미배포: 녹음 중 처리와 Mac 메모리 로딩
+
+- 공통 기능 source `f7e4630a88ddaaaf5f551359fbcee8bd685c22d0`, Mac PR47 source `5afd730ad379a5381f19bdb15d42fb07ecae2c88`. 설치 build35를 변경한 기록이 아니며 새 공증/설치는 별도다.
+- 저장된 PCM을 읽는 한 세션 ASR/독립 화자 stream과 종료 후 취소 가능한 일반 작업을 연결했다. 오래된 종료 응답이 새 녹음 상태를 덮지 않으며, 완료 ASR은 화자 처리 전에 checkpoint한다. 재시작 후 명시적 재시도는 원음/세션/해시가 일치하는 완료 결과만 재사용한다.
+- Mac은 base v0.2.0에 공식 PR47의9파일만 적용한 source package를 사용한다. 소스/의존성/patch hash와 target별 identity를 한곳에서 관리하고, 과거 artifact의 provenance를 바꾸지 않는다. Windows는 기존 공식 Vulkan/CPU runtime을 유지한다.
+- Mac 파일 공급 검증에서81분 입력을 정상 완료했고,5141단어/시각과 화자 확률 전체가 기존 기준과 같았다. 동일 빌드 조건의 CPU 비교도 결과가 같았다. Core227/CLI39/desktop320(실기5제외)/frontend426, frontend/native build와 package14검사를 통과했다. 실제 마이크/8GB 동시 사용/Windows 실기/자연3시간 수락과 구분한다.
+
+
 제품 버전, 소스 커밋과 실제 배포 상태를 구분한다. 전체 Git 변경 이력은 저장소에 유지하고, 이 문서에는 릴리스 기준과 주요 경계를 기록한다. 버전 규칙은 [버전 관리](versioning.md)를 따른다.
 
 ## 0.0.1 / build 35 (개인 설치 및 화면 검증 완료)

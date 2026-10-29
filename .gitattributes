@@ -6,3 +6,6 @@ design-system/** text eol=lf
 
 # Unified diff context lines contain required spaces; preserve the pinned patch bytes.
 scripts/native-moss-harness/patches/*.patch text eol=lf -whitespace
+
+# Preserve the exact verified native speech patch, including diff context spaces.
+scripts/native-diarization/patches/*.patch text eol=lf -whitespace
