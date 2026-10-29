@@ -171,3 +171,50 @@ test('collapsed navigation has no separate action rail or pin icon',async t=>{
  assert.equal(doc.querySelector('svg[data-icon="pin"]'),null);
  assert.equal(doc.querySelectorAll('#toggleNav').length,1);
 });
+
+
+test('new meeting owns import and notes without prefilled summary or duplicate creation',async t=>{
+ const window=await setup(t),doc=window.document;
+ assert.equal(doc.querySelector('.create-options'),null);
+ assert.equal(doc.querySelector('.sidebar-utilities [data-import]'),null);
+ doc.getElementById('new').click();
+ assert.equal(doc.querySelectorAll('[data-recent-row]').length,5);
+ const id=doc.querySelector('[data-recent-meeting][aria-current="page"]').dataset.recentMeeting;
+ assert.equal(doc.querySelector('.summary'),null);
+ assert.equal(doc.getElementById('transcriptToggle').hidden,true);
+ const title=doc.getElementById('draft-title');title.value='직접 정한 제목';title.dispatchEvent(new window.Event('input',{bubbles:true}));
+ const notes=doc.getElementById('draft-notes');notes.value='유지할 메모';notes.dispatchEvent(new window.Event('input',{bubbles:true}));
+ doc.querySelector('[data-import]').click();
+ const dialog=doc.querySelector('dialog');
+ assert.equal(dialog.querySelector('button[value="cancel"]').formNoValidate,true);
+ dialog.close('cancel');await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(doc.querySelector('[data-import]').isConnected,true);
+ doc.querySelector('[data-import]').click();
+ Object.defineProperty(dialog.querySelector('input[type="file"]'),'files',{value:[new window.File(['sample'],'검토 음성.wav',{type:'audio/wav'})]});
+ dialog.close('confirm');await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(doc.querySelectorAll('[data-recent-row]').length,5);
+ assert.equal(doc.querySelector('[data-recent-meeting][aria-current="page"]').dataset.recentMeeting,id);
+ assert.equal(doc.getElementById('draft-title').value,'직접 정한 제목');
+ assert.equal(doc.getElementById('draft-notes').value,'유지할 메모');
+ assert.match(doc.querySelector('.attached-audio').textContent,/검토 음성.wav/);
+ assert.equal(doc.querySelector('[data-import]'),null);
+ assert.equal(doc.querySelector('.summary'),null);
+});
+
+test('calendar attaches to the same meeting and cancel leaves the draft unchanged',async t=>{
+ const window=await setup(t),doc=window.document;
+ doc.getElementById('new').click();
+ const id=doc.querySelector('[data-recent-meeting][aria-current="page"]').dataset.recentMeeting;
+ doc.querySelector('[data-calendar]').click();const dialog=doc.querySelector('dialog');
+ dialog.querySelector('[name="title"]').value='지난 회의';dialog.querySelector('[name="date"]').value='2026-10-28T09:00';
+ dialog.close('cancel');await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(doc.getElementById('draft-title').value,'새 회의');
+ doc.querySelector('[data-calendar]').click();dialog.querySelector('[name="title"]').value='미리 준비하는 회의';dialog.querySelector('[name="date"]').value='2027-01-05T09:00';
+ dialog.close('confirm');await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(doc.querySelectorAll('[data-recent-row]').length,5);
+ assert.equal(doc.querySelector('[data-recent-meeting][aria-current="page"]').dataset.recentMeeting,id);
+ assert.equal(doc.getElementById('draft-title').value,'미리 준비하는 회의');
+ assert.match(doc.querySelector('.draft-heading .metadata').textContent,/2027/);
+ doc.getElementById('new').click();doc.getElementById('new').click();
+ assert.equal(doc.getElementById('draft-title').value,'새 회의 (1)');
+});
