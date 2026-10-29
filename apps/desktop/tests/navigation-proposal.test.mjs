@@ -39,6 +39,7 @@ test('hover reveals the sidebar without duplicate controls; the same button pins
 
 test('folder and meeting breadcrumbs navigate to the actual parent and preserve root view mode',async t=>{
   const window=await setup(t),doc=window.document;
+  doc.querySelector('#breadcrumbs [data-home]').click();
   doc.querySelector('.folder[data-filter="제품팀"]').click();
   assert.equal(doc.querySelector('h1').textContent,'제품팀');
   assert.equal(doc.querySelector('#breadcrumbs [aria-current="page"]').textContent,'제품팀');
@@ -64,4 +65,20 @@ test('temporary sidebar closes after pointer exit but stays while entering a sea
   aside.dispatchEvent(new window.PointerEvent('pointerleave',{pointerType:'mouse'}));
   await new Promise(resolve=>setTimeout(resolve,220));
   assert.equal(shell.classList.contains('nav-peek'),true);
+});
+
+ test('prototype feedback belongs to the selected meeting and supports retry and dismissal', async t => {
+  const window = await setup(t), doc = window.document;
+  doc.querySelector('[data-state="cancelled"]').click();
+  assert.match(doc.querySelector('.meeting-status').textContent, /음성 기록 변환을 취소/);
+  doc.querySelector('[data-retry]').click();
+  assert.equal(doc.querySelector('.meeting-status').dataset.status, 'processing');
+  doc.querySelector('[data-cancel]').click();
+  assert.equal(doc.querySelector('.meeting-status').dataset.status, 'cancelled');
+  doc.querySelector('[data-recent-meeting="2"]').click();
+  assert.equal(doc.querySelector('.meeting-status'), null);
+  doc.querySelector('[data-recent-meeting="1"]').click();
+  assert.equal(doc.querySelector('.meeting-status').dataset.status, 'cancelled');
+  doc.querySelector('[data-dismiss]').click();
+  assert.equal(doc.querySelector('.meeting-status'), null);
 });
