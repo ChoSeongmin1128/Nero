@@ -19,7 +19,7 @@ use std::thread;
 use std::time::Duration;
 
 pub const MANIFEST: &str = include_str!("../../models/diarization.json");
-const RUNTIME: &str = "nemo-speech-0.2.0@6a3ca369370782acee0dd155e34394ba60b920c4";
+use nero_core::speech_runtime::current as runtime;
 const RESULT_LIMIT: u64 = 16 * 1024 * 1024;
 const POSTERIOR_LIMIT: u64 = 128 * 1024 * 1024;
 
@@ -369,7 +369,7 @@ fn posterior(
         || receipt["secondsPerFrame"].as_f64() != Some(f64::from(0.01_f32))
         || receipt["probabilityBytes"].as_u64() != Some(expected_bytes)
         || receipt["runtimeVersionString"] != "nemo-speech-asr 0.2.0"
-        || receipt["runtimePin"] != "6a3ca369370782acee0dd155e34394ba60b920c4"
+        || receipt["runtimePin"] != nero_core::speech_runtime::pin()
         || receipt["inputAndWeightsAndLibraryUnchanged"] != true
         || receipt["postprocessingPolicy"] != "nemotron-v3-contiguous-threshold-0.5-v1"
         || receipt["threshold"] != 0.5
@@ -434,7 +434,7 @@ pub(super) fn completed_live(
         model: spec.repository,
         model_revision: spec.revision,
         model_sha256: item.sha256.clone(),
-        runtime: RUNTIME.into(),
+        runtime: runtime().into(),
         configuration: config.clone(),
         raw: read_limited(&path.join("diarization.json"), RESULT_LIMIT)?,
         posterior: Some(posterior(path, audio, &weights, &native, &config, cancel)?),
@@ -473,7 +473,7 @@ pub(super) fn analyze_with_model(
                 "schemaVersion":1, "audio":audio, "model":weights,
                 "library":native, "output":attempt_dir,
                 "backend":config["backend"], "modelSha256":item.sha256,
-                "runtimePin":"6a3ca369370782acee0dd155e34394ba60b920c4"
+                "runtimePin":nero_core::speech_runtime::pin()
             }),
         )?;
         record(
@@ -481,7 +481,7 @@ pub(super) fn analyze_with_model(
             &json!({
                 "sourceVersion": source.version, "sourceSessionId": source.source_session_id,
                 "model": spec.repository, "modelRevision": spec.revision,
-                "modelSha256": item.sha256, "runtime": RUNTIME, "configuration": config
+                "modelSha256": item.sha256, "runtime": runtime(), "configuration": config
             }),
         )?;
         process.update(|progress| {
@@ -522,7 +522,7 @@ pub(super) fn analyze_with_model(
                     model: spec.repository,
                     model_revision: spec.revision,
                     model_sha256: item.sha256.clone(),
-                    runtime: RUNTIME.into(),
+                    runtime: runtime().into(),
                     configuration: config,
                     raw,
                     posterior: Some(posterior),
@@ -768,7 +768,7 @@ mod tests {
             model: spec.repository,
             model_revision: spec.revision,
             model_sha256: spec.files[0].sha256.clone(),
-            runtime: RUNTIME.into(),
+            runtime: runtime().into(),
             configuration: config.clone(),
             raw: read_limited(&artifacts.join("speaker/diarization.json"), RESULT_LIMIT).unwrap(),
             posterior: Some(
@@ -1048,7 +1048,7 @@ mod tests {
             "nativeFrames":101,"expectedNativeFrames":101,"speakerSlots":8,"backend":"cpu",
             "secondsPerFrame":f64::from(0.01_f32),"probabilityBytes":data.len(),
             "runtimeVersionString":"nemo-speech-asr 0.2.0",
-            "runtimePin":"6a3ca369370782acee0dd155e34394ba60b920c4",
+            "runtimePin":nero_core::speech_runtime::pin(),
             "inputAndWeightsAndLibraryUnchanged":true,
             "postprocessingPolicy":"nemotron-v3-contiguous-threshold-0.5-v1",
             "threshold":0.5,"thresholdComparison":">",

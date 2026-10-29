@@ -6,7 +6,6 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const PROJECTION_VERSION: &str = "majority-coverage-v1";
 pub const WORD_PROJECTION_VERSION: &str = "nemo-word-160ms-argmax-v1";
 const TIMEBASE: u64 = 16_000;
-const NEMO_RUNTIME: &str = "nemo-speech-0.2.0@6a3ca369370782acee0dd155e34394ba60b920c4";
 const NEMO_MODEL: &str = "nvidia/Nemotron-3-Diarization";
 const NEMO_REVISION: &str = "f667ed73aee57d40cc39428eb768b4fd87a0a29e";
 const NEMO_SHA256: &str = "08456d9e22cd9a323c0364d98375f3746d6e68507ebb705cd46438c534c7a3a1";
@@ -14,7 +13,7 @@ const NEMO_TAIL_RULE: &str = "nemo-v3-centered-stft-terminal-tail-v1";
 
 fn pinned_nemo(draft: &SpeakerAnalysisDraft) -> bool {
     let config = &draft.configuration;
-    draft.runtime == NEMO_RUNTIME
+    crate::speech_runtime::known(&draft.runtime)
         && draft.model == NEMO_MODEL
         && draft.model_revision == NEMO_REVISION
         && draft.model_sha256 == NEMO_SHA256
@@ -155,7 +154,7 @@ pub(crate) fn posterior_profile(draft: &SpeakerAnalysisDraft) -> bool {
     !(draft.model != NEMO_MODEL
         || draft.model_revision != NEMO_REVISION
         || draft.model_sha256 != NEMO_SHA256
-        || draft.runtime != NEMO_RUNTIME
+        || !crate::speech_runtime::known(&draft.runtime)
         || c["scope"] != "recording"
         || c["fullAttention"] != false
         || c["batching"] != false
@@ -534,6 +533,7 @@ pub(crate) fn project_with_source_assignments(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::speech_runtime::current as runtime;
 
     fn draft(segments: serde_json::Value, activity: serde_json::Value) -> SpeakerAnalysisDraft {
         let source = Transcript {
@@ -591,7 +591,7 @@ mod tests {
         draft.model = NEMO_MODEL.into();
         draft.model_revision = NEMO_REVISION.into();
         draft.model_sha256 = NEMO_SHA256.into();
-        draft.runtime = NEMO_RUNTIME.into();
+        draft.runtime = runtime().into();
         draft.configuration = serde_json::json!({
             "scope":"recording","preset":"v3-offline","fullAttention":false,
             "backend":"cpu","batching":false,"postprocessingSource":"pinned-runtime-defaults",

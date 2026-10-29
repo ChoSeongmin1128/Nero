@@ -47,7 +47,12 @@ This file applies to the entire repository.
   and revision identities. Preserve the MOSS EOS, measured-budget, single-generation
   and complete-input checks for its whole-recording artifacts; the stored-artifact
   policy does not authorize an old worker as a new recognition fallback.
-- ASR and diarization share the pinned native speech package. GPU is preferred;
+- ASR and diarization share the pinned native speech package. Its target identity,
+  source recipe and hashes are owned by `scripts/native-diarization/runtime.json`;
+  Core and all workers use `speech_runtime` rather than independent pin strings.
+  macOS uses only the verified PR47 mmap backport; Windows retains its existing
+  official base until a separate runtime qualification. Stored base artifacts stay
+  readable without rewriting provenance. GPU is preferred;
   only a confirmed unavailable GPU backend permits the packaged CPU route. Allocation
   and generic runtime failures do not authorize CPU fallback. Windows packages contain
   Vulkan and CPU runtimes. Windows WAV preparation uses the portable bounded converter;

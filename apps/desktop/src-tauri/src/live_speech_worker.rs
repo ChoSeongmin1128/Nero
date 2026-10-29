@@ -193,7 +193,7 @@ pub(super) fn entry(path: &Path) -> Result<ExitPolicy> {
         return Err("ASR did not complete its native stream".into());
     }
     let raw = json!({"schemaVersion":1,"model":manifest["repository"],"modelRevision":manifest["revision"],
-        "runtime":"nemo-speech-0.2.0@6a3ca369370782acee0dd155e34394ba60b920c4",
+        "runtime":nero_core::speech_runtime::current(),
         "processingPolicy":"whole-recording-stateful-live-v1","completionEvidence":"native-stream-finish-cabi-v1",
         "completed":true,"inputAudioFrames":count,"audioSampleRate":16000,
         "audioDurationSeconds":count as f64/16000.0,"nativeDurationSeconds":result["duration"],

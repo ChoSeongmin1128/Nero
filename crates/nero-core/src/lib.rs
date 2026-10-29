@@ -7,6 +7,7 @@ mod library;
 mod nemotron;
 pub mod presentation;
 pub mod reader;
+pub mod speech_runtime;
 mod store;
 mod summary;
 pub mod templates;

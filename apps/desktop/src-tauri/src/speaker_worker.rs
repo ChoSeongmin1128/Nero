@@ -8,7 +8,7 @@ use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-const RUNTIME_PIN: &str = "6a3ca369370782acee0dd155e34394ba60b920c4";
+use nero_core::speech_runtime::pin as runtime_pin;
 const MODEL_SHA256: &str = "08456d9e22cd9a323c0364d98375f3746d6e68507ebb705cd46438c534c7a3a1";
 const MODEL_BYTES: u64 = 107_012_128;
 const SAMPLE_RATE: u32 = 16_000;
@@ -655,7 +655,7 @@ struct Prepared {
 
 fn prepare(request: &Request) -> Result<Prepared> {
     if request.schema_version != 1
-        || request.runtime_pin != RUNTIME_PIN
+        || request.runtime_pin != runtime_pin()
         || request.model_sha256 != MODEL_SHA256
         || std::mem::size_of::<usize>() != 8
         || std::mem::size_of::<ModelConfig>() != 56
@@ -906,7 +906,7 @@ fn finish_export(
         "geometryEvidence":"pinned-c-abi-overrides-no-runtime-readback"
     });
     let identity = json!({
-        "runtimePin":RUNTIME_PIN,"runtimeVersionString":version,"backend":request.backend,
+        "runtimePin":runtime_pin(),"runtimeVersionString":version,"backend":request.backend,
         "gpuIndex":request.backend.gpu(),"sourceAudioSha256":input.source_sha,
         "modelSha256":input.model_sha,"librarySha256":input.library_sha,
         "inputAndWeightsAndLibraryUnchanged":true

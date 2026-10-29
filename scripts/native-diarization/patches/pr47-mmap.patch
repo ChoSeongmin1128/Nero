@@ -1,0 +1,885 @@
+--- a/src/asr/encoder/rel_pos_attention.cpp
++++ b/src/asr/encoder/rel_pos_attention.cpp
+@@ -110,8 +110,9 @@
+     // Prefer GGUF-embedded PE (produced by convert_model.py). Fall back
+     // to external pe.bin for legacy tdt-0.6b flow.
+     if (session->gguf_loader != nullptr && session->gguf_loader->has_tensor(name + ".pe")) {
+-        auto data = session->gguf_loader->get_tensor_file_data(name + ".pe", data_size);
+-        ggml_backend_tensor_set(pe_tensor.tensor, data, 0, data_size);
++        // May be left unallocated for zero-copy mmap binding — see
++        // TensorContainer::allocate_tensors_on_backend_buffers.
++        session->bind_or_copy_tensor(pe_tensor, name + ".pe");
+         return;
+     }
+     std::vector<char> buffer(data_size);
+--- a/src/runtime/ggml/CMakeLists.txt
++++ b/src/runtime/ggml/CMakeLists.txt
+@@ -9,6 +9,12 @@
+ # position-independent lib; absorbed into each pipeline's shared library at
+ # link time. NOT installed — internal implementation detail.
+ file(GLOB RUNTIME_GGML_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp")
++
++# Reuses llama.cpp's llama_mmap (not the full `llama` target, nor
++# llama-impl.cpp, whose format() clashes with logging.cpp's — see llama_log_shim.cpp).
++list(APPEND RUNTIME_GGML_SOURCES
++    ${NEMO_SPEECH_LLAMA_CPP_DIR}/src/llama-mmap.cpp
++)
+ 
+ add_library(nemo_speech_runtime_ggml STATIC ${RUNTIME_GGML_SOURCES})
+ 
+@@ -23,6 +29,11 @@
+ )
+ target_include_directories(nemo_speech_runtime_ggml PRIVATE
+     ${CMAKE_SOURCE_DIR}/src/common
++)
++
++target_include_directories(nemo_speech_runtime_ggml PRIVATE
++    ${NEMO_SPEECH_LLAMA_CPP_DIR}/src
++    ${NEMO_SPEECH_LLAMA_CPP_DIR}/include
+ )
+ 
+ target_link_libraries(nemo_speech_runtime_ggml PUBLIC ${GGML_DEPENDENCIES})
+--- /dev/null
++++ b/src/runtime/ggml/llama_log_shim.cpp
+@@ -0,0 +1,20 @@
++// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
++// SPDX-License-Identifier: Apache-2.0
++//
++// llama-mmap.cpp (reused by GGUFLoader) logs via LLAMA_LOG_*; this supplies
++// the one symbol it needs without linking llama-impl.cpp (format() clash).
++#include <cstdarg>
++#include <cstdio>
++
++#include "llama-impl.h"
++#include "runtime.h"
++
++void
++llama_log_internal(ggml_log_level level, const char* fmt, ...) {
++    char buf[1024];
++    va_list args;
++    va_start(args, fmt);
++    vsnprintf(buf, sizeof(buf), fmt, args);
++    va_end(args);
++    ggml_runtime::log_internal(level, __FILE__, __LINE__, "llama_mmap", "%s", buf);
++}
+--- a/src/runtime/ggml/loader.cpp
++++ b/src/runtime/ggml/loader.cpp
+@@ -6,6 +6,7 @@
+ // Licensed under the MIT License. See THIRD_PARTY_NOTICES.md.
+ #include <algorithm>
+ 
++#include "llama-mmap.h"
+ #include "runtime.h"
+ 
+ #if defined(_WIN32)
+@@ -20,202 +21,8 @@
+ #include <io.h>
+ #endif
+ 
+-struct llama_file {
+-#if defined(_WIN32)
+-    FILE* fp;
+-    HANDLE fp_win32;
+-    size_t size;
+-
+-   private:
+-    std::string GetErrorMessageWin32(DWORD error_code) const {
+-        std::string ret;
+-        LPSTR lpMsgBuf = NULL;
+-        DWORD bufLen = FormatMessageA(
+-            FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
+-                FORMAT_MESSAGE_IGNORE_INSERTS,
+-            NULL, error_code, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), (LPSTR)&lpMsgBuf, 0, NULL);
+-        if (!bufLen) {
+-            ret = format("Win32 error code: %lx", error_code);
+-        } else {
+-            ret = lpMsgBuf;
+-            LocalFree(lpMsgBuf);
+-        }
+-
+-        return ret;
+-    }
+-
+-   public:
+-    llama_file(const char* fname, const char* mode) {
+-        fp = ggml_fopen(fname, mode);
+-        if (fp == NULL) {
+-            throw std::runtime_error(format("failed to open %s: %s", fname, strerror(errno)));
+-        }
+-        fp_win32 = (HANDLE)_get_osfhandle(_fileno(fp));
+-        seek(0, SEEK_END);
+-        size = tell();
+-        seek(0, SEEK_SET);
+-    }
+-
+-    size_t tell() const {
+-        LARGE_INTEGER li;
+-        li.QuadPart = 0;
+-        BOOL ret = SetFilePointerEx(fp_win32, li, &li, FILE_CURRENT);
+-        if (!ret) {
+-            throw std::runtime_error(
+-                format("read error: %s", GetErrorMessageWin32(GetLastError()).c_str()));
+-        }
+-
+-        return li.QuadPart;
+-    }
+-
+-    void seek(size_t offset, int whence) const {
+-        // SEEK_* and FILE_* must remain interchangeable here.
+-        static_assert(SEEK_SET == FILE_BEGIN, "SEEK_SET != FILE_BEGIN");
+-        static_assert(SEEK_CUR == FILE_CURRENT, "SEEK_CUR != FILE_CURRENT");
+-        static_assert(SEEK_END == FILE_END, "SEEK_END != FILE_END");
+-
+-        LARGE_INTEGER li;
+-        li.QuadPart = offset;
+-        BOOL ret = SetFilePointerEx(fp_win32, li, NULL, whence);
+-        if (!ret) {
+-            throw std::runtime_error(
+-                format("read error: %s", GetErrorMessageWin32(GetLastError()).c_str()));
+-        }
+-    }
+-
+-    void read_raw(void* ptr, size_t len) const {
+-        // Some Windows configurations reject ReadFile requests larger than 64 MiB.
+-        size_t bytes_read = 0;
+-        while (bytes_read < len) {
+-            size_t chunk_size = std::min<size_t>(len - bytes_read, 64 * 1024 * 1024);
+-            DWORD chunk_read = 0;
+-            BOOL result = ReadFile(
+-                fp_win32, reinterpret_cast<char*>(ptr) + bytes_read, chunk_size, &chunk_read, NULL);
+-            if (!result) {
+-                throw std::runtime_error(
+-                    format("read error: %s", GetErrorMessageWin32(GetLastError()).c_str()));
+-            }
+-            if (chunk_read < chunk_size || chunk_read == 0) {
+-                throw std::runtime_error("unexpectedly reached end of file");
+-            }
+-
+-            bytes_read += chunk_read;
+-        };
+-    }
+-
+-    uint32_t read_u32() const {
+-        uint32_t val;
+-        read_raw(&val, sizeof(val));
+-        return val;
+-    }
+-
+-    void write_raw(const void* ptr, size_t len) const {
+-        // Match the conservative ReadFile chunk limit.
+-        size_t bytes_written = 0;
+-        while (bytes_written < len) {
+-            size_t chunk_size = std::min<size_t>(len - bytes_written, 64 * 1024 * 1024);
+-            DWORD chunk_written = 0;
+-            BOOL result = WriteFile(
+-                fp_win32, reinterpret_cast<char const*>(ptr) + bytes_written, chunk_size,
+-                &chunk_written, NULL);
+-            if (!result) {
+-                throw std::runtime_error(
+-                    format("write error: %s", GetErrorMessageWin32(GetLastError()).c_str()));
+-            }
+-            if (chunk_written < chunk_size || chunk_written == 0) {
+-                throw std::runtime_error("unexpectedly failed to write bytes");
+-            }
+-
+-            bytes_written += chunk_written;
+-        }
+-    }
+-
+-    void write_u32(std::uint32_t val) const { write_raw(&val, sizeof(val)); }
+-
+-    ~llama_file() {
+-        if (fp) {
+-            std::fclose(fp);
+-        }
+-    }
+-#else
+-    FILE* fp;
+-    size_t size;
+-
+-    llama_file(const char* fname, const char* mode) {
+-        fp = ggml_fopen(fname, mode);
+-        if (fp == NULL) {
+-            throw std::runtime_error(format("failed to open %s: %s", fname, strerror(errno)));
+-        }
+-        seek(0, SEEK_END);
+-        size = tell();
+-        seek(0, SEEK_SET);
+-    }
+-
+-    size_t tell() const {
+-#ifdef _WIN32
+-        __int64 ret = _ftelli64(fp);
+-#else
+-        long ret = std::ftell(fp);
+-#endif
+-        if (ret == -1) {
+-            throw std::runtime_error(format("ftell error: %s", strerror(errno)));
+-        }
+-
+-        return (size_t)ret;
+-    }
+-
+-    void seek(size_t offset, int whence) const {
+-#ifdef _WIN32
+-        int ret = _fseeki64(fp, (__int64)offset, whence);
+-#else
+-        int ret = std::fseek(fp, (long)offset, whence);
+-#endif
+-        if (ret != 0) {
+-            throw std::runtime_error(format("seek error: %s", strerror(errno)));
+-        }
+-    }
+-
+-    void read_raw(void* ptr, size_t len) const {
+-        if (len == 0) {
+-            return;
+-        }
+-        errno = 0;
+-        std::size_t ret = std::fread(ptr, len, 1, fp);
+-        if (ferror(fp)) {
+-            throw std::runtime_error(format("read error: %s", strerror(errno)));
+-        }
+-        if (ret != 1) {
+-            throw std::runtime_error("unexpectedly reached end of file");
+-        }
+-    }
+-
+-    uint32_t read_u32() const {
+-        uint32_t ret;
+-        read_raw(&ret, sizeof(ret));
+-        return ret;
+-    }
+-
+-    void write_raw(const void* ptr, size_t len) const {
+-        if (len == 0) {
+-            return;
+-        }
+-        errno = 0;
+-        size_t ret = std::fwrite(ptr, len, 1, fp);
+-        if (ret != 1) {
+-            throw std::runtime_error(format("write error: %s", strerror(errno)));
+-        }
+-    }
+-
+-    void write_u32(std::uint32_t val) const { write_raw(&val, sizeof(val)); }
+-
+-    ~llama_file() {
+-        if (fp) {
+-            std::fclose(fp);
+-        }
+-    }
+-#endif
+-};
+-
++// llama_file/llama_mmap are llama.cpp's own (vendored), reused as-is
++// instead of reimplemented.
+ 
+ namespace ggml_runtime {
+ 
+@@ -244,7 +51,7 @@
+     }
+ 
+     m_file = std::make_unique<llama_file>(path.c_str(), "rb");
+-    GGMLF_LOG_INFO("GGUF file size: %ld\n", m_file->size);
++    GGMLF_LOG_INFO("GGUF file size: %ld\n", (long)m_file->size());
+ 
+     auto n_tensors = gguf_get_n_tensors(m_context.get());
+     GGMLF_LOG_INFO("GGUF has %d tensors\n", n_tensors);
+@@ -264,18 +71,70 @@
+         }
+         last_tensor_offset = tensor_offset;
+     }
+-    if (m_file->size > last_tensor_offset) {
+-        max_tensor_size = std::max(max_tensor_size, m_file->size - last_tensor_offset);
++    if (m_file->size() > last_tensor_offset) {
++        max_tensor_size = std::max(max_tensor_size, m_file->size() - last_tensor_offset);
+     }
+     const uint64_t tensor_size_mb = max_tensor_size / 1024 / 1024;
+     GGMLF_LOG_INFO("Max tensor size: %zu MB\n", static_cast<size_t>(tensor_size_mb));
+     m_tensor_buffer.resize((tensor_size_mb + 1) * 1024 * 1024);
++
++    // Lazily-faulted mmap (prefetch=0): clean, evictable pages instead of a
++    // malloc'd copy. llama_mmap throws on failure (e.g. ENODEV); a null
++    // m_mapping selects the fread path.
++    if (llama_mmap::SUPPORTED) {
++        try {
++            m_mapping = std::make_shared<llama_mmap>(m_file.get(), /*prefetch=*/0, /*numa=*/false);
++        }
++        catch (const std::exception& e) {
++            GGMLF_LOG_WARN(
++                "mmap of %s failed (%s); falling back to buffered reads\n", path.c_str(), e.what());
++        }
++    }
+ }
+ 
+ void
+ GGUFLoader::release_file_resources() {
++    // m_mapping is kept: zero-copy tensors point into it for the model's
++    // lifetime. Closing the fd here is safe independent of that.
+     m_file.reset();
+     std::vector<char>().swap(m_tensor_buffer);
++}
++
++bool
++GGUFLoader::is_mmapped() const {
++    return m_mapping != nullptr;
++}
++
++uint64_t
++GGUFLoader::get_tensor_offset(const std::string& tensor_name) const {
++    auto it = m_tensor_infos.find(tensor_name);
++    if (it == m_tensor_infos.end()) {
++        throw std::runtime_error("Tensor not found: " + tensor_name);
++    }
++    return std::get<1>(it->second);
++}
++
++void*
++GGUFLoader::mapped_tensor_ptr(const std::string& tensor_name, size_t size) const {
++    if (!m_mapping) {
++        throw std::logic_error("mapped_tensor_ptr() called without an active mmap mapping");
++    }
++    const uint64_t offset = get_tensor_offset(tensor_name);
++    // Same bound as get_tensor_file_data(); a truncated file must fail here, not fault later.
++    if (offset > m_mapping->size() || size > m_mapping->size() - offset) {
++        throw std::runtime_error("Tensor data out of range: " + tensor_name);
++    }
++    return static_cast<char*>(m_mapping->addr()) + offset;
++}
++
++std::shared_ptr<void>
++GGUFLoader::mapping_handle() const {
++    return m_mapping;
++}
++
++void*
++GGUFLoader::mapped_base() const {
++    return m_mapping ? m_mapping->addr() : nullptr;
+ }
+ 
+ const char*
+@@ -290,7 +149,7 @@
+     auto tensor_info = it->second;
+     auto tensor_offset = std::get<1>(tensor_info);
+ 
+-    if (tensor_offset + size > m_file->size) {
++    if (tensor_offset + size > m_file->size()) {
+         throw std::runtime_error("Tensor data out of range: " + tensor_name);
+     }
+     if (size > m_tensor_buffer.size()) {
+--- a/src/runtime/ggml/runtime.h
++++ b/src/runtime/ggml/runtime.h
+@@ -60,6 +60,7 @@
+     ::ggml_runtime::log_internal(GGML_LOG_LEVEL_INFO, __FILE__, __LINE__, __func__, __VA_ARGS__)
+ 
+ struct llama_file;
++struct llama_mmap;
+ 
+ namespace ggml_runtime {
+ 
+@@ -100,6 +101,18 @@
+     std::vector<int64_t> get_tensor_ne(const std::string& tensor_name) const;
+     bool has_tensor(const std::string& tensor_name) const;
+ 
++    // False when mmap is unsupported or failed; use get_tensor_file_data() then.
++    bool is_mmapped() const;
++    // Absolute file offset (includes the GGUF data offset); the mapping starts
++    // at file offset 0, so mapped_base() + offset addresses the tensor.
++    uint64_t get_tensor_offset(const std::string& tensor_name) const;
++    // Pointer to `size` bytes of the tensor in the mapping. Throws logic_error
++    // without a mapping, runtime_error ("out of range") past the end of the file.
++    void* mapped_tensor_ptr(const std::string& tensor_name, size_t size) const;
++    void* mapped_base() const;
++    // Null when not mapped. Hold this while keeping pointers into the mapping.
++    std::shared_ptr<void> mapping_handle() const;
++
+     // Metadata accessors (return `def` if key missing).
+     uint32_t get_u32(const std::string& key, uint32_t def = 0) const;
+     int32_t get_i32(const std::string& key, int32_t def = 0) const;
+@@ -114,6 +127,9 @@
+     std::string m_path;
+     gguf_context_ptr m_context;
+     std::unique_ptr<llama_file> m_file;
++    // Out-of-line dtor sees the complete llama_mmap type; never released by
++    // release_file_resources() — see loader.cpp for why.
++    std::shared_ptr<llama_mmap> m_mapping;
+     std::map<std::string, std::tuple<ggml_type, uint64_t>> m_tensor_infos;
+     // Per-tensor on-disk dimensionality.
+     std::map<std::string, int> m_tensor_n_dims;
+@@ -274,6 +290,13 @@
+     ggml_bf_context get_ctx_of_buffer_type(ggml_backend_buffer_type_t buft);
+     void allocate_tensors_on_backend_buffers();
+     void free_temp_ctx();
++
++    // Opt in to zero-copy weight binding for GGUF-backed tensors on
++    // eligible bufts; see allocate_tensors_on_backend_buffers.
++    void set_mmap_loader(GGUFLoader* loader) { mmap_loader_ = loader; }
++    // Non-null once allocate_tensors_on_backend_buffers() built a
++    // zero-copy buffer for this buft.
++    ggml_backend_buffer_t mmap_buffer_for(ggml_backend_buffer_type_t buft) const;
+     ggml_bf_tensor get_tensor_by_name(const std::string& name);
+     bool has_tensor_by_name(const std::string& name);
+     void cache_tensor(std::string name, ggml_bf_tensor tensor);
+@@ -301,8 +324,14 @@
+     // (the ggml_bf_context.ctx field) into these contexts.
+     std::vector<ggml_context_ptr> owned_ctxs_;
+     buft_ctx_map_t ctx_map;
++    // Outlives backend_buffers (declared first) so mmap-backed buffers stay valid.
++    std::shared_ptr<void> mmap_keepalive_;
+     std::vector<ggml_backend_buffer_ptr> backend_buffers;
+     std::map<std::string, ggml_bf_tensor> tensor_lookup;
++    // Non-owning, used only while allocating; see set_mmap_loader(). Null unless opted in.
++    GGUFLoader* mmap_loader_ = nullptr;
++    // Non-owning views into backend_buffers, keyed by buft; see mmap_buffer_for().
++    std::map<ggml_backend_buffer_type_t, ggml_backend_buffer_t> mmap_bufs_;
+ 
+     ggml_bf_tensor m_create_tensor(ggml_tensor* meta, std::string& name);
+ };
+@@ -332,6 +361,10 @@
+ 
+     // Allows exact dtype copies and F32-to-F16 conversion.
+     void load_weight(const std::string& gguf_key);
++
++    // Verbatim bind-or-copy of a GGUF tensor, for set_data() overrides that
++    // read GGUF directly instead of going through load_weight().
++    void bind_or_copy_tensor(ggml_bf_tensor t, const std::string& gguf_key);
+ 
+     // Import a model tensor whose storage is owned by the embedding pipeline. Call only from
+     // Module::define_tensors(); the tensor and its backend buffer must outlive this Session.
+--- a/src/runtime/ggml/session.cpp
++++ b/src/runtime/ggml/session.cpp
+@@ -286,6 +286,21 @@
+ 
+ 
+ void
++Session::bind_or_copy_tensor(ggml_bf_tensor t, const std::string& gguf_key) {
++    if (t.tensor->data == nullptr) {
++        // Left unbound for zero-copy (see
++        // TensorContainer::allocate_tensors_on_backend_buffers); bind directly.
++        ggml_backend_buffer_t buf = model_tensor_container->mmap_buffer_for(t.buft);
++        ggml_backend_tensor_alloc(
++            buf, t.tensor, gguf_loader->mapped_tensor_ptr(gguf_key, ggml_nbytes(t.tensor)));
++    } else {
++        const size_t mem_bytes = ggml_nbytes(t.tensor);
++        const char* data = gguf_loader->get_tensor_file_data(gguf_key, mem_bytes);
++        ggml_backend_tensor_set(t.tensor, data, 0, mem_bytes);
++    }
++}
++
++void
+ Session::load_weight(const std::string& gguf_key) {
+     ggml_bf_tensor t = model_tensor_container->get_tensor_by_name(gguf_key);
+     const ggml_type mem = t.tensor->type;
+@@ -302,8 +317,7 @@
+     if (mem == disk) {
+         // Verbatim: tensor was declared at the on-disk dtype, so ggml_nbytes
+         // matches the on-disk byte size for any format (F32/F16/BF16/Q*).
+-        const char* data = gguf_loader->get_tensor_file_data(gguf_key, mem_bytes);
+-        ggml_backend_tensor_set(t.tensor, data, 0, mem_bytes);
++        bind_or_copy_tensor(t, gguf_key);
+     } else if (disk == GGML_TYPE_F32 && mem == GGML_TYPE_F16) {
+         // Converter quirk: some Conv weights are F32 on disk but wanted F16 in
+         // memory. On-disk is 2x the F16 byte size.
+@@ -339,6 +353,7 @@
+     // two-pass sizing used for activation graphs.
+     model_tensor_container =
+         std::make_unique<TensorContainer>(buft_list, TensorContainer::ArenaSizes{});
++    model_tensor_container->set_mmap_loader(gguf_loader);
+     // State tensors (declared via create_state_tensor_*) live in this sibling
+     // container, which is deliberately NEVER allocate_tensors_on_backend_buffers()'d:
+     // each per-stream SessionState supplies their device backing per run. The
+--- a/src/runtime/ggml/tensor_container.cpp
++++ b/src/runtime/ggml/tensor_container.cpp
+@@ -22,6 +22,62 @@
+         }
+     }
+     return buft_list.back().second;  // CPU main is always last
++}
++
++// Packs `tensors` tightly into one fresh buffer via ggml_tallocr. Shared by
++// the sched_managed and mmap-leftover paths below.
++static ggml_backend_buffer_t
++alloc_tensor_subset(ggml_backend_buffer_type_t buft, const std::vector<ggml_tensor*>& tensors) {
++    if (tensors.empty()) {
++        return nullptr;
++    }
++    const size_t align = ggml_backend_buft_get_alignment(buft);
++    size_t total = 0;
++    for (ggml_tensor* t : tensors) {
++        const size_t sz = ggml_backend_buft_get_alloc_size(buft, t);
++        total += (sz + align - 1) / align * align;
++    }
++    if (total == 0) {
++        return nullptr;
++    }
++    ggml_backend_buffer_ptr owned(ggml_backend_buft_alloc_buffer(buft, total));
++    if (!owned) {
++        const char* buft_name = ggml_backend_buft_name(buft);
++        throw std::runtime_error(
++            std::string("failed to allocate tensor buffer for buffer type ") +
++            (buft_name ? buft_name : "<unknown>") + " (out of device memory?)");
++    }
++    ggml_backend_buffer_t buf = owned.get();
++    ggml_tallocr ta = ggml_tallocr_new(buf);
++    for (ggml_tensor* t : tensors) {
++        if (ggml_tallocr_alloc(&ta, t) != GGML_STATUS_SUCCESS) {
++            // owned's destructor frees buf here.
++            throw std::runtime_error(std::string("failed to place tensor ") + t->name);
++        }
++    }
++    owned.release();
++    return buf;
++}
++
++// The CPU buffer type reports a NULL device; resolve it to the CPU device as
++// llama.cpp does (llama-model.cpp), so CPU weights are eligible too.
++static ggml_backend_dev_t
++buft_device_or_cpu(ggml_backend_buffer_type_t buft) {
++    ggml_backend_dev_t dev = ggml_backend_buft_get_device(buft);
++    return dev ? dev : ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
++}
++
++// Eligible only for a device's default buft that supports
++// buffer_from_host_ptr (CPU/Metal); CUDA reports false and is unaffected.
++static bool
++buft_supports_mmap_zero_copy(ggml_backend_buffer_type_t buft) {
++    ggml_backend_dev_t dev = buft_device_or_cpu(buft);
++    if (!dev || buft != ggml_backend_dev_buffer_type(dev)) {
++        return false;
++    }
++    ggml_backend_dev_props props;
++    ggml_backend_dev_get_props(dev, &props);
++    return props.caps.buffer_from_host_ptr;
+ }
+ 
+ TensorBag::TensorBag() {
+@@ -229,46 +285,83 @@
+             by_buft[kv.second.buft].push_back(t);
+         }
+         for (auto& kv : by_buft) {
+-            ggml_backend_buffer_type_t buft = kv.first;
+-            const size_t align = ggml_backend_buft_get_alignment(buft);
+-            size_t total = 0;
+-            for (ggml_tensor* t : kv.second) {
+-                const size_t sz = ggml_backend_buft_get_alloc_size(buft, t);
+-                total += (sz + align - 1) / align * align;
++            ggml_backend_buffer_t buf = alloc_tensor_subset(kv.first, kv.second);
++            if (buf) {
++                backend_buffers.emplace_back(buf);
+             }
+-            if (total == 0) {
+-                continue;
++        }
++        return;
++    }
++    for (auto& p : ctx_map) {
++        ggml_backend_buffer_type_t buft = p.first;
++        ggml_bf_context bf_ctx = p.second;
++
++        // Split into GGUF-backed zero-copy candidates vs. everything else
++        // (e.g. RNNT decoder state tensors sharing this buft, no on-disk form).
++        std::vector<ggml_tensor*> mmap_tensors;
++        std::vector<ggml_tensor*> other_tensors;
++        const bool try_mmap =
++            mmap_loader_ && mmap_loader_->is_mmapped() && buft_supports_mmap_zero_copy(buft);
++        for (ggml_tensor* t = ggml_get_first_tensor(bf_ctx.ctx); t != nullptr;
++             t = ggml_get_next_tensor(bf_ctx.ctx, t)) {
++            // Type must match exactly: a dtype-converting weight (e.g.
++            // F32-on-disk/F16-in-memory) needs load_weight's copy-and-convert
++            // path, not a zero-copy bind into the raw on-disk bytes.
++            if (try_mmap && mmap_loader_->has_tensor(t->name) &&
++                mmap_loader_->get_tensor_type(t->name) == t->type) {
++                mmap_tensors.push_back(t);
++            } else {
++                other_tensors.push_back(t);
+             }
+-            ggml_backend_buffer_t buf = ggml_backend_buft_alloc_buffer(buft, total);
++        }
++
++        if (mmap_tensors.empty()) {
++            // Unchanged fast path: no zero-copy candidates on this buft.
++            ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors_from_buft(bf_ctx.ctx, buft);
+             if (!buf) {
+                 const char* buft_name = ggml_backend_buft_name(buft);
+                 throw std::runtime_error(
+-                    std::string("failed to allocate named-tensor buffer for buffer type ") +
++                    std::string("failed to allocate backend buffer for buffer type ") +
+                     (buft_name ? buft_name : "<unknown>") + " (out of device memory?)");
+             }
+-            ggml_tallocr ta = ggml_tallocr_new(buf);
+-            for (ggml_tensor* t : kv.second) {
+-                if (ggml_tallocr_alloc(&ta, t) != GGML_STATUS_SUCCESS) {
+-                    throw std::runtime_error(
+-                        std::string("failed to place named tensor ") + t->name);
+-                }
+-            }
+             backend_buffers.emplace_back(buf);
+-        }
+-        return;
+-    }
+-    for (auto& p : ctx_map) {
+-        ggml_backend_buffer_type_t buft = p.first;
+-        ggml_bf_context bf_ctx = p.second;
+-        ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors_from_buft(bf_ctx.ctx, buft);
+-        if (!buf) {
+-            const char* buft_name = ggml_backend_buft_name(buft);
++            continue;
++        }
++
++        uint64_t first = UINT64_MAX;
++        uint64_t last = 0;
++        for (ggml_tensor* t : mmap_tensors) {
++            const uint64_t off = mmap_loader_->get_tensor_offset(t->name);
++            first = std::min(first, off);
++            last = std::max(last, off + ggml_nbytes(t));
++        }
++        ggml_backend_dev_t dev = buft_device_or_cpu(buft);
++        void* base = mmap_loader_->mapped_base();
++        const size_t max_tensor_size = ggml_get_max_tensor_size(bf_ctx.ctx);
++        ggml_backend_buffer_t mmap_buf = ggml_backend_dev_buffer_from_host_ptr(
++            dev, static_cast<char*>(base) + first, last - first, max_tensor_size);
++        if (!mmap_buf) {
+             throw std::runtime_error(
+-                std::string("failed to allocate backend buffer for buffer type ") +
+-                (buft_name ? buft_name : "<unknown>") + " (out of device memory?)");
+-        }
+-        backend_buffers.emplace_back(buf);
+-    }
++                std::string("failed to create mmap-backed buffer for buffer type ") +
++                ggml_backend_buft_name(buft));
++        }
++        backend_buffers.emplace_back(mmap_buf);
++        mmap_bufs_[buft] = mmap_buf;
++        mmap_keepalive_ = mmap_loader_->mapping_handle();
++        // mmap_tensors are left with data == nullptr; Session::load_weight
++        // binds each one via ggml_backend_tensor_alloc.
++
++        ggml_backend_buffer_t other_buf = alloc_tensor_subset(buft, other_tensors);
++        if (other_buf) {
++            backend_buffers.emplace_back(other_buf);
++        }
++    }
++}
++
++ggml_backend_buffer_t
++TensorContainer::mmap_buffer_for(ggml_backend_buffer_type_t buft) const {
++    auto it = mmap_bufs_.find(buft);
++    return it == mmap_bufs_.end() ? nullptr : it->second;
+ }
+ 
+ size_t
+--- a/tests/cpp/asr/CMakeLists.txt
++++ b/tests/cpp/asr/CMakeLists.txt
+@@ -8,6 +8,12 @@
+ 
+ add_executable(test_rnnt_streaming test_rnnt_streaming.cpp)
+ target_link_libraries(test_rnnt_streaming PRIVATE nemo_speech_asr)
++
++add_executable(test_gguf_mmap_loader test_gguf_mmap_loader.cpp)
++target_link_libraries(test_gguf_mmap_loader PRIVATE nemo_speech_asr)
++# Synthetic-GGUF cases always run; NEMO_SPEECH_TEST_ASR_MODEL (if set) adds a full-model compare.
++add_test(NAME gguf_mmap_loader COMMAND test_gguf_mmap_loader $ENV{NEMO_SPEECH_TEST_ASR_MODEL})
++set_tests_properties(gguf_mmap_loader PROPERTIES SKIP_RETURN_CODE 77)
+ 
+ # Multi-threaded crosstalk / deadlock stress test for the shared cache-aware
+ # encoder Session driven by many per-stream SessionStates at once.
+@@ -55,6 +61,10 @@
+ target_link_libraries(test_diar_state PRIVATE nemo_speech_asr)
+ add_test(NAME diar_state COMMAND test_diar_state)
+ 
++add_executable(test_mel_features test_mel_features.cpp)
++target_link_libraries(test_mel_features PRIVATE nemo_speech_asr)
++add_test(NAME mel_features COMMAND test_mel_features)
++
+ add_executable(test_diar_recognizer test_diar_recognizer.cpp)
+ target_link_libraries(test_diar_recognizer PRIVATE nemo_speech_asr)
+ 
+--- /dev/null
++++ b/tests/cpp/asr/test_gguf_mmap_loader.cpp
+@@ -0,0 +1,185 @@
++// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
++// SPDX-License-Identifier: Apache-2.0
++// GGUFLoader mmap tests. Self-contained cases (synthetic GGUF): mapped bytes
++// match the buffered-fread path, a truncated file raises "out of range" rather
++// than handing out a pointer past the mapping, and the mapping outlives the
++// loader via mapping_handle(). If a model path is given, every tensor of that
++// model is also compared against the buffered-fread path.
++// Usage: ./test_gguf_mmap_loader [model.gguf]
++#include <cstdio>
++#include <cstring>
++#include <filesystem>
++#include <stdexcept>
++#include <string>
++#include <vector>
++
++#include "runtime.h"
++
++namespace fs = std::filesystem;
++
++namespace {
++
++int
++fail(const char* what) {
++    std::fprintf(stderr, "[FAIL] %s\n", what);
++    return 1;
++}
++
++constexpr size_t kBytesA = 8 * 4 * sizeof(float);  // F32 [8,4]
++constexpr size_t kBytesB = 16 * 2 * 2;             // F16 [16,2]
++
++// Writes a two-tensor GGUF ("a", "b") with a known byte pattern.
++bool
++write_synthetic_gguf(const std::string& path) {
++    gguf_context_ptr gctx(gguf_init_empty());
++    ggml_init_params ip = {/*mem_size=*/1 << 20, /*mem_buffer=*/nullptr, /*no_alloc=*/false};
++    ggml_context_ptr ctx(ggml_init(ip));
++    ggml_tensor* a = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F32, 8, 4);
++    ggml_tensor* b = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_F16, 16, 2);
++    ggml_set_name(a, "a");
++    ggml_set_name(b, "b");
++    for (ggml_tensor* t : {a, b}) {
++        for (size_t i = 0; i < ggml_nbytes(t); i++) {
++            static_cast<unsigned char*>(t->data)[i] = static_cast<unsigned char>(i * 7 + 1);
++        }
++        gguf_add_tensor(gctx.get(), t);
++    }
++    return gguf_write_to_file(gctx.get(), path.c_str(), false);
++}
++
++constexpr int kSkip = 77;  // matches SKIP_RETURN_CODE in CMake
++
++int
++test_synthetic(const fs::path& dir) {
++    const std::string path = (dir / "synthetic.gguf").string();
++    if (!write_synthetic_gguf(path)) {
++        return fail("could not write synthetic GGUF");
++    }
++
++    const void* mapped_a = nullptr;
++    std::shared_ptr<void> keepalive;
++    {
++        ggml_runtime::GGUFLoader loader(path);
++        if (!loader.is_mmapped()) {
++            // The loader falls back to buffered reads where mmap is unavailable.
++            std::fprintf(stdout, "[SKIP] mmap unavailable on this platform/filesystem\n");
++            return kSkip;
++        }
++        mapped_a = loader.mapped_tensor_ptr("a", kBytesA);
++        const void* mapped_b = loader.mapped_tensor_ptr("b", kBytesB);
++        if (std::memcmp(mapped_a, loader.get_tensor_file_data("a", kBytesA), kBytesA) != 0 ||
++            std::memcmp(mapped_b, loader.get_tensor_file_data("b", kBytesB), kBytesB) != 0) {
++            return fail("synthetic tensor bytes differ between mmap and fread");
++        }
++        keepalive = loader.mapping_handle();
++    }
++    // Loader destroyed: the pages must still be readable through the handle.
++    if (!keepalive || static_cast<const unsigned char*>(mapped_a)[0] != 1) {
++        return fail("mapping did not outlive the GGUFLoader");
++    }
++    keepalive.reset();
++
++    // Cut into the last tensor: the file still parses (no_alloc) but "b" now
++    // runs past EOF, so mapped_tensor_ptr() must throw rather than hand out a
++    // pointer past the mapping.
++    const std::string cut = (dir / "truncated.gguf").string();
++    fs::copy_file(path, cut, fs::copy_options::overwrite_existing);
++    fs::resize_file(cut, fs::file_size(cut) - 16);
++    ggml_runtime::GGUFLoader loader(cut);
++    if (!loader.is_mmapped() || loader.mapped_tensor_ptr("a", kBytesA) == nullptr) {
++        return fail("truncated GGUF: untouched tensor unreadable");
++    }
++    try {
++        loader.mapped_tensor_ptr("b", kBytesB);
++    }
++    catch (const std::runtime_error& e) {
++        if (std::string(e.what()).find("out of range") != std::string::npos) {
++            return 0;
++        }
++    }
++    return fail("truncated tensor did not raise 'Tensor data out of range'");
++}
++
++int
++test_model(const std::string& model_path) {
++    ggml_runtime::GGUFLoader loader(model_path);
++
++    if (!loader.is_mmapped()) {
++        std::fprintf(
++            stderr,
++            "[FAIL] GGUFLoader did not mmap %s (llama_mmap::SUPPORTED false on this "
++            "platform?)\n",
++            model_path.c_str());
++        return 1;
++    }
++    if (loader.mapped_base() == nullptr) {
++        std::fprintf(stderr, "[FAIL] is_mmapped() true but mapped_base() is null\n");
++        return 1;
++    }
++
++    struct gguf_init_params params = {/*no_alloc=*/true, /*ctx=*/nullptr};
++    gguf_context_ptr ctx(gguf_init_from_file(model_path.c_str(), params));
++    const int64_t n_tensors = ctx ? gguf_get_n_tensors(ctx.get()) : 0;
++    if (n_tensors == 0) {
++        std::fprintf(stderr, "[FAIL] GGUF has no tensors: %s\n", model_path.c_str());
++        return 1;
++    }
++
++    int checked = 0;
++    for (int64_t i = 0; i < n_tensors; i++) {
++        const std::string name = gguf_get_tensor_name(ctx.get(), i);
++        const ggml_type type = loader.get_tensor_type(name);
++        const auto ne = loader.get_tensor_ne(name);
++        if (ne.empty()) {
++            continue;
++        }
++        size_t n_elems = 1;
++        for (int64_t d : ne) n_elems *= static_cast<size_t>(d);
++        const size_t n_rows = n_elems / static_cast<size_t>(ne[0]);
++        const size_t nbytes = ggml_row_size(type, static_cast<size_t>(ne[0])) * n_rows;
++        if (nbytes == 0) {
++            continue;
++        }
++
++        const void* mapped = loader.mapped_tensor_ptr(name, nbytes);
++        const char* fread_data = loader.get_tensor_file_data(name, nbytes);
++
++        if (std::memcmp(mapped, fread_data, nbytes) != 0) {
++            std::fprintf(
++                stderr,
++                "[FAIL] mmap'd bytes for tensor '%s' (%zu bytes) don't match the buffered-fread "
++                "path -- mmap offset/base arithmetic is wrong\n",
++                name.c_str(), nbytes);
++            return 1;
++        }
++        checked++;
++    }
++
++    if (checked == 0) {
++        std::fprintf(
++            stderr, "[FAIL] no tensor in %s had decodable extents to check\n", model_path.c_str());
++        return 1;
++    }
++
++    std::fprintf(
++        stdout, "[PASS] mmap'd %d/%lld tensors match buffered-read bytes\n", checked,
++        (long long)n_tensors);
++    return 0;
++}
++
++}  // namespace
++
++int
++main(int argc, char** argv) {
++    const fs::path dir = fs::temp_directory_path() / "nemo_speech_gguf_mmap_test";
++    fs::create_directories(dir);
++    const int rc = test_synthetic(dir);
++    std::error_code ec;
++    fs::remove_all(dir, ec);
++    if (rc != 0)
++        return rc;
++    std::fprintf(stdout, "[PASS] synthetic GGUF: bytes, range check, mapping lifetime\n");
++    if (argc >= 2)
++        return test_model(argv[1]);
++    return 0;
++}

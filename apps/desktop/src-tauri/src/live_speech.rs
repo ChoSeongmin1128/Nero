@@ -320,7 +320,7 @@ fn run(
     let request = json!({"asrModel":model_path,"asrLibrary":library,"meetingId":meeting_id,"sessionId":session_id,
         "speaker":{"schemaVersion":1,"audio":audio,"model":speaker_weights,"library":library,
             "output":speaker_path,"backend":backend,"modelSha256":speaker_model.files[0].sha256,
-            "runtimePin":"6a3ca369370782acee0dd155e34394ba60b920c4"}});
+            "runtimePin":nero_core::speech_runtime::pin()}});
     let request_path = path.join("live-request.json");
     fs::write(&request_path, serde_json::to_vec_pretty(&request).unwrap())
         .map_err(|e| e.to_string())?;

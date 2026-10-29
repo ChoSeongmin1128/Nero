@@ -44,6 +44,9 @@ def package_receipt(root, target=None):
     if (receipt.get("runtime") != SPEC or receipt.get("sourceArchiveHashesVerified") is not True
             or receipt.get("target") not in SPEC["assets"] or target is not None and receipt["target"] != target):
         raise ValueError("Speech runtime does not match the pinned target/source")
+    profile = SPEC.get("sourceBuilds", {}).get(receipt["target"])
+    if receipt.get("sourceBuild") != profile:
+        raise ValueError("Speech source-build provenance differs from its pin")
     entries = receipt.get("files")
     if not isinstance(entries, list) or not entries:
         raise ValueError("Speech runtime file receipt is empty")
@@ -155,7 +158,8 @@ def extract(archive, destination, item):
                             write(item.name, stream)
 
 
-def prepare(target, cache, output, redist=None):
+def prepare(target, cache, output, redist=None, cmake=None):
+    cmake = cmake or ["cmake"]
     crt = {}
     if target.startswith("windows"):
         # The existing summary packager owns the app-local MSVC redistributable contract.
@@ -170,7 +174,13 @@ def prepare(target, cache, output, redist=None):
     with tempfile.TemporaryDirectory(prefix="diarization-", dir=output.parent) as temporary:
         stage = Path(temporary) / "diarization"
         stage.mkdir()
-        for item in SPEC["assets"][target]:
+        profile = SPEC.get("sourceBuilds", {}).get(target)
+        if profile:
+            spec = importlib.util.spec_from_file_location("nero_speech_source", Path(__file__).with_name("source_build.py"))
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            module.build(profile, cache, stage / "gpu", cmake, archive_path)
+        for item in ([] if profile else SPEC["assets"][target]):
             archive = cache / item["name"]
             if not archive.is_file() or archive.stat().st_size != item["bytes"] or sha(archive) != item["sha256"]:
                 partial = cache / (item["name"] + ".part")
@@ -200,6 +210,7 @@ def prepare(target, cache, output, redist=None):
             "target": target,
             "runtime": SPEC,
             "sourceArchiveHashesVerified": True,
+            "sourceBuild": profile,
             "fileHashScope": "before Developer ID code signing",
             "files": package_files(stage),
         }
@@ -214,6 +225,8 @@ if __name__ == "__main__":
     parser.add_argument("--cache", type=Path, default=ROOT / ".work/diarization-runtime-downloads")
     parser.add_argument("--output", type=Path, default=ROOT / "apps/desktop/.generated/native/diarization")
     parser.add_argument("--msvc-redist", type=Path)
+    parser.add_argument("--cmake", default="cmake")
+    parser.add_argument("--cmake-python", type=Path)
     parser.add_argument("--verify-staged", type=Path)
     parser.add_argument("--optional", action="store_true")
     parser.add_argument("--execute-runtime", action="store_true")
@@ -227,4 +240,5 @@ if __name__ == "__main__":
     else:
         if args.target is None:
             parser.error("--target is required to prepare a runtime")
-        prepare(args.target, args.cache, args.output, args.msvc_redist)
+        prepare(args.target, args.cache, args.output, args.msvc_redist,
+                [str(args.cmake_python), "-m", "cmake"] if args.cmake_python else [args.cmake])

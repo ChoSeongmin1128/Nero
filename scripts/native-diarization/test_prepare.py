@@ -26,7 +26,7 @@ class PackagingTests(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(data)
         receipt = {"target": "macos-arm64", "runtime": build.SPEC,
-                   "sourceArchiveHashesVerified": True, "fileHashScope": "before Developer ID code signing",
+                   "sourceArchiveHashesVerified": True, "sourceBuild": build.SPEC.get("sourceBuilds", {}).get("macos-arm64"), "fileHashScope": "before Developer ID code signing",
                    "files": build.package_files(root)}
         (root / "runtime.json").write_text(json.dumps(receipt))
         return receipt
@@ -135,6 +135,19 @@ class PackagingTests(unittest.TestCase):
             self.assertEqual(run.call_args.args[0], [str(root / "gpu/bin/nemo-speech"), "--version"])
             self.assertEqual(run.call_args.kwargs["timeout"], 15)
 
+
+
+class SourceProvenanceTests(unittest.TestCase):
+    def test_missing_or_changed_source_recipe_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            tests = PackagingTests()
+            receipt = tests.fixture(root)
+            for invalid in ({"pin": "unknown"}, {"patch": "unverified"}):
+                receipt["sourceBuild"] = invalid
+                (root / "runtime.json").write_text(json.dumps(receipt))
+                with self.assertRaises(ValueError):
+                    build.verify_staged(root)
 
 if __name__ == "__main__":
     unittest.main()

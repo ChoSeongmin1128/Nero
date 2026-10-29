@@ -7,7 +7,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
 pub(crate) const PROJECTOR_VERSION: &str = "nemotron-asr-sentences-v1";
-const RUNTIME: &str = "nemo-speech-0.2.0@6a3ca369370782acee0dd155e34394ba60b920c4";
 const POLICY: &str = "whole-recording-stateful-v1";
 const SAMPLE_RATE: u32 = 16000;
 // Pinned transcribe.cpp uses defaultfloat's six significant digits. Duration is
@@ -106,7 +105,7 @@ pub(crate) fn decode_asr(
     if output.schema_version != 1
         || Some(output.model.as_str()) != manifest["repository"].as_str()
         || Some(output.model_revision.as_str()) != manifest["revision"].as_str()
-        || output.runtime != RUNTIME
+        || !crate::speech_runtime::known(&output.runtime)
         || !((output.processing_policy == POLICY
             && output.completion_evidence == "native-stream-finish-exit0-v1")
             || (output.processing_policy == "whole-recording-stateful-live-v1"
@@ -788,6 +787,7 @@ pub(crate) fn create_speaker_generation(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::speech_runtime::current as runtime;
     use crate::transcript::tests::{output as moss_output, setup};
 
     fn value() -> serde_json::Value {
@@ -796,7 +796,7 @@ pub(crate) mod tests {
         serde_json::json!({
             "schemaVersion":1,
             "model":manifest["repository"],"modelRevision":manifest["revision"],
-            "runtime":RUNTIME,"processingPolicy":POLICY,
+            "runtime":runtime(),"processingPolicy":POLICY,
             "completionEvidence":"native-stream-finish-exit0-v1","completed":true,
             "inputAudioFrames":16000,"audioSampleRate":16000,
             "audioDurationSeconds":1.0,"nativeDurationSeconds":1.0,
@@ -841,6 +841,28 @@ pub(crate) mod tests {
         assert_eq!(source.association, "direct");
         assert_eq!(source.speaker_scope, None);
         assert_eq!(source.chunking_policy.as_deref(), Some(POLICY));
+    }
+
+    #[test]
+    fn historical_base_output_remains_readable_with_its_own_raw_identity() {
+        let spec: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../scripts/native-diarization/runtime.json"
+        ))
+        .unwrap();
+        let mut historical = value();
+        historical["runtime"] = serde_json::json!(format!(
+            "nemo-speech-{}@{}",
+            spec["version"].as_str().unwrap().trim_start_matches('v'),
+            spec["commit"].as_str().unwrap()
+        ));
+        let bytes = serde_json::to_vec(&historical).unwrap();
+        let source = project(historical).unwrap().source.unwrap();
+        assert_eq!(source.raw_sha256, format!("{:x}", Sha256::digest(bytes)));
+        let patched = project(value()).unwrap();
+        assert_eq!(patched.segments.len(), 3);
+        if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+            assert_ne!(source.raw_sha256, patched.source.unwrap().raw_sha256);
+        }
     }
 
     #[test]
@@ -1133,7 +1155,7 @@ pub(crate) mod tests {
             model: "nvidia/Nemotron-3-Diarization".into(),
             model_revision: "f667ed73aee57d40cc39428eb768b4fd87a0a29e".into(),
             model_sha256: "08456d9e22cd9a323c0364d98375f3746d6e68507ebb705cd46438c534c7a3a1".into(),
-            runtime: RUNTIME.into(),
+            runtime: runtime().into(),
             configuration: serde_json::json!({"scope":"recording","fullAttention":false,"batching":false,"backend":"cpu",
                 "postprocessingSource":"nvidia-v3-probability-v1","assignment":"nemo-word-160ms-argmax-v1",
                 "geometry":{"spkcache":264,"fifo":40,"chunk":340,"updatePeriod":300,"leftContext":0,"rightContext":40}}),

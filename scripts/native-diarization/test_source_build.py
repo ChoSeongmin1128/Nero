@@ -1,0 +1,71 @@
+import importlib.util
+import io
+import json
+from pathlib import Path
+import sys
+import tarfile
+import tempfile
+import unittest
+from unittest.mock import patch
+
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location("speech_source", Path(__file__).with_name("source_build.py"))
+build = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(build)
+
+
+class SourceBuildTests(unittest.TestCase):
+    def test_verified_cache_is_used_without_network(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "owner-repo-commit.tar.gz"
+            path.write_bytes(b"source")
+            item = {"repository": "owner/repo", "commit": "commit", "bytes": 6, "sha256": build.digest(path)}
+            with patch.object(build.urllib.request, "urlopen", side_effect=AssertionError("network")):
+                self.assertEqual(build.archive(item, root), path)
+
+    def test_wrong_download_hash_never_becomes_a_cache_entry(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            item = {"repository": "owner/repo", "commit": "commit", "bytes": 3, "sha256": "0" * 64}
+            with patch.object(build.urllib.request, "urlopen", return_value=io.BytesIO(b"bad")):
+                with self.assertRaises(ValueError):
+                    build.archive(item, root)
+            self.assertFalse((root / "owner-repo-commit.tar.gz").exists())
+
+    def test_extract_rejects_escape_and_external_aliases(self):
+        for name, link in (("../outside", None), ("source/link", "../../outside")):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                archive = root / "source.tar.gz"
+                with tarfile.open(archive, "w:gz") as bundle:
+                    item = tarfile.TarInfo(name)
+                    if link:
+                        item.type = tarfile.SYMTYPE
+                        item.linkname = link
+                        bundle.addfile(item)
+                    else:
+                        item.size = 1
+                        bundle.addfile(item, io.BytesIO(b"x"))
+                with self.assertRaises((ValueError, tarfile.FilterError)):
+                    build.unpack(archive, root / "out")
+                self.assertFalse((root / "outside").exists())
+
+    def test_patch_hash_is_checked_before_any_source_mutation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "source").mkdir()
+            (root / "patch").write_bytes(b"bad")
+            profile = {"patch": {"file": "patch", "bytes": 3, "sha256": "0" * 64}}
+            with patch.object(build.subprocess, "run", side_effect=AssertionError("patch invoked")):
+                with self.assertRaises(ValueError):
+                    build.patch_source(root / "source", profile, root, {})
+
+    def test_non_mac_source_build_fails_before_download(self):
+        with patch.object(build.platform, "system", return_value="Windows"), patch.object(build, "archive", side_effect=AssertionError("download")):
+            with self.assertRaises(ValueError):
+                build.build({}, Path("unused"), Path("unused"), "cmake", None)
+
+
+if __name__ == "__main__":
+    unittest.main()

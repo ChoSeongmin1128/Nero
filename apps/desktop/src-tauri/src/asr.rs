@@ -9,7 +9,7 @@ use std::sync::atomic::AtomicBool;
 
 pub const MANIFEST: &str = include_str!("../../../../config/models/nemotron-asr.json");
 pub const LABEL: &str = "Nemotron35-ASR";
-const RUNTIME: &str = "nemo-speech-0.2.0@6a3ca369370782acee0dd155e34394ba60b920c4";
+use nero_core::speech_runtime::current as runtime;
 const POLICY: &str = "whole-recording-stateful-v1";
 const COMPLETION: &str = "native-stream-finish-exit0-v1";
 const RESULT_LIMIT: u64 = 16 * 1024 * 1024;
@@ -173,7 +173,7 @@ fn envelope(
     }
     Ok(json!({
         "schemaVersion": 1, "model": spec.repository, "modelRevision": spec.revision,
-        "runtime": RUNTIME, "processingPolicy": POLICY,
+        "runtime": runtime(), "processingPolicy": POLICY,
         "inputAudioFrames": frames, "audioSampleRate": SAMPLE_RATE,
         "audioDurationSeconds": frames as f64 / f64::from(SAMPLE_RATE),
         "inputAudioSha256": input_sha, "completed": true,
@@ -206,7 +206,7 @@ pub fn recognize(
     record(
         &path.join("recognition-request.json"),
         &json!({
-            "runtime": RUNTIME, "model": spec.repository, "modelRevision": spec.revision,
+            "runtime": runtime(), "model": spec.repository, "modelRevision": spec.revision,
             "processingPolicy": POLICY, "inputAudioFrames": frames, "audioSampleRate": SAMPLE_RATE,
             "inputAudioSha256": input_sha, "language": "ko-KR", "stream": true,
             "endpointing": false, "concurrency": 1, "batching": false, "warmup": false,
@@ -250,7 +250,7 @@ pub fn recognize(
     record(
         &path.join("recognition-completion.json"),
         &json!({
-            "runtime": RUNTIME, "processingPolicy": POLICY, "completionEvidence": COMPLETION,
+            "runtime": runtime(), "processingPolicy": POLICY, "completionEvidence": COMPLETION,
             "exitCode": 0, "inputAudioSha256": input_sha, "inputAudioFrames": frames,
             "nativeResultSha256": native_sha, "backend": backend(gpu),
             "nativeOutput": output.file_name().and_then(|value| value.to_str()),

@@ -25,5 +25,101 @@
         "sha256": "82c80451086e86194aba9af19f800da77cd66d1c28d993d0efceffd6cdb49bb8"
       }
     ]
+  },
+  "sourceBuilds": {
+    "macos-arm64": {
+      "identity": "nemo-speech-0.2.0@6a3ca369370782acee0dd155e34394ba60b920c4+pr47.848eb12212ae2cf912fd504cca7453d6c2f97b8097ba88b8d70b5d0d69b8dcdf",
+      "pin": "6a3ca369370782acee0dd155e34394ba60b920c4+pr47.848eb12212ae2cf912fd504cca7453d6c2f97b8097ba88b8d70b5d0d69b8dcdf",
+      "patch": {
+        "file": "patches/pr47-mmap.patch",
+        "sha256": "848eb12212ae2cf912fd504cca7453d6c2f97b8097ba88b8d70b5d0d69b8dcdf",
+        "bytes": 34185,
+        "files": [
+          {
+            "path": "src/asr/encoder/rel_pos_attention.cpp",
+            "baseSha256": "3446bc5a71f4e513f3173072e2bf90da6303b9e0b454e5a30478d9139485ce4a",
+            "resultSha256": "aa8d3420259d0eb3c48750781e00e8e47e165aa96b9e8bc23867794ffda3b315"
+          },
+          {
+            "path": "src/runtime/ggml/CMakeLists.txt",
+            "baseSha256": "0a8f94d12d65e9bd1c89844fdd0ada6bedf1cc8227a14859220378c0c30c1049",
+            "resultSha256": "70d66bf4aaa78f9a706598d8f9356cf7cd3a174cf79b9cf018c77c7d3afbb255"
+          },
+          {
+            "path": "src/runtime/ggml/llama_log_shim.cpp",
+            "baseSha256": null,
+            "resultSha256": "74434b2b70bd400e6bb1dce751597fdef41781eb8fe6ed0163ed0851cfd01352"
+          },
+          {
+            "path": "src/runtime/ggml/loader.cpp",
+            "baseSha256": "b637cdc587eac7d626d74b0c9763885c89ea7bd4ff137fae2ad504058be22c0a",
+            "resultSha256": "47fce233a30b0648aa085569844fb975c612bde8a909525bfc3587d420018035"
+          },
+          {
+            "path": "src/runtime/ggml/runtime.h",
+            "baseSha256": "8b16754a48bc69a9d0f9d2bc29913e9cf4a7e9b5321bd118780093010c5c0f25",
+            "resultSha256": "60664a158c1c03c05657420da032600e29133d95c11cd964abab3b720f3befcb"
+          },
+          {
+            "path": "src/runtime/ggml/session.cpp",
+            "baseSha256": "b37a3a1b5810d9034a847aa0923d5ae7063ec70f8f43080fec36c01db6e6d81c",
+            "resultSha256": "6124096a580b87867aeb3515cd18a5494c0e2eb3f3540fe4ffcd643f6e0b248c"
+          },
+          {
+            "path": "src/runtime/ggml/tensor_container.cpp",
+            "baseSha256": "95d65e2f7d64ab56027b67bb8ea6591bfe5d7f73ec3a1328fe33ece11590b914",
+            "resultSha256": "30d7281e6a21a55380595dec64898ddcffebed0d075453eb755b69aab495acd4"
+          },
+          {
+            "path": "tests/cpp/asr/CMakeLists.txt",
+            "baseSha256": "d7c5d911d22102279fa51af2eff2af9edbdd8a4a0f14d56e16d8fa0aa377aa43",
+            "resultSha256": "c5abb64f703dfdae09d796c21bac473ce8a64f5a320059fa956dd98ff778b1fd"
+          },
+          {
+            "path": "tests/cpp/asr/test_gguf_mmap_loader.cpp",
+            "baseSha256": null,
+            "resultSha256": "ebc31c9f95424fab9c160685e62fd79bc1855a57c72fd62c683d3b9cb305614f"
+          }
+        ]
+      },
+      "sources": [
+        {
+          "repository": "NVIDIA/NeMo-Speech.cpp",
+          "commit": "6a3ca369370782acee0dd155e34394ba60b920c4",
+          "sha256": "2db94a47ad61a16e6ff3da1786fc4097747233dedf2f12671201782af640165c",
+          "bytes": 2380381
+        },
+        {
+          "repository": "ggml-org/llama.cpp",
+          "commit": "bd4f514db14d87fded667787a7a963bfbaa98e89",
+          "sha256": "b02af830447d56db65f6579414dee3c06d9d116cc1765d2539417ee8a7ff1dfa",
+          "bytes": 37568242
+        },
+        {
+          "repository": "google/sentencepiece",
+          "commit": "31646a467d2051eb904e0b45de3a73e91fe1c1e3",
+          "sha256": "b4eb17e6bea5c9380ddd79d04d01d6aa5e280be8f3e3cef1f745a80e6d9451ce",
+          "bytes": 13487581
+        }
+      ],
+      "cmakeFlags": [
+        "-G",
+        "Unix Makefiles",
+        "-DCMAKE_BUILD_TYPE=Release",
+        "-DCMAKE_OSX_ARCHITECTURES=arm64",
+        "-DGGML_METAL=ON",
+        "-DGGML_METAL_EMBED_LIBRARY=ON",
+        "-DGGML_NATIVE=ON",
+        "-DGGML_LLAMAFILE=ON",
+        "-DNEMO_SPEECH_BUILD_ASR=ON",
+        "-DNEMO_SPEECH_BUILD_DIAR=ON",
+        "-DNEMO_SPEECH_BUILD_TTS=OFF",
+        "-DNEMO_SPEECH_BUILD_NMT=OFF",
+        "-DNEMO_SPEECH_BUILD_MIC_CAPTURE=OFF",
+        "-DNEMO_SPEECH_BUILD_HTTP=OFF",
+        "-DNEMO_SPEECH_BUILD_TESTS=OFF",
+        "-DNEMO_SPEECH_BUILD_EXAMPLES=OFF"
+      ]
+    }
   }
 }
