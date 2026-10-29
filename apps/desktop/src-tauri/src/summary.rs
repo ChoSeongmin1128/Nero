@@ -1259,6 +1259,22 @@ async fn run_summary_with_notes(
     cache_base: &Path,
     cancel: &AtomicBool,
 ) -> SummaryResult<(String, Value)> {
+    run_summary_with_template(
+        process, source, notes, weights, path, cache_base, cancel, None,
+    )
+    .await
+}
+
+async fn run_summary_with_template(
+    process: &Processing,
+    source: &Transcript,
+    notes: &str,
+    weights: &Path,
+    path: &Path,
+    cache_base: &Path,
+    cancel: &AtomicBool,
+    template: Option<&grove_core::templates::PromptTemplate>,
+) -> SummaryResult<(String, Value)> {
     let monitor = MemoryMonitor::new();
     monitor_attempt(
         process,
@@ -1268,7 +1284,10 @@ async fn run_summary_with_notes(
         recover_summary(process, path, cancel, |gpu, folder| async move {
             let mut server = launch(process, weights, gpu, &folder, cancel).await?;
             process.update(|p| p.message = "요약 중".into());
-            let result = pipeline::run(&server, source, notes, cache_base, process, cancel).await;
+            let result = pipeline::run_with_template(
+                &server, source, notes, cache_base, process, cancel, template,
+            )
+            .await;
             server.stop(process)?;
             result.map_err(|error| server.diagnose(error))
         }),
@@ -1315,14 +1334,28 @@ impl Processing {
         core: CoreHandle,
         meeting_id: String,
     ) -> Result<Progress, String> {
-        self.summarize_bound(core, meeting_id, None)
+        self.summarize_selected(core, meeting_id, None)
     }
-    pub(super) fn summarize_bound(
+    pub fn summarize_selected(
+        self: &Arc<Self>,
+        core: CoreHandle,
+        meeting_id: String,
+        selection: Option<crate::summary_template::TemplateRef>,
+    ) -> Result<Progress, String> {
+        let (selection, _) = crate::summary_template::select(&self.root, selection)?;
+        self.summarize_bound_with_template(core, meeting_id, None, Some(selection))
+    }
+    pub(super) fn summarize_bound_with_template(
         self: &Arc<Self>,
         core: CoreHandle,
         meeting_id: String,
         required_fingerprint: Option<String>,
+        selection: Option<crate::summary_template::TemplateRef>,
     ) -> Result<Progress, String> {
+        let template = selection
+            .as_ref()
+            .map(|value| value.resolve(&self.root))
+            .transpose()?;
         if !availability(self).1 {
             return Err("먼저 요약 모델을 준비해 주세요.".into());
         }
@@ -1335,13 +1368,19 @@ impl Processing {
         }
 
         let source_core = core.clone();
-        self.start_meeting(
+        self.start_meeting_with_template(
             "summary",
             meeting_id.clone(),
             &source_core,
             required_fingerprint,
+            selection.clone(),
             move |process, cancel, path| {
                 let result = (|| -> SummaryResult<Option<String>> {
+                    if let Some(value) = &selection {
+                        value
+                            .resolve(&process.root)
+                            .map_err(|e| Failure::new(FailureKind::Input, e))?;
+                    }
                     let current = core
                         .summary_input(&meeting_id)
                         .map_err(preflight_core_failure)?;
@@ -1428,7 +1467,7 @@ impl Processing {
                         &format!("meetings/{meeting_id}/summary-work"),
                     )
                     .map_err(storage)?;
-                    let outcome = runtime.block_on(run_summary_with_notes(
+                    let outcome = runtime.block_on(run_summary_with_template(
                         &process,
                         &source,
                         &notes,
@@ -1436,6 +1475,7 @@ impl Processing {
                         &path,
                         &cache_base,
                         &cancel,
+                        template.as_ref(),
                     ));
                     let (text, receipt) = outcome?;
                     check_cancel(&cancel)?;
@@ -1453,7 +1493,12 @@ impl Processing {
                             model_sha256: Some(spec.files[0].sha256.clone()),
                             runtime: Some("llama.cpp b11734-f3fb2fcdb".into()),
                             prompt_version: Some(pipeline::VERSION.into()),
-                            template: Some("minutes".into()),
+                            template: Some(
+                                selection
+                                    .as_ref()
+                                    .map(|value| format!("{}@{}", value.id, value.revision))
+                                    .unwrap_or_else(|| "minutes".into()),
+                            ),
                         },
                         receipt,
                     };

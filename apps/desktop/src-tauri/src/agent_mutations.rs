@@ -1,5 +1,5 @@
 use crate::{processing::Processing, publish};
-use grove_core::agent_control::{ControlError, Mutation, Server};
+use grove_core::agent_control::{ControlError, JobRequest, Mutation, Server};
 use grove_core::CoreHandle;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -144,10 +144,33 @@ impl AgentMutations {
         });
         let weak = Arc::downgrade(&state);
         let worker_core = core.clone();
-        let server = Server::start(root, core, move |request| {
-            let state = weak.upgrade().ok_or_else(ControlError::unavailable)?;
-            state.execute(&app, &worker_core, &processing, request)
-        });
+        let job_state = weak.clone();
+        let job_processing = processing.clone();
+        let server = Server::start_with_jobs(
+            root,
+            core,
+            move |request| {
+                let state = weak.upgrade().ok_or_else(ControlError::unavailable)?;
+                state.execute(&app, &worker_core, &processing, request)
+            },
+            move |request| {
+                let state = job_state.upgrade().ok_or_else(ControlError::unavailable)?;
+                if state.gate.closing.load(Ordering::Acquire) {
+                    return Err(ControlError::new("app_not_ready", "Nero가 종료 중입니다."));
+                }
+                match request {
+                    JobRequest::List {
+                        meeting_id,
+                        offset,
+                        limit,
+                    } => job_processing.agent_jobs(meeting_id.as_deref(), offset, limit),
+                    JobRequest::Cancel {
+                        job_id,
+                        expected_version,
+                    } => job_processing.agent_cancel(&job_id, &expected_version),
+                }
+            },
+        );
         match server {
             Ok(server) => *state.server.lock().unwrap() = Some(server),
             Err(_) => eprintln!("Nero 에이전트 수정 연결을 열지 못했습니다."),

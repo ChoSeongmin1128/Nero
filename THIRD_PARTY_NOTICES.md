@@ -34,3 +34,10 @@ Runtime source: https://github.com/NVIDIA/NeMo-Speech.cpp.
 Optional team voice enrollment downloads the pinned FBANK / WeSpeaker Core ML models from
 https://huggingface.co/FluidInference/speaker-diarization-coreml (metadata: CC BY 4.0) on
 request. Voice features are stored encrypted; automatic naming remains disabled.
+
+## Portable WAV preparation
+
+Windows WAV preparation uses rubato 0.16.2 (MIT) and its FFT/numeric dependencies.
+The complete pinned dependency notices are included under
+`Contents/Resources/native/licenses/portable-wav/` (equivalent resources on Windows).
+Source: https://github.com/HEnquist/rubato/tree/v0.16.2 .

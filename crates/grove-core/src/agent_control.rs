@@ -157,6 +157,74 @@ pub const METHODS: [&str; 9] = [
     "folder_delete",
 ];
 
+pub const JOB_METHODS: [&str; 2] = ["jobs_list", "job_cancel"];
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "method", content = "params", deny_unknown_fields)]
+pub enum JobRequest {
+    #[serde(rename = "jobs_list")]
+    List {
+        #[serde(rename = "meetingId")]
+        meeting_id: Option<String>,
+        #[serde(default)]
+        offset: usize,
+        #[serde(default = "job_page_limit")]
+        limit: usize,
+    },
+    #[serde(rename = "job_cancel")]
+    Cancel {
+        #[serde(rename = "jobId")]
+        job_id: String,
+        #[serde(rename = "expectedVersion")]
+        expected_version: String,
+    },
+}
+
+fn job_page_limit() -> usize {
+    50
+}
+
+impl JobRequest {
+    pub fn parse(method: &str, params: Value) -> std::result::Result<Self, ControlError> {
+        let request: Self = serde_json::from_value(json!({"method":method,"params":params}))
+            .map_err(|_| ControlError::invalid())?;
+        match &request {
+            Self::List {
+                meeting_id, limit, ..
+            } if *limit == 0
+                || *limit > 200
+                || meeting_id
+                    .as_ref()
+                    .is_some_and(|id| store::validate_id(id).is_err()) =>
+            {
+                return Err(ControlError::invalid())
+            }
+            Self::Cancel {
+                job_id,
+                expected_version,
+            } if store::validate_id(job_id).is_err() || !valid_version(expected_version) => {
+                return Err(ControlError::invalid())
+            }
+            _ => (),
+        }
+        Ok(request)
+    }
+}
+
+enum ControlRequest {
+    Mutation(Mutation),
+    Job(JobRequest),
+}
+impl ControlRequest {
+    fn parse(method: &str, params: Value) -> std::result::Result<Self, ControlError> {
+        if JOB_METHODS.contains(&method) {
+            JobRequest::parse(method, params).map(Self::Job)
+        } else {
+            Mutation::parse(method, params).map(Self::Mutation)
+        }
+    }
+}
+
 fn valid_version(version: &str) -> bool {
     version
         .strip_prefix("sha256:")
@@ -534,7 +602,7 @@ pub fn request(
     method: &str,
     params: Value,
 ) -> std::result::Result<Value, ControlError> {
-    Mutation::parse(method, params.clone())?;
+    ControlRequest::parse(method, params.clone())?;
     let descriptor = read_descriptor(root)?;
     let envelope = Envelope {
         protocol: PROTOCOL,
@@ -635,6 +703,15 @@ impl Server {
         core: CoreHandle,
         handler: impl Fn(Mutation) -> std::result::Result<Value, ControlError> + Send + 'static,
     ) -> std::result::Result<Self, ControlError> {
+        Self::start_with_jobs(root, core, handler, |_| Err(ControlError::invalid()))
+    }
+
+    pub fn start_with_jobs(
+        root: &Path,
+        core: CoreHandle,
+        handler: impl Fn(Mutation) -> std::result::Result<Value, ControlError> + Send + 'static,
+        jobs: impl Fn(JobRequest) -> std::result::Result<Value, ControlError> + Send + 'static,
+    ) -> std::result::Result<Self, ControlError> {
         let path = descriptor_path(root)?;
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
             .map_err(|_| ControlError::new("app_not_ready", "Nero 수정 연결을 열지 못했습니다."))?;
@@ -699,8 +776,13 @@ impl Server {
                                         "Nero 수정 연결을 다시 확인해 주세요.",
                                     )
                                 })
-                                .and_then(|value| Mutation::parse(&value.method, value.params))
-                                .and_then(&handler);
+                                .and_then(|value| {
+                                    ControlRequest::parse(&value.method, value.params)
+                                })
+                                .and_then(|request| match request {
+                                    ControlRequest::Mutation(request) => handler(request),
+                                    ControlRequest::Job(request) => jobs(request),
+                                });
                             let response = match result {
                                 Ok(value) => json!({"result":value}),
                                 Err(error) => json!({"error":error}),
@@ -762,6 +844,53 @@ mod tests {
             .as_str()
             .unwrap()
             .into()
+    }
+
+    #[test]
+    fn job_requests_use_authenticated_transport_and_reject_unknown_fields() {
+        let (directory, core, _) = fixture();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let invoked = calls.clone();
+        let _server = Server::start_with_jobs(
+            directory.path(),
+            core,
+            |_| panic!("not a mutation"),
+            move |request| {
+                invoked.fetch_add(1, Ordering::SeqCst);
+                assert!(matches!(request, JobRequest::List { .. }));
+                Ok(json!({"jobs":[]}))
+            },
+        )
+        .unwrap();
+        assert!(JobRequest::parse("jobs_list", json!({"unknown":true})).is_err());
+        assert!(JobRequest::parse(
+            "job_cancel",
+            json!({"jobId":uuid::Uuid::new_v4().to_string()})
+        )
+        .is_err());
+        assert_eq!(
+            request(directory.path(), "jobs_list", json!({})).unwrap(),
+            json!({"jobs":[]})
+        );
+        let descriptor = read_descriptor(directory.path()).unwrap();
+        let mut stream = TcpStream::connect(descriptor.address).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        write_frame(
+            &mut stream,
+            &Envelope {
+                protocol: PROTOCOL,
+                generation: descriptor.generation,
+                secret: "invalid".into(),
+                method: "jobs_list".into(),
+                params: json!({}),
+            },
+        )
+        .unwrap();
+        let response: Value = serde_json::from_slice(&read_frame(&mut stream).unwrap()).unwrap();
+        assert!(response.get("error").is_some());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]

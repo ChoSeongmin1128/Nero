@@ -11,7 +11,7 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
 
 function harness(overrides = {}, options = {}) {
   const nodes = new Map(), calls = [], errors = [], dragImages = [], frames = new Map();
-  const state = { snapshot: { meetings: meetings(), folders: [{ id: 'project', name: '프로젝트' }], session: null }, selectedId: 'one', connected: true, libraryFilter: 'all', libraryOpen: true, librarySelection: new Set(), libraryBusy: false, processing: { status: 'idle' } };
+  const state = { snapshot: { meetings: meetings(), folders: [{ id: 'project', name: '프로젝트' }], session: null }, selectedId: 'one', connected: true, libraryView: 'all', libraryFilter: 'all', libraryOpen: true, librarySelection: new Set(), libraryBusy: false, processing: { status: 'idle' } };
   let locked = false, owner, frameId = 0;
   class Node {
     constructor(id) { this.id = id; this.listeners = {}; this.dataset = {}; this.value = ''; this.open = false; this.hidden = false; this.disabled = false; this.isConnected = true; this.ownerDocument = owner; this.style = {}; this.children = []; }

@@ -28,6 +28,8 @@ pub async fn serve(root: PathBuf) -> Result<(), ()> {
 fn tools() -> Vec<Tool> {
     METHODS.into_iter().map(|method| {
         let description = match method {
+            "jobs_list" => "Read minimal processing job IDs, kinds, meeting IDs, states and editVersion from running Nero, newest first. Does not start processing or load models. Pages reflect current state.",
+            "job_cancel" => "Cancel one queued or running job only on explicit current user intent, using its jobs_list editVersion. Requires running Nero. Saving results cannot be interrupted. Applied means cancellation accepted; query jobs_list for completion. Do not automatically retry conflicts or uncertain results.",
             "meetings_list" => "List meetings by folder/date. Resolve names with folders_list; unfiled selects no folder. trashed returns only recoverable metadata and editVersion.",
             "meetings_search" => "Find literal text in titles, notes, transcripts and saved summaries. Returns matching excerpts, not complete meeting content.",
             "meeting_get" => "Read meeting metadata, editVersion and paged notes. Concatenate page text in order.",

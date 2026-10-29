@@ -32,6 +32,8 @@ pub const HELP: &str = "Nero 로컬 CLI
   templates update ID --expected-revision HASH --file JSON_PATH
   templates delete ID --expected-revision HASH
   templates reset ID --expected-revision HASH
+  jobs list [--meeting-id ID] [--offset N] [--limit N]
+  jobs cancel ID --expected-version HASH
   doctor
   mcp
 
@@ -60,6 +62,8 @@ mcp는 stdin/stdout으로 MCP를 제공하며 stdout에 진단 문구를 쓰지 
 회의 수정은 실행 중인 Nero에 요청합니다. 파일은 update의 title/notes 또는
 일괄 작업의 expectedVersions와 move의 folderId(null=미분류)를 포함합니다.
 회의/폴더 수정본은 조회 응답의 editVersion이며 sourceVersion과 다릅니다.
+작업 조회/취소는 실행 중인 Nero에 요청하며 모델을 실행하지 않습니다.
+작업 취소는 jobs list의 editVersion을 사용하며 취소 요청 수락 후 상태를 다시 조회합니다.
 요약 import 파일은 summary context의 context, 생성한 text, producer를 포함합니다.
 원문/메모/기존 요약이 바뀌면 저장하지 않습니다. 요약 저장은 실행 중인 Nero에 요청합니다.
 ";
@@ -138,13 +142,14 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Options, QueryError
             method: "status",
             params: json!({}),
         },
-        ["meetings" | "transcript" | "summary" | "folders" | "templates", ..]
+        ["meetings" | "transcript" | "summary" | "folders" | "templates" | "jobs", ..]
             if strings
                 .iter()
                 .any(|value| matches!(*value, "--help" | "-h")) =>
         {
             Action::Help
         }
+        ["jobs", command, remaining @ ..] => parse_jobs(command, remaining)?,
         ["templates", command, remaining @ ..] => parse_templates(command, remaining)?,
         ["summary", "import", remaining @ ..] => parse_summary_import(remaining)?,
         [group @ ("meetings" | "folders"), command @ ("update" | "date" | "move" | "trash" | "restore" | "create" | "rename"
@@ -153,6 +158,52 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Options, QueryError
         _ => return Err(QueryError::invalid()),
     };
     Ok(Options { root, json, action })
+}
+
+fn parse_jobs(command: &str, remaining: &[&str]) -> Result<Action, QueryError> {
+    let method = match command {
+        "list" => "jobs_list",
+        "cancel" => "job_cancel",
+        _ => return Err(QueryError::invalid()),
+    };
+    let mut args = remaining.iter().copied();
+    let mut params = Map::new();
+    if command == "cancel" {
+        let id = args
+            .next()
+            .filter(|value| !value.starts_with("--"))
+            .ok_or_else(QueryError::invalid)?;
+        params.insert("jobId".into(), json!(id));
+    }
+    while let Some(argument) = args.next() {
+        let (flag, inline) = argument
+            .split_once('=')
+            .map_or((argument, None), |(flag, value)| (flag, Some(value)));
+        let value = inline
+            .or_else(|| args.next())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(QueryError::invalid)?;
+        let (key, value) = match (command, flag) {
+            ("list", "--meeting-id") => ("meetingId", json!(value)),
+            ("list", "--offset" | "--limit") => (
+                if flag == "--offset" {
+                    "offset"
+                } else {
+                    "limit"
+                },
+                json!(value.parse::<usize>().map_err(|_| QueryError::invalid())?),
+            ),
+            ("cancel", "--expected-version") => ("expectedVersion", json!(value)),
+            _ => return Err(QueryError::invalid()),
+        };
+        if params.insert(key.into(), value).is_some() {
+            return Err(QueryError::invalid());
+        }
+    }
+    let params = Value::Object(params);
+    grove_core::agent_control::JobRequest::parse(method, params.clone())
+        .map_err(|_| QueryError::invalid())?;
+    Ok(Action::Request { method, params })
 }
 
 fn parse_query(group: &str, command: &str, remaining: &[&str]) -> Result<Action, QueryError> {
@@ -645,6 +696,21 @@ fn write_error(error: &QueryError, json: bool) -> i32 {
 fn render(method: &str, value: &Value, timezone: &TimeZone) -> String {
     let mut output = String::new();
     match method {
+        "jobs_list" => {
+            output.push_str("ID\t종류\t회의 ID\t상태\t수정본\n");
+            if let Some(jobs) = value["jobs"].as_array() {
+                for job in jobs {
+                    output.push_str(&format!(
+                        "{}\t{}\t{}\t{}\t{}\n",
+                        text(&job["id"]),
+                        text(&job["kind"]),
+                        text(&job["meetingId"]),
+                        text(&job["status"]),
+                        text(&job["editVersion"])
+                    ));
+                }
+            }
+        }
         "templates_list" => {
             output.push_str("ID\t이름\t용도\n");
             if let Some(items) = value["templates"].as_array() {
@@ -783,11 +849,18 @@ fn render(method: &str, value: &Value, timezone: &TimeZone) -> String {
             page.get("total").unwrap_or(&Value::Null)
         ));
         if page.get("hasMore") == Some(&Value::Bool(true)) {
-            output.push_str(&format!(
-                "다음: --offset {} --expected-source-version {}\n",
-                page.get("nextOffset").unwrap_or(&Value::Null),
-                text(&value["sourceVersion"])
-            ));
+            if method == "jobs_list" {
+                output.push_str(&format!(
+                    "다음: --offset {}\n",
+                    page.get("nextOffset").unwrap_or(&Value::Null)
+                ));
+            } else {
+                output.push_str(&format!(
+                    "다음: --offset {} --expected-source-version {}\n",
+                    page.get("nextOffset").unwrap_or(&Value::Null),
+                    text(&value["sourceVersion"])
+                ));
+            }
         } else {
             output.push_str("요청한 조회 범위의 끝입니다.\n");
         }
@@ -819,6 +892,27 @@ mod tests {
 
     fn args(values: &[&str]) -> Result<Options, QueryError> {
         parse(values.iter().map(OsString::from))
+    }
+
+    #[test]
+    fn jobs_require_bounded_queries_and_explicit_cancel_version() {
+        let id = "00000000-0000-0000-0000-000000000001";
+        let version = format!("sha256:{}", "a".repeat(64));
+        assert!(args(&["jobs", "list", "--meeting-id", id, "--limit", "200"]).is_ok());
+        assert!(args(&["jobs", "list", "--limit", "201"]).is_err());
+        assert!(args(&["jobs", "list", "--limit", "0"]).is_err());
+        assert!(args(&["jobs", "cancel", id]).is_err());
+        assert!(args(&["jobs", "cancel", id, "--expected-version", &version]).is_ok());
+        assert!(args(&[
+            "jobs",
+            "cancel",
+            id,
+            "--expected-version",
+            &version,
+            "--expected-version",
+            &version
+        ])
+        .is_err());
     }
 
     #[test]

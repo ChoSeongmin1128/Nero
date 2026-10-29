@@ -1,6 +1,6 @@
 use crate::calendar::{self, CalendarService, CalendarSnapshot, Occurrence};
 use crate::{microphone_permission, DesktopState};
-use grove_core::{SessionState, Snapshot};
+use grove_core::{CalendarReference, Meeting, SessionState, Snapshot};
 use std::path::PathBuf;
 use std::sync::{atomic::Ordering, Arc};
 use std::time::Duration;
@@ -316,6 +316,73 @@ pub fn read_calendar_reminder(
     let key = key(&window)?;
     Ok(state.service()?.reminder(&key))
 }
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeetingOccurrences {
+    calendar: CalendarSnapshot,
+    occurrences: Vec<Occurrence>,
+}
+
+fn calendar_reference(event: &Occurrence) -> CalendarReference {
+    CalendarReference {
+        occurrence_key: event.key.clone(),
+        title: event.title.clone(),
+        start_at: event.start_at,
+        end_at: event.end_at,
+        calendar_name: event.calendar_name.clone(),
+        join_urls: event.join_urls.clone(),
+    }
+}
+
+#[tauri::command]
+pub async fn read_calendar_meeting_occurrences(
+    app: tauri::AppHandle,
+    window: WebviewWindow,
+    state: tauri::State<'_, CalendarDesktop>,
+) -> Result<MeetingOccurrences, String> {
+    crate::require_main(&window)?;
+    let calendar = state.snapshot();
+    if !calendar.connected {
+        return Ok(MeetingOccurrences {
+            calendar,
+            occurrences: vec![],
+        });
+    }
+    let service = state.service()?;
+    let result = service.sync_now().await;
+    publish(&app);
+    result?;
+    Ok(MeetingOccurrences {
+        calendar: service.snapshot(),
+        occurrences: service.meeting_occurrences(calendar::now_ms())?,
+    })
+}
+
+#[tauri::command]
+pub async fn create_meeting_from_calendar(
+    app: tauri::AppHandle,
+    window: WebviewWindow,
+    calendar: tauri::State<'_, CalendarDesktop>,
+    state: tauri::State<'_, DesktopState>,
+    occurrence_key: String,
+) -> Result<Meeting, String> {
+    crate::require_main(&window)?;
+    state.processing.require_meeting_models()?;
+    let service = calendar.service()?;
+    let result = service.sync_now().await;
+    publish(&app);
+    result?;
+    let core = state.core.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        service.with_current_occurrence(&occurrence_key, calendar::now_ms(), |event| {
+            core.create_meeting_from_calendar(calendar_reference(event))
+                .map_err(|error| error.to_string())
+        })
+    })
+    .await
+    .map_err(|_| "회의를 준비하지 못했습니다.".to_string())?
+}
 #[tauri::command]
 pub fn calendar_reminder_ready(
     window: WebviewWindow,
@@ -356,15 +423,57 @@ pub async fn start_calendar_recording(
     if recording_busy(&snapshot) {
         return Err("진행 중인 녹음을 마친 뒤 시작해 주세요.".into());
     }
-    microphone_permission::ensure_authorized(&app).await?;
     // A click never acts on cached event text, a cancelled event, or a partial sync.
     service.sync_now().await?;
     service.tick(calendar::now_ms(), false)?;
     let ticket = service.reminder_ticket(&key, calendar::now_ms())?;
+    let existing_core = state.core.clone();
+    let existing_calendar = service.clone();
+    let existing_ticket = service.reminder_ticket(&key, calendar::now_ms())?;
+    let existing = tauri::async_runtime::spawn_blocking(move || {
+        existing_calendar.with_current_reminder(&existing_ticket, calendar::now_ms(), |event| {
+            let current = existing_core
+                .snapshot()
+                .map_err(|error| error.to_string())?;
+            Ok(current
+                .meetings
+                .iter()
+                .find(|meeting| {
+                    meeting
+                        .calendar_reference
+                        .as_ref()
+                        .is_some_and(|reference| reference.occurrence_key == event.key)
+                        && (meeting.deleted_at.is_some()
+                            || meeting.status != grove_core::MeetingStatus::Draft
+                            || meeting.audio.is_some())
+                })
+                .cloned()
+                .map(|meeting| (meeting, current)))
+        })
+    })
+    .await
+    .map_err(|_| "회의를 확인하지 못했습니다.".to_string())??;
+    if let Some((meeting, current)) = existing {
+        let _ = service.dismiss(&key);
+        sync_windows(&app, &service);
+        crate::publish(&app, &current);
+        crate::show_main(&app);
+        let error = meeting
+            .deleted_at
+            .is_some()
+            .then_some("휴지통에 있는 회의입니다. 복원 후 열어 주세요.");
+        let _ = app.emit_to(
+            "main",
+            "grove://open-meeting",
+            serde_json::json!({"meetingId":meeting.id,"error":error}),
+        );
+        return Ok(current);
+    }
+    microphone_permission::ensure_authorized(&app).await?;
     let core = state.core.clone();
     let processing = state.processing.clone();
     let recording_calendar = service.clone();
-    let snapshot = tauri::async_runtime::spawn_blocking(move || {
+    let (meeting, snapshot) = tauri::async_runtime::spawn_blocking(move || {
         processing.recording_start(|| {
             let current = core.snapshot().map_err(|error| error.to_string())?;
             if recording_busy(&current) {
@@ -378,7 +487,7 @@ pub async fn start_calendar_recording(
                 .map(|device| device.id)
                 .unwrap_or_default();
             recording_calendar.with_current_reminder(&ticket, calendar::now_ms(), |event| {
-                core.create_recording(&event.title, "", &selected)
+                core.create_calendar_recording(calendar_reference(event), &selected)
                     .map_err(|error| error.to_string())
             })
         })
@@ -390,13 +499,11 @@ pub async fn start_calendar_recording(
     sync_windows(&app, &service);
     crate::publish(&app, &snapshot);
     crate::show_main(&app);
-    if let Some(session) = &snapshot.session {
-        let _ = app.emit_to(
-            "main",
-            "grove://open-meeting",
-            serde_json::json!({"meetingId":session.meeting_id,"error":null}),
-        );
-    }
+    let _ = app.emit_to(
+        "main",
+        "grove://open-meeting",
+        serde_json::json!({"meetingId":meeting.id,"error":null}),
+    );
     Ok(snapshot)
 }
 

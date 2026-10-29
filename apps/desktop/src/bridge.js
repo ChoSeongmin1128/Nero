@@ -83,7 +83,7 @@ export const prepareSpeakerModel = () => call('prepare_diarization_model');
 export const diarizeMeeting = (meetingId, expected) => call('diarize_meeting', { meetingId, expected });
 
 export const prepareSummaryModel = () => call('prepare_summary_model');
-export const summarizeMeeting = (meetingId) => call('summarize_meeting', { meetingId });
+export const summarizeMeeting = (meetingId, template = null) => call('summarize_meeting', { meetingId, template });
 export const readSummary = (meetingId) => call('read_summary', { meetingId });
 export const readSummaryCitations = (meetingId, summaryId, references) => call('read_summary_citations', { meetingId, summaryId, references });
 

@@ -593,6 +593,53 @@ impl CalendarService {
         events.sort_by(|a, b| a.start_at.cmp(&b.start_at).then_with(|| a.key.cmp(&b.key)));
         events
     }
+
+    pub fn meeting_occurrences(&self, now: u64) -> Result<Vec<Occurrence>, String> {
+        let inner = self.inner.lock().unwrap();
+        require_current_events(&inner, now)?;
+        let mut events: Vec<_> = inner
+            .state
+            .events
+            .iter()
+            .filter(|event| event.end_at > now && event.end_at > event.start_at)
+            .cloned()
+            .collect();
+        events.sort_by(|a, b| a.start_at.cmp(&b.start_at).then_with(|| a.key.cmp(&b.key)));
+        Ok(events)
+    }
+
+    pub fn with_current_occurrence<T>(
+        &self,
+        key: &str,
+        now: u64,
+        action: impl FnOnce(&Occurrence) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let inner = self.inner.lock().unwrap();
+        require_current_events(&inner, now)?;
+        let event = inner
+            .state
+            .events
+            .iter()
+            .find(|event| event.key == key && event.end_at > now && event.end_at > event.start_at)
+            .ok_or("일정이 변경되었거나 끝났습니다. 새로고침해 주세요.")?;
+        action(event)
+    }
+}
+
+fn require_current_events(inner: &Inner, now: u64) -> Result<(), String> {
+    if !inner.auth_ready
+        || inner.state.account.is_none()
+        || inner.connecting_id.is_some()
+        || inner.needs_sync
+        || inner.error.is_some()
+        || !inner
+            .state
+            .last_synced_at
+            .is_some_and(|last| now >= last && now.saturating_sub(last) <= FRESH_MS)
+    {
+        return Err("현재 일정을 확인하지 못했습니다. 새로고침해 주세요.".into());
+    }
+    Ok(())
 }
 
 fn current_reminder<'a>(inner: &'a Inner, key: &str, now: u64) -> Result<&'a Occurrence, String> {
@@ -982,6 +1029,48 @@ mod tests {
             assert!(service
                 .with_current_reminder(&ticket, now, |_| Ok(()))
                 .is_err());
+        }
+    }
+
+    #[test]
+    fn meeting_picker_uses_current_events_beyond_the_reminder_window_and_never_creates_on_read() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = reminder_service(temp.path());
+        {
+            let mut inner = service.inner.lock().unwrap();
+            inner.state.events[0].start_at = 3_000_000;
+            inner.state.events[0].end_at = 4_000_000;
+        }
+        let events = service.meeting_occurrences(1_000_001).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].start_at, 3_000_000);
+    }
+
+    #[test]
+    fn meeting_picker_creation_rechecks_selection_cancellation_connection_and_freshness() {
+        for changed in ["selection", "cancelled", "connection", "stale"] {
+            let temp = tempfile::tempdir().unwrap();
+            let service = reminder_service(temp.path());
+            match changed {
+                "selection" => {
+                    service.set_calendars(vec![]).unwrap();
+                }
+                "cancelled" => service.inner.lock().unwrap().state.events.clear(),
+                "connection" => service.inner.lock().unwrap().auth_ready = false,
+                "stale" => service.inner.lock().unwrap().needs_sync = true,
+                _ => unreachable!(),
+            }
+            let created = AtomicBool::new(false);
+            assert!(
+                service
+                    .with_current_occurrence("current", 1_000_001, |_| {
+                        created.store(true, Ordering::Release);
+                        Ok(())
+                    })
+                    .is_err(),
+                "{changed}"
+            );
+            assert!(!created.load(Ordering::Acquire));
         }
     }
 }

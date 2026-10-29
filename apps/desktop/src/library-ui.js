@@ -1,3 +1,4 @@
+import { mountNavigationSidebar } from '../../../design-system/navigation.mjs';
 import { pendingJob } from './processing-state.js';
 import { createDragPreview } from './drag-preview.js';
 export function filterLibraryMeetings(meetings, filter = 'all', query = '') {
@@ -16,10 +17,23 @@ export function recentLibraryMeetings(meetings) {
 }
 const recentDate = new Intl.DateTimeFormat('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
 
-export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnapshot, selectMeeting, render: renderApp, showError, escape, icon, onViewChanged }) {
+export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnapshot, selectMeeting, render: renderApp, showError, escape, icon, duration, onViewChanged }) {
   const dialog = byId('library-dialog');
   const dialogBody = byId('library-dialog-body');
   const owner = dialog.ownerDocument;
+  let storage;
+  try { storage = owner.defaultView?.localStorage; } catch {}
+  const readPreference = key => { try { return storage?.getItem(key); } catch { return null; } };
+  const savePreference = (key, value) => { try { storage?.setItem(key, value); } catch {} };
+  const shell = owner.querySelector?.('.workspace');
+  const sidebar = shell ? mountNavigationSidebar({ shell, aside: byId('navigation-sidebar'), content: owner.querySelector('.main-content'), trigger: byId('navigation-toggle'), storage, icons: icon }) : null;
+  const savedView = getState().libraryView || readPreference('nero.library.view');
+  getState().libraryView = ['folders', 'all'].includes(savedView) ? savedView : 'folders';
+  const recents = byId('recent-section');
+  recents.open = readPreference('nero.library.recents') !== 'false';
+  recents.addEventListener('toggle', () => savePreference('nero.library.recents', String(recents.open)));
+  let navigationKey = '', cardsKey = '', breadcrumbKey = '';
+  const folderOverview = () => state().libraryFilter === 'all' && state().libraryView === 'folders' && !query();
   const dragPreview = createDragPreview(owner);
   let folderKey = '', recentKey = '', pending = null, returnFocus = null, dragSources = [];
   let activeMenu = null, dropTarget = null, selectionAnchor = null;
@@ -55,7 +69,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     const found = state().librarySearchIds;
     const ids = found != null ? new Set(found) : null;
     const visible = query() && ids ? meetings.filter(meeting => ids.has(meeting.id)) : filterLibraryMeetings(meetings, state().libraryFilter, query());
-    return visible.sort((a, b) => (b.recordedAt ?? b.createdAt ?? 0) - (a.recordedAt ?? a.createdAt ?? 0) || (b.createdAt ?? 0) - (a.createdAt ?? 0));
+    return visible.filter(meeting => !folderOverview() || !meeting.folderId).sort((a, b) => (b.recordedAt ?? b.createdAt ?? 0) - (a.recordedAt ?? a.createdAt ?? 0) || (b.createdAt ?? 0) - (a.createdAt ?? 0));
   }
   function resetSelection() {
     selection().clear();
@@ -67,6 +81,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
       const changed = state().libraryFilter !== filter;
       state().libraryFilter = filter;
       state().libraryOpen = true;
+      sidebar?.navigate();
       resetSelection();
       renderApp();
       byId('library-title')?.focus({ preventScroll: true });
@@ -253,7 +268,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     if (!selection().size || !visibleIds.has(selectionAnchor)) selectionAnchor = null;
     const filter = state().libraryFilter;
     const disabled = Boolean(state().libraryBusy || !state().connected);
-    const navigation = [{ id: 'all', name: '전체 회의', icon: 'notebook-pen' }, { id: 'unfiled', name: '미분류', icon: 'inbox' }, ...folders.map(folder => ({ ...folder, icon: 'folder' })), { id: 'trash', name: '휴지통', icon: 'trash-2' }];
+    const navigation = [{ id: 'all', name: '회의 목록', icon: 'notebook-pen' }, { id: 'unfiled', name: '미분류', icon: 'inbox' }, ...folders.map(folder => ({ ...folder, icon: 'folder' })), { id: 'trash', name: '휴지통', icon: 'trash-2' }];
     const key = JSON.stringify([filter, state().libraryOpen, folders, disabled, snapshot.meetings.map(meeting => [meeting.id, meeting.folderId, meeting.deletedAt])]);
     if (key !== folderKey) {
       clearDropTarget();
@@ -269,11 +284,34 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     if (recentKey !== nextRecentKey) {
       recentKey = nextRecentKey;
       const focused = owner.activeElement?.dataset?.recentMeeting;
-      byId('recent-meetings').innerHTML = recent.map(meeting => `<button type="button" class="quiet recent-meeting" data-recent-meeting="${escape(meeting.id)}"${activeId === meeting.id ? ' aria-current="page"' : ''}${disabled ? ' disabled' : ''}><strong title="${escape(meeting.title)}">${escape(meeting.title)}</strong><time>${escape(recentDate.format(meeting.recordedAt ?? meeting.createdAt ?? 0))}</time></button>`).join('');
+      byId('recent-meetings').innerHTML = recent.map(meeting => `<button type="button" class="quiet recent-meeting" data-recent-meeting="${escape(meeting.id)}"${activeId === meeting.id ? ' aria-current="page"' : ''}${disabled ? ' disabled' : ''}><strong title="${escape(meeting.title)}">${escape(meeting.title)}</strong><time>${escape(recentDate.format(meeting.recordedAt ?? meeting.createdAt ?? 0))}${meeting.audio?.sampleRate && duration ? ` / ${escape(duration(meeting.audio.frames / meeting.audio.sampleRate * 1000))}` : ''}</time></button>`).join('');
       if (focused) [...byId('recent-meetings').querySelectorAll('[data-recent-meeting]')].find(node => node.dataset.recentMeeting === focused)?.focus({ preventScroll: true });
     }
+    const overview = folderOverview();
+    byId('library-view').hidden = filter !== 'all';
+    byId('library-view').querySelectorAll('[data-library-view]').forEach(button => {
+      button.setAttribute('aria-pressed', String(button.dataset.libraryView === state().libraryView));
+      button.disabled = disabled;
+    });
+    byId('library-folders').hidden = !overview || !folders.length;
+    byId('library-unfiled-heading').hidden = !overview || !folders.length;
+    const nextCardsKey = JSON.stringify([folders, disabled, snapshot.meetings.map(meeting => [meeting.id, meeting.folderId, meeting.deletedAt])]);
+    if (cardsKey !== nextCardsKey) {
+      cardsKey = nextCardsKey;
+      byId('library-folders').innerHTML = folders.map(folder => `<button type="button" class="library-folder-card" data-library-filter="${escape(folder.id)}"${disabled ? ' disabled' : ''}>${icon('folder')}<span><strong title="${escape(folder.name)}">${escape(folder.name)}</strong><small>${filterLibraryMeetings(snapshot.meetings, folder.id).length}개 회의</small></span>${icon('chevron-right')}</button>`).join('');
+    }
+    const selectedMeeting = state().libraryOpen ? null : current(state().selectedId);
+    const parent = selectedMeeting ? selectedMeeting.folderId || 'unfiled' : filter;
+    const parentName = navigation.find(item => item.id === parent)?.name || '미분류';
+    const nextBreadcrumbKey = JSON.stringify([filter, state().libraryOpen, selectedMeeting?.id, selectedMeeting?.title, parent, parentName, disabled]);
+    if (breadcrumbKey !== nextBreadcrumbKey) {
+      breadcrumbKey = nextBreadcrumbKey;
+      byId('navigation-breadcrumbs').innerHTML = `<button type="button" class="quiet small" data-library-filter="all"${disabled ? ' disabled' : ''}${!selectedMeeting && filter === 'all' ? ' aria-current="page"' : ''}>회의 목록</button>${parent !== 'all' ? `<span aria-hidden="true">/</span><button type="button" class="quiet small" data-library-filter="${escape(parent)}"${disabled ? ' disabled' : ''}${!selectedMeeting ? ' aria-current="page"' : ''}>${escape(parentName)}</button>` : ''}${selectedMeeting ? `<span aria-hidden="true">/</span><span class="breadcrumb-current" aria-current="page" title="${escape(selectedMeeting.title)}">${escape(selectedMeeting.title)}</span>` : ''}`;
+    }
+    const nextNavigationKey = `${state().libraryOpen}:${state().selectedId}:${filter}`;
+    if (navigationKey !== nextNavigationKey) { navigationKey = nextNavigationKey; sidebar?.navigate(); }
     byId('library-title').textContent = navigation.find(item => item.id === filter)?.name || '회의';
-    byId('library-count').innerHTML = state().libraryBusy ? '<span class="activity-spinner" aria-hidden="true"></span><span role="status">처리 중</span>' : `${visible.length}개`;
+    byId('library-count').innerHTML = state().libraryBusy ? '<span class="activity-spinner" aria-hidden="true"></span><span role="status">처리 중</span>' : `${overview ? filterLibraryMeetings(snapshot.meetings, 'all').length : visible.length}개`;
     const count = selection().size;
     byId('library-batch').hidden = !count;
     byId('library-selected-count').textContent = `${count}개 선택`;
@@ -378,6 +416,19 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     if (remove) deleteFolder(remove.dataset.folderDelete);
     if (rename || remove) event.target.closest('details')?.removeAttribute('open');
   });
+  for (const id of ['library-folders', 'navigation-breadcrumbs']) byId(id).addEventListener('click', event => {
+    const button = event.target.closest('[data-library-filter]');
+    if (button && !button.disabled) void show(button.dataset.libraryFilter);
+  });
+  byId('library-view').addEventListener('click', event => {
+    const button = event.target.closest('[data-library-view]');
+    if (!button || button.disabled || state().libraryBusy || !state().connected) return;
+    const mode = button.dataset.libraryView;
+    if (!['folders', 'all'].includes(mode) || mode === state().libraryView) return;
+    state().libraryView = mode;
+    savePreference('nero.library.view', mode);
+    resetSelection(); renderApp();
+  });
   byId('recent-meetings').addEventListener('click', event => {
     const target = event.target.closest('[data-recent-meeting]');
     const meeting = target && current(target.dataset.recentMeeting);
@@ -441,24 +492,26 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     const destination = moveDestination(filter);
     return destination && dragSources.some(source => source.folderId !== destination.folderId) ? { target, filter, destination } : null;
   }
-  byId('folder-list').addEventListener('dragover', event => {
-    const destination = dropDestination(event);
-    if (!destination) { clearDropTarget(); if (event.dataTransfer) event.dataTransfer.dropEffect = 'none'; return; }
-    const { target } = destination;
-    event.preventDefault();
-    event.dataTransfer.dropEffect = 'move';
-    if (dropTarget !== target) { clearDropTarget(); dropTarget = target; target.classList.add('is-drop-target'); }
-  });
-  byId('folder-list').addEventListener('dragleave', event => { if (dropTarget && !dropTarget.contains(event.relatedTarget)) clearDropTarget(); });
-  byId('folder-list').addEventListener('drop', event => {
-    const destination = dropDestination(event);
-    clearDropTarget();
-    dragPreview.clear();
-    if (!destination) { dragSources = []; return; }
-    event.preventDefault();
-    const sources = dragSources; dragSources = [];
-    if (destination.filter === 'trash') trashDialog(sources.map(source => source.id));
-    else void mutate(() => moveChecked(sources, destination.destination), resetSelection);
-  });
+  for (const id of ['folder-list', 'library-folders']) {
+    byId(id).addEventListener('dragover', event => {
+      const destination = dropDestination(event);
+      if (!destination) { clearDropTarget(); if (event.dataTransfer) event.dataTransfer.dropEffect = 'none'; return; }
+      const { target } = destination;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'move';
+      if (dropTarget !== target) { clearDropTarget(); dropTarget = target; target.classList.add('is-drop-target'); }
+    });
+    byId(id).addEventListener('dragleave', event => { if (dropTarget && !dropTarget.contains(event.relatedTarget)) clearDropTarget(); });
+    byId(id).addEventListener('drop', event => {
+      const destination = dropDestination(event);
+      clearDropTarget();
+      dragPreview.clear();
+      if (!destination) { dragSources = []; return; }
+      event.preventDefault();
+      const sources = dragSources; dragSources = [];
+      if (destination.filter === 'trash') trashDialog(sources.map(source => source.id));
+      else void mutate(() => moveChecked(sources, destination.destination), resetSelection);
+    });
+  }
   return { render, show, resetSelection, toggleSelection, handleRowSelection, selectedIds, visibleMeetings };
 }

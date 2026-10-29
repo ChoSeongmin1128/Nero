@@ -110,7 +110,11 @@ fn respond(request: &Value) -> Value {
                 .map(|item| {
                     (
                         item["id"].as_u64().unwrap().to_string(),
-                        item["fact"]["text"].clone(),
+                        if item.get("fact").is_some() {
+                            item["fact"]["text"].clone()
+                        } else {
+                            json!({"heading":"핵심 발견","order":1,"text":item["text"]})
+                        },
                     )
                 })
                 .collect(),
@@ -408,4 +412,52 @@ fn preaccepted_cancellation_starts_no_generation_or_checkpoint() {
     assert_eq!(error.kind, FailureKind::Cancelled);
     assert!(requests(&fixture).is_empty());
     assert!(fs::read_dir(cache).unwrap().next().is_none());
+}
+
+#[test]
+fn three_hour_template_pipeline_preserves_all_facts_and_invalidates_changed_prompt() {
+    let temporary = tempfile::tempdir().unwrap();
+    let fixture = scripted_server(temporary.path(), tokenize, respond);
+    let (process, cache) = prepare(temporary.path());
+    let source = source();
+    let template = grove_core::templates::TemplateStore::new(process.root.canonicalize().unwrap())
+        .get("interview")
+        .unwrap();
+    let (text, receipt) = runtime()
+        .block_on(pipeline::run_with_template(
+            &fixture.server,
+            &source,
+            "",
+            &cache,
+            &process,
+            &AtomicBool::new(false),
+            Some(&template),
+        ))
+        .unwrap();
+    assert_eq!(source.segments.last().unwrap().end, 10800.0);
+    assert!(text.starts_with("## 핵심 발견"));
+    for number in 1..=48 {
+        assert!(text.contains(&format!("합성 사실 {number} [{number}]")));
+    }
+    assert_eq!(receipt["template"]["revision"], template.revision);
+    let mut changed = template.clone();
+    changed.prompt.push_str("\n후속 확인을 강조한다.");
+    changed.revision = "changed-revision".into();
+    let (_, new_receipt) = runtime()
+        .block_on(pipeline::run_with_template(
+            &fixture.server,
+            &source,
+            "",
+            &cache,
+            &process,
+            &AtomicBool::new(false),
+            Some(&changed),
+        ))
+        .unwrap();
+    assert_eq!(new_receipt["template"]["revision"], "changed-revision");
+    assert!(new_receipt["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|event| event["request"]["cached"] == false));
 }

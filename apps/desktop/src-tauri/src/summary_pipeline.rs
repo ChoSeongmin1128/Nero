@@ -239,6 +239,18 @@ pub(super) async fn run(
     process: &Processing,
     cancel: &AtomicBool,
 ) -> SummaryResult<(String, Value)> {
+    run_with_template(server, source, notes, cache_base, process, cancel, None).await
+}
+
+pub(super) async fn run_with_template(
+    server: &Server,
+    source: &Transcript,
+    notes: &str,
+    cache_base: &Path,
+    process: &Processing,
+    cancel: &AtomicBool,
+    template: Option<&grove_core::templates::PromptTemplate>,
+) -> SummaryResult<(String, Value)> {
     check_cancel(cancel)?;
     let binary_hash = format!(
         "{:x}",
@@ -246,7 +258,7 @@ pub(super) async fn run(
     );
     let identity = json!({"source":source,"notes":notes,"modelManifest":MANIFEST,
         "runtime":"llama.cpp b11734-f3fb2fcdb","runtimeSha256":binary_hash,"gpu":server.gpu,"pipeline":VERSION,"system":SYSTEM,
-        "extract":EXTRACT,"plan":PLAN,"write":WRITE,
+        "extract":EXTRACT,"plan":PLAN,"write":WRITE,"template":template,
         "context":CONTEXT,"output":OUTPUT,"margin":MARGIN});
     let checkpoints = Checkpoints::open(cache_base, &identity).map_err(storage)?;
     let mut session = Session {
@@ -255,6 +267,17 @@ pub(super) async fn run(
         cancel,
         events: Vec::new(),
     };
+    if let Some(template) = template {
+        if !session
+            .fits(&crate::summary_template::instruction(template, true))
+            .await?
+        {
+            return Err(Failure::new(
+                FailureKind::InputLimit,
+                "선택한 템플릿이 너무 깁니다. 설정에서 프롬프트를 줄인 뒤 다시 요약해 주세요.",
+            ));
+        }
+    }
     let lines = source_lines(source);
     if lines.is_empty() {
         return Err(Failure::new(
@@ -262,7 +285,16 @@ pub(super) async fn run(
             "요약할 음성 기록이 없습니다.",
         ));
     }
-    let full = with_reference_notes(transcript_user(&lines), notes);
+    let full = with_reference_notes(
+        format!(
+            "{}{}",
+            template
+                .map(|v| crate::summary_template::instruction(v, false))
+                .unwrap_or_default(),
+            transcript_user(&lines)
+        ),
+        notes,
+    );
     let input = server.input_tokens(&full, cancel).await?;
     if let Some(limit) = remaining_output(input) {
         process.update(|p| {
@@ -364,6 +396,7 @@ pub(super) async fn run(
         p.message = "안건별로 회의록을 작성하고 있습니다.".into();
     });
     let mut sections = Vec::new();
+    let mut template_sections = Vec::new();
     for agenda in &plan.agendas {
         check_cancel(cancel)?;
         let mut facts: Vec<Fact> = agenda
@@ -372,16 +405,28 @@ pub(super) async fn run(
             .flat_map(|index| topics[index - 1].facts.clone())
             .collect();
         facts.sort_by_key(|fact| fact.sources.iter().max().copied().unwrap_or(0));
-        let written = write_sections(&mut session, &agenda.title, &facts, &lines, notes).await?;
-        sections.push((agenda.title.clone(), written));
+        if let Some(template) = template {
+            let written =
+                write_template_sections(&mut session, &agenda.title, &facts, notes, template)
+                    .await?;
+            template_sections.push((agenda.title.clone(), written));
+        } else {
+            let written =
+                write_sections(&mut session, &agenda.title, &facts, &lines, notes).await?;
+            sections.push((agenda.title.clone(), written));
+        }
     }
-    let text = render(&sections);
+    let text = if template.is_some() {
+        render_template(&template_sections)
+    } else {
+        render(&sections)
+    };
     validate_references(&text, lines.len()).map_err(|e| Failure::new(FailureKind::Output, e))?;
     Ok((
         text,
         json!({"strategy":"evidence-agenda-sections","promptVersion":VERSION,
         "sourceCount":lines.len(),"ranges":ranges,"sourcePieces":pieces,"topics":topics,"agendaPlan":plan,
-        "sections":sections,"changeLinks":change_receipt,"events":session.events}),
+        "sections":sections,"templateSections":template_sections,"template":template.map(|v|json!({"id":v.id,"revision":v.revision})),"changeLinks":change_receipt,"events":session.events}),
     ))
 }
 
@@ -581,6 +626,165 @@ async fn write_sections(
     Ok(sections)
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct TemplatePoint {
+    heading: String,
+    order: u64,
+    point: Point,
+}
+
+fn template_section_schema(count: usize) -> Value {
+    let keys: Vec<_> = (1..=count).map(|i| i.to_string()).collect();
+    let properties: serde_json::Map<_,_> = keys.iter().map(|key|(key.clone(),json!({"type":"object","additionalProperties":false,"required":["heading","order","text"],"properties":{"order":{"type":"integer","minimum":1,"maximum":32},"heading":{"type":"string","minLength":1},"text":{"type":"string","minLength":1}}}))).collect();
+    json!({"type":"object","additionalProperties":false,"required":keys,"properties":properties})
+}
+fn template_section_from_output(text: &str, facts: &[Fact]) -> SummaryResult<Vec<TemplatePoint>> {
+    let data: Value = serde_json::from_str(text)
+        .map_err(|_| Failure::new(FailureKind::Output, "템플릿 결과 형식이 올바르지 않습니다."))?;
+    let fields = data
+        .as_object()
+        .filter(|v| v.len() == facts.len())
+        .ok_or_else(|| {
+            Failure::new(
+                FailureKind::Output,
+                "일부 회의 항목이 누락되거나 추가되었습니다.",
+            )
+        })?;
+    facts
+        .iter()
+        .enumerate()
+        .map(|(index, fact)| {
+            let entry = fields.get(&(index + 1).to_string()).ok_or_else(|| {
+                Failure::new(FailureKind::Output, "입력 항목 번호가 올바르지 않습니다.")
+            })?;
+            let heading = entry["heading"]
+                .as_str()
+                .filter(|s| {
+                    !s.trim().is_empty()
+                        && s.chars().count() <= 100
+                        && !s
+                            .chars()
+                            .any(|c| c.is_control() || matches!(c, '[' | ']' | '#'))
+                })
+                .ok_or_else(|| {
+                    Failure::new(FailureKind::Output, "템플릿 제목이 올바르지 않습니다.")
+                })?;
+            let text = entry["text"]
+                .as_str()
+                .filter(|s| {
+                    !s.trim().is_empty() && !s.chars().any(|c| matches!(c, '\0' | '[' | ']'))
+                })
+                .ok_or_else(|| {
+                    Failure::new(FailureKind::Output, "템플릿 내용이 올바르지 않습니다.")
+                })?;
+            let order = entry["order"]
+                .as_u64()
+                .filter(|v| *v > 0 && *v <= 32)
+                .ok_or_else(|| {
+                    Failure::new(FailureKind::Output, "템플릿 절 순서가 올바르지 않습니다.")
+                })?;
+            Ok(TemplatePoint {
+                heading: heading.into(),
+                order,
+                point: Point {
+                    text: text.into(),
+                    sources: fact.sources.clone(),
+                    inputs: vec![index + 1],
+                },
+            })
+        })
+        .collect()
+}
+async fn write_template_sections(
+    session: &mut Session<'_>,
+    title: &str,
+    facts: &[Fact],
+    notes: &str,
+    template: &grove_core::templates::PromptTemplate,
+) -> SummaryResult<Vec<TemplatePoint>> {
+    let mut pending = VecDeque::from([(0, facts.len())]);
+    let mut output = Vec::new();
+    while let Some((first, last)) = pending.pop_front() {
+        let group = &facts[first..last];
+        let items: Vec<_> = group
+            .iter()
+            .enumerate()
+            .map(|(i, f)| json!({"id":i+1,"kind":f.kind,"text":f.text}))
+            .collect();
+        let instruction = format!("{}각 입력 사실을 하나도 빠뜨리지 말고 지정한 템플릿의 절로 분류하고 읽기 좋게 정리하세요. heading은 템플릿에 적합한 절 제목, order는 템플릿 전체에서 그 절의 순서(1~32), text는 해당 사실의 요약문입니다. 안건별로 절 제목이나 순서를 다르게 바꾸지 마세요. 입력 번호별 객체를 반환하세요. 인용 번호는 쓰지 마세요.", crate::summary_template::instruction(template, true));
+        let user = prompt(&instruction, json!({"title":title,"facts":items}), notes);
+        let result = if session.fits(&user).await? {
+            session
+                .call(
+                    user,
+                    "write-template-agenda",
+                    Some(template_section_schema(group.len())),
+                    OUTPUT,
+                    |text| template_section_from_output(text, group),
+                )
+                .await
+        } else {
+            Err(Failure::new(
+                FailureKind::InputLimit,
+                "템플릿 또는 안건의 입력 한도를 넘었습니다.",
+            ))
+        };
+        match result {
+            Ok(points) => output.extend(points),
+            Err(error) if split_recoverable(&error) && last - first > 1 => {
+                let middle = first + (last - first) / 2;
+                pending.push_front((middle, last));
+                pending.push_front((first, middle));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(output)
+}
+fn render_template(sections: &[(String, Vec<TemplatePoint>)]) -> String {
+    let mut headings: Vec<_> = sections
+        .iter()
+        .flat_map(|(_, points)| points.iter().map(|item| (item.order, item.heading.clone())))
+        .collect();
+    headings.sort();
+    headings.dedup();
+    let mut text = String::new();
+    for (order, heading) in headings {
+        text.push_str(&format!("## {heading}\n\n"));
+        for (title, points) in sections {
+            let selected: Vec<_> = points
+                .iter()
+                .filter(|p| p.order == order && p.heading == heading)
+                .collect();
+            if selected.is_empty() {
+                continue;
+            }
+            text.push_str(&format!("### {title}\n\n"));
+            for item in selected {
+                let citations = item
+                    .point
+                    .sources
+                    .chunks(grove_core::MAX_SUMMARY_CITATION_REFERENCES)
+                    .map(|group| {
+                        format!(
+                            "[{}]",
+                            group
+                                .iter()
+                                .map(usize::to_string)
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                text.push_str(&format!("- {} {citations}\n", item.point.text.trim()));
+            }
+            text.push('\n');
+        }
+    }
+    text.trim_end().into()
+}
+
 fn render(sections: &[(String, Vec<Section>)]) -> String {
     let mut output = String::new();
     for (title, parts) in sections {
@@ -757,5 +961,39 @@ mod tests {
         assert_eq!(text.matches("[2, 99]").count(), 2);
         assert_eq!(text.matches("## ").count(), 4);
         assert!(text.ends_with("[2, 99]"));
+    }
+}
+
+#[cfg(test)]
+mod template_contract_tests {
+    use super::*;
+    #[test]
+    fn template_layout_groups_all_agendas_by_template_order_without_losing_sources() {
+        let facts = vec![Fact {
+            kind: "report".into(),
+            text: "사실".into(),
+            sources: vec![2],
+        }];
+        assert!(template_section_from_output(
+            r#"{"2":{"heading":"발견","order":1,"text":"사실"}}"#,
+            &facts
+        )
+        .is_err());
+        assert!(template_section_from_output(r#"{}"#, &facts).is_err());
+        let first = template_section_from_output(
+            r#"{"1":{"heading":"다음 확인","order":5,"text":"후속 확인"}}"#,
+            &facts,
+        )
+        .unwrap();
+        let second = template_section_from_output(
+            r#"{"1":{"heading":"핵심 발견","order":1,"text":"확인한 발견"}}"#,
+            &facts,
+        )
+        .unwrap();
+        let output = render_template(&[("안건1".into(), first), ("안건2".into(), second)]);
+        assert!(output.starts_with("## 핵심 발견"));
+        assert!(output.contains("## 다음 확인"));
+        assert_eq!(output.matches("[2]").count(), 2);
+        assert!(output.contains("### 안건1") && output.contains("### 안건2"));
     }
 }

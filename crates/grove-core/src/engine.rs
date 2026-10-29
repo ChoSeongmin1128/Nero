@@ -90,6 +90,42 @@ impl Engine {
         Ok(())
     }
 
+    pub fn create_meeting_from_calendar(
+        &mut self,
+        reference: crate::CalendarReference,
+    ) -> Result<Meeting> {
+        if self.quitting {
+            return Err(CoreError::Unavailable);
+        }
+        let digest = reference.occurrence_key.strip_prefix("google:");
+        if !digest.is_some_and(|value| {
+            value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+        }) || reference.end_at <= reference.start_at
+        {
+            return Err(CoreError::InvalidInput(
+                "일정 정보를 확인하지 못했습니다.".into(),
+            ));
+        }
+        store::validate_text(&reference.title, "")?;
+        if let Some(stored) = self.meetings.values().find(|stored| {
+            stored
+                .meeting
+                .calendar_reference
+                .as_ref()
+                .is_some_and(|current| current.occurrence_key == reference.occurrence_key)
+        }) {
+            return Ok(stored.meeting.clone());
+        }
+        let stored = self.store.create_with_calendar(
+            reference.title.clone(),
+            String::new(),
+            Some(reference),
+        )?;
+        let meeting = stored.meeting.clone();
+        self.meetings.insert(meeting.id.clone(), stored);
+        Ok(meeting)
+    }
+
     pub(crate) fn agent_library_version(&self) -> Result<String> {
         crate::agent_control::library_edit_version(&self.library)
     }
@@ -652,6 +688,140 @@ mod tests {
         let root = temporary.path().canonicalize().unwrap().join("dev");
         let engine = Engine::open(root).unwrap();
         (temporary, engine)
+    }
+
+    fn calendar_reference(letter: &str) -> crate::CalendarReference {
+        crate::CalendarReference {
+            occurrence_key: format!("google:{}", letter.repeat(64)),
+            title: "Synthetic schedule".into(),
+            start_at: 1_000_000,
+            end_at: 2_000_000,
+            calendar_name: "Synthetic calendar".into(),
+            join_urls: vec!["https://example.test/meeting".into()],
+        }
+    }
+
+    #[test]
+    fn calendar_meeting_is_a_draft_and_reopening_preserves_manual_fields_and_reference() {
+        let (_temporary, mut engine) = engine();
+        let reference = calendar_reference("a");
+        let meeting = engine
+            .create_meeting_from_calendar(reference.clone())
+            .unwrap();
+        assert_eq!(meeting.status, MeetingStatus::Draft);
+        assert_eq!(meeting.title, reference.title);
+        assert_eq!(meeting.notes, "");
+        assert_eq!(meeting.calendar_reference, Some(reference.clone()));
+        assert!(engine.capture.is_none());
+        let edited = engine
+            .update_meeting(&meeting.id, "Manual title".into(), "Manual notes".into())
+            .unwrap();
+        let path = engine
+            .store
+            .root
+            .join("meetings")
+            .join(&meeting.id)
+            .join("meeting.json");
+        let before = fs::read(&path).unwrap();
+        let mut changed_event = reference;
+        changed_event.title = "Changed provider title".into();
+        changed_event.start_at += 1;
+        assert_eq!(
+            engine
+                .create_meeting_from_calendar(changed_event.clone())
+                .unwrap(),
+            edited
+        );
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(engine.meetings.len(), 1);
+        let root = engine.store.root.clone();
+        drop(engine);
+        let mut reopened = Engine::open(root).unwrap();
+        assert_eq!(
+            reopened
+                .create_meeting_from_calendar(changed_event)
+                .unwrap(),
+            edited
+        );
+    }
+
+    #[test]
+    fn trashed_calendar_occurrence_returns_existing_without_restore_or_duplicate() {
+        let (_temporary, mut engine) = engine();
+        let reference = calendar_reference("b");
+        let meeting = engine
+            .create_meeting_from_calendar(reference.clone())
+            .unwrap();
+        engine.trash_meetings(&[meeting.id.clone()]).unwrap();
+        let existing = engine.create_meeting_from_calendar(reference).unwrap();
+        assert_eq!(existing.id, meeting.id);
+        assert!(existing.deleted_at.is_some());
+        assert_eq!(engine.meetings.len(), 1);
+    }
+
+    #[test]
+    fn separate_recurring_occurrences_create_separate_drafts_and_plain_meetings_have_no_reference()
+    {
+        let (_temporary, mut engine) = engine();
+        let first = engine
+            .create_meeting_from_calendar(calendar_reference("a"))
+            .unwrap();
+        let second = engine
+            .create_meeting_from_calendar(calendar_reference("b"))
+            .unwrap();
+        assert_ne!(first.id, second.id);
+        let plain = engine
+            .create_meeting("New meeting".into(), String::new())
+            .unwrap();
+        assert_eq!(plain.calendar_reference, None);
+        let mut legacy = serde_json::to_value(&plain).unwrap();
+        legacy.as_object_mut().unwrap().remove("calendarReference");
+        assert_eq!(serde_json::from_value::<Meeting>(legacy).unwrap(), plain);
+    }
+
+    #[test]
+    fn concurrent_calendar_requests_share_one_meeting() {
+        let temporary = tempfile::tempdir().unwrap();
+        let core =
+            CoreHandle::open(temporary.path().canonicalize().unwrap().join("library")).unwrap();
+        let other = core.clone();
+        let first = std::thread::spawn(move || {
+            other
+                .create_meeting_from_calendar(calendar_reference("a"))
+                .unwrap()
+        });
+        let second = core
+            .create_meeting_from_calendar(calendar_reference("a"))
+            .unwrap();
+        assert_eq!(first.join().unwrap().id, second.id);
+        assert_eq!(core.list_meetings().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn calendar_recording_reopens_completed_occurrence_without_touching_audio_or_starting_device() {
+        let (_temporary, mut engine) = engine();
+        let reference = calendar_reference("a");
+        let meeting = engine
+            .create_meeting_from_calendar(reference.clone())
+            .unwrap();
+        let (session, mut sink) = synthetic(&mut engine, &meeting.id);
+        sink.write(&[0.5_f32.to_le_bytes(); 2].concat());
+        engine.stop(&session).unwrap();
+        let audio = engine.audio_path(&meeting.id).unwrap();
+        let before = fs::read(&audio).unwrap();
+        let completed = engine.meetings[&meeting.id].meeting.clone();
+        let root = engine.store.root.clone();
+        drop(engine);
+        let core = CoreHandle::open(root).unwrap();
+        let (existing, snapshot) = core
+            .create_calendar_recording(reference, "unavailable synthetic device")
+            .unwrap();
+        assert_eq!(existing, completed);
+        assert_eq!(snapshot.meetings.len(), 1);
+        assert_eq!(fs::read(audio).unwrap(), before);
+        assert!(!snapshot
+            .session
+            .is_some_and(|session| session.state == SessionState::Recording));
     }
 
     fn synthetic(engine: &mut Engine, meeting_id: &str) -> (String, CallbackSink) {

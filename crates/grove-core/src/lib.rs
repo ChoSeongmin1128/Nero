@@ -99,10 +99,23 @@ pub struct AudioArtifact {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CalendarReference {
+    pub occurrence_key: String,
+    pub title: String,
+    pub start_at: u64,
+    pub end_at: u64,
+    pub calendar_name: String,
+    pub join_urls: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Meeting {
     pub id: String,
     pub title: String,
     pub notes: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calendar_reference: Option<CalendarReference>,
     pub created_at: u64,
     pub updated_at: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -266,6 +279,10 @@ impl CoreHandle {
     pub fn create_meeting(&self, title: &str, notes: &str) -> Result<Meeting> {
         let (title, notes) = (title.to_owned(), notes.to_owned());
         self.call(move |engine| engine.create_meeting(title, notes))
+    }
+
+    pub fn create_meeting_from_calendar(&self, reference: CalendarReference) -> Result<Meeting> {
+        self.call(move |engine| engine.create_meeting_from_calendar(reference))
     }
 
     pub fn create_folder(&self, name: &str) -> Result<Folder> {
@@ -443,6 +460,31 @@ impl CoreHandle {
             }
             let meeting = engine.create_meeting(title, notes)?;
             engine.start(&meeting.id, &device_id)
+        })
+    }
+
+    pub fn create_calendar_recording(
+        &self,
+        reference: CalendarReference,
+        device_id: &str,
+    ) -> Result<(Meeting, Snapshot)> {
+        let device_id = device_id.to_owned();
+        self.call(move |engine| {
+            if engine.capture.is_some() {
+                return Err(CoreError::RecordingBusy);
+            }
+            let meeting = engine.create_meeting_from_calendar(reference)?;
+            if meeting.deleted_at.is_some() {
+                return Err(CoreError::InvalidState(
+                    "휴지통에 있는 회의입니다. 복원 후 열어 주세요.".into(),
+                ));
+            }
+            let snapshot = if meeting.status == MeetingStatus::Draft && meeting.audio.is_none() {
+                engine.start(&meeting.id, &device_id)?
+            } else {
+                engine.snapshot()
+            };
+            Ok((meeting, snapshot))
         })
     }
 

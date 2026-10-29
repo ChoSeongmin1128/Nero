@@ -962,6 +962,7 @@ fn stdio_initialization_tools_errors_and_framing_use_the_sdk() {
     let tools = listed["result"]["tools"].as_array().unwrap();
     assert_eq!(tools.len(), nero_cli::METHODS.len());
     let readers = [
+        "jobs_list",
         "meetings_list",
         "meetings_search",
         "meeting_get",
@@ -982,7 +983,11 @@ fn stdio_initialization_tools_errors_and_framing_use_the_sdk() {
         );
         if matches!(
             name,
-            "summary_import" | "template_delete" | "meetings_trash" | "folder_delete"
+            "job_cancel"
+                | "summary_import"
+                | "template_delete"
+                | "meetings_trash"
+                | "folder_delete"
         ) {
             assert_eq!(tool["annotations"]["destructiveHint"], true);
         }

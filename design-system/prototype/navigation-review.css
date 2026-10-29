@@ -1,3 +1,4 @@
+@import url("../navigation.css");
 
 body{font-family:var(--font-ui);font-size:14px}
 button{display:inline-flex;align-items:center;gap:8px;cursor:pointer}
@@ -83,14 +84,6 @@ aside{min-width:0;overflow:auto;background:var(--surface-secondary);border-right
 @media(prefers-reduced-motion:no-preference){button{transition:background .12s}
 }
 
-/* Temporary navigation floats; only pinned navigation reserves layout space. */
-.shell.collapsed{grid-template-columns:0 minmax(0,1fr)}
-.shell.collapsed aside{visibility:hidden;pointer-events:none}
-.shell.collapsed.nav-peek aside{visibility:visible;display:flex;pointer-events:auto;position:absolute;inset:8px auto auto 8px;width:224px;max-height:calc(100% - 16px);height:auto;min-height:520px;padding:18px 12px;z-index:6;border:1px solid var(--border);border-radius:var(--radius);box-shadow:0 12px 32px var(--overlay)}
-.shell.nav-pinned{grid-template-columns:224px minmax(0,1fr)}
-.shell.nav-pinned aside{position:static;width:auto;visibility:visible;pointer-events:auto;padding:18px 12px}
-.shell.half.nav-pinned{grid-template-columns:224px minmax(0,1fr)}
-.nav-hover-edge{position:absolute;inset:0 auto 0 0;width:10px;z-index:5}
 .recent summary{list-style:none;display:flex;align-items:center;gap:8px;border-radius:var(--control-radius);min-height:32px;padding:6px 8px}
 .recent summary::-webkit-details-marker{display:none}
 .recent summary:hover{background:var(--hover);color:var(--text)}
@@ -102,6 +95,4 @@ aside{min-width:0;overflow:auto;background:var(--surface-secondary);border-right
 .breadcrumbs button:hover{color:var(--text)}
 .breadcrumbs [aria-current=page]{color:var(--text)}
 .breadcrumb-current{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:260px}
-@media(max-width:600px){.shell.nav-pinned{grid-template-columns:0 minmax(0,1fr)}
-.shell.nav-pinned aside{position:absolute;inset:8px auto 8px 8px;width:224px;z-index:6;border:1px solid var(--border);border-radius:var(--radius);box-shadow:0 12px 32px var(--overlay)}
-.breadcrumb-current{max-width:100px}}
+@media(max-width:600px){.breadcrumb-current{max-width:100px}}

@@ -1,14 +1,14 @@
 {
   "name": "nero",
   "version": "0.0.1",
-  "description": "Nero 회의 검색, 음성 기록과 요약 조회, 새 요약 저장",
+  "description": "Nero 회의 검색, 음성 기록과 요약 조회, 새 요약 저장, 처리 작업 조회와 취소",
   "author": { "name": "Nero" },
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Nero",
     "shortDescription": "회의 검색과 요약",
-    "longDescription": "Nero 회의의 음성 기록과 메모를 읽고 새 요약을 생성해 저장합니다.",
+    "longDescription": "Nero 회의의 음성 기록과 메모를 읽고 새 요약을 생성해 저장합니다. 처리 작업 상태를 조회하고 요청한 작업을 취소합니다.",
     "developerName": "Nero",
     "category": "Productivity",
     "capabilities": [],

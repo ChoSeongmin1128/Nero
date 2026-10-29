@@ -13,6 +13,8 @@ export const cancelCalendarConnect = (attemptId = null) => call('cancel_calendar
 export const disconnectCalendar = () => call('disconnect_calendar');
 export const selectCalendars = ids => call('select_calendars', { ids });
 export const syncCalendar = () => call('sync_calendar');
+export const readCalendarMeetingOccurrences = () => call('read_calendar_meeting_occurrences');
+export const createMeetingFromCalendar = occurrenceKey => call('create_meeting_from_calendar', { occurrenceKey });
 export const subscribeCalendarSettings = callback => isTauri() ? listen('nero://calendar-settings', event => callback(event.payload)) : Promise.resolve(() => {});
 export const readCalendarReminder = () => call('read_calendar_reminder');
 export const calendarReminderReady = () => call('calendar_reminder_ready');

@@ -17,6 +17,7 @@ fn record(kind: &str) -> JobRecord {
         meeting_id: None,
         source_fingerprint: None,
         include_summary: false,
+        summary_template_ref: None,
         acknowledged: false,
         failure_kind: None,
         status: JobStatus::Queued,
@@ -858,4 +859,59 @@ fn cancelled_recognition_cannot_publish_a_speaker_continuation() {
             .kind,
         "transcribe"
     );
+}
+
+#[test]
+fn agent_jobs_only_exposes_minimal_fields_and_cancellation_checks_current_state() {
+    let (_temporary, process) = setup();
+    let mut queued = record("summary");
+    queued.message = "/private/model/location sensitive diagnostic".into();
+    let id = queued.id.clone();
+    process.save_job(queued.clone()).unwrap();
+    process
+        .pending
+        .lock()
+        .unwrap()
+        .push_back(pending(queued.clone(), |_, _, _| Ok(None)));
+    let view = process.agent_jobs(None, 0, 50).unwrap();
+    let entry = &view["jobs"][0];
+    assert_eq!(entry.as_object().unwrap().len(), 5);
+    assert!(!view.to_string().contains("private"));
+    let wrong = format!("sha256:{}", "0".repeat(64));
+    assert_eq!(
+        process.agent_cancel(&id, &wrong).unwrap_err().code,
+        "edit_conflict"
+    );
+    assert_eq!(status(&process, &id), JobStatus::Queued);
+    let version = entry["editVersion"].as_str().unwrap();
+    let response = process.agent_cancel(&id, version).unwrap();
+    assert_eq!(response["applied"], true);
+    assert_eq!(response["job"]["status"], "cancelled");
+    assert!(process.agent_cancel(&id, version).is_err());
+    assert_eq!(process.pending.lock().unwrap().len(), 0);
+    assert_eq!(
+        process.agent_jobs(None, 1, 1).unwrap()["jobs"],
+        serde_json::json!([])
+    );
+}
+
+#[test]
+fn agent_cancel_rejects_queued_version_after_worker_starts() {
+    let (_temporary, process) = setup();
+    let queued = record("summary");
+    let version = agent_job_version(&queued);
+    let (release_tx, release_rx) = mpsc::channel();
+    let id = launch(
+        &process,
+        pending(queued, move |_, _, _| {
+            release_rx
+                .recv_timeout(Duration::from_secs(3))
+                .map_err(message)?;
+            Ok(None)
+        }),
+    );
+    let rejected = process.agent_cancel(&id, &version);
+    release_tx.send(()).unwrap();
+    finish(&process);
+    assert_eq!(rejected.unwrap_err().code, "edit_conflict");
 }

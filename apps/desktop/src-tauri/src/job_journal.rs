@@ -41,6 +41,8 @@ pub(super) struct JobRecord {
     pub meeting_id: Option<String>,
     pub source_fingerprint: Option<String>,
     pub include_summary: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_template_ref: Option<crate::summary_template::TemplateRef>,
     #[serde(default)]
     pub acknowledged: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -66,6 +68,13 @@ impl JobRecord {
                 .phase
                 .as_ref()
                 .is_some_and(|phase| phase.is_empty() || phase.len() > 64 || phase.contains('\0'))
+            || self.summary_template_ref.as_ref().is_some_and(|value| {
+                value.id.is_empty()
+                    || value.id.len() > 128
+                    || value.revision.len() > 128
+                    || value.id.contains('\0')
+                    || value.revision.contains('\0')
+            })
             || self.message.len() > 4096
             || self.message.contains('\0')
             || self.updated_at < self.created_at
@@ -427,6 +436,7 @@ mod tests {
             meeting_id: Some(Uuid::new_v4().to_string()),
             source_fingerprint: Some("a".repeat(64)),
             include_summary: false,
+            summary_template_ref: None,
             acknowledged: false,
             failure_kind: None,
             status,

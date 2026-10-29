@@ -1020,8 +1020,14 @@ button.danger:hover:not(:disabled), button.danger-text:hover:not(:disabled) { co
 .library-folder-menu { grid-column: 2; justify-self: center; position: relative; }
 .library-folder-menu summary { cursor: pointer; display: flex; padding: 4px; list-style: none; border-radius: 4px; color: var(--text-secondary); }
 .library-folder-menu summary::-webkit-details-marker { display: none; }
-.library-folder-menu .action-menu { position: absolute; top: 100%; left: 0; z-index: 10; min-width: 135px; padding: 4px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); box-shadow: 0 8px 24px var(--shadow-modal); }
-.library-folder-menu .action-menu button { width: 100%; text-align: left; border-color: transparent; }
+.library-folder-menu .action-menu { position: absolute; top: 100%; left: 0; z-index: 10; }
+:is(.meeting-menu, .library-folder-menu, .detail-more) > .action-menu { min-width: 160px; padding: 5px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); box-shadow: 0 8px 24px var(--shadow-modal); }
+:is(.meeting-menu, .library-folder-menu, .detail-more) > .action-menu button { display: block; width: 100%; text-align: left; border-color: transparent; background: transparent; padding: 7px 9px; }
+:is(.meeting-menu, .library-folder-menu, .detail-more) > .action-menu button:hover:not(:disabled) { background: var(--hover); }
+.meeting-menu > summary { display: grid; place-items: center; list-style: none; cursor: pointer; border-radius: var(--control-radius); }
+.meeting-menu > summary::-webkit-details-marker { display: none; }
+.meeting-menu > summary:hover, .meeting-menu[open] > summary { background: var(--hover); }
+.meeting-menu > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .library-form .dialog-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .library-folder-choices { display: grid; gap: 6px; margin-top: 16px; }
 .library-dialog .library-folder-choice { display: flex; align-items: center; gap: 10px; padding: 10px 12px; margin: 0; border: 1px solid var(--border); border-radius: 6px; cursor: pointer; }

@@ -33,6 +33,7 @@ await writeFile(resolve(licenses, 'manifest.json'), JSON.stringify(licenseManife
 await cp(resolve(source, 'vendor/lucide'), resolve(target, 'vendor/lucide'), { recursive: true });
 
 await mkdir(resolve(app, '.generated/native'), { recursive: true });
+await cp(resolve(app, 'licenses/portable-wav'), resolve(app, '.generated/native/licenses/portable-wav'), { recursive: true });
 await mkdir(resolve(app, '.generated/agent'), { recursive: true });
 
 await mkdir(resolve(app, '.generated/brand'), { recursive: true });

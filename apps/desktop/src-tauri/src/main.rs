@@ -23,6 +23,7 @@ mod summary;
 mod summary_checkpoint;
 mod summary_evidence;
 mod summary_failure;
+mod summary_template;
 mod template_settings;
 mod terminology;
 use grove_core::{
@@ -1245,7 +1246,14 @@ async fn import_audio(
     let source = tauri::async_runtime::spawn_blocking(move || {
         app.dialog()
             .file()
-            .add_filter("음성", &["wav", "m4a", "mp3", "aac", "aiff", "aif", "caf"])
+            .add_filter(
+                "음성",
+                if cfg!(windows) {
+                    &["wav"][..]
+                } else {
+                    &["wav", "m4a", "mp3", "aac", "aiff", "aif", "caf"][..]
+                },
+            )
             .blocking_pick_file()
     })
     .await
@@ -1337,6 +1345,7 @@ async fn diarize_meeting(
 }
 #[tauri::command]
 async fn summarize_meeting(
+    template: Option<summary_template::TemplateRef>,
     window: WebviewWindow,
     state: tauri::State<'_, DesktopState>,
     meeting_id: String,
@@ -1344,9 +1353,11 @@ async fn summarize_meeting(
     require_main(&window)?;
     let processing = state.processing.clone();
     let core = state.core.clone();
-    tauri::async_runtime::spawn_blocking(move || processing.summarize(core, meeting_id))
-        .await
-        .map_err(|_| "요약을 시작하지 못했습니다.".to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        processing.summarize_selected(core, meeting_id, template)
+    })
+    .await
+    .map_err(|_| "요약을 시작하지 못했습니다.".to_string())?
 }
 #[tauri::command]
 async fn read_summary(
@@ -1512,6 +1523,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             agent_write_ready,
             calendar_desktop::read_calendar_settings,
+            calendar_desktop::read_calendar_meeting_occurrences,
+            calendar_desktop::create_meeting_from_calendar,
             calendar_desktop::begin_calendar_connect,
             calendar_desktop::finish_calendar_connect,
             calendar_desktop::reopen_calendar_connect,

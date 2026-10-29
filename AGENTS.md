@@ -44,7 +44,8 @@ This file applies to the entire repository.
 - ASR and diarization share the pinned native speech package. GPU is preferred;
   only a confirmed unavailable GPU backend permits the packaged CPU route. Allocation
   and generic runtime failures do not authorize CPU fallback. Windows packages contain
-  Vulkan and CPU runtimes, but the current AudioPrepare path requires Apple silicon/
+  Vulkan and CPU runtimes. Windows WAV preparation uses the portable bounded converter;
+  compressed imports remain unavailable there. macOS conversion requires Apple silicon/
   macOS 26. Windows end-to-end recognition availability remains unqualified.
 - Existing chunk speaker labels retain their `asr_chunk` scope; never equate the same
   label across independently recognized chunks. Verified whole-recording labels use

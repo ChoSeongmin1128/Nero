@@ -68,7 +68,8 @@ test('the real application HTML boots and opens all settings tabs without stale 
   }
   window.document.getElementById('settings-close').click();
   await wait(() => !window.document.getElementById('settings-dialog').open);
-  assert.equal(window.document.activeElement.id, 'settings');
+  await wait(() => window.document.activeElement.id === 'navigation-toggle');
+  assert.equal(window.document.activeElement.id, 'navigation-toggle');
   assert.deepEqual(errors, []);
   assert.equal(window.document.getElementById('error').hidden, true);
   assert.ok(calls.includes('readSnapshot'));

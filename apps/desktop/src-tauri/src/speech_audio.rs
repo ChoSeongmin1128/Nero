@@ -6,7 +6,16 @@ use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
+#[cfg(any(windows, test))]
+#[path = "speech_audio_wav.rs"]
+mod portable_wav;
+
 pub const SAMPLE_RATE: u32 = 16000;
+
+pub(super) fn supported(process: &Processing) -> bool {
+    cfg!(all(target_os = "windows", target_arch = "x86_64"))
+        || process.worker("AudioPrepare").is_file()
+}
 
 fn failure(kind: FailureKind) -> Failure {
     Failure::new(
@@ -52,21 +61,26 @@ impl AnalysisAudio {
             Err(error) if error.kind == FailureKind::Cancelled => return Err(error),
             Err(_) => {
                 let path = work.join("analysis.wav");
-                let arguments = [
-                    source.as_os_str().to_os_string(),
-                    path.as_os_str().to_os_string(),
-                ];
-                crate::diarization::run(
-                    process,
-                    &process.worker("AudioPrepare"),
-                    &arguments,
-                    &work.join("prepare.log"),
-                    cancel,
-                    false,
-                    Some(source),
-                    "prepare-audio",
-                )
-                .map_err(|error| failure(error.kind))?;
+                #[cfg(windows)]
+                portable_wav::prepare(source, &path, cancel)?;
+                #[cfg(not(windows))]
+                {
+                    let arguments = [
+                        source.as_os_str().to_os_string(),
+                        path.as_os_str().to_os_string(),
+                    ];
+                    crate::diarization::run(
+                        process,
+                        &process.worker("AudioPrepare"),
+                        &arguments,
+                        &work.join("prepare.log"),
+                        cancel,
+                        false,
+                        Some(source),
+                        "prepare-audio",
+                    )
+                    .map_err(|error| failure(error.kind))?;
+                }
                 let frames = native_frames(&path, cancel)?;
                 (path, frames)
             }

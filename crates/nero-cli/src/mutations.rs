@@ -7,6 +7,7 @@ pub(crate) fn dispatch(root: &Path, method: &str, params: Value) -> Result<Value
     agent_control::request(root, method, params).map_err(|error| {
         let message = match error.code {
             "invalid_input" => "수정 요청의 ID/입력값/수정본을 확인해 주세요.",
+            "edit_conflict" if method == "job_cancel" => "작업 상태가 변경되었습니다. jobs_list로 현재 상태를 확인하세요.",
             "edit_conflict" if method == "summary_import" => "원문, 메모 또는 기존 요약이 변경되어 저장하지 않았습니다. 현재 내용을 확인해 요약을 다시 판단하세요. 같은 요청을 자동 반복하지 마세요.",
             "edit_conflict" => "회의나 폴더가 변경되었습니다. 최신 editVersion을 조회한 뒤 다시 요청하세요.",
             "meeting_not_found" => "회의를 찾을 수 없습니다.",
@@ -26,7 +27,21 @@ pub(crate) fn schema(method: &str) -> Map<String, Value> {
     let mut fields = Map::new();
     let mut required = Vec::new();
     let version = json!({"type":"string","pattern":"^sha256:[0-9a-f]{64}$"});
-    if method == "summary_import" {
+    if method == "jobs_list" {
+        fields.insert("meetingId".into(), id_schema());
+        fields.insert(
+            "offset".into(),
+            json!({"type":"integer","minimum":0,"default":0}),
+        );
+        fields.insert(
+            "limit".into(),
+            json!({"type":"integer","minimum":1,"maximum":200,"default":50}),
+        );
+    } else if method == "job_cancel" {
+        fields.insert("jobId".into(), id_schema());
+        fields.insert("expectedVersion".into(), version.clone());
+        required.extend(["jobId", "expectedVersion"]);
+    } else if method == "summary_import" {
         fields.insert("meetingId".into(), id_schema());
         let mut nullable_id = id_schema();
         nullable_id["type"] = json!(["string", "null"]);

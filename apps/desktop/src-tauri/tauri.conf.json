@@ -18,7 +18,7 @@
         "title": "Nero",
         "width": 1180,
         "height": 790,
-        "minWidth": 760,
+        "minWidth": 640,
         "minHeight": 560,
         "center": true
       }
@@ -48,7 +48,7 @@
     "category": "Productivity",
     "macOS": {
       "minimumSystemVersion": "13.0",
-      "bundleVersion": "29",
+      "bundleVersion": "30",
       "infoPlist": "Info.plist"
     },
     "windows": {

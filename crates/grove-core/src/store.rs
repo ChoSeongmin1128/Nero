@@ -343,12 +343,22 @@ impl Store {
     }
 
     pub fn create(&self, title: String, notes: String) -> Result<StoredMeeting> {
+        self.create_with_calendar(title, notes, None)
+    }
+
+    pub fn create_with_calendar(
+        &self,
+        title: String,
+        notes: String,
+        calendar_reference: Option<crate::CalendarReference>,
+    ) -> Result<StoredMeeting> {
         validate_text(&title, &notes)?;
         let timestamp = now();
         let meeting = Meeting {
             id: Uuid::new_v4().to_string(),
             title,
             notes,
+            calendar_reference,
             created_at: timestamp,
             updated_at: timestamp,
             meeting_date: None,

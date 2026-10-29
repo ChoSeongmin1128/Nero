@@ -31,7 +31,7 @@ function TemplateSettings({ flow, confirm, beforeLeave }) {
       </form>
     </> : <>
       <div className="template-settings-heading"><h3 className="settings-panel-title">요약 템플릿</h3><button type="button" className="small with-icon" disabled={state.busy} onClick={() => flow.create()}><Plus size={14} aria-hidden="true" />추가</button></div>
-      <p className="template-settings-description">연결된 에이전트의 요약에 사용합니다.</p>
+      <p className="template-settings-description">앱과 에이전트가 함께 사용합니다.</p>
       <div className="settings-group template-settings-list">
         {state.items.map(item => <div className="template-settings-row" key={item.id}>
           <div className="template-settings-copy"><div className="template-settings-name"><strong>{item.name}</strong>{item.builtIn && <span>기본</span>}{item.customized && <span>수정됨</span>}</div><p title={item.description}>{item.description}</p></div>

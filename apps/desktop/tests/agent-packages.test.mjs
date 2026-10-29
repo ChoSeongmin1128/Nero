@@ -61,6 +61,9 @@ for (const [target, platform, binary] of [
     assert.match(skill, /sourceVersion/);
     assert.match(skill, /editVersion/);
     assert.match(skill, /templates_list/);
+    assert.match(skill, /jobs_list/);
+    assert.match(skill, /job_cancel/);
+    assert.match(skill, /expectedVersion/);
     assert.doesNotMatch(skill, /글로랑|AX팀/);
     assert.equal(resolve(destination, claude.server.entry_point), join(destination, 'server', binary));
   });

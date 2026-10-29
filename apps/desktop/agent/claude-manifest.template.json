@@ -3,7 +3,7 @@
   "name": "nero",
   "display_name": "Nero",
   "version": "0.0.1",
-  "description": "Nero 회의와 요약 조회, 새 요약 저장, 회의와 요약 템플릿 관리",
+  "description": "Nero 회의와 요약 조회, 새 요약 저장, 회의와 요약 템플릿 관리, 처리 작업 조회와 취소",
   "author": {
     "name": "Nero"
   },
@@ -25,6 +25,14 @@
     ]
   },
   "tools": [
+    {
+      "name": "jobs_list",
+      "description": "실행 중인 Nero의 처리 작업 상태 조회"
+    },
+    {
+      "name": "job_cancel",
+      "description": "사용자가 요청한 처리 작업을 수정본 확인 후 취소"
+    },
     {
       "name": "meetings_list",
       "description": "회의 목록 조회"

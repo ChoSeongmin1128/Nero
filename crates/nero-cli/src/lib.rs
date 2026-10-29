@@ -13,7 +13,9 @@ use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 
 pub const APP_IDENTIFIER: &str = "io.github.choseongmin1128.grove.desktop";
-pub const METHODS: [&str; 23] = [
+pub const METHODS: [&str; 25] = [
+    "jobs_list",
+    "job_cancel",
     "meetings_list",
     "meetings_search",
     "meeting_get",
@@ -42,7 +44,8 @@ pub const METHODS: [&str; 23] = [
 pub fn is_read_only(method: &str) -> bool {
     matches!(
         method,
-        "meetings_list"
+        "jobs_list"
+            | "meetings_list"
             | "meetings_search"
             | "meeting_get"
             | "transcript_get"
@@ -58,7 +61,8 @@ pub fn is_read_only(method: &str) -> bool {
 pub fn is_destructive(method: &str) -> bool {
     matches!(
         method,
-        "template_update"
+        "job_cancel"
+            | "template_update"
             | "summary_import"
             | "template_delete"
             | "template_reset"
@@ -107,7 +111,9 @@ pub fn dispatch(root: &Path, method: &str, params: Value) -> Result<Value, Query
     if method.starts_with("template") {
         return templates::dispatch(root, method, params);
     }
-    if grove_core::agent_control::METHODS.contains(&method) {
+    if grove_core::agent_control::METHODS.contains(&method)
+        || grove_core::agent_control::JOB_METHODS.contains(&method)
+    {
         return mutations::dispatch(root, method, params);
     }
     if method != "status" && !root.exists() {
@@ -121,7 +127,7 @@ pub fn dispatch(root: &Path, method: &str, params: Value) -> Result<Value, Query
     let mut result = reader.query(method, params).map_err(query_error)?;
     if method == "status" {
         result["readOnly"] = json!(false);
-        result["capabilities"] = json!({"queriesReadOnly":true,"templateWrites":true,"meetingWritesRequireApp":true,"summaryImportsRequireApp":true});
+        result["capabilities"] = json!({"queriesReadOnly":true,"templateWrites":true,"meetingWritesRequireApp":true,"summaryImportsRequireApp":true,"jobQueriesRequireApp":true,"jobCancellationRequireApp":true});
     }
     Ok(result)
 }
@@ -205,7 +211,9 @@ pub fn input_schema(method: &str) -> Map<String, Value> {
     if method.starts_with("template") {
         return templates::schema(method);
     }
-    if grove_core::agent_control::METHODS.contains(&method) {
+    if grove_core::agent_control::METHODS.contains(&method)
+        || grove_core::agent_control::JOB_METHODS.contains(&method)
+    {
         return mutations::schema(method);
     }
     let mut properties = Map::new();
@@ -337,7 +345,9 @@ mod tests {
     #[test]
     fn schemas_expose_bounded_reads_and_explicit_calendar_dates() {
         for method in METHODS.into_iter().filter(|method| {
-            is_read_only(method) && *method != "status" && !method.starts_with("template")
+            is_read_only(method)
+                && !matches!(*method, "status" | "jobs_list")
+                && !method.starts_with("template")
         }) {
             let schema = Value::Object(input_schema(method));
             assert_eq!(
@@ -350,6 +360,26 @@ mod tests {
             );
             assert_eq!(schema["additionalProperties"], false);
         }
+        let jobs = Value::Object(input_schema("jobs_list"));
+        assert_eq!(jobs["properties"]["limit"]["default"], 50);
+        assert_eq!(jobs["properties"]["limit"]["minimum"], 1);
+        assert_eq!(jobs["properties"]["limit"]["maximum"], 200);
+        assert_eq!(jobs["properties"]["offset"]["minimum"], 0);
+        assert_eq!(jobs["properties"]["offset"]["default"], 0);
+        assert_eq!(jobs["properties"]["meetingId"], id_schema());
+        assert_eq!(jobs["additionalProperties"], false);
+        assert!(jobs["properties"].get("maxBytes").is_none());
+        assert!(jobs["properties"].get("expectedSourceVersion").is_none());
+        assert!(is_read_only("jobs_list"));
+        let cancel = Value::Object(input_schema("job_cancel"));
+        assert_eq!(cancel["required"], json!(["jobId", "expectedVersion"]));
+        assert_eq!(
+            cancel["properties"]["expectedVersion"]["pattern"],
+            "^sha256:[0-9a-f]{64}$"
+        );
+        assert_eq!(cancel["additionalProperties"], false);
+        assert!(!is_read_only("job_cancel"));
+        assert!(is_destructive("job_cancel"));
         let status = Value::Object(input_schema("status"));
         assert!(status["properties"].get("maxBytes").is_none());
         for method in ["meetings_list", "meetings_search"] {

@@ -152,6 +152,9 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     const mountSummaryEvidence = options => { summaryEvidenceOptions = options; return { reset() {}, update() {}, restoreFocus() {} }; };
     const mountTemplateSettings = () => testTemplateSettings;
     const mountCalendarSettings = () => ({ setActive() {} });
+    const mountCalendarMeetingPicker = () => ({open(){}, close(){}, isOpen(){return false;}});
+    const mountCalendarMeetingReference = () => ({render(){}});
+    const mountSummaryTemplatePicker = () => ({reload:async()=>{},selected:async()=>({id:'meeting',revision:'test'})});
     const mountDocumentActions = () => ({ update() {}, close() {} });
     const mountAgentConnectionDialog = () => ({ open(...args) { testAgentDialogCalls.push(args); }, update() {}, close() {}, isOpen: () => false });
     const mountLibrary = ({getState}) => ({ render() {}, resetSelection() {}, toggleSelection() {}, handleRowSelection: () => false, show: async () => {}, visibleMeetings() {
@@ -161,6 +164,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     } });
     const mountSpeakers = ({getState}) => ({render() {}, reset() {}, open: async () => {}, label: segment => getState().transcriptDraft?.doc?.speakers?.find(speaker=>speaker.id === segment.speakerId)?.name || '화자 미지정'});
 
+    const returnFocusTarget = (origin, fallback) => origin || fallback;
     const bridge = testBridge;
     const { icon, escape, button, duration, recordingStatus, statusMarkup, sessionControls, applySystemAppearance } = testUI;
     ${executable}
@@ -1661,4 +1665,13 @@ test('summary download failures remain visible inside General settings', async (
   assert.equal(page.element('settings-summary-error').hidden,false);
   assert.match(page.element('settings-summary-error').textContent,/공간이 부족/);
   assert.equal(page.element('settings-dialog').open,true);
+});
+
+test('explicit library navigation remains available without prepared models', async () => {
+  const page=await openApp();
+  page.app.state.connected=true;page.app.state.selectedId=null;page.app.state.libraryOpen=true;
+  page.app.state.processing.supported=false;page.app.state.processing.modelReady=false;
+  page.app.render();
+  assert.equal(page.element('setup-screen').hidden,true);
+  assert.equal(page.element('library-screen').hidden,false);
 });
