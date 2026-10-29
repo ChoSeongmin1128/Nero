@@ -36,7 +36,7 @@ function harness(overrides = {}, options = {}) {
         this.checkedRadio = /<input[^>]*name="library-destination"[^>]*value="([^"]*)"[^>]* checked/.exec(value)?.[1];
       }
     }
-    get innerHTML() { return this.html || ''; }
+    get innerHTML() { return this.id === 'folder-list' ? ['library-system-views', 'library-user-folders', 'library-trash-view'].map(id => byId(id).innerHTML).join('') : this.html || ''; }
     querySelector(selector) {
       if (selector === '[autofocus]') return this.autofocus || null;
       if (selector === '[data-library-confirm]') return byId('confirm');
@@ -802,4 +802,21 @@ test('recent duration updates after finalization without navigation or title cha
   h.controller.render();
   assert.match(h.byId('recent-meetings').innerHTML, /3000ms/);
   assert.doesNotMatch(h.byId('recent-meetings').innerHTML, /2000ms/);
+});
+
+ test('built-in views, user folders and trash occupy separate navigation groups', () => {
+  const app = harness();
+  const views = app.byId('library-system-views').innerHTML;
+  const folders = app.byId('library-user-folders').innerHTML;
+  const trash = app.byId('library-trash-view').innerHTML;
+  assert.match(views, /data-library-filter="all"/);
+  assert.match(views, /data-library-filter="unfiled"/);
+  assert.doesNotMatch(views, /data-library-filter="project"|data-library-filter="trash"/);
+  assert.match(folders, /data-library-filter="project"/);
+  assert.doesNotMatch(folders, /data-library-filter="all"|data-library-filter="trash"/);
+  assert.match(trash, /data-library-filter="trash"/);
+  app.state.snapshot.folders = [];
+  app.controller.render();
+  assert.equal(app.byId('library-user-folders').innerHTML, '');
+  assert.match(app.byId('library-system-views').innerHTML, /data-library-filter="all"/);
 });

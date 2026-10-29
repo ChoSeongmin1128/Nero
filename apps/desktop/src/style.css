@@ -10,7 +10,7 @@ body { overflow: hidden; }
 .library-header button { justify-content: center; width: 100%; min-height: 34px; padding: 5px 10px; font-size: var(--text-label-size); }
 .search-field { padding: 0 16px 6px; }
 .search-field input { width: 100%; min-width: 0; }
-.library-heading { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px 4px; }
+.library-heading { display: flex; align-items: center; justify-content: space-between; min-height: 32px; padding: 0 8px; }
 .library-navigation { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .library-navigation .folder-list { flex: none; overflow: visible; padding: 4px 10px; }
 .library-heading h2, .recent-section h2 { color: var(--text-secondary); font-size: var(--text-caption-size); font-weight: var(--weight-medium); }

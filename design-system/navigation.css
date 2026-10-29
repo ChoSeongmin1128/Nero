@@ -40,3 +40,8 @@
 .navigation-shell[data-onboarding="true"] > .navigation-sidebar,
 .navigation-shell[data-onboarding="true"] > .navigation-rail,
 .navigation-shell[data-onboarding="true"] .navigation-toolbar { display: none; }
+
+.navigation-folder-section { margin-top: 12px; }
+.navigation-folder-section h2 { margin: 0; color: var(--text-secondary); font-size: var(--text-caption-size); font-weight: var(--weight-medium); }
+.navigation-folder-section .library-heading > button { width: 28px; min-width: 28px; min-height: 28px; padding: 5px; }
+.navigation-trash-section { margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--border); }
