@@ -8,7 +8,7 @@ the private installation and evaluation receipts.
 
 ## Release state
 
-Nero 0.0.1 build 28/agent23 has signed/notarized macOS arm64 artifacts and is locally
+Nero 0.0.1 build 29/agent23 has signed/notarized macOS arm64 artifacts and is locally
 installed. The canonical installer replaced only the app by rename under the writer
 lock. Existing library hashes, model metadata and installation-time connection state
 were preserved without copying audio, models or a full data snapshot. Native settings
@@ -23,19 +23,21 @@ Host package updates and actual live tool acceptance remain separate from app pa
 client configuration was not rewritten. Windows-device and model-quality qualification
 remain separate. Source commits and hashes are in [Release history](release-history.md).
 
-Build 28 source tests and installed-screen checks do not establish new microphone
-capture, Google account authorization/reminder delivery or Windows-device qualification.
+Build29 installed-screen checks establish Google account authorization, calendar choice
+and initial sync, but not a new agent-run capture, reminder delivery, browser auto-close
+or Windows-device qualification.
 Host package installation and existing live sessions remain separate; a current enabled
 installation remains connected while per-conversation sessions start or stop. Older-only
 sessions have a new-conversation notice without requiring reinstall or whole-app restart.
 
-## Notarized candidate
+## Latest installed verification
 
-Build29/source91a8561 retains the signed agent23 payload and improves stable installation
-readiness, ChatGPT naming and Google Desktop authorization/callback completion. App/DMG
-notarization is accepted with verified embedded-app identity. Installation remains pending
-while the installed app records. Actual Google reauthorization, callback auto-close and
-reminder delivery remain distinct from mocked/endpoint and unit checks.
+Build29/source91a8561 retains the signed agent23 payload. App/DMG notarization and
+embedded-app identity are verified. After capture and processing ended, normal app quit
+and the canonical writer-locked installer preserved existing library hashes, models and
+connection registrations. Native settings show Claude/ChatGPT connected and a selected
+Google calendar after real authorization/sync. Actual reminder delivery and browser
+close behavior remain separate from successful connection and the callback tests.
 
 ## Native rewrite source
 
