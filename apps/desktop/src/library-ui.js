@@ -279,7 +279,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     }
     const recent = recentLibraryMeetings(snapshot.meetings);
     const activeId = state().libraryOpen ? null : state().selectedId;
-    const nextRecentKey = JSON.stringify([disabled, activeId, recent.map(meeting => [meeting.id, meeting.title, meeting.recordedAt, meeting.createdAt])]);
+    const nextRecentKey = JSON.stringify([disabled, activeId, recent.map(meeting => [meeting.id, meeting.title, meeting.recordedAt, meeting.createdAt, meeting.audio?.frames, meeting.audio?.sampleRate])]);
     byId('recent-section').hidden = !recent.length;
     if (recentKey !== nextRecentKey) {
       recentKey = nextRecentKey;

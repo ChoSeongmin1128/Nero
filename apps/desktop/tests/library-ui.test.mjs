@@ -789,3 +789,17 @@ test('bulk toolbar focus retains list-wide select-all and Escape behavior', () =
   assert.deepEqual(app.controller.selectedIds(), []);
   assert.equal(app.byId('library-batch').hidden, true);
 });
+
+
+test('recent duration updates after finalization without navigation or title changes', () => {
+  const h = harness({}, { duration: value => `${value}ms` });
+  const before = h.byId('recent-meetings').innerHTML;
+  h.state.snapshot.meetings[0].audio = { sampleRate: 16000, frames: 32000 };
+  h.controller.render();
+  assert.notEqual(h.byId('recent-meetings').innerHTML, before);
+  assert.match(h.byId('recent-meetings').innerHTML, /2000ms/);
+  h.state.snapshot.meetings[0].audio.frames = 48000;
+  h.controller.render();
+  assert.match(h.byId('recent-meetings').innerHTML, /3000ms/);
+  assert.doesNotMatch(h.byId('recent-meetings').innerHTML, /2000ms/);
+});
