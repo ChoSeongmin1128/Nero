@@ -43,7 +43,7 @@ document.addEventListener('click',e=>{const t=e.target.closest('button');if(!t)r
 $('search').oninput=()=>{selected=null;filter='all';render();};$('transcriptToggle').onclick=()=>{transcript=!transcript;render();};$('width').onclick=()=>{$('shell').classList.toggle('half');navigation.resetTemporary();$('width').textContent=$('shell').classList.contains('half')?'전체 너비':'절반 너비';syncNav();};$('theme').onclick=()=>{const dark=document.documentElement.dataset.mode==='dark';document.documentElement.dataset.mode=dark?'light':'dark';$('theme').textContent=dark?'어둡게':'밝게';};document.addEventListener('keydown',e=>{if(e.defaultPrevented||document.querySelector('dialog[open]'))return;if(e.key==='Escape'){if(transcript){transcript=false;render();$('transcriptToggle').focus();}else {navigation.resetTemporary();}}});$('new').innerHTML=icon('plus')+'<span>새 회의</span>';
 document.querySelector('.sidebar-utilities [data-filter="trash"]').insertAdjacentHTML('afterbegin',icon('trash-2'));
 $('settings').insertAdjacentHTML('afterbegin',icon('settings'));
-$('notifications-open').insertAdjacentHTML('afterbegin',icon('inbox'));
+$('notifications-open').insertAdjacentHTML('afterbegin',icon('bell'));
 function statusMarkup(){
  if(processingState!=='processing')return '';
  const copy={processing:'음성을 텍스트로 변환하고 있습니다.',cancelled:'음성 기록 변환을 취소했습니다.',failed:'텍스트로 변환하지 못했습니다.'}[processingState];

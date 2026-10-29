@@ -1,5 +1,6 @@
 (function (root) {
   const shapes = {
+    bell: '<path d="M10.268 21a2 2 0 0 0 3.464 0"/><path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326"/>',
     pin: '<path d="M16 9V4l1-1H7l1 1v5l-3 3v2h14v-2z"/><path d="M12 14v8"/>',
     "circle-slash": '<circle cx="12" cy="12" r="10"/><path d="m5 5 14 14"/>',
     "picture-in-picture-2": '<path d="M21 9V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h4"/><rect x="13" y="13" width="8" height="8" rx="2"/>',
