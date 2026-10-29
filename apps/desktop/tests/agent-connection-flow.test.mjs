@@ -74,7 +74,7 @@ test('polling unchanged paths does not clear copy confirmation', async () => {
   const flow = createAgentConnectionFlow({ writeText: async () => {} });
   flow.open(info);
   await flow.copy();
-  flow.update({ ...info, clients: [{ id: 'claude', state: 'waiting' }] });
+  flow.update({ ...info, clients: [{ id: 'claude', state: 'installation_unknown' }] });
   assert.equal(flow.getSnapshot().copied, true);
 });
 
@@ -126,5 +126,5 @@ test('manual connection owns a contextual dialog rather than a detached copy but
   assert.match(component, /DialogContent container=\{container\}/);
   assert.match(component, /<DialogTitle>에이전트로 연결<\/DialogTitle>/);
   assert.match(component, /<pre aria-labelledby="agent-prompt-label"/);
-  assert.match(component, /Claude Code, Codex, Cursor 등의 대화에 붙여넣으세요/);
+  assert.match(component, /Claude Code, ChatGPT, Cursor 등의 대화에 붙여넣으세요/);
 });

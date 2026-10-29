@@ -25,8 +25,9 @@ remain separate. Source commits and hashes are in [Release history](release-hist
 
 Build 28 source tests and installed-screen checks do not establish new microphone
 capture, Google account authorization/reminder delivery or Windows-device qualification.
-Host package installation and existing live sessions remain separate; an up-to-date
-package can require refreshing an older session without reinstalling the package.
+Host package installation and existing live sessions remain separate; a current enabled
+installation remains connected while per-conversation sessions start or stop. Older-only
+sessions have a new-conversation notice without requiring reinstall or whole-app restart.
 
 ## Native rewrite source
 
@@ -45,13 +46,16 @@ package can require refreshing an older session without reinstalling the package
   retaining the previous folder filter for returning to the list. The summary remains
   the primary document beside a non-modal voice record, with compact playback and
   labeled icon actions. No unimplemented summary-template selector is displayed.
-- Settings > Connections keeps direct Claude/Codex installation and actual connection
+- Settings > Integrations keeps direct Claude/ChatGPT installation and connection
   evidence. Other agents open a connection dialog with the full prompt, copy action
   and paste destination together. Its code area scrolls independently of the instruction;
   copy failure and unavailable connection metadata have explicit recovery states.
-- Connection preparation and verified initialization are separate. Host installation freshness and live-session freshness are separate. A current
-  installed package with an older or inactive session requests a connection recheck,
-  not another update. Explicit status checks refresh bounded host observations. Client-specific observation errors do not block
+- Connection preparation and verified initialization are separate. Verified enabled host
+  installation represents connection readiness independently of lazy per-conversation
+  sessions. Inactive sessions do not change a current connection's label or restore a
+  recheck button. Older-only sessions explain that the update is complete and applies
+  to new conversations. Unknown host installation still requires current live evidence.
+  Explicit status checks refresh bounded host observations. Client-specific observation errors do not block
   the other row, and retrying an observation never runs installation. Codex uses a
   stable catalog location pointing at preserved generation-specific executables.
   Catalog metadata alone does not establish a running client's installed version.
@@ -71,7 +75,11 @@ package can require refreshing an older session without reinstalling the package
 - Calendar integrations use a desktop public-client PKCE grant and the platform credential
   store. Selected Google calendars supply a compact five-minute reminder while Nero runs.
   Recording starts only from an explicit reminder action; no helper wakes a quit app.
-  Calendar-state corruption is isolated from the meeting library.
+  Calendar-state corruption is isolated from the meeting library. Complete Desktop
+  client configuration is required before offering connection. The callback renders
+  shared Nero styles, waits for token exchange and durable connection state before
+  success, returns focus to Nero and attempts to close the tab. Browser restrictions
+  retain a clear completion message; failures stay visible with an actionable reason.
 - Recording controls remain visible throughout capture when enabled, including while
   the main window is foreground. Closing the control hides it for that capture only.
   Bounded capture diagnostics record observed writer progress rather than inventing a

@@ -235,6 +235,11 @@ pub async fn finish_calendar_connect(
     crate::require_main(&window)?;
     let result = state.service()?.finish_connect(&attempt_id).await;
     publish(&app);
+    if result.is_ok() {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
     result
 }
 #[tauri::command]

@@ -186,8 +186,9 @@ fn codex_command(home: &Path) -> Option<Command> {
 }
 
 fn codex_list(home: &Path) -> Result<Vec<u8>, &'static str> {
-    let mut command = codex_command(home)
-        .ok_or("Codex의 설치 정보를 읽을 수 없습니다. Codex에서 Nero 설치 상태를 확인해 주세요.")?;
+    let mut command = codex_command(home).ok_or(
+        "ChatGPT의 설치 정보를 읽을 수 없습니다. ChatGPT에서 Nero 설치 상태를 확인해 주세요.",
+    )?;
     command
         .args(["plugin", "list", "--marketplace", "nero-local", "--json"])
         .current_dir(home)
@@ -209,7 +210,7 @@ pub(super) fn install_codex(home: &Path, connection: &Path) -> Result<bool, Stri
             .any(|part| matches!(part, Component::ParentDir | Component::CurDir))
         || !connection.ancestors().all(super::plain_directory)
     {
-        return Err("Codex 연결 패키지의 경로를 확인하지 못했습니다.".into());
+        return Err("ChatGPT 연결 패키지의 경로를 확인하지 못했습니다.".into());
     }
     let Some(command) = codex_command(home) else {
         return Ok(false);
@@ -239,25 +240,25 @@ fn install_codex_with_runner(
     mut run: impl FnMut(&[OsString]) -> Result<Vec<u8>, String>,
 ) -> Result<(), String> {
     if !connection.is_absolute() || !plain_tree(connection, &connection.join(".agents/plugins")) {
-        return Err("Codex 연결 패키지의 경로를 확인하지 못했습니다.".into());
+        return Err("ChatGPT 연결 패키지의 경로를 확인하지 못했습니다.".into());
     }
     let marketplace = read_json(&connection.join(".agents/plugins/marketplace.json"))?;
     let plugins = marketplace["plugins"]
         .as_array()
-        .ok_or("Codex 연결 패키지를 확인하지 못했습니다.")?;
+        .ok_or("ChatGPT 연결 패키지를 확인하지 못했습니다.")?;
     if marketplace["name"] != "nero-local"
         || plugins.len() != 1
         || plugins[0]["name"] != "nero"
         || plugins[0]["source"]["source"] != "local"
     {
-        return Err("Codex 연결 패키지를 확인하지 못했습니다.".into());
+        return Err("ChatGPT 연결 패키지를 확인하지 못했습니다.".into());
     }
     let source = plugins[0]["source"]["path"]
         .as_str()
         .and_then(|value| value.strip_prefix("./releases/"))
         .and_then(|value| value.strip_suffix("/plugins/nero"))
         .filter(|value| super::valid_generation(value))
-        .ok_or("Codex 연결 패키지를 확인하지 못했습니다.")?;
+        .ok_or("ChatGPT 연결 패키지를 확인하지 못했습니다.")?;
     if !plain_tree(
         connection,
         &connection
@@ -265,7 +266,7 @@ fn install_codex_with_runner(
             .join(source)
             .join("plugins/nero"),
     ) {
-        return Err("Codex 연결 패키지를 확인하지 못했습니다.".into());
+        return Err("ChatGPT 연결 패키지를 확인하지 못했습니다.".into());
     }
     let commands = [
         vec![
@@ -284,12 +285,12 @@ fn install_codex_with_runner(
     ];
     for (index, arguments) in commands.iter().enumerate() {
         let response = run(arguments).map_err(|_| if index == 0 {
-            "Codex 연결 목록의 갱신 결과를 확인하지 못했습니다. 현재 설치 상태를 다시 확인해 주세요.".to_string()
+            "ChatGPT 연결 목록의 갱신 결과를 확인하지 못했습니다. 현재 설치 상태를 다시 확인해 주세요.".to_string()
         } else {
-            "Codex의 Nero 설치 결과를 확인하지 못했습니다. 현재 설치 상태를 다시 확인해 주세요.".to_string()
+            "ChatGPT의 Nero 설치 결과를 확인하지 못했습니다. 현재 설치 상태를 다시 확인해 주세요.".to_string()
         })?;
         if !serde_json::from_slice::<Value>(&response).is_ok_and(|value| value.is_object()) {
-            return Err("Codex 연결 변경의 결과를 확인하지 못했습니다. 현재 설치 상태를 다시 확인해 주세요.".into());
+            return Err("ChatGPT 연결 변경의 결과를 확인하지 못했습니다. 현재 설치 상태를 다시 확인해 주세요.".into());
         }
     }
     Ok(())
@@ -297,14 +298,14 @@ fn install_codex_with_runner(
 
 fn codex_list_output(mut command: Command) -> Result<Vec<u8>, &'static str> {
     const MAXIMUM: u64 = 2 * 1024 * 1024;
-    let mut output = tempfile::tempfile().map_err(|_| "Codex 설치 정보를 읽지 못했습니다.")?;
+    let mut output = tempfile::tempfile().map_err(|_| "ChatGPT 설치 정보를 읽지 못했습니다.")?;
     command.stdout(Stdio::from(
         output
             .try_clone()
-            .map_err(|_| "Codex 설치 정보를 읽지 못했습니다.")?,
+            .map_err(|_| "ChatGPT 설치 정보를 읽지 못했습니다.")?,
     ));
     let mut child = command.spawn().map_err(|_| {
-        "Codex의 설치 정보를 읽을 수 없습니다. Codex에서 Nero 설치 상태를 확인해 주세요."
+        "ChatGPT의 설치 정보를 읽을 수 없습니다. ChatGPT에서 Nero 설치 상태를 확인해 주세요."
     })?;
     let started = Instant::now();
     loop {
@@ -314,36 +315,36 @@ fn codex_list_output(mut command: Command) -> Result<Vec<u8>, &'static str> {
         {
             let _ = child.kill();
             let _ = child.wait();
-            return Err("Codex 설치 정보를 읽지 못했습니다.");
+            return Err("ChatGPT 설치 정보를 읽지 못했습니다.");
         }
         match child.try_wait() {
             Ok(Some(status)) if status.success() => break,
             Ok(Some(_)) => {
-                return Err("Codex 설치 정보를 확인하지 못했습니다. 다시 확인해 주세요.")
+                return Err("ChatGPT 설치 정보를 확인하지 못했습니다. 다시 확인해 주세요.")
             }
             Err(_) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err("Codex 설치 정보를 확인하지 못했습니다. 다시 확인해 주세요.");
+                return Err("ChatGPT 설치 정보를 확인하지 못했습니다. 다시 확인해 주세요.");
             }
             Ok(None) if started.elapsed() >= Duration::from_secs(3) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err("Codex 설치 확인이 지연되고 있습니다. 잠시 후 다시 확인해 주세요.");
+                return Err("ChatGPT 설치 확인이 지연되고 있습니다. 잠시 후 다시 확인해 주세요.");
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(10)),
         }
     }
     output
         .seek(SeekFrom::Start(0))
-        .map_err(|_| "Codex 설치 정보를 읽지 못했습니다.")?;
+        .map_err(|_| "ChatGPT 설치 정보를 읽지 못했습니다.")?;
     let mut bytes = Vec::new();
     output
         .take(MAXIMUM + 1)
         .read_to_end(&mut bytes)
-        .map_err(|_| "Codex 설치 정보를 읽지 못했습니다.")?;
+        .map_err(|_| "ChatGPT 설치 정보를 읽지 못했습니다.")?;
     if bytes.len() as u64 > MAXIMUM {
-        return Err("Codex 설치 정보를 읽지 못했습니다.");
+        return Err("ChatGPT 설치 정보를 읽지 못했습니다.");
     }
     Ok(bytes)
 }
@@ -400,7 +401,7 @@ fn codex_installation(bytes: &[u8], home: &Path, connection: &Path) -> HostInsta
         })
     })();
     result.unwrap_or(HostInstallation::Unknown(
-        "Codex의 설치 정보와 Nero 패키지가 일치하지 않습니다. Codex에서 설치 상태를 확인해 주세요.",
+        "ChatGPT의 설치 정보와 Nero 패키지가 일치하지 않습니다. ChatGPT에서 설치 상태를 확인해 주세요.",
     ))
 }
 
@@ -649,21 +650,17 @@ pub(super) fn client_info(
             info.state = "disabled".into();
             info.detail = Some(format!("{name}에서 Nero 연동을 켠 뒤 다시 확인해 주세요."));
         }
+        "current" => {
+            info.state = "connected".into();
+            info.action = "none".into();
+            info.detail = (info.session_state == "outdated").then(|| {
+                format!("업데이트는 완료됐습니다. 이전 대화에는 예전 연결이 남아 있으므로 {name}에서 새 대화로 Nero를 사용해 주세요.")
+            });
+        }
         _ if current_live => {
             info.state = "connected".into();
             info.detail = None;
             info.action = "none".into();
-        }
-        "current" => {
-            if active.is_empty() {
-                info.state = "waiting".into();
-                info.detail = Some(format!(
-                    "연동은 최신입니다. {name}에서 Nero 연결을 시작한 뒤 다시 확인해 주세요."
-                ));
-            } else {
-                info.state = "reconnect_required".into();
-                info.detail = Some(format!("연동은 최신입니다. {name}의 이전 연결이 실행 중이므로 {name}를 다시 시작한 뒤 확인해 주세요."));
-            }
         }
         "not_installed" => {
             info.state = "not_connected".into();

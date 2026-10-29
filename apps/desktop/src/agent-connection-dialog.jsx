@@ -24,7 +24,7 @@ function ConnectionPrompt({ flow, container, finalFocus }) {
           </div>
           <pre aria-labelledby="agent-prompt-label" tabIndex={0}><code>{state.prompt}</code></pre>
         </div>
-        <p className="agent-prompt-instruction">복사한 내용을 Claude Code, Codex, Cursor 등의 대화에 붙여넣으세요.</p>
+        <p className="agent-prompt-instruction">복사한 내용을 Claude Code, ChatGPT, Cursor 등의 대화에 붙여넣으세요.</p>
         <p className="agent-prompt-feedback" role={state.error ? 'alert' : 'status'} hidden={!state.error && !state.copied}>{state.error || '프롬프트를 복사했습니다.'}</p>
       </div>
     </DialogContent>

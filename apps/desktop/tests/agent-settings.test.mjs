@@ -102,7 +102,7 @@ test('connection is per client and only native evidence can mark it connected', 
   assert.equal(app.byId('settings-claude-connect').disabled, true);
   assert.equal(app.byId('settings-claude-status').textContent, '연결 중');
   assert.equal(app.byId('settings-codex-connect').disabled, false);
-  pending.resolve({ ...info, clients: [{ id: 'claude', state: 'waiting' }, info.clients[1]] });
+  pending.resolve({ ...info, clients: [{ id: 'claude', state: 'installation_unknown' }, info.clients[1]] });
   await connect;
   assert.notEqual(app.byId('settings-claude-status').textContent, '연결됨');
 });
@@ -115,7 +115,7 @@ for (const client of ['claude', 'codex']) {
     assert.equal(app.byId(`settings-${client}-status`).textContent, '업데이트 필요');
     assert.equal(app.byId(`settings-${client}-status`).dataset.state, 'update_required');
     assert.equal(app.byId(`settings-${client}-connect`).textContent, '업데이트');
-    assert.equal(app.byId(`settings-${client}-connect`).getAttribute('aria-label'), `${client === 'claude' ? 'Claude' : 'Codex'} 업데이트`);
+    assert.equal(app.byId(`settings-${client}-connect`).getAttribute('aria-label'), `${client === 'claude' ? 'Claude' : 'ChatGPT'} 업데이트`);
     assert.equal(app.byId(`settings-${client}-connect`).disabled, false);
     assert.equal(app.byId(`settings-${client}-connect`).hidden, false);
     assert.equal(app.byId(`settings-${client}-error`).textContent, detail);
@@ -130,7 +130,7 @@ for (const client of ['claude', 'codex']) {
 
 for (const [result, label, action] of [
   ['update_required', '업데이트 필요', '업데이트'],
-  ['waiting', '설치됨', '다시 확인'],
+  ['installation_unknown', '설치 확인 필요', '다시 확인'],
   ['connected', '연결됨', '연결'],
 ]) {
   test(`update completion uses native ${result} evidence without inventing success`, async () => {
@@ -145,13 +145,13 @@ for (const [result, label, action] of [
     assert.equal(app.byId('settings-codex-status').textContent, '업데이트 중');
     assert.equal(app.byId('settings-codex-status').dataset.state, 'updating');
     assert.equal(app.byId('settings-codex-connect').textContent, '업데이트 중');
-    assert.equal(app.byId('settings-codex-connect').getAttribute('aria-label'), 'Codex 업데이트 중');
+    assert.equal(app.byId('settings-codex-connect').getAttribute('aria-label'), 'ChatGPT 업데이트 중');
     assert.equal(app.byId('settings-codex-connect').disabled, true);
     assert.equal(app.byId('settings-codex-spinner').hidden, false);
     assert.equal(app.byId('settings-claude-status').textContent, '연결 안 됨');
     assert.equal(app.byId('settings-claude-connect').disabled, false);
     assert.equal(app.byId('settings-claude-spinner').hidden, true);
-    current = { ...current, clients: [current.clients[0], { ...current.clients[1], state: 'waiting' }] };
+    current = { ...current, clients: [current.clients[0], { ...current.clients[1], state: 'installation_unknown' }] };
     await app.context.loadAgentConnection(true);
     assert.equal(app.byId('settings-codex-status').textContent, '업데이트 중');
     assert.equal(app.byId('settings-codex-connect').textContent, '업데이트 중');
@@ -176,7 +176,7 @@ for (const client of ['claude', 'codex']) {
     assert.equal(app.byId(`settings-${client}-status`).textContent, '확인 불가');
     assert.equal(app.byId(`settings-${client}-status`).dataset.state, 'error');
     assert.equal(app.byId(`settings-${client}-connect`).textContent, '다시 확인');
-    assert.equal(app.byId(`settings-${client}-connect`).getAttribute('aria-label'), `${client === 'claude' ? 'Claude' : 'Codex'} 다시 확인`);
+    assert.equal(app.byId(`settings-${client}-connect`).getAttribute('aria-label'), `${client === 'claude' ? 'Claude' : 'ChatGPT'} 다시 확인`);
     assert.equal(app.byId(`settings-${client}-connect`).disabled, false);
     assert.equal(app.byId(`settings-${client}-error`).textContent, detail);
     assert.equal(app.byId(`settings-${client}-error`).hidden, false);
@@ -191,7 +191,7 @@ for (const client of ['claude', 'codex']) {
 for (const [result, label, action] of [
   ['error', '확인 불가', '다시 확인'],
   ['update_required', '업데이트 필요', '업데이트'],
-  ['waiting', '설치됨', '다시 확인'],
+  ['installation_unknown', '설치 확인 필요', '다시 확인'],
   ['connected', '연결됨', '연결'],
 ]) {
   test(`metadata recheck uses only one read and retains native ${result} state`, async () => {
@@ -345,18 +345,32 @@ test(`an older refresh cannot overwrite a successful ${initialState} request`, a
 });
 }
 
-test('confirmed connections have no redundant action and a lost connection restores it', async () => {
+test('confirmed connections keep the same presentation across lazy session lifetimes', async () => {
+  let sessionState = 'outdated';
+  const detail = '업데이트는 완료됐습니다. 이전 대화에는 예전 연결이 남아 있으므로 ChatGPT에서 새 대화로 Nero를 사용해 주세요.';
+  const app = harness({ load: async () => ({ ...info, clients: [info.clients[0], { id: 'codex', state: 'connected', installationState: 'current', sessionState, action: 'none', detail: sessionState === 'outdated' ? detail : null }] }) });
+  for (const next of ['outdated', 'inactive', 'current', 'inactive']) {
+    sessionState = next;
+    await app.context.loadAgentConnection(true);
+    assert.equal(app.byId('settings-codex-status').textContent, '연결됨');
+    assert.equal(app.byId('settings-codex-connect').hidden, true);
+    assert.equal(app.byId('settings-codex-error').hidden, next !== 'outdated');
+    assert.equal(app.byId('settings-codex-error').textContent, next === 'outdated' ? detail : '');
+  }
+});
+
+test('a native unconfirmed state remains actionable without inventing readiness', async () => {
   let clientState = 'connected';
   const app = harness({ load: async () => ({ ...info, clients: [{ id: 'claude', state: clientState }, info.clients[1]] }) });
   await app.context.loadAgentConnection();
   assert.equal(app.byId('settings-claude-connect').hidden, true);
   assert.equal(app.byId('settings-codex-connect').hidden, false);
-  clientState = 'waiting';
+  clientState = 'installation_unknown';
   await app.context.loadAgentConnection(true);
   assert.equal(app.byId('settings-claude-connect').hidden, false);
   assert.equal(app.byId('settings-claude-connect').disabled, false);
   assert.equal(app.byId('settings-claude-connect').textContent, '다시 확인');
-  assert.equal(app.byId('settings-claude-status').dataset.state, 'waiting');
+  assert.equal(app.byId('settings-claude-status').dataset.state, 'installation_unknown');
 });
 
 
@@ -384,10 +398,10 @@ test(`closing and reopening a ${initialState} request preserves ownership and re
 }
 
 
-test('waiting describes an unconfirmed live connection without assuming approval is pending', async () => {
-  const app = harness({ load: async () => ({ ...info, clients: [{ id: 'claude', state: 'waiting', detail: 'Claude에서 Nero 연결을 확인해 주세요.' }, info.clients[1]] }) });
+test('unknown host installation requests verification without assuming approval is pending', async () => {
+  const app = harness({ load: async () => ({ ...info, clients: [{ id: 'claude', state: 'installation_unknown', detail: 'Claude에서 Nero 연결을 확인해 주세요.' }, info.clients[1]] }) });
   await app.context.loadAgentConnection();
-  assert.equal(app.byId('settings-claude-status').textContent, '설치됨');
+  assert.equal(app.byId('settings-claude-status').textContent, '설치 확인 필요');
   assert.equal(app.byId('settings-claude-error').textContent, 'Claude에서 Nero 연결을 확인해 주세요.');
   assert.equal(app.byId('settings-claude-connect').disabled, false);
 });
@@ -451,7 +465,7 @@ test('manual connection obeys parent ownership and closes when leaving settings'
   assert.equal(app.dialog.closed.at(-1).restoreFocus, false);
 });
 
-for (const state of ['reconnect_required', 'installation_unknown', 'disabled']) {
+for (const state of ['installation_unknown', 'disabled']) {
   test(`${state} rechecks host evidence without invoking installation`, async () => {
     let installs = 0; const flags = [];
     const app = harness({ load: async force => { flags.push(force); return { ...info, clients: [info.clients[0], { ...info.clients[1], state, action: 'recheck' }] }; }, connect: async () => { installs++; return info; } });

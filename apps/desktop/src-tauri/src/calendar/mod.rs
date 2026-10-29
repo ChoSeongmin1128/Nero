@@ -1,3 +1,4 @@
+mod callback_page;
 mod google;
 mod oauth;
 mod schedule;
@@ -212,9 +213,23 @@ impl CalendarService {
         Ok(self.snapshot())
     }
     async fn complete(&self, pending: &Pending, generation: u64) -> Result<(), String> {
-        let code = pending.receive().await?;
+        let mut authorization = pending.receive().await?;
+        let result = self
+            .complete_authorized(pending, generation, &authorization.code)
+            .await;
+        authorization
+            .page
+            .finish(result.as_ref().map(|_| ()).map_err(String::as_str));
+        result
+    }
+    async fn complete_authorized(
+        &self,
+        pending: &Pending,
+        generation: u64,
+        code: &str,
+    ) -> Result<(), String> {
         let config = self.config.as_ref().ok_or("Google 연결 정보가 없습니다.")?;
-        let response = google::exchange(&self.client, config, pending, &code)
+        let response = google::exchange(&self.client, config, pending, code)
             .await
             .map_err(|error| error.message())?;
         let calendars = google::calendars(&self.client, &response.access_token)
@@ -706,7 +721,11 @@ mod tests {
         let saved = std::fs::read(directory.join("state.json")).unwrap();
         let value: serde_json::Value = serde_json::from_slice(&saved).unwrap();
         assert!(value.get("accessToken").is_none() && value.get("refreshToken").is_none());
-        let service = CalendarService::new(temp.path().into()).unwrap();
+        let mut service = CalendarService::new(temp.path().into()).unwrap();
+        service.config = Some(Config {
+            client_id: "synthetic.apps.googleusercontent.com".into(),
+            client_secret: None,
+        });
         assert!(service.snapshot().restoring && !service.snapshot().connected);
         assert!(service.tick(2000, false).unwrap().is_empty());
         assert_eq!(saved, std::fs::read(directory.join("state.json")).unwrap());

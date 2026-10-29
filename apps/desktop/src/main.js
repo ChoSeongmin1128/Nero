@@ -490,15 +490,15 @@ function renderAgentConnection() {
     const pending = Boolean(agentConnection.pending[client]);
     const pendingLabel = { updating: '업데이트 중', checking: '확인 중', connecting: '연결 중' }[agentConnection.pending[client]];
     byId(`settings-${client}-spinner`).hidden = !pending && !(agentConnection.loading && !info);
-    const labels = { not_connected: '연결 안 됨', update_required: '업데이트 필요', waiting: '설치됨', reconnect_required: '연결 확인 필요', installation_unknown: '설치 확인 필요', disabled: '사용 안 함', connected: '연결됨', error: '확인 불가', unavailable: '사용 불가' };
+    const labels = { not_connected: '연결 안 됨', update_required: '업데이트 필요', installation_unknown: '설치 확인 필요', disabled: '사용 안 함', connected: '연결됨', error: '확인 불가', unavailable: '사용 불가' };
     const status = byId(`settings-${client}-status`);
     status.textContent = pending ? pendingLabel : !info ? (error ? '확인 불가' : '확인 중') : labels[entry?.state] || '사용 불가';
     status.dataset.state = pending ? agentConnection.pending[client] : !info ? (error ? 'error' : 'loading') : entry?.state || 'unavailable';
     const button = byId(`settings-${client}-connect`);
     button.hidden = !pending && entry?.state === 'connected';
     button.disabled = pending || !available || !entry || entry.state === 'unavailable' || entry.state === 'connected';
-    button.textContent = pending ? pendingLabel : entry?.action === 'connect' && entry?.state === 'installation_unknown' ? '연결 화면 열기' : entry?.action === 'recheck' || ['waiting', 'reconnect_required', 'installation_unknown', 'disabled'].includes(entry?.state) ? '다시 확인' : entry?.state === 'update_required' ? '업데이트' : entry?.state === 'error' ? '다시 확인' : '연결';
-    button.setAttribute?.('aria-label', `${client === 'claude' ? 'Claude' : 'Codex'} ${button.textContent}`);
+    button.textContent = pending ? pendingLabel : entry?.action === 'connect' && entry?.state === 'installation_unknown' ? '연결 화면 열기' : entry?.action === 'recheck' || ['installation_unknown', 'disabled'].includes(entry?.state) ? '다시 확인' : entry?.state === 'update_required' ? '업데이트' : entry?.state === 'error' ? '다시 확인' : '연결';
+    button.setAttribute?.('aria-label', `${client === 'claude' ? 'Claude' : 'ChatGPT'} ${button.textContent}`);
     const errorNode = byId(`settings-${client}-error`);
     const failed = Boolean(agentConnection.errors[client]) || entry?.state === 'error';
     errorNode.textContent = agentConnection.errors[client] || entry?.detail || '';
@@ -548,7 +548,7 @@ async function connectAgentClient(client) {
   const entry = agentConnection.info?.clients?.find(item => item.id === client);
   if (!agentConnectionActive() || agentConnection.pending[client] || !agentConnection.info?.available || !entry || ['unavailable', 'connected'].includes(entry.state)) return;
   const request = agentConnection.request;
-  const checking = entry.action === 'recheck' || (!entry.action && ['error', 'reconnect_required', 'installation_unknown', 'disabled'].includes(entry.state));
+  const checking = entry.action === 'recheck' || (!entry.action && ['error', 'installation_unknown', 'disabled'].includes(entry.state));
   agentConnection.pending[client] = checking ? 'checking' : entry.state === 'update_required' ? 'updating' : 'connecting';
   agentConnection.errors[client] = '';
   agentConnection.refresh += 1;

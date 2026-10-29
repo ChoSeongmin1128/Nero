@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="ko" data-mode="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Nero - Google Calendar 연결</title>
+  <style nonce="{{NONCE}}">
+{{APPEARANCE}}
+{{TYPOGRAPHY}}
+{{CONTROLS}}
+    body { min-height:100vh; display:grid; place-items:center; padding:24px; font:var(--text-body-size)/var(--leading-ui) var(--font-ui); }
+    main { width:min(100%,420px); padding:32px; border:1px solid var(--border); border-radius:16px; background:var(--surface); text-align:center; }
+    .brand { color:var(--accent); font-size:var(--text-heading-size); font-weight:var(--weight-heading); margin-bottom:28px; }
+    .indicator { display:block; width:28px; height:28px; margin:0 auto 20px; border:2px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin 1s linear infinite; }
+    main[data-result] .indicator { animation:none; border:none; font-size:24px; line-height:28px; color:var(--accent); }
+    main[data-result="error"] .indicator { color:var(--danger-text); }
+    h1 { font-size:var(--text-title-size); line-height:var(--leading-heading); letter-spacing:var(--tracking-title); margin:0 0 12px; }
+    p { color:var(--text-secondary); margin:0; }
+    #fallback { margin-top:8px; }
+    @keyframes spin { to { transform:rotate(360deg); } }
+    @media (prefers-reduced-motion:reduce) { .indicator { animation:none; } }
+  </style>
+</head>
+<body>
+  <main aria-live="polite">
+    <div class="brand">Nero</div>
+    <span class="indicator" aria-hidden="true"></span>
+    <h1 id="title">Google Calendar 연결 중</h1>
+    <p id="message">연결을 마무리하고 있습니다.</p>
+    <p id="fallback" hidden>이 탭을 닫아도 됩니다.</p>
+  </main>
+  <script nonce="{{NONCE}}">
+    document.documentElement.dataset.mode = matchMedia('(prefers-color-scheme:dark)').matches ? 'dark' : 'light';
+    history.replaceState(null, '', location.pathname);
+    function finishConnection(result) {
+      document.querySelector('main').dataset.result = result.ok ? 'success' : 'error';
+      document.querySelector('.indicator').textContent = result.ok ? '\u2713' : '!';
+      document.getElementById('title').textContent = result.ok ? 'Google Calendar 연결 완료' : '연결하지 못했습니다';
+      document.getElementById('message').textContent = result.ok ? 'Nero에서 캘린더를 선택해 주세요.' : result.message;
+      document.getElementById('fallback').hidden = !result.ok;
+      document.title = result.ok ? 'Nero - 연결 완료' : 'Nero - 연결 실패';
+      if (result.ok) setTimeout(() => window.close(), 800);
+    }
+  </script>

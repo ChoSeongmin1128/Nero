@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 #[path = "agent_installation.rs"]
 mod installation;
 
-const CLIENTS: [(&str, &str); 2] = [("claude", "Claude"), ("codex", "Codex")];
+const CLIENTS: [(&str, &str); 2] = [("claude", "Claude"), ("codex", "ChatGPT")];
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -297,7 +297,7 @@ pub fn prepare_connection(
     let codex_marketplace = if client == "codex" {
         Some(
             codex_marketplace_path(&client_directory)
-                .map_err(|_| "Codex 설치 경로를 준비하지 못했습니다.")?,
+                .map_err(|_| "ChatGPT 설치 경로를 준비하지 못했습니다.")?,
         )
     } else {
         None
@@ -362,54 +362,55 @@ pub fn prepare_connection(
         .map_err(|_| "회의 안내를 찾지 못했습니다.")?;
     let plugin = release.join("plugins/nero");
     private_directory(&plugin.join(".codex-plugin"))
-        .map_err(|_| "Codex 연결을 준비하지 못했습니다.")?;
+        .map_err(|_| "ChatGPT 연결을 준비하지 못했습니다.")?;
     private_directory(&plugin.join("skills/meeting-summary"))
-        .map_err(|_| "Codex 회의 안내를 준비하지 못했습니다.")?;
+        .map_err(|_| "ChatGPT 회의 안내를 준비하지 못했습니다.")?;
     for (source, destination) in [
         ("codex-plugin.json", "plugin.json"),
         ("codex-legacy-plugin.json", ".codex-plugin/plugin.json"),
     ] {
         let template = bounded_read(&templates.join(source), 128 * 1024)
-            .map_err(|_| "Codex 연결 파일을 찾지 못했습니다.")?;
+            .map_err(|_| "ChatGPT 연결 파일을 찾지 못했습니다.")?;
         atomic_write(&plugin.join(destination), &template)
-            .map_err(|_| "Codex 연결 파일을 저장하지 못했습니다.")?;
+            .map_err(|_| "ChatGPT 연결 파일을 저장하지 못했습니다.")?;
     }
     private_directory(&plugin.join("server"))
-        .map_err(|_| "Codex 실행 경로를 준비하지 못했습니다.")?;
+        .map_err(|_| "ChatGPT 실행 경로를 준비하지 못했습니다.")?;
     let executable = plugin.join("server").join(executable_name());
-    immutable_write(&executable, &binary).map_err(|_| "Codex 연결 도구를 저장하지 못했습니다.")?;
+    immutable_write(&executable, &binary)
+        .map_err(|_| "ChatGPT 연결 도구를 저장하지 못했습니다.")?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o755))
-            .map_err(|_| "Codex 연결 도구를 실행할 수 없습니다.")?;
+            .map_err(|_| "ChatGPT 연결 도구를 실행할 수 없습니다.")?;
     }
     let config =
         json!({"mcpServers":{"nero":{"command":executable,"args":args,"env":environment}}});
     atomic_write(&plugin.join(".mcp.json"), config.to_string().as_bytes())
-        .map_err(|_| "Codex 연결을 저장하지 못했습니다.")?;
+        .map_err(|_| "ChatGPT 연결을 저장하지 못했습니다.")?;
     let portable = json!({"$schema":"https://agent-plugins.org/schemas/1.0.0/mcp.schema.json","mcpServers":{"nero":{"type":"stdio","command":format!("./server/{}", executable_name()),"args":config["mcpServers"]["nero"]["args"],"env":config["mcpServers"]["nero"]["env"]}}});
     atomic_write(&plugin.join("mcp.json"), portable.to_string().as_bytes())
-        .map_err(|_| "Codex 연결을 저장하지 못했습니다.")?;
+        .map_err(|_| "ChatGPT 연결을 저장하지 못했습니다.")?;
     atomic_write(&plugin.join("skills/meeting-summary/SKILL.md"), &skill)
-        .map_err(|_| "Codex 회의 안내를 저장하지 못했습니다.")?;
+        .map_err(|_| "ChatGPT 회의 안내를 저장하지 못했습니다.")?;
     private_directory(&plugin.join("assets"))
-        .map_err(|_| "Codex 아이콘 경로를 준비하지 못했습니다.")?;
+        .map_err(|_| "ChatGPT 아이콘 경로를 준비하지 못했습니다.")?;
     atomic_write(&plugin.join("assets/icon.png"), &icon)
-        .map_err(|_| "Codex 아이콘을 저장하지 못했습니다.")?;
+        .map_err(|_| "ChatGPT 아이콘을 저장하지 못했습니다.")?;
     let mut marketplace = read_json(&templates.join("codex-marketplace.json"))?;
     *marketplace
         .pointer_mut("/plugins/0/source/path")
-        .ok_or("Codex 설치 정보를 확인하지 못했습니다.")? =
+        .ok_or("ChatGPT 설치 정보를 확인하지 못했습니다.")? =
         json!(format!("./releases/{generation}/plugins/nero"));
-    let marketplace_path = codex_marketplace.ok_or("Codex 설치 경로를 확인하지 못했습니다.")?;
+    let marketplace_path = codex_marketplace.ok_or("ChatGPT 설치 경로를 확인하지 못했습니다.")?;
     atomic_write(
         &marketplace_path,
         serde_json::to_string_pretty(&marketplace)
-            .map_err(|_| "Codex 설치 정보를 만들지 못했습니다.")?
+            .map_err(|_| "ChatGPT 설치 정보를 만들지 못했습니다.")?
             .as_bytes(),
     )
-    .map_err(|_| "Codex 설치 정보를 저장하지 못했습니다.")?;
+    .map_err(|_| "ChatGPT 설치 정보를 저장하지 못했습니다.")?;
     Ok(ConnectionAction {
         kind: "url".into(),
         target: format!(
@@ -1763,7 +1764,7 @@ mod tests {
     }
 
     #[test]
-    fn current_installation_with_old_session_requests_reconnection_without_reinstalling() {
+    fn current_installation_with_old_session_explains_new_conversations_without_reinstalling() {
         let temp = tempfile::tempdir().unwrap();
         let resources = resources(temp.path());
         let root = temp.path().join("missing library");
@@ -1794,15 +1795,39 @@ mod tests {
                 &connections,
                 Some(&installed),
             );
-            assert_eq!(info.clients[1].state, "reconnect_required");
+            assert_eq!(info.clients[1].state, "connected");
             assert_eq!(info.clients[1].installation_state, "current");
             assert_eq!(info.clients[1].session_state, "outdated");
-            assert_eq!(info.clients[1].action, "recheck");
-            assert!(info.clients[1]
-                .detail
-                .as_ref()
-                .unwrap()
-                .contains("다시 시작"));
+            assert_eq!(info.clients[1].action, "none");
+            assert!(info.clients[1].detail.as_ref().unwrap().contains("새 대화"));
+        }
+        drop(_old);
+        for running in [false, true, false] {
+            let registration =
+                load_registration(&connections.join("codex"), &root, "codex").unwrap();
+            let session = running.then(|| {
+                initialized_receipt(
+                    &connections.join("codex"),
+                    &registration,
+                    registration["generation"].as_str().unwrap(),
+                    "current",
+                )
+            });
+            let info = connection_info_with_installations(
+                &resources,
+                &root,
+                &connections,
+                Some(&installed),
+            );
+            assert_eq!(info.clients[1].name, "ChatGPT");
+            assert_eq!(info.clients[1].state, "connected");
+            assert_eq!(info.clients[1].action, "none");
+            assert_eq!(
+                info.clients[1].session_state,
+                if running { "current" } else { "inactive" }
+            );
+            assert!(info.clients[1].detail.is_none());
+            drop(session);
         }
         assert_eq!(
             fs::read(connections.join("codex/state.json")).unwrap(),
@@ -1900,17 +1925,17 @@ mod tests {
         ));
         let info =
             connection_info_with_installations(&resources, &root, &connections, Some(&installed));
-        assert_eq!(info.clients[1].state, "waiting");
+        assert_eq!(info.clients[1].state, "connected");
         assert_eq!(info.clients[1].installation_state, "current");
         assert_eq!(info.clients[1].session_state, "inactive");
-        assert_eq!(info.clients[1].action, "recheck");
+        assert_eq!(info.clients[1].action, "none");
     }
 
     #[test]
     fn installed_current_payload_overrides_legacy_pending_update_receipts() {
         for (session, expected_state, expected_session, expected_action) in [
-            (None, "waiting", "inactive", "recheck"),
-            (Some("older"), "reconnect_required", "outdated", "recheck"),
+            (None, "connected", "inactive", "none"),
+            (Some("older"), "connected", "outdated", "none"),
             (Some("installed"), "connected", "current", "none"),
         ] {
             let temp = tempfile::tempdir().unwrap();
@@ -2129,7 +2154,7 @@ mod tests {
         let root = temp.path().join("missing library");
         let connections = temp.path().join("connections");
         let installed = hosts(installation::HostInstallation::Unknown(
-            "Codex CLI를 찾지 못했습니다.",
+            "ChatGPT 설치 도구를 찾지 못했습니다.",
         ));
         let info =
             connection_info_with_installations(&resources, &root, &connections, Some(&installed));
@@ -2208,7 +2233,7 @@ mod tests {
         let confirmed =
             connection_info_with_installations(&resources, &root, &connections, Some(&installed))
                 .with_action_error("codex", "결과를 다시 확인해 주세요.".into());
-        assert_eq!(confirmed.clients[1].state, "waiting");
+        assert_eq!(confirmed.clients[1].state, "connected");
         assert_eq!(confirmed.clients[1].installation_state, "current");
         fs::write(resource_agent_path(&resources), b"new executable").unwrap();
         let uncertain =

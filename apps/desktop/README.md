@@ -26,6 +26,14 @@ For a macOS local test bundle, apply ad hoc signing after bundling and then run
 `codesign --verify --deep --strict` on that bundle. This does not provide Developer ID
 signing or notarization; use a separate distribution configuration for a release.
 
+## Google Calendar registration
+
+Release builds enabling Google Calendar require `NERO_GOOGLE_CLIENT_ID` and
+`NERO_GOOGLE_CLIENT_SECRET` for the registered Desktop OAuth client. Load these from
+the credential store through the build environment; never commit the credential JSON.
+An incomplete registration leaves Calendar unavailable instead of opening a flow that
+cannot exchange its authorization code. Tokens remain in the platform credential store.
+
 ## Version and macOS distribution
 
 The product version is owned by `package.json`. `npm run version:check` verifies

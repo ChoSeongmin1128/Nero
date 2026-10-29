@@ -20,15 +20,20 @@ pub struct Config {
 }
 impl Config {
     pub fn bundled() -> Option<Self> {
-        let client_id = option_env!("NERO_GOOGLE_CLIENT_ID")?.trim();
-        if !valid_client_id(client_id) {
+        Self::from_values(
+            option_env!("NERO_GOOGLE_CLIENT_ID"),
+            option_env!("NERO_GOOGLE_CLIENT_SECRET"),
+        )
+    }
+    fn from_values(client_id: Option<&str>, client_secret: Option<&str>) -> Option<Self> {
+        let client_id = client_id?.trim();
+        let client_secret = client_secret?.trim();
+        if !valid_client_id(client_id) || client_secret.is_empty() {
             return None;
         }
         Some(Self {
             client_id: client_id.into(),
-            client_secret: option_env!("NERO_GOOGLE_CLIENT_SECRET")
-                .filter(|value| !value.is_empty())
-                .map(str::to_owned),
+            client_secret: Some(client_secret.into()),
         })
     }
 }
@@ -110,7 +115,7 @@ impl Pending {
             request,
         ))
     }
-    pub async fn receive(&self) -> Result<String, String> {
+    pub async fn receive(&self) -> Result<Authorization, String> {
         let listener = self
             .listener
             .try_clone()
@@ -184,7 +189,7 @@ fn receive_blocking(
     state: &str,
     cancelled: &AtomicBool,
     deadline: Instant,
-) -> Result<String, String> {
+) -> Result<Authorization, String> {
     while Instant::now() < deadline {
         if cancelled.load(Ordering::Acquire) {
             return Err("Google 연결을 취소했습니다.".into());
@@ -208,13 +213,21 @@ fn receive_blocking(
                     break;
                 }
                 match callback(&request, host, path, state) {
-                    Callback::Ignore => respond(&mut stream, false),
+                    Callback::Ignore => super::callback_page::CallbackPage::reject(
+                        stream,
+                        "연결 요청을 확인하지 못했습니다. Nero에서 다시 연결해 주세요.",
+                    ),
                     Callback::Code(code) => {
-                        respond(&mut stream, true);
-                        return Ok(code);
+                        return Ok(Authorization {
+                            code,
+                            page: super::callback_page::CallbackPage::begin(stream),
+                        });
                     }
                     Callback::Denied => {
-                        respond(&mut stream, false);
+                        super::callback_page::CallbackPage::reject(
+                            stream,
+                            "Google 연결을 취소했습니다. Nero에서 다시 연결할 수 있습니다.",
+                        );
                         return Err(
                             "Google 연결이 허용되지 않았습니다. 다시 연결할 수 있습니다.".into(),
                         );
@@ -228,6 +241,11 @@ fn receive_blocking(
         }
     }
     Err("Google 연결 시간이 지났습니다. 다시 연결해 주세요.".into())
+}
+
+pub struct Authorization {
+    pub code: String,
+    pub page: super::callback_page::CallbackPage,
 }
 
 enum Callback {
@@ -287,19 +305,17 @@ fn callback(request: &str, host: &str, path: &str, state: &str) -> Callback {
         _ => Callback::Ignore,
     }
 }
-fn respond(stream: &mut TcpStream, success: bool) {
-    let body = if success {
-        "Nero로 돌아가 주세요. 연결을 확인하고 있습니다."
-    } else {
-        "연결 요청을 확인하지 못했습니다. Nero에서 다시 연결해 주세요."
-    };
-    let status = if success { "200 OK" } else { "400 Bad Request" };
-    let _ = write!(stream, "HTTP/1.1 {status}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: default-src 'none'\r\nConnection: close\r\n\r\n{body}", body.len());
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn desktop_configuration_requires_both_registered_client_values() {
+        let id = "synthetic.apps.googleusercontent.com";
+        assert!(Config::from_values(Some(id), None).is_none());
+        assert!(Config::from_values(Some(id), Some(" ")).is_none());
+        assert!(Config::from_values(None, Some("synthetic")).is_none());
+        assert!(Config::from_values(Some(id), Some("synthetic")).is_some());
+    }
     #[test]
     fn callback_requires_exact_host_path_state_and_unique_parameters() {
         let request =

@@ -108,15 +108,9 @@ async fn token_request(
                 "Google 연결을 확인하지 못했습니다. 네트워크 상태를 확인해 주세요.".into(),
             )
         })?;
-    if response.status() == StatusCode::BAD_REQUEST {
+    if !response.status().is_success() {
         let body = read_json(response, 64 * 1024).await?;
-        return Err(if body["error"] == "invalid_grant" {
-            Failure::Reconnect
-        } else {
-            Failure::Other(
-                "Google 연결 정보를 확인하지 못했습니다. 잠시 후 다시 시도해 주세요.".into(),
-            )
-        });
+        return Err(token_failure(&body));
     }
     let token: TokenResponse =
         serde_json::from_value(response_json(response, 64 * 1024).await?).map_err(|_| invalid())?;
@@ -134,6 +128,26 @@ async fn token_request(
         return Err(Failure::Reconnect);
     }
     Ok(token)
+}
+
+fn token_failure(body: &Value) -> Failure {
+    match body["error"].as_str() {
+        Some("invalid_grant") => Failure::Reconnect,
+        Some("invalid_request") if body["error_description"] == "client_secret is missing." => {
+            Failure::Other(
+                "Nero의 Google 연결 설정이 누락되었습니다. 앱을 업데이트해 주세요.".into(),
+            )
+        }
+        Some("invalid_client" | "unauthorized_client" | "invalid_request") => Failure::Other(
+            "Nero의 Google 연결 설정이 올바르지 않습니다. 앱을 업데이트해 주세요.".into(),
+        ),
+        Some("access_denied") => Failure::Other(
+            "Google에서 연결을 허용하지 않았습니다. 계정의 앱 접근 권한을 확인해 주세요.".into(),
+        ),
+        _ => Failure::Other(
+            "Google 인증 서버에 연결하지 못했습니다. 잠시 후 다시 시도해 주세요.".into(),
+        ),
+    }
 }
 
 pub async fn exchange(
@@ -414,6 +428,25 @@ fn normalize(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn oauth_configuration_errors_are_actionable_without_exposing_provider_text() {
+        for (error, description) in [
+            ("invalid_request", "client_secret is missing."),
+            ("invalid_client", "private credentials"),
+            ("unauthorized_client", "private credentials"),
+        ] {
+            let message =
+                token_failure(&serde_json::json!({"error":error,"error_description":description}))
+                    .message();
+            assert!(message.contains("앱을 업데이트"));
+            assert!(!message.contains("잠시 후"));
+            assert!(!message.contains(description));
+        }
+        assert!(matches!(
+            token_failure(&serde_json::json!({"error":"invalid_grant"})),
+            Failure::Reconnect
+        ));
+    }
     use serde_json::json;
     fn calendar() -> CalendarChoice {
         CalendarChoice {
