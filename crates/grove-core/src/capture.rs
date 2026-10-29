@@ -1091,7 +1091,7 @@ mod tests {
             .warning
             .as_ref()
             .unwrap()
-            .contains("녹음 내용을 들어 확인"));
+            .contains("입력 지연 신호"));
         capture.resume().unwrap();
         capture.signals.device_event(cpal::ErrorKind::Xrun.into());
         sink.write(&[0.5_f32.to_le_bytes(); 10].concat());

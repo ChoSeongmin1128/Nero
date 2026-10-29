@@ -226,6 +226,19 @@ pub async fn begin_calendar_connect(
 }
 
 #[tauri::command]
+pub async fn reopen_calendar_connect(
+    window: WebviewWindow,
+    state: tauri::State<'_, CalendarDesktop>,
+    attempt_id: String,
+) -> Result<(), String> {
+    crate::require_main(&window)?;
+    let url = state.service()?.authorization_url(&attempt_id)?;
+    tauri::async_runtime::spawn_blocking(move || open_authorization(&url))
+        .await
+        .map_err(|_| "기본 브라우저를 열지 못했습니다.".to_string())?
+}
+
+#[tauri::command]
 pub async fn finish_calendar_connect(
     app: tauri::AppHandle,
     window: WebviewWindow,

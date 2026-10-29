@@ -13,15 +13,27 @@ test('native entry markup provides every directly bound element before startup',
   for (const id of ids) assert.ok(window.document.getElementById(id), `Missing startup element: ${id}`);
 });
 
-test('scheduling diagnostics alone do not create a user warning', () => {
-  assert.deepEqual(recordingQuality({ realtimeDeniedCount: 2, events: [{ kind:'realtimeDenied',firstSavedFrame:1600 }] }, 16000, 32000), { visible:false,locations:[] });
+test('scheduling and driver delay diagnostics do not claim missing audio or require review', () => {
+  assert.equal(recordingQuality({ realtimeDeniedCount: 2, events: [{ kind:'realtimeDenied' }] },16000,32000).visible,false);
+  for (const quality of [{xrunCount:1, events:[{kind:'xrun',firstSavedFrame:0}]},{xrunCount:20}]) {
+    const result = recordingQuality(quality,16000,32000);
+    assert.equal(result.severity,'info');
+    assert.equal(result.title,'녹음 진단');
+    assert.match(result.message,/확인할 수는 없습니다/);
+  }
 });
-test('quality locations use observed stored frames and never synthesize a gap duration', () => {
-  const result = recordingQuality({ xrunCount:2,events:[{kind:'xrun',firstSavedFrame:16000,lastSavedFrame:32000,coalesced:true}] },16000,48000);
-  assert.deepEqual(result,{ visible:true,locations:[{kind:'xrun',label:'입력 상태 변화',seconds:1,grouped:true}] });
+test('device change asks for device selection while terminal faults explain recovery', () => {
+  assert.equal(recordingQuality({routeChangedCount:1},16000,32000).severity,'warning');
+  for (const kind of ['queueOverflow','writerFailure','deviceFailure','formatChanged','captureInterrupted']) {
+    const result=recordingQuality({events:[{kind,firstSavedFrame:16000}]},16000,32000);
+    assert.equal(result.severity,'error');
+    assert.match(result.message,/새 녹음/);
+    assert.equal(result.locations[0].seconds,1);
+  }
+});
+test('observed positions never synthesize a gap or seek beyond saved audio', () => {
+  const result=recordingQuality({events:[{kind:'xrun',firstSavedFrame:16000,lastSavedFrame:32000,coalesced:true}]},16000,48000);
+  assert.equal(result.locations[0].seconds,1);
   assert.equal('end' in result.locations[0],false);
-});
-test('old counters remain visible without an invented audio position', () => {
-  assert.deepEqual(recordingQuality({ xrunCount:3 },16000,48000),{visible:true,locations:[]});
   assert.equal(recordingQuality({events:[{kind:'deviceFailure',firstSavedFrame:50000}]},16000,48000).locations[0].seconds,null);
 });

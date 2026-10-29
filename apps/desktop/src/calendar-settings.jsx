@@ -1,19 +1,21 @@
 import * as React from 'react';
 import { createRoot } from 'react-dom/client';
-import { createCalendarSettingsFlow } from './calendar-settings-flow.js';
+import { createCalendarSettingsFlow, calendarConnectionView } from './calendar-settings-flow.js';
 import './calendar-settings.css';
 
 function CalendarSettings({ flow }) {
   const state = React.useSyncExternalStore(flow.subscribe, flow.getSnapshot);
   const snapshot = state.snapshot;
-  const connecting = snapshot.connecting || state.connecting;
+  const view = calendarConnectionView(state);
+  const { connecting } = view;
   return <section className="calendar-settings" data-nero-ui-owned="" aria-label="Google Calendar" aria-busy={state.busy}>
     <h4 className="settings-subtitle">Google Calendar</h4>
     <p className="calendar-settings-description">시작 5분 전에 알림</p>
     <div className="settings-group"><div className="calendar-settings-account">
-      <div><strong>{snapshot.connected ? snapshot.accountLabel : snapshot.restoring ? '연결 확인 중' : connecting ? 'Google 연결 중' : '연결 안 됨'}</strong>{snapshot.connected && <p>읽기 전용</p>}</div>
+      <div><strong>{view.label}</strong>{snapshot.connected && <p>읽기 전용</p>}</div>
       <div className="calendar-settings-actions">
-        {connecting ? <button type="button" className="small" onClick={() => { void flow.cancel(); }}>취소</button> : <button type="button" className="small" disabled={state.busy || !snapshot.configured || snapshot.restoring} onClick={() => { void flow.connect(); }}>{snapshot.connected ? '다시 연결' : 'Google 연결'}</button>}
+        {connecting && <><span className="activity-spinner" aria-hidden="true" /><button type="button" className="small" disabled={state.phase !== 'authorizing' || state.reopening} onClick={() => { void flow.reopen(); }}>브라우저 다시 열기</button></>}
+        {connecting ? <button type="button" className="small" onClick={() => { void flow.cancel(); }}>취소</button> : <button type="button" className="small" disabled={state.busy || !snapshot.configured || snapshot.restoring} onClick={() => { void (view.retryable ? flow.retry() : flow.connect()); }}>{view.action}</button>}
         {(snapshot.accountLabel || snapshot.connected) && !connecting && <button type="button" className="small" disabled={state.busy || snapshot.restoring} onClick={() => { void flow.disconnect(); }}>연결 해제</button>}
       </div>
     </div></div>
@@ -27,7 +29,7 @@ function CalendarSettings({ flow }) {
       <div className="calendar-settings-actions"><button type="button" className="small" disabled={state.busy || snapshot.connecting} onClick={() => { void flow.refresh(); }}>새로고침</button>{snapshot.lastSyncedAt && <span className="calendar-settings-synced">{new Date(snapshot.lastSyncedAt).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })} 확인</span>}</div>
     </>}
     {!snapshot.configured && !snapshot.error && state.snapshot.revision >= 0 && <p className="notice" role="status">이 버전에는 Google Calendar 연결 정보가 없습니다.</p>}
-    {(state.error || snapshot.error) && <p className="notice" role="alert">{state.error || snapshot.error}</p>}
+    {view.error && <p className="notice" role="alert">{view.error}</p>}
   </section>;
 }
 

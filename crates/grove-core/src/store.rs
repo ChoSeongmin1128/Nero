@@ -98,14 +98,11 @@ impl CaptureQuality {
     pub fn warning(&self) -> Option<String> {
         let mut warnings: Vec<String> = Vec::new();
         if self.xrun_count != 0 {
-            warnings.push(
-                "오디오 입력의 불안정 신호가 감지되었습니다. 녹음 내용을 들어 확인해 주세요."
-                    .into(),
-            );
+            warnings.push("오디오 입력 지연 신호가 기록되었습니다.".into());
         }
         if self.route_changed_count != 0 {
             warnings.push(
-                "녹음 중 오디오 입력 경로가 변경되었습니다. 녹음 내용을 들어 확인해 주세요.".into(),
+                "녹음 중 오디오 입력 경로가 변경되었습니다. 사용할 마이크를 확인해 주세요.".into(),
             );
         }
         (!warnings.is_empty()).then(|| warnings.join(" "))

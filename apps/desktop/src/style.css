@@ -414,7 +414,8 @@ html.recorder-document { background: transparent; }
 .settings-feature-progress progress { flex: 1; min-width: 0; }
 
 .recording-quality { margin-top: 10px; font-size: var(--text-caption-size); }
-.recording-quality summary { cursor: pointer; color: var(--warning-text); }
+.recording-quality summary { cursor: pointer; color: var(--text-secondary); }
+.recording-quality[data-severity="warning"] summary, .recording-quality[data-severity="error"] summary { color: var(--warning-text); }
 .recording-quality p { margin: 8px 0; }
 .recording-quality ul { display: grid; gap: 4px; max-height: 180px; overflow: auto; list-style: none; margin: 0; padding: 0; }
 .recording-quality li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }

@@ -1,10 +1,12 @@
 const initial = { revision: -1, configured: false, connected: false, connecting: false, restoring: false, calendars: [], selectedCalendars: [], accountLabel: null, lastSyncedAt: null, error: null };
 
 export function createCalendarSettingsFlow({ bridge }) {
-  let state = { active: false, snapshot: initial, busy: false, connecting: false, error: '' };
+  let state = { active: false, snapshot: initial, busy: false, connecting: false, phase: 'idle', reopening: false, error: '' };
   let epoch = 0;
   let attemptId = null;
   let disposed = false;
+  let beginning = null;
+  let cancellation = null;
   const listeners = new Set();
   const publish = changes => { if (disposed) return; state = { ...state, ...changes }; listeners.forEach(listener => listener()); };
   const accept = snapshot => {
@@ -26,15 +28,26 @@ export function createCalendarSettingsFlow({ bridge }) {
       return false;
     }
   };
-  const cancel = async () => {
-    const cancelled = attemptId;
-    attemptId = null;
-    epoch += 1;
-    publish({ busy: false, connecting: false });
-    if (cancelled) {
-      try { accept(await bridge.cancelCalendarConnect(cancelled)); }
-      catch (error) { publish({ error: error?.message || '연결 취소를 확인하지 못했습니다.' }); }
-    }
+  const cancel = () => {
+    if (cancellation) return cancellation;
+    const current = ++epoch;
+    const pendingBegin = beginning;
+    publish({ busy: true, connecting: false, reopening: false, phase: 'cancelling' });
+    cancellation = Promise.resolve().then(async () => {
+      try {
+        const started = pendingBegin ? await pendingBegin.catch(() => null) : null;
+        if (beginning === pendingBegin) beginning = null;
+        const cancelled = attemptId || started?.attemptId;
+        if (cancelled) { attemptId = cancelled; accept(await bridge.cancelCalendarConnect(cancelled)); }
+        attemptId = null;
+        if (current === epoch) publish({ busy: false, phase: 'idle', error: '' });
+        return true;
+      } catch (error) {
+        if (current === epoch) publish({ busy: false, phase: 'cancelFailed', error: error?.message || '연결 취소를 확인하지 못했습니다. 다시 시도해 주세요.' });
+        return false;
+      } finally { cancellation = null; }
+    });
+    return cancellation;
   };
   const flow = {
     getSnapshot: () => state,
@@ -43,7 +56,7 @@ export function createCalendarSettingsFlow({ bridge }) {
     setActive(active) {
       if (state.active === active || disposed) return;
       publish({ active });
-      if (active) void flow.reload();
+      if (active) void (cancellation || Promise.resolve()).then(() => flow.reload());
       else { void cancel(); }
     },
     reload: () => run(() => bridge.readCalendarSettings()),
@@ -54,27 +67,44 @@ export function createCalendarSettingsFlow({ bridge }) {
       return run(() => bridge.selectCalendars(ids));
     },
     disconnect: () => run(() => bridge.disconnectCalendar()),
+    async reopen() {
+      if (!attemptId || state.phase !== 'authorizing' || state.reopening) return false;
+      const current = epoch;
+      publish({ reopening: true });
+      try { await bridge.reopenCalendarConnect(attemptId); return true; }
+      catch (error) { if (current === epoch) publish({ error: error?.message || '브라우저를 열지 못했습니다. 다시 시도해 주세요.' }); return false; }
+      finally { if (current === epoch) publish({ reopening: false }); }
+    },
+    async retry() {
+      if (!(await cancel()) || !state.active || disposed) return false;
+      return flow.connect();
+    },
     async connect() {
-      if (!state.active || state.busy || state.snapshot.connecting || !state.snapshot.configured) return false;
+      if (!state.active || state.busy || state.snapshot.connecting || !state.snapshot.configured || cancellation || state.phase === 'cancelFailed') return false;
       const current = ++epoch;
-      publish({ busy: true, connecting: true, error: '' });
+      publish({ busy: true, connecting: true, phase: 'opening', error: '' });
       try {
-        const attempt = await bridge.beginCalendarConnect();
+        beginning = bridge.beginCalendarConnect();
+        const attempt = await beginning;
+        beginning = null;
         if (current !== epoch || !state.active || disposed) {
-          await bridge.cancelCalendarConnect(attempt.attemptId);
+          if (cancellation) await cancellation;
+          else await bridge.cancelCalendarConnect(attempt.attemptId);
           return false;
         }
         attemptId = attempt.attemptId;
+        publish({ phase: 'authorizing' });
         const snapshot = await bridge.finishCalendarConnect(attemptId);
         if (current !== epoch || !state.active || disposed) return false;
         attemptId = null;
         accept(snapshot);
-        publish({ busy: false, connecting: false });
+        publish({ busy: false, connecting: false, reopening: false, phase: 'idle', error: '' });
         return true;
       } catch (error) {
         if (current === epoch && state.active && !disposed) {
+          beginning = null;
           attemptId = null;
-          publish({ busy: false, connecting: false, error: error?.message || 'Google 연결을 완료하지 못했습니다.' });
+          publish({ busy: false, connecting: false, phase: 'failed', error: error?.message || 'Google 연결을 완료하지 못했습니다.' });
         }
         return false;
       }
@@ -90,4 +120,17 @@ export function reminderCountdown(startAt, now = Date.now()) {
   if (!Number.isFinite(milliseconds) || milliseconds <= 0) return '시작 시간';
   if (milliseconds < 60_000) return `${Math.ceil(milliseconds / 1000)}초 후`;
   return `${Math.ceil(milliseconds / 60_000)}분 후`;
+}
+
+export function calendarConnectionView(state) {
+  const { snapshot, phase } = state;
+  const connecting = state.connecting || (phase === 'idle' && snapshot.connecting);
+  const cancelling = phase === 'cancelling';
+  const retryable = ['failed', 'cancelFailed'].includes(phase);
+  return {
+    connecting, cancelling, retryable,
+    label: cancelling ? '연결 취소 중' : connecting ? '브라우저에서 승인 중' : snapshot.restoring ? '연결 확인 중' : snapshot.connected ? snapshot.accountLabel : '연결 안 됨',
+    action: retryable ? '다시 시도' : snapshot.connected ? '다시 연결' : 'Google 연결',
+    error: state.error || (!connecting && snapshot.error) || '',
+  };
 }

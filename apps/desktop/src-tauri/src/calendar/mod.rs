@@ -63,6 +63,7 @@ struct Inner {
     scheduler: Scheduler,
     pending: Option<Pending>,
     connecting_id: Option<String>,
+    authorization_url: Option<String>,
     cancel: Option<Arc<AtomicBool>>,
     auth_ready: bool,
     needs_sync: bool,
@@ -118,6 +119,7 @@ impl CalendarService {
                 scheduler,
                 pending: None,
                 connecting_id: None,
+                authorization_url: None,
                 cancel: None,
                 auth_ready: false,
                 needs_sync: true,
@@ -163,10 +165,21 @@ impl CalendarService {
         let mut inner = self.inner.lock().unwrap();
         inner.cancel = Some(pending.cancelled.clone());
         inner.connecting_id = Some(pending.id.clone());
+        inner.authorization_url = Some(request.authorization_url.clone());
         inner.pending = Some(pending);
         inner.error = None;
         inner.state.revision += 1;
         Ok(request)
+    }
+    pub fn authorization_url(&self, attempt_id: &str) -> Result<String, String> {
+        let inner = self.inner.lock().unwrap();
+        if inner.connecting_id.as_deref() != Some(attempt_id) {
+            return Err("현재 연결 요청이 아닙니다. 다시 시도해 주세요.".into());
+        }
+        inner
+            .authorization_url
+            .clone()
+            .ok_or_else(|| "Google 연결 정보를 확인 중입니다. 잠시 기다려 주세요.".into())
     }
     pub fn cancel_connect(&self) {
         self.cancel_connect_attempt(None);
@@ -182,6 +195,7 @@ impl CalendarService {
         }
         inner.pending = None;
         inner.connecting_id = None;
+        inner.authorization_url = None;
         inner.state.revision += 1;
     }
     pub async fn finish_connect(&self, attempt_id: &str) -> Result<CalendarSnapshot, String> {
@@ -202,6 +216,7 @@ impl CalendarService {
             let mut inner = self.inner.lock().unwrap();
             if inner.connecting_id.as_deref() == Some(attempt_id) {
                 inner.connecting_id = None;
+                inner.authorization_url = None;
                 inner.cancel = None;
                 if let Err(message) = &result {
                     inner.error = Some(message.clone());
@@ -214,6 +229,12 @@ impl CalendarService {
     }
     async fn complete(&self, pending: &Pending, generation: u64) -> Result<(), String> {
         let mut authorization = pending.receive().await?;
+        {
+            let mut inner = self.inner.lock().unwrap();
+            if inner.connecting_id.as_deref() == Some(&pending.id) {
+                inner.authorization_url = None;
+            }
+        }
         let result = self
             .complete_authorized(pending, generation, &authorization.code)
             .await;
@@ -739,6 +760,20 @@ mod tests {
         assert!(service.set_calendars(vec!["unknown".into()]).is_err());
         assert_eq!(service.generation.load(Ordering::Acquire), generation);
         assert!(!temp.path().join("calendar").exists());
+    }
+    #[test]
+    fn browser_reopen_is_bound_to_the_active_attempt_and_cleared_on_cancel() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = CalendarService::new(temp.path().into()).unwrap();
+        {
+            let mut inner = service.inner.lock().unwrap();
+            inner.connecting_id = Some("current".into());
+            inner.authorization_url = Some("https://accounts.google.com/synthetic".into());
+        }
+        assert!(service.authorization_url("old").is_err());
+        assert!(service.authorization_url("current").is_ok());
+        service.cancel_connect_attempt(Some("current"));
+        assert!(service.authorization_url("current").is_err());
     }
     #[test]
     fn late_cancel_does_not_cancel_a_newer_browser_attempt() {

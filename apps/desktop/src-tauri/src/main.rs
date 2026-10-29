@@ -1514,6 +1514,7 @@ fn main() {
             calendar_desktop::read_calendar_settings,
             calendar_desktop::begin_calendar_connect,
             calendar_desktop::finish_calendar_connect,
+            calendar_desktop::reopen_calendar_connect,
             calendar_desktop::cancel_calendar_connect,
             calendar_desktop::disconnect_calendar,
             calendar_desktop::select_calendars,

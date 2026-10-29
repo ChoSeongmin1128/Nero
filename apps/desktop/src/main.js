@@ -152,13 +152,14 @@ function renderRecording(meeting) {
   const review = recordingQuality(quality, ownSession?.sampleRate || meeting.audio?.sampleRate, ownSession?.savedFrames ?? meeting.audio?.frames);
   const qualityNode = byId('recording-quality');
   qualityNode.hidden = !review.visible;
+  qualityNode.dataset.severity = review.severity;
   const qualityKey = JSON.stringify([meeting.id, review, Boolean(ownSession), Boolean(meeting.audio)]);
   if (qualityNode.dataset.key !== qualityKey) {
     qualityNode.dataset.key = qualityKey;
     const opened = qualityNode.querySelector('details')?.open;
     const playable = Boolean(meeting.audio && !ownSession);
-    const actions = review.locations.map(item => `<li><span>${escape(item.label)}</span>${item.seconds == null ? '' : `<button type="button" class="quiet small" data-quality-seek="${item.seconds}"${playable ? '' : ' disabled'}>저장 위치 ${duration(item.seconds * 1000)} 듣기</button>`}</li>`).join('');
-    qualityNode.innerHTML = `<details${opened ? ' open' : ''}><summary>녹음 상태 확인 필요</summary><p class="type-caption muted">${ownSession ? '녹음을 마친 뒤 아래 저장 위치 근처를 들어 확인하세요.' : '입력 이상이 감지됐을 때의 저장 위치입니다. 주변 녹음을 확인하세요.'}</p>${actions ? `<ul>${actions}</ul>` : `<button type="button" class="quiet small" data-quality-seek="0"${playable ? '' : ' disabled'}>녹음 듣기</button>`}</details>`;
+    const actions = review.locations.map(item => `<li><span>${escape(item.label)}</span>${item.seconds == null ? '' : `<button type="button" class="quiet small" data-quality-seek="${item.seconds}"${playable ? '' : ' disabled'}>${duration(item.seconds * 1000)} 근처 듣기</button>`}</li>`).join('');
+    qualityNode.innerHTML = `<details${opened ? ' open' : ''}><summary>${escape(review.title)}</summary><p class="type-caption muted">${escape(review.message)}</p>${actions ? `<ul>${actions}</ul>` : `<button type="button" class="quiet small" data-quality-seek="0"${playable ? '' : ' disabled'}>녹음 듣기</button>`}</details>`;
   }
 
   prepareAudio(meeting, Boolean(ownSession));

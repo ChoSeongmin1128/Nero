@@ -7,6 +7,7 @@ function call(command, args = {}) {
 }
 export const readCalendarSettings = () => call('read_calendar_settings');
 export const beginCalendarConnect = () => call('begin_calendar_connect');
+export const reopenCalendarConnect = attemptId => call('reopen_calendar_connect', { attemptId });
 export const finishCalendarConnect = attemptId => call('finish_calendar_connect', { attemptId });
 export const cancelCalendarConnect = (attemptId = null) => call('cancel_calendar_connect', { attemptId });
 export const disconnectCalendar = () => call('disconnect_calendar');

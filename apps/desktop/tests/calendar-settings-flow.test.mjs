@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createCalendarSettingsFlow, reminderCountdown } from '../src/calendar-settings-flow.js';
+import { createCalendarSettingsFlow, reminderCountdown, calendarConnectionView } from '../src/calendar-settings-flow.js';
 
 const snapshot = { revision: 1, configured: true, connected: true, connecting: false, restoring: false, accountLabel: 'synthetic', calendars: [{ id: 'one', name: 'One' }, { id: 'two', name: 'Two' }], selectedCalendars: ['one'], lastSyncedAt: null, error: null };
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
@@ -72,4 +72,55 @@ test('countdown handles five-minute, second, expired, and invalid values', () =>
   assert.equal(reminderCountdown(59_001, 0), '60초 후');
   assert.equal(reminderCountdown(1, 2), '시작 시간');
   assert.equal(reminderCountdown(NaN, 0), '시작 시간');
+});
+
+test('retry waits for cancellation and rejects old authorization completion', async () => {
+  const old=deferred(), cancelled=deferred(); let begins=0;
+  const flow=await setup({beginCalendarConnect:async()=>({attemptId:String(++begins)}),finishCalendarConnect:id=>id==='1'?old.promise:Promise.resolve({...snapshot,revision:5}),cancelCalendarConnect:()=>cancelled.promise});
+  const first=flow.connect(); await flush(); const retry=flow.retry(); await flush();
+  assert.equal(begins,1); assert.equal(flow.getSnapshot().phase,'cancelling');
+  cancelled.resolve({...snapshot,revision:3}); await retry;
+  old.resolve({...snapshot,revision:4,accountLabel:'stale'}); await first;
+  assert.equal(begins,2); assert.equal(flow.getSnapshot().snapshot.accountLabel,'synthetic');
+});
+test('browser reopen reuses only the current attempt without another begin', async () => {
+  const finishing=deferred(); const reopened=[]; let begins=0;
+  const flow=await setup({beginCalendarConnect:async()=>({attemptId:String(++begins)}),finishCalendarConnect:()=>finishing.promise,reopenCalendarConnect:async id=>reopened.push(id)});
+  const first=flow.connect(); await flush(); await flow.reopen();
+  assert.deepEqual(reopened,['1']); assert.equal(begins,1);
+  finishing.resolve({...snapshot,revision:3}); await first;
+  assert.equal(await flow.reopen(),false);
+});
+test('failed cancellation blocks a new request until cancellation succeeds', async () => {
+  const finishing=deferred(); let begins=0, cancels=0;
+  const flow=await setup({beginCalendarConnect:async()=>({attemptId:String(++begins)}),finishCalendarConnect:()=>finishing.promise,cancelCalendarConnect:async()=>{if(++cancels===1)throw Error('취소 실패');return {...snapshot,revision:3};}});
+  const first=flow.connect(); await flush(); assert.equal(await flow.cancel(),false);
+  assert.equal(await flow.connect(),false); assert.equal(begins,1);
+  assert.equal(await flow.cancel(),true);
+  finishing.resolve({...snapshot,revision:2}); await first;
+});
+test('idle cancellation releases its barrier for later connection', async () => {
+  const flow=await setup({beginCalendarConnect:async()=>({attemptId:'next'}),finishCalendarConnect:async()=>({...snapshot,revision:4})});
+  await flow.cancel(); assert.equal(await flow.connect(),true);
+});
+
+test('connection presentation prioritizes active authorization and hides previous failure', () => {
+  const state={snapshot:{...snapshot,error:'old failure'},phase:'authorizing',connecting:true,error:''};
+  assert.equal(calendarConnectionView(state).label,'브라우저에서 승인 중');
+  assert.equal(calendarConnectionView(state).error,'');
+  assert.equal(calendarConnectionView({...state,connecting:false,phase:'failed',error:'timed out'}).action,'다시 시도');
+  assert.equal(calendarConnectionView({...state,connecting:false,phase:'cancelling'}).label,'연결 취소 중');
+});
+
+test('leaving during failed browser launch releases the request for another connection', async () => {
+  let failBegin; let calls=0;
+  const flow=await setup({beginCalendarConnect:()=>{calls++;return calls===1?new Promise((_,reject)=>{failBegin=reject;}):Promise.resolve({attemptId:'new'});},finishCalendarConnect:async()=>({...snapshot,revision:4})});
+  const pending=flow.connect();flow.setActive(false);failBegin(Error('browser failed'));await pending;await flush();
+  flow.setActive(true);await flush();assert.equal(await flow.connect(),true);
+});
+test('successful authorization clears a browser-reopen error', async () => {
+  const finish=deferred();
+  const flow=await setup({beginCalendarConnect:async()=>({attemptId:'one'}),finishCalendarConnect:()=>finish.promise,reopenCalendarConnect:async()=>{throw Error('browser failed');}});
+  const pending=flow.connect();await flush();await flow.reopen();assert.equal(flow.getSnapshot().error,'browser failed');
+  finish.resolve({...snapshot,revision:4});await pending;assert.equal(flow.getSnapshot().error,'');
 });
