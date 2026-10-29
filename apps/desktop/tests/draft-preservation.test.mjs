@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import vm from 'node:vm';
 import { Window } from 'happy-dom';
+import { renderMeetingMenu } from '../../../design-system/navigation.mjs';
 
 const source = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
 const qualitySource = await readFile(new URL('../src/recording-quality.js', import.meta.url), 'utf8');
@@ -125,7 +126,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
   };
   const copied = [], agentDialogCalls = [];
   const templateSettings = { setActive() {}, beforeLeave: async () => true, isConfirming: () => false, hide() {} };
-  const context = vm.createContext({
+  const context = vm.createContext({ renderMeetingMenu,
     navigator: { clipboard: { writeText: async text => { copied.push(text); } } },
     document, testBridge: bridge, testAgentDialogCalls: agentDialogCalls, testTemplateSettings: templateSettings, localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
     GroveControls: { enhanceAll() {} },
@@ -147,7 +148,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     let restoreForTest;
     const createTranscriptActions = mountTranscriptActions;
     mountTranscriptActions = options => { restoreForTest = options.onRestored; return createTranscriptActions(options); };
-    ${librarySource.slice(0, librarySource.indexOf('export function mountLibrary')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '')}
+    ${librarySource.slice(0, librarySource.indexOf('export function mountLibrary')).replace(/^import .*;\n/gm, '').replace(/^export \{.*\}.*;\n/gm, '').replace(/^export /gm, '')}
     let summaryEvidenceOptions;
     const mountSummaryEvidence = options => { summaryEvidenceOptions = options; return { reset() {}, update() {}, restoreFocus() {} }; };
     const mountTemplateSettings = () => testTemplateSettings;

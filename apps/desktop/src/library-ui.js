@@ -1,4 +1,5 @@
-import { mountNavigationSidebar, recentMeetingRow } from '../../../design-system/navigation.mjs';
+import { mountActionMenus } from '../../../design-system/action-menu.mjs';
+import { mountNavigationSidebar, recentMeetingRow, renderMeetingMenu } from '../../../design-system/navigation.mjs';
 import { pendingJob } from './processing-state.js';
 import { createDragPreview } from './drag-preview.js';
 export function filterLibraryMeetings(meetings, filter = 'all', query = '') {
@@ -17,10 +18,7 @@ export function recentLibraryMeetings(meetings) {
 }
 const recentDate = new Intl.DateTimeFormat('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
 
-export function renderMeetingMenu(meeting, { escape, icon, disabled = false }) {
-  const actions = meeting.deletedAt != null ? [['restore', '복원'], ['purge', '영구 삭제']] : [['rename', '이름 변경'], ['move', '폴더로 이동'], ['trash', '휴지통으로 이동']];
-  return `<details class="meeting-menu document-export" data-meeting-menu="${escape(meeting.id)}"><summary aria-label="${escape(meeting.title)} 더보기" title="${escape(meeting.title)} 더보기">${icon('ellipsis')}</summary><div class="action-menu">${actions.map(([action, label]) => `<button type="button" class="${['trash', 'purge'].includes(action) ? 'danger-text' : ''}" aria-label="${escape(label)}" data-library-action="${action}" data-library-target="${escape(meeting.id)}"${disabled ? ' disabled' : ''}>${escape(label)}</button>`).join('')}</div></details>`;
-}
+export { renderMeetingMenu } from '../../../design-system/navigation.mjs';
 
 export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnapshot, selectMeeting, render: renderApp, showError, escape, icon, duration, onViewChanged }) {
   const dialog = byId('library-dialog');
@@ -41,7 +39,8 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
   const folderOverview = () => state().libraryFilter === 'all' && state().libraryView === 'folders' && !query();
   const dragPreview = createDragPreview(owner);
   let folderKey = '', recentKey = '', pending = null, returnFocus = null, returnRecentId = null, dragSources = [];
-  let activeMenu = null, dropTarget = null, selectionAnchor = null;
+  let dropTarget = null, selectionAnchor = null;
+  const menus = mountActionMenus({ owner, onEscape: clearDrag });
   const state = () => getState();
   const selection = () => state().librarySelection ||= new Set();
   const selectedIds = () => [...selection()];
@@ -306,7 +305,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
         menu: renderMeetingMenu(meeting, { escape, icon, disabled }),
       })).join('');
       if (focused) [...byId('recent-meetings').querySelectorAll('[data-recent-row]')].find(node => node.dataset.recentRow === focused)?.querySelector(focusMenu ? 'summary' : '[data-recent-meeting]')?.focus({ preventScroll: true });
-      if (activeMenu?.isConnected === false) closeMenu();
+      if (menus.active?.isConnected === false) closeMenu();
     }
     const overview = folderOverview();
     byId('library-view').hidden = filter !== 'all';
@@ -365,32 +364,8 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     if (action === 'purge') purgeDialog(ids);
     if (action === 'restore') void mutate(() => bridge.restoreMeetings(ids), afterRemoval);
   }
-  function menuContent(menu) { return menu?.querySelector(':scope > div'); }
-  function closeMenu(menu = activeMenu, restore = false) {
-    if (!menu) return;
-    menu.open = false;
-    menu.classList?.remove('is-open');
-    if (activeMenu === menu) activeMenu = null;
-    if (restore && menu.isConnected) menu.querySelector('summary')?.focus({ preventScroll: true });
-  }
-  function positionMenu(menu) {
-    const content = menuContent(menu), trigger = menu.querySelector('summary');
-    if (!content || !trigger) return;
-    if (activeMenu && activeMenu !== menu) closeMenu(activeMenu);
-    activeMenu = menu;
-    menu.classList.add('is-open');
-    const view = owner.defaultView;
-    const width = view?.innerWidth || owner.documentElement?.clientWidth || 1024;
-    const height = view?.innerHeight || owner.documentElement?.clientHeight || 768;
-    content.style.width = `${Math.min(180, Math.max(0, width - 16))}px`;
-    content.style.maxHeight = `${Math.max(0, height - 16)}px`;
-    content.style.overflowY = 'auto';
-    const anchor = trigger.getBoundingClientRect(), rect = content.getBoundingClientRect();
-    const below = anchor.bottom + 6;
-    const top = below + rect.height <= height - 8 ? below : anchor.top - rect.height - 6;
-    content.style.left = `${Math.max(8, Math.min(anchor.right - rect.width, width - rect.width - 8))}px`;
-    content.style.top = `${Math.max(8, Math.min(top, height - rect.height - 8))}px`;
-  }
+  const closeMenu = (menu = menus.active, restore = false) => menus.close(menu, restore);
+  const positionMenu = menu => menus.position(menu);
   function clearDropTarget() {
     dropTarget?.classList.remove('is-drop-target');
     dropTarget = null;
@@ -400,30 +375,6 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     clearDropTarget();
     dragPreview.clear();
   }
-  owner?.addEventListener?.('toggle', event => {
-    const menu = event.target;
-    if (!menu.matches?.('[data-meeting-menu],.library-folder-menu')) return;
-    if (menu.open) positionMenu(menu); else closeMenu(menu);
-  }, true);
-  owner?.addEventListener?.('pointerdown', event => { if (activeMenu && !activeMenu.contains(event.target)) closeMenu(); }, true);
-  owner?.addEventListener?.('keydown', event => {
-    if (event.key === 'Escape') {
-      clearDrag();
-      if (!activeMenu) return;
-      event.preventDefault(); event.stopPropagation(); closeMenu(activeMenu, true);
-      return;
-    }
-    const menu = event.target.closest?.('[data-meeting-menu],.library-folder-menu');
-    if (!menu || !['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
-    if (menu.querySelector('summary')?.getAttribute?.('aria-disabled') === 'true') return;
-    const buttons = [...menu.querySelectorAll('button:not(:disabled)')];
-    if (!buttons.length) return;
-    event.preventDefault();
-    menu.open = true; positionMenu(menu);
-    const index = buttons.indexOf(owner.activeElement);
-    const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : event.key === 'ArrowDown' ? (index + 1) % buttons.length : (index < 0 ? buttons.length - 1 : (index - 1 + buttons.length) % buttons.length);
-    buttons[next].focus({ preventScroll: true });
-  }, true);
   byId('create-meeting-options').addEventListener('click', event => {
     if (byId('create-meeting-options').getAttribute('aria-disabled') === 'true') event.preventDefault();
   });
@@ -433,10 +384,6 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
   byId('rail-new-meeting').addEventListener('click', () => { sidebar?.navigate(); byId('create-meeting').click(); });
   byId('rail-settings').addEventListener('click', () => { sidebar?.navigate(); byId('settings').click(); });
   byId('rail-library').addEventListener('click', () => void show('all'));
-  owner?.addEventListener?.('scroll', event => {
-    if (activeMenu && !menuContent(activeMenu)?.contains(event.target)) closeMenu();
-  }, true);
-  owner?.defaultView?.addEventListener('resize', () => closeMenu());
   owner?.addEventListener?.('drop', () => { clearDropTarget(); dragPreview.clear(); }, true);
   owner?.addEventListener?.('dragend', clearDrag);
   dialog.addEventListener('submit', event => {
@@ -489,7 +436,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
   byId('library-select-all').addEventListener('click', selectAll);
   byId('library-selection-clear').addEventListener('click', () => { if (state().libraryBusy || !state().connected) return; resetSelection(); renderApp(); });
   for (const action of ['move', 'trash', 'restore', 'purge']) byId(`library-${action}`).addEventListener('click', () => actionFor(action, selectedIds()));
-  for (const action of ['move', 'trash']) byId(`meeting-${action}`).addEventListener('click', () => { closeMenu(activeMenu, true); actionFor(action, [state().selectedId].filter(Boolean)); });
+  for (const action of ['move', 'trash']) byId(`meeting-${action}`).addEventListener('click', () => { closeMenu(menus.active, true); actionFor(action, [state().selectedId].filter(Boolean)); });
   byId('meeting-list').addEventListener('click', event => {
     const toggle = event.target.closest('[data-library-toggle]');
     const action = event.target.closest('[data-library-action]');
@@ -497,7 +444,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     if (action) { event.preventDefault(); event.stopPropagation(); closeMenu(action.closest('details'), true); actionFor(action.dataset.libraryAction, [action.dataset.libraryTarget]); }
   });
   function handleSelectionKeydown(event) {
-    if (event.defaultPrevented || event.isComposing || event.keyCode === 229 || dialog.open || activeMenu || !state().libraryOpen || state().libraryBusy || !state().connected) return;
+    if (event.defaultPrevented || event.isComposing || event.keyCode === 229 || dialog.open || menus.active || !state().libraryOpen || state().libraryBusy || !state().connected) return;
     if (event.target.closest?.('textarea,select,[contenteditable]:not([contenteditable="false"]),input:not([type="checkbox"]):not([type="radio"]):not([type="button"])')) return;
     if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === 'a') {
       event.preventDefault(); selectAll();

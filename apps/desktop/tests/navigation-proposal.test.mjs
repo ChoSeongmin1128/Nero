@@ -82,3 +82,65 @@ test('temporary sidebar closes after pointer exit but stays while entering a sea
   doc.querySelector('[data-dismiss]').click();
   assert.equal(doc.querySelector('.meeting-status'), null);
 });
+
+
+test('recent right click operates on the targeted meeting without navigating or changing another meeting', async t => {
+  const window=await setup(t),doc=window.document;
+  doc.querySelector('.navigation-rail').dispatchEvent(new window.PointerEvent('pointerenter',{pointerType:'mouse'}));
+  doc.getElementById('toggleNav').click();
+  const row=()=>doc.querySelector('[data-recent-row="2"]');
+  const open=()=>{const event=new window.MouseEvent('contextmenu',{bubbles:true,cancelable:true});row().dispatchEvent(event);assert.equal(event.defaultPrevented,true);};
+  const original=doc.querySelector('h1').textContent;
+  open();
+  assert.equal(row().querySelector('details').open,true);
+  assert.equal(doc.activeElement.textContent,'이름 변경');
+  assert.equal(doc.querySelector('h1').textContent,original);
+  row().querySelector('[data-library-action="rename"]').click();
+  const dialog=doc.querySelector('dialog');
+  assert.equal(dialog.open,true);
+  dialog.querySelector('input').value='수정한 인터뷰';
+  dialog.close('confirm');await new Promise(resolve=>setImmediate(resolve));
+  assert.match(row().textContent,/수정한 인터뷰/);
+  assert.equal(doc.activeElement,row().querySelector('summary'));
+  assert.equal(doc.querySelector('h1').textContent,original);
+  open();row().querySelector('[data-library-action="move"]').click();
+  dialog.querySelector('input[name="destination"][value="제품팀"]').checked=true;
+  dialog.close('confirm');await new Promise(resolve=>setImmediate(resolve));
+  assert.match(row().querySelector('.recent-meeting-meta').textContent,/제품팀/);
+  open();row().querySelector('[data-library-action="trash"]').click();
+  dialog.close('cancel');await new Promise(resolve=>setImmediate(resolve));
+  assert.ok(row());
+  open();row().querySelector('[data-library-action="trash"]').click();
+  dialog.close('confirm');await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(row(),null);
+  assert.equal(doc.querySelector('h1').textContent,original);
+  assert.equal(doc.querySelectorAll('[data-recent-row]').length,3);
+});
+
+test('recent context menu supports keyboard navigation, Escape and outside dismissal',async t=>{
+  const window=await setup(t),doc=window.document;
+  doc.querySelector('.navigation-rail').dispatchEvent(new window.PointerEvent('pointerenter',{pointerType:'mouse'}));
+  doc.getElementById('toggleNav').click();
+  const row=doc.querySelector('[data-recent-row="1"]'),trigger=row.querySelector('summary');
+  const recent=row.querySelector('[data-recent-meeting]');recent.focus();
+  recent.dispatchEvent(new window.KeyboardEvent('keydown',{key:'F10',shiftKey:true,bubbles:true,cancelable:true}));
+  assert.equal(doc.activeElement.textContent,'이름 변경');
+  doc.activeElement.dispatchEvent(new window.KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true,cancelable:true}));
+  assert.equal(doc.activeElement.textContent,'폴더로 이동');
+  doc.activeElement.dispatchEvent(new window.KeyboardEvent('keydown',{key:'End',bubbles:true,cancelable:true}));
+  assert.equal(doc.activeElement.textContent,'휴지통으로 이동');
+  doc.activeElement.dispatchEvent(new window.KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));
+  assert.equal(row.querySelector('details').open,false);assert.equal(doc.activeElement,trigger);
+  recent.dispatchEvent(new window.MouseEvent('contextmenu',{bubbles:true,cancelable:true}));
+  doc.querySelector('main').dispatchEvent(new window.PointerEvent('pointerdown',{bubbles:true}));
+  assert.equal(row.querySelector('details').open,false);
+});
+
+
+test('recent metadata and breadcrumb paths use layout and chevrons instead of slash separators',async t=>{
+ const window=await setup(t),doc=window.document;
+ for(const metadata of doc.querySelectorAll('.recent-meeting-meta'))assert.doesNotMatch(metadata.textContent,/\//);
+ assert.doesNotMatch(doc.querySelector('#breadcrumbs').textContent,/\//);
+ assert.equal(doc.querySelectorAll('#breadcrumbs .breadcrumb-separator svg[data-icon="chevron-right"]').length,2);
+ assert.equal(doc.querySelector('.recent-meeting-meta').querySelectorAll('span').length,2);
+});

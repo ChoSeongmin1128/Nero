@@ -11,6 +11,7 @@
 | `appearance.css`, `appearance.js` | 역할 색상, 6색과 light/dark/system 선택 |
 | `typography.css` | 시스템/한글/코드 글꼴, 크기/굵기/줄간격/자간 역할 |
 | `components.css` | 버튼, 입력, 필드, 배지, 선택, 내용 탭, 오류, 모달, 설정 선택의 기본 스타일 |
+| `navigation.mjs`, `navigation.css`, `action-menu.mjs` | 최근 회의 행/회의 작업 메뉴, hover 탐색과 메뉴 위치/키보드/닫기 동작. 제품과 탐색 시안이 같은 구현 사용 |
 | `components.js` | 버튼/상태/회의 행/사람 행/참석자 항목/전사 발언/회의록 읽기/모달 내용 생성 |
 | `controls.css`, `controls.js`, `react-controls.jsx`, `components/ui/` | shadcn/ui Base 레지스트리에서 조정한 React/Base UI 선택/Popover/Dialog와 한국어 React DayPicker. 원래 native 입력의 값/이벤트 어댑터와 DOM 수명 관리 |
 | `style.css`, `prototype/` | 브라우저 제품 예제의 배치와 기능 상태 |

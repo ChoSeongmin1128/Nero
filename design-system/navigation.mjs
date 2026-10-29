@@ -1,7 +1,12 @@
+export function renderMeetingMenu(meeting, { escape, icon, disabled = false }) {
+  const actions = meeting.deletedAt != null ? [['restore', '복원'], ['purge', '영구 삭제']] : [['rename', '이름 변경'], ['move', '폴더로 이동'], ['trash', '휴지통으로 이동']];
+  return `<details class="meeting-menu document-export" data-meeting-menu="${escape(meeting.id)}"><summary aria-label="${escape(meeting.title)} 더보기" title="${escape(meeting.title)} 더보기">${icon('ellipsis')}</summary><div class="action-menu">${actions.map(([action, label]) => `<button type="button" class="${['trash', 'purge'].includes(action) ? 'danger-text' : ''}" aria-label="${escape(label)}" data-library-action="${action}" data-library-target="${escape(meeting.id)}"${disabled ? ' disabled' : ''}>${escape(label)}</button>`).join('')}</div></details>`;
+}
+
 export function recentMeetingRow({ id, title, metadata, active = false, disabled = false, menu = '', escape }) {
   const [folder, timestamp, duration] = metadata;
   const description = [folder, timestamp].filter(Boolean);
-  return `<article class="navigation-recent-row" data-recent-row="${escape(id)}"><button type="button" class="quiet recent-meeting" data-recent-meeting="${escape(id)}"${active ? ' aria-current="page"' : ''}${disabled ? ' disabled' : ''}><span class="recent-title-line"><strong title="${escape(title)}">${escape(title)}</strong>${duration ? `<span class="recent-meeting-duration">${escape(duration)}</span>` : ''}</span><span class="recent-meeting-meta" title="${escape(description.join(' / '))}">${description.map(value => `<span>${escape(value)}</span>`).join('')}</span></button>${menu}</article>`;
+  return `<article class="navigation-recent-row" data-recent-row="${escape(id)}"><button type="button" class="quiet recent-meeting" data-recent-meeting="${escape(id)}"${active ? ' aria-current="page"' : ''}${disabled ? ' disabled' : ''}><span class="recent-title-line"><strong title="${escape(title)}">${escape(title)}</strong>${duration ? `<span class="recent-meeting-duration">${escape(duration)}</span>` : ''}</span><span class="recent-meeting-meta" title="${escape(description.join(', '))}">${description.map(value => `<span>${escape(value)}</span>`).join('')}</span></button>${menu}</article>`;
 }
 
 export function mountNavigationSidebar({ shell, aside, content, trigger, backdrop, storage, storageKey = 'nero.sidebar.pinned', icons = globalThis.GroveIcons }) {
