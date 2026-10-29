@@ -1,11 +1,16 @@
 # Nero 릴리스 이력
 
-## 미배포: 녹음 중 처리와 Mac 메모리 로딩
+## 0.0.1 / build 36 (개인 설치, 화면 검증 대기)
 
-- 공통 기능 source `f7e4630a88ddaaaf5f551359fbcee8bd685c22d0`, Mac PR47 source `5afd730ad379a5381f19bdb15d42fb07ecae2c88`. 설치 build35를 변경한 기록이 아니며 새 공증/설치는 별도다.
+- 공통 기능 source `f7e4630a88ddaaaf5f551359fbcee8bd685c22d0`, Mac PR47 source `5afd730ad379a5381f19bdb15d42fb07ecae2c88`. 최종 clean source `f66c072ffa051adc6238c2ca6c01efd4f27a7b78`, 연동26. build36 공증과 앱 교체를 완료했다.
 - 저장된 PCM을 읽는 한 세션 ASR/독립 화자 stream과 종료 후 취소 가능한 일반 작업을 연결했다. 오래된 종료 응답이 새 녹음 상태를 덮지 않으며, 완료 ASR은 화자 처리 전에 checkpoint한다. 재시작 후 명시적 재시도는 원음/세션/해시가 일치하는 완료 결과만 재사용한다.
 - Mac은 base v0.2.0에 공식 PR47의9파일만 적용한 source package를 사용한다. 소스/의존성/patch hash와 target별 identity를 한곳에서 관리하고, 과거 artifact의 provenance를 바꾸지 않는다. Windows는 기존 공식 Vulkan/CPU runtime을 유지한다.
-- Mac 파일 공급 검증에서81분 입력을 정상 완료했고,5141단어/시각과 화자 확률 전체가 기존 기준과 같았다. 동일 빌드 조건의 CPU 비교도 결과가 같았다. Core227/CLI39/desktop320(실기5제외)/frontend426, frontend/native build와 package14검사를 통과했다. 실제 마이크/8GB 동시 사용/Windows 실기/자연3시간 수락과 구분한다.
+- Mac 파일 공급 검증에서81분 입력을 정상 완료했고,5141단어/시각과 화자 확률 전체가 기존 기준과 같았다. 동일 빌드 조건의 CPU 비교도 결과가 같았다. Core227/CLI39/desktop320(실기5제외)/frontend426, frontend/native build와 package17검사를 통과했다. 실제 CPU 결과의 격리 게시/화자 적용/이전 revision 복원/재열기 검사도 추가 통과했다. 실제 마이크/8GB 동시 사용/자연3시간 수락과 구분한다.
+
+
+- Windows 파일 공급 검증 중 공식 CRT를 구버전으로 덮는 준비 문제와 VCOMP DLL unload 충돌을 수정했다. Windows DLL은 격리 자식 종료까지 유지하고 모델/stream은 정상 해제한다. 동일70초 실제속도/빠른공급 및180초 빠른공급이 정상 종료했고 기존 단어/시각/확률이 유지됐다. Core218/CLI38/frontend426 통과. Desktop267통과/11실패/5제외이며 11개는 baseline에서도 동일 재현했다. 패키지16통과/권한1제외. Windows 장치/GUI/배포 수락 완료는 아니다.
+- 앱 공증 `a7c7bb9a-23d0-4faf-96dc-7a83eb2af1f9`, DMG 공증 `30c59d36-2352-494e-875d-6457d6707c3a` Accepted. ZIP SHA256 `b56c13a160fe900a04098ed3666e5e2c896486d2ed9955aa9dfe419997172ddd`, DMG SHA256 `09191b0aade0f579a093b1925513e903d4b1c12fcaf8898c6a1ec9777fc348d1`. 공증 ZIP은 자동 정리했고 DMG/작은 영수증만 유지한다.
+- 정본 installer가 유휴3회/쓰기잠금/정상종료 뒤 앱만 rename 교체했다. 기존585파일과 모델메타데이터/에이전트 등록 해시가 유지됐으며 전체 library snapshot/모델 복제는 없다. 실행 후 캘린더 갱신/앱 제어 정보 외 회의/원음/음성기록/요약 변경은 없었다. 새 CLI/MCP의25도구/폴더/회의 조회도 성공했다. 설치 후 화면과 연동26 host 업데이트 확인은 Mac 잠금 해제를 기다리고 있다.
 
 
 제품 버전, 소스 커밋과 실제 배포 상태를 구분한다. 전체 Git 변경 이력은 저장소에 유지하고, 이 문서에는 릴리스 기준과 주요 경계를 기록한다. 버전 규칙은 [버전 관리](versioning.md)를 따른다.
