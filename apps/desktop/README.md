@@ -113,6 +113,12 @@ frontend, whose actions require the native bridge; it does not supply fake meeti
   and refresh the device list to enable it. Existing recording controls stay available.
 - Pause/resume/stop and use a separate compact control window.
 - Preserve raw PCM and prepare a separate WAV for playback.
+- During new recordings, consume saved PCM in the background with persistent ASR
+  and independent speaker states. Publish provisional text every 60–180 seconds of
+  processed audio; pauses retain state and stop drains/finalizes once. Reuse completed
+  ASR and speaker evidence through the existing source-bound publication path.
+  Interim text has no fabricated word times/speakers and remains read-only.
+  See [live speech contract](../../docs/live-speech.md) for limits and acceptance gaps.
 - Recover complete stored frames after interruption; retain originals on failure.
 - On Apple silicon with macOS 26 or later and packaged workers, import local audio
   through the native file picker, retaining the original bytes and separate playback WAV.

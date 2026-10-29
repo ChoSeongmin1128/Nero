@@ -12,6 +12,7 @@ mod summary;
 pub mod templates;
 pub mod terminology;
 mod transcript;
+pub use capture::CaptureReader;
 pub use diarization::{SpeakerAnalysis, SpeakerAnalysisDraft, SpeakerPosterior};
 pub use library::Folder;
 pub use presentation::{DocumentFormat, DocumentKind, ExportedDocument};
@@ -540,6 +541,18 @@ impl CoreHandle {
 
     pub fn snapshot(&self) -> Result<Snapshot> {
         self.call(|engine| Ok(engine.snapshot()))
+    }
+
+    pub fn capture_reader(&self, session_id: &str) -> Result<CaptureReader> {
+        let session_id = session_id.to_owned();
+        self.call(move |engine| {
+            let capture = engine
+                .capture
+                .as_ref()
+                .filter(|capture| capture.manifest.session_id == session_id)
+                .ok_or(CoreError::StaleSession)?;
+            capture.reader(&engine.store.root)
+        })
     }
 
     pub fn prepare_shutdown(&self, expected_session_id: Option<&str>) -> Result<Snapshot> {

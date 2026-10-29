@@ -10,6 +10,14 @@ but cancels and joins an active inference before capture starts. Requested infer
 until recording/current processing ends. Changing the selected meeting does not change
 job ownership. Folder movement changes placement, never original paths or job ownership.
 
+New recording also owns one isolated live speech child. It reads already saved
+PCM, preserves ASR and independent speaker state across pause/resume, and publishes
+provisional replacements. Other inference waits until it exits. Recording stop
+returns after audio finalization while speech drains in the background. A new
+capture interrupts and joins the previous live child when capture is no longer
+active. Completed results remain bound to their capture session for queued work.
+Shutdown/removal terminates and joins the live child. See [live speech](live-speech.md).
+
 ## Persistence
 
 New jobs append immutable generations at `processing/<job-id>/job-state/<generation>.json`.

@@ -403,6 +403,9 @@ impl TemplateStore {
         let mut current = PathBuf::new();
         for part in self.root.components() {
             current.push(part.as_os_str());
+            if matches!(part, Component::Prefix(_)) {
+                continue;
+            }
             validate_directory(&current)?;
         }
         Ok(())

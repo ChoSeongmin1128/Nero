@@ -16,9 +16,9 @@ const bundled = await build({
   plugins: [{ name: 'test-native-boundary', setup(builder) {
     builder.onResolve({ filter: /^\.\/bridge\.js$/ }, () => ({ path: 'bridge', namespace: 'test-bridge' }));
     builder.onLoad({ filter: /.*/, namespace: 'test-bridge' }, () => ({ contents: bridgeNames.map(name => `export const ${name} = (...args) => globalThis.testBridge.${name}(...args);`).join('\n') }));
-    builder.onLoad({ filter: /\/src\/main\.js$/ }, () => {
+    builder.onLoad({ filter: /[\\/]src[\\/]main\.js$/ }, () => {
       const imports = main.match(/^import .*;$/gm).join('\n');
-      return { contents: `${imports}\nglobalThis.neroBoot = (async () => {\n${main.replace(/^import .*;\n/gm, '')}\n})();`, loader: 'js' };
+      return { contents: `${imports}\nglobalThis.neroBoot = (async () => {\n${main.replace(/^import .*;\r?\n/gm, '')}\n})();`, loader: 'js' };
     });
   } }],
 });

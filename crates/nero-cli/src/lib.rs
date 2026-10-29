@@ -366,10 +366,15 @@ mod tests {
 
     #[test]
     fn platform_paths_use_the_native_identifier_without_legacy_fallback() {
+        let xdg = if cfg!(windows) {
+            "C:/custom/data"
+        } else {
+            "/custom/data"
+        };
         let env = |key: &str| match key {
             "HOME" => Some(OsString::from("/home/example")),
             "APPDATA" => Some(OsString::from("C:/Users/example/AppData/Roaming")),
-            "XDG_DATA_HOME" => Some(OsString::from("/custom/data")),
+            "XDG_DATA_HOME" => Some(OsString::from(xdg)),
             _ => None,
         };
         assert_eq!(
@@ -382,7 +387,7 @@ mod tests {
         );
         assert_eq!(
             data_dir_for(env, "linux").unwrap(),
-            PathBuf::from("/custom/data").join(APP_IDENTIFIER)
+            PathBuf::from(xdg).join(APP_IDENTIFIER)
         );
         assert!(data_dir_for(|_| None, "macos").is_none());
     }

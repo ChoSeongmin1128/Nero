@@ -1107,7 +1107,14 @@ fn edited_templates_cannot_override_external_summary_citation_defaults() {
                 } else {
                     files.insert(
                         path.strip_prefix(root).unwrap().into(),
-                        fs::read(path).unwrap(),
+                        if cfg!(windows)
+                            && path.file_name().is_some_and(|name| name == "store.lock")
+                        {
+                            assert_eq!(fs::metadata(&path).unwrap().len(), 0);
+                            Vec::new()
+                        } else {
+                            fs::read(path).unwrap()
+                        },
                     );
                 }
             }

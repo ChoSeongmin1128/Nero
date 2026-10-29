@@ -64,14 +64,14 @@ type Result<T> = std::result::Result<T, WorkerError>;
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
-enum Backend {
+pub(super) enum Backend {
     Cpu,
     Metal,
     Vulkan,
 }
 
 impl Backend {
-    fn gpu(self) -> i32 {
+    pub(super) fn gpu(self) -> i32 {
         if matches!(self, Self::Cpu) {
             -1
         } else {
@@ -82,15 +82,15 @@ impl Backend {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Request {
-    schema_version: u32,
-    audio: PathBuf,
-    model: PathBuf,
-    library: PathBuf,
-    output: PathBuf,
-    backend: Backend,
-    model_sha256: String,
-    runtime_pin: String,
+pub(super) struct Request {
+    pub(super) schema_version: u32,
+    pub(super) audio: PathBuf,
+    pub(super) model: PathBuf,
+    pub(super) library: PathBuf,
+    pub(super) output: PathBuf,
+    pub(super) backend: Backend,
+    pub(super) model_sha256: String,
+    pub(super) runtime_pin: String,
 }
 
 #[repr(C)]
@@ -118,7 +118,7 @@ type Count = unsafe extern "C" fn(*const c_void) -> i64;
 type Probs = unsafe extern "C" fn(*const c_void, *mut f32, usize) -> i32;
 type Text = unsafe extern "C" fn() -> *const c_char;
 
-struct Api {
+pub(super) struct Api {
     _library: Library,
     create: Create,
     destroy: Destroy,
@@ -152,7 +152,7 @@ fn loader_error(error: libloading::Error, backend: Backend) -> WorkerError {
 }
 
 impl Api {
-    fn load(path: &Path, backend: Backend) -> Result<Self> {
+    pub(super) fn load(path: &Path, backend: Backend) -> Result<Self> {
         #[cfg(windows)]
         let library: Library = unsafe {
             // Resolve dependencies beside the verified DLL and in System32 only.
@@ -237,7 +237,7 @@ impl Api {
     }
 }
 
-struct Native<'a> {
+pub(super) struct Native<'a> {
     api: &'a Api,
     model: *mut c_void,
     stream: *mut c_void,
@@ -245,7 +245,7 @@ struct Native<'a> {
 }
 
 impl<'a> Native<'a> {
-    fn open(api: &'a Api, path: &Path, backend: Backend) -> Result<Self> {
+    pub(super) fn open(api: &'a Api, path: &Path, backend: Backend) -> Result<Self> {
         let mut native = Self {
             api,
             model: std::ptr::null_mut(),
@@ -306,7 +306,7 @@ impl<'a> Native<'a> {
         Ok(native)
     }
 
-    fn push(&self, samples: &[f32]) -> Result<()> {
+    pub(super) fn push(&self, samples: &[f32]) -> Result<()> {
         self.api.check(
             unsafe {
                 (self.api.push)(
@@ -321,7 +321,7 @@ impl<'a> Native<'a> {
         )
     }
 
-    fn finish(&self) -> Result<()> {
+    pub(super) fn finish(&self) -> Result<()> {
         self.api.check(
             unsafe { (self.api.finish)(self.stream) },
             "stream_finish",
@@ -329,7 +329,12 @@ impl<'a> Native<'a> {
         )
     }
 
-    fn collect(&self, timeline: &mut Timeline, raw: &mut impl Write, maximum: u64) -> Result<()> {
+    pub(super) fn collect(
+        &self,
+        timeline: &mut Timeline,
+        raw: &mut impl Write,
+        maximum: u64,
+    ) -> Result<()> {
         let count = u64::try_from(unsafe { (self.api.count)(self.stream) }).map_err(|_| {
             WorkerError::new(WorkerFailureKind::Protocol, "Negative native frame count")
         })?;
@@ -450,7 +455,7 @@ impl Activity {
     }
 }
 
-struct Timeline {
+pub(super) struct Timeline {
     exported: u64,
     base: u64,
     previous: Vec<f32>,
@@ -460,7 +465,7 @@ struct Timeline {
 }
 
 impl Timeline {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             exported: 0,
             base: 0,
@@ -753,7 +758,6 @@ fn process(request: &Request, input: &Prepared, started: Instant) -> Result<()> 
         ));
     }
     let native = Native::open(&api, &request.model, request.backend)?;
-    let stride = unsafe { (api.stride)(native.model) };
     let expected = input.frames / 160 + 1;
     let mut timeline = Timeline::new();
     let mut reader = hound::WavReader::new(BufReader::new(plain_file(
@@ -815,6 +819,24 @@ fn process(request: &Request, input: &Prepared, started: Instant) -> Result<()> 
             "Native output does not cover the complete centered-STFT timeline",
         ));
     }
+    finish_export(
+        request, input, started, &native, timeline, raw, progress, pushed,
+    )
+}
+
+fn finish_export(
+    request: &Request,
+    input: &Prepared,
+    started: Instant,
+    native: &Native<'_>,
+    timeline: Timeline,
+    mut raw: BufWriter<File>,
+    mut progress: BufWriter<File>,
+    pushed: u64,
+) -> Result<()> {
+    let expected = input.frames / 160 + 1;
+    let stride = unsafe { (native.api.stride)(native.model) };
+    let version = native.api.text(native.api.version)?;
     raw.flush().map_err(storage)?;
     raw.get_ref().sync_all().map_err(storage)?;
     progress.flush().map_err(storage)?;
@@ -909,6 +931,36 @@ fn process(request: &Request, input: &Prepared, started: Instant) -> Result<()> 
         &Value::Object(receipt),
     )?;
     Ok(())
+}
+
+pub(super) fn finish_live(
+    request: &Request,
+    frames: u64,
+    library_sha: &str,
+    started: Instant,
+    native: &Native<'_>,
+    mut timeline: Timeline,
+    mut raw: BufWriter<File>,
+) -> Result<()> {
+    let input = prepare(request)?;
+    if input.frames != frames || input.library_sha != library_sha {
+        return Err(WorkerError::new(
+            WorkerFailureKind::SourceChanged,
+            "Live source or library changed",
+        ));
+    }
+    native.finish()?;
+    native.collect(&mut timeline, &mut raw, frames / 160 + 1)?;
+    if timeline.exported != frames / 160 + 1 {
+        return Err(WorkerError::new(
+            WorkerFailureKind::Protocol,
+            "Incomplete live probability timeline",
+        ));
+    }
+    let progress = BufWriter::new(new_file(&request.output.join("progress.jsonl"))?);
+    finish_export(
+        request, &input, started, native, timeline, raw, progress, frames,
+    )
 }
 
 pub fn entry(request_path: &Path) -> Result<()> {

@@ -12,6 +12,9 @@ mod downloads;
 mod export;
 mod identity_migration;
 mod job_journal;
+mod live_asr;
+mod live_speech;
+mod live_speech_worker;
 mod memory;
 mod microphone_permission;
 mod processing;
@@ -928,6 +931,7 @@ async fn start_recording(
     .await
     .map_err(|_| "녹음을 시작하지 못했습니다.".to_string())??;
     publish(&app, &snapshot);
+    start_live_speech(&app, &snapshot);
     Ok(snapshot)
 }
 
@@ -942,6 +946,20 @@ async fn pause_recording(
     let snapshot = on_core(state.core.clone(), move |core| core.pause(&session_id)).await?;
     publish(&app, &snapshot);
     Ok(snapshot)
+}
+
+pub(crate) fn start_live_speech(app: &tauri::AppHandle, snapshot: &Snapshot) {
+    let state = app.state::<DesktopState>();
+    if state.processing.start_live(&state.core, snapshot).is_err() {
+        let _ = app.emit_to(
+            "main",
+            "nero://processing-error",
+            ProcessingError {
+                meeting_id: snapshot.session.as_ref().map(|s| s.meeting_id.clone()),
+                message: "녹음은 계속합니다. 음성 기록은 녹음을 마친 뒤 처리합니다.".into(),
+            },
+        );
+    }
 }
 
 #[tauri::command]
@@ -970,33 +988,36 @@ async fn stop_recording(
     let processing = state.processing.clone();
     let core = state.core.clone();
     let completed = snapshot.clone();
-    match tauri::async_runtime::spawn_blocking(move || {
-        processing.transcribe_recording(core, &completed)
-    })
-    .await
-    {
-        Ok(Ok(Some(progress))) => {
-            let _ = app.emit_to("main", "nero://processing", progress);
+    let completed_meeting = completed
+        .session
+        .as_ref()
+        .map(|session| session.meeting_id.clone());
+    tauri::async_runtime::spawn(async move {
+        match tauri::async_runtime::spawn_blocking(move || {
+            processing.transcribe_recording(core, &completed)
+        })
+        .await
+        {
+            Ok(Ok(Some(progress))) => {
+                let _ = app.emit_to("main", "nero://processing", progress);
+            }
+            Ok(Ok(None)) => (),
+            result => {
+                let message = match result {
+                    Ok(Err(error)) => error,
+                    _ => "음성 인식을 시작하지 못했습니다.".into(),
+                };
+                let _ = app.emit_to(
+                    "main",
+                    "nero://processing-error",
+                    ProcessingError {
+                        meeting_id: completed_meeting,
+                        message,
+                    },
+                );
+            }
         }
-        Ok(Ok(None)) => (),
-        result => {
-            let message = match result {
-                Ok(Err(error)) => error,
-                _ => "음성 인식을 시작하지 못했습니다.".into(),
-            };
-            let _ = app.emit_to(
-                "main",
-                "nero://processing-error",
-                ProcessingError {
-                    meeting_id: snapshot
-                        .session
-                        .as_ref()
-                        .map(|session| session.meeting_id.clone()),
-                    message,
-                },
-            );
-        }
-    }
+    });
     Ok(snapshot)
 }
 
@@ -1538,7 +1559,21 @@ fn main() {
     // This isolated child only loads the packaged speech library. It must run
     // before single-instance registration, windows, recording or model setup.
     let mut arguments = std::env::args_os().skip(1);
-    if arguments.next().as_deref() == Some(std::ffi::OsStr::new("--nero-speaker-worker")) {
+    let mode = arguments.next();
+    if mode.as_deref() == Some(std::ffi::OsStr::new("--nero-live-speech-worker")) {
+        let request = arguments.next();
+        if request.is_none() || arguments.next().is_some() {
+            live_speech_worker::ExitPolicy::Normal.exit(64);
+        }
+        match live_speech_worker::entry(std::path::Path::new(&request.unwrap())) {
+            Ok(policy) => policy.exit(0),
+            Err(error) => {
+                eprintln!("{error}");
+                live_speech_worker::ExitPolicy::Retained.exit(1);
+            }
+        }
+    }
+    if mode.as_deref() == Some(std::ffi::OsStr::new("--nero-speaker-worker")) {
         let request = arguments.next();
         if request.is_none() || arguments.next().is_some() {
             eprintln!("invalid speaker worker request");

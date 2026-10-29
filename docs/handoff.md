@@ -1,5 +1,22 @@
 # Nero handoff
 
+## Live speech source work (2026-10-30)
+
+The working tree adds recording-time saved-PCM consumption, persistent independent
+ASR/speaker streams, 60–180 second provisional text publication and final evidence
+reuse through ordinary transcript checkpoints. See [live speech](live-speech.md).
+This source work does not replace an installed app or establish macOS, microphone,
+8 GB laptop performance or accuracy acceptance. Existing private evaluations retain
+their original scope; do not attribute them to this implementation.
+
+Windows source validation passed: 216 core tests, 38 CLI tests, 426 frontend tests,
+frontend build, native desktop check and development executable build. The extra
+desktop Rust suite has 262 passes, 11 agent-connection failures and five explicit
+acceptance skips. The supplied live-artifact publication/reopen acceptance was run
+separately and passed. The agent-connection failures remain unresolved; do not
+report the full native test suite as passing. Private audio measurements are kept
+outside product Git. No installer or existing user library was changed.
+
 AI-assisted working document. Current user instructions, live state, source and tests
 take precedence. This public handoff describes code, not a user's installed app,
 machine, recordings or evaluation results. Machine-local installation receipts and

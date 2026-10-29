@@ -191,6 +191,40 @@ fn convert(
 mod tests {
     use super::*;
     use std::fs;
+    #[test]
+    fn live_normalization_matches_file_conversion_across_rates_and_delivery_boundaries() {
+        let temp = tempfile::tempdir().unwrap();
+        for rate in [8_000, 16_000, 44_100, 48_000, 96_000, 192_000] {
+            let source = temp.path().join(format!("live-{rate}.wav"));
+            let target = temp.path().join(format!("file-{rate}.wav"));
+            fixture(&source, rate, 1, rate + 17, 1000.0);
+            prepare(&source, &target, &AtomicBool::new(false)).unwrap();
+            let samples: Vec<f64> = WavReader::open(&source)
+                .unwrap()
+                .samples::<f32>()
+                .map(|s| f64::from(s.unwrap()))
+                .collect();
+            let expected: Vec<i16> = WavReader::open(&target)
+                .unwrap()
+                .samples::<i16>()
+                .map(Result::unwrap)
+                .collect();
+            for delivery in [137, 2048] {
+                let mut live = crate::live_speech::Normalizer::new(rate).unwrap();
+                let mut actual = Vec::new();
+                for block in samples.chunks(delivery) {
+                    actual.extend(live.push(block, false).unwrap());
+                }
+                actual.extend(live.push(&[], true).unwrap());
+                assert_eq!(actual, expected, "rate {rate}, delivery {delivery}");
+                assert!(live.push(&[], true).is_err());
+            }
+        }
+        assert!(crate::live_speech::Normalizer::new(16000)
+            .unwrap()
+            .push(&[f64::NAN], false)
+            .is_err());
+    }
     fn fixture(path: &Path, rate: u32, channels: u16, frames: u32, frequency: f64) {
         let mut writer = WavWriter::create(
             path,

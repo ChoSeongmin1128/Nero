@@ -530,6 +530,7 @@ pub async fn start_calendar_recording(
     let _ = service.tick(calendar::now_ms(), true);
     sync_windows(&app, &service);
     crate::publish(&app, &snapshot);
+    crate::start_live_speech(&app, &snapshot);
     crate::show_main(&app);
     let _ = app.emit_to(
         "main",

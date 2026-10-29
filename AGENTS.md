@@ -25,6 +25,14 @@ This file applies to the entire repository.
   identity, successful native completion evidence and valid word timestamps. Preserve
   native output, the execution receipt and original audio; completion evidence does
   not prove that every spoken word was recognized. Never silently switch to chunk ASR.
+- During new recording, a background saved-PCM reader may feed one persistent ASR
+  stream and an independent speaker stream. Publish provisional replacements at
+  60–180 seconds without resetting models, finish only after successful capture EOF,
+  and bind the exact fed PCM hash/frame count to the finalized analysis WAV.
+  Interim C ABI text has no word offsets: do not invent times or speaker labels.
+  Save native ASR before speaker finalization and reuse it through the normal
+  checkpoint/continuation path. See `docs/live-speech.md`; source checks do not
+  establish microphone, low-memory laptop or macOS acceptance.
 - Save recognition before optional terminology correction and the separate
   whole-recording Nemotron 3 speaker stage. Persist the source-bound diarization
   continuation under the same job ID so a speaker-stage retry does not rerun ASR.

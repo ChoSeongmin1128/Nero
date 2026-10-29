@@ -15,6 +15,7 @@ import { mountLibrary, filterLibraryMeetings, renderMeetingMenu } from './librar
 import { mountSpeakers } from './speakers-ui.js';
 import { createMeetingSearch, mountDocumentSearch } from './meeting-search.js';
 import { mountTranscriptActions } from './transcript-actions.js';
+import { liveTranscriptRows } from './live-transcript.js';
 import { mountMeetingDetail } from './meeting-detail-ui.js';
 import { mountSummaryEvidence } from './summary-evidence.js';
 import { mountAgentConnectionDialog } from './agent-connection-dialog.jsx';
@@ -281,7 +282,7 @@ function render() {
   calendarReference.render(meeting);
   byId('create-calendar-meeting').hidden = !meeting || Boolean(meeting.audio || meeting.calendarReference || activeSession()?.meetingId === meeting.id);
   byId('import-audio').hidden = !meeting || Boolean(meeting.audio || activeSession()?.meetingId === meeting.id);
-  byId('detail-transcript-open').hidden = !meeting?.audio;
+  byId('detail-transcript-open').hidden = !meeting?.audio && !liveTranscriptRows(state.processing.liveTranscript, meeting?.id, state.snapshot.session?.id).length;
   byId('library-screen').hidden = state.notificationsOpen || setupVisible || !state.connected || (!state.libraryOpen && !modelsReady() && !state.snapshot.meetings.length) || (!state.libraryOpen && Boolean(meeting));
   byId('welcome').hidden = state.notificationsOpen || !byId('library-screen').hidden || setupVisible || Boolean(meeting);
   byId('meeting-detail').hidden = state.notificationsOpen || setupVisible || state.libraryOpen || !meeting;
@@ -1055,6 +1056,8 @@ function renderTranscript(meeting) {
   const job = { ...state.processing, ...pendingJob(state.processing, { meetingId: meeting.id }) };
   const ownJob = Boolean(pendingJob(job, { meetingId: meeting.id }));
   const draft = state.transcriptDraft;
+  const preview = state.processing.liveTranscript;
+  const liveRows = !draft?.doc ? liveTranscriptRows(preview, meeting.id, state.snapshot.session?.id) : [];
   byId('transcript-history').hidden = !draft?.doc;
   byId('transcript-history').disabled = state.busy;
   byId('transcribe').hidden = ownJob || !state.transcriptLoaded || Boolean(state.transcriptLoadError);
@@ -1068,7 +1071,9 @@ function renderTranscript(meeting) {
   else if (state.transcriptLoadError) message = '음성 기록을 불러오지 못했습니다.';
   else if (draft?.dirty) message = '저장되지 않은 수정이 있습니다.';
   else if (ownJob) message = job.kind === 'diarize' || job.phase === 'diarizing' ? '' : processingFeedback(job).title;
-  else if (!draft?.doc && !meeting.audio) message = '녹음을 마치면 음성 기록을 볼 수 있습니다.';
+  else if (preview?.meetingId === meeting.id && preview?.sessionId === state.snapshot.session?.id && (preview.finishing || preview.deferred)) message = preview.message;
+  else if (liveRows.length) message = preview.deferred ? preview.message : '녹음 중 초안 - 마지막 구간은 바뀔 수 있습니다.';
+  else if (!draft?.doc && !meeting.audio) message = '음성 기록을 준비하고 있습니다.';
   else if (!draft?.doc && !job.supported) message = '이 환경에서는 음성 기록을 변환할 수 없습니다.';
   else if (!draft?.doc && !job.modelReady) message = '음성 인식 모델을 먼저 준비해 주세요.';
   else if (!draft?.doc) message = '아직 텍스트로 변환하지 않았습니다.';
@@ -1079,16 +1084,17 @@ function renderTranscript(meeting) {
   byId('transcribe').classList?.toggle('primary', !draft?.doc);
   byId('transcribe').classList?.toggle('quiet', Boolean(draft?.doc));
   byId('transcript-section').setAttribute('aria-busy', String(ownJob || !state.transcriptLoaded));
-  const key = transcriptRenderKey();
+  const key = `${transcriptRenderKey()}:${liveRows.length ? preview.generation : ''}`;
   if (key !== state.transcriptKey) {
     state.transcriptKey = key;
     const scroll = byId('transcript-scroll').scrollTop;
-    byId('transcript-rows').innerHTML = (draft?.doc?.segments || []).map((segment,index) => globalThis.NeroUI.transcriptRow({ index, time: duration(segment.start * 1000), start: segment.start, text: segment.text, originalText: segment.originalText, editing: state.transcriptEditing === index, speaker: speakers.label(segment), speakerVisible: true, searchQuery: documentSearch.query(), disabled: ownJob || state.editLocks > 0 })).join('');
+    byId('transcript-rows').innerHTML = liveRows.length ? liveRows.map((row,index)=>globalThis.NeroUI.transcriptRow({ index, time:row.start == null ? '' : duration(row.start*1000),start:row.start ?? 0,text:row.text,originalText:row.text,editing:false,speaker:row.speaker ? `화자 ${row.speaker}` : '미지정',speakerVisible:row.speaker != null,searchQuery:'',disabled:true })).join('') : (draft?.doc?.segments || []).map((segment,index) => globalThis.NeroUI.transcriptRow({ index, time: duration(segment.start * 1000), start: segment.start, text: segment.text, originalText: segment.originalText, editing: state.transcriptEditing === index, speaker: speakers.label(segment), speakerVisible: true, searchQuery: documentSearch.query(), disabled: ownJob || state.editLocks > 0 })).join('');
     byId('transcript-rows').querySelectorAll('textarea').forEach(resizeTranscriptEditor);
     byId('transcript-scroll').scrollTop = scroll;
   }
   byId('transcript-rows').querySelectorAll('textarea').forEach((input) => { input.readOnly = ownJob || state.editLocks > 0; });
-  byId('transcript-rows').querySelectorAll('[data-transcript-edit], [data-transcript-done], [data-transcript-cancel], [data-speaker-edit]').forEach(input => { input.disabled = ownJob || state.editLocks > 0; });
+  byId('transcript-rows').querySelectorAll('[data-transcript-edit], [data-transcript-done], [data-transcript-cancel], [data-speaker-edit]').forEach(input => { input.disabled = liveRows.length > 0 || ownJob || state.editLocks > 0; });
+  if (liveRows.length) byId('transcript-rows').querySelectorAll('[data-seek]').forEach(input => { input.disabled = true; });
   byId('transcript-rows').querySelectorAll('[data-transcript-done]').forEach(input => {
     const html = draft?.saving ? '<span class="activity-spinner" aria-hidden="true"></span>저장 중' : '완료';
     if (input.innerHTML !== html) input.innerHTML = html;

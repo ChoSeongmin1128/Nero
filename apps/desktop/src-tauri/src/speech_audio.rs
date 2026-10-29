@@ -48,6 +48,21 @@ pub(super) struct AnalysisAudio {
 }
 
 impl AnalysisAudio {
+    pub(super) fn from_live(
+        source: &Path,
+        path: &Path,
+        cancel: &AtomicBool,
+    ) -> Result<Self, Failure> {
+        let prepared = Self {
+            source: source.to_owned(),
+            source_sha256: digest(source)?,
+            path: path.to_owned(),
+            frames: native_frames(path, cancel)?,
+            sha256: digest(path)?,
+        };
+        prepared.verify(source, cancel)?;
+        Ok(prepared)
+    }
     pub(super) fn prepare(
         process: &Processing,
         source: &Path,

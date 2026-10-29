@@ -1309,3 +1309,83 @@ fn acknowledging_completed_work_keeps_the_completed_receipt_and_rejects_live_wor
     process.save_job(running).unwrap();
     assert!(process.acknowledge(&running_id).is_err());
 }
+
+#[test]
+fn finalizing_live_processing_is_a_visible_cancellable_job() {
+    let (_temporary, process) = setup();
+    let live = crate::live_speech::waiting_fixture(
+        &process,
+        "f85ab0da-8d37-4bc4-b3d3-789a39d20190",
+        "session",
+    );
+    let mut record = record("transcribe");
+    record.meeting_id = Some("f85ab0da-8d37-4bc4-b3d3-789a39d20190".into());
+    let id = launch(
+        &process,
+        pending(record, |process, cancel, _| {
+            process.wait_live("f85ab0da-8d37-4bc4-b3d3-789a39d20190", "session", &cancel)?;
+            panic!("Cancelled live recognition must not run file recognition");
+        }),
+    );
+    assert_eq!(status(&process, &id), JobStatus::Running);
+    process.cancel(&id).unwrap();
+    finish(&process);
+    assert_eq!(status(&process, &id), JobStatus::Cancelled);
+    assert!(!live.running.load(Ordering::Acquire));
+}
+
+#[test]
+fn cancelling_a_queued_live_job_stops_only_its_meeting() {
+    let (_temporary, process) = setup();
+    let live = crate::live_speech::waiting_fixture(
+        &process,
+        "f85ab0da-8d37-4bc4-b3d3-789a39d20190",
+        "session",
+    );
+    let mut record = record("transcribe");
+    record.meeting_id = Some("f85ab0da-8d37-4bc4-b3d3-789a39d20190".into());
+    let id = record.id.clone();
+    process.save_job(record.clone()).unwrap();
+    process
+        .pending
+        .lock()
+        .unwrap()
+        .push_back(pending(record, |_, _, _| panic!("Cancelled job ran")));
+    process.cancel(&id).unwrap();
+    assert_eq!(status(&process, &id), JobStatus::Cancelled);
+    assert!(!live.running.load(Ordering::Acquire));
+    let new = crate::live_speech::waiting_fixture(&process, "new-meeting", "new-session");
+    process
+        .cancel_live_meeting(Some("f85ab0da-8d37-4bc4-b3d3-789a39d20190"))
+        .unwrap();
+    assert!(new.running.load(Ordering::Acquire));
+    process.cancel_live().unwrap();
+}
+
+#[test]
+fn live_scheduler_allows_its_completion_but_not_competing_inference() {
+    let (_temporary, process) = setup();
+    let live = crate::live_speech::waiting_fixture(
+        &process,
+        "f85ab0da-8d37-4bc4-b3d3-789a39d20190",
+        "session",
+    );
+    process.recording.store(true, Ordering::Release);
+    assert!(!process.live_allows("transcribe", Some("f85ab0da-8d37-4bc4-b3d3-789a39d20190")));
+    process.recording.store(false, Ordering::Release);
+    assert!(process.live_allows("transcribe", Some("f85ab0da-8d37-4bc4-b3d3-789a39d20190")));
+    assert!(!process.live_allows("transcribe", Some("different")));
+    assert!(!process.live_allows("summary", Some("f85ab0da-8d37-4bc4-b3d3-789a39d20190")));
+    let cancel = AtomicBool::new(false);
+    process
+        .wait_live(
+            "f85ab0da-8d37-4bc4-b3d3-789a39d20190",
+            "previous-session",
+            &cancel,
+        )
+        .unwrap();
+    assert!(live.running.load(Ordering::Acquire));
+    process.recording_start(|| Ok(())).unwrap();
+    assert!(!live.running.load(Ordering::Acquire));
+    assert!(process.recording.load(Ordering::Acquire));
+}

@@ -687,7 +687,14 @@ mod tests {
                 } else {
                     files.insert(
                         path.strip_prefix(root).unwrap().into(),
-                        std::fs::read(path).unwrap(),
+                        if cfg!(windows)
+                            && path.file_name().is_some_and(|name| name == "store.lock")
+                        {
+                            assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
+                            Vec::new()
+                        } else {
+                            std::fs::read(path).unwrap()
+                        },
                     );
                 }
             }

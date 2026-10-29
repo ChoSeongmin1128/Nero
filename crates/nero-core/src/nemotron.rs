@@ -51,6 +51,12 @@ struct Output {
     audio_sample_rate: u32,
     audio_duration_seconds: f64,
     native_duration_seconds: f64,
+    #[serde(default)]
+    stream_frames_fed: Option<u64>,
+    #[serde(default)]
+    native_stream_finished: bool,
+    #[serde(default)]
+    input_pcm_sha256: Option<String>,
     words: Vec<Word>,
 }
 
@@ -101,8 +107,15 @@ pub(crate) fn decode_asr(
         || Some(output.model.as_str()) != manifest["repository"].as_str()
         || Some(output.model_revision.as_str()) != manifest["revision"].as_str()
         || output.runtime != RUNTIME
-        || output.processing_policy != POLICY
-        || output.completion_evidence != "native-stream-finish-exit0-v1"
+        || !((output.processing_policy == POLICY
+            && output.completion_evidence == "native-stream-finish-exit0-v1")
+            || (output.processing_policy == "whole-recording-stateful-live-v1"
+                && output.completion_evidence == "native-stream-finish-cabi-v1"
+                && output.stream_frames_fed == Some(output.input_audio_frames)
+                && output.native_stream_finished
+                && output.input_pcm_sha256.as_ref().is_some_and(|sha| {
+                    sha.len() == 64 && sha.bytes().all(|b| b.is_ascii_hexdigit())
+                })))
         || !output.completed
         || output.input_audio_frames == 0
         || output.audio_sample_rate != SAMPLE_RATE
@@ -173,7 +186,7 @@ pub(crate) fn decode_asr(
             projector_version: PROJECTOR_VERSION.into(),
             association: "direct".into(),
             speaker_scope: None,
-            chunking_policy: Some(POLICY.into()),
+            chunking_policy: Some(output.processing_policy.clone()),
         }),
         speakers: Vec::new(),
         segments,
@@ -575,7 +588,7 @@ fn decode_derived(raw: &[u8], duration: f64, session: &str, id: &str) -> Result<
         projector_version: WORD_PROJECTOR_VERSION.into(),
         association: "direct".into(),
         speaker_scope: Some("recording".into()),
-        chunking_policy: Some(POLICY.into()),
+        chunking_policy: Some(words.processing_policy),
     });
     Ok(transcript)
 }
@@ -861,6 +874,44 @@ pub(crate) mod tests {
             .remove("completionEvidence");
         assert!(project(missing).is_err());
         assert!(decode(&raw(), 2.0, "session", "id").is_err());
+    }
+
+    #[test]
+    fn live_completion_requires_exact_fed_frames_finish_and_pcm_identity() {
+        let mut live = value();
+        live["processingPolicy"] = serde_json::json!("whole-recording-stateful-live-v1");
+        live["completionEvidence"] = serde_json::json!("native-stream-finish-cabi-v1");
+        live["streamFramesFed"] = serde_json::json!(16000);
+        live["nativeStreamFinished"] = serde_json::json!(true);
+        live["inputPcmSha256"] = serde_json::json!("a".repeat(64));
+        assert_eq!(
+            project(live.clone())
+                .unwrap()
+                .source
+                .unwrap()
+                .chunking_policy
+                .as_deref(),
+            Some("whole-recording-stateful-live-v1")
+        );
+        for (field, bad) in [
+            ("streamFramesFed", serde_json::json!(15999)),
+            ("nativeStreamFinished", serde_json::json!(false)),
+            ("inputPcmSha256", serde_json::json!("unknown")),
+            ("nativeDurationSeconds", serde_json::json!(0.5)),
+            (
+                "completionEvidence",
+                serde_json::json!("native-stream-finish-exit0-v1"),
+            ),
+        ] {
+            let mut candidate = live.clone();
+            candidate[field] = bad;
+            assert!(project(candidate).is_err(), "accepted {field}");
+        }
+        for field in ["streamFramesFed", "nativeStreamFinished", "inputPcmSha256"] {
+            let mut candidate = live.clone();
+            candidate.as_object_mut().unwrap().remove(field);
+            assert!(project(candidate).is_err());
+        }
     }
 
     #[test]

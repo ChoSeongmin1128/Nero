@@ -106,6 +106,7 @@ pub struct Progress {
     pub committing: bool,
     pub summary_committing: bool,
     pub jobs: Vec<JobView>,
+    pub live_transcript: Option<serde_json::Value>,
 }
 
 #[derive(Clone, Serialize, Default, PartialEq, Eq)]
@@ -202,12 +203,14 @@ pub struct Processing {
     journal: Journal,
     journal_error: Mutex<Option<String>>,
     retry_gate: Mutex<()>,
-    recording: AtomicBool,
+    pub(super) recording: AtomicBool,
     interrupted_jobs: Mutex<HashSet<String>>,
     revision: AtomicU64,
     recording_transcription: Mutex<RecordingTranscription>,
     shutting_down: AtomicBool,
     worker_cleanup_failed: AtomicBool,
+    pub(super) live: Mutex<Option<Arc<crate::live_speech::LiveJob>>>,
+    pub(super) live_completed: Mutex<HashMap<String, crate::live_speech::Completed>>,
 }
 
 fn agent_job_version(record: &JobRecord) -> String {
@@ -385,12 +388,14 @@ impl Processing {
             recording_transcription: Mutex::new(RecordingTranscription::default()),
             shutting_down: AtomicBool::new(false),
             worker_cleanup_failed: AtomicBool::new(false),
+            live: Mutex::new(None),
+            live_completed: Mutex::new(HashMap::new()),
         })
     }
-    fn model(&self) -> Model {
+    pub(super) fn model(&self) -> Model {
         serde_json::from_str(MODEL).expect("bundled speech recognition manifest")
     }
-    fn model_dir(&self) -> Result<PathBuf, String> {
+    pub(super) fn model_dir(&self) -> Result<PathBuf, String> {
         directory(
             &self.root,
             &format!("models/{MODEL_LABEL}-{}", self.model().revision),
@@ -596,8 +601,7 @@ impl Processing {
         ))
     }
 
-    pub fn drive(self: &Arc<Self>, core: &CoreHandle) -> Result<(), String> {
-        let mut running = self.running.lock().unwrap();
+    fn synchronize_recording(&self, core: &CoreHandle) -> Result<(), String> {
         self.recording.store(
             core.snapshot()
                 .map_err(message)?
@@ -605,6 +609,12 @@ impl Processing {
                 .is_some_and(|s| matches!(s.state, SessionState::Recording | SessionState::Paused)),
             Ordering::Release,
         );
+        Ok(())
+    }
+
+    pub fn drive(self: &Arc<Self>, core: &CoreHandle) -> Result<(), String> {
+        let mut running = self.running.lock().unwrap();
+        self.synchronize_recording(core)?;
         if running.as_ref().is_some_and(|r| !r.handle.is_finished())
             || self.shutting_down.load(Ordering::Acquire)
         {
@@ -617,9 +627,10 @@ impl Processing {
         }
         self.job_ready()?;
         let mut queue = self.pending.lock().unwrap();
-        let index = queue
-            .iter()
-            .position(|job| !self.recording.load(Ordering::Acquire) || model_job(&job.record.kind));
+        let index = queue.iter().position(|job| {
+            (!self.recording.load(Ordering::Acquire) || model_job(&job.record.kind))
+                && self.live_allows(&job.record.kind, job.record.meeting_id.as_deref())
+        });
         if let Some(index) = index {
             let job = queue.remove(index).unwrap();
             drop(queue);
@@ -689,9 +700,13 @@ impl Processing {
             record.status = JobStatus::Cancelled;
             record.message = "취소했습니다.".into();
             record.updated_at = now().max(record.updated_at);
-            self.save_job(record).map_err(storage_error)?;
+            self.save_job(record.clone()).map_err(storage_error)?;
             pending.remove(index);
             drop(pending);
+            if record.kind == "transcribe" && !self.recording.load(Ordering::Acquire) {
+                self.cancel_live_meeting(record.meeting_id.as_deref())
+                    .map_err(storage_error)?;
+            }
             self.update(|_| ());
             return Ok(());
         }
@@ -885,6 +900,9 @@ impl Processing {
                 .unwrap()
                 .iter()
                 .any(|job| job.record.meeting_id.as_deref() == Some(meeting_id))
+            || self.live.lock().unwrap().as_ref().is_some_and(|job| {
+                job.meeting_id == meeting_id && job.running.load(Ordering::Acquire)
+            })
         {
             return Err(nero_core::CoreError::InvalidState(
                 "이 회의의 처리가 끝난 뒤 다시 시도해 주세요.".into(),
@@ -938,6 +956,20 @@ impl Processing {
         // Validate after GUI drafts have been flushed and while new jobs are excluded.
         // A rejected external edit must not cancel running or queued processing.
         preflight()?;
+        let remove_live = self
+            .live
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|job| ids.contains(&job.meeting_id));
+        if remove_live {
+            self.cancel_live()
+                .map_err(nero_core::CoreError::InvalidState)?;
+        }
+        self.live_completed
+            .lock()
+            .unwrap()
+            .retain(|_, result| !ids.contains(&result.meeting_id));
         let affected = self
             .progress
             .lock()
@@ -1221,6 +1253,7 @@ impl Processing {
 
     pub fn shutdown(&self) -> Result<(), String> {
         self.shutting_down.store(true, Ordering::Release);
+        self.cancel_live()?;
         if let Some(job) = self.running.lock().unwrap().take() {
             self.mark_interrupted(&job);
             job.cancel.store(true, Ordering::Release);
@@ -1330,6 +1363,10 @@ impl Processing {
             + 'static,
     ) -> Result<Progress, String> {
         let mut running = self.running.lock().unwrap();
+        if let Some((core, _)) = &source {
+            self.synchronize_recording(core)?;
+        }
+
         self.job_ready()?;
         if self.shutting_down.load(Ordering::Acquire) {
             return Err("앱을 종료하고 있습니다.".into());
@@ -1420,6 +1457,7 @@ impl Processing {
         if !queue.is_empty()
             || running.as_ref().is_some_and(|r| !r.handle.is_finished())
             || (self.recording.load(Ordering::Acquire) && !model_job(kind))
+            || !self.live_allows(kind, job.record.meeting_id.as_deref())
         {
             queue.push_back(job);
             drop(queue);
@@ -1855,6 +1893,12 @@ impl Processing {
     ) -> Result<T, String> {
         let mut running = self.running.lock().unwrap();
         self.worker_ready()?;
+        if self.live.lock().unwrap().as_ref().is_some_and(|job| {
+            self.recording.load(Ordering::Acquire) && job.running.load(Ordering::Acquire)
+        }) {
+            return Err("이미 녹음 중입니다.".into());
+        }
+        self.cancel_live()?;
         if self.shutting_down.load(Ordering::Acquire) {
             return Err("앱을 종료하고 있습니다.".into());
         }
@@ -2021,6 +2065,7 @@ impl Processing {
                 record.meeting_id.clone().ok_or("회의가 없습니다.")?,
                 record.source_fingerprint.clone(),
                 Some(successor_id.into()),
+                None,
             )?,
             "summary" => self.summarize_bound_with_template(
                 core,
@@ -2184,7 +2229,7 @@ impl Processing {
         core: CoreHandle,
         meeting_id: String,
     ) -> Result<Progress, String> {
-        self.transcribe_bound(core, meeting_id, None, None)
+        self.transcribe_bound(core, meeting_id, None, None, None)
     }
     fn transcribe_bound(
         self: &Arc<Self>,
@@ -2192,7 +2237,24 @@ impl Processing {
         meeting_id: String,
         required_fingerprint: Option<String>,
         requested_id: Option<String>,
+        required_session: Option<String>,
     ) -> Result<Progress, String> {
+        let session_id = core
+            .snapshot()
+            .map_err(message)?
+            .meetings
+            .iter()
+            .find(|m| m.id == meeting_id)
+            .and_then(|m| m.audio.as_ref())
+            .ok_or("녹음 원본을 찾을 수 없습니다.")?
+            .session_id
+            .clone();
+        if required_session
+            .as_ref()
+            .is_some_and(|required| required != &session_id)
+        {
+            return Err("녹음 원본이 변경되어 이전 녹음 처리를 시작하지 않았습니다.".into());
+        }
         let audio = core.audio_path(&meeting_id).map_err(message)?;
         let expected = core
             .transcript(&meeting_id)
@@ -2246,21 +2308,41 @@ impl Processing {
                         return Err("모델 파일을 다시 준비해 주세요.".into());
                     }
                 }
-                let prepared =
-                    crate::speech_audio::AnalysisAudio::prepare(&this, &audio, &path, &cancel)
-                        .map_err(|error| {
-                            this.update(|progress| progress.failure_kind = Some(error.kind));
-                            error.message
-                        })?;
+                this.update(|p| {
+                    p.phase = Some("recognizing".into());
+                    p.message = "마지막 구간과 화자를 정리하고 있습니다.".into();
+                });
+                let _finalization = this.wait_live_asr(&meeting_id, &session_id, &cancel)?;
+                let live = match this.take_live(&meeting_id, &session_id) {
+                    Some(live) => Some(live),
+                    None => this.recover_live(&meeting_id, &session_id, &audio, &cancel)?,
+                };
+                let prepared = match &live {
+                    Some(live) => {
+                        crate::speech_audio::AnalysisAudio::from_live(&audio, &live.audio, &cancel)
+                    }
+                    None => {
+                        crate::speech_audio::AnalysisAudio::prepare(&this, &audio, &path, &cancel)
+                    }
+                }
+                .map_err(|error| {
+                    this.update(|progress| progress.failure_kind = Some(error.kind));
+                    error.message
+                })?;
                 this.update(|p| {
                     p.phase = Some("recognizing".into());
                     p.message = "텍스트로 변환 중".into();
                 });
-                let raw = crate::asr::recognize(&this, prepared.path(), &path, &cancel, &directory)
-                    .map_err(|error| {
-                        this.update(|progress| progress.failure_kind = Some(error.kind));
-                        error.message
-                    })?;
+                let raw = match &live {
+                    Some(live) => Ok(live.raw.clone()),
+                    None => {
+                        crate::asr::recognize(&this, prepared.path(), &path, &cancel, &directory)
+                    }
+                }
+                .map_err(|error| {
+                    this.update(|progress| progress.failure_kind = Some(error.kind));
+                    error.message
+                })?;
                 let mut output = OpenOptions::new()
                     .write(true)
                     .create_new(true)
@@ -2272,6 +2354,9 @@ impl Processing {
                 output
                     .sync_all()
                     .map_err(crate::storage_space::write_error)?;
+                prepared
+                    .verify(&audio, &cancel)
+                    .map_err(|error| error.message)?;
                 cancelled(&cancel)?;
                 let source = this.checkpoint_transcript_following(
                     &cancel,
@@ -2280,6 +2365,8 @@ impl Processing {
                         this.bind_speaker_continuation(progress, &core, &meeting_id, source)
                     },
                 )?;
+                this.update(|p| p.live_transcript = None);
+                this.wait_live(&meeting_id, &session_id, &cancel)?;
                 crate::terminology::correct(
                     &this,
                     &core,
@@ -2296,20 +2383,39 @@ impl Processing {
                     .map_err(message)?
                     .ok_or("음성 기록을 찾을 수 없습니다.")?;
                 this.verify_speaker_continuation(&core, &meeting_id, &source)?;
-                crate::diarization::analyze_recording(
-                    &this,
-                    &core,
-                    &meeting_id,
-                    source,
-                    &audio,
-                    Some(&prepared),
-                    &path,
-                    &cancel,
-                )
-                .map_err(|error| {
-                    this.update(|progress| progress.failure_kind = Some(error.kind));
-                    error.message
-                })?;
+                if let Some(live) = live
+                    .as_ref()
+                    .filter(|live| live.speaker.join("receipt.json").is_file())
+                {
+                    let draft = crate::diarization::completed_live(
+                        &this,
+                        source,
+                        prepared.path(),
+                        &live.speaker,
+                        &live.backend,
+                        &cancel,
+                    )
+                    .map_err(|e| e.message)?;
+                    prepared.verify(&audio, &cancel).map_err(|e| e.message)?;
+                    this.commit_transcript_result(&cancel, || {
+                        core.apply_diarization(&meeting_id, draft).map_err(message)
+                    })?;
+                } else {
+                    crate::diarization::analyze_recording(
+                        &this,
+                        &core,
+                        &meeting_id,
+                        source,
+                        &audio,
+                        Some(&prepared),
+                        &path,
+                        &cancel,
+                    )
+                    .map_err(|error| {
+                        this.update(|progress| progress.failure_kind = Some(error.kind));
+                        error.message
+                    })?;
+                }
                 Ok(Some(meeting_id))
             },
         )
@@ -2440,8 +2546,26 @@ impl Processing {
         let Some(meeting_id) = self.recording_transcription.lock().unwrap().claim(snapshot) else {
             return Ok(None);
         };
-        self.recording.store(false, Ordering::Release);
-        self.transcribe(core, meeting_id).map(Some)
+        self.update(|p| {
+            if let Some(preview) = p.live_transcript.as_mut().filter(|preview| {
+                preview["meetingId"] == meeting_id
+                    && snapshot
+                        .session
+                        .as_ref()
+                        .is_some_and(|session| preview["sessionId"] == session.id)
+            }) {
+                preview["finishing"] = serde_json::json!(true);
+                preview["message"] = serde_json::json!("마지막 구간과 화자를 정리하고 있습니다.");
+            }
+        });
+        self.transcribe_bound(
+            core,
+            meeting_id,
+            None,
+            None,
+            snapshot.session.as_ref().map(|session| session.id.clone()),
+        )
+        .map(Some)
     }
 }
 
@@ -2569,6 +2693,39 @@ mod tests {
             .edit_transcript(&meeting.id, source.version, vec!["사용자 수정".into()])
             .unwrap();
         (core, meeting.id, edited)
+    }
+
+    #[test]
+    fn delayed_old_completion_does_not_clear_a_new_capture_or_preview() {
+        let (_temporary, process) = setup();
+        let (core, meeting, _) = edited_baseline(&process);
+        let (release, delayed) = std::sync::mpsc::channel();
+        let old = completed_recording("replaced-session", &meeting);
+        let background = process.clone();
+        let callback = thread::spawn(move || {
+            delayed.recv().unwrap();
+            background.transcribe_recording(core, &old)
+        });
+        process.recording.store(true, Ordering::Release);
+        process.update(|p| {
+            p.live_transcript = Some(serde_json::json!({
+                "meetingId":meeting,"sessionId":"new-session","text":"current","words":[]
+            }))
+        });
+        release.send(()).unwrap();
+        assert!(callback.join().unwrap().is_err());
+        assert!(process.recording.load(Ordering::Acquire));
+        assert_eq!(
+            process
+                .progress
+                .lock()
+                .unwrap()
+                .live_transcript
+                .as_ref()
+                .unwrap()["sessionId"],
+            "new-session"
+        );
+        assert!(process.records.lock().unwrap().is_empty());
     }
 
     #[test]

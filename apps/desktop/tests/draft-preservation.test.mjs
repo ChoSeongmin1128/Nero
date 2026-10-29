@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import vm from 'node:vm';
+import { liveTranscriptRows } from '../src/live-transcript.js';
 import { mountNotificationCenter } from '../src/notification-center.js';
 import { Window } from 'happy-dom';
 import { renderMeetingMenu } from '../../../design-system/navigation.mjs';
@@ -127,7 +128,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
   };
   const copied = [], agentDialogCalls = [];
   const templateSettings = { setActive() {}, beforeLeave: async () => true, isConfirming: () => false, hide() {} };
-  const context = vm.createContext({ renderMeetingMenu, testMountNotificationCenter: mountNotificationCenter,
+  const context = vm.createContext({ liveTranscriptRows, renderMeetingMenu, testMountNotificationCenter: mountNotificationCenter,
     navigator: { clipboard: { writeText: async text => { copied.push(text); } } },
     document, testBridge: bridge, testAgentDialogCalls: agentDialogCalls, testTemplateSettings: templateSettings, localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
     NeroControls: { enhanceAll() {} },
@@ -138,18 +139,18 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     ${uiSource.replace(/^export /gm, '')}
     return { ui, icon, escape, button, duration, recordingStatus, statusMarkup, sessionControls, applySystemAppearance() {} };
   })()`, context);
-  const executable = source.replace(/^import .*;\n/gm, '');
+  const executable = source.replace(/^import .*;\r?\n/gm, '');
   const app = await vm.runInContext(`(async () => {
     ${qualitySource.replace(/^export /gm, '')}
     ${detailSource.replace(/^export /gm, '')}
     ${feedbackSource.replace(/^export /gm, '')}
     ${processingStateSource.replace(/^export /gm, '')}
     ${searchSource.replace(/^export /gm, '')}
-    ${actionsSource.replace(/^import .*;\n/gm, '').replace(/^export /gm, '')}
+    ${actionsSource.replace(/^import .*;\r?\n/gm, '').replace(/^export /gm, '')}
     let restoreForTest;
     const createTranscriptActions = mountTranscriptActions;
     mountTranscriptActions = options => { restoreForTest = options.onRestored; return createTranscriptActions(options); };
-    ${librarySource.slice(0, librarySource.indexOf('export function mountLibrary')).replace(/^import .*;\n/gm, '').replace(/^export \{.*\}.*;\n/gm, '').replace(/^export /gm, '')}
+    ${librarySource.slice(0, librarySource.indexOf('export function mountLibrary')).replace(/^import .*;\r?\n/gm, '').replace(/^export \{.*\}.*;\r?\n/gm, '').replace(/^export /gm, '')}
     let summaryEvidenceOptions;
     const mountSummaryEvidence = options => { summaryEvidenceOptions = options; return { reset() {}, update() {}, restoreFocus() {} }; };
     const mountTemplateSettings = () => testTemplateSettings;
@@ -188,6 +189,24 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     edit(notes) { element('meeting-notes').value = notes; app.onEdit(); },
   };
 }
+
+test('live text is provisional, session-bound and replaced without touching saved transcript drafts', async () => {
+  const page=await openApp();
+  await page.app.selectMeeting('a');
+  page.app.state.snapshot.session={id:'capture',meetingId:'a',state:'recording'};
+  await page.app.acceptProcessing({...page.app.state.processing,revision:10,liveTranscript:{meetingId:'a',sessionId:'capture',generation:960000,words:[],text:'첫 초안'}});
+  page.app.render();
+  assert.match(page.element('transcript-rows').innerHTML,/첫 초안/);
+  assert.equal(page.app.state.transcriptDraft?.doc ?? null,null);
+  assert.equal(page.transcriptUpdates.length,0);
+  assert.ok(page.element('transcript-rows').children.every(child=>child.disabled));
+  await page.app.acceptProcessing({...page.app.state.processing,revision:11,liveTranscript:{meetingId:'a',sessionId:'capture',generation:1920000,words:[],text:'수정된 초안'}});
+  page.app.render();
+  assert.match(page.element('transcript-rows').innerHTML,/수정된 초안/);
+  assert.doesNotMatch(page.element('transcript-rows').innerHTML,/첫 초안/);
+  await page.app.selectMeeting('b');
+  assert.doesNotMatch(page.element('transcript-rows').innerHTML,/수정된 초안/);
+});
 
 test('manual connection click passes its trigger even when clicking does not move focus', async () => {
   const page = await openApp();

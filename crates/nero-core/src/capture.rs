@@ -6,7 +6,7 @@ use crate::{AudioArtifact, CoreError, Device, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use rtrb::{Consumer, Producer, RingBuffer};
 use std::fs::File;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -155,6 +155,7 @@ pub(crate) struct Signals {
     saved_bytes: AtomicU64,
     queued_bytes: AtomicU64,
     phase: AtomicU8,
+    completion: AtomicU8,
 }
 
 impl Signals {
@@ -175,6 +176,7 @@ impl Signals {
             saved_bytes: AtomicU64::new(0),
             queued_bytes: AtomicU64::new(0),
             phase: AtomicU8::new(0),
+            completion: AtomicU8::new(0),
         }
     }
 
@@ -365,6 +367,65 @@ pub(crate) struct CaptureOutcome {
     pub audio: Option<AudioArtifact>,
 }
 
+/// A bounded reader of already written microphone PCM. It never calls the
+/// device callback or waits for the audio writer. Pauses do not end the reader.
+pub struct CaptureReader {
+    file: File,
+    signals: Arc<Signals>,
+    manifest: Manifest,
+    consumed_frames: u64,
+}
+
+impl CaptureReader {
+    pub fn consumed_frames(&self) -> u64 {
+        self.consumed_frames
+    }
+    pub fn sample_rate(&self) -> u32 {
+        self.manifest.sample_rate
+    }
+    pub fn session_id(&self) -> &str {
+        &self.manifest.session_id
+    }
+    pub fn finished(&self) -> bool {
+        self.signals.completion.load(Ordering::Acquire) != 0
+    }
+    pub fn successful(&self) -> bool {
+        self.signals.completion.load(Ordering::Acquire) == 1
+    }
+    pub fn available_frames(&self) -> u64 {
+        self.signals.saved_bytes.load(Ordering::Acquire) / self.manifest.frame_bytes() as u64
+    }
+    pub fn read_mono(&mut self, maximum_frames: usize) -> Result<Vec<f64>> {
+        if maximum_frames == 0 || maximum_frames > 16_384 {
+            return Err(CoreError::InvalidInput(
+                "음성 읽기 범위가 올바르지 않습니다.".into(),
+            ));
+        }
+        let count = self
+            .available_frames()
+            .checked_sub(self.consumed_frames)
+            .ok_or(CoreError::StaleSession)?
+            .min(maximum_frames as u64) as usize;
+        let mut bytes = vec![0; count * self.manifest.frame_bytes()];
+        self.file.read_exact(&mut bytes)?;
+        let width = self.manifest.encoding.bytes();
+        let mut mono = Vec::with_capacity(count);
+        for frame in bytes.chunks_exact(self.manifest.frame_bytes()) {
+            let mut sum = 0.0;
+            for value in frame.chunks_exact(width) {
+                let sample = self.manifest.encoding.sample(value);
+                if !sample.is_finite() {
+                    return Err(CoreError::Audio("음성 샘플이 올바르지 않습니다.".into()));
+                }
+                sum += f64::from(sample);
+            }
+            mono.push(sum / f64::from(self.manifest.channels));
+        }
+        self.consumed_frames += count as u64;
+        Ok(mono)
+    }
+}
+
 pub(crate) struct Capture {
     pub manifest: Manifest,
     pub signals: Arc<Signals>,
@@ -374,6 +435,15 @@ pub(crate) struct Capture {
 }
 
 impl Capture {
+    pub(crate) fn reader(&self, root: &Path) -> Result<CaptureReader> {
+        let path = store::checked_path(root, &self.manifest.relative_dir().join("audio.pcm"))?;
+        Ok(CaptureReader {
+            file: File::open(path)?,
+            signals: self.signals.clone(),
+            manifest: self.manifest.clone(),
+            consumed_frames: 0,
+        })
+    }
     pub fn prepare(root: &Path, manifest: Manifest, raw: File) -> Result<(Self, CallbackSink)> {
         let capacity = (manifest.sample_rate as usize)
             .checked_mul(manifest.frame_bytes())
@@ -810,6 +880,14 @@ fn writer_loop(
             }
         }
     };
+    signals.completion.store(
+        if manifest.phase == CapturePhase::Completed && manifest.error.is_none() {
+            1
+        } else {
+            2
+        },
+        Ordering::Release,
+    );
     CaptureOutcome { manifest, audio }
 }
 
@@ -836,6 +914,51 @@ mod tests {
         let (capture, sink) =
             Capture::prepare_with_capacity(&store.root, manifest, raw, capacity).unwrap();
         (temporary, store, capture, sink)
+    }
+
+    #[test]
+    fn saved_pcm_reader_survives_pause_and_reads_the_final_tail_once() {
+        let (_temp, store, mut capture, mut sink) = setup(4096);
+        let mut reader = capture.reader(&store.root).unwrap();
+        assert!(reader.read_mono(16).unwrap().is_empty());
+        assert!(!reader.finished());
+        capture.begin();
+        sink.write(&[0.25_f32.to_le_bytes(), (-0.5_f32).to_le_bytes()].concat());
+        capture.pause().unwrap();
+        assert!(!reader.finished());
+        assert_eq!(reader.read_mono(1).unwrap(), vec![0.25]);
+        assert_eq!(reader.read_mono(16).unwrap(), vec![-0.5]);
+        assert!(reader.read_mono(16).unwrap().is_empty());
+        capture.resume().unwrap();
+        sink.write(&0.75_f32.to_le_bytes());
+        let original = store
+            .root
+            .join(capture.manifest.relative_dir())
+            .join("audio.pcm");
+        capture.finish(CapturePhase::Completed, None).unwrap();
+        assert!(reader.finished() && reader.successful());
+        assert_eq!(reader.read_mono(16).unwrap(), vec![0.75]);
+        assert_eq!(reader.consumed_frames, 3);
+        assert!(reader.read_mono(16).unwrap().is_empty());
+        assert_eq!(fs::metadata(original).unwrap().len(), 12);
+    }
+
+    #[test]
+    fn an_interrupted_capture_never_claims_live_completion() {
+        let (_temp, store, mut capture, mut sink) = setup(4096);
+        let mut reader = capture.reader(&store.root).unwrap();
+        capture.begin();
+        sink.write(&0.5_f32.to_le_bytes());
+        capture
+            .finish(
+                CapturePhase::Interrupted,
+                Some("synthetic interruption".into()),
+            )
+            .unwrap();
+        assert!(reader.finished());
+        assert!(!reader.successful());
+        assert_eq!(reader.read_mono(16).unwrap(), vec![0.5]);
+        assert!(reader.read_mono(0).is_err());
     }
 
     #[test]

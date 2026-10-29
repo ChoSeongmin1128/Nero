@@ -23,11 +23,11 @@ const RUNTIME: &str = "nemo-speech-0.2.0@6a3ca369370782acee0dd155e34394ba60b920c
 const RESULT_LIMIT: u64 = 16 * 1024 * 1024;
 const POSTERIOR_LIMIT: u64 = 128 * 1024 * 1024;
 
-fn model() -> Model {
+pub(super) fn model() -> Model {
     serde_json::from_str(MANIFEST).expect("bundled diarization manifest")
 }
 
-fn model_dir(process: &Processing) -> Result<PathBuf, String> {
+pub(super) fn model_dir(process: &Processing) -> Result<PathBuf, String> {
     directory(
         &process.root,
         &format!("models/Nemotron3-{}", model().revision),
@@ -117,7 +117,7 @@ fn record(path: &Path, value: &Value) -> Result<(), Failure> {
     file.sync_all().map_err(|_| failure(FailureKind::Storage))
 }
 
-fn library(process: &Processing, gpu: bool) -> PathBuf {
+pub(super) fn library(process: &Processing, gpu: bool) -> PathBuf {
     let root = executable(process, gpu)
         .parent()
         .unwrap()
@@ -408,6 +408,37 @@ fn analyze(
 ) -> Result<SpeakerAnalysisDraft, Failure> {
     let directory = model_dir(process).map_err(|_| failure(FailureKind::Storage))?;
     analyze_with_model(process, source, audio, path, cancel, &directory)
+}
+
+pub(super) fn completed_live(
+    process: &Processing,
+    source: Transcript,
+    audio: &Path,
+    path: &Path,
+    backend: &Value,
+    cancel: &AtomicBool,
+) -> Result<SpeakerAnalysisDraft, Failure> {
+    let spec = model();
+    let item = &spec.files[0];
+    let weights = model_dir(process)
+        .map_err(|_| failure(FailureKind::Storage))?
+        .join(&item.name);
+    let gpu = backend != "cpu";
+    let native = library(process, gpu);
+    let config = configuration(gpu);
+    if &config["backend"] != backend {
+        return Err(failure(FailureKind::Protocol));
+    }
+    Ok(SpeakerAnalysisDraft {
+        source,
+        model: spec.repository,
+        model_revision: spec.revision,
+        model_sha256: item.sha256.clone(),
+        runtime: RUNTIME.into(),
+        configuration: config.clone(),
+        raw: read_limited(&path.join("diarization.json"), RESULT_LIMIT)?,
+        posterior: Some(posterior(path, audio, &weights, &native, &config, cancel)?),
+    })
 }
 
 pub(super) fn analyze_with_model(
@@ -709,6 +740,69 @@ mod tests {
         let document = core.commit_transcript(&meeting.id, None, raw).unwrap();
         let audio = core.audio_path(&meeting.id).unwrap();
         (core, meeting.id, document, audio)
+    }
+
+    #[test]
+    #[ignore = "requires explicitly supplied completed live artifacts; never executes a model"]
+    fn local_live_artifacts_publish_and_reopen_without_rerunning_models() {
+        let configured = |name| PathBuf::from(std::env::var(name).expect(name));
+        let artifacts = configured("NERO_LIVE_ARTIFACTS");
+        let weights = configured("NERO_LIVE_SPEAKER_WEIGHTS");
+        let native = configured("NERO_LIVE_LIBRARY");
+        let audio = artifacts.join("analysis.wav");
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap().join("isolated-library");
+        let core = CoreHandle::open(&root).unwrap();
+        let meeting = core
+            .import_audio("Isolated live acceptance", &audio, &audio)
+            .unwrap();
+        let raw = fs::read(artifacts.join("recognition.json")).unwrap();
+        let source = core
+            .commit_nemotron_transcript(&meeting.id, None, raw)
+            .unwrap();
+        let initial = source.version.clone();
+        let spec = model();
+        let config = configuration(false);
+        let draft = SpeakerAnalysisDraft {
+            source,
+            model: spec.repository,
+            model_revision: spec.revision,
+            model_sha256: spec.files[0].sha256.clone(),
+            runtime: RUNTIME.into(),
+            configuration: config.clone(),
+            raw: read_limited(&artifacts.join("speaker/diarization.json"), RESULT_LIMIT).unwrap(),
+            posterior: Some(
+                posterior(
+                    &artifacts.join("speaker"),
+                    &audio,
+                    &weights,
+                    &native,
+                    &config,
+                    &AtomicBool::new(false),
+                )
+                .unwrap(),
+            ),
+        };
+        let final_doc = core.apply_diarization(&meeting.id, draft).unwrap();
+        assert!(!final_doc.segments.is_empty());
+        assert_eq!(
+            final_doc
+                .source
+                .as_ref()
+                .unwrap()
+                .chunking_policy
+                .as_deref(),
+            Some("whole-recording-stateful-live-v1")
+        );
+        let restored = core
+            .restore_transcript(&meeting.id, final_doc.version, initial)
+            .unwrap();
+        drop(core);
+        let reopened = CoreHandle::open(&root).unwrap();
+        assert_eq!(
+            serde_json::to_value(reopened.transcript(&meeting.id).unwrap().unwrap()).unwrap(),
+            serde_json::to_value(restored).unwrap()
+        );
     }
 
     #[test]

@@ -62,7 +62,10 @@ impl JobRecord {
             || self.id != expected_id
             || !valid_id(&self.id)
             || self.meeting_id.as_ref().is_some_and(|id| !valid_id(id))
-            || self.retry_successor_id.as_ref().is_some_and(|id| !valid_id(id) || id == &self.id)
+            || self
+                .retry_successor_id
+                .as_ref()
+                .is_some_and(|id| !valid_id(id) || id == &self.id)
             || (self.phase.as_deref() == Some("retryPending") && self.retry_successor_id.is_none())
             || !KINDS.contains(&self.kind.as_str())
             || self.source_fingerprint.as_ref().is_some_and(|value| {
@@ -199,12 +202,16 @@ impl Journal {
 
     pub fn retry_successor_exists(&self, record: &JobRecord) -> Result<bool, String> {
         let id = record.retry_successor_id.as_ref().ok_or_else(invalid)?;
-        if !valid_id(id) || id == &record.id { return Err(invalid()); }
+        if !valid_id(id) || id == &record.id {
+            return Err(invalid());
+        }
         Ok(read_job(&self.root.join("processing").join(id), id)?.is_some())
     }
 
     fn recover_retry(&self, record: &mut JobRecord) -> Result<bool, String> {
-        if record.phase.as_deref() != Some("retryPending") { return Ok(false); }
+        if record.phase.as_deref() != Some("retryPending") {
+            return Ok(false);
+        }
         match self.retry_successor_exists(record) {
             Ok(true) => {
                 record.status = JobStatus::Cancelled;
@@ -215,12 +222,14 @@ impl Journal {
                 record.status = JobStatus::Cancelled;
                 record.acknowledged = false;
                 record.retry_successor_id = None;
-                record.message = "재시도를 시작하기 전에 앱이 종료되었습니다. 다시 시도할 수 있습니다.".into();
+                record.message =
+                    "재시도를 시작하기 전에 앱이 종료되었습니다. 다시 시도할 수 있습니다.".into();
             }
             Err(_) => {
                 record.status = JobStatus::NeedsReview;
                 record.acknowledged = false;
-                record.message = "재시도 작업의 상태를 확인하지 못했습니다. 저장된 결과를 확인해 주세요.".into();
+                record.message =
+                    "재시도 작업의 상태를 확인하지 못했습니다. 저장된 결과를 확인해 주세요.".into();
             }
         }
         record.phase = None;
@@ -500,18 +509,47 @@ mod tests {
             previous.retry_successor_id = Some(successor.id.clone());
             journal.write(&previous).unwrap();
             if state != "missing" {
-                if state == "completed" { successor.status = JobStatus::Completed; }
+                if state == "completed" {
+                    successor.status = JobStatus::Completed;
+                }
                 journal.write(&successor).unwrap();
-                if state == "corrupt" { fs::write(states(temporary.path(), &successor).join("00000000000000000002.json"), b"invalid").unwrap(); }
+                if state == "corrupt" {
+                    fs::write(
+                        states(temporary.path(), &successor).join("00000000000000000002.json"),
+                        b"invalid",
+                    )
+                    .unwrap();
+                }
             }
             let recovered = journal.recover_available().unwrap();
-            let old = recovered.records.iter().find(|value| value.id == previous.id).unwrap();
-            assert_eq!(old.acknowledged, matches!(state, "queued" | "completed"), "{state}");
-            assert_eq!(old.status, if state == "corrupt" { JobStatus::NeedsReview } else { JobStatus::Cancelled }, "{state}");
+            let old = recovered
+                .records
+                .iter()
+                .find(|value| value.id == previous.id)
+                .unwrap();
+            assert_eq!(
+                old.acknowledged,
+                matches!(state, "queued" | "completed"),
+                "{state}"
+            );
+            assert_eq!(
+                old.status,
+                if state == "corrupt" {
+                    JobStatus::NeedsReview
+                } else {
+                    JobStatus::Cancelled
+                },
+                "{state}"
+            );
             assert_eq!(old.phase, None);
-            if state == "missing" { assert_eq!(old.retry_successor_id, None); }
+            if state == "missing" {
+                assert_eq!(old.retry_successor_id, None);
+            }
             let again = journal.recover_available().unwrap();
-            assert_eq!(again.records.iter().find(|value| value.id == previous.id), Some(old));
+            assert_eq!(
+                again.records.iter().find(|value| value.id == previous.id),
+                Some(old)
+            );
         }
     }
 

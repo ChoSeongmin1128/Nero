@@ -30,7 +30,7 @@ impl Encoding {
         }
     }
 
-    fn sample(self, bytes: &[u8]) -> f32 {
+    pub(crate) fn sample(self, bytes: &[u8]) -> f32 {
         match self {
             Self::F32 => f32::from_le_bytes(bytes.try_into().unwrap()),
             Self::F64 => f64::from_le_bytes(bytes.try_into().unwrap()) as f32,
@@ -923,6 +923,11 @@ pub(crate) fn ensure_directory(path: &Path) -> Result<()> {
     let mut current = PathBuf::new();
     for component in path.components() {
         current.push(component.as_os_str());
+        // A canonical Windows path starts with a verbatim prefix (e.g. \\?\C:).
+        // Inspect it only after RootDir makes it a complete absolute path.
+        if matches!(component, Component::Prefix(_)) {
+            continue;
+        }
         validate_existing(&current)?;
         if !current.exists() {
             fs::create_dir(&current)?;

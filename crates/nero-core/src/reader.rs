@@ -881,6 +881,9 @@ fn validate_root(root: &Path) -> Result<()> {
     let mut current = PathBuf::new();
     for part in root.components() {
         current.push(part.as_os_str());
+        if matches!(part, Component::Prefix(_)) {
+            continue;
+        }
         match fs::symlink_metadata(&current) {
             Ok(metadata) => {
                 #[cfg(windows)]
@@ -1110,7 +1113,14 @@ mod tests {
                 } else {
                     values.insert(
                         path.strip_prefix(root).unwrap().to_path_buf(),
-                        fs::read(path).unwrap(),
+                        if cfg!(windows)
+                            && path.file_name().is_some_and(|name| name == "store.lock")
+                        {
+                            assert_eq!(fs::metadata(&path).unwrap().len(), 0);
+                            Vec::new()
+                        } else {
+                            fs::read(path).unwrap()
+                        },
                     );
                 }
             }
