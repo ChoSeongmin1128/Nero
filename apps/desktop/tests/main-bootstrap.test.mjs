@@ -44,7 +44,7 @@ test('the real application HTML boots and opens all settings tabs without stale 
     readTranscript: () => null, readSummary: () => null,
     showRecorder: id => assert.equal(id, 'capture'),
     acknowledgeProcessing: id => ({ id, status: 'acknowledged', jobs: [{ id, kind: 'transcribe', status: 'cancelled', retryable: false, acknowledged: true }] }),
-    retryProcessing: id => ({ id: 'retry', kind: 'transcribe', status: 'queued', jobs: [{ id, kind: 'transcribe', status: 'cancelled', acknowledged: true }, { id: 'retry', kind: 'transcribe', status: 'queued' }] }),
+    retryProcessing: id => ({ revision: 5, id: 'retry', kind: 'transcribe', status: 'queued', jobs: [{ id, kind: 'transcribe', status: 'cancelled', acknowledged: true }, { id: 'retry', kind: 'transcribe', status: 'queued' }] }),
   };
   window.testBridge = Object.fromEntries(bridgeNames.map(name => [name, async (...args) => {
     calls.push(name);
@@ -62,7 +62,7 @@ test('the real application HTML boots and opens all settings tabs without stale 
       if (predicate()) return;
       await new Promise(resolve => setTimeout(resolve, 5));
     }
-    assert.fail('Expected UI state was not rendered: ' + window.document.getElementById('error-message').textContent);
+    assert.fail('Expected UI state was not rendered: ' + window.document.getElementById('error-message').textContent + ' / ' + window.document.getElementById('notification-center').textContent);
   };
   window.document.getElementById('settings').click();
   await wait(() => window.document.getElementById('settings-dialog').open);
@@ -97,24 +97,20 @@ test('the real application HTML boots and opens all settings tabs without stale 
   await wait(() => !window.document.getElementById('retry-processing').hidden);
   window.document.getElementById('retry-processing').click();
   await wait(() => calls.includes('retryProcessing'));
-  const background = { id: 'background', kind: 'summary', meetingId: 'other', status: 'running', createdAt: 1 };
+  const background = { id: 'background', kind: 'summary-model', status: 'running', createdAt: 1 };
   subscriptions.subscribeProcessing({ revision: 20, status: 'idle', supported: true, modelReady: true, jobs: [background] });
-  const region = window.document.getElementById('processing-jobs');
+  const region = window.document.getElementById('notification-center');
+  window.document.getElementById('notifications-open').click();
   await wait(() => !region.hidden);
-  assert.equal(region.querySelector('details').open, false);
-  assert.equal(region.querySelector('summary').textContent, '다른 작업 1개 진행 중');
-  region.querySelector('summary').focus();
-  subscriptions.subscribeProcessing({ revision: 21, status: 'idle', supported: true, modelReady: true, jobs: [{ ...background, phase: 'saving' }] });
-  await wait(() => region.textContent.includes('저장 중'));
-  assert.equal(window.document.activeElement, region.querySelector('summary'));
-  region.querySelector('details').open = true;
-  region.querySelector('[data-job-action="cancel"]').focus();
-  subscriptions.subscribeProcessing({ revision: 22, status: 'idle', supported: true, modelReady: true, jobs: [{ ...background, phase: 'preparing' }] });
-  await wait(() => region.textContent.includes('요약 준비 중'));
-  assert.equal(region.querySelector('details').open, true);
-  assert.equal(window.document.activeElement.dataset.jobId, 'background');
-  subscriptions.subscribeProcessing({ revision: 23, status: 'idle', supported: true, modelReady: true, jobs: [{ ...background, status: 'completed' }] });
-  await wait(() => region.hidden);
-  assert.equal(window.document.activeElement.id, 'navigation-toggle');
+  await wait(() => region.querySelector('.activity-spinner'));
+  const cancel = region.querySelector('[data-notification-action="cancel"]');
+  cancel.focus();
+  subscriptions.subscribeProcessing({ revision: 21, status: 'idle', supported: true, modelReady: true, jobs: [{ ...background, phase: 'preparing' }] });
+  await wait(() => region.textContent.includes('요약 모델 준비 중'));
+  assert.equal(window.document.activeElement.dataset.notificationJob, 'background');
+  subscriptions.subscribeProcessing({ revision: 22, status: 'idle', supported: true, modelReady: true, jobs: [{ ...background, status: 'completed' }] });
+  await wait(() => region.textContent.includes('완료'));
+  assert.ok(region.querySelector('[data-notification-action="ack"]'));
+  assert.equal(window.document.getElementById('processing-jobs'), null);
   assert.deepEqual(errors, []);
 });

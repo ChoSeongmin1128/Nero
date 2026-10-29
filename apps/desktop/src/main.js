@@ -1,3 +1,5 @@
+import { mountNotificationCenter } from './notification-center.js';
+import './notification-center.css';
 import { returnFocusTarget } from './focus-return.js';
 import { mountCalendarMeetingPicker, mountCalendarMeetingReference } from './calendar-meeting-picker.jsx';
 import { mountSummaryTemplatePicker } from './summary-template-picker.js';
@@ -47,7 +49,7 @@ function readMicrophonePreference() {
   } catch { return { id: null, name: '' }; }
 }
 const microphonePreference = readMicrophonePreference();
-const state = { snapshot: { meetings: [], folders: [], session: null }, libraryOpen: false, libraryFilter: 'all', librarySelection: new Set(), libraryBusy: false, librarySearchIds: null, librarySearchHits: [], pendingSearchIntent: null, setupReturnId: null, librarySearchPending: false, librarySearchUnavailable: 0, selectedId: null, devices: [], devicesLoaded: false, deviceId: microphonePreference.id, deviceName: microphonePreference.name, settingsPanel: 'appearance', summaryFeatureError: '', settingsKey: '', settingsError: '', settingsReturnId: 'settings', setupFromSettings: false, autoRecorder: readAutoRecorder(), recorderSettingBusy: false, snapshotKey: '', processingKey: '', processingCancellingId: null, transcriptEditing: null, audioRequest: 0, audioLoading: null, dateSaving: null, dateKey: '', dateError: null, lastError: null, errorIsSave: false, connected: false, busy: false, composing: false, transcriptComposing: false, editLocks: 0, draft: null, saveTimer: null, saveQueue: Promise.resolve(), listKey: '', controlsKey: '', audioKey: '', processing: { status: 'idle', supported: false, modelReady: false }, transcriptDraft: null, transcriptKey: '', transcriptLoadId: 0, transcriptSaveQueue: Promise.resolve(), summary: null, summaryKey: '', summaryLoadId: 0, summaryLoaded: false, transcriptLoaded: false, summaryLoadError: false, transcriptLoadError: false, setupRequested: false };
+const state = { snapshot: { meetings: [], folders: [], session: null }, notificationsOpen: false, libraryOpen: false, libraryFilter: 'all', librarySelection: new Set(), libraryBusy: false, librarySearchIds: null, librarySearchHits: [], pendingSearchIntent: null, setupReturnId: null, librarySearchPending: false, librarySearchUnavailable: 0, selectedId: null, devices: [], devicesLoaded: false, deviceId: microphonePreference.id, deviceName: microphonePreference.name, settingsPanel: 'appearance', summaryFeatureError: '', settingsKey: '', settingsError: '', settingsReturnId: 'settings', setupFromSettings: false, autoRecorder: readAutoRecorder(), recorderSettingBusy: false, snapshotKey: '', processingKey: '', processingCancellingId: null, transcriptEditing: null, audioRequest: 0, audioLoading: null, dateSaving: null, dateKey: '', dateError: null, lastError: null, errorIsSave: false, connected: false, busy: false, composing: false, transcriptComposing: false, editLocks: 0, draft: null, saveTimer: null, saveQueue: Promise.resolve(), listKey: '', controlsKey: '', audioKey: '', processing: { status: 'idle', supported: false, modelReady: false }, transcriptDraft: null, transcriptKey: '', transcriptLoadId: 0, transcriptSaveQueue: Promise.resolve(), summary: null, summaryKey: '', summaryLoadId: 0, summaryLoaded: false, transcriptLoaded: false, summaryLoadError: false, transcriptLoadError: false, setupRequested: false };
 const fullDate = new Intl.DateTimeFormat('ko-KR', { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 const calendarDay = value => { const date = new Date(value); return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`; };
 const meetingDay = meeting => meeting.meetingDate || calendarDay(meeting.recordedAt ?? meeting.createdAt);
@@ -260,10 +262,15 @@ async function openSetup(fromSettings = false, returnId = document.activeElement
 
 function render() {
   byId('create-meeting').disabled = !state.connected || state.busy;
-  byId('create-meeting-options').setAttribute('aria-disabled', String(!state.connected || state.busy));
   byId('create-calendar-meeting').disabled = !state.connected || state.busy;
   byId('welcome-create').disabled = !state.connected || state.busy;
   const setupVisible = renderSetup();
+  notificationCenter.update({ processing: state.processing, meetings: state.snapshot.meetings, selectedMeetingId: state.selectedId, connected: state.connected, actions: processingActions });
+  const notificationCount = notificationCenter.counts().unread;
+  setText('notification-count', notificationCount ? String(notificationCount) : '');
+  byId('notification-count').hidden = !notificationCount;
+  byId('notifications-open').setAttribute('aria-current', state.notificationsOpen ? 'page' : 'false');
+  byId('notification-center').hidden = setupVisible || !state.notificationsOpen;
   library.render();
   renderList();
   speakers.render();
@@ -272,9 +279,13 @@ function render() {
   renderProcessing();
   const meeting = currentMeeting();
   calendarReference.render(meeting);
-  byId('library-screen').hidden = setupVisible || !state.connected || (!state.libraryOpen && !modelsReady() && !state.snapshot.meetings.length) || (!state.libraryOpen && Boolean(meeting));
-  byId('welcome').hidden = !byId('library-screen').hidden || setupVisible || Boolean(meeting);
-  byId('meeting-detail').hidden = setupVisible || state.libraryOpen || !meeting;
+  byId('create-calendar-meeting').hidden = !meeting || Boolean(meeting.audio || meeting.calendarReference || activeSession()?.meetingId === meeting.id);
+  byId('import-audio').hidden = !meeting || Boolean(meeting.audio || activeSession()?.meetingId === meeting.id);
+  byId('detail-transcript-open').hidden = !meeting?.audio;
+  byId('library-screen').hidden = state.notificationsOpen || setupVisible || !state.connected || (!state.libraryOpen && !modelsReady() && !state.snapshot.meetings.length) || (!state.libraryOpen && Boolean(meeting));
+  byId('welcome').hidden = state.notificationsOpen || !byId('library-screen').hidden || setupVisible || Boolean(meeting);
+  byId('meeting-detail').hidden = state.notificationsOpen || setupVisible || state.libraryOpen || !meeting;
+  if (state.notificationsOpen && !setupVisible) byId('navigation-breadcrumbs').innerHTML = '<span class="breadcrumb-current" aria-current="page">알림</span>';
   if (!meeting) { detail.update({ id: null }); summaryEvidence?.reset(); return; }
   renderMeetingDates(meeting);
   if (!state.draft?.dirty && !state.draft?.saving && document.activeElement !== byId('meeting-title') && document.activeElement !== byId('meeting-notes')) {
@@ -286,7 +297,7 @@ function render() {
   renderTranscript(meeting);
   renderSummary(meeting);
   const showSummary = Boolean(state.summary?.document || state.transcriptDraft?.doc?.segments?.length || pendingJob(state.processing, { meetingId: meeting.id, kind: 'summary' }) || state.summaryLoadError);
-  detail.update({ showSummary, id: byId('meeting-detail').hidden ? null : meeting.id, recording: Boolean(activeSession()?.meetingId === meeting.id), summaryLoaded: state.summaryLoaded, transcriptLoaded: state.transcriptLoaded, hasSummary: Boolean(state.summary?.document), hasTranscript: Boolean(state.transcriptDraft?.doc?.segments?.length) });
+  detail.update({ inlineNotes: !showSummary, showSummary, id: byId('meeting-detail').hidden ? null : meeting.id, recording: Boolean(activeSession()?.meetingId === meeting.id), summaryLoaded: state.summaryLoaded, transcriptLoaded: state.transcriptLoaded, hasSummary: Boolean(state.summary?.document), hasTranscript: Boolean(state.transcriptDraft?.doc?.segments?.length) });
   if (byId('meeting-detail').hidden) summaryEvidence?.reset();
   renderNotesSearch();
   documentSearch.refresh();
@@ -406,6 +417,7 @@ async function selectMeeting(id, searchIntent = null) {
       if (!meeting || meeting.deletedAt) return;
       const changed = state.selectedId !== id;
       detail.rememberScroll();
+      state.notificationsOpen = false;
       state.libraryOpen = false;
       speakers.reset(); transcriptActions.reset(); documentSearch.reset();
       state.setupRequested = false; state.setupFromSettings = false;
@@ -749,7 +761,7 @@ for (const id of ['meeting-title', 'meeting-notes']) {
   byId(id).addEventListener('compositionend', () => { state.composing = false; onEdit(); });
 }
 byId('search').addEventListener('input', () => {
-  state.libraryOpen = true; library.resetSelection(); render();
+  state.notificationsOpen = false; state.libraryOpen = true; library.resetSelection(); render();
   meetingSearch.update(byId('search').value, state.libraryFilter === 'trash');
 });
 byId('meeting-list').addEventListener('click', event => {
@@ -857,7 +869,7 @@ byId('auto-recorder').addEventListener('change', async () => {
   } catch { state.autoRecorder = previous; state.settingsError = '녹음 제어창 설정을 저장하지 못했습니다.'; }
   finally { state.recorderSettingBusy = false; renderSettings(); }
 });
-byId('create-calendar-meeting').addEventListener('click', event => { const trigger = event.currentTarget; void run(() => finishEditing(async () => { if (!modelsReady()) return openSetup(); calendarPicker.open(trigger); })); });
+byId('create-calendar-meeting').addEventListener('click', event => { const trigger = event.currentTarget; void run(() => finishEditing(async () => { if (!modelsReady()) return openSetup(); const target = await bridge.draftAttachmentTarget(state.selectedId); calendarPicker.open(trigger, target); })); });
 byId('retry-audio').addEventListener('click', () => { const meeting = currentMeeting(); if (meeting) void prepareAudio(meeting, Boolean(activeSession()?.meetingId === meeting.id), true); });
 byId('audio-player').addEventListener('error', () => { if (byId('audio-player').getAttribute('src')) { byId('audio-message').dataset.state = 'error'; byId('audio-message').textContent = '음성을 재생할 수 없습니다. 녹음 파일을 다시 열어 주세요.'; byId('retry-audio').hidden = false; } });
 document.addEventListener('keydown', (event) => {
@@ -918,7 +930,7 @@ const processingActive = () => state.processing.status === 'running';
 
 function renderProcessing() {
   rememberProcessingFocus();
-  const notices = processingNotices(state.processing, !state.libraryOpen && !state.setupRequested ? currentMeeting()?.id : undefined);
+  const notices = processingNotices(state.processing, !state.notificationsOpen && !state.libraryOpen && !state.setupRequested ? currentMeeting()?.id : undefined);
   const progress = notices.primary ? { ...(state.processing.id === notices.primary.id ? state.processing : {}), ...notices.primary } : {};
   const feedback = processingFeedback(progress, { cancelling: state.processingCancellingId === progress.id || processingActions.get(progress.id) === 'cancel' });
   byId('import-audio').disabled = !state.connected || state.busy || Boolean(pendingJob(state.processing, { kind: 'import' })) || Boolean(activeSession());
@@ -956,7 +968,7 @@ function renderProcessing() {
     byId(id).dataset.jobId = progress.id || '';
     byId(id).dataset.jobAction = action;
   }
-  renderProcessingJobs(notices.background.filter(job => job.kind !== 'setup' || byId('setup-screen').hidden));
+  restoreProcessingFocus();
 }
 
 function rememberProcessingFocus() {
@@ -964,7 +976,7 @@ function rememberProcessingFocus() {
   const target = document.activeElement;
   const jobId = target?.dataset?.jobId;
   if (!jobId) return;
-  const ids = [...new Set([...byId('processing-jobs').querySelectorAll('[data-job-id]')].map(node => node.dataset.jobId))];
+  const ids = [...new Set([...byId('processing').querySelectorAll('[data-job-id]')].map(node => node.dataset.jobId))];
   processingFocus = { target, id: jobId, action: target.dataset.jobAction, ids, index: ids.indexOf(jobId) };
 }
 
@@ -975,10 +987,8 @@ function restoreProcessingFocus() {
   if (active && active !== document.body && active !== saved.target && active.isConnected !== false) { processingFocus = null; return; }
   if (processingActions.has(saved.id)) return;
   const usable = node => node && !node.disabled && !node.hidden && node.isConnected !== false && !node.closest?.('[hidden], [inert]');
-  const region = byId('processing-jobs');
-  const rows = [...region.querySelectorAll('[data-job-id]')].filter(usable);
   const banner = ['cancel-processing', 'retry-processing', 'open-processing-meeting', 'dismiss-processing'].map(byId).filter(node => !byId('processing').hidden && usable(node));
-  const forJob = id => [...banner, ...rows].filter(node => node.dataset.jobId === id);
+  const forJob = id => banner.filter(node => node.dataset.jobId === id);
   const same = forJob(saved.id);
   const nextIds = saved.ids.slice(saved.index + 1);
   const previousIds = saved.index < 0 ? [] : saved.ids.slice(0, saved.index).reverse();
@@ -986,33 +996,10 @@ function restoreProcessingFocus() {
   const previous = previousIds.map(id => forJob(id)[0]).find(Boolean);
   const successor = forJob(processingJobs(state.processing).find(job => job.id === saved.id)?.retrySuccessorId)[0];
   const target = same.find(node => node.dataset.jobAction === saved.action) || same[0] || successor || next || previous
-    || rows[Math.max(0, saved.index)] || rows[rows.length - 1] || banner[0]
+    || banner[0]
     || ['settings', 'navigation-toggle', 'library-title'].map(byId).find(usable);
   processingFocus = null;
   target?.focus({ preventScroll: true });
-}
-
-function renderProcessingJobs(jobs) {
-  const region = byId('processing-jobs');
-  const disclosure = region.querySelector('details');
-  const summaryFocused = Boolean(disclosure && document.activeElement === disclosure.querySelector('summary'));
-  const expanded = disclosure?.open || Boolean(document.activeElement?.dataset?.jobId && region.contains(document.activeElement));
-  region.hidden = !jobs.length;
-  setHTML('processing-jobs', jobs.length ? `<details${expanded ? ' open' : ''}><summary>다른 작업 ${jobs.length}개 진행 중</summary>` + jobs.map(job => {
-    const owner = state.snapshot.meetings.find(meeting => meeting.id === job.meetingId);
-    const pending = processingActions.get(job.id);
-    const feedback = processingFeedback(job, { cancelling: pending === 'cancel' });
-    const detail = feedback.detail;
-    const action = feedback.cancelVisible ? ['cancel', feedback.cancelLabel] : null;
-    const attrs = `data-job-id="${escape(job.id)}"${pending || feedback.cancelDisabled ? ' disabled' : ''}`;
-    const controls = `${action ? `<button type="button" class="small" data-job-action="${action[0]}" ${attrs}>${action[1]}</button>` : ''}${owner ? `<button type="button" class="quiet small" data-job-action="open" ${attrs}>회의 열기</button>` : ''}${canDismissProcessing(job) ? `<button type="button" class="quiet small" data-job-action="ack" ${attrs}>알림 닫기</button>` : ''}`;
-    return `<div class="processing-job"><div class="processing-job-copy"><strong>${owner ? escape(owner.title) + ': ' : ''}${escape(feedback.title)}${feedback.progress ? ` (${feedback.progress.percent}%)` : ''}</strong>${detail ? `<p>${escape(detail)}</p>` : ''}${processingErrors.has(job.id) ? `<p class="field-error" role="alert">${escape(processingErrors.get(job.id))}</p>` : ''}</div><div class="processing-job-actions">${controls}</div></div>`;
-  }).join('') + '</details>' : '');
-  if (summaryFocused && (!document.activeElement || document.activeElement === document.body || document.activeElement.isConnected === false)) {
-    const target = region.querySelector('summary') || ['settings', 'navigation-toggle', 'library-title'].map(byId).find(node => !node.hidden && !node.closest?.('[hidden], [inert]'));
-    target?.focus({ preventScroll: true });
-  }
-  restoreProcessingFocus();
 }
 
 async function cancelProcessing(jobId = state.processing.id) {
@@ -1262,7 +1249,8 @@ function seekRecording(seconds) {
 const sameTranscriptVersion = (a, b) => Boolean(a && b && a.id === b.id && a.revision === b.revision);
 byId('import-audio').addEventListener('click', () => run(() => finishEditing(async () => {
   if (!modelsReady()) return openSetup();
-  const progress = await bridge.importAudio();
+  const target = await bridge.draftAttachmentTarget(state.selectedId);
+  const progress = await bridge.importAudio(target);
   if (progress) await acceptProcessing(progress);
 })));
 byId('cancel-processing').addEventListener('click', () => { void cancelProcessing(byId('cancel-processing').dataset.jobId); });
@@ -1271,15 +1259,6 @@ byId('dismiss-processing').addEventListener('click', () => { void acknowledgePro
 byId('open-processing-meeting').addEventListener('click', () => {
   const job = processingJobs(state.processing).find(item => item.id === byId('open-processing-meeting').dataset.jobId);
   if (job?.meetingId) void run(() => selectMeeting(job.meetingId));
-});
-byId('processing-jobs').addEventListener('click', event => {
-  const action = event.target.closest('[data-job-action]');
-  const job = processingJobs(state.processing).find(item => item.id === action?.dataset.jobId);
-  if (!job) return;
-  if (action.dataset.jobAction === 'cancel') void cancelProcessing(job.id);
-  if (action.dataset.jobAction === 'retry') void retryProcessing(job.id);
-  if (action.dataset.jobAction === 'ack') void acknowledgeProcessing(job.id);
-  if (action.dataset.jobAction === 'open' && job.meetingId) void run(() => selectMeeting(job.meetingId));
 });
 byId('transcribe').addEventListener('click', () => { void transcriptActions.rebuild(); });
 byId('transcript-history').addEventListener('click', () => { void transcriptActions.openHistory(); });
@@ -1441,6 +1420,9 @@ const transcriptActions = mountTranscriptActions({ byId, bridge, finishEditing, 
   },
 });
 const library = mountLibrary({ bridge, getState: () => state, byId, finishEditing, acceptSnapshot, selectMeeting, render, showError, escape, icon, meetingTimestamp, recordingStatus, duration, onViewChanged() { meetingSearch.update(byId('search').value, state.libraryFilter === 'trash'); } });
+const notificationAction = action => async id => { await action(id); const error = processingErrors.get(id); if (error) throw new Error(error); };
+const notificationCenter = mountNotificationCenter({ container: byId('notification-center'), bridge, onOpenMeeting: id => selectMeeting(id), onRetry: notificationAction(retryProcessing), onCancel: notificationAction(cancelProcessing), onAcknowledge: notificationAction(acknowledgeProcessing), showError, icon });
+byId('notifications-open').addEventListener('click', () => run(() => finishEditing(() => { state.notificationsOpen = true; state.setupRequested = false; state.libraryOpen = false; render(); byId('notification-center').querySelector('h1')?.focus({ preventScroll: true }); })));
 const speakers = mountSpeakers({ bridge, getState: () => state, byId, finishEditing, showError,
   canPlay: () => Boolean(byId('audio-player').getAttribute('src')),
   isPlaying: () => !byId('audio-player').paused && !byId('audio-player').ended,

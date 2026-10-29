@@ -13,7 +13,7 @@ function page(finish = async action => action()) {
     if (!elements.has(id)) {
       let scroll = 0;
       elements.set(id, {
-      id, parentNode: null, contains() { return false; }, append(child) { child.parentNode = this; }, insertBefore(child) { child.parentNode = this; }, dataset: {}, hidden: false, scrollMax: Infinity, tabIndex: -1, listeners: {}, attributes: {},
+      id, querySelector() { return null; }, parentNode: null, contains() { return false; }, append(child) { child.parentNode = this; }, insertBefore(child) { child.parentNode = this; }, dataset: {}, hidden: false, scrollMax: Infinity, tabIndex: -1, listeners: {}, attributes: {},
       get scrollTop() { return Math.min(this.scrollMax, scroll); },
       set scrollTop(value) { scroll = Math.max(0, Math.min(this.scrollMax, value)); },
       addEventListener(name, listener) { this.listeners[name] = listener; },

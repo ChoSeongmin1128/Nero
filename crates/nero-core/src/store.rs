@@ -226,7 +226,7 @@ impl Manifest {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct StoredMeeting {
     pub schema_version: u32,
@@ -393,6 +393,18 @@ impl Store {
         base.meeting.folder_id = None;
         base.meeting.deleted_at = None;
         write_json(&self.root, &relative, &base)
+    }
+
+    pub fn meeting_matches(&self, stored: &StoredMeeting) -> Result<bool> {
+        validate_id(&stored.meeting.id)?;
+        let relative = Path::new("meetings")
+            .join(&stored.meeting.id)
+            .join("meeting.json");
+        let saved: StoredMeeting = read_json(&checked_path(&self.root, &relative)?)?;
+        let mut expected = stored.clone();
+        expected.meeting.folder_id = None;
+        expected.meeting.deleted_at = None;
+        Ok(saved == expected)
     }
 
     pub fn validate_purge(&self, ids: &BTreeSet<String>) -> Result<()> {
@@ -812,6 +824,16 @@ mod json_precision_tests {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    static FAIL_JSON_SYNC_FOR: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn fail_next_json_sync(path: PathBuf) {
+    FAIL_JSON_SYNC_FOR.with(|failure| *failure.borrow_mut() = Some(path));
+}
+
 pub(crate) fn write_json(root: &Path, relative: &Path, value: &impl Serialize) -> Result<()> {
     let destination = checked_path(root, relative)?;
     let parent = relative
@@ -826,6 +848,17 @@ pub(crate) fn write_json(root: &Path, relative: &Path, value: &impl Serialize) -
     file.sync_all()?;
     checked_path(root, relative)?;
     fs::rename(&temporary_path, &destination)?;
+    #[cfg(test)]
+    if FAIL_JSON_SYNC_FOR.with(|failure| {
+        failure
+            .borrow_mut()
+            .take_if(|path| path == &destination)
+            .is_some()
+    }) {
+        return Err(CoreError::Storage(
+            "Synthetic post-replacement sync failure".into(),
+        ));
+    }
     sync_parent(&destination)
 }
 

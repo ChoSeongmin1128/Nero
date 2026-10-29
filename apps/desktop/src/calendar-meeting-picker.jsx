@@ -50,7 +50,7 @@ function CalendarMeetingPicker({ flow, container, finalFocus }) {
   const calendar = state.calendar;
   return <Dialog open={state.open} onOpenChange={open => { if (!open) flow.close(); }}>
     <DialogContent container={container} className="calendar-meeting-picker" data-nero-ui-owned="" finalFocus={finalFocus} showCloseButton={!state.creating}>
-      <DialogHeader><DialogTitle>일정에서 회의 준비</DialogTitle><DialogDescription>선택한 날짜의 캘린더 일정</DialogDescription></DialogHeader>
+      <DialogHeader><DialogTitle>일정 연결</DialogTitle><DialogDescription>선택한 날짜의 캘린더 일정</DialogDescription></DialogHeader>
       <CalendarDateControls flow={flow} state={state} container={container} />
       <div className="calendar-meeting-body" aria-busy={busy}>
         {state.loading && <p className="muted" role="status">일정을 불러오는 중</p>}
@@ -64,7 +64,7 @@ function CalendarMeetingPicker({ flow, container, finalFocus }) {
         {selected && <CalendarLinks reference={{ ...selected, occurrenceKey: selected.key }} />}
         {state.error && <p className="notice" role="alert">{state.error}</p>}
       </div>
-      <DialogFooter><button type="button" disabled={busy} onClick={() => { void flow.refresh(); }}>새로고침</button><button type="button" disabled={state.creating} onClick={() => flow.close()}>취소</button><button type="button" className="primary" disabled={busy || !selected} onClick={() => { void flow.prepare(); }}>{state.creating ? '회의 준비 중' : '회의 준비'}</button></DialogFooter>
+      <DialogFooter><button type="button" disabled={busy} onClick={() => { void flow.refresh(); }}>새로고침</button><button type="button" disabled={state.creating} onClick={() => flow.close()}>취소</button><button type="button" className="primary" disabled={busy || !selected} onClick={() => { void flow.prepare(); }}>{state.creating ? '연결 중' : '일정 연결'}</button></DialogFooter>
     </DialogContent>
   </Dialog>;
 }
@@ -79,7 +79,7 @@ export function mountCalendarMeetingPicker({ container, bridge, onPrepared, onCo
   let origin = null;
   root.render(<CalendarMeetingPicker flow={flow} container={container} finalFocus={() => returnFocusTarget(origin, document.getElementById('navigation-toggle')) || false} />);
   return {
-    open(trigger = document.activeElement) { origin = trigger; globalThis.NeroControls?.close?.(); flow.open(); },
+    open(trigger = document.activeElement, target = null) { origin = trigger; globalThis.NeroControls?.close?.(); flow.open(target); },
     close: () => flow.close(),
     isOpen: () => flow.getSnapshot().open,
     dispose() { flow.dispose(); root.unmount(); mount.remove(); },

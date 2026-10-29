@@ -19,7 +19,7 @@ test('calendar picker renders one explicit selection and keeps linked metadata s
   const button = text => [...window.document.querySelectorAll('button')].find(node => node.textContent === text);
   picker.open(window.document.getElementById('trigger'));
   await wait(() => window.document.querySelector('input[type="radio"]'));
-  assert.equal(button('회의 준비').disabled, true);
+  assert.equal(button('일정 연결').disabled, true);
   assert.equal(window.document.querySelectorAll('input[type="radio"]').length, 1);
   assert.match(window.document.body.textContent, /Provider title/);
   assert.deepEqual(calls, []);
@@ -54,9 +54,9 @@ test('calendar picker renders one explicit selection and keeps linked metadata s
   assert.notEqual(queries[2].day, queries[3].day);
   assert.deepEqual(calls, []);
   window.document.querySelector('input[type="radio"]').click();
-  await wait(() => !button('회의 준비').disabled);
+  await wait(() => !button('일정 연결').disabled);
   assert.match(window.document.body.textContent, /https:\/\/example.test\/join/);
-  button('회의 준비').click(); await wait(() => calls.length === 1 && !picker.isOpen());
+  button('일정 연결').click(); await wait(() => calls.length === 1 && !picker.isOpen());
   assert.deepEqual(calls, ['one']);
   await wait(() => window.document.activeElement.id === 'trigger');
   const reference = window.CalendarMeetingUI.mountCalendarMeetingReference({ container: window.document.getElementById('reference') });

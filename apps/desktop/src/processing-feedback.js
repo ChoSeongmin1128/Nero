@@ -1,6 +1,6 @@
 const modelJobs = new Set(['setup', 'model', 'summary-model', 'speaker-model']);
 export const canRetryProcessing = job => job?.acknowledged !== true && !job?.retrySuccessorId && job?.retryable === true && ['interrupted', 'failed', 'cancelled'].includes(job?.status);
-export const canDismissProcessing = job => job?.acknowledged !== true && !job?.retrySuccessorId && ['interrupted', 'failed', 'cancelled', 'needsReview'].includes(job?.status);
+export const canDismissProcessing = job => job?.acknowledged !== true && !job?.retrySuccessorId && ['completed', 'interrupted', 'failed', 'cancelled', 'needsReview'].includes(job?.status);
 const jobTitles = {
   cleanup: '임시 파일 정리',
   setup: '모델 준비',

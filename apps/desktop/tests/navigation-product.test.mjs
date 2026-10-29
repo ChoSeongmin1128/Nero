@@ -148,26 +148,18 @@ test('recent context actions target their row while preserving the current meeti
   assert.equal(state.selectedId, 'filed');
 });
 
-test('split new meeting keeps the primary action direct and calendar/import separate', async t => {
-  const { window, document } = await setup(t);
-  let created = 0, fromCalendar = 0, openedSettings = 0;
-  const primary = document.getElementById('create-meeting'), calendar = document.getElementById('create-calendar-meeting');
-  primary.disabled = false; calendar.disabled = false;
-  primary.addEventListener('click', () => created++);
-  calendar.addEventListener('click', () => fromCalendar++);
-  document.getElementById('settings').addEventListener('click', () => openedSettings++);
-  primary.click(); assert.equal(created, 1); assert.equal(fromCalendar, 0);
-  const trigger = document.getElementById('create-meeting-options'), menu = document.getElementById('new-meeting-menu');
-  document.querySelector('.navigation-edge').dispatchEvent(new window.PointerEvent('pointerenter', { pointerType: 'mouse' }));
-  trigger.click(); await settle(); assert.equal(menu.open, false);
-  trigger.setAttribute('aria-disabled', 'false');
-  trigger.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
-  assert.equal(menu.open, true); assert.equal(document.activeElement, calendar);
-  calendar.click(); assert.equal(fromCalendar, 1); assert.equal(menu.open, false); assert.equal(created, 1);
-  assert.equal(menu.contains(document.getElementById('import-audio')), false);
-  assert.equal(document.querySelectorAll('.navigation-edge [data-recent-meeting]').length, 0);
+test('new meeting has one sidebar action and draft owns calendar and audio actions', async t => {
+  const { document } = await setup(t);
+  assert.equal(document.getElementById('create-meeting-options'), null);
+  assert.equal(document.getElementById('new-meeting-menu'), null);
+  const primary = document.getElementById('create-meeting');
+  assert.ok(primary.closest('#navigation-sidebar'));
+  for (const id of ['import-audio', 'create-calendar-meeting']) {
+    const action = document.getElementById(id);
+    assert.ok(action.closest('#meeting-detail'));
+    assert.equal(action.closest('#navigation-sidebar'), null);
+  }
 });
-
 
 test('closing a recent-action dialog returns to the header after temporary navigation closes', async t => {
   const { window, document } = await setup(t);

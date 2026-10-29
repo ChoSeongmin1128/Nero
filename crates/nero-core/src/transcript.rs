@@ -657,6 +657,26 @@ impl Engine {
         source: PathBuf,
         prepared: PathBuf,
     ) -> Result<Meeting> {
+        self.import_audio_target(title, source, prepared, None)
+    }
+
+    pub fn import_audio_into_draft(
+        &mut self,
+        target: crate::DraftAttachmentTarget,
+        source: PathBuf,
+        prepared: PathBuf,
+    ) -> Result<Meeting> {
+        self.require_draft_attachment(&target)?;
+        self.import_audio_target(String::new(), source, prepared, Some(target))
+    }
+
+    fn import_audio_target(
+        &mut self,
+        title: String,
+        source: PathBuf,
+        prepared: PathBuf,
+        target: Option<crate::DraftAttachmentTarget>,
+    ) -> Result<Meeting> {
         if self.quitting {
             return Err(CoreError::Unavailable);
         }
@@ -683,7 +703,11 @@ impl Engine {
         }
         let source_file = store::open_read(&source)?;
         let metadata = source_file.metadata()?;
-        let mut stored = self.store.create(title, String::new())?;
+        let attaching = target.is_some();
+        let mut stored = match &target {
+            Some(target) => self.require_draft_attachment(target)?.clone(),
+            None => self.store.create(title, String::new())?,
+        };
         let mut manifest = Manifest::new(
             &stored.meeting.id,
             "import",
@@ -696,7 +720,9 @@ impl Engine {
             let mut pcm = BufWriter::new(self.store.prepare_capture(&manifest)?);
             stored.capture_id = Some(manifest.session_id.clone());
             stored.meeting.status = MeetingStatus::Interrupted;
-            self.store.save(&stored)?;
+            if !attaching {
+                self.store.save(&stored)?;
+            }
             let directory = manifest.relative_dir();
             let extension = source
                 .extension()
@@ -754,9 +780,17 @@ impl Engine {
             manifest.phase = CapturePhase::Completed;
             stored.meeting.audio = store::finalize_audio(&self.store.root, &mut manifest)?;
             stored.meeting.status = MeetingStatus::Completed;
-            self.store.save(&stored)?;
+            stored.meeting.updated_at = store::now();
+            if attaching {
+                self.commit_meeting(stored.clone())?;
+            } else {
+                self.store.save(&stored)?;
+            }
             Ok(())
         })();
+        if attaching {
+            return result.map(|_| stored.meeting);
+        }
         if let Err(error) = &result {
             stored.meeting.status = MeetingStatus::Interrupted;
             stored.meeting.error = Some(error.to_string());
@@ -1712,6 +1746,164 @@ pub(crate) mod tests {
             .unwrap();
         (temp, engine, meeting.id, wav_path)
     }
+    #[test]
+    fn draft_import_keeps_identity_notes_folder_and_calendar() {
+        let (_temp, mut engine, _, wav) = setup();
+        let draft = engine
+            .create_meeting("Manual title".into(), "Manual notes".into())
+            .unwrap();
+        let folder = engine.create_folder("Folder".into()).unwrap();
+        engine
+            .move_meetings(&[draft.id.clone()], Some(folder.id.clone()))
+            .unwrap();
+        let reference = crate::CalendarReference {
+            occurrence_key: format!("google:{}", "a".repeat(64)),
+            title: "Event".into(),
+            start_at: 1,
+            end_at: 2,
+            calendar_name: "Calendar".into(),
+            join_urls: vec![],
+        };
+        let target = engine.draft_attachment_target(&draft.id).unwrap();
+        engine
+            .attach_calendar_to_draft(target, reference.clone())
+            .unwrap();
+        let target = engine.draft_attachment_target(&draft.id).unwrap();
+        let imported = engine
+            .import_audio_into_draft(target.clone(), wav.clone(), wav.clone())
+            .unwrap();
+        assert_eq!(imported.id, draft.id);
+        assert_eq!(imported.title, draft.title);
+        assert_eq!(imported.notes, draft.notes);
+        assert_eq!(imported.folder_id, Some(folder.id));
+        assert_eq!(imported.calendar_reference, Some(reference));
+        assert_eq!(imported.status, MeetingStatus::Completed);
+        assert!(imported.audio.is_some());
+        assert_eq!(engine.meetings.len(), 2);
+        assert!(matches!(
+            engine.import_audio_into_draft(target, wav.clone(), wav.clone()),
+            Err(CoreError::EditConflict)
+        ));
+        assert!(engine.draft_attachment_target(&draft.id).is_err());
+        let root = engine.store.root.clone();
+        drop(engine);
+        let reopened = Engine::open(root).unwrap();
+        assert_eq!(reopened.meetings[&draft.id].meeting, imported);
+    }
+
+    #[test]
+    fn draft_import_keeps_published_audio_after_directory_sync_failure() {
+        let (_temp, mut engine, _, wav) = setup();
+        let draft = engine
+            .create_meeting("Draft".into(), "Notes".into())
+            .unwrap();
+        let folder = engine.create_folder("Folder".into()).unwrap();
+        engine
+            .move_meetings(&[draft.id.clone()], Some(folder.id.clone()))
+            .unwrap();
+        let target = engine.draft_attachment_target(&draft.id).unwrap();
+        let path = engine
+            .store
+            .root
+            .join("meetings")
+            .join(&draft.id)
+            .join("meeting.json");
+        store::fail_next_json_sync(path);
+        assert!(matches!(
+            engine.import_audio_into_draft(target.clone(), wav.clone(), wav.clone()),
+            Err(CoreError::Storage(_))
+        ));
+        let published = engine.meetings[&draft.id].meeting.clone();
+        assert_eq!(published.status, MeetingStatus::Completed);
+        assert!(published.audio.is_some());
+        assert_eq!(published.title, draft.title);
+        assert_eq!(published.notes, draft.notes);
+        assert_eq!(published.folder_id, Some(folder.id));
+        assert!(engine
+            .store
+            .meeting_matches(&engine.meetings[&draft.id])
+            .unwrap());
+        let audio = engine.audio_path(&draft.id).unwrap();
+        let audio_before = std::fs::read(&audio).unwrap();
+        assert!(matches!(
+            engine.import_audio_into_draft(target, wav.clone(), wav),
+            Err(CoreError::EditConflict)
+        ));
+        assert!(engine.draft_attachment_target(&draft.id).is_err());
+        assert_eq!(engine.meetings[&draft.id].meeting, published);
+        assert_eq!(std::fs::read(&audio).unwrap(), audio_before);
+        let root = engine.store.root.clone();
+        drop(engine);
+        let reopened = Engine::open(root).unwrap();
+        assert_eq!(reopened.meetings[&draft.id].meeting, published);
+        assert_eq!(std::fs::read(&audio).unwrap(), audio_before);
+    }
+
+    #[test]
+    fn failed_draft_import_preserves_document_and_remains_attachable() {
+        let (_temp, mut engine, _, wav) = setup();
+        let draft = engine
+            .create_meeting("Draft".into(), "Notes".into())
+            .unwrap();
+        let target = engine.draft_attachment_target(&draft.id).unwrap();
+        let path = engine
+            .store
+            .root
+            .join("meetings")
+            .join(&draft.id)
+            .join("meeting.json");
+        let before = std::fs::read(&path).unwrap();
+        let unsupported = wav.with_extension("unsupported");
+        std::fs::write(&unsupported, b"Synthetic source").unwrap();
+        assert!(engine
+            .import_audio_into_draft(target.clone(), unsupported, wav.clone())
+            .is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(engine.meetings[&draft.id].meeting, draft);
+        assert_eq!(engine.draft_attachment_target(&draft.id).unwrap(), target);
+        let root = engine.store.root.clone();
+        drop(engine);
+        let reopened = Engine::open(root).unwrap();
+        assert_eq!(reopened.meetings[&draft.id].meeting, draft);
+    }
+
+    #[test]
+    fn draft_import_rejects_intervening_edits_trash_and_existing_audio() {
+        let (_temp, mut engine, audio_id, wav) = setup();
+        let draft = engine
+            .create_meeting("Draft".into(), String::new())
+            .unwrap();
+        let target = engine.draft_attachment_target(&draft.id).unwrap();
+        let edited = engine
+            .update_meeting(&draft.id, "Edited".into(), "Notes".into())
+            .unwrap();
+        assert!(matches!(
+            engine.import_audio_into_draft(target, wav.clone(), wav.clone()),
+            Err(CoreError::EditConflict)
+        ));
+        assert_eq!(engine.meetings[&draft.id].meeting, edited);
+        let target = engine.draft_attachment_target(&draft.id).unwrap();
+        engine.trash_meetings(&[draft.id.clone()]).unwrap();
+        assert!(matches!(
+            engine.import_audio_into_draft(target, wav.clone(), wav.clone()),
+            Err(CoreError::MeetingNotFound)
+        ));
+        let target = crate::DraftAttachmentTarget {
+            meeting_id: audio_id.clone(),
+            expected_version: crate::agent_control::meeting_edit_version(
+                &engine.meetings[&audio_id].meeting,
+            )
+            .unwrap(),
+        };
+        let before = engine.meetings[&audio_id].meeting.clone();
+        assert!(matches!(
+            engine.import_audio_into_draft(target, wav.clone(), wav),
+            Err(CoreError::InvalidState(_))
+        ));
+        assert_eq!(engine.meetings[&audio_id].meeting, before);
+        assert_eq!(engine.meetings.len(), 2);
+    }
+
     pub(crate) fn output() -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({"model":"OpenMOSS-Team/MOSS-Transcribe-Diarize","segments":[{"start":0.0,"end":1.0,"text":"[S1] 원문","speaker_id":"S1"}],"hitTokenLimit":false,"hasUnparsedText":false,"processedAudioFrames":16000,"inputAudioFrames":16000,"audioDurationSeconds":1.0})).unwrap()
     }

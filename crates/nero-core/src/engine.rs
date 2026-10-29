@@ -90,13 +90,74 @@ impl Engine {
         Ok(())
     }
 
-    pub fn create_meeting_from_calendar(
-        &mut self,
-        reference: crate::CalendarReference,
-    ) -> Result<Meeting> {
+    pub fn draft_attachment_target(&self, id: &str) -> Result<crate::DraftAttachmentTarget> {
+        self.require_active_meeting(id)?;
+        let stored = &self.meetings[id];
+        let target = crate::DraftAttachmentTarget {
+            meeting_id: id.into(),
+            expected_version: crate::agent_control::meeting_edit_version(&stored.meeting)?,
+        };
+        self.require_draft_attachment(&target)?;
+        Ok(target)
+    }
+
+    pub(crate) fn require_draft_attachment(
+        &self,
+        target: &crate::DraftAttachmentTarget,
+    ) -> Result<&StoredMeeting> {
         if self.quitting {
             return Err(CoreError::Unavailable);
         }
+        self.require_active_meeting(&target.meeting_id)?;
+        let stored = &self.meetings[&target.meeting_id];
+        if crate::agent_control::meeting_edit_version(&stored.meeting)? != target.expected_version {
+            return Err(CoreError::EditConflict);
+        }
+        if stored.meeting.status != MeetingStatus::Draft
+            || stored.capture_id.is_some()
+            || stored.meeting.audio.is_some()
+            || stored.meeting.transcript_id.is_some()
+            || self
+                .capture
+                .as_ref()
+                .is_some_and(|capture| capture.manifest.meeting_id == target.meeting_id)
+        {
+            return Err(CoreError::InvalidState(
+                "음성이 없는 새 회의에서 다시 시도해 주세요.".into(),
+            ));
+        }
+        Ok(stored)
+    }
+
+    pub fn attach_calendar_to_draft(
+        &mut self,
+        target: crate::DraftAttachmentTarget,
+        reference: crate::CalendarReference,
+    ) -> Result<Meeting> {
+        let mut stored = self.require_draft_attachment(&target)?.clone();
+        Self::validate_calendar_reference(&reference)?;
+        if stored.meeting.calendar_reference.is_some() {
+            return Err(CoreError::InvalidState(
+                "이미 일정이 연결된 회의입니다.".into(),
+            ));
+        }
+        if self.meetings.values().any(|current| {
+            current
+                .meeting
+                .calendar_reference
+                .as_ref()
+                .is_some_and(|current| current.occurrence_key == reference.occurrence_key)
+        }) {
+            return Err(CoreError::InvalidState(
+                "이미 다른 회의에 연결된 일정입니다. 연결된 회의를 열어 주세요.".into(),
+            ));
+        }
+        stored.meeting.calendar_reference = Some(reference);
+        stored.meeting.updated_at = store::now();
+        self.commit_meeting(stored)
+    }
+
+    fn validate_calendar_reference(reference: &crate::CalendarReference) -> Result<()> {
         let digest = reference.occurrence_key.strip_prefix("google:");
         if !digest.is_some_and(|value| {
             value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
@@ -106,7 +167,17 @@ impl Engine {
                 "일정 정보를 확인하지 못했습니다.".into(),
             ));
         }
-        store::validate_text(&reference.title, "")?;
+        store::validate_text(&reference.title, "")
+    }
+
+    pub fn create_meeting_from_calendar(
+        &mut self,
+        reference: crate::CalendarReference,
+    ) -> Result<Meeting> {
+        if self.quitting {
+            return Err(CoreError::Unavailable);
+        }
+        Self::validate_calendar_reference(&reference)?;
         if let Some(stored) = self.meetings.values().find(|stored| {
             stored
                 .meeting
@@ -136,6 +207,16 @@ impl Engine {
 
     pub fn retry_purge_cleanup(&mut self) -> Result<()> {
         self.store.cleanup_purges(&self.library)
+    }
+
+    pub(crate) fn commit_meeting(&mut self, stored: StoredMeeting) -> Result<Meeting> {
+        let result = self.store.save(&stored);
+        let meeting = stored.meeting.clone();
+        if result.is_ok() || self.store.meeting_matches(&stored).unwrap_or(false) {
+            self.meetings.insert(meeting.id.clone(), stored);
+        }
+        result?;
+        Ok(meeting)
     }
 
     fn commit_library(&mut self, library: Library) -> Result<()> {
@@ -699,6 +780,126 @@ mod tests {
             calendar_name: "Synthetic calendar".into(),
             join_urls: vec!["https://example.test/meeting".into()],
         }
+    }
+
+    #[test]
+    fn attaching_calendar_preserves_draft_identity_and_manual_fields() {
+        let (_temporary, mut engine) = engine();
+        let draft = engine
+            .create_meeting("Manual title".into(), "Manual notes".into())
+            .unwrap();
+        let folder = engine.create_folder("Folder".into()).unwrap();
+        engine
+            .move_meetings(&[draft.id.clone()], Some(folder.id.clone()))
+            .unwrap();
+        let target = engine.draft_attachment_target(&draft.id).unwrap();
+        let reference = calendar_reference("a");
+        let attached = engine
+            .attach_calendar_to_draft(target.clone(), reference.clone())
+            .unwrap();
+        assert_eq!(attached.id, draft.id);
+        assert_eq!(attached.title, draft.title);
+        assert_eq!(attached.notes, draft.notes);
+        assert_eq!(attached.folder_id, Some(folder.id));
+        assert_eq!(attached.calendar_reference, Some(reference));
+        assert_eq!(attached.status, MeetingStatus::Draft);
+        assert_eq!(engine.meetings.len(), 1);
+        assert!(matches!(
+            engine.attach_calendar_to_draft(target, calendar_reference("b")),
+            Err(CoreError::EditConflict)
+        ));
+        let root = engine.store.root.clone();
+        drop(engine);
+        let reopened = Engine::open(root).unwrap();
+        assert_eq!(reopened.meetings[&draft.id].meeting, attached);
+    }
+
+    #[test]
+    fn calendar_attachment_keeps_published_result_after_directory_sync_failure() {
+        let (_temporary, mut engine) = engine();
+        let draft = engine
+            .create_meeting("Draft".into(), "Notes".into())
+            .unwrap();
+        let folder = engine.create_folder("Folder".into()).unwrap();
+        engine
+            .move_meetings(&[draft.id.clone()], Some(folder.id.clone()))
+            .unwrap();
+        let target = engine.draft_attachment_target(&draft.id).unwrap();
+        let reference = calendar_reference("a");
+        let path = engine
+            .store
+            .root
+            .join("meetings")
+            .join(&draft.id)
+            .join("meeting.json");
+        store::fail_next_json_sync(path);
+        assert!(matches!(
+            engine.attach_calendar_to_draft(target.clone(), reference.clone()),
+            Err(CoreError::Storage(_))
+        ));
+        let published = engine.meetings[&draft.id].meeting.clone();
+        assert_eq!(published.calendar_reference, Some(reference.clone()));
+        assert_eq!(published.title, draft.title);
+        assert_eq!(published.notes, draft.notes);
+        assert_eq!(published.folder_id, Some(folder.id));
+        assert!(engine
+            .store
+            .meeting_matches(&engine.meetings[&draft.id])
+            .unwrap());
+        assert!(matches!(
+            engine.attach_calendar_to_draft(target, calendar_reference("b")),
+            Err(CoreError::EditConflict)
+        ));
+        assert_eq!(
+            engine.create_meeting_from_calendar(reference).unwrap(),
+            published
+        );
+        assert_eq!(engine.meetings.len(), 1);
+        let root = engine.store.root.clone();
+        drop(engine);
+        let reopened = Engine::open(root).unwrap();
+        assert_eq!(reopened.meetings[&draft.id].meeting, published);
+    }
+
+    #[test]
+    fn calendar_attachment_rejects_stale_moved_deleted_and_duplicate_targets() {
+        let (_temporary, mut engine) = engine();
+        let draft = engine
+            .create_meeting("Draft".into(), String::new())
+            .unwrap();
+        let target = engine.draft_attachment_target(&draft.id).unwrap();
+        engine
+            .update_meeting(&draft.id, "Edited".into(), "Notes".into())
+            .unwrap();
+        assert!(matches!(
+            engine.attach_calendar_to_draft(target, calendar_reference("a")),
+            Err(CoreError::EditConflict)
+        ));
+        let target = engine.draft_attachment_target(&draft.id).unwrap();
+        let folder = engine.create_folder("Folder".into()).unwrap();
+        engine
+            .move_meetings(&[draft.id.clone()], Some(folder.id))
+            .unwrap();
+        assert!(matches!(
+            engine.attach_calendar_to_draft(target, calendar_reference("a")),
+            Err(CoreError::EditConflict)
+        ));
+        let target = engine.draft_attachment_target(&draft.id).unwrap();
+        engine
+            .create_meeting_from_calendar(calendar_reference("a"))
+            .unwrap();
+        let before = engine.meetings[&draft.id].meeting.clone();
+        assert!(matches!(
+            engine.attach_calendar_to_draft(target.clone(), calendar_reference("a")),
+            Err(CoreError::InvalidState(_))
+        ));
+        assert_eq!(engine.meetings[&draft.id].meeting, before);
+        engine.trash_meetings(&[draft.id.clone()]).unwrap();
+        assert!(matches!(
+            engine.attach_calendar_to_draft(target, calendar_reference("b")),
+            Err(CoreError::MeetingNotFound)
+        ));
+        assert_eq!(engine.meetings.len(), 2);
     }
 
     #[test]

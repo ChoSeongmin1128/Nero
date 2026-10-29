@@ -7,21 +7,29 @@ export function mountMeetingDetail({ byId, finishEditing, onReveal = () => {}, o
   const inspector = byId('detail-inspector'), close = byId('detail-inspector-close');
   const notesEditor = byId('meeting-notes'), memories = new Map();
   let meetingId = null, request = 0, renderedId = null, renderedView = null;
-  let summaryVisible = true;
+  let summaryVisible = true, notesInline = false, requestedInline = false;
   let ready = {}, pendingRestore = new Set(views);
   const memory = () => memories.get(meetingId);
   function rememberScroll() {
     if (renderedId !== meetingId || !meetingId) return;
     for (const view of views) if (ready[view] && !pendingRestore.has(view) && !panels.get(view).hidden) memory().scroll[view] = scrollers.get(view).scrollTop;
-    if (memory().view === 'notes') memory().scroll.notesEditor = notesEditor.scrollTop;
+    if (!panels.get('notes').hidden) memory().scroll.notesEditor = notesEditor.scrollTop;
   }
   function display({ reveal = false, focus = false } = {}) {
     const view = memory()?.view || 'summary', changed = renderedId !== meetingId || renderedView !== view;
+    const inline = Boolean(meetingId && notesInline && view !== 'transcript');
+    const home = byId('draft-notes-home');
+    home.hidden = !inline;
+    const notes = panels.get('notes'), notesDestination = inline ? home : inspector;
+    if (notes.parentNode !== notesDestination) notesDestination.append(notes);
+    notes.querySelector('h2')?.classList.toggle('sr-only', !inline);
+    byId('meeting-detail').dataset.inlineNotes = String(inline);
+    controls.get('notes').hidden = notesInline;
     panels.get('summary').hidden = !meetingId || !summaryVisible;
-    inspector.hidden = !meetingId || view === 'summary';
+    inspector.hidden = !meetingId || inline || view === 'summary';
     byId('meeting-detail').dataset.inspector = inspector.hidden ? '' : view;
     for (const name of ['transcript', 'notes']) {
-      panels.get(name).hidden = !meetingId || name !== view;
+      panels.get(name).hidden = !meetingId || (name === 'notes' && inline ? false : name !== view);
       controls.get(name).setAttribute('aria-expanded', String(!inspector.hidden && name === view));
     }
     const search = byId('document-search'), destination = inspector.hidden ? byId('detail-search-home') : inspector;
@@ -42,9 +50,12 @@ export function mountMeetingDetail({ byId, finishEditing, onReveal = () => {}, o
     }
     if (focus) (view === 'summary' ? controls.get(memory().lastPanel || 'transcript') : close).focus({ preventScroll: true });
   }
-  function update({ id, recording = false, summaryLoaded = false, transcriptLoaded = false, hasSummary = false, hasTranscript = false, showSummary = true }) {
-    if (id !== meetingId) { meetingId = id; request++; pendingRestore = new Set(views); }
-    summaryVisible = showSummary;
+  function update({ id, recording = false, summaryLoaded = false, transcriptLoaded = false, hasSummary = false, hasTranscript = false, showSummary = true, inlineNotes = false }) {
+    const sameMeeting = id === meetingId;
+    const editingInline = sameMeeting && notesInline && notesEditor.ownerDocument?.activeElement === notesEditor;
+    if (!sameMeeting) { meetingId = id; request++; pendingRestore = new Set(views); }
+    requestedInline = inlineNotes;
+    summaryVisible = showSummary; notesInline = inlineNotes || editingInline;
     ready = { summary: summaryLoaded, transcript: transcriptLoaded, notes: true };
     for (const view of views) if (!ready[view]) pendingRestore.add(view);
     if (id && !memories.has(id)) memories.set(id, { view: recording && !hasSummary && !hasTranscript ? 'notes' : 'summary', explicit: false, recordingConsidered: false, lastPanel: 'transcript', scroll: { summary: 0, transcript: 0, notes: 0, notesEditor: 0 } });
@@ -70,6 +81,7 @@ export function mountMeetingDetail({ byId, finishEditing, onReveal = () => {}, o
   }
   for (const view of views) scrollers.get(view).addEventListener('scroll', rememberScroll);
   notesEditor.addEventListener('scroll', rememberScroll);
+  notesEditor.addEventListener('blur', () => { if (notesInline && !requestedInline) { rememberScroll(); notesInline = false; display(); } });
   for (const [view, control] of controls) control.addEventListener('click', () => { void select(view, { focus: true }); });
   close.addEventListener('click', () => { void select('summary', { focus: true }); });
   inspector.addEventListener('keydown', event => {

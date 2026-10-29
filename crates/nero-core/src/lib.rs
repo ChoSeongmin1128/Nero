@@ -143,6 +143,13 @@ pub struct Meeting {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DraftAttachmentTarget {
+    pub meeting_id: String,
+    pub expected_version: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Device {
     pub id: String,
@@ -282,6 +289,23 @@ impl CoreHandle {
         self.call(move |engine| engine.create_meeting(title, notes))
     }
 
+    pub fn draft_attachment_target(&self, id: &str) -> Result<DraftAttachmentTarget> {
+        let id = id.to_owned();
+        self.call(move |engine| engine.draft_attachment_target(&id))
+    }
+
+    pub fn validate_draft_attachment(&self, target: DraftAttachmentTarget) -> Result<()> {
+        self.call(move |engine| engine.require_draft_attachment(&target).map(|_| ()))
+    }
+
+    pub fn attach_calendar_to_draft(
+        &self,
+        target: DraftAttachmentTarget,
+        reference: CalendarReference,
+    ) -> Result<Meeting> {
+        self.call(move |engine| engine.attach_calendar_to_draft(target, reference))
+    }
+
     pub fn create_meeting_from_calendar(&self, reference: CalendarReference) -> Result<Meeting> {
         self.call(move |engine| engine.create_meeting_from_calendar(reference))
     }
@@ -317,6 +341,16 @@ impl CoreHandle {
     pub fn import_audio(&self, title: &str, source: &Path, prepared: &Path) -> Result<Meeting> {
         let (title, source, prepared) = (title.to_owned(), source.to_owned(), prepared.to_owned());
         self.call(move |engine| engine.import_audio(title, source, prepared))
+    }
+
+    pub fn import_audio_into_draft(
+        &self,
+        target: DraftAttachmentTarget,
+        source: &Path,
+        prepared: &Path,
+    ) -> Result<Meeting> {
+        let (source, prepared) = (source.to_owned(), prepared.to_owned());
+        self.call(move |engine| engine.import_audio_into_draft(target, source, prepared))
     }
 
     pub fn transcript(&self, id: &str) -> Result<Option<Transcript>> {

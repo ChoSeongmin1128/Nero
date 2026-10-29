@@ -386,9 +386,16 @@ pub async fn create_meeting_from_calendar(
     day: String,
     time_zone: String,
     scope_revision: u64,
+    target: Option<nero_core::DraftAttachmentTarget>,
 ) -> Result<Meeting, String> {
     crate::require_main(&window)?;
     state.processing.require_meeting_models()?;
+    if let Some(target) = target.clone() {
+        crate::on_core(state.core.clone(), move |core| {
+            core.validate_draft_attachment(target)
+        })
+        .await?;
+    }
     let service = calendar.service()?;
     let result = service
         .browse_day(day, time_zone, Some(scope_revision))
@@ -398,8 +405,11 @@ pub async fn create_meeting_from_calendar(
     let core = state.core.clone();
     tauri::async_runtime::spawn_blocking(move || {
         service.with_browsed_occurrence(&browse, &occurrence_key, |event| {
-            core.create_meeting_from_calendar(calendar_reference(event))
-                .map_err(|error| error.to_string())
+            match target {
+                Some(target) => core.attach_calendar_to_draft(target, calendar_reference(event)),
+                None => core.create_meeting_from_calendar(calendar_reference(event)),
+            }
+            .map_err(|error| error.to_string())
         })
     })
     .await

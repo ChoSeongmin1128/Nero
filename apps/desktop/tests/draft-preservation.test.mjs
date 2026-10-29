@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import vm from 'node:vm';
+import { mountNotificationCenter } from '../src/notification-center.js';
 import { Window } from 'happy-dom';
 import { renderMeetingMenu } from '../../../design-system/navigation.mjs';
 
@@ -126,7 +127,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
   };
   const copied = [], agentDialogCalls = [];
   const templateSettings = { setActive() {}, beforeLeave: async () => true, isConfirming: () => false, hide() {} };
-  const context = vm.createContext({ renderMeetingMenu,
+  const context = vm.createContext({ renderMeetingMenu, testMountNotificationCenter: mountNotificationCenter,
     navigator: { clipboard: { writeText: async text => { copied.push(text); } } },
     document, testBridge: bridge, testAgentDialogCalls: agentDialogCalls, testTemplateSettings: templateSettings, localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
     NeroControls: { enhanceAll() {} },
@@ -152,6 +153,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     let summaryEvidenceOptions;
     const mountSummaryEvidence = options => { summaryEvidenceOptions = options; return { reset() {}, update() {}, restoreFocus() {} }; };
     const mountTemplateSettings = () => testTemplateSettings;
+    const mountNotificationCenter = testMountNotificationCenter;
     const mountCalendarSettings = () => ({ setActive() {} });
     const mountCalendarMeetingPicker = () => ({open(){}, close(){}, isOpen(){return false;}});
     const mountCalendarMeetingReference = () => ({render(){}});
@@ -438,7 +440,7 @@ test('late processing replies cannot replace the current running job', async () 
   await page.app.acceptProcessing({ revision: 5, id: 'new-job', kind: 'model', status: 'running', supported: true });
   await page.app.acceptProcessing({ revision: 4, id: 'old-job', kind: 'model', status: 'completed', supported: true });
   assert.equal(page.app.state.processing.id, 'new-job');
-  assert.match(page.element('processing-jobs').innerHTML, /data-job-action="cancel" data-job-id="new-job"/);
+  assert.match(page.element('notification-center').innerHTML, /data-notification-job="new-job" data-notification-action="cancel"/);
   assert.equal(page.element('import-audio').disabled, false);
 });
 
@@ -449,8 +451,8 @@ test('queued selected work targets its job while background model work stays com
   await page.app.acceptProcessing({ revision: 3, id: 'download', kind: 'summary-model', status: 'running', supported: true, modelReady: true,
     jobs: [{ id: 'waiting', kind: 'summary', meetingId: 'a', status: 'queued', createdAt: 10 }] });
   assert.equal(page.element('processing-title').textContent, '회의록 요약 대기 중');
-  assert.match(page.element('processing-jobs').innerHTML, /다른 작업 1개 진행 중/);
-  assert.match(page.element('processing-jobs').innerHTML, /요약 모델 준비 중/);
+  assert.match(page.element('notification-center').innerHTML, /2개 진행 중/);
+  assert.match(page.element('notification-center').innerHTML, /요약 모델 준비 중/);
   assert.equal(page.element('cancel-processing').dataset.jobId, 'waiting');
   await page.app.cancelProcessing('waiting');
   assert.deepEqual(cancelled, ['waiting']);
@@ -464,7 +466,6 @@ test('historical outcomes never fill the global region and only the latest selec
     { id: 'latest', kind: 'summary', meetingId: 'a', status: 'failed', createdAt: 20, retryable: true, failureKind: 'modelNotReady', message: 'private engine path' },
   ];
   const page = await openApp(null, { revision: 1, status: 'idle', supported: true, modelReady: true, jobs });
-  assert.equal(page.element('processing-jobs').hidden, true);
   assert.equal(page.element('retry-processing').dataset.jobId, 'latest');
   assert.equal(page.element('retry-processing').hidden, false);
   assert.match(page.element('processing-message').textContent, /요약 모델을 다시 준비/);
@@ -474,7 +475,6 @@ test('historical outcomes never fill the global region and only the latest selec
   assert.equal(page.app.state.processing.jobs.length, 3);
   page.app.state.libraryOpen = true; page.app.render();
   assert.equal(page.element('processing').hidden, true);
-  assert.equal(page.element('processing-jobs').hidden, true);
 });
 
 test('newer completed work suppresses old failure and its summary action label', async () => {
@@ -484,7 +484,6 @@ test('newer completed work suppresses old failure and its summary action label',
     { id: 'new', meetingId: 'a', kind: 'summary', status: 'completed', createdAt: 20 },
   ] });
   assert.equal(page.element('processing').hidden, true);
-  assert.equal(page.element('processing-jobs').hidden, true);
   assert.equal(page.element('summarize').textContent, '요약하기');
 });
 
@@ -497,7 +496,6 @@ test('acknowledgement hides the single notice without resurfacing older results 
   page.element('dismiss-processing').focus();
   await page.app.acknowledgeProcessing('latest');
   assert.equal(page.element('processing').hidden, true);
-  assert.equal(page.element('processing-jobs').hidden, true);
   assert.equal(page.focused(), 'settings');
   assert.equal(page.app.state.processing.jobs.length, 2);
   assert.equal(page.app.state.processing.jobs[0].acknowledged, undefined);
@@ -669,7 +667,7 @@ test('optional summary download leaves new meetings enabled and reports transfer
   await page.app.acceptProcessing({ revision: 3, id: 'download', kind: 'summary-model', status: 'running', supported: true, modelReady: true, summarySupported: true, summaryReady: false, message: '요약 모델 다운로드 중', bytes: 25, totalBytes: 100 });
   assert.equal(page.element('create-meeting').disabled, false);
   assert.equal(page.element('setup-screen').hidden, true);
-  assert.match(page.element('processing-jobs').innerHTML, /요약 모델 준비 중 \(25%\)/);
+  assert.match(page.element('notification-center').innerHTML, /요약 모델 준비 중 \(25%\)/);
   assert.equal(page.element('processing').hidden, true);
   let created = false;
   page.bridge.createMeeting = async () => { created = true; return { id: 'b' }; };
@@ -701,7 +699,7 @@ test('memory warnings and same-job summary retries preserve readiness, new meeti
   assert.equal(page.app.state.processing.modelReady, true);
   assert.equal(page.app.state.processing.summaryReady, true);
   assert.equal(page.element('processing').hidden, true);
-  assert.match(page.element('processing-jobs').innerHTML, /data-job-id="summary-memory"/);
+  assert.match(page.element('notification-center').innerHTML, /data-notification-job="summary-memory"/);
   assert.equal(page.element('create-meeting').disabled, false);
   assert.equal(page.element('cancel-processing').disabled, false);
   const cancellations = [];
@@ -710,8 +708,8 @@ test('memory warnings and same-job summary retries preserve readiness, new meeti
   assert.deepEqual(cancellations, ['summary-memory']);
   assert.equal(page.element('processing-warning').hidden, true);
   assert.equal(page.element('processing').hidden, true);
-  assert.match(page.element('processing-jobs').innerHTML, /data-job-id="summary-memory"/);
-  assert.match(page.element('processing-jobs').innerHTML, /취소 중/);
+  assert.match(page.element('notification-center').innerHTML, /data-notification-job="summary-memory"/);
+  assert.match(page.element('notification-center').innerHTML, /취소 중/);
   await page.app.acceptProcessing({ ...job, revision: 5, status: 'cancelled', memoryState: 'critical', retryCount: 1, message: '처리를 취소했습니다.' });
   assert.equal(page.element('processing-warning').hidden, true);
   assert.equal(page.element('processing-spinner').hidden, true);
@@ -1638,4 +1636,18 @@ test('explicit library navigation remains available without prepared models', as
   page.app.render();
   assert.equal(page.element('setup-screen').hidden,true);
   assert.equal(page.element('library-screen').hidden,false);
+});
+
+test('audio picker cancellation stays in the same saved draft and uses an explicit attachment version', async () => {
+  const page = await openApp();
+  const id = page.app.state.selectedId;
+  const before = JSON.stringify(page.app.state.snapshot.meetings);
+  const target = { meetingId: id, expectedVersion: 'current-draft-version' };
+  let imported;
+  page.bridge.draftAttachmentTarget = async requested => { assert.equal(requested, id); return target; };
+  page.bridge.importAudio = async received => { imported = received; return null; };
+  await page.element('import-audio').listeners.get('click')();
+  assert.deepEqual(imported, target);
+  assert.equal(page.app.state.selectedId, id);
+  assert.equal(JSON.stringify(page.app.state.snapshot.meetings), before);
 });

@@ -91,3 +91,13 @@ test('configuration is explicit and link references only expose credential-free 
   assert.deepEqual(calendarJoinUrls({ joinUrls: ['javascript:alert(1)', 'https://user:password@example.test', 'https://example.test/join'] }), ['https://example.test/join']);
   assert.match(calendarOccurrenceTime(event), / - /);
 });
+
+test('attaching an occurrence freezes the explicit draft target without leaking it into later opens', async () => {
+  const calls = [];
+  const flow = create({ bridge: { readCalendarMeetingOccurrences: async query => result(query), createMeetingFromCalendar: async (key, scope) => { calls.push(scope); return { id: scope.target?.meetingId || 'new' }; } }, onPrepared() {} });
+  const target = { meetingId: 'draft-id', expectedVersion: 'opaque-version' };
+  flow.open(target); await flush(); flow.select('one'); await flow.prepare();
+  assert.deepEqual(calls[0].target, target);
+  flow.open(); await flush(); flow.select('one'); await flow.prepare();
+  assert.equal(calls[1].target, undefined);
+});

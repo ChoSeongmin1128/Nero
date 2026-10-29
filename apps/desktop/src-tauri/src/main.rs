@@ -1247,10 +1247,23 @@ async fn prepare_meeting_models(
         .prepare_meeting_models(include_summary.unwrap_or(false))
 }
 #[tauri::command]
+async fn draft_attachment_target(
+    window: WebviewWindow,
+    state: tauri::State<'_, DesktopState>,
+    meeting_id: String,
+) -> Result<nero_core::DraftAttachmentTarget, String> {
+    require_main(&window)?;
+    on_core(state.core.clone(), move |core| {
+        core.draft_attachment_target(&meeting_id)
+    })
+    .await
+}
+#[tauri::command]
 async fn import_audio(
     window: WebviewWindow,
     app: tauri::AppHandle,
     state: tauri::State<'_, DesktopState>,
+    target: Option<nero_core::DraftAttachmentTarget>,
 ) -> Result<Option<Progress>, String> {
     require_main(&window)?;
     state.processing.require_meeting_models()?;
@@ -1260,6 +1273,12 @@ async fn import_audio(
     let snapshot = on_core(state.core.clone(), |core| core.snapshot()).await?;
     if active_session(&snapshot).is_some() {
         return Err("녹음을 마친 뒤 음성을 가져와 주세요.".into());
+    }
+    if let Some(target) = target.clone() {
+        on_core(state.core.clone(), move |core| {
+            core.validate_draft_attachment(target)
+        })
+        .await?;
     }
     let source = tauri::async_runtime::spawn_blocking(move || {
         app.dialog()
@@ -1282,10 +1301,13 @@ async fn import_audio(
     let source = source
         .into_path()
         .map_err(|_| "로컬 음성 파일을 선택해 주세요.")?;
-    state
-        .processing
-        .import(state.core.clone(), source)
-        .map(Some)
+    match target {
+        Some(target) => state
+            .processing
+            .import_into_draft(state.core.clone(), source, target),
+        None => state.processing.import(state.core.clone(), source),
+    }
+    .map(Some)
 }
 #[tauri::command]
 async fn transcribe_audio(
@@ -1592,6 +1614,7 @@ fn main() {
             processing_status,
             prepare_model,
             prepare_meeting_models,
+            draft_attachment_target,
             import_audio,
             transcribe_audio,
             cancel_processing,

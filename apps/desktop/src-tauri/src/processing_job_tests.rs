@@ -973,7 +973,9 @@ fn baseline_checkpoint_publishes_bound_continuation_before_cancellation() {
     process
         .retry_with(&core, &id, |record, successor_id| {
             assert_eq!(record.kind, "diarize");
-            let mut successor = record.clone(); successor.id = successor_id.into(); successor.status = JobStatus::Queued;
+            let mut successor = record.clone();
+            successor.id = successor_id.into();
+            successor.status = JobStatus::Queued;
             process.save_job(successor).unwrap();
             assert_eq!(
                 core.transcript(&meeting_id).unwrap().unwrap().version,
@@ -983,7 +985,9 @@ fn baseline_checkpoint_publishes_bound_continuation_before_cancellation() {
         })
         .unwrap();
     assert!(process
-        .retry_with(&core, &id, |_, _| panic!("retry cannot be handed off twice"))
+        .retry_with(&core, &id, |_, _| panic!(
+            "retry cannot be handed off twice"
+        ))
         .is_err());
     assert_eq!(fs::read(audio).unwrap(), audio_before);
     assert_eq!(
@@ -1125,7 +1129,9 @@ fn concurrent_retry_consumes_one_handoff_and_failed_scheduling_restores_notice()
         one_process.retry_with(&one_core, &one_id, |record, successor_id| {
             entered_tx.send(()).unwrap();
             release_rx.recv_timeout(Duration::from_secs(3)).unwrap();
-            let mut successor = record.clone(); successor.id = successor_id.into(); successor.status = JobStatus::Queued;
+            let mut successor = record.clone();
+            successor.id = successor_id.into();
+            successor.status = JobStatus::Queued;
             one_process.save_job(successor).unwrap();
             Ok(())
         })
@@ -1166,7 +1172,9 @@ fn retry_reservation_failure_never_schedules_work() {
         .join("job-state/00000000000000000002.json");
     fs::write(&corrupt, b"invalid").unwrap();
     assert!(process
-        .retry_with(&core, &id, |_, _| panic!("reservation must be durable first"))
+        .retry_with(&core, &id, |_, _| panic!(
+            "reservation must be durable first"
+        ))
         .is_err());
     assert!(
         !process
@@ -1224,12 +1232,27 @@ fn legacy_postprocessing_without_bound_continuation_never_repeats_recognition() 
 fn retry_without_a_created_successor_restores_the_original_notice() {
     let (_temporary, process) = setup();
     let core = CoreHandle::open(&process.root).unwrap();
-    let mut original = record("summary-model"); original.status = JobStatus::Cancelled;
-    let id = original.id.clone(); process.save_job(original.clone()).unwrap();
+    let mut original = record("summary-model");
+    original.status = JobStatus::Cancelled;
+    let id = original.id.clone();
+    process.save_job(original.clone()).unwrap();
     assert!(process.retry_with(&core, &id, |_, _| Ok(())).is_err());
-    assert_eq!(process.journal.records().unwrap().into_iter().find(|value| value.id == id).unwrap(), original);
+    assert_eq!(
+        process
+            .journal
+            .records()
+            .unwrap()
+            .into_iter()
+            .find(|value| value.id == id)
+            .unwrap(),
+        original
+    );
     let recovered = process.journal.recover_available().unwrap();
-    let old = recovered.records.iter().find(|value| value.id == id).unwrap();
+    let old = recovered
+        .records
+        .iter()
+        .find(|value| value.id == id)
+        .unwrap();
     assert!(!old.acknowledged);
     assert_eq!(old.retry_successor_id, None);
 }
@@ -1238,16 +1261,51 @@ fn retry_without_a_created_successor_restores_the_original_notice() {
 fn retry_failure_after_successor_publication_does_not_restore_the_predecessor() {
     let (_temporary, process) = setup();
     let core = CoreHandle::open(&process.root).unwrap();
-    let mut original = record("summary-model"); original.status = JobStatus::Cancelled;
-    let id = original.id.clone(); process.save_job(original).unwrap();
-    assert!(process.retry_with(&core, &id, |previous, successor_id| {
-        let mut successor = previous.clone(); successor.id = successor_id.into(); successor.status = JobStatus::Failed;
-        process.save_job(successor)?;
-        Err("launch failed after durable job publication".into())
-    }).is_err());
+    let mut original = record("summary-model");
+    original.status = JobStatus::Cancelled;
+    let id = original.id.clone();
+    process.save_job(original).unwrap();
+    assert!(process
+        .retry_with(&core, &id, |previous, successor_id| {
+            let mut successor = previous.clone();
+            successor.id = successor_id.into();
+            successor.status = JobStatus::Failed;
+            process.save_job(successor)?;
+            Err("launch failed after durable job publication".into())
+        })
+        .is_err());
     let records = process.journal.records().unwrap();
     let old = records.iter().find(|value| value.id == id).unwrap();
     assert!(old.acknowledged);
     assert_eq!(old.phase, None);
-    assert!(records.iter().any(|value| Some(&value.id) == old.retry_successor_id.as_ref()));
+    assert!(records
+        .iter()
+        .any(|value| Some(&value.id) == old.retry_successor_id.as_ref()));
+}
+
+#[test]
+fn acknowledging_completed_work_keeps_the_completed_receipt_and_rejects_live_work() {
+    let (_temporary, process) = setup();
+    let mut completed = record("summary");
+    completed.status = JobStatus::Completed;
+    let id = completed.id.clone();
+    process.save_job(completed).unwrap();
+    let before = process
+        .records
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|job| job.id == id)
+        .unwrap()
+        .clone();
+    let progress = process.acknowledge(&id).unwrap();
+    let job = progress.jobs.iter().find(|job| job.id == id).unwrap();
+    assert!(job.acknowledged);
+    assert_eq!(job.status, "completed");
+    assert_eq!(status(&process, &id), before.status);
+    let mut running = record("transcribe");
+    running.status = JobStatus::Running;
+    let running_id = running.id.clone();
+    process.save_job(running).unwrap();
+    assert!(process.acknowledge(&running_id).is_err());
 }

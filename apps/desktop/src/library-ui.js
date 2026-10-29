@@ -83,6 +83,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     try {
       await finishEditing(() => {});
       const changed = state().libraryFilter !== filter;
+      state().notificationsOpen = false;
       state().libraryFilter = filter;
       state().libraryOpen = true;
       sidebar?.navigate();
@@ -289,7 +290,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
       if (focused) [...byId('folder-list').querySelectorAll('[data-library-filter]')].find(node => node.dataset.libraryFilter === focused)?.focus({ preventScroll: true });
     }
     const recent = recentLibraryMeetings(snapshot.meetings);
-    const activeId = state().libraryOpen ? null : state().selectedId;
+    const activeId = state().libraryOpen || state().notificationsOpen ? null : state().selectedId;
     const nextRecentKey = JSON.stringify([disabled, activeId, folders, recent.map(meeting => [meeting.id, meeting.title, meeting.folderId, meeting.recordedAt, meeting.createdAt, meeting.audio?.frames, meeting.audio?.sampleRate])]);
     byId('recent-section').hidden = !recent.length;
     if (recentKey !== nextRecentKey) {
@@ -318,15 +319,15 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
       cardsKey = nextCardsKey;
       byId('library-folders').innerHTML = folders.map(folder => `<button type="button" class="library-folder-card" data-library-filter="${escape(folder.id)}"${disabled ? ' disabled' : ''}>${icon('folder')}<span><strong title="${escape(folder.name)}">${escape(folder.name)}</strong><small>${filterLibraryMeetings(snapshot.meetings, folder.id).length}개 회의</small></span>${icon('chevron-right')}</button>`).join('');
     }
-    const selectedMeeting = state().libraryOpen ? null : current(state().selectedId);
+    const selectedMeeting = state().libraryOpen || state().notificationsOpen ? null : current(state().selectedId);
     const parent = selectedMeeting ? selectedMeeting.folderId || 'unfiled' : filter;
     const parentName = navigation.find(item => item.id === parent)?.name || '미분류';
     const nextBreadcrumbKey = JSON.stringify([filter, state().libraryOpen, selectedMeeting?.id, selectedMeeting?.title, parent, parentName, disabled]);
     if (breadcrumbKey !== nextBreadcrumbKey) {
       breadcrumbKey = nextBreadcrumbKey;
-      byId('navigation-breadcrumbs').innerHTML = `<button type="button" class="quiet small" data-library-filter="all"${disabled ? ' disabled' : ''}${!selectedMeeting && filter === 'all' ? ' aria-current="page"' : ''}>회의 목록</button>${parent !== 'all' ? `<span aria-hidden="true">/</span><button type="button" class="quiet small" data-library-filter="${escape(parent)}"${disabled ? ' disabled' : ''}${!selectedMeeting ? ' aria-current="page"' : ''}>${escape(parentName)}</button>` : ''}${selectedMeeting ? `<span aria-hidden="true">/</span><span class="breadcrumb-current" aria-current="page" title="${escape(selectedMeeting.title)}">${escape(selectedMeeting.title)}</span>` : ''}`;
+      byId('navigation-breadcrumbs').innerHTML = `<button type="button" class="quiet small" data-library-filter="all"${disabled ? ' disabled' : ''}${!selectedMeeting && filter === 'all' ? ' aria-current="page"' : ''}>회의 목록</button>${parent !== 'all' ? `<span class="breadcrumb-separator" aria-hidden="true">${icon('chevron-right')}</span><button type="button" class="quiet small" data-library-filter="${escape(parent)}"${disabled ? ' disabled' : ''}${!selectedMeeting ? ' aria-current="page"' : ''}>${escape(parentName)}</button>` : ''}${selectedMeeting ? `<span class="breadcrumb-separator" aria-hidden="true">${icon('chevron-right')}</span><span class="breadcrumb-current" aria-current="page" title="${escape(selectedMeeting.title)}">${escape(selectedMeeting.title)}</span>` : ''}`;
     }
-    const nextNavigationKey = `${state().libraryOpen}:${state().selectedId}:${filter}`;
+    const nextNavigationKey = `${state().notificationsOpen}:${state().libraryOpen}:${state().selectedId}:${filter}`;
     if (navigationKey !== nextNavigationKey) { navigationKey = nextNavigationKey; sidebar?.navigate(); }
     byId('library-title').textContent = navigation.find(item => item.id === filter)?.name || '회의';
     byId('library-count').innerHTML = state().libraryBusy ? '<span class="activity-spinner" aria-hidden="true"></span><span role="status">처리 중</span>' : `${overview ? filterLibraryMeetings(snapshot.meetings, 'all').length : visible.length}개`;
@@ -373,12 +374,6 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     clearDropTarget();
     dragPreview.clear();
   }
-  byId('create-meeting-options').addEventListener('click', event => {
-    if (byId('create-meeting-options').getAttribute('aria-disabled') === 'true') event.preventDefault();
-  });
-  owner?.addEventListener?.('click', event => {
-    if (event.target.closest?.('#create-calendar-meeting')) closeMenu(byId('new-meeting-menu'), true);
-  }, true);
   owner?.addEventListener?.('drop', () => { clearDropTarget(); dragPreview.clear(); }, true);
   owner?.addEventListener?.('dragend', clearDrag);
   dialog.addEventListener('submit', event => {

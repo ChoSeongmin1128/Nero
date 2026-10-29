@@ -1274,7 +1274,15 @@ impl Processing {
             + Send
             + 'static,
     ) -> Result<Progress, String> {
-        self.start_meeting_with_template(kind, meeting_id, core, required_fingerprint, None, None, action)
+        self.start_meeting_with_template(
+            kind,
+            meeting_id,
+            core,
+            required_fingerprint,
+            None,
+            None,
+            action,
+        )
     }
 
     pub(super) fn start_meeting_with_template(
@@ -1361,7 +1369,14 @@ impl Processing {
             })
             .transpose()?;
         let id = requested_id.unwrap_or_else(|| Uuid::new_v4().to_string());
-        if Uuid::parse_str(&id).is_err() || self.records.lock().unwrap().iter().any(|record| record.id == id) {
+        if Uuid::parse_str(&id).is_err()
+            || self
+                .records
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|record| record.id == id)
+        {
             return Err("작업 ID가 올바르지 않거나 이미 사용되었습니다.".into());
         }
         let created_at = now();
@@ -1539,7 +1554,11 @@ impl Processing {
         self.prepare_meeting_models_with_id(include_summary, None)
     }
 
-    fn prepare_meeting_models_with_id(self: &Arc<Self>, include_summary: bool, requested_id: Option<String>) -> Result<Progress, String> {
+    fn prepare_meeting_models_with_id(
+        self: &Arc<Self>,
+        include_summary: bool,
+        requested_id: Option<String>,
+    ) -> Result<Progress, String> {
         if self.shutting_down.load(Ordering::Acquire) {
             return Err("앱을 종료하고 있습니다.".into());
         }
@@ -1612,18 +1631,33 @@ impl Processing {
         self.prepare_named_model_with_id(manifest, kind, label, None)
     }
 
-    fn prepare_named_model_with_id(self: &Arc<Self>, manifest: &'static str, kind: &str, label: &'static str, requested_id: Option<String>) -> Result<Progress, String> {
+    fn prepare_named_model_with_id(
+        self: &Arc<Self>,
+        manifest: &'static str,
+        kind: &str,
+        label: &'static str,
+        requested_id: Option<String>,
+    ) -> Result<Progress, String> {
         crate::storage_space::check(&self.root, self.remaining_model_bytes(manifest, label)?)?;
-        self.start_scoped(kind, None, None, None, false, None, requested_id, move |this, cancel, _path| {
-            let total = serde_json::from_str::<Model>(manifest)
-                .map_err(message)?
-                .files
-                .iter()
-                .map(|file| file.bytes)
-                .sum();
-            this.prepare_files(manifest, label, &cancel, 0, total)?;
-            Ok(None)
-        })
+        self.start_scoped(
+            kind,
+            None,
+            None,
+            None,
+            false,
+            None,
+            requested_id,
+            move |this, cancel, _path| {
+                let total = serde_json::from_str::<Model>(manifest)
+                    .map_err(message)?
+                    .files
+                    .iter()
+                    .map(|file| file.bytes)
+                    .sum();
+                this.prepare_files(manifest, label, &cancel, 0, total)?;
+                Ok(None)
+            },
+        )
     }
     fn remaining_model_bytes(&self, manifest: &str, label: &str) -> Result<u64, String> {
         let model: Model = serde_json::from_str(manifest).map_err(message)?;
@@ -1860,7 +1894,8 @@ impl Processing {
             .ok_or("작업을 찾을 수 없습니다.")?;
         if !matches!(
             record.status,
-            JobStatus::Failed
+            JobStatus::Completed
+                | JobStatus::Failed
                 | JobStatus::Interrupted
                 | JobStatus::NeedsReview
                 | JobStatus::Cancelled
@@ -1923,20 +1958,35 @@ impl Processing {
         handed_off.updated_at = now().max(handed_off.updated_at);
         self.save_job(handed_off.clone())?;
         let scheduled = schedule(&record, &successor_id);
-        let known_successor = self.records.lock().unwrap().iter().any(|item| item.id == successor_id);
-        let exists = if known_successor { Ok(true) } else { self.journal.retry_successor_exists(&handed_off) }.map_err(|error| {
-            *self.journal_error.lock().unwrap() = Some(error.clone()); error
+        let known_successor = self
+            .records
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|item| item.id == successor_id);
+        let exists = if known_successor {
+            Ok(true)
+        } else {
+            self.journal.retry_successor_exists(&handed_off)
+        }
+        .map_err(|error| {
+            *self.journal_error.lock().unwrap() = Some(error.clone());
+            error
         })?;
         if !exists {
             self.save_job(record).map_err(|restore_error| {
-                *self.journal_error.lock().unwrap() = Some(restore_error.clone()); restore_error
+                *self.journal_error.lock().unwrap() = Some(restore_error.clone());
+                restore_error
             })?;
-            return Err(scheduled.err().unwrap_or_else(|| "재시도 작업이 만들어지지 않았습니다. 현재 상태를 확인해 주세요.".into()));
+            return Err(scheduled.err().unwrap_or_else(|| {
+                "재시도 작업이 만들어지지 않았습니다. 현재 상태를 확인해 주세요.".into()
+            }));
         }
         handed_off.phase = None;
         handed_off.message = "새 작업으로 다시 시도했습니다.".into();
         self.save_job(handed_off).map_err(|error| {
-            *self.journal_error.lock().unwrap() = Some(error.clone()); error
+            *self.journal_error.lock().unwrap() = Some(error.clone());
+            error
         })?;
         scheduled?;
         self.update(|_| ());
@@ -1949,10 +1999,23 @@ impl Processing {
         successor_id: &str,
     ) -> Result<(), String> {
         match record.kind.as_str() {
-            "setup" => self.prepare_meeting_models_with_id(record.include_summary, Some(successor_id.into()))?,
+            "setup" => self.prepare_meeting_models_with_id(
+                record.include_summary,
+                Some(successor_id.into()),
+            )?,
             "model" => self.prepare_meeting_models_with_id(false, Some(successor_id.into()))?,
-            "summary-model" => self.prepare_named_model_with_id(crate::summary::MANIFEST, "summary-model", "Gemma4-E4B", Some(successor_id.into()))?,
-            "speaker-model" => self.prepare_named_model_with_id(crate::diarization::MANIFEST, "speaker-model", "Nemotron3", Some(successor_id.into()))?,
+            "summary-model" => self.prepare_named_model_with_id(
+                crate::summary::MANIFEST,
+                "summary-model",
+                "Gemma4-E4B",
+                Some(successor_id.into()),
+            )?,
+            "speaker-model" => self.prepare_named_model_with_id(
+                crate::diarization::MANIFEST,
+                "speaker-model",
+                "Nemotron3",
+                Some(successor_id.into()),
+            )?,
             "transcribe" => self.transcribe_bound(
                 core,
                 record.meeting_id.clone().ok_or("회의가 없습니다.")?,
@@ -1986,15 +2049,39 @@ impl Processing {
         Ok(())
     }
     pub fn import(self: &Arc<Self>, core: CoreHandle, source: PathBuf) -> Result<Progress, String> {
+        self.import_target(core, source, None)
+    }
+
+    pub fn import_into_draft(
+        self: &Arc<Self>,
+        core: CoreHandle,
+        source: PathBuf,
+        target: nero_core::DraftAttachmentTarget,
+    ) -> Result<Progress, String> {
+        core.validate_draft_attachment(target.clone())
+            .map_err(message)?;
+        self.import_target(core, source, Some(target))
+    }
+
+    fn import_target(
+        self: &Arc<Self>,
+        core: CoreHandle,
+        source: PathBuf,
+        target: Option<nero_core::DraftAttachmentTarget>,
+    ) -> Result<Progress, String> {
         self.start_scoped(
             "import",
-            None,
-            Some(core.clone()),
+            target.as_ref().map(|target| target.meeting_id.clone()),
+            target.is_none().then(|| core.clone()),
             None,
             false,
             None,
             None,
             move |this, cancel, path| {
+                if let Some(target) = &target {
+                    core.validate_draft_attachment(target.clone())
+                        .map_err(message)?;
+                }
                 let source = source.canonicalize().map_err(message)?;
                 let mut input = plain_file(&source)?;
                 let ext = source
@@ -2052,8 +2139,39 @@ impl Processing {
                     .take(200)
                     .collect::<String>();
                 let meeting = this.commit_transcript_result(&cancel, || {
-                    core.import_audio(&title, &copied, prepared.path())
-                        .map_err(message)
+                    let attaching = target.is_some();
+                    let result = match target {
+                        Some(target) => {
+                            core.import_audio_into_draft(target, &copied, prepared.path())
+                        }
+                        None => core.import_audio(&title, &copied, prepared.path()),
+                    };
+                    let rejection = if attaching {
+                        match &result {
+                            Err(
+                                nero_core::CoreError::EditConflict
+                                | nero_core::CoreError::InvalidState(_)
+                                | nero_core::CoreError::RecordingBusy,
+                            ) => Some((
+                                "sourceChanged",
+                                crate::summary_failure::FailureKind::SourceChanged,
+                            )),
+                            Err(nero_core::CoreError::MeetingNotFound) => Some((
+                                "meetingUnavailable",
+                                crate::summary_failure::FailureKind::MeetingUnavailable,
+                            )),
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
+                    if let Some((phase, kind)) = rejection {
+                        this.update(|progress| {
+                            progress.phase = Some(phase.into());
+                            progress.failure_kind = Some(kind);
+                        });
+                    }
+                    result.map_err(message)
                 })?;
                 this.update(|progress| progress.meeting_id = Some(meeting.id.clone()));
                 Self::bind_job(&path, &meeting.id)?;

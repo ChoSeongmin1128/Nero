@@ -41,9 +41,9 @@ export function createCalendarMeetingFlow({ bridge, onPrepared, onConfigure = ()
   const flow = {
     getSnapshot: () => state,
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
-    open() {
+    open(target = null) {
       if (disposed || state.open) return;
-      publish({ open: true, calendar: null, occurrences: [], selectedKey: null, day: calendarDay(now()), timeZone: timeZone(), scopeRevision: null, error: '' });
+      publish({ target, open: true, calendar: null, occurrences: [], selectedKey: null, day: calendarDay(now()), timeZone: timeZone(), scopeRevision: null, error: '' });
       void flow.refresh();
     },
     close() {
@@ -65,7 +65,7 @@ export function createCalendarMeetingFlow({ bridge, onPrepared, onConfigure = ()
       if (!state.open || state.loading || state.creating || !state.selectedKey || state.scopeRevision == null || disposed) return false;
       const current = ++epoch;
       const key = state.selectedKey;
-      const scope = { day: state.day, timeZone: state.timeZone, scopeRevision: state.scopeRevision };
+      const scope = { day: state.day, timeZone: state.timeZone, scopeRevision: state.scopeRevision, ...(state.target ? { target: state.target } : {}) };
       publish({ creating: true, error: '' });
       try {
         const meeting = await bridge.createMeetingFromCalendar(key, scope);

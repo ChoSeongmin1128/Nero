@@ -1,5 +1,6 @@
 fn main() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+    let manifest = std::env::var_os("CARGO_MANIFEST_DIR").expect("Cargo manifest directory");
+    let root = std::path::Path::new(&manifest)
         .ancestors()
         .nth(3)
         .expect("repository root");
