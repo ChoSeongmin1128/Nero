@@ -28,13 +28,15 @@ test('product shares hover, pin and close navigation without hiding the meeting 
   const shell = document.querySelector('.workspace'), trigger = document.getElementById('navigation-toggle');
   document.querySelector('.navigation-rail').dispatchEvent(new window.PointerEvent('pointerenter', { pointerType: 'mouse' }));
   assert.equal(shell.classList.contains('nav-peek'), true);
-  assert.equal(trigger.parentElement.className, 'navigation-rail-head');
+  assert.equal(trigger.parentElement.className, 'navigation-brand');
+  assert.equal(document.querySelector('.navigation-rail').inert, true);
   assert.equal(document.querySelector('main').inert, false);
   trigger.click();
   assert.equal(window.localStorage.getItem('nero.sidebar.pinned'), 'true');
   trigger.click();
   assert.equal(shell.classList.contains('collapsed'), true);
   assert.equal(trigger.parentElement.className, 'navigation-rail-head');
+  assert.equal(document.querySelector('.navigation-rail').inert, false);
   assert.equal(document.querySelectorAll('#navigation-toggle').length, 1);
 });
 

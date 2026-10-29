@@ -27,11 +27,11 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
     shell.classList.toggle('nav-peek', temporary && !pinned);
     shell.classList.toggle('nav-pinned', pinned);
     aside.inert = !open;
-    if (rail) rail.inert = unavailable();
     aside.setAttribute('aria-label', '회의 탐색');
     trigger.setAttribute('aria-expanded', String(open));
-    const destination = pinned && !unavailable() ? brand : triggerHome;
+    const destination = open ? brand : triggerHome;
     if (trigger.parentElement !== destination) destination.append(trigger);
+    if (rail) rail.inert = unavailable() || open;
     trigger.setAttribute('aria-label', pinned ? '사이드바 접기' : temporary ? '사이드바 고정' : '사이드바 열기');
     trigger.title = trigger.getAttribute('aria-label');
     trigger.innerHTML = icons?.(temporary && !pinned ? 'pin' : pinned ? 'panel-left-close' : 'panel-left') || '';
