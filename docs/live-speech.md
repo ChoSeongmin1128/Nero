@@ -65,3 +65,10 @@ closed and required outputs have been synchronized. The OS reclaims only that
 child's resources. This containment is not an upstream teardown repair or proof
 of successful inference. Missing terminal input must still exit nonzero and
 must not produce a successful ASR artifact.
+
+On Windows, model/stream destruction does not establish that OpenMP worker threads
+have stopped. The shared speech-library owner keeps Windows DLL modules loaded
+until isolated process exit; it never unloads code underneath surviving native
+threads. macOS retains normal library destruction after completed streams close.
+This policy applies to both live and standalone speaker children and does not
+keep a model resident in the main application.

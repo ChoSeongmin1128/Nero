@@ -224,14 +224,24 @@ pub(super) fn entry(path: &Path) -> Result<ExitPolicy> {
             speaker_error = Some(error.to_string());
         } else {
             unsafe {
+                #[cfg(windows)]
+                eprintln!("native-cleanup: speaker-close");
                 ManuallyDrop::drop(&mut native);
+                #[cfg(windows)]
+                eprintln!("native-cleanup: speaker-closed");
             }
         }
     }
     if speaker_error.is_none() {
         unsafe {
+            #[cfg(windows)]
+            eprintln!("native-cleanup: asr-close");
             ManuallyDrop::drop(&mut asr);
+            #[cfg(windows)]
+            eprintln!("native-cleanup: asr-closed");
             ManuallyDrop::drop(&mut speaker_api);
+            #[cfg(windows)]
+            eprintln!("native-cleanup: api-released");
         }
     }
     save(

@@ -1,6 +1,7 @@
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import sys
 import tarfile
@@ -62,7 +63,8 @@ class PackagingTests(unittest.TestCase):
             self.assertFalse(alias.is_symlink())
             self.assertEqual(alias.read_bytes(), b"library")
             self.assertEqual((output / "share/licenses/nemo-speech/LICENSE").read_bytes(), b"license")
-            self.assertTrue((output / "bin/nemo-speech").stat().st_mode & 0o100)
+            if os.name != "nt":
+                self.assertTrue((output / "bin/nemo-speech").stat().st_mode & 0o100)
 
     def test_windows_layout_keeps_dlls_beside_executable_and_rejects_duplicates(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -88,7 +90,7 @@ class PackagingTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 build.verify_staged(root)
 
-    def test_package_rejects_changed_source_pin_and_links(self):
+    def test_package_rejects_changed_source_pin(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             receipt = self.fixture(root)
@@ -96,8 +98,17 @@ class PackagingTests(unittest.TestCase):
             (root / "runtime.json").write_text(json.dumps(receipt))
             with self.assertRaises(ValueError):
                 build.verify_staged(root)
+
+    def test_package_rejects_links(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
             self.fixture(root)
-            (root / "gpu/lib/alias.dylib").symlink_to(root / "gpu/lib/libggml.dylib")
+            try:
+                (root / "gpu/lib/alias.dylib").symlink_to(root / "gpu/lib/libggml.dylib")
+            except OSError as error:
+                if os.name == "nt" and getattr(error, "winerror", None) == 1314:
+                    self.skipTest("Symbolic-link privilege is unavailable on this Windows host")
+                raise
             with self.assertRaises(ValueError):
                 build.verify_staged(root)
 

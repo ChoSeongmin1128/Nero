@@ -22,6 +22,7 @@ mod recorder_geometry;
 mod recorder_policy;
 mod speaker_worker;
 mod speech_audio;
+mod speech_library;
 mod storage_space;
 mod summary;
 mod summary_checkpoint;

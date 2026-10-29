@@ -1,4 +1,4 @@
-use libloading::Library;
+use crate::speech_library::SpeechLibrary;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -119,7 +119,7 @@ type Probs = unsafe extern "C" fn(*const c_void, *mut f32, usize) -> i32;
 type Text = unsafe extern "C" fn() -> *const c_char;
 
 pub(super) struct Api {
-    _library: Library,
+    _library: SpeechLibrary,
     create: Create,
     destroy: Destroy,
     slots: Slots,
@@ -153,16 +153,8 @@ fn loader_error(error: libloading::Error, backend: Backend) -> WorkerError {
 
 impl Api {
     pub(super) fn load(path: &Path, backend: Backend) -> Result<Self> {
-        #[cfg(windows)]
-        let library: Library = unsafe {
-            // Resolve dependencies beside the verified DLL and in System32 only.
-            libloading::os::windows::Library::load_with_flags(path, 0x0000_0100 | 0x0000_0800)
-        }
-        .map_err(|error| loader_error(error, backend))?
-        .into();
-        #[cfg(not(windows))]
         let library =
-            unsafe { Library::new(path) }.map_err(|error| loader_error(error, backend))?;
+            unsafe { SpeechLibrary::load(path) }.map_err(|error| loader_error(error, backend))?;
         unsafe {
             macro_rules! symbol {
                 ($name:literal, $ty:ty) => {

@@ -1,6 +1,6 @@
 //! Pinned C ABI for one complete recognition stream. The isolated live worker
 //! owns this handle; publication and source validation remain in the parent.
-use libloading::Library;
+use crate::speech_library::SpeechLibrary;
 use serde_json::{json, Value};
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::path::Path;
@@ -88,7 +88,7 @@ type Final = unsafe extern "C" fn(*const c_void) -> bool;
 type Duration = unsafe extern "C" fn(*const c_void) -> f32;
 
 pub(super) struct Asr {
-    _library: Library,
+    _library: SpeechLibrary,
     recognizer: *mut c_void,
     stream: *mut c_void,
     destroy: Destroy,
@@ -120,13 +120,7 @@ fn text(pointer: *const c_char) -> Result<String> {
 }
 impl Asr {
     pub(super) fn open(path: &Path, weights: &Path, gpu: i32) -> Result<Self> {
-        #[cfg(windows)]
-        let library: Library =
-            unsafe { libloading::os::windows::Library::load_with_flags(path, 0x100 | 0x800) }
-                .map_err(|e| e.to_string())?
-                .into();
-        #[cfg(not(windows))]
-        let library = unsafe { Library::new(path) }.map_err(|e| e.to_string())?;
+        let library = unsafe { SpeechLibrary::load(path) }.map_err(|e| e.to_string())?;
         unsafe {
             macro_rules! get {
                 ($name:literal, $t:ty) => {
