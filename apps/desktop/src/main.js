@@ -8,7 +8,7 @@ import '../../../design-system/react-controls.jsx';
 import * as bridge from './bridge.js';
 import { ui, icon, escape, button, duration, recordingStatus, statusMarkup, sessionControls, applySystemAppearance } from './ui.js';
 import { processingFeedback, canRetryProcessing, canDismissProcessing } from './processing-feedback.js';
-import { processingJobs, pendingJob, processingResults } from './processing-state.js';
+import { processingJobs, pendingJob, processingResults, latestMeetingProcessing, processingNotices } from './processing-state.js';
 import { mountLibrary, filterLibraryMeetings, renderMeetingMenu } from './library-ui.js';
 import { mountSpeakers } from './speakers-ui.js';
 import { createMeetingSearch, mountDocumentSearch } from './meeting-search.js';
@@ -918,7 +918,8 @@ const processingActive = () => state.processing.status === 'running';
 
 function renderProcessing() {
   rememberProcessingFocus();
-  const progress = { ...state.processing, ...processingJobs(state.processing).find(job => job.id === state.processing.id) };
+  const notices = processingNotices(state.processing, !state.libraryOpen && !state.setupRequested ? currentMeeting()?.id : undefined);
+  const progress = notices.primary ? { ...(state.processing.id === notices.primary.id ? state.processing : {}), ...notices.primary } : {};
   const feedback = processingFeedback(progress, { cancelling: state.processingCancellingId === progress.id || processingActions.get(progress.id) === 'cancel' });
   byId('import-audio').disabled = !state.connected || state.busy || Boolean(pendingJob(state.processing, { kind: 'import' })) || Boolean(activeSession());
   byId('processing').hidden = !feedback.visible || progress.kind === 'setup';
@@ -955,7 +956,7 @@ function renderProcessing() {
     byId(id).dataset.jobId = progress.id || '';
     byId(id).dataset.jobAction = action;
   }
-  renderProcessingJobs(feedback.visible && progress.kind !== 'setup' ? progress.id : null);
+  renderProcessingJobs(notices.background.filter(job => job.kind !== 'setup' || byId('setup-screen').hidden));
 }
 
 function rememberProcessingFocus() {
@@ -973,7 +974,7 @@ function restoreProcessingFocus() {
   const active = document.activeElement;
   if (active && active !== document.body && active !== saved.target && active.isConnected !== false) { processingFocus = null; return; }
   if (processingActions.has(saved.id)) return;
-  const usable = node => node && !node.disabled && !node.hidden && node.isConnected !== false && !node.closest?.('[hidden]');
+  const usable = node => node && !node.disabled && !node.hidden && node.isConnected !== false && !node.closest?.('[hidden], [inert]');
   const region = byId('processing-jobs');
   const rows = [...region.querySelectorAll('[data-job-id]')].filter(usable);
   const banner = ['cancel-processing', 'retry-processing', 'open-processing-meeting', 'dismiss-processing'].map(byId).filter(node => !byId('processing').hidden && usable(node));
@@ -983,28 +984,34 @@ function restoreProcessingFocus() {
   const previousIds = saved.index < 0 ? [] : saved.ids.slice(0, saved.index).reverse();
   const next = nextIds.map(id => forJob(id)[0]).find(Boolean);
   const previous = previousIds.map(id => forJob(id)[0]).find(Boolean);
-  const target = same.find(node => node.dataset.jobAction === saved.action) || same[0] || next || previous
+  const successor = forJob(processingJobs(state.processing).find(job => job.id === saved.id)?.retrySuccessorId)[0];
+  const target = same.find(node => node.dataset.jobAction === saved.action) || same[0] || successor || next || previous
     || rows[Math.max(0, saved.index)] || rows[rows.length - 1] || banner[0]
-    || ['settings', 'library-title'].map(byId).find(usable);
+    || ['settings', 'navigation-toggle', 'library-title'].map(byId).find(usable);
   processingFocus = null;
   target?.focus({ preventScroll: true });
 }
 
-function renderProcessingJobs(visibleId) {
+function renderProcessingJobs(jobs) {
   const region = byId('processing-jobs');
-  const jobs = processingJobs(state.processing).filter(job => job.id && job.id !== visibleId && job.acknowledged !== true && (job.status === 'queued' || canDismissProcessing(job)));
+  const disclosure = region.querySelector('details');
+  const summaryFocused = Boolean(disclosure && document.activeElement === disclosure.querySelector('summary'));
+  const expanded = disclosure?.open || Boolean(document.activeElement?.dataset?.jobId && region.contains(document.activeElement));
   region.hidden = !jobs.length;
-  setHTML('processing-jobs', jobs.map(job => {
+  setHTML('processing-jobs', jobs.length ? `<details${expanded ? ' open' : ''}><summary>다른 작업 ${jobs.length}개 진행 중</summary>` + jobs.map(job => {
     const owner = state.snapshot.meetings.find(meeting => meeting.id === job.meetingId);
     const pending = processingActions.get(job.id);
     const feedback = processingFeedback(job, { cancelling: pending === 'cancel' });
     const detail = feedback.detail;
-    const action = job.status === 'queued' ? ['cancel', pending === 'cancel' ? '취소 중' : '취소']
-      : canRetryProcessing(job) ? ['retry', pending === 'retry' ? '준비 중' : '다시 시도'] : null;
-    const attrs = `data-job-id="${escape(job.id)}"${pending ? ' disabled' : ''}`;
+    const action = feedback.cancelVisible ? ['cancel', feedback.cancelLabel] : null;
+    const attrs = `data-job-id="${escape(job.id)}"${pending || feedback.cancelDisabled ? ' disabled' : ''}`;
     const controls = `${action ? `<button type="button" class="small" data-job-action="${action[0]}" ${attrs}>${action[1]}</button>` : ''}${owner ? `<button type="button" class="quiet small" data-job-action="open" ${attrs}>회의 열기</button>` : ''}${canDismissProcessing(job) ? `<button type="button" class="quiet small" data-job-action="ack" ${attrs}>알림 닫기</button>` : ''}`;
-    return `<div class="processing-job"><div class="processing-job-copy"><strong>${owner ? escape(owner.title) + ': ' : ''}${escape(feedback.title)}</strong>${detail ? `<p>${escape(detail)}</p>` : ''}${processingErrors.has(job.id) ? `<p class="field-error" role="alert">${escape(processingErrors.get(job.id))}</p>` : ''}</div><div class="processing-job-actions">${controls}</div></div>`;
-  }).join(''));
+    return `<div class="processing-job"><div class="processing-job-copy"><strong>${owner ? escape(owner.title) + ': ' : ''}${escape(feedback.title)}${feedback.progress ? ` (${feedback.progress.percent}%)` : ''}</strong>${detail ? `<p>${escape(detail)}</p>` : ''}${processingErrors.has(job.id) ? `<p class="field-error" role="alert">${escape(processingErrors.get(job.id))}</p>` : ''}</div><div class="processing-job-actions">${controls}</div></div>`;
+  }).join('') + '</details>' : '');
+  if (summaryFocused && (!document.activeElement || document.activeElement === document.body || document.activeElement.isConnected === false)) {
+    const target = region.querySelector('summary') || ['settings', 'navigation-toggle', 'library-title'].map(byId).find(node => !node.hidden && !node.closest?.('[hidden], [inert]'));
+    target?.focus({ preventScroll: true });
+  }
   restoreProcessingFocus();
 }
 
@@ -1184,7 +1191,8 @@ function renderSummary(meeting) {
   byId('summarize').hidden = !hasTranscript || Boolean(state.summaryLoadError) || !state.summaryLoaded || !progress.summaryReady || !progress.summarySupported;
   byId('summary-template-choice').hidden = byId('summarize').hidden;
   byId('summarize').disabled = !hasTranscript || !progress.summaryReady || !progress.summarySupported || ownJob || state.busy;
-  const failed = processingJobs(state.processing).some(job => job.kind === 'summary' && job.status === 'failed' && job.acknowledged !== true && job.meetingId === meeting.id);
+  const latest = latestMeetingProcessing(state.processing, meeting.id);
+  const failed = latest?.kind === 'summary' && latest.status === 'failed' && canDismissProcessing(latest);
   byId('summarize').textContent = failed ? '현재 내용 요약' : doc ? '다시 요약' : '요약하기';
   byId('summarize').className = doc ? 'small quiet' : 'small primary';
   documentActions.summary.update({ id: meeting.id, available: Boolean(doc), busy: state.busy || ownJob });
@@ -1257,11 +1265,11 @@ byId('import-audio').addEventListener('click', () => run(() => finishEditing(asy
   const progress = await bridge.importAudio();
   if (progress) await acceptProcessing(progress);
 })));
-byId('cancel-processing').addEventListener('click', () => { void cancelProcessing(); });
-byId('retry-processing').addEventListener('click', () => { void retryProcessing(); });
-byId('dismiss-processing').addEventListener('click', () => { void acknowledgeProcessing(); });
+byId('cancel-processing').addEventListener('click', () => { void cancelProcessing(byId('cancel-processing').dataset.jobId); });
+byId('retry-processing').addEventListener('click', () => { void retryProcessing(byId('retry-processing').dataset.jobId); });
+byId('dismiss-processing').addEventListener('click', () => { void acknowledgeProcessing(byId('dismiss-processing').dataset.jobId); });
 byId('open-processing-meeting').addEventListener('click', () => {
-  const job = processingJobs(state.processing).find(item => item.id === state.processing.id);
+  const job = processingJobs(state.processing).find(item => item.id === byId('open-processing-meeting').dataset.jobId);
   if (job?.meetingId) void run(() => selectMeeting(job.meetingId));
 });
 byId('processing-jobs').addEventListener('click', event => {

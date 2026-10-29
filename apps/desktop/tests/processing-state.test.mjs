@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { processingJobs, pendingJob, processingResults } from '../src/processing-state.js';
+import { processingJobs, pendingJob, processingResults, latestMeetingProcessing, processingNotices } from '../src/processing-state.js';
 
 test('pending ownership follows the meeting and model kind rather than the foreground download', () => {
   const progress = { id: 'download', kind: 'summary-model', status: 'running', jobs: [
@@ -56,5 +56,42 @@ test('recognition becomes readable before speaker analysis and stays available o
     assert.deepEqual(processingResults(speaker, finished), [finished]);
     assert.deepEqual(processingResults(recognition, finished), [finished]);
     assert.deepEqual(processingResults(finished, finished), []);
+  }
+});
+
+const noticeJob = (id, createdAt, status = 'cancelled', extra = {}) => ({ id, createdAt, meetingId: 'a', kind: 'summary', status, retryable: true, ...extra });
+
+test('only the selected meeting has a terminal notice and unrelated work remains discoverable', () => {
+  const stopped = noticeJob('stopped', 10);
+  const active = noticeJob('other', 20, 'running', { meetingId: 'b' });
+  const progress = { id: active.id, ...active, jobs: [stopped, active] };
+  assert.equal(processingNotices(progress, 'a').primary.id, 'stopped');
+  assert.deepEqual(processingNotices(progress, 'a').background.map(job => job.id), ['other']);
+  assert.equal(processingNotices(progress).primary, undefined);
+  assert.deepEqual(processingNotices(progress).background.map(job => job.id), ['other']);
+});
+
+test('new success, acknowledgement and retry handoff never reveal an earlier outcome', () => {
+  const old = noticeJob('old', 10);
+  for (const latest of [noticeJob('new', 20, 'completed'), noticeJob('new', 20, 'cancelled', { acknowledged: true }), noticeJob('new', 20, 'cancelled', { retrySuccessorId: 'successor' })]) {
+    assert.equal(processingNotices({ jobs: [latest, old] }, 'a').primary, undefined);
+  }
+  const latest = noticeJob('retry', 30, 'failed');
+  assert.equal(processingNotices({ jobs: [{ ...old, retrySuccessorId: 'retry' }, latest] }, 'a').primary.id, 'retry');
+});
+
+test('creation time determines the latest result independently of journal array and acknowledgement update order', () => {
+  const old = noticeJob('old', 10, 'cancelled', { updatedAt: 100 });
+  const latest = noticeJob('latest', 20, 'completed', { updatedAt: 20 });
+  assert.equal(latestMeetingProcessing({ jobs: [old, latest] }, 'a').id, 'latest');
+  assert.equal(latestMeetingProcessing({ jobs: [latest, old] }, 'a').id, 'latest');
+});
+
+test('missing or tied creation evidence does not guess a historical outcome and never hides active work', () => {
+  for (const createdAt of [undefined, 10]) {
+    const progress = { jobs: [noticeJob('old', 10), noticeJob('unknown', createdAt)] };
+    assert.equal(processingNotices(progress, 'a').primary, undefined);
+    progress.jobs.push(noticeJob('running', undefined, 'cancelling'));
+    assert.equal(processingNotices(progress, 'a').primary.id, 'running');
   }
 });

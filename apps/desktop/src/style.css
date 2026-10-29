@@ -146,6 +146,7 @@ html.recorder-document { background: transparent; }
 .processing-notice progress { width: 140px; height: 5px; accent-color: var(--accent-fill); }
 .processing-notice .activity-spinner, .setup-progress-region .activity-spinner { color: var(--accent); }
 .processing-inline, .detail-actions { display: inline-flex; align-items: center; gap: 7px; }
+.processing-jobs > details > summary { cursor: pointer; padding: 8px 24px; font-size: var(--text-caption-size); color: var(--text-secondary); }
 .processing-jobs { flex: none; max-height: 12rem; overflow: auto; border-bottom: 1px solid var(--border); background: var(--surface-secondary); }
 .processing-job { display: flex; align-items: center; gap: 10px; padding: 8px 24px; }
 .processing-job + .processing-job { border-top: 1px solid var(--border); }

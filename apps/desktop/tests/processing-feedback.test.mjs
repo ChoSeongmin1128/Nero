@@ -18,6 +18,12 @@ test('cancelled processing exposes recovery and dismissal without a false close 
 
 const running = (kind, extra = {}) => ({ id: 'job', kind, status: 'running', ...extra });
 
+test('a retry predecessor has no retry or acknowledgement action even without legacy acknowledgement metadata', () => {
+  const job = { id: 'prior', kind: 'summary', status: 'cancelled', retryable: true, acknowledged: false, retrySuccessorId: 'next' };
+  assert.equal(canRetryProcessing(job), false);
+  assert.equal(canDismissProcessing(job), false);
+});
+
 test('queued work is cancellable without pretending inference is running', () => {
   const job = { id: 'waiting', kind: 'summary', status: 'queued' };
   const feedback = processingFeedback(job);
@@ -82,6 +88,7 @@ test('progress clamps malformed byte counters without changing task completion s
 test('cancel requests remain active and disable repeated cancellation until acknowledged', () => {
   for (const [job, options] of [
     [running('summary', { message: '취소 중' }), {}],
+    [running('summary', { status: 'cancelling' }), {}],
     [running('summary', { message: '요약 중' }), { cancelling: true }],
   ]) {
     const feedback = processingFeedback(job, options);

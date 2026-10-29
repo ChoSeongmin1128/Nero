@@ -8,13 +8,19 @@ the private installation and evaluation receipts.
 
 ## Release state
 
-Nero 0.0.1 build 29/agent23 has signed/notarized macOS arm64 artifacts and is locally
-installed. The canonical installer replaced only the app by rename under the writer
-lock. Existing library hashes, model metadata and installation-time connection state
-were preserved without copying audio, models or a full data snapshot. Native settings
-navigation, copy-format menus, citation defaults, focus restoration and existing meeting
-access have been observed. The rollback app was retired after acceptance; current/previous
-DMGs and small provenance receipts are retained.
+Nero 0.0.1 build 34/agent24 has signed/notarized macOS arm64 artifacts and was
+locally installed by the canonical app-only installer. Existing library hashes,
+model metadata and agent connection state were preserved without copying audio,
+models or a full snapshot. Visual acceptance is incomplete: the creation action,
+navigation hierarchy and historical processing-notice presentation require revision.
+No further app replacement is scheduled until the revised visual flow is reviewed.
+
+Current source scopes processing feedback to the selected meeting's latest relevant
+job using journal creation time and retry lineage. Older results are not global
+notifications; other running work has a compact collapsed disclosure. Existing job
+history is not changed or acknowledged by this projection. This source change is not
+in the installed build34. The navigation prototype is a visual proposal, not proof of
+native operation or completion of shared component adoption.
 
 External agents can read a summary context and explicitly save their generated summary
 through the running application's writer. Source/notes/current-summary checks reject

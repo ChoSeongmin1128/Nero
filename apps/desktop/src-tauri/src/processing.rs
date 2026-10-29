@@ -119,6 +119,8 @@ pub struct JobView {
     pub message: String,
     pub retryable: bool,
     pub acknowledged: bool,
+    pub created_at: u64,
+    pub retry_successor_id: Option<String>,
     pub failure_kind: Option<crate::summary_failure::FailureKind>,
 }
 
@@ -419,6 +421,8 @@ impl Processing {
                     phase: record.phase.clone(),
                     message: record.message.clone(),
                     acknowledged: record.acknowledged,
+                    created_at: record.created_at,
+                    retry_successor_id: record.retry_successor_id.clone(),
                     failure_kind: record.failure_kind,
                     retryable: matches!(
                         record.status,
@@ -3450,6 +3454,20 @@ mod tests {
 #[cfg(test)]
 mod setup_tests {
     use super::*;
+    #[test]
+    fn job_view_serializes_existing_creation_and_retry_lineage() {
+        let view = JobView {
+            id: "prior".into(),
+            created_at: 1234,
+            retry_successor_id: Some("successor".into()),
+            ..Default::default()
+        };
+        let serialized = serde_json::to_value(view).unwrap();
+        assert_eq!(serialized["createdAt"], 1234);
+        assert_eq!(serialized["retrySuccessorId"], "successor");
+        assert!(serialized.get("created_at").is_none());
+    }
+
     #[test]
     fn meeting_entry_requires_speech_but_not_optional_summary() {
         for supported in [false, true] {

@@ -1,6 +1,6 @@
 const modelJobs = new Set(['setup', 'model', 'summary-model', 'speaker-model']);
-export const canRetryProcessing = job => job?.acknowledged !== true && job?.retryable === true && ['interrupted', 'failed', 'cancelled'].includes(job?.status);
-export const canDismissProcessing = job => job?.acknowledged !== true && ['interrupted', 'failed', 'cancelled', 'needsReview'].includes(job?.status);
+export const canRetryProcessing = job => job?.acknowledged !== true && !job?.retrySuccessorId && job?.retryable === true && ['interrupted', 'failed', 'cancelled'].includes(job?.status);
+export const canDismissProcessing = job => job?.acknowledged !== true && !job?.retrySuccessorId && ['interrupted', 'failed', 'cancelled', 'needsReview'].includes(job?.status);
 const jobTitles = {
   cleanup: '임시 파일 정리',
   setup: '모델 준비',
@@ -65,11 +65,11 @@ function failureDiagnostics(job) {
 }
 
 export function processingFeedback(job = {}, { cancelling = false } = {}) {
-  const active = Boolean(job.id) && job.status === 'running';
+  const active = Boolean(job.id) && ['running', 'cancelling'].includes(job.status);
   const queued = Boolean(job.id) && job.status === 'queued';
   const committing = active && (job.committing === true
     || (job.kind === 'summary' && job.summaryCommitting === true));
-  const cancelRequested = (active || queued) && !committing && (cancelling || job.message === '취소 중');
+  const cancelRequested = (active || queued) && !committing && (cancelling || job.status === 'cancelling' || job.message === '취소 중');
   const title = jobTitles[job.kind] || '처리';
   let progress = null;
   // Byte counts describe model preparation. Inference messages and chunk counts
@@ -105,7 +105,7 @@ export function processingFeedback(job = {}, { cancelling = false } = {}) {
   const repeated = (job.kind === 'transcribe' && message === '텍스트로 변환 중')
     || (job.kind === 'summary' && message === '요약 중');
   return {
-    visible: Boolean(job.id) && job.acknowledged !== true && ['running', 'failed', 'cancelled', 'queued', 'interrupted', 'needsReview'].includes(job.status),
+    visible: Boolean(job.id) && job.acknowledged !== true && ['running', 'cancelling', 'failed', 'cancelled', 'queued', 'interrupted', 'needsReview'].includes(job.status),
     active,
     state: cancelRequested ? 'cancelling' : active ? 'running' : job.status || 'idle',
     icon: job.status === 'queued' ? 'clock' : ['failed', 'needsReview'].includes(job.status) ? 'triangle-alert' : job.status === 'interrupted' ? 'pause' : 'circle-slash',
