@@ -12,9 +12,9 @@ small,.muted{color:var(--text-secondary)}
 .preview-tools{height:48px;display:flex;align-items:center;gap:12px;padding:0 20px;border-bottom:1px solid var(--border)}
 .preview-tools small{margin-right:auto}
 .shell{height:calc(100dvh - 48px);display:grid;grid-template-columns:224px minmax(0,1fr);background:var(--surface);position:relative}
-.shell.collapsed{grid-template-columns:0 minmax(0,1fr)}
+
 aside{min-width:0;overflow:auto;background:var(--surface-secondary);border-right:1px solid var(--border);display:flex;flex-direction:column;padding:18px 12px;gap:18px}
-.collapsed aside{visibility:hidden;padding:0}
+
 .brand{display:flex;justify-content:space-between;align-items:center;padding:0 8px;font-size:20px;font-weight:700}
 .new{justify-content:center;background:var(--accent-fill);color:var(--on-accent);border:0}
 .nav{display:grid;gap:3px}
@@ -65,16 +65,16 @@ aside{min-width:0;overflow:auto;background:var(--surface-secondary);border-right
 .utterance small{display:block;margin-bottom:5px}
 .backdrop{display:none}
 .shell.half{max-width:760px;margin:auto;border-inline:1px solid var(--border)}
-.shell.half aside{position:absolute;width:224px;inset:0 auto 0 0;z-index:5}
-.shell.half{grid-template-columns:1fr}
-.shell.half.collapsed aside{display:none}
-.shell.half:not(.collapsed) .backdrop{display:block;position:absolute;inset:0;background:var(--overlay);z-index:4;border:0}
+
+
+
+
 .shell.half .page{padding:22px}
 .shell.half .transcript{width:100%;margin-left:0;border:0;padding-left:0}
 .shell.half .detail-body:has(.transcript:not([hidden])) .summary{display:none}
-@media(max-width:900px){.shell{grid-template-columns:1fr}
-.shell aside{position:absolute;width:224px;inset:0 auto 0 0;z-index:5}
-.shell:not(.collapsed) .backdrop{display:block;position:absolute;inset:0;background:var(--overlay);z-index:4;border:0}
+@media(max-width:900px){
+
+
 .page{padding:22px}
 .transcript{width:100%;margin-left:0;border:0;padding-left:0}
 .detail-body:has(.transcript:not([hidden])) .summary{display:none}
@@ -83,3 +83,25 @@ aside{min-width:0;overflow:auto;background:var(--surface-secondary);border-right
 @media(prefers-reduced-motion:no-preference){button{transition:background .12s}
 }
 
+/* Temporary navigation floats; only pinned navigation reserves layout space. */
+.shell.collapsed{grid-template-columns:0 minmax(0,1fr)}
+.shell.collapsed aside{visibility:hidden;pointer-events:none}
+.shell.collapsed.nav-peek aside{visibility:visible;display:flex;pointer-events:auto;position:absolute;inset:8px auto auto 8px;width:224px;max-height:calc(100% - 16px);height:auto;min-height:520px;padding:18px 12px;z-index:6;border:1px solid var(--border);border-radius:var(--radius);box-shadow:0 12px 32px var(--overlay)}
+.shell.nav-pinned{grid-template-columns:224px minmax(0,1fr)}
+.shell.nav-pinned aside{position:static;width:auto;visibility:visible;pointer-events:auto;padding:18px 12px}
+.shell.half.nav-pinned{grid-template-columns:224px minmax(0,1fr)}
+.nav-hover-edge{position:absolute;inset:0 auto 0 0;width:10px;z-index:5}
+.recent summary{list-style:none;display:flex;align-items:center;gap:8px;border-radius:var(--control-radius);min-height:32px;padding:6px 8px}
+.recent summary::-webkit-details-marker{display:none}
+.recent summary:hover{background:var(--hover);color:var(--text)}
+.recent-chevron{display:flex;align-items:center;justify-content:center}
+.recent-chevron svg{width:14px;height:14px;transform:rotate(-90deg)}
+.recent[open] .recent-chevron svg{transform:none}
+.breadcrumbs{display:flex;align-items:center;gap:4px;min-width:0;color:var(--text-secondary);font-size:13px}
+.breadcrumbs button{flex:none;min-height:28px;padding:4px 6px;color:var(--text-secondary)}
+.breadcrumbs button:hover{color:var(--text)}
+.breadcrumbs [aria-current=page]{color:var(--text)}
+.breadcrumb-current{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:260px}
+@media(max-width:600px){.shell.nav-pinned{grid-template-columns:0 minmax(0,1fr)}
+.shell.nav-pinned aside{position:absolute;inset:8px auto 8px 8px;width:224px;z-index:6;border:1px solid var(--border);border-radius:var(--radius);box-shadow:0 12px 32px var(--overlay)}
+.breadcrumb-current{max-width:100px}}
