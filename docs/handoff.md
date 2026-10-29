@@ -29,6 +29,14 @@ Host package installation and existing live sessions remain separate; a current 
 installation remains connected while per-conversation sessions start or stop. Older-only
 sessions have a new-conversation notice without requiring reinstall or whole-app restart.
 
+## Notarized candidate
+
+Build29/source91a8561 retains the signed agent23 payload and improves stable installation
+readiness, ChatGPT naming and Google Desktop authorization/callback completion. App/DMG
+notarization is accepted with verified embedded-app identity. Installation remains pending
+while the installed app records. Actual Google reauthorization, callback auto-close and
+reminder delivery remain distinct from mocked/endpoint and unit checks.
+
 ## Native rewrite source
 
 - Meeting lists use direct checkbox/modifier selection without a selection mode.
