@@ -8,13 +8,13 @@ the private installation and evaluation receipts.
 
 ## Release state
 
-Nero 0.0.1 build 27 has signed/notarized macOS arm64 artifacts and is locally installed.
-Agent component 0.0.1-nero.22 reuses the exact signed CLI and integration files from
-build 26. Existing library hashes, model metadata and connection state were preserved
-without copying user audio, models or a full data snapshot. Native settings navigation,
-template draft cancellation and selection/hover distinction have been observed in the
-installed app. The rollback app was retired after acceptance; current/previous DMGs
-and small provenance receipts are retained.
+Nero 0.0.1 build 28/agent23 has signed/notarized macOS arm64 artifacts and is locally
+installed. The canonical installer replaced only the app by rename under the writer
+lock. Existing library hashes, model metadata and installation-time connection state
+were preserved without copying audio, models or a full data snapshot. Native settings
+navigation, copy-format menus, citation defaults, focus restoration and existing meeting
+access have been observed. The rollback app was retired after acceptance; current/previous
+DMGs and small provenance receipts are retained.
 
 External agents can read a summary context and explicitly save their generated summary
 through the running application's writer. Source/notes/current-summary checks reject
@@ -23,10 +23,10 @@ Host package updates and actual live tool acceptance remain separate from app pa
 client configuration was not rewritten. Windows-device and model-quality qualification
 remain separate. Source commits and hashes are in [Release history](release-history.md).
 
-Build 28/agent23 has signed/notarized arm64 candidate artifacts. Its source implements
-copy formats, external citation policy, four settings groups, Calendar reminders and
-separate host-installation/session status. Installed-app acceptance remains pending;
-source tests and notarization are not native capture/Calendar/Windows qualification.
+Build 28 source tests and installed-screen checks do not establish new microphone
+capture, Google account authorization/reminder delivery or Windows-device qualification.
+Host package installation and existing live sessions remain separate; an up-to-date
+package can require refreshing an older session without reinstalling the package.
 
 ## Native rewrite source
 
