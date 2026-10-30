@@ -1231,19 +1231,12 @@ function renderSummary(meeting) {
   const progress = { ...state.processing, ...pendingJob(state.processing, { meetingId: meeting.id, kind: 'summary' }) };
   const doc = state.summary?.document;
   const result = resultPreview(meeting);
-  const previewing = !doc && result.visible;
   const hasTranscript = Boolean(state.transcriptDraft?.doc?.segments?.length);
   const stale = summaryIsStale();
   const ownJob = Boolean(pendingJob(progress, { meetingId: meeting.id, kind: 'summary' }));
   byId('summary-section').setAttribute('aria-busy', String(ownJob || result.busy || !state.summaryLoaded || !state.transcriptLoaded));
-  byId('summary-section').setAttribute('aria-label', previewing ? '음성 기록' : '요약');
-  setText('meeting-result-title', previewing ? '음성 기록' : '요약');
-  byId('summary-content').hidden = previewing;
-  byId('meeting-result-preview').hidden = !previewing;
-  byId('meeting-result-draft').hidden = !result.draft;
-  const excerpt = result.rows.slice(0, 5).map(row => ({ text: row.text, time: Number.isFinite(row.start) ? duration(row.start * 1000) : '', speaker: result.draft ? (row.speaker ? `화자 ${row.speaker}` : '') : speakers.label(row) }));
-  setHTML('meeting-result-rows', previewing ? globalThis.NeroUI.transcriptPreview(excerpt) : '');
-  byId('meeting-result-open').hidden = !result.rows.length && !state.transcriptLoadError;
+  byId('summary-section').setAttribute('aria-label', '요약');
+  byId('summary-content').hidden = !doc;
   byId('prepare-summary').hidden = progress.summaryReady || !progress.summarySupported || !hasTranscript;
   byId('prepare-summary').disabled = Boolean(pendingJob(progress, { models: true })) || state.busy;
   byId('summarize').hidden = !hasTranscript || Boolean(state.summaryLoadError) || !state.summaryLoaded || !progress.summaryReady || !progress.summarySupported;
@@ -1255,23 +1248,20 @@ function renderSummary(meeting) {
   byId('summarize').className = doc ? 'small quiet' : 'small primary';
   documentActions.summary.update({ id: meeting.id, available: Boolean(doc), busy: state.busy || ownJob });
   let message = '';
-  if (!state.summaryLoaded && !result.rows.length) message = '불러오는 중';
-  else if (state.summaryLoadError) message = '회의록을 불러오지 못했습니다.';
+  if (!state.summaryLoaded) message = '불러오는 중';
+  else if (state.summaryLoadError) message = '요약을 불러오지 못했습니다.';
   else if (doc && stale) message = '이전 내용으로 만든 요약';
   else if (ownJob || failed) message = '';
-  else if (previewing && result.busy) message = pendingJob(state.processing, { meetingId: meeting.id }) ? '' : '처리 중';
-  else if (previewing && !state.transcriptLoaded) message = '불러오는 중';
-  else if (previewing && state.transcriptLoadError) message = '음성 기록을 불러오지 못했습니다.';
-  else if (previewing && result.rows.length) message = '';
-  else if (previewing && state.transcriptDraft?.doc) message = '인식된 음성이 없습니다.';
-  else if (previewing && latest && ['failed', 'cancelled', 'interrupted'].includes(latest.status)) message = '';
-  else if (!doc && !hasTranscript) message = '음성 기록을 변환한 뒤 요약할 수 있습니다.';
+  else if (!doc && result.busy) message = '음성 기록을 처리하고 있습니다.';
+  else if (!doc && !state.transcriptLoaded) message = '불러오는 중';
+  else if (!doc && state.transcriptLoadError) message = '음성 기록을 불러오지 못했습니다.';
+  else if (!doc && !hasTranscript) message = result.visible ? '인식된 음성이 없습니다.' : '';
   else if (!doc && !progress.summarySupported) message = '이 기기에서는 요약을 사용할 수 없습니다.';
-  else if (!doc && !progress.summaryReady) message = '요약 모델을 준비해 주세요.';
-  else if (!doc) message = '아직 요약하지 않은 회의입니다.';
+  else if (!doc && !progress.summaryReady) message = '요약 기능을 준비하면 이 회의를 요약할 수 있습니다.';
+  else if (!doc) message = '음성 기록이 준비되었습니다. 템플릿을 선택해 요약해 보세요.';
   byId('retry-summary-load').hidden = !state.summaryLoadError;
   byId('summary-message').hidden = !message;
-  const loading = !state.summaryLoaded || (previewing && (result.busy || !state.transcriptLoaded));
+  const loading = !state.summaryLoaded || (!doc && (result.busy || !state.transcriptLoaded));
   if (loading && message) setHTML('summary-message', '<span class="activity-spinner" aria-hidden="true"></span> ' + escape(message));
   else setText('summary-message', message);
   const key = JSON.stringify([meeting.id, doc?.id, state.transcriptDraft?.doc?.version, Boolean(stale), documentSearch.query()]);
@@ -1449,7 +1439,6 @@ const detail = mountMeetingDetail({ byId, finishEditing, onError: showError, onR
   for (const actions of Object.values(documentActions)) actions.close();
   globalThis.NeroControls.close?.();
 } });
-byId('meeting-result-open').addEventListener('click', () => { void detail.select('transcript', { focus: true }); });
 summaryEvidence = mountSummaryEvidence({
   container: byId('summary-content'), panel: byId('summary-evidence'),
   onOpen: () => detail.select('transcript'),
