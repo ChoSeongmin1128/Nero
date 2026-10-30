@@ -40,6 +40,9 @@ pub struct Status {
     download_ready: bool,
     message: String,
     recovery_message: Option<String>,
+    recovery_required: bool,
+    previous_app_path: Option<String>,
+    recovery_receipt_saved: bool,
 }
 
 pub struct AppUpdates {
@@ -55,6 +58,65 @@ pub struct AppUpdates {
 struct PendingInstall {
     from: ReleaseIdentity,
     target: ReleaseIdentity,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RecoveryRecord {
+    previous_app_path: String,
+}
+
+enum InstallFailure {
+    Retryable(String),
+    PreviousAppNotRestored(PathBuf),
+}
+impl From<tauri_plugin_updater::Error> for InstallFailure {
+    fn from(error: tauri_plugin_updater::Error) -> Self {
+        match error {
+            tauri_plugin_updater::Error::PreviousAppNotRestored(path) => {
+                Self::PreviousAppNotRestored(path)
+            }
+            _ => Self::Retryable(
+                "업데이트 설치를 완료하지 못했습니다. 다시 시도할 수 있습니다.".into(),
+            ),
+        }
+    }
+}
+
+enum FailedInstall {
+    Retryable(String),
+    RecoveryRequired {
+        record: RecoveryRecord,
+        receipt_saved: bool,
+    },
+}
+
+fn finish_failed_install(
+    mut fence: IdleFence,
+    failure: InstallFailure,
+    cache: &Path,
+) -> FailedInstall {
+    match failure {
+        InstallFailure::Retryable(message) => {
+            let message = fence.rollback().err().unwrap_or(message);
+            FailedInstall::Retryable(message)
+        }
+        InstallFailure::PreviousAppNotRestored(path) => {
+            let record = RecoveryRecord {
+                previous_app_path: path.to_string_lossy().into_owned(),
+            };
+            let receipt_saved = serde_json::to_vec(&record)
+                .ok()
+                .is_some_and(|bytes| write_atomic(&cache.join("recovery.json"), &bytes).is_ok());
+            // The install path is NOT known to contain a usable app. Keep all
+            // admission closed until this process exits; Drop must not resume it.
+            fence.commit();
+            FailedInstall::RecoveryRequired {
+                record,
+                receipt_saved,
+            }
+        }
+    }
 }
 
 struct IdleFence {
@@ -125,13 +187,19 @@ impl AppUpdates {
                 .as_str()
                 .unwrap_or(""),
         )?;
-        let recovery_message = read_limited(&cache.join("pending.json"), MAX_METADATA).ok()
+        let previous_recovery = read_limited(&cache.join("recovery.json"), MAX_METADATA)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<RecoveryRecord>(&bytes).ok());
+        let pending_message = read_limited(&cache.join("pending.json"), MAX_METADATA).ok()
             .and_then(|bytes| serde_json::from_slice::<PendingInstall>(&bytes).ok())
             .map(|pending| if current == pending.target {
                 "업데이트를 완료했습니다.".to_string()
             } else if current == pending.from {
                 "이전 업데이트가 완료되지 않았습니다. 현재 앱과 회의 데이터는 유지됩니다. 다시 시도할 수 있습니다.".into()
             } else { "이전 업데이트 기록과 현재 앱 버전이 다릅니다. 현재 앱을 유지합니다.".into() });
+        // A newly launched app may have been manually repaired. Preserve the
+        // historical warning/path without claiming the prior restore succeeded.
+        let recovery_message = previous_recovery.as_ref().map(|_| "이전 업데이트에서 앱 복원에 실패했습니다. 이전 앱의 보관 위치와 설치 상태를 확인해 주세요.".to_string()).or(pending_message);
         let status = Status {
             phase: "idle".into(),
             current_version: current.version.clone(),
@@ -143,6 +211,11 @@ impl AppUpdates {
             download_ready: false,
             message: "업데이트를 확인할 수 있습니다.".into(),
             recovery_message,
+            recovery_required: false,
+            previous_app_path: previous_recovery
+                .as_ref()
+                .map(|record| record.previous_app_path.clone()),
+            recovery_receipt_saved: previous_recovery.is_some(),
         };
         Ok(Self {
             current,
@@ -194,15 +267,34 @@ impl AppUpdates {
             *self.candidate.lock().unwrap() = None;
         }
     }
-    fn publish(&self, app: &tauri::AppHandle, phase: &str, message: &str) -> Status {
-        let status = {
-            let mut status = self.status.lock().unwrap();
+    fn transition(&self, phase: &str, message: &str) -> Status {
+        let mut status = self.status.lock().unwrap();
+        if !status.recovery_required {
             status.phase = phase.into();
             status.message = message.into();
-            status.clone()
-        };
+        }
+        status.clone()
+    }
+    fn publish(&self, app: &tauri::AppHandle, phase: &str, message: &str) -> Status {
+        let status = self.transition(phase, message);
         let _ = app.emit_to("main", "nero://app-update", &status);
         status
+    }
+    fn latch_recovery(&self, record: RecoveryRecord, receipt_saved: bool) -> Status {
+        let mut status = self.status.lock().unwrap();
+        status.phase = "recoveryRequired".into();
+        status.recovery_required = true;
+        status.previous_app_path = Some(record.previous_app_path);
+        status.recovery_receipt_saved = receipt_saved;
+        status.download_ready = false;
+        status.message = if receipt_saved {
+            "업데이트 중 이전 앱을 원래 위치로 복원하지 못했습니다. 작업을 중지했습니다. 보관된 이전 앱의 위치를 확인하고 앱을 복구해 주세요."
+        } else {
+            "업데이트 중 이전 앱을 원래 위치로 복원하지 못했습니다. 복구 안내도 저장하지 못했습니다. 표시된 보관 위치를 복사한 뒤 앱을 종료해 주세요."
+        }.into();
+        status.recovery_message = Some(status.message.clone());
+        *self.candidate.lock().unwrap() = None;
+        status.clone()
     }
     fn updater(&self, app: &tauri::AppHandle) -> Result<tauri_plugin_updater::Updater, String> {
         let current = self.current.clone();
@@ -468,6 +560,9 @@ pub async fn app_update_install(
     desktop: tauri::State<'_, crate::DesktopState>,
 ) -> Result<Status, String> {
     require_window(&window)?;
+    if state.view().recovery_required {
+        return Ok(state.view());
+    }
     let _operation = state
         .operation
         .try_lock()
@@ -497,7 +592,7 @@ pub async fn app_update_install(
             .await
             .map_err(|_| "앱의 작업 상태를 확인하지 못했습니다.".to_string())
             .and_then(|result| result);
-    let mut fence = match prepared {
+    let fence = match prepared {
         Ok(fence) => fence,
         Err(error) => {
             return Ok(state.publish(&app, "waiting", &error));
@@ -519,15 +614,30 @@ pub async fn app_update_install(
     let polling = desktop.polling.clone();
     let install_app = app.clone();
     let installed = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
-        let result = (|| {
-            write_atomic(&cache.join("pending.json"), &receipt?)?;
-            update.install(&bytes).map_err(|_| {
-                "업데이트 설치를 시작하지 못했습니다. 현재 앱을 유지합니다.".to_string()
-            })
+        let result = (|| -> Result<(), InstallFailure> {
+            write_atomic(
+                &cache.join("pending.json"),
+                &receipt.map_err(InstallFailure::Retryable)?,
+            )
+            .map_err(InstallFailure::Retryable)?;
+            update.install(&bytes).map_err(InstallFailure::from)
         })();
         if let Err(error) = result {
-            fence.rollback()?;
-            return Err(error);
+            return match finish_failed_install(fence, error, &cache) {
+                FailedInstall::Retryable(message) => Err(message),
+                FailedInstall::RecoveryRequired {
+                    record,
+                    receipt_saved,
+                } => {
+                    // Publish from the owning task, not its IPC waiter: even a
+                    // cancelled caller cannot lose the preserved backup path.
+                    let status = install_app
+                        .state::<AppUpdates>()
+                        .latch_recovery(record, receipt_saved);
+                    let _ = install_app.emit_to("main", "nero://app-update", &status);
+                    Err(status.message)
+                }
+            };
         }
         // Keep successful ownership through restart in this task as well. A
         // dropped IPC future cannot reopen admission after the Mac app swap.
@@ -540,15 +650,152 @@ pub async fn app_update_install(
     .map_err(|_| "업데이트 설치를 완료하지 못했습니다.".to_string())
     .and_then(|result| result);
     if let Err(error) = installed {
+        if state.view().recovery_required {
+            return Ok(state.view());
+        }
         // Keep the verified download for retry; never touch meetings or models.
         return Ok(state.publish(&app, "error", &error));
     }
     Ok(state.view())
 }
 
+#[tauri::command]
+pub fn app_update_recovery_quit(
+    window: WebviewWindow,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppUpdates>,
+    desktop: tauri::State<'_, crate::DesktopState>,
+) -> Result<(), String> {
+    require_window(&window)?;
+    if !state.view().recovery_required || !desktop.lifecycle.is_closing() {
+        return Err("앱 복구가 필요한 상태에서만 실행할 수 있습니다.".into());
+    }
+    // Core/processing are already fenced. Do not reopen or re-finalize them.
+    desktop.quitting.store(true, Ordering::Release);
+    desktop.polling.store(false, Ordering::Release);
+    app.exit(0);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn prepared_fixture(
+        root: &Path,
+    ) -> (
+        nero_core::CoreHandle,
+        std::sync::Arc<crate::processing::Processing>,
+        crate::lifecycle::Lifecycle,
+        IdleFence,
+    ) {
+        let core = nero_core::CoreHandle::open(root).unwrap();
+        core.create_meeting("보존", "기존 메모").unwrap();
+        let processing = crate::processing::Processing::new(root.into(), root.into());
+        let lifecycle = crate::lifecycle::Lifecycle::default();
+        let lease = lifecycle
+            .begin_exit(crate::lifecycle::ExitKind::Update)
+            .unwrap();
+        let fence = IdleFence::prepare(core.clone(), processing.clone(), lease).unwrap();
+        (core, processing, lifecycle, fence)
+    }
+
+    #[test]
+    fn previous_app_not_restored_preserves_path_and_keeps_all_admission_closed() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let backup = root.join("이전 앱.app");
+        std::fs::create_dir(&backup).unwrap();
+        std::fs::write(backup.join("marker"), b"preserved previous application").unwrap();
+        let (core, processing, lifecycle, fence) = prepared_fixture(&root.join("library"));
+        let cache = root.join("cache");
+        let failure = tauri_plugin_updater::Error::PreviousAppNotRestored(backup.clone());
+        let FailedInstall::RecoveryRequired {
+            record,
+            receipt_saved,
+        } = finish_failed_install(fence, failure.into(), &cache)
+        else {
+            panic!("a failed restore must not resume normal work");
+        };
+        assert!(receipt_saved);
+        assert_eq!(record.previous_app_path, backup.to_string_lossy());
+        assert!(core.create_folder("차단된 변경").is_err());
+        assert!(processing.recording_start(|| Ok(())).is_err());
+        assert!(lifecycle
+            .begin_exit(crate::lifecycle::ExitKind::Quit)
+            .is_err());
+        assert_eq!(
+            std::fs::read(backup.join("marker")).unwrap(),
+            b"preserved previous application"
+        );
+        let state = AppUpdates::new(cache.clone()).unwrap();
+        let status = state.latch_recovery(record, receipt_saved);
+        let json = serde_json::to_value(status).unwrap();
+        assert_eq!(json["phase"], "recoveryRequired");
+        assert_eq!(json["recoveryRequired"], true);
+        assert_eq!(json["previousAppPath"], backup.to_string_lossy().as_ref());
+        assert_eq!(json["downloadReady"], false);
+        for phase in ["ready", "error", "current"] {
+            let late = state.transition(phase, "late ordinary status");
+            assert_eq!(late.phase, "recoveryRequired");
+            assert!(late.recovery_required);
+            assert_eq!(late.previous_app_path.as_deref(), backup.to_str());
+            assert!(!late.message.contains("late ordinary status"));
+        }
+        let relaunched = AppUpdates::new(cache).unwrap().view();
+        assert_eq!(
+            relaunched.previous_app_path.as_deref(),
+            Some(backup.to_str().unwrap())
+        );
+        assert!(relaunched.recovery_message.unwrap().contains("복원에 실패"));
+        // Only the already-failed process is latched; a new manually launched
+        // process keeps the historical receipt without declaring a repair.
+        assert!(!relaunched.recovery_required);
+    }
+
+    #[test]
+    fn recovery_receipt_storage_failure_does_not_reopen_gates_or_lose_the_live_path() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let blocked_cache = root.join("not-a-directory");
+        std::fs::write(&blocked_cache, b"preserve").unwrap();
+        let (core, processing, lifecycle, fence) = prepared_fixture(&root.join("library"));
+        let backup = root.join("previous.app");
+        let failure = tauri_plugin_updater::Error::PreviousAppNotRestored(backup.clone());
+        let FailedInstall::RecoveryRequired {
+            record,
+            receipt_saved,
+        } = finish_failed_install(fence, failure.into(), &blocked_cache)
+        else {
+            panic!("recovery failure must remain latched");
+        };
+        assert!(!receipt_saved);
+        let state = AppUpdates::new(root.join("status-cache")).unwrap();
+        let status = state.latch_recovery(record, receipt_saved);
+        assert_eq!(status.previous_app_path.as_deref(), backup.to_str());
+        assert!(status.message.contains("저장하지 못했습니다"));
+        assert!(core.create_folder("차단된 변경").is_err());
+        assert!(processing.recording_start(|| Ok(())).is_err());
+        assert!(lifecycle.is_closing());
+        assert_eq!(std::fs::read(blocked_cache).unwrap(), b"preserve");
+    }
+
+    #[test]
+    fn ordinary_install_error_reopens_its_gates_and_retains_meeting_data() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let (core, processing, lifecycle, fence) = prepared_fixture(&root.join("library"));
+        let failure =
+            tauri_plugin_updater::Error::Io(std::io::Error::other("synthetic launch failure"));
+        assert!(matches!(
+            finish_failed_install(fence, failure.into(), &root.join("cache")),
+            FailedInstall::Retryable(_)
+        ));
+        assert!(!lifecycle.is_closing());
+        core.create_folder("다시 작업").unwrap();
+        assert_eq!(core.list_meetings().unwrap()[0].notes, "기존 메모");
+        processing.recording_start(|| Ok(())).unwrap();
+    }
+
     #[test]
     fn installation_failure_reopens_both_admission_gates_and_preserves_data() {
         let temporary = tempfile::tempdir().unwrap();

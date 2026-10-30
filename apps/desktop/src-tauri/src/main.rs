@@ -1674,6 +1674,7 @@ fn main() {
             app_updater::app_update_check,
             app_updater::app_update_download,
             app_updater::app_update_install,
+            app_updater::app_update_recovery_quit,
             agent_write_ready,
             calendar_desktop::read_calendar_settings,
             calendar_desktop::read_calendar_meeting_occurrences,
