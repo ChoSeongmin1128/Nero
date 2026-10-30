@@ -1,0 +1,42 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { fileURLToPath } from 'node:url';
+import { build } from 'esbuild';
+import { Window } from 'happy-dom';
+
+const root = fileURLToPath(new URL('../', import.meta.url));
+const bundle = await build({ entryPoints: [root + 'src/app-update-recovery.jsx'], bundle: true, write: false, format: 'iife', globalName: 'Recovery', jsx: 'automatic', nodePaths: [root + 'node_modules'], loader: { '.css': 'empty' }, define: { 'process.env.NODE_ENV': '"production"' } });
+const wait = async condition => { for (let attempt = 0; attempt < 100; attempt++) { if (condition()) return; await new Promise(resolve => setTimeout(resolve, 5)); } assert.fail('Recovery UI did not settle'); };
+
+test('isolated recovery state stays above native settings, cannot dismiss, copies the path and permits only explicit quit', async t => {
+  const window = new Window({ url: 'http://nero.test', settings: { enableJavaScriptEvaluation: true, suppressInsecureJavaScriptEnvironmentWarning: true } });
+  t.after(() => window.happyDOM.abort());
+  const document = window.document;
+  document.body.innerHTML = '<main class="workspace" inert></main><dialog id="settings" inert><button>설정</button></dialog>';
+  document.getElementById('settings').showModal();
+  window.eval(bundle.outputFiles[0].text);
+  const copied = []; let quit = 0;
+  const recovery = window.Recovery.mountAppUpdateRecovery({ document, copy: async value => copied.push(value), quit: async () => { quit++; throw Error('종료 요청 실패'); } });
+  t.after(() => recovery.destroy());
+  recovery.update({ phase: 'recoveryRequired', recoveryRequired: true, previousAppPath: '/recovery/Previous.app', recoveryReceiptSaved: false, message: '교체 중 복구가 필요합니다.' });
+  await wait(() => document.querySelector('[role="alertdialog"]'));
+  const host = document.querySelector('[data-app-update-recovery]');
+  assert.equal(host.open, true); assert.equal(host.inert, false);
+  assert.equal(document.getElementById('settings').inert, true);
+  const cancel = new window.Event('cancel', { cancelable: true }); host.dispatchEvent(cancel);
+  assert.equal(cancel.defaultPrevented, true);
+  document.activeElement.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(host.open, true);
+  assert.ok(host.querySelector('[role="alertdialog"]'));
+  assert.equal(host.querySelectorAll('button').length, 2);
+  assert.equal(quit, 0);
+  const copyButton = [...host.querySelectorAll('button')].find(button => button.textContent.includes('위치 복사'));
+  copyButton.click(); await wait(() => copied.length === 1);
+  assert.deepEqual(copied, ['/recovery/Previous.app']);
+  assert.match(host.textContent, /종료 전에 이전 앱 위치를 별도로 보관/);
+  [...host.querySelectorAll('button')].find(button => button.textContent === '앱 종료').click();
+  await wait(() => host.textContent.includes('종료 요청 실패'));
+  assert.equal(quit, 1); assert.equal(host.open, true);
+  assert.equal([...host.querySelectorAll('button')].find(button => button.textContent === '앱 종료').disabled, false);
+});

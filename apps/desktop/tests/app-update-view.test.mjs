@@ -23,7 +23,7 @@ function setup(t, overrides = {}) {
     subscribeAppUpdate: async callback => { emit = callback; return () => {}; }, ...overrides.bridge,
   };
   const view = mountAppUpdateView({ container: window.document.getElementById('app-update'), bridge,
-    saveEdits: overrides.saveEdits || (async () => true), onInstalling: value => locks.push(value), onChange: value => notices.push(value),
+    saveEdits: overrides.saveEdits || (async () => true), onRecovery: overrides.onRecovery, onInstalling: value => locks.push(value), onChange: value => notices.push(value),
     schedule: (fn, delay) => { scheduled.push({ fn, delay }); return scheduled.length; }, unschedule() {},
   });
   t.after(() => view.destroy());
@@ -86,4 +86,18 @@ test('app update notices are separate from integrations and invoke user actions'
   assert.deepEqual(app.calls, ['install']);
   assert.equal(appUpdateNotices(status('error')).length, 0);
   assert.equal(appUpdateNotices(status('idle', { recoveryMessage: '업데이트 복구 확인' }))[0].service, 'app-update');
+});
+
+test('isolated recovery status retains the app lock while excluding the recovery host', async t => {
+  const recoveryStates = [];
+  const app = setup(t, { onRecovery: value => recoveryStates.push(value), bridge: { installAppUpdate: async () => status('recoveryRequired', { recoveryRequired: true, previousAppPath: '/recovery/Previous.app', recoveryReceiptSaved: true }) } });
+  const host = app.window.document.createElement('dialog'); host.dataset.appUpdateRecovery = ''; app.window.document.body.append(host);
+  const nested = app.window.document.createElement('div'); nested.setAttribute('role', 'alertdialog'); host.append(nested);
+  await app.view.start(); app.emit(status('ready'));
+  await app.view.perform();
+  assert.equal(app.window.document.querySelector('.workspace').inert, true);
+  assert.equal(app.window.document.getElementById('settings-dialog').inert, true);
+  assert.equal(host.inert, false); assert.equal(nested.inert, false);
+  assert.match(app.get('action').textContent, /종료/);
+  assert.equal(recoveryStates.at(-1).previousAppPath, '/recovery/Previous.app');
 });

@@ -10,17 +10,17 @@ export function appUpdateNotices(status) {
     actionLabel: action.label, actionDisabled: action.disabled }];
 }
 
-export function mountAppUpdateView({ container, bridge, saveEdits, onChange = () => {}, onInstalling = () => {}, schedule, unschedule }) {
+export function mountAppUpdateView({ container, bridge, saveEdits, onChange = () => {}, onInstalling = () => {}, onRecovery = () => {}, schedule, unschedule }) {
   const document = container.ownerDocument;
   const get = id => container.querySelector(`#app-update-${id}`);
-  const methods = { app_update_status: bridge.appUpdateStatus, app_update_check: bridge.checkAppUpdate, app_update_download: bridge.downloadAppUpdate, app_update_install: bridge.installAppUpdate };
+  const methods = { app_update_status: bridge.appUpdateStatus, app_update_check: bridge.checkAppUpdate, app_update_download: bridge.downloadAppUpdate, app_update_install: bridge.installAppUpdate, app_update_recovery_quit: bridge.quitAppUpdateRecovery };
   let busy = false, installedLock = false;
   const inertState = new Map();
   function setInstalling(value) {
     if (installedLock === value) return;
     installedLock = value;
     if (value) {
-      for (const node of document.querySelectorAll('.workspace, dialog, [role="dialog"], [role="alertdialog"]')) { inertState.set(node, node.inert); node.inert = true; }
+      for (const node of document.querySelectorAll('.workspace, dialog, [role="dialog"], [role="alertdialog"]')) { if (node.closest('[data-app-update-recovery]')) continue; inertState.set(node, node.inert); node.inert = true; }
     } else {
       for (const [node, inert] of inertState) if (node.isConnected) node.inert = inert;
       inertState.clear();
@@ -43,10 +43,11 @@ export function mountAppUpdateView({ container, bridge, saveEdits, onChange = ()
   const updater = createAppUpdater({
     invoke: command => methods[command](), listen: (_, callback) => bridge.subscribeAppUpdate(payload => callback({ payload })),
     saveEdits, setInstalling, schedule, unschedule,
-    onChange(status) { render(status); onChange(appUpdateNotices(status)); },
+    onChange(status) { onRecovery(status.phase === 'recoveryRequired' || status.recoveryRequired ? status : null); render(status); onChange(appUpdateNotices(status)); },
   });
   async function perform() {
-    const action = appUpdateAction(updater.getSnapshot());
+    const status = updater.getSnapshot();
+    const action = appUpdateAction(status);
     if (busy || action.disabled || !action.action) return false;
     busy = true; render(updater.getSnapshot());
     try { return await updater[action.action](); }
@@ -55,6 +56,6 @@ export function mountAppUpdateView({ container, bridge, saveEdits, onChange = ()
   const click = () => { void perform(); };
   get('action').addEventListener('click', click);
   render(updater.getSnapshot());
-  return { start: () => updater.start(), perform, getSnapshot: updater.getSnapshot,
+  return { start: () => updater.start(), perform, getSnapshot: updater.getSnapshot, quitForRecovery: () => updater.quitForRecovery(),
     destroy() { updater.dispose(); get('action').removeEventListener('click', click); } };
 }

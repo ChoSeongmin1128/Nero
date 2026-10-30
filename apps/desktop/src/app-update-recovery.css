@@ -1,0 +1,5 @@
+.app-update-recovery-host { position: fixed; inset: 0; width: 100vw; height: 100dvh; max-width: none; max-height: none; margin: 0; padding: 0; border: 0; background: transparent; overflow: hidden; }
+.app-update-recovery-host::backdrop { background: transparent; }
+.app-update-recovery-body { display: grid; gap: 12px; margin-top: 20px; }
+.app-update-recovery-body code { display: block; padding: 10px 12px; background: var(--surface-secondary); border: 1px solid var(--border); border-radius: var(--control-radius); overflow-wrap: anywhere; white-space: pre-wrap; user-select: text; }
+.app-update-recovery-body > button { justify-self: start; }

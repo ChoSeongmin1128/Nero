@@ -1,3 +1,4 @@
+import { mountAppUpdateRecovery } from './app-update-recovery.jsx';
 import { mountAppUpdateView } from './app-update-view.js';
 import './app-update-view.css';
 import { mountPeopleSettings, mountMeetingAttendees } from './people-ui.jsx';
@@ -62,7 +63,9 @@ function readMicrophonePreference() {
 }
 const microphonePreference = readMicrophonePreference();
 const state = { snapshot: { meetings: [], folders: [], session: null }, notificationsOpen: false, libraryOpen: false, libraryFilter: 'all', librarySelection: new Set(), libraryBusy: false, librarySearchIds: null, librarySearchHits: [], pendingSearchIntent: null, setupReturnId: null, librarySearchPending: false, librarySearchUnavailable: 0, selectedId: null, devices: [], devicesLoaded: false, deviceId: microphonePreference.id, deviceName: microphonePreference.name, settingsPanel: 'appearance', summaryFeatureError: '', settingsKey: '', settingsError: '', settingsReturnId: 'settings', setupFromSettings: false, autoRecorder: readAutoRecorder(), recorderSettingBusy: false, snapshotKey: '', processingKey: '', processingCancellingId: null, transcriptEditing: null, audioRequest: 0, audioLoading: null, dateSaving: null, dateKey: '', dateError: null, lastError: null, errorIsSave: false, connected: false, busy: false, composing: false, transcriptComposing: false, editLocks: 0, draft: null, saveTimer: null, saveQueue: Promise.resolve(), listKey: '', controlsKey: '', audioKey: '', processing: { status: 'idle', supported: false, modelReady: false }, transcriptDraft: null, transcriptKey: '', transcriptLoadId: 0, transcriptSaveQueue: Promise.resolve(), summary: null, summaryKey: '', summaryLoadId: 0, summaryLoaded: false, transcriptLoaded: false, summaryLoadError: false, transcriptLoadError: false, setupRequested: false };
+const appUpdateRecovery = mountAppUpdateRecovery({ document, quit: () => appUpdateView.quitForRecovery() });
 const appUpdateView = mountAppUpdateView({ container: byId('app-update'), bridge,
+  onRecovery: status => appUpdateRecovery.update(status),
   saveEdits: () => prepareAppLeave(() => true),
   onChange(notices) { appUpdateNotices = notices; render(); },
   onInstalling(locked) {
