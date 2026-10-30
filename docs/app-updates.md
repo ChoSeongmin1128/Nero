@@ -51,6 +51,21 @@ agent clients. Only snapshot/shutdown preparation/failure recovery bypass this
 actor gate. This avoids a check-then-start race. The native gate is authoritative;
 browser state alone is not an idle check.
 
+Normal quit and update installation also share one process-lifetime lifecycle
+owner. Each must acquire an exclusive lease before its first shutdown side effect;
+passing an earlier window check does not grant ownership. Successful quit/restart
+commits that lease until the process actually exits, while failed preparation
+releases only its own token after reopening its own gates. Side-effecting tasks
+own their leases even if the IPC future is dropped. This prevents a previously
+admitted normal quit from exiting during an update or undoing its preparation.
+
+Recording changes have transition leases. In particular, stop, completed-snapshot
+publication and automatic-transcription registration/error run in one blocking
+task under a single transition lease. Quit/update admission refuses while that
+transition is present, including the interval where capture has finished but no
+processing job has been registered yet. The processing and actor gates still
+check real capture/jobs after the lifecycle lease is acquired.
+
 The application writes a small pending-install receipt outside the meeting library
 and calls the official installer with the already verified bytes. It never copies
 or replaces the user's meeting/audio/model directory. If preparation or installer
