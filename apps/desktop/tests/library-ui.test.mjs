@@ -316,7 +316,8 @@ test('detail selection moves from the preserved navigation scope to the open rec
   app.controller.render();
   assert.match(navigation, /data-library-filter="all" aria-current="page"/);
   assert.doesNotMatch(app.byId('folder-list').innerHTML, /aria-current/);
-  assert.match(app.byId('recent-meetings').innerHTML, /data-recent-meeting="one" aria-current="page"/);
+  assert.match(app.byId('recent-meetings').innerHTML, /data-recent-meeting="one"[^>]*aria-current="page"/);
+  assert.match(app.byId('recent-meetings').innerHTML, /aria-label="주간 회의, 프로젝트, 1\. 1\. 09:00"/);
   assert.equal(app.state.libraryFilter, 'all');
   assert.equal(app.byId('meeting-folder-context').textContent, '프로젝트');
   assert.equal(app.byId('meeting-folder-context').title, '프로젝트');
