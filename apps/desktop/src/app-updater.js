@@ -4,16 +4,19 @@ export function createAppUpdater({ invoke, listen, saveEdits, onChange = () => {
   let snapshot = { phase: 'idle', message: '업데이트를 확인할 수 있습니다.' };
   let disposed = false;
   let busy = false;
+  let recoveryQuitting = false;
   let removeListener;
   let timer;
   const publish = value => {
     if (disposed || !value) return;
+    if (snapshot.recoveryRequired && !value.recoveryRequired) return;
     snapshot = { ...value };
-    setInstalling(snapshot.phase === 'installing');
+    setInstalling(snapshot.phase === 'installing' || Boolean(snapshot.recoveryRequired));
     onChange(snapshot);
   };
   const run = async (command, before) => {
     if (disposed || busy) return false;
+    if (snapshot.recoveryRequired) return false;
     busy = true;
     try {
       if (before && await before() === false) return false;
@@ -27,18 +30,29 @@ export function createAppUpdater({ invoke, listen, saveEdits, onChange = () => {
   };
   const check = () => run('app_update_check');
   const download = () => run('app_update_download');
+  // A recovery event can arrive before the original install IPC resolves. Its
+  // safe-exit action must not wait for that request's busy flag to clear.
+  const quitForRecovery = async () => {
+    if (disposed || recoveryQuitting || !snapshot.recoveryRequired) return false;
+    recoveryQuitting = true;
+    try { await invoke('app_update_recovery_quit'); return true; }
+    catch (error) {
+      publish({ ...snapshot, message: typeof error === 'string' ? error : error?.message || '앱을 종료하지 못했습니다. 다시 시도해 주세요.' });
+      return false;
+    } finally { recoveryQuitting = false; }
+  };
   const install = () => {
-    if (disposed || busy) return Promise.resolve(false);
+    if (disposed || busy || snapshot.recoveryRequired) return Promise.resolve(false);
     return run('app_update_install', async () => {
       if (typeof saveEdits !== 'function') throw Error('열려 있는 편집 내용을 먼저 저장해 주세요.');
       // Lock interaction while saves drain; on a refusal/error release it again.
       setInstalling(true);
       try { return await saveEdits(); }
       finally { if (disposed) setInstalling(false); }
-    }).finally(() => { if (snapshot.phase !== 'installing') setInstalling(false); });
+    }).finally(() => { if (snapshot.phase !== 'installing' && !snapshot.recoveryRequired) setInstalling(false); });
   };
   const autoCheck = async () => {
-    if (disposed) return;
+    if (disposed || snapshot.recoveryRequired) return;
     const checked = await check();
     if (checked && snapshot.phase === 'available') await download();
     if (!disposed) timer = schedule(autoCheck, 6 * 60 * 60 * 1000);
@@ -53,12 +67,14 @@ export function createAppUpdater({ invoke, listen, saveEdits, onChange = () => {
       if (!disposed) timer = schedule(autoCheck, 45_000);
     },
     check, download, install,
+    quitForRecovery,
     getSnapshot: () => ({ ...snapshot }),
     dispose() { disposed = true; if (timer !== undefined) unschedule(timer); removeListener?.(); setInstalling(false); },
   };
 }
 
 export function appUpdateAction(status) {
+  if (status?.recoveryRequired || status?.phase === 'recoveryRequired') return { action: 'quitForRecovery', label: '복구 안내 확인 후 종료', disabled: false };
   if (['checking', 'downloading', 'installing'].includes(status?.phase)) return { action: null, label: '진행 중…', disabled: true };
   if (['ready', 'waiting'].includes(status?.phase)) return { action: 'install', label: '다시 시작해 업데이트', disabled: false };
   if (status?.phase === 'error' && status.downloadReady) return { action: 'install', label: '업데이트 설치 재시도', disabled: false };

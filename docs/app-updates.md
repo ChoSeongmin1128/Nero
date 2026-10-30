@@ -68,13 +68,33 @@ check real capture/jobs after the lifecycle lease is acquired.
 
 The application writes a small pending-install receipt outside the meeting library
 and calls the official installer with the already verified bytes. It never copies
-or replaces the user's meeting/audio/model directory. If preparation or installer
-launch fails, processing/core admission is reopened and the downloaded package is
-retained for retry. The plugin's destructive pre-exit window cleanup is disabled
+or replaces the user's meeting/audio/model directory. Ordinary preparation/launch
+failures reopen processing/core admission and retain the download for retry.
+`PreviousAppNotRestored` is a separate critical failure described below and never
+uses that rollback/resume path. The plugin's destructive pre-exit window cleanup is disabled
 so a Windows launcher error leaves the current app usable.
 
 On macOS, the pinned plugin stages on the application's filesystem and uses an
-app-only rename/swap with restoration on swap failure, then Nero restarts. A system
+app-only rename/swap and attempts restoration on swap failure, then Nero restarts.
+If installing and restoring both fail, the official plugin preserves the previous
+app at a separate path and returns the typed `PreviousAppNotRestored(path)` error.
+Nero retains that path, commits its closed lifecycle/core/processing gates and
+publishes `phase: recoveryRequired`; it does not resume work or restart automatically.
+The path is saved best-effort to one small `app-update/recovery.json` cache receipt.
+Even if saving that receipt fails, the live status retains the path and explicitly
+asks the user to copy it. The previous app itself is never moved or removed by
+Nero's failure handler.
+
+The consuming screen must show a recovery dialog outside the inert editor/settings
+area, display/copy `previousAppPath` as text, and offer the guarded
+`app_update_recovery_quit` command. This exits with the gates still closed. It also
+works when the original install IPC response has not arrived. Ordinary quit,
+editing, downloads and installation retry remain blocked in the failed process.
+A new manually launched process reads the historical receipt as a warning and
+backup path, without claiming that the previous restoration succeeded or that a
+manual repair was verified. Only the already-failed process retains that live fence.
+
+A system
 authorization prompt can still be required by filesystem ownership. Normal UI
 permission requests are not added by the controller.
 
@@ -105,10 +125,15 @@ and canonical shared design system, not this controller.
 Commands: `app_update_status`, `app_update_check`, `app_update_download`,
 `app_update_install`. Status events use `nero://app-update`. Public status fields:
 `phase`, `currentVersion`, `currentBuild`, `availableVersion`, `availableBuild`,
-`downloadedBytes`, `totalBytes`, `downloadReady`, `message`, `recoveryMessage`.
+`downloadedBytes`, `totalBytes`, `downloadReady`, `message`, `recoveryMessage`,
+`recoveryRequired` (boolean), `previousAppPath` (string or null), and
+`recoveryReceiptSaved` (boolean).
 Phases: idle, checking, current, available, downloading, ready, waiting,
-installing, error. Waiting means work must finish before another user install
-action; it does not cancel work or install silently later.
+installing, error, recoveryRequired. Waiting means work must finish before another user install
+action; it does not cancel work or install silently later. Recovery-required status
+keeps `setInstalling(true)` and exposes only `quitForRecovery()`; the consuming view
+owns its recovery dialog and copy-path action. Register `app_update_recovery_quit`
+alongside the other commands. Do not route that action through normal `request_quit`.
 
 ## Preparing a release without publishing
 
@@ -158,6 +183,10 @@ processing refusal without cancellation, saved-editor ordering, duplicate clicks
 automatic download without auto-install, and local feed provenance/verification
 failures. Windows guard tests compile and execute real NSIS helpers against
 synthetic processes/files, including natural exit and timeout preservation.
+Typed restore-failure injection tests verify that the backup marker/path survives,
+all admission stays closed, receipt-write failure does not unfreeze work, ordinary
+failure still resumes, and recovery exit remains callable during a pending install
+IPC response. These do not reproduce real disk/rename/restore failure on macOS.
 
 These are not production signing/publishing, a real Windows-to-Mac acceptance,
 power-loss rollback, microphone/model quality or OS authorization acceptance.
