@@ -18,6 +18,7 @@ export function bindDialogDismiss(dialog, { dismiss = () => dialog.close(), bloc
   dialog.addEventListener('keydown', event => {
     if (event.key !== 'Escape' || event.defaultPrevented || blocked() || nested()) return;
     event.preventDefault();
+    event.stopPropagation();
     if (event.isComposing || event.keyCode === 229 || composing) return;
     if (globalThis.NeroControls?.isOpen?.()) { globalThis.NeroControls.close(); return; }
     void request();
