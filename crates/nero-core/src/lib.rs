@@ -108,6 +108,8 @@ pub struct CalendarReference {
     pub start_at: u64,
     pub end_at: u64,
     pub calendar_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_date: Option<String>,
     pub join_urls: Vec<String>,
 }
 

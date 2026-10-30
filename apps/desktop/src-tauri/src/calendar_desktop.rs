@@ -339,15 +339,23 @@ impl From<calendar::MeetingBrowse> for MeetingOccurrences {
     }
 }
 
-fn calendar_reference(event: &Occurrence) -> CalendarReference {
-    CalendarReference {
+fn calendar_reference(
+    event: &Occurrence,
+    zone: jiff::tz::TimeZone,
+) -> Result<CalendarReference, String> {
+    let timestamp = i64::try_from(event.start_at)
+        .ok()
+        .and_then(|value| jiff::Timestamp::from_millisecond(value).ok())
+        .ok_or_else(|| "일정 날짜를 확인하지 못했습니다.".to_string())?;
+    Ok(CalendarReference {
         occurrence_key: event.key.clone(),
         title: event.title.clone(),
         start_at: event.start_at,
         end_at: event.end_at,
         calendar_name: event.calendar_name.clone(),
+        start_date: Some(timestamp.to_zoned(zone).date().to_string()),
         join_urls: event.join_urls.clone(),
-    }
+    })
 }
 
 #[tauri::command]
@@ -402,12 +410,15 @@ pub async fn create_meeting_from_calendar(
         .await;
     publish(&app);
     let browse = result?;
+    let zone = jiff::tz::TimeZone::get(&browse.time_zone)
+        .map_err(|_| "일정 시간대를 확인하지 못했습니다.".to_string())?;
     let core = state.core.clone();
     tauri::async_runtime::spawn_blocking(move || {
         service.with_browsed_occurrence(&browse, &occurrence_key, |event| {
+            let reference = calendar_reference(event, zone.clone())?;
             match target {
-                Some(target) => core.attach_calendar_to_draft(target, calendar_reference(event)),
-                None => core.create_meeting_from_calendar(calendar_reference(event)),
+                Some(target) => core.attach_calendar_to_draft(target, reference),
+                None => core.create_meeting_from_calendar(reference),
             }
             .map_err(|error| error.to_string())
         })
@@ -519,8 +530,11 @@ pub async fn start_calendar_recording(
                 .map(|device| device.id)
                 .unwrap_or_default();
             recording_calendar.with_current_reminder(&ticket, calendar::now_ms(), |event| {
-                core.create_calendar_recording(calendar_reference(event), &selected)
-                    .map_err(|error| error.to_string())
+                core.create_calendar_recording(
+                    calendar_reference(event, jiff::tz::TimeZone::system())?,
+                    &selected,
+                )
+                .map_err(|error| error.to_string())
             })
         })
     })
@@ -600,6 +614,33 @@ fn open_authorization(url: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn calendar_defaults_use_actual_start_in_selected_zone_including_overnight_events() {
+        let start: jiff::Timestamp = "2026-10-29T15:30:00Z".parse().unwrap();
+        let event = Occurrence {
+            key: format!("google:{}", "a".repeat(64)),
+            title: "Scheduled title".into(),
+            start_at: start.as_millisecond() as u64,
+            end_at: (start.as_millisecond() + 36_000_000) as u64,
+            calendar_name: "Calendar".into(),
+            join_urls: vec![],
+        };
+        for (zone, expected) in [
+            ("Asia/Seoul", "2026-10-30"),
+            ("America/Los_Angeles", "2026-10-29"),
+        ] {
+            let reference =
+                calendar_reference(&event, jiff::tz::TimeZone::get(zone).unwrap()).unwrap();
+            assert_eq!(reference.title, event.title);
+            assert_eq!(reference.start_date.as_deref(), Some(expected));
+            assert_eq!(reference.start_at, event.start_at);
+            assert_eq!(reference.end_at, event.end_at);
+        }
+        let mut invalid = event;
+        invalid.start_at = u64::MAX;
+        assert!(calendar_reference(&invalid, jiff::tz::TimeZone::UTC).is_err());
+    }
+
     #[test]
     fn reminder_labels_only_accept_generated_occurrence_ids() {
         assert!(label("google:../main").is_none());
