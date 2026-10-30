@@ -8,7 +8,7 @@ import { Window } from 'happy-dom';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const html = await readFile(new URL('../src/index.html', import.meta.url), 'utf8');
 const main = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
-const bridgeFiles = await Promise.all(['bridge.js', 'calendar-bridge.js'].map(name => readFile(new URL(`../src/${name}`, import.meta.url), 'utf8')));
+const bridgeFiles = await Promise.all(['bridge.js', 'calendar-bridge.js', 'people-bridge.js'].map(name => readFile(new URL(`../src/${name}`, import.meta.url), 'utf8')));
 const bridgeNames = [...new Set(bridgeFiles.flatMap(source => [...source.matchAll(/^export (?:async )?(?:const|function) (\w+)/gm)].map(match => match[1])))];
 const bundled = await build({
   entryPoints: [root + 'src/main.js'], bundle: true, write: false, format: 'iife', jsx: 'automatic',

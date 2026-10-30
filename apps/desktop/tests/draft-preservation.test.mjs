@@ -158,6 +158,8 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     let summaryEvidenceOptions;
     const mountSummaryEvidence = options => { summaryEvidenceOptions = options; return { reset() {}, update() {}, restoreFocus() {} }; };
     const mountTemplateSettings = () => testTemplateSettings;
+    const mountPeopleSettings = () => ({show(){},hide(){},beforeLeave:async()=>true,isConfirming:()=>false});
+    const mountMeetingAttendees = () => ({open:async()=>{},beforeLeave:async()=>true,dispose(){}});
     const mountNotificationCenter = testMountNotificationCenter;
     const mountCalendarSettings = () => ({ setActive() {} });
     const mountCalendarMeetingPicker = () => ({open(){}, close(){}, isOpen(){return false;}});

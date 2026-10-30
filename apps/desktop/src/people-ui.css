@@ -1,0 +1,26 @@
+.people-dialog { width: min(540px, calc(100vw - 32px)); }
+.people-confirm { width: min(440px, calc(100vw - 32px)); }
+.people-dialog-body { overflow: auto; max-height: min(60vh, 560px); padding: 20px 24px; }
+.people-settings, .people-editor, .people-section { display: grid; gap: 16px; }
+.people-settings { gap: 24px; }
+.people-section + .people-section { margin-top: 20px; }
+.people-section > header, .people-row, .people-actions, .people-option { display: flex; align-items: center; gap: 8px; }
+.people-section > header { justify-content: space-between; }
+.people-row { min-height: 44px; padding: 8px 12px; }
+.people-row + .people-row { border-top: 1px solid var(--border); }
+.people-name { min-width: 0; flex: 1; display: flex; align-items: center; gap: 12px; overflow-wrap: anywhere; }
+.people-name input { width: 100%; min-width: 0; }
+.people-empty { padding: 14px 12px; color: var(--text-secondary); }
+.people-check { display: flex; align-items: center; gap: 8px; padding-block: 6px; }
+.people-check input { flex: none; }
+.people-editor label { display: grid; gap: 8px; }
+.people-editor fieldset { display: grid; gap: 4px; border: 0; padding: 0; margin: 0; }
+.people-editor .people-check { display: flex; }
+.people-actions { justify-content: flex-end; }
+.people-roster { border: 1px solid var(--border); border-radius: var(--radius); }
+.people-picker { display: grid; max-height: 200px; overflow: auto; }
+.people-option { width: 100%; justify-content: space-between; padding: 10px 12px; text-align: start; background: transparent; border: 0; }
+.people-option > span { min-width: 0; overflow-wrap: anywhere; }
+.people-option:hover:not(:disabled) { background: var(--hover); }
+.people-section input[type="search"] { width: 100%; }
+@media (max-width: 700px) { .people-dialog-body { padding: 16px; } }

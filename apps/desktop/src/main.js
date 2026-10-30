@@ -1,3 +1,4 @@
+import { mountPeopleSettings, mountMeetingAttendees } from './people-ui.jsx';
 import { bindDialogDismiss } from './dialog-dismiss.js';
 import { createIntegrationMonitor } from './integration-notifications.js';
 import { mountNotificationCenter } from './notification-center.js';
@@ -33,6 +34,8 @@ const terminologySettings = { info: null, error: '', request: 0, saving: null };
 const agentConnection = { info: null, loading: false, error: '', request: 0, refresh: 0, timer: null, pending: {}, errors: {} };
 const agentConnectionDialog = mountAgentConnectionDialog({ container: byId('settings-dialog'), fallbackTrigger: () => byId('settings-agent-manual') });
 const templateSettings = mountTemplateSettings({ container: byId('settings-dialog'), panel: byId('settings-templates-panel'), bridge });
+const peopleSettings = mountPeopleSettings({ container: byId('settings-dialog'), panel: byId('settings-people-panel'), bridge });
+const meetingAttendees = mountMeetingAttendees({ container: document.body, bridge, onChanged: async () => { acceptSnapshot(await bridge.readSnapshot()); if (state.selectedId) await loadSummary(state.selectedId); } });
 let integrationNotices = [];
 const integrationMonitor = createIntegrationMonitor({ bridge, onChange(notices) { integrationNotices = notices; render(); } });
 const calendarSettings = mountCalendarSettings({ panel: byId('calendar-settings'), bridge, onSnapshot: value => integrationMonitor.acceptCalendar(value) });
@@ -298,6 +301,9 @@ function render() {
   renderProcessing();
   const meeting = currentMeeting();
   calendarReference.render(meeting);
+  byId('meeting-attendees').hidden = !meeting;
+  byId('meeting-attendees').disabled = !state.connected || state.busy;
+  setHTML('meeting-attendees', `${icon('users')}<span>참석자${meeting?.attendees?.length ? ` ${meeting.attendees.length}명` : ''}</span>`);
   byId('create-calendar-meeting').hidden = !meeting || Boolean(meeting.audio || meeting.calendarReference || activeSession()?.meetingId === meeting.id);
   byId('import-audio').hidden = !meeting || Boolean(meeting.audio || activeSession()?.meetingId === meeting.id);
   byId('detail-transcript-open').hidden = !meeting?.audio && !liveTranscriptRows(state.processing.liveTranscript, meeting?.id, state.snapshot.session?.id).length;
@@ -645,6 +651,7 @@ function renderSettings() {
   renderTerminologySettings();
   templateSettings.setActive(dialog.open && state.settingsPanel === 'templates');
   calendarSettings.setActive(dialog.open && state.settingsPanel === 'agent');
+  if (dialog.open && state.settingsPanel === 'people') peopleSettings.show(); else peopleSettings.hide();
   for (const name of settingsPanels) {
     const selected = state.settingsPanel === name;
     byId(`settings-${name}-tab`).setAttribute('aria-selected', String(selected));
@@ -822,7 +829,7 @@ byId('welcome-create').addEventListener('click', () => run(createMeeting));
 byId('setup-start').addEventListener('click', () => run(createMeeting));
 byId('settings').addEventListener('click', () => openSettings().catch(showError));
 async function leaveSettings(action) {
-  if (templateSettings.isConfirming() || !await templateSettings.beforeLeave()) return false;
+  if (templateSettings.isConfirming() || peopleSettings.isConfirming() || !await templateSettings.beforeLeave() || !await peopleSettings.beforeLeave()) return false;
   globalThis.NeroControls.close?.();
   await action();
   return true;
@@ -839,12 +846,12 @@ async function selectSettingsPanel(name, focus = false) {
   });
 }
 byId('settings-close').addEventListener('click', () => { void closeSettings(); });
-bindDialogDismiss(byId('settings-dialog'), { dismiss: closeSettings, blocked: () => templateSettings.isConfirming() });
+bindDialogDismiss(byId('settings-dialog'), { dismiss: closeSettings, blocked: () => templateSettings.isConfirming() || peopleSettings.isConfirming() });
 bindDialogDismiss(byId('quit-dialog'));
-byId('settings-dialog').addEventListener('close', () => { templateSettings.hide(); void summaryTemplatePicker.reload(); resetTerminologySettings(); resetAgentConnection(); globalThis.NeroControls.close?.(); returnFocusTarget(byId(state.settingsReturnId) || byId('settings'), byId('navigation-toggle')).focus({ preventScroll: true }); });
+byId('settings-dialog').addEventListener('close', () => { templateSettings.hide(); peopleSettings.hide(); void summaryTemplatePicker.reload(); resetTerminologySettings(); resetAgentConnection(); globalThis.NeroControls.close?.(); returnFocusTarget(byId(state.settingsReturnId) || byId('settings'), byId('navigation-toggle')).focus({ preventScroll: true }); });
 for (const name of settingsPanels) byId(`settings-${name}-tab`).addEventListener('click', () => { void selectSettingsPanel(name, true); });
 byId('settings-dialog').addEventListener('keydown', event => {
-  if (event.isComposing || event.keyCode === 229 || templateSettings.isConfirming()) return;
+  if (event.isComposing || event.keyCode === 229 || (templateSettings.isConfirming() || peopleSettings.isConfirming())) return;
   const index = settingsPanels.findIndex(name => `settings-${name}-tab` === event.target.id);
   if (index < 0 || !['ArrowDown', 'ArrowUp', 'ArrowRight', 'ArrowLeft', 'Home', 'End'].includes(event.key)) return;
   event.preventDefault();
@@ -944,6 +951,14 @@ async function finishEditing(action) {
   }
 }
 
+async function prepareAppLeave(action) {
+  for (const editor of [templateSettings, peopleSettings, meetingAttendees]) {
+    if (!await editor.beforeLeave()) return false;
+  }
+  globalThis.NeroControls.close?.();
+  return finishEditing(action);
+}
+
 async function onAgentWriteRequest({ requestId } = {}) {
   if (typeof requestId !== 'string' || !/^[a-f0-9-]{36}$/.test(requestId)) return;
   let ready = false;
@@ -952,6 +967,7 @@ async function onAgentWriteRequest({ requestId } = {}) {
       ready = true;
       await bridge.agentWriteReady(requestId);
       acceptSnapshot(await bridge.readSnapshot());
+      await peopleSettings.refreshIfClean?.();
       if (currentMeeting()) await loadSummary(state.selectedId);
       refreshMeetingSearch();
     });
@@ -1404,12 +1420,12 @@ byId('transcript-rows').addEventListener('keydown', event => {
 });
 
 async function onQuitRequest({ sessionId } = {}) {
-  if (!await templateSettings.beforeLeave()) return;
   if (!activeSession()) {
-    await run(() => finishEditing(() => bridge.requestQuit(null)));
+    await run(() => prepareAppLeave(() => bridge.requestQuit(null)));
     return;
   }
   if (sessionId !== activeSession().id) return;
+  if (!await prepareAppLeave(() => true)) return;
   pendingQuitSessionId = sessionId;
   const dialog = byId('quit-dialog');
   dialog.innerHTML = globalThis.NeroUI.dialogContent({ title: '녹음을 종료하고 나갈까요?', titleId: 'quit-title', bodyHTML: '<p>지금까지 녹음한 음성과 메모를 저장한 뒤 앱을 종료합니다.</p>', actionsHTML: button('계속 녹음', 'cancel-quit', null, '') + button('저장하고 종료', 'confirm-quit', null, 'primary') });
@@ -1525,7 +1541,7 @@ try {
   await acceptProcessing(await bridge.processingStatus());
   await bridge.subscribeOpenMeeting(async (meetingId, error) => { await selectMeeting(meetingId); if (error) showError(error); });
   await bridge.subscribeQuitRequest(onQuitRequest);
-  await bridge.subscribeCloseRequest(() => run(async () => { if (await templateSettings.beforeLeave()) await finishEditing(() => bridge.hideMain()); }));
+  await bridge.subscribeCloseRequest(() => run(() => prepareAppLeave(() => bridge.hideMain())));
   acceptSnapshot(await bridge.readSnapshot());
   await refreshDevices();
   await integrationMonitor.refresh();
@@ -1535,3 +1551,5 @@ try {
   showError(error);
 }
 render();
+
+byId('meeting-attendees').addEventListener('click', () => run(() => finishEditing(() => { const meeting = currentMeeting(); if (meeting) return meetingAttendees.open(meeting.id, byId('meeting-attendees')); })));

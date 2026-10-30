@@ -19,6 +19,7 @@ mod live_speech_worker;
 mod macos_recorder;
 mod memory;
 mod microphone_permission;
+mod people_desktop;
 mod processing;
 mod recorder_geometry;
 mod recorder_policy;
@@ -1639,6 +1640,11 @@ fn main() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
+            people_desktop::people_catalog,
+            people_desktop::replace_people_catalog,
+            people_desktop::meeting_attendees,
+            people_desktop::replace_meeting_attendees,
+            people_desktop::promote_meeting_attendee,
             agent_write_ready,
             calendar_desktop::read_calendar_settings,
             calendar_desktop::read_calendar_meeting_occurrences,
