@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { Plus, Pencil, Trash2, UserPlus, Check } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '../../../design-system/components/ui/dialog.jsx';
 import { attendeeLabel, createAttendeeFlow, createPeopleCatalogFlow } from './people-flow.js';
+import { ConfirmDialog } from '../../../design-system/components/ui/confirm-dialog.jsx';
 import './people-ui.css';
 
 function useConfirmation() {
@@ -17,18 +18,8 @@ function useConfirmation() {
   return { request, ask, resolve };
 }
 
-function Confirmation({ confirmation, container }) {
-  const cancel = React.useRef(null), request = confirmation.request;
-  return <Dialog open={Boolean(request)} onOpenChange={open => { if (!open) confirmation.resolve(false); }}>
-    <DialogContent container={container} showCloseButton={false} initialFocus={cancel} className="people-confirm" data-nero-ui-owned="">
-      <DialogHeader><DialogTitle>{request?.title}</DialogTitle><DialogDescription>{request?.description}</DialogDescription></DialogHeader>
-      <DialogFooter><button ref={cancel} type="button" onClick={() => confirmation.resolve(false)}>취소</button><button type="button" className={request?.destructive ? 'danger' : 'primary'} onClick={() => confirmation.resolve(true)}>{request?.label}</button></DialogFooter>
-    </DialogContent>
-  </Dialog>;
-}
-
 function Feedback({ state }) {
-  return <>{state.busy && <p className="notice" role="status"><span className="activity-spinner" aria-hidden="true" /> 처리 중</p>}{state.error && <p className="notice" role="alert">{state.error}</p>}</>;
+  return <>{state.busy && <p className="inline-feedback" role="status"><span className="activity-spinner" aria-hidden="true" /> 처리 중</p>}{state.error && <p className="notice" role="alert">{state.error}</p>}</>;
 }
 
 function PeopleSettings({ flow, container, controls }) {
@@ -57,12 +48,12 @@ function PeopleSettings({ flow, container, controls }) {
     </form> : catalog && <>
       {[['person', '사람', catalog.people], ['group', '그룹', catalog.groups]].map(([kind, title, items]) => <section className="people-section" key={kind}>
         <header><h4>{title}</h4><button type="button" className="small with-icon" disabled={state.busy} onClick={() => flow.edit(kind)}><Plus size={14} aria-hidden="true" />{title} 추가</button></header>
-        <div className="settings-group">{items.length ? items.map(item => <div className="people-row" key={item.id}><span className="people-name">{item.name}{kind === 'group' && <span className="muted">{item.personIds.length}명</span>}</span><button type="button" className="small quiet icon-only" disabled={state.busy} aria-label={`${item.name} 편집`} title="편집" onClick={() => flow.edit(kind, item)}><Pencil size={15} aria-hidden="true" /></button><button type="button" className="small quiet icon-only danger" disabled={state.busy} aria-label={`${item.name} 삭제`} title="삭제" onClick={() => { void remove(kind, item); }}><Trash2 size={15} aria-hidden="true" /></button></div>) : <p className="people-empty">등록된 {title === '사람' ? '사람이' : '그룹이'} 없습니다.</p>}</div>
+        <div className="settings-group">{items.length ? items.map(item => <div className="people-row" key={item.id}><span className="people-name">{item.name}{kind === 'group' && <span className="muted">{item.personIds.length}명</span>}</span><button type="button" className="small quiet icon" disabled={state.busy} aria-label={`${item.name} 편집`} title="편집" onClick={() => flow.edit(kind, item)}><Pencil size={15} aria-hidden="true" /></button><button type="button" className="small quiet icon danger" disabled={state.busy} aria-label={`${item.name} 삭제`} title="삭제" onClick={() => { void remove(kind, item); }}><Trash2 size={15} aria-hidden="true" /></button></div>) : <p className="people-empty">등록된 {title === '사람' ? '사람이' : '그룹이'} 없습니다.</p>}</div>
       </section>)}
     </>}
     <Feedback state={state} />
     {(!catalog || state.error) && !state.busy && <button type="button" onClick={async () => { if (await beforeLeave()) void flow.reload(); }}>다시 불러오기</button>}
-    <Confirmation confirmation={confirmation} container={container} />
+    <ConfirmDialog request={confirmation.request && { ...confirmation.request, action: confirmation.request.label }} container={container} resolve={confirmation.resolve} />
   </div>;
 }
 
@@ -98,8 +89,8 @@ function AttendeeDialog({ flow, container, origin, controls }) {
             <section className="people-section"><header><h4>이 회의 <span className="muted">{state.attendees.length}명</span></h4><button type="button" className="small quiet with-icon" disabled={state.busy} onClick={() => flow.addTemporary()}><Plus size={14} aria-hidden="true" />임시 참석자</button></header>
               <div className="people-roster">{state.attendees.map((item, index) => <div className="people-row" key={item.id}>
                 <label className="people-name"><span className="sr-only">{attendeeLabel(item, index)} 이름</span><input value={item.name || ''} placeholder={attendeeLabel(item, index)} maxLength={120} disabled={state.busy} onChange={event => flow.rename(item.id, event.target.value)} /></label>
-                {!item.personId && <button type="button" className="small quiet icon-only" aria-label={`${attendeeLabel(item, index)} 인원 목록에 추가`} title="인원 목록에 추가" disabled={state.busy} onClick={() => { setName(item.name || ''); setPromoting(item.id); }}><UserPlus size={16} aria-hidden="true" /></button>}
-                <button type="button" className="small quiet icon-only danger" aria-label={`${attendeeLabel(item, index)} 제외`} title="회의에서 제외" disabled={state.busy} onClick={() => flow.remove(item.id)}><Trash2 size={16} aria-hidden="true" /></button>
+                {!item.personId && <button type="button" className="small quiet icon" aria-label={`${attendeeLabel(item, index)} 인원 목록에 추가`} title="인원 목록에 추가" disabled={state.busy} onClick={() => { setName(item.name || ''); setPromoting(item.id); }}><UserPlus size={16} aria-hidden="true" /></button>}
+                <button type="button" className="small quiet icon danger" aria-label={`${attendeeLabel(item, index)} 제외`} title="회의에서 제외" disabled={state.busy} onClick={() => flow.remove(item.id)}><Trash2 size={16} aria-hidden="true" /></button>
               </div>)}{!state.attendees.length && <p className="people-empty">참석자를 추가해 주세요.</p>}</div>
             </section>
             <section className="people-section"><h4>인원 목록에서 추가</h4><label><span className="sr-only">사람 또는 그룹 검색</span><input type="search" value={query} placeholder="사람 또는 그룹 검색" onChange={event => setQuery(event.target.value)} disabled={state.busy} /></label>
@@ -119,7 +110,7 @@ function AttendeeDialog({ flow, container, origin, controls }) {
         <form className="people-editor" onSubmit={async event => { event.preventDefault(); if (await flow.promote(promoting, name)) setPromoting(null); }}><label>이름<input autoFocus value={name} required maxLength={120} disabled={state.busy} onChange={event => setName(event.target.value)} /></label><Feedback state={state} /><DialogFooter><button type="button" disabled={state.busy} onClick={() => setPromoting(null)}>취소</button><button type="submit" className="primary" disabled={state.busy || !name.trim()}>추가</button></DialogFooter></form>
       </DialogContent>
     </Dialog>
-    <Confirmation confirmation={confirmation} container={container} />
+    <ConfirmDialog request={confirmation.request && { ...confirmation.request, action: confirmation.request.label }} container={container} resolve={confirmation.resolve} />
   </>;
 }
 

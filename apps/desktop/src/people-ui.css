@@ -1,5 +1,4 @@
 .people-dialog { width: min(540px, calc(100vw - 32px)); }
-.people-confirm { width: min(440px, calc(100vw - 32px)); }
 .people-dialog-body { overflow: auto; max-height: min(60vh, 560px); padding: 20px 24px; }
 .people-settings, .people-editor, .people-section { display: grid; gap: 16px; }
 .people-settings { gap: 24px; }

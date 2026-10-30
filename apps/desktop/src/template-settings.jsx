@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { createRoot } from 'react-dom/client';
 import { ArrowLeft, Plus, Trash2 } from 'lucide-react';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '../../../design-system/components/ui/dialog.jsx';
+import { ConfirmDialog } from '../../../design-system/components/ui/confirm-dialog.jsx';
 import { bindTemplateDialogKeys, createTemplateSettingsFlow } from './template-settings-flow.js';
 
 function TemplateSettings({ flow, confirm, beforeLeave }) {
@@ -25,7 +25,7 @@ function TemplateSettings({ flow, confirm, beforeLeave }) {
         <label>요약 지침<textarea value={draft.prompt} disabled={state.busy} required spellCheck={false} onChange={event => flow.edit('prompt', event.target.value)} /></label>
         <div className="template-settings-actions">
           {state.document?.builtIn && state.document.customized && <button type="button" className="small" disabled={state.busy} onClick={async () => { if (await confirm('기본값으로 복원할까요?', '이 템플릿의 수정 내용이 기본값으로 바뀝니다.', '복원')) void flow.reset(); }}>기본값으로</button>}
-          {state.document && !state.document.builtIn && <button type="button" className="small icon-only danger" aria-label="템플릿 삭제" title="템플릿 삭제" disabled={state.busy} onClick={async () => { if (await confirm('템플릿을 삭제할까요?', '이 템플릿을 삭제합니다.', '삭제', true)) void flow.remove(); }}><Trash2 size={15} aria-hidden="true" /></button>}
+          {state.document && !state.document.builtIn && <button type="button" className="small icon danger" aria-label="템플릿 삭제" title="템플릿 삭제" disabled={state.busy} onClick={async () => { if (await confirm('템플릿을 삭제할까요?', '이 템플릿을 삭제합니다.', '삭제', true)) void flow.remove(); }}><Trash2 size={15} aria-hidden="true" /></button>}
           <button type="submit" className="small primary" disabled={state.busy || !draft.name.trim() || !draft.prompt.trim() || (!flow.isDirty() && Boolean(state.document))}>{state.busy ? '처리 중' : '저장'}</button>
         </div>
       </form>
@@ -41,20 +41,10 @@ function TemplateSettings({ flow, confirm, beforeLeave }) {
       {!state.items.length && !state.busy && !state.error && <p className="template-settings-description">템플릿이 없습니다.</p>}
       <div className="template-settings-list-actions"><button type="button" className="small" disabled={state.busy} onClick={() => { void reload(); }}>새로고침</button></div>
     </>}
-    {state.busy && <p className="notice" role="status"><span className="activity-spinner" aria-hidden="true" /> 처리 중</p>}
+    {state.busy && <p className="inline-feedback" role="status"><span className="activity-spinner" aria-hidden="true" /> 처리 중</p>}
     {state.message && <p className="notice" role="status">{state.message}</p>}
     {state.error && <div className="template-settings-error"><p className="notice" role="alert">{state.error}</p><button type="button" className="small" disabled={state.busy} onClick={() => { void reload(); }}>다시 불러오기</button></div>}
   </div>;
-}
-
-function Confirmation({ state, container, resolve, finalFocus }) {
-  const cancel = React.useRef(null);
-  return <Dialog open={Boolean(state)} onOpenChange={open => { if (!open) resolve(false); }}>
-    <DialogContent container={container} className="template-settings-confirm" data-nero-ui-owned="" initialFocus={cancel} finalFocus={finalFocus} showCloseButton={false}>
-      <DialogHeader><DialogTitle>{state?.title}</DialogTitle><DialogDescription>{state?.description}</DialogDescription></DialogHeader>
-      <DialogFooter><button type="button" ref={cancel} onClick={() => resolve(false)}>취소</button><button type="button" className={state?.destructive ? 'danger' : 'primary'} onClick={() => resolve(true)}>{state?.action}</button></DialogFooter>
-    </DialogContent>
-  </Dialog>;
 }
 
 export function mountTemplateSettings({ container, panel, bridge }) {
@@ -81,7 +71,7 @@ export function mountTemplateSettings({ container, panel, bridge }) {
     flow.discard();
     return true;
   };
-  const render = () => root.render(<><TemplateSettings flow={flow} confirm={confirm} beforeLeave={beforeLeave} /><Confirmation state={confirmation} container={container} resolve={resolve} finalFocus={() => focusOrigin?.isConnected && container.open ? focusOrigin : false} /></>);
+  const render = () => root.render(<><TemplateSettings flow={flow} confirm={confirm} beforeLeave={beforeLeave} /><ConfirmDialog request={confirmation} container={container} resolve={resolve} finalFocus={() => focusOrigin?.isConnected && container.open ? focusOrigin : false} /></>);
   const unbind = bindTemplateDialogKeys(container, { isOpen: () => Boolean(confirmation), cancel: () => resolve(false) });
   const close = () => { resolve(false); flow.setActive(false); };
   container.addEventListener('close', close);
