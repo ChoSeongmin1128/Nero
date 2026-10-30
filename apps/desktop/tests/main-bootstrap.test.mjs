@@ -23,7 +23,7 @@ const bundled = await build({
   } }],
 });
 
-test('summary body and the single transcript inspector stay distinct through processing and recovery', async t => {
+test('one transcript panel stays visible through processing and moves to the inspector after summary completion', async t => {
   const window = new Window({ url: 'http://nero.test', settings: { enableJavaScriptEvaluation: true, suppressInsecureJavaScriptEnvironmentWarning: true, disableCSSFileLoading: true, disableJavaScriptFileLoading: true } });
   t.after(() => window.happyDOM.abort());
   window.document.write(html);
@@ -75,8 +75,8 @@ test('summary body and the single transcript inspector stay distinct through pro
   assert.equal(el('meeting-result-title').textContent, '요약');
   assert.doesNotMatch(el('summary-section').textContent, /검토 내용을 담은 초안/);
   assert.equal(el('meeting-result-preview'), null);
-  el('detail-transcript-open').click();
-  await wait(() => !el('detail-inspector').hidden);
+  await wait(() => !el('result-transcript-home').hidden);
+  assert.equal(el('transcript-section').hidden, false);
   assert.match(el('transcript-rows').textContent, /검토 내용을 담은 초안/);
   assert.ok(el('processing').querySelector('.activity-spinner'));
   assert.doesNotMatch(el('processing').textContent, /마지막 구간|화자를 정리/);
@@ -87,12 +87,10 @@ test('summary body and the single transcript inspector stay distinct through pro
   await subscriptions.subscribeProcessing({ ...recognizing, revision: 4, kind: 'diarize', status: 'completed' });
   await wait(() => !el('summarize').disabled);
   assert.match(el('summary-message').textContent, /음성 기록이 준비되었습니다/);
-  el('detail-transcript-open').click();
-  await wait(() => !el('detail-inspector').hidden);
   assert.match(el('transcript-rows').textContent, /확정된 검토 내용/);
-  assert.equal(el('detail-inspector-close').getAttribute('aria-label'), '본문으로 돌아가기');
-  el('detail-inspector-close').click();
-  await wait(() => el('detail-inspector').hidden);
+  assert.equal(el('transcript-section').parentNode, el('result-transcript-home'));
+  assert.equal(el('transcript-section').hidden, false);
+  assert.equal(window.document.querySelectorAll('#transcript-rows').length,1);
   await subscriptions.subscribeProcessing({ ...ready, revision: 5, id: 'summary-job', kind: 'summary', meetingId: 'one', status: 'running' });
   assert.doesNotMatch(el('summary-section').textContent, /확정된 검토 내용/);
   await subscriptions.subscribeProcessing({ ...ready, revision: 6, id: 'summary-job', kind: 'summary', meetingId: 'one', status: 'failed', failureKind: 'engineUnavailable', retryable: true });
@@ -105,6 +103,12 @@ test('summary body and the single transcript inspector stay distinct through pro
   assert.equal(el('meeting-result-preview'), null);
   assert.equal(el('meeting-result-title').textContent, '요약');
   assert.equal(el('summary-content').hidden, false);
+  assert.equal(el('result-transcript-home').hidden, true);
+  assert.equal(el('detail-inspector').hidden, true);
+  el('detail-transcript-open').click();
+  await wait(() => !el('detail-inspector').hidden);
+  assert.equal(el('transcript-section').parentNode,el('detail-inspector'));
+  assert.match(el('transcript-rows').textContent,/확정된 검토 내용/);
   assert.deepEqual(errors, []);
 });
 

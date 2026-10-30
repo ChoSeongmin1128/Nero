@@ -175,7 +175,8 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
       const ids = current.librarySearchIds == null ? null : new Set(current.librarySearchIds);
       return filterLibraryMeetings(current.snapshot.meetings, current.libraryFilter, query && !ids ? query : '').filter(meeting => !query || !ids || ids.has(meeting.id)).sort((a,b) => (b.recordedAt ?? b.createdAt ?? 0) - (a.recordedAt ?? a.createdAt ?? 0) || (b.createdAt ?? 0) - (a.createdAt ?? 0));
     } });
-    const mountSpeakers = ({getState}) => ({render() {}, reset() {}, open: async () => {}, label: segment => getState().transcriptDraft?.doc?.speakers?.find(speaker=>speaker.id === segment.speakerId)?.name || '화자 미지정'});
+    const mountConfirmDialog = () => ({confirm:async()=>false});
+    const mountSpeakers = ({getState}) => ({beforeLeave:async()=>true,render() {}, reset() {}, open: async () => {}, label: segment => getState().transcriptDraft?.doc?.speakers?.find(speaker=>speaker.id === segment.speakerId)?.name || '화자 미지정'});
 
     const returnFocusTarget = (origin, fallback) => origin || fallback;
     const bridge = testBridge;

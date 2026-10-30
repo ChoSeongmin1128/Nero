@@ -1,3 +1,4 @@
+import { mountConfirmDialog } from '../../../design-system/components/ui/confirm-dialog.jsx';
 import { requestAudioPlayback } from './audio-playback.js';
 import { mountAppUpdateRecovery } from './app-update-recovery.jsx';
 import { mountAppUpdateView } from './app-update-view.js';
@@ -975,7 +976,7 @@ async function finishEditing(action) {
 }
 
 async function prepareAppLeave(action) {
-  for (const editor of [templateSettings, peopleSettings, meetingAttendees]) {
+  for (const editor of [templateSettings, peopleSettings, meetingAttendees, speakers]) {
     if (!await editor.beforeLeave()) return false;
   }
   globalThis.NeroControls.close?.();
@@ -1528,7 +1529,8 @@ const notificationCenter = mountNotificationCenter({ container: byId('notificati
   target?.scrollIntoView?.({ block: 'nearest' });
 }, onChanged: () => render() });
 byId('notifications-open').addEventListener('click', () => run(() => finishEditing(() => { state.notificationsOpen = true; state.setupRequested = false; state.libraryOpen = false; render(); byId('notification-center').querySelector('h1')?.focus({ preventScroll: true }); })));
-const speakers = mountSpeakers({ bridge, getState: () => state, byId, finishEditing, showError,
+const speakerConfirmation = mountConfirmDialog({ container: byId('speaker-dialog') });
+const speakers = mountSpeakers({ confirmDiscard: () => speakerConfirmation.confirm({ title: '화자 수정을 버릴까요?', description: '저장하지 않은 화자 이름과 발언 배정이 사라집니다.', action: '버리기', destructive: true }), bridge, getState: () => state, byId, finishEditing, showError,
   canPlay: () => Boolean(byId('audio-player').getAttribute('src')),
   isPlaying: () => !byId('audio-player').paused && !byId('audio-player').ended,
   onPause() { speakerReplay = null; byId('audio-player').pause(); },
