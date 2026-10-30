@@ -72,7 +72,7 @@ impl Params {
             "summary_get" => &["meetingId", "offset", "limit", "format", "includeCitations"],
             "summary_context" => &["meetingId"],
             "transcript_get" => &["meetingId", "start", "end", "offset", "limit"],
-            "folders_list" => &["offset", "limit"],
+            "folders_list" | "people_catalog" => &["offset", "limit"],
             "status" => &[],
             _ => {
                 return Err(CoreError::InvalidInput(
@@ -278,6 +278,7 @@ fn response_bytes(value: &Value) -> Result<usize> {
 fn response_prefix(value: &Value, method: &str, params: &Params, count: usize) -> Value {
     let mut prefix = value.clone();
     match method {
+        "people_catalog" => prefix["entries"].as_array_mut().unwrap().truncate(count),
         "folders_list" => prefix["folders"].as_array_mut().unwrap().truncate(count),
         "meetings_list" | "meetings_search" => {
             prefix["meetings"].as_array_mut().unwrap().truncate(count)
@@ -591,13 +592,17 @@ impl<'a> Transaction<'a> {
         store::validate_id(&summary.source_version.id).map_err(|_| ReadError::InvalidDocument)?;
         if summary.source_sha256.len() != 64
             || !summary.source_sha256.bytes().all(|b| b.is_ascii_hexdigit())
+            || summary.attendees_sha256.as_ref().is_some_and(|digest| {
+                digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit())
+            })
             || summary.notes_sha256.as_ref().is_some_and(|digest| {
                 digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit())
             })
         {
             return Err(ReadError::InvalidDocument.into());
         }
-        let stale = crate::summary::is_stale(&summary, transcript, &meeting.notes)?;
+        let stale =
+            crate::summary::is_stale(&summary, transcript, &meeting.notes, &meeting.attendees)?;
         let reference_count =
             crate::summary::summary_reference_count(&meeting.id, &summary, |relative| {
                 self.content(relative)
@@ -611,6 +616,23 @@ impl<'a> Transaction<'a> {
 
     fn query(&mut self, method: &str, params: &Params) -> Result<Value> {
         let library = self.library()?;
+        if method == "people_catalog" {
+            let catalog = library.people.catalog()?;
+            let entries: Vec<_> = catalog
+                .people
+                .iter()
+                .map(|person| json!({"kind":"person","person":person}))
+                .chain(
+                    catalog
+                        .groups
+                        .iter()
+                        .map(|group| json!({"kind":"group","group":group})),
+                )
+                .collect();
+            return Ok(
+                json!({"editVersion":catalog.edit_version,"pagination":params.page(entries.len(),"entries"),"entries":params.select(entries)}),
+            );
+        }
         if method == "folders_list" {
             let folders = library.folders();
             return Ok(
@@ -704,8 +726,11 @@ impl<'a> Transaction<'a> {
                     .as_ref()
                     .and_then(|(value, _)| value["id"].as_str())
                     .map(str::to_owned);
-                let context = SummaryContext::new(source, &meeting.notes, summary_id)?;
-                Ok(json!({"meetingId":id,"context":context}))
+                let context =
+                    SummaryContext::new(source, &meeting.notes, &meeting.attendees, summary_id)?;
+                Ok(
+                    json!({"meetingId":id,"context":context,"attendees":meeting.attendees,"attendeesMeaning":"Attendance only; order does not identify transcript speakers or verify voice identity. Never infer speaker names from this roster."}),
+                )
             }
             _ => unreachable!(),
         }
@@ -822,6 +847,7 @@ impl<'a> Transaction<'a> {
 fn meeting_value(meeting: &Meeting, transcript: Option<&Transcript>) -> Value {
     json!({"id":meeting.id,"title":meeting.title,"createdAt":meeting.created_at,"updatedAt":meeting.updated_at,
         "meetingDate":meeting.meeting_date,"recordedAt":meeting.recorded_at,"status":meeting.status,"folderId":meeting.folder_id,
+        "attendees":meeting.attendees,"attendeesMeaning":"Attendance only; order does not identify transcript speakers or verify voice identity.",
         "transcriptVersion":transcript.map(|doc| &doc.version)})
 }
 
@@ -1084,6 +1110,7 @@ mod tests {
                 source_version: source.version.clone(),
                 source_sha256: crate::summary::transcript_digest(source).unwrap(),
                 notes_sha256: None,
+                attendees_sha256: None,
                 provenance: SummaryProvenance {
                     producer: None,
                     model: Some("fixture".into()),

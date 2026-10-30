@@ -970,6 +970,7 @@ fn stdio_initialization_tools_errors_and_framing_use_the_sdk() {
         "summary_get",
         "summary_context",
         "folders_list",
+        "people_catalog",
         "status",
         "templates_list",
         "template_get",
@@ -1146,6 +1147,7 @@ fn edited_templates_cannot_override_external_summary_citation_defaults() {
             SummaryDraft {
                 source: input.source,
                 notes: Some(input.notes),
+                attendees: Some(input.attendees),
                 expected_id: None,
                 text: markdown.into(),
                 provenance: SummaryProvenance {
@@ -1279,4 +1281,52 @@ fn edited_templates_cannot_override_external_summary_citation_defaults() {
         .as_str()
         .unwrap()
         .starts_with(nero_core::presentation::STALE_SUMMARY_WARNING));
+}
+
+#[test]
+fn people_and_roster_reads_share_cli_mcp_contract_without_opening_a_writer() {
+    let root = fixture();
+    let person_id = "77777777-7777-4777-8777-777777777777";
+    let group_id = "88888888-8888-4888-8888-888888888888";
+    let attendee_id = "99999999-9999-4999-8999-999999999999";
+    let attendees = json!([{ "id":attendee_id,"personId":person_id,"name":"Selected name" },{"id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}]);
+    let library = json!({"schemaVersion":1,"folders":{},"placements":{},"pendingPurges":[],"people":{"people":[{"id":person_id,"name":"Catalog name"}],"groups":[{"id":group_id,"name":"Group","personIds":[person_id]}]},"meetingAttendees":{MEETING_ID:attendees}});
+    let path = root.path().join("library.json");
+    fs::write(&path, serde_json::to_vec(&library).unwrap()).unwrap();
+    let before = fs::read(&path).unwrap();
+    let output = command(root.path())
+        .args(["--json", "people", "list", "--limit", "1"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let cli: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(cli["entries"][0]["person"]["name"], "Catalog name");
+    let mut process = McpProcess::start(root.path());
+    process.initialize();
+    process.send(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"people_catalog","arguments":{"limit":1}}}));
+    let mcp = tool_data(&process.result(2));
+    assert_eq!(cli, mcp);
+    process.send(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"people_catalog","arguments":{"limit":1,"offset":1,"expectedSourceVersion":cli["sourceVersion"]}}}));
+    assert_eq!(
+        tool_data(&process.result(3))["entries"][0]["group"]["personIds"],
+        json!([person_id])
+    );
+    process.send(json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"meeting_get","arguments":{"meetingId":MEETING_ID}}}));
+    assert_eq!(
+        tool_data(&process.result(4))["meeting"]["attendees"],
+        attendees
+    );
+    let displayed = command(root.path())
+        .args(["meetings", "get", MEETING_ID])
+        .output()
+        .unwrap();
+    let text = String::from_utf8(displayed.stdout).unwrap();
+    assert!(text.contains("Selected name, 임시 참석자 1"));
+    assert!(!text.contains("Catalog name"));
+    assert_eq!(fs::read(path).unwrap(), before);
+    assert!(!root.path().join("store.lock").exists());
 }

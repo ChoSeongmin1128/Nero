@@ -87,6 +87,33 @@ pub enum Mutation {
         text: String,
         producer: ExternalSummaryProducer,
     },
+    #[serde(rename = "people_update")]
+    PeopleUpdate {
+        #[serde(rename = "expectedVersion")]
+        expected_version: String,
+        people: Vec<crate::Person>,
+        groups: Vec<crate::PersonGroup>,
+    },
+    #[serde(rename = "meeting_attendees_set")]
+    MeetingAttendeesSet {
+        #[serde(rename = "meetingId")]
+        meeting_id: String,
+        #[serde(rename = "expectedVersion")]
+        expected_version: String,
+        attendees: Vec<crate::MeetingAttendee>,
+    },
+    #[serde(rename = "meeting_attendee_promote")]
+    MeetingAttendeePromote {
+        #[serde(rename = "meetingId")]
+        meeting_id: String,
+        #[serde(rename = "expectedVersion")]
+        expected_version: String,
+        #[serde(rename = "expectedCatalogVersion")]
+        expected_catalog_version: String,
+        #[serde(rename = "attendeeId")]
+        attendee_id: String,
+        name: String,
+    },
     #[serde(rename = "meeting_update")]
     MeetingUpdate {
         #[serde(rename = "meetingId")]
@@ -145,9 +172,12 @@ pub enum Mutation {
     },
 }
 
-pub const METHODS: [&str; 9] = [
+pub const METHODS: [&str; 12] = [
     "summary_import",
     "meeting_update",
+    "people_update",
+    "meeting_attendees_set",
+    "meeting_attendee_promote",
     "meeting_date_set",
     "meetings_move",
     "meetings_trash",
@@ -250,7 +280,10 @@ impl Mutation {
         let versions = mutation.versions();
         let folder = matches!(
             &mutation,
-            Self::FolderCreate { .. } | Self::FolderRename { .. } | Self::FolderDelete { .. }
+            Self::FolderCreate { .. }
+                | Self::FolderRename { .. }
+                | Self::FolderDelete { .. }
+                | Self::PeopleUpdate { .. }
         );
         if (!folder && !matches!(&mutation, Self::SummaryImport { .. }) && versions.is_empty())
             || versions.len() > 200
@@ -268,7 +301,10 @@ impl Mutation {
                 folder_id: Some(id),
                 ..
             } if store::validate_id(id).is_err() => return Err(ControlError::invalid()),
-            Self::FolderCreate {
+            Self::PeopleUpdate {
+                expected_version, ..
+            }
+            | Self::FolderCreate {
                 expected_version, ..
             }
             | Self::FolderRename {
@@ -298,6 +334,26 @@ impl Mutation {
                     return Err(ControlError::invalid());
                 }
             }
+            Self::PeopleUpdate { people, groups, .. } => crate::people::People {
+                people: people.clone(),
+                groups: groups.clone(),
+            }
+            .validate()
+            .map_err(|_| ControlError::invalid())?,
+            Self::MeetingAttendeesSet { attendees, .. } => {
+                crate::people::validate_attendees(attendees).map_err(|_| ControlError::invalid())?
+            }
+            Self::MeetingAttendeePromote {
+                attendee_id,
+                expected_catalog_version,
+                name,
+                ..
+            } => {
+                store::validate_id(attendee_id).map_err(|_| ControlError::invalid())?;
+                if !valid_version(expected_catalog_version) || name.trim().is_empty() {
+                    return Err(ControlError::invalid());
+                }
+            }
             Self::MeetingDateSet {
                 meeting_date: Some(date),
                 ..
@@ -315,7 +371,17 @@ impl Mutation {
     fn versions(&self) -> Vec<(&str, &str)> {
         match self {
             Self::SummaryImport { .. } => Vec::new(),
-            Self::MeetingUpdate {
+            Self::MeetingAttendeesSet {
+                meeting_id,
+                expected_version,
+                ..
+            }
+            | Self::MeetingAttendeePromote {
+                meeting_id,
+                expected_version,
+                ..
+            }
+            | Self::MeetingUpdate {
                 meeting_id,
                 expected_version,
                 ..
@@ -333,9 +399,10 @@ impl Mutation {
                 .iter()
                 .map(|(id, version)| (id.as_str(), version.as_str()))
                 .collect(),
-            Self::FolderCreate { .. } | Self::FolderRename { .. } | Self::FolderDelete { .. } => {
-                Vec::new()
-            }
+            Self::FolderCreate { .. }
+            | Self::FolderRename { .. }
+            | Self::FolderDelete { .. }
+            | Self::PeopleUpdate { .. } => Vec::new(),
         }
     }
 
@@ -374,6 +441,13 @@ pub(crate) fn validate(engine: &Engine, mutation: &Mutation) -> Result<()> {
         return Err(CoreError::Unavailable);
     }
     match mutation {
+        Mutation::PeopleUpdate {
+            expected_version, ..
+        } => {
+            if &engine.people_catalog()?.edit_version != expected_version {
+                return Err(CoreError::EditConflict);
+            }
+        }
         Mutation::SummaryImport {
             meeting_id,
             context,
@@ -432,6 +506,43 @@ pub(crate) fn apply(engine: &mut Engine, mutation: Mutation) -> Result<Value> {
         } => {
             let summary = engine.import_summary(&meeting_id, context, text, producer)?;
             Ok(json!({"applied":true,"meetingId":meeting_id,"summaryId":summary.id}))
+        }
+        Mutation::PeopleUpdate {
+            expected_version,
+            people,
+            groups,
+        } => {
+            let catalog = engine.replace_people_catalog(&expected_version, people, groups)?;
+            Ok(json!({"applied":true,"editVersion":catalog.edit_version}))
+        }
+        Mutation::MeetingAttendeesSet {
+            meeting_id,
+            expected_version,
+            attendees,
+        } => {
+            let meeting =
+                engine.replace_meeting_attendees(&meeting_id, &expected_version, attendees)?;
+            Ok(
+                json!({"applied":true,"meetingId":meeting.id,"editVersion":meeting_edit_version(&meeting)?}),
+            )
+        }
+        Mutation::MeetingAttendeePromote {
+            meeting_id,
+            expected_version,
+            expected_catalog_version,
+            attendee_id,
+            name,
+        } => {
+            let result = engine.promote_meeting_attendee(
+                &meeting_id,
+                &expected_version,
+                &expected_catalog_version,
+                &attendee_id,
+                name,
+            )?;
+            Ok(
+                json!({"applied":true,"meetingId":result.meeting.id,"editVersion":meeting_edit_version(&result.meeting)?,"catalogEditVersion":result.catalog.edit_version,"personId":result.person.id}),
+            )
         }
         Mutation::MeetingUpdate {
             meeting_id,

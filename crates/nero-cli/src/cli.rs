@@ -18,6 +18,10 @@ pub const HELP: &str = "Nero 로컬 CLI
   summary context ID
   summary import ID --file JSON_PATH
   folders list [--offset N] [--limit N]
+  people list [--offset N] [--limit N]
+  people update --expected-version HASH --file JSON_PATH
+  meetings attendees ID --expected-version HASH --file JSON_PATH
+  meetings attendee-promote ID --expected-version HASH --file JSON_PATH
   meetings update ID --expected-version HASH --file JSON_PATH
   meetings date ID --expected-version HASH [--date YYYY-MM-DD | --clear]
   meetings move --file JSON_PATH
@@ -64,8 +68,10 @@ mcp는 stdin/stdout으로 MCP를 제공하며 stdout에 진단 문구를 쓰지 
 회의/폴더 수정본은 조회 응답의 editVersion이며 sourceVersion과 다릅니다.
 작업 조회/취소는 실행 중인 Nero에 요청하며 모델을 실행하지 않습니다.
 작업 취소는 jobs list의 editVersion을 사용하며 취소 요청 수락 후 상태를 다시 조회합니다.
+인원 update 파일은 people/groups 전체 배열, attendees 파일은 attendees 배열입니다.
+attendee-promote 파일은 attendeeId/name/expectedCatalogVersion 세 문자열입니다.
 요약 import 파일은 summary context의 context, 생성한 text, producer를 포함합니다.
-원문/메모/기존 요약이 바뀌면 저장하지 않습니다. 요약 저장은 실행 중인 Nero에 요청합니다.
+원문/메모/참석자/기존 요약이 바뀌면 저장하지 않습니다. 요약 저장은 실행 중인 Nero에 요청합니다.
 ";
 
 #[derive(Debug, PartialEq)]
@@ -92,6 +98,9 @@ enum FileContent {
     MeetingMove,
     MeetingSet,
     SummaryImport,
+    PeopleUpdate,
+    AttendeesSet,
+    AttendeePromote,
 }
 
 #[derive(Debug)]
@@ -142,7 +151,7 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Options, QueryError
             method: "status",
             params: json!({}),
         },
-        ["meetings" | "transcript" | "summary" | "folders" | "templates" | "jobs", ..]
+        ["meetings" | "transcript" | "summary" | "folders" | "people" | "templates" | "jobs", ..]
             if strings
                 .iter()
                 .any(|value| matches!(*value, "--help" | "-h")) =>
@@ -152,6 +161,13 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Options, QueryError
         ["jobs", command, remaining @ ..] => parse_jobs(command, remaining)?,
         ["templates", command, remaining @ ..] => parse_templates(command, remaining)?,
         ["summary", "import", remaining @ ..] => parse_summary_import(remaining)?,
+        ["people", "update", remaining @ ..] => parse_people_mutation("people_update", remaining)?,
+        ["meetings", "attendees", remaining @ ..] => {
+            parse_people_mutation("meeting_attendees_set", remaining)?
+        }
+        ["meetings", "attendee-promote", remaining @ ..] => {
+            parse_people_mutation("meeting_attendee_promote", remaining)?
+        }
         [group @ ("meetings" | "folders"), command @ ("update" | "date" | "move" | "trash" | "restore" | "create" | "rename"
         | "delete"), remaining @ ..] => parse_mutation(group, command, remaining)?,
         [group, command, remaining @ ..] => parse_query(group, command, remaining)?,
@@ -215,6 +231,7 @@ fn parse_query(group: &str, command: &str, remaining: &[&str]) -> Result<Action,
         ("summary", "get") => "summary_get",
         ("summary", "context") => "summary_context",
         ("folders", "list") => "folders_list",
+        ("people", "list") => "people_catalog",
         _ => return Err(QueryError::invalid()),
     };
     let mut params = Map::new();
@@ -425,6 +442,49 @@ fn parse_summary_import(remaining: &[&str]) -> Result<Action, QueryError> {
     })
 }
 
+fn parse_people_mutation(method: &'static str, remaining: &[&str]) -> Result<Action, QueryError> {
+    let mut args = remaining.iter().copied();
+    let mut params = Map::new();
+    if method != "people_update" {
+        let id = args
+            .next()
+            .filter(|value| !value.starts_with("--"))
+            .ok_or_else(QueryError::invalid)?;
+        params.insert("meetingId".into(), json!(id));
+    }
+    let mut file = None;
+    while let Some(argument) = args.next() {
+        let (flag, inline) = argument
+            .split_once('=')
+            .map_or((argument, None), |(flag, value)| (flag, Some(value)));
+        let value = inline
+            .or_else(|| args.next())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(QueryError::invalid)?;
+        match flag {
+            "--file" if file.is_none() => file = Some(PathBuf::from(value)),
+            "--expected-version" if !params.contains_key("expectedVersion") => {
+                params.insert("expectedVersion".into(), json!(value));
+            }
+            _ => return Err(QueryError::invalid()),
+        }
+    }
+    if !params.contains_key("expectedVersion") {
+        return Err(QueryError::invalid());
+    }
+    let content = match method {
+        "people_update" => FileContent::PeopleUpdate,
+        "meeting_attendees_set" => FileContent::AttendeesSet,
+        _ => FileContent::AttendeePromote,
+    };
+    Ok(Action::FileRequest {
+        method,
+        params: Value::Object(params),
+        path: file.ok_or_else(QueryError::invalid)?,
+        content,
+    })
+}
+
 fn parse_mutation(group: &str, command: &str, remaining: &[&str]) -> Result<Action, QueryError> {
     let method = match (group, command) {
         ("meetings", "update") => "meeting_update",
@@ -581,6 +641,20 @@ fn read_content_file(
                 && content
                     .get("expectedVersions")
                     .is_some_and(Value::is_object)
+        }
+        FileContent::PeopleUpdate => {
+            content.len() == 2
+                && content.get("people").is_some_and(Value::is_array)
+                && content.get("groups").is_some_and(Value::is_array)
+        }
+        FileContent::AttendeesSet => {
+            content.len() == 1 && content.get("attendees").is_some_and(Value::is_array)
+        }
+        FileContent::AttendeePromote => {
+            content.len() == 3
+                && ["attendeeId", "name", "expectedCatalogVersion"]
+                    .iter()
+                    .all(|key| content.get(*key).is_some_and(Value::is_string))
         }
         FileContent::SummaryImport => {
             content.len() == 3
@@ -777,6 +851,21 @@ fn render(method: &str, value: &Value, timezone: &TimeZone) -> String {
                 }
             }
         }
+        "people_catalog" => {
+            output.push_str("종류\tID\t이름\n");
+            if let Some(entries) = value["entries"].as_array() {
+                for entry in entries {
+                    let kind = text(&entry["kind"]);
+                    let item = &entry[kind.as_str()];
+                    output.push_str(&format!(
+                        "{}\t{}\t{}\n",
+                        kind,
+                        text(&item["id"]),
+                        text(&item["name"])
+                    ));
+                }
+            }
+        }
         "folders_list" => {
             output.push_str("ID\t폴더\n");
             if let Some(folders) = value["folders"].as_array() {
@@ -791,6 +880,24 @@ fn render(method: &str, value: &Value, timezone: &TimeZone) -> String {
         }
         "meeting_get" => {
             let meeting = &value["meeting"];
+            if let Some(attendees) = meeting["attendees"].as_array() {
+                let mut unnamed = 0;
+                let names: Vec<_> = attendees
+                    .iter()
+                    .map(|attendee| {
+                        attendee["name"]
+                            .as_str()
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| {
+                                unnamed += 1;
+                                format!("임시 참석자 {unnamed}")
+                            })
+                    })
+                    .collect();
+                if !names.is_empty() {
+                    output.push_str(&format!("참석자: {}\n", names.join(", ")));
+                }
+            }
             output.push_str(&format!(
                 "{}\nID: {}\n상태: {}\n\n{}\n",
                 text(&meeting["title"]),
@@ -1132,6 +1239,64 @@ mod tests {
         ] {
             assert!(args(&arguments).is_err(), "{arguments:?}");
         }
+    }
+
+    #[test]
+    fn attendance_files_cannot_override_target_or_revision_flags() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("input.json");
+        for (kind, content) in [
+            (
+                FileContent::AttendeesSet,
+                json!({"attendees":[],"expectedVersion":"override"}),
+            ),
+            (
+                FileContent::PeopleUpdate,
+                json!({"people":[],"groups":[],"meetingId":"override"}),
+            ),
+            (
+                FileContent::AttendeePromote,
+                json!({"attendeeId":"id","name":"Name","expectedCatalogVersion":"hash","expectedVersion":"override"}),
+            ),
+        ] {
+            std::fs::write(&path, serde_json::to_vec(&content).unwrap()).unwrap();
+            assert!(read_content_file(&path, json!({"expectedVersion":"original"}), kind).is_err());
+        }
+        let version = format!("sha256:{}", "a".repeat(64));
+        assert!(matches!(
+            args(&[
+                "people",
+                "update",
+                "--expected-version",
+                &version,
+                "--file",
+                "input.json"
+            ])
+            .unwrap()
+            .action,
+            Action::FileRequest {
+                method: "people_update",
+                ..
+            }
+        ));
+        assert!(matches!(
+            args(&[
+                "meetings",
+                "attendees",
+                "11111111-1111-4111-8111-111111111111",
+                "--expected-version",
+                &version,
+                "--file",
+                "input.json"
+            ])
+            .unwrap()
+            .action,
+            Action::FileRequest {
+                method: "meeting_attendees_set",
+                ..
+            }
+        ));
+        assert!(args(&["meetings", "attendees", "id", "--file", "input.json"]).is_err());
     }
 
     #[test]

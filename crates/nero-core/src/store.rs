@@ -367,6 +367,7 @@ impl Store {
             id: Uuid::new_v4().to_string(),
             title,
             notes,
+            attendees: Vec::new(),
             calendar_reference,
             created_at: timestamp,
             updated_at: timestamp,
@@ -400,6 +401,7 @@ impl Store {
             .join(&stored.meeting.id)
             .join("meeting.json");
         let mut base = stored.clone();
+        base.meeting.attendees.clear();
         base.meeting.folder_id = None;
         base.meeting.deleted_at = None;
         write_json(&self.root, &relative, &base)
@@ -412,6 +414,7 @@ impl Store {
             .join("meeting.json");
         let saved: StoredMeeting = read_json(&checked_path(&self.root, &relative)?)?;
         let mut expected = stored.clone();
+        expected.meeting.attendees.clear();
         expected.meeting.folder_id = None;
         expected.meeting.deleted_at = None;
         Ok(saved == expected)

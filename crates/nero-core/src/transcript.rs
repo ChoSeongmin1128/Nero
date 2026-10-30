@@ -2994,6 +2994,7 @@ pub(crate) mod tests {
         let draft = |source: Transcript, expected_id: Option<String>| crate::SummaryDraft {
             source,
             notes: None,
+            attendees: None,
             expected_id,
             text: "예시 회의록 [1]".into(),
             provenance: crate::SummaryProvenance {
@@ -3605,6 +3606,7 @@ pub(crate) mod tests {
                 crate::SummaryDraft {
                     source: before.clone(),
                     notes: None,
+                    attendees: None,
                     expected_id: None,
                     text: "기존 회의록".into(),
                     provenance: crate::SummaryProvenance {

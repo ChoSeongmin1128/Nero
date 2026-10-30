@@ -5,7 +5,9 @@ mod engine;
 pub mod identity;
 mod library;
 mod nemotron;
+pub mod people;
 pub mod presentation;
+pub use people::{MeetingAttendee, PeopleCatalog, Person, PersonGroup, PromotedAttendee};
 pub mod reader;
 pub mod speech_runtime;
 mod store;
@@ -119,6 +121,8 @@ pub struct Meeting {
     pub id: String,
     pub title: String,
     pub notes: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attendees: Vec<MeetingAttendee>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub calendar_reference: Option<CalendarReference>,
     pub created_at: u64,

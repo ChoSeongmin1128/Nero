@@ -11,7 +11,7 @@ use std::path::PathBuf;
 pub(crate) struct Engine {
     pub(crate) store: Store,
     pub(crate) meetings: BTreeMap<String, StoredMeeting>,
-    library: Library,
+    pub(crate) library: Library,
     pub(crate) capture: Option<Capture>,
     last_session: Option<SessionSnapshot>,
     revision: u64,
@@ -233,7 +233,7 @@ impl Engine {
         Ok(meeting)
     }
 
-    fn commit_library(&mut self, library: Library) -> Result<()> {
+    pub(crate) fn commit_library(&mut self, library: Library) -> Result<()> {
         if self.quitting {
             return Err(CoreError::Unavailable);
         }
@@ -394,6 +394,7 @@ impl Engine {
         let mut library = self.library.clone();
         for id in &ids {
             library.placements.remove(id);
+            library.meeting_attendees.remove(id);
             library.pending_purges.insert(id.clone());
         }
         self.commit_library(library)?;

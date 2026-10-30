@@ -75,6 +75,7 @@ pub struct SummaryContext {
     pub transcript_version: TranscriptVersion,
     pub transcript_sha256: String,
     pub notes_sha256: String,
+    pub attendees_sha256: String,
     pub summary_id: Option<String>,
 }
 
@@ -82,12 +83,14 @@ impl SummaryContext {
     pub(crate) fn new(
         source: &Transcript,
         notes: &str,
+        attendees: &[crate::MeetingAttendee],
         summary_id: Option<String>,
     ) -> Result<Self> {
         Ok(Self {
             transcript_version: source.version.clone(),
             transcript_sha256: transcript_digest(source)?,
             notes_sha256: notes_digest(notes),
+            attendees_sha256: crate::people::attendees_digest(attendees)?,
             summary_id,
         })
     }
@@ -97,7 +100,11 @@ impl SummaryContext {
         if let Some(id) = &self.summary_id {
             store::validate_id(id)?;
         }
-        for digest in [&self.transcript_sha256, &self.notes_sha256] {
+        for digest in [
+            &self.transcript_sha256,
+            &self.notes_sha256,
+            &self.attendees_sha256,
+        ] {
             if digest.len() != 64
                 || !digest
                     .bytes()
@@ -121,6 +128,8 @@ pub struct Summary {
     pub source_sha256: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notes_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attendees_sha256: Option<String>,
     pub provenance: SummaryProvenance,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -154,6 +163,8 @@ struct SummaryArchive {
     source: Transcript,
     #[serde(default)]
     notes: Option<String>,
+    #[serde(default)]
+    attendees: Option<Vec<crate::MeetingAttendee>>,
     #[serde(rename = "receipt")]
     _receipt: serde_json::Value,
 }
@@ -164,6 +175,11 @@ fn validated_summary_archive(active: &Summary, bytes: &[u8]) -> Result<SummaryAr
         != serde_json::to_value(active).map_err(|_| invalid_citations())?
         || archive.source.version != active.source_version
         || transcript_digest(&archive.source)? != active.source_sha256
+        || active.attendees_sha256.as_ref().is_some_and(|expected| {
+            archive.attendees.as_ref().is_none_or(|attendees| {
+                crate::people::attendees_digest(attendees).ok().as_ref() != Some(expected)
+            })
+        })
         || active.notes_sha256.as_ref().is_some_and(|expected| {
             archive
                 .notes
@@ -259,6 +275,7 @@ fn validate_citation_source(source: &Transcript) -> Result<()> {
 pub struct SummaryInput {
     pub source: Transcript,
     pub notes: String,
+    pub attendees: Vec<crate::MeetingAttendee>,
     pub expected_id: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -267,6 +284,8 @@ pub struct SummaryDraft {
     pub source: Transcript,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attendees: Option<Vec<crate::MeetingAttendee>>,
     pub expected_id: Option<String>,
     pub text: String,
     pub provenance: SummaryProvenance,
@@ -284,11 +303,16 @@ pub(crate) fn is_stale(
     summary: &Summary,
     transcript: Option<&Transcript>,
     notes: &str,
+    attendees: &[crate::MeetingAttendee],
 ) -> Result<bool> {
     let Some(transcript) = transcript else {
         return Ok(true);
     };
-    Ok(transcript.version != summary.source_version
+    let attendees_changed = summary.attendees_sha256.as_ref().is_some_and(|expected| {
+        crate::people::attendees_digest(attendees).ok().as_ref() != Some(expected)
+    });
+    Ok(attendees_changed
+        || transcript.version != summary.source_version
         || transcript_digest(transcript)? != summary.source_sha256
         || summary
             .notes_sha256
@@ -339,6 +363,7 @@ impl Engine {
         Ok(SummaryInput {
             source,
             notes: self.meetings[id].meeting.notes.clone(),
+            attendees: self.meetings[id].meeting.attendees.clone(),
             expected_id: self.summary(id)?.map(|view| view.document.id),
         })
     }
@@ -357,7 +382,12 @@ impl Engine {
         }
         context.validate()?;
         let input = self.summary_input(id)?;
-        if SummaryContext::new(&input.source, &input.notes, input.expected_id.clone())? != *context
+        if SummaryContext::new(
+            &input.source,
+            &input.notes,
+            &input.attendees,
+            input.expected_id.clone(),
+        )? != *context
         {
             return Err(CoreError::EditConflict);
         }
@@ -388,6 +418,7 @@ impl Engine {
             SummaryDraft {
                 source: input.source,
                 notes: Some(input.notes),
+                attendees: Some(input.attendees),
                 expected_id: input.expected_id,
                 text,
                 provenance,
@@ -411,6 +442,7 @@ impl Engine {
             &document,
             current.as_ref(),
             &self.meetings[id].meeting.notes,
+            &self.meetings[id].meeting.attendees,
         )?;
         Ok(Some(SummaryView { document, stale }))
     }
@@ -564,6 +596,9 @@ impl Engine {
         if let Some(notes) = &draft.notes {
             store::validate_text("", notes)?;
         }
+        if let Some(attendees) = &draft.attendees {
+            crate::people::validate_attendees(attendees)?;
+        }
         let source_sha256 = transcript_digest(&draft.source)?;
         let doc = Summary {
             id: Uuid::new_v4().to_string(),
@@ -572,6 +607,9 @@ impl Engine {
             source_version: draft.source.version.clone(),
             source_sha256,
             notes_sha256: draft.notes.as_deref().map(notes_digest),
+            attendees_sha256: Some(crate::people::attendees_digest(
+                draft.attendees.as_deref().unwrap_or_default(),
+            )?),
             provenance: draft.provenance.clone(),
         };
         let relative = directory.join(&doc.id);
@@ -581,6 +619,7 @@ impl Engine {
         if let Some(notes) = &draft.notes {
             archive["notes"] = serde_json::json!(notes);
         }
+        archive["attendees"] = serde_json::json!(draft.attendees.as_deref().unwrap_or_default());
         let mut file = store::create_new(&store::checked_path(
             &self.store.root,
             &relative.join("run.json"),
@@ -597,9 +636,11 @@ impl Engine {
                 .notes
                 .as_ref()
                 .is_some_and(|notes| notes != &self.meetings[id].meeting.notes)
+            || draft.attendees.as_deref().unwrap_or_default()
+                != self.meetings[id].meeting.attendees.as_slice()
             || self.summary(id)?.map(|v| v.document.id) != draft.expected_id
         {
-            return Err(CoreError::InvalidState("음성 기록, 메모 또는 회의록이 변경되어 새 결과를 적용하지 않았습니다. 기존 내용은 유지했습니다.".into()));
+            return Err(CoreError::InvalidState("음성 기록, 메모, 참석자 또는 회의록이 변경되어 새 결과를 적용하지 않았습니다. 기존 내용은 유지했습니다.".into()));
         }
         store::write_json(&self.store.root, &directory.join("current.json"), &doc)?;
         Ok(doc)
@@ -609,6 +650,102 @@ impl Engine {
 mod tests {
     use super::*;
     use crate::transcript::tests::{output, setup};
+
+    #[test]
+    fn attendee_snapshot_changes_mark_summary_stale_and_reject_late_imports() {
+        let (_temporary, mut engine, id, _) = setup();
+        engine.commit_transcript(&id, None, output()).unwrap();
+        let person = crate::Person {
+            id: Uuid::new_v4().to_string(),
+            name: "Reference name".into(),
+        };
+        let catalog = engine.people_catalog().unwrap();
+        let catalog = engine
+            .replace_people_catalog(&catalog.edit_version, vec![person.clone()], Vec::new())
+            .unwrap();
+        let attendees = vec![crate::MeetingAttendee {
+            id: Uuid::new_v4().to_string(),
+            person_id: Some(person.id.clone()),
+            name: Some(person.name.clone()),
+        }];
+        let version =
+            crate::agent_control::meeting_edit_version(&engine.meetings[&id].meeting).unwrap();
+        engine
+            .replace_meeting_attendees(&id, &version, attendees.clone())
+            .unwrap();
+        let first_context = context(&engine, &id);
+        assert_eq!(
+            first_context.attendees_sha256,
+            crate::people::attendees_digest(&attendees).unwrap()
+        );
+        let saved = engine
+            .import_summary(&id, first_context, "Saved [1]".into(), external_producer())
+            .unwrap();
+        assert!(!engine.summary(&id).unwrap().unwrap().stale);
+        let late_context = context(&engine, &id);
+        let mut renamed_person = person;
+        renamed_person.name = "Catalog rename".into();
+        engine
+            .replace_people_catalog(&catalog.edit_version, vec![renamed_person], Vec::new())
+            .unwrap();
+        assert!(!engine.summary(&id).unwrap().unwrap().stale);
+        assert_eq!(context(&engine, &id), late_context);
+        let mut changed = attendees.clone();
+        changed[0].name = Some("Roster rename".into());
+        let version =
+            crate::agent_control::meeting_edit_version(&engine.meetings[&id].meeting).unwrap();
+        engine
+            .replace_meeting_attendees(&id, &version, changed)
+            .unwrap();
+        assert!(engine.summary(&id).unwrap().unwrap().stale);
+        assert!(matches!(
+            engine.import_summary(&id, late_context, "Late [1]".into(), external_producer()),
+            Err(CoreError::EditConflict)
+        ));
+        let reader = crate::reader::LibraryReader::open(&engine.store.root).unwrap();
+        assert_eq!(
+            reader
+                .query("summary_get", serde_json::json!({"meetingId":id}))
+                .unwrap()["summary"]["stale"],
+            true
+        );
+        let archive: serde_json::Value = store::read_json(
+            &engine
+                .store
+                .root
+                .join("meetings")
+                .join(&id)
+                .join("summaries")
+                .join(&saved.id)
+                .join("run.json"),
+        )
+        .unwrap();
+        assert_eq!(archive["attendees"], serde_json::json!(attendees));
+        assert_eq!(engine.summary(&id).unwrap().unwrap().document.id, saved.id);
+    }
+
+    #[test]
+    fn local_summary_draft_cannot_omit_a_nonempty_attendance_snapshot() {
+        let (_temporary, mut engine, id, _) = setup();
+        let source = engine.commit_transcript(&id, None, output()).unwrap();
+        let version =
+            crate::agent_control::meeting_edit_version(&engine.meetings[&id].meeting).unwrap();
+        engine
+            .replace_meeting_attendees(
+                &id,
+                &version,
+                vec![crate::MeetingAttendee {
+                    id: Uuid::new_v4().to_string(),
+                    person_id: None,
+                    name: None,
+                }],
+            )
+            .unwrap();
+        assert!(engine
+            .commit_summary(&id, draft(source, None, "No roster snapshot"))
+            .is_err());
+        assert!(engine.summary(&id).unwrap().is_none());
+    }
 
     fn external_producer() -> ExternalSummaryProducer {
         ExternalSummaryProducer {
@@ -622,7 +759,13 @@ mod tests {
 
     fn context(engine: &Engine, id: &str) -> SummaryContext {
         let input = engine.summary_input(id).unwrap();
-        SummaryContext::new(&input.source, &input.notes, input.expected_id).unwrap()
+        SummaryContext::new(
+            &input.source,
+            &input.notes,
+            &input.attendees,
+            input.expected_id,
+        )
+        .unwrap()
     }
 
     #[test]
@@ -860,6 +1003,7 @@ mod tests {
         SummaryDraft {
             source,
             notes: None,
+            attendees: None,
             expected_id,
             text: text.into(),
             provenance: SummaryProvenance {

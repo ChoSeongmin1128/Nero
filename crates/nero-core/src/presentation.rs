@@ -626,6 +626,7 @@ mod tests {
                 SummaryDraft {
                     source: source.clone(),
                     notes: Some(String::new()),
+                    attendees: None,
                     expected_id: None,
                     text: summary_text.into(),
                     provenance: SummaryProvenance {

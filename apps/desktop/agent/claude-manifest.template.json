@@ -55,7 +55,7 @@
     },
     {
       "name": "summary_context",
-      "description": "요약 저장에 필요한 원문과 기존 요약 수정본 조회"
+      "description": "참석 명단과 요약 저장에 필요한 원문/메모/명단/기존 요약 수정본 조회"
     },
     {
       "name": "summary_import",
@@ -64,6 +64,22 @@
     {
       "name": "folders_list",
       "description": "폴더 목록 조회"
+    },
+    {
+      "name": "people_catalog",
+      "description": "관리 인원과 그룹 조회"
+    },
+    {
+      "name": "people_update",
+      "description": "관리 인원과 그룹 수정"
+    },
+    {
+      "name": "meeting_attendees_set",
+      "description": "회의 참석 명단 수정"
+    },
+    {
+      "name": "meeting_attendee_promote",
+      "description": "회의 참석자를 관리 인원으로 저장"
     },
     {
       "name": "status",

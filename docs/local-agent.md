@@ -70,6 +70,10 @@ nero summary get MEETING_ID --offset 0 --limit 50 --json
 nero summary context MEETING_ID --json
 nero summary import MEETING_ID --file summary.json --json
 nero folders list --json
+nero people list --json
+nero people update --expected-version HASH --file people.json --json
+nero meetings attendees MEETING_ID --expected-version HASH --file attendees.json --json
+nero meetings attendee-promote MEETING_ID --expected-version HASH --file person.json --json
 nero templates list --json
 nero templates get meeting --json
 nero templates create --file template.json --json
@@ -104,6 +108,9 @@ nero mcp
 | 대상 | 입력/수정본 |
 |---|---|
 | 템플릿 create/update의 `--file` | `{"name":"이름","description":"추천 용도","prompt":"프롬프트"}` 전체 필드 |
+| 인원 update의 `--file` | `{"people":[{"id":"UUID","name":"이름"}],"groups":[{"id":"UUID","name":"그룹","personIds":["UUID"]}]}` 전체 카탈로그 |
+| 회의 attendees의 `--file` | `{"attendees":[{"id":"UUID","personId":"UUID","name":"선택 당시 이름"},{"id":"UUID"}]}` 전체 참석 명단. name/personId가 없으면 임시 참석자 |
+| 회의 attendee-promote의 `--file` | `{"attendeeId":"UUID","name":"이름","expectedCatalogVersion":"HASH"}`. 회의와 카탈로그 수정본을 함께 검사 |
 | 회의 update의 `--file` | `{"title":"제목"}` 또는 `{"notes":"메모"}`, 둘 다 지정 가능 |
 | 회의 move의 `--file` | `{"expectedVersions":{"MEETING_ID":"HASH"},"folderId":"FOLDER_ID"}`, 미분류는 null |
 | 회의 trash/restore의 `--file` | `{"expectedVersions":{"MEETING_ID":"HASH"}}` |
@@ -112,7 +119,7 @@ nero mcp
 `--file -`는 stdin을 읽는다. 입력은 최대 1MiB이며 정의하지 않은 필드는 거부한다.
 회의의 `expectedVersion`은 `meeting_get`의 `editVersion`, 일괄 변경은 각 회의 ID와
 editVersion을 사용한다. 휴지통 복원용 editVersion은 `meetings list --trashed`로 조회한다.
-회의 editVersion은 제목, 메모, 회의 날짜, 폴더, 휴지통 상태와 음성/원문 출처를 포함한
+회의 editVersion은 제목, 메모, 참석 명단, 회의 날짜, 폴더, 휴지통 상태와 음성/원문 출처를 포함한
 저장 상태를 보호한다. 캡처 manifest에서 메모리로 보충하는 `warning`, `captureQuality`,
 `recordedAt`은 제외한다. 진단 표시를 위해 기존 완료 회의 파일을 다시 저장하지 않으며,
 이 값의 보충만으로 편집 충돌을 만들지 않는다.
@@ -132,10 +139,10 @@ editVersion을 사용한다. 휴지통 복원용 editVersion은 `meetings list -
 
 요약 생성 전에 `summary context`로 `context`를 보관한 뒤 음성 기록과 메모를 모든 페이지에
 걸쳐 읽는다. `context`는 `transcriptVersion`의 id/revision, `transcriptSha256`,
-`notesSha256`, 기존 `summaryId`(없으면 null)를 포함한다. 해시는 접두사 없는 64자리 소문자
-SHA-256이다. 원문, 메모 또는 기존 요약이 바뀌면 `edit_conflict`로 저장하지 않으며 자동
+`notesSha256`, `attendeesSha256`, 기존 `summaryId`(없으면 null)를 포함한다. 해시는 접두사 없는 64자리 소문자
+SHA-256이다. 원문, 메모, 참석 명단 또는 기존 요약이 바뀌면 `edit_conflict`로 저장하지 않으며 자동
 재시도하지 않는다. `context` 대신 페이지 조회용 `sourceVersion`을 전달하지 않는다.
-`summary context`는 본문 없이 수정본만 반환하며 페이지 인수를 받지 않는다.
+`summary context`는 참석 명단과 수정본을 반환하며 페이지 인수를 받지 않는다. 참석 명단은 참고 정보이며 명단 순서/인원수로 실제 발언자 이름을 추정하거나 목소리가 확인된 인물로 취급하지 않는다.
 
 `producer.name`은 필수이며 선택 항목은 `model`, `modelRevision`, `promptVersion`, `template`이다.
 이 정보는 에이전트가 제공한 생성 정보이며 Nero가 모델을 검증했다는 뜻은 아니다. 모르는
@@ -152,9 +159,13 @@ SHA-256이다. 원문, 메모 또는 기존 요약이 바뀌면 `edit_conflict`�
 | `meeting_get` | 회의 정보와 저장된 메모 |
 | `transcript_get` | 현재 교정본의 화자, 시각, 발언 ID와 텍스트 |
 | `summary_get` | 현재 요약과 원본 수정 여부. 기본 내부 인용 번호 제외, `format:md/txt` |
-| `summary_context` | 요약 저장용 원문/메모/기존 요약 수정본 조회 |
+| `summary_context` | 참석 명단과 요약 저장용 원문/메모/명단/기존 요약 수정본 조회 |
 | `summary_import` | 외부 에이전트가 생성한 요약 저장. Nero 실행 필요 |
 | `folders_list` | 폴더 목록 |
+| `people_catalog` | 인원/그룹을 kind별 entries로 통합 페이지 조회. 편집에 필요한 editVersion 포함 |
+| `people_update` | 관리 인원/그룹 전체를 현재 카탈로그 editVersion으로 교체 |
+| `meeting_attendees_set` | 현재 회의 editVersion으로 참석 명단 교체 |
+| `meeting_attendee_promote` | 회의 전용 참석자를 관리 인원으로 저장하고 같은 원자 저장에서 연결 |
 | `status` | 조회/편집 기능과 저장소 존재 여부 |
 | `jobs_list` | 실행 중인 Nero의 처리 작업 상태. 선택적 meetingId, offset/limit |
 | `job_cancel` | 명시적으로 요청한 작업을 editVersion 검사 후 취소 |
@@ -164,6 +175,8 @@ SHA-256이다. 원문, 메모 또는 기존 요약이 바뀌면 `edit_conflict`�
 | `meeting_update`, `meeting_date_set` | 회의 제목/메모와 별도 회의 날짜 편집 |
 | `meetings_move`, `meetings_trash`, `meetings_restore` | 폴더 이동과 휴지통/복원 |
 | `folder_create`, `folder_rename`, `folder_delete` | 폴더 관리 |
+
+인원/그룹 카탈로그와 회의별 참석 명단은 별개다. 사람 이름 변경/삭제는 기존 회의의 선택 당시 이름을 바꾸지 않는다. 삭제한 사람은 그룹에서도 제거한 전체 카탈로그를 제출한다. 동명이인은 별도 ID로 허용하며 같은 관리 인원을 한 명단에 중복 연결하지 않는다. 참석 명단 편집은 녹음 전/중/후에 가능하며 원음/전사와 화자 이름을 바꾸거나 분석을 시작하지 않는다. 명단 순서가 바뀌어도 참석자 ID는 유지한다.
 
 폴더 조회와 회의의 folderId는 앱과 같은 library.json을 매 요청 읽으므로 새 폴더, 이름 변경과 이동을 반영한다.
 폴더 이름은 목록에서 한 번 해석하고, 검색 결과를 확인한 후 필요한 회의와 발언 구간만 조회한다.

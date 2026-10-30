@@ -26,6 +26,10 @@ pub(crate) struct Library {
     pub folders: BTreeMap<String, Folder>,
     pub placements: BTreeMap<String, Placement>,
     pub pending_purges: BTreeSet<String>,
+    #[serde(default)]
+    pub people: crate::people::People,
+    #[serde(default)]
+    pub meeting_attendees: BTreeMap<String, Vec<crate::MeetingAttendee>>,
 }
 
 impl Default for Library {
@@ -35,6 +39,8 @@ impl Default for Library {
             folders: BTreeMap::new(),
             placements: BTreeMap::new(),
             pending_purges: BTreeSet::new(),
+            people: Default::default(),
+            meeting_attendees: BTreeMap::new(),
         }
     }
 }
@@ -45,6 +51,16 @@ impl Library {
             return Err(CoreError::Storage(
                 "지원하지 않는 회의 목록 형식입니다.".into(),
             ));
+        }
+        self.people.validate()?;
+        for (id, attendees) in &self.meeting_attendees {
+            store::validate_id(id)?;
+            crate::people::validate_attendees(attendees)?;
+            if self.pending_purges.contains(id) {
+                return Err(CoreError::Storage(
+                    "삭제된 회의의 참석자 정보가 남아 있습니다.".into(),
+                ));
+            }
         }
         let mut names = BTreeSet::new();
         for (id, folder) in &self.folders {
@@ -75,6 +91,11 @@ impl Library {
     }
 
     pub fn project(&self, meeting: &mut Meeting) {
+        meeting.attendees = self
+            .meeting_attendees
+            .get(&meeting.id)
+            .cloned()
+            .unwrap_or_default();
         let placement = self.placements.get(&meeting.id);
         meeting.folder_id = placement.and_then(|entry| entry.folder_id.clone());
         meeting.deleted_at = placement.and_then(|entry| entry.deleted_at);
