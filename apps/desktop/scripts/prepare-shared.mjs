@@ -42,7 +42,10 @@ await cp(resolve(app, 'licenses/portable-wav'), resolve(app, '.generated/native/
 await mkdir(resolve(app, '.generated/agent'), { recursive: true });
 
 await mkdir(resolve(app, '.generated/brand'), { recursive: true });
-await copyFile(resolve(app, 'brand/mark.svg'), resolve(app, '.generated/brand/mark.svg'));
+await mkdir(resolve(app, '.generated/brand/logo'), { recursive: true });
+for (const name of ['nero-logo-light.svg', 'nero-logo-dark.svg', 'nero-symbol-light.svg', 'nero-symbol-dark.svg']) {
+  await copyFile(resolve(app, 'brand/logo', name), resolve(app, '.generated/brand/logo', name));
+}
 
 const git = (...args) => execFileSync('git', args, { cwd: resolve(app, '../..'), encoding: 'utf8' }).trim();
 const config = JSON.parse(await readFile(resolve(app, 'src-tauri/tauri.conf.json'), 'utf8'));

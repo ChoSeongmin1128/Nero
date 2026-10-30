@@ -15,13 +15,13 @@
   const initialMode = nativeKey && media.matches ? "dark" : "light";
   function mode(value) { return modes.has(value) ? value : initialMode; }
   function decode(saved) {
-    if (Object.hasOwn(legacy, saved)) return { color: "green", mode: mode(legacy[saved].mode) };
+    if (Object.hasOwn(legacy, saved)) return { color: "mono", mode: mode(legacy[saved].mode) };
     try {
       const value = JSON.parse(saved);
       if (value && typeof value === "object")
-        return { color: "green", mode: mode(value.mode) };
+        return { color: "mono", mode: mode(value.mode) };
     } catch {}
-    return { color: "green", mode: initialMode };
+    return { color: "mono", mode: initialMode };
   }
   let preference = decode(null);
   try {
@@ -77,7 +77,7 @@
     dialog.addEventListener("change", (event) => {
       const input = event.target;
       if (input.name !== "appearance-mode" || !modes.has(input.value)) return;
-      preference = { color: "green", mode: input.value };
+      preference = { color: "mono", mode: input.value };
       apply();
       try {
         localStorage.setItem(key, JSON.stringify(preference));

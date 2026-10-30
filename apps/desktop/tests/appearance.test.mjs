@@ -31,7 +31,7 @@ function openAppearance({ saved, dark = false, native = true, blocked = false } 
 
 test('initial brightness resolves once and only explicit light or dark remains selectable', () => {
   const app = openAppearance({ dark: true });
-  assert.equal(app.root.dataset.appearancePreference, 'green-dark');
+  assert.equal(app.root.dataset.appearancePreference, 'mono-dark');
   app.media.matches = false;
   assert.equal(app.listeners.has('system'), false);
   assert.equal(app.root.dataset.mode, 'dark');
@@ -45,7 +45,7 @@ test('legacy system mode resolves to a persisted fixed brightness', () => {
   for (const saved of ['system', JSON.stringify({ color: 'blue', mode: 'system' })]) {
     const app = openAppearance({ saved, dark: true });
     const reopened = openAppearance({ saved: app.storage.get('nero.appearance.v1'), dark: false });
-    assert.equal(reopened.root.dataset.appearancePreference, 'green-dark');
+    assert.equal(reopened.root.dataset.appearancePreference, 'mono-dark');
   }
 });
 
@@ -56,7 +56,7 @@ test('legacy colors normalize to the single accent while preserving brightness',
     for (const mode of ['light', 'dark']) {
       app.change('mode', mode);
       const reopened = openAppearance({ saved: app.storage.get('nero.appearance.v1') });
-      assert.equal(reopened.root.dataset.appearancePreference, `green-${mode}`);
+      assert.equal(reopened.root.dataset.appearancePreference, `mono-${mode}`);
       assert.equal(reopened.inputs.filter(input => input.checked).length, 2);
     }
   }
@@ -65,20 +65,20 @@ test('legacy colors normalize to the single accent while preserving brightness',
 test('recorder appearance follows the shared preference storage event', () => {
   const recorder = openAppearance();
   recorder.listeners.get('storage')({ key: 'nero.appearance.v1', newValue: JSON.stringify({ color: 'mono', mode: 'dark' }) });
-  assert.equal(recorder.root.dataset.appearance, 'green-dark');
+  assert.equal(recorder.root.dataset.appearance, 'mono-dark');
   recorder.listeners.get('storage')({ key: 'unrelated', newValue: null });
-  assert.equal(recorder.root.dataset.appearance, 'green-dark');
+  assert.equal(recorder.root.dataset.appearance, 'mono-dark');
   recorder.listeners.get('storage')({ key: 'nero.appearance.v1', newValue: null });
-  assert.equal(recorder.root.dataset.appearancePreference, 'green-light');
+  assert.equal(recorder.root.dataset.appearancePreference, 'mono-light');
 });
 
 test('invalid saved values and blocked storage keep theme controls usable', () => {
   const invalid = openAppearance({ saved: JSON.stringify({ color: 'invalid', mode: 'dark' }) });
-  assert.equal(invalid.root.dataset.appearancePreference, 'green-dark');
+  assert.equal(invalid.root.dataset.appearancePreference, 'mono-dark');
   const blocked = openAppearance({ blocked: true });
   blocked.change('color', 'blue');
   blocked.change('mode', 'dark');
-  assert.equal(blocked.root.dataset.appearance, 'green-dark');
+  assert.equal(blocked.root.dataset.appearance, 'mono-dark');
   const prototype = openAppearance({ native: false });
-  assert.equal(prototype.root.dataset.appearancePreference, 'green-light');
+  assert.equal(prototype.root.dataset.appearancePreference, 'mono-light');
 });

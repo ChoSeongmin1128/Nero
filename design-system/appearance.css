@@ -1,4 +1,4 @@
-/* Neutral surfaces and selection; green is reserved for primary actions. */
+/* Neutral surfaces and actions; color is reserved for recording and problems. */
 :root,
 [data-theme-preview] {
   color-scheme: light;
@@ -12,10 +12,10 @@
   --text-secondary: #686868;
   --border: #e2e2e2;
   --border-control: #909090;
-  --accent: #1f6049;
-  --accent-strong: #164b37;
-  --accent-fill: #1b5942;
-  --accent-fill-hover: #164b37;
+  --accent: #242424;
+  --accent-strong: #111111;
+  --accent-fill: #242424;
+  --accent-fill-hover: #111111;
   --on-accent: #ffffff;
   --accent-subtle: #eeeeee;
   --selection-border: #9a9a9a;
@@ -28,19 +28,19 @@
   --recording-surface: #fbebe5;
   --danger-text: #a04430;
   --danger-surface: #fbebe5;
-  --ready-text: #58652f;
-  --ready-surface: #edf0df;
-  --avatar-one-surface: #e8eee9;
-  --avatar-one-text: #47614e;
-  --avatar-two-surface: #eee9f3;
-  --avatar-two-text: #6c567d;
-  --avatar-three-surface: #e8edf5;
-  --avatar-three-text: #4a6488;
+  --ready-text: #686868;
+  --ready-surface: #eeeeee;
+  --avatar-one-surface: #eeeeee;
+  --avatar-one-text: #555555;
+  --avatar-two-surface: #e6e6e6;
+  --avatar-two-text: #555555;
+  --avatar-three-surface: #f1f1f1;
+  --avatar-three-text: #555555;
   --overlay: #00000066;
   --shadow-soft: #0000000a;
   --shadow-modal: #00000026;
-  --link: #295f9b;
-  --link-surface: #edf3fa;
+  --link: #242424;
+  --link-surface: #eeeeee;
 }
 
 :root[data-mode="dark"],
@@ -56,11 +56,11 @@
   --text-secondary: #aaaaaa;
   --border: #363636;
   --border-control: #757575;
-  --accent: #a4ddb6;
-  --accent-strong: #c9ecd4;
-  --accent-fill: #a4ddb6;
-  --accent-fill-hover: #c1eaca;
-  --on-accent: #153221;
+  --accent: #ededed;
+  --accent-strong: #ffffff;
+  --accent-fill: #ededed;
+  --accent-fill-hover: #ffffff;
+  --on-accent: #1c1c1c;
   --accent-subtle: #292929;
   --selection-border: #727272;
   --hover: #2c2c2c;
@@ -72,17 +72,17 @@
   --recording-surface: #3b2b27;
   --danger-text: #e5a18d;
   --danger-surface: #3b2b27;
-  --ready-text: #c0ca95;
-  --ready-surface: #303626;
-  --avatar-one-surface: #2f3e33;
-  --avatar-one-text: #bed1c2;
-  --avatar-two-surface: #39313f;
-  --avatar-two-text: #d2c1df;
-  --avatar-three-surface: #2d3847;
-  --avatar-three-text: #c0cee3;
+  --ready-text: #aaaaaa;
+  --ready-surface: #303030;
+  --avatar-one-surface: #303030;
+  --avatar-one-text: #cccccc;
+  --avatar-two-surface: #383838;
+  --avatar-two-text: #cccccc;
+  --avatar-three-surface: #282828;
+  --avatar-three-text: #cccccc;
   --overlay: #000000b3;
   --shadow-soft: #00000024;
   --shadow-modal: #00000070;
-  --link: #a9c8f2;
-  --link-surface: #293749;
+  --link: #ededed;
+  --link-surface: #292929;
 }

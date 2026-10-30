@@ -2,13 +2,13 @@
 
 재작성 UI의 공통 글자 규칙, 컨트롤, 반복 뷰와 브라우저 예제를 관리한다. 이 디렉터리가 정본이며 legacy Swift 앱과 사용자 라이브러리는 사용하지 않는다. Tauri 앱은 `apps/desktop/scripts/prepare-shared.mjs`로 공통 소스를 `.generated/shared`에 복사해 빌드한다. 생성본은 수정하지 않는다. 브라우저 예제는 네이티브 기능 검증을 대신하지 않는다.
 
-배경, 본문, 보조 글자, 테두리, 선택과 hover는 중립색을 사용한다. 녹색은 주요 동작의 작은 강조 면에 사용한다. light/dark의 명암 구분과 오류/녹음 상태 색상을 유지한다.
+배경, 본문, 보조 글자, 테두리, 선택, 링크와 주요 동작은 무채색을 사용한다. light에서는 어두운 주요 버튼, dark에서는 밝은 주요 버튼을 사용한다. 선택은 배경 명도, 테두리와 글자 굵기로 구분하고 색상만으로 상태를 전달하지 않는다. 오류/경고/녹음의 의미색은 유지한다.
 
 ## 책임
 
 | 파일/경로 | 소유하는 것 |
 | --- | --- |
-| `appearance.css`, `appearance.js` | 중립색과 단일 녹색 강조, light/dark 선택 |
+| `appearance.css`, `appearance.js` | 흑백 색상과 의미별 상태색, light/dark 선택 |
 | `typography.css` | 시스템/한글/코드 글꼴, 크기/굵기/줄간격/자간 역할 |
 | `components.css` | 버튼, 입력, 필드, 배지, 선택, 내용 탭, 오류, 모달, 설정 선택의 기본 스타일 |
 | `navigation.mjs`, `navigation-width.mjs`, `navigation.css`, `action-menu.mjs` | 최근 회의 행/회의 작업 메뉴, hover 탐색, 너비 조절과 메뉴 위치/키보드/닫기 동작. 제품과 탐색 시안이 같은 구현 사용 |

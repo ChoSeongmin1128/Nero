@@ -21,6 +21,33 @@ body {
   background: var(--canvas);
 }
 
+.nero-logo {
+  display: inline-flex;
+  flex: none;
+  width: 114px;
+  max-width: 100%;
+  vertical-align: middle;
+}
+
+.nero-logo--symbol {
+  width: 40px;
+}
+
+.nero-logo > img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.nero-logo > .nero-logo-dark,
+:root[data-mode="dark"] .nero-logo > .nero-logo-light {
+  display: none;
+}
+
+:root[data-mode="dark"] .nero-logo > .nero-logo-dark {
+  display: block;
+}
+
 button,
 input,
 textarea,

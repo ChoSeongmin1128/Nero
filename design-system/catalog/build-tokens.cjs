@@ -117,9 +117,9 @@ function build() {
     if (!match) throw new Error(`Missing appearance set: ${name}`);
     return [...match[1].matchAll(/"([^"]+)"/g)].map((entry) => entry[1]);
   };
-  const colorIds = ['green'];
+  const colorIds = ['mono'];
   const preferenceModes = setValues('modes');
-  const labels = { green: 'Nero' };
+  const labels = { mono: 'Nero' };
   const tokens = declarations.filter((item) => item.property.startsWith('--')).map(({ property, ...item }) => ({
     ...item,
     name: property,
