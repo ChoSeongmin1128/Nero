@@ -107,3 +107,20 @@ test('a completed external write during a successful catalog save is refreshed a
   assert.equal(reads, 2);
   assert.equal(flow.getSnapshot().draft.name, '미저장 초안');
 });
+
+test('initial roster read failure can retry the same meeting without closing the dialog', async () => {
+  let fail = true;
+  const reads = [];
+  const flow = createAttendeeFlow({ bridge: {
+    readMeetingAttendees: async id => { reads.push(id); if (fail) throw Error('읽기 실패'); return meeting(id); },
+    readPeopleCatalog: async () => empty(),
+  } });
+  await flow.open('retry-meeting');
+  assert.equal(flow.getSnapshot().meeting, null);
+  assert.equal(flow.getSnapshot().open, true);
+  fail = false;
+  assert.equal(await flow.reload(), true);
+  assert.equal(flow.getSnapshot().meeting.id, 'retry-meeting');
+  assert.equal(flow.getSnapshot().error, '');
+  assert.deepEqual(reads, ['retry-meeting', 'retry-meeting']);
+});
