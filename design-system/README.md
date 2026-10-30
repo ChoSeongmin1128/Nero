@@ -11,7 +11,7 @@
 | `appearance.css`, `appearance.js` | 중립색과 단일 녹색 강조, light/dark/system 선택 |
 | `typography.css` | 시스템/한글/코드 글꼴, 크기/굵기/줄간격/자간 역할 |
 | `components.css` | 버튼, 입력, 필드, 배지, 선택, 내용 탭, 오류, 모달, 설정 선택의 기본 스타일 |
-| `navigation.mjs`, `navigation.css`, `action-menu.mjs` | 최근 회의 행/회의 작업 메뉴, hover 탐색과 메뉴 위치/키보드/닫기 동작. 제품과 탐색 시안이 같은 구현 사용 |
+| `navigation.mjs`, `navigation-width.mjs`, `navigation.css`, `action-menu.mjs` | 최근 회의 행/회의 작업 메뉴, hover 탐색, 너비 조절과 메뉴 위치/키보드/닫기 동작. 제품과 탐색 시안이 같은 구현 사용 |
 | `components.js` | 버튼/상태/회의 행/사람 행/참석자 항목/전사 발언/회의록 읽기/모달 내용 생성 |
 | `controls.css`, `controls.js`, `react-controls.jsx`, `components/ui/` | shadcn/ui Base 레지스트리에서 조정한 React/Base UI 선택/Popover/Dialog와 한국어 React DayPicker. 원래 native 입력의 값/이벤트 어댑터와 DOM 수명 관리 |
 | `style.css`, `prototype/` | 브라우저 제품 예제의 배치와 기능 상태 |
@@ -126,3 +126,9 @@ python3 -m http.server 8792 --bind 127.0.0.1 --directory .work/design-system-pre
 사이드바의 새 회의는 하나의 전체 폭 동작이다. 일정 연결과 음성 가져오기는 선택한 빈 회의 안에 배치한다. 같은 초안의 제목, 메모, 폴더를 유지하며, 녹음/음성이 있으면 연결 동작을 노출하지 않는다. 편집 중 비동기 결과가 도착해도 포커스된 메모 편집기를 재생성하거나 다른 패널로 이동하지 않는다.
 
 별도 알림 화면은 실제 작업 ID/상태/시도를 사용한다. 본문에는 현재 회의에 필요한 상태만 표시한다. 다른 회의의 과거 실패/취소를 상단 배너로 쌓지 않는다. 재시도는 해당 작업의 최신 시도에만 적용하며, 확인은 알림 표시만 종료하고 작업 영수증을 보존한다. 초기 진입에서 과거 완료 작업을 새 알림으로 복원하지 않는다. 측정된 다운로드만 백분율을 표시하고 모델 추론은 진행 표시를 사용한다.
+
+## 사이드바 너비
+
+공통 navigation controller가 하나의 separator를 생성하고 고정 또는 hover로 열린 상태에서만 표시한다. 기본 224px, 최소 200px, 최대 400px이며 본문에 400px을 남긴다. shell이 640px 이하이면 overlay로 표시하며 바깥 영역을 최소 48px 남긴다. 저장한 선호 너비와 화면에 맞춘 실제 너비를 구분하므로 작은 창에서 다시 넓혀도 선호가 복원된다.
+
+드래그는 frame마다 미리 보기만 갱신하고 정상 종료 때 저장한다. Escape, pointer cancel, capture loss, 창 blur, 숨김과 크기 변경은 미리 보기를 취소한다. separator는 방향키로 8px씩, Home/End로 현재 범위의 양 끝으로 조절하고 더블클릭으로 기본값을 복원한다. 접기 버튼과 hover 상태는 navigation controller가 계속 소유한다.

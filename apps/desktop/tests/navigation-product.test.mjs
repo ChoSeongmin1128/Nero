@@ -231,3 +231,84 @@ test('open shared menus retain shortcut priority and Escape closes only the menu
   assert.equal(menu.open, false);
   assert.equal(document.querySelector('.workspace').classList.contains('nav-peek'), true);
 });
+
+test('product sidebar has one resize separator only while pinned or peeking and persists the final gesture', async t => {
+  const { window, document } = await setup(t);
+  const shell = document.querySelector('.navigation-shell');
+  const trigger = document.getElementById('navigation-toggle');
+  const handle = shell.querySelector('[role="separator"]');
+  assert.equal(handle.hidden, true);
+  assert.equal(shell.querySelectorAll('[role="separator"]').length, 1);
+  shell.getBoundingClientRect = () => ({ width: 1000 });
+  window.dispatchEvent(new window.Event('resize'));
+  document.querySelector('.navigation-edge').dispatchEvent(new window.PointerEvent('pointerenter', { pointerType: 'mouse' }));
+  assert.equal(handle.hidden, false);
+  const pointer = (type, x, options = {}) => handle.dispatchEvent(new window.PointerEvent(type, { pointerId: 1, button: 0, isPrimary: true, clientX: x, bubbles: true, ...options }));
+  pointer('pointerdown', 224);
+  pointer('pointermove', 300);
+  pointer('pointermove', 320);
+  await new Promise(resolve => window.requestAnimationFrame(resolve));
+  assert.equal(shell.style.getPropertyValue('--navigation-width'), '320px');
+  assert.equal(window.localStorage.getItem('nero.sidebar.pinned.width'), null);
+  assert.equal(shell.classList.contains('nav-peek'), true);
+  pointer('pointerup', 320);
+  assert.equal(window.localStorage.getItem('nero.sidebar.pinned.width'), '320');
+  assert.equal(shell.classList.contains('nav-resizing'), false);
+  trigger.click();
+  assert.equal(shell.classList.contains('nav-pinned'), true);
+  assert.equal(shell.style.getPropertyValue('--navigation-width'), '320px');
+  trigger.click();
+  assert.equal(handle.hidden, true);
+  pointer('pointerdown', 320); pointer('pointerup', 380);
+  assert.equal(window.localStorage.getItem('nero.sidebar.pinned.width'), '320');
+});
+
+test('sidebar keyboard sizing and viewport bounds preserve the saved preference', async t => {
+  const { window, document } = await setup(t, { 'nero.sidebar.pinned': 'true', 'nero.sidebar.pinned.width': '380' });
+  const shell = document.querySelector('.navigation-shell'), handle = shell.querySelector('[role="separator"]');
+  let viewport = 1000;
+  shell.getBoundingClientRect = () => ({ width: viewport });
+  const resize = value => { viewport = value; window.dispatchEvent(new window.Event('resize')); };
+  resize(1000);
+  assert.equal(handle.getAttribute('aria-valuenow'), '380');
+  resize(700);
+  assert.equal(handle.getAttribute('aria-valuemax'), '300');
+  assert.equal(handle.getAttribute('aria-valuenow'), '300');
+  assert.equal(window.localStorage.getItem('nero.sidebar.pinned.width'), '380');
+  resize(640);
+  assert.equal(shell.classList.contains('nav-overlay'), true);
+  assert.equal(handle.getAttribute('aria-valuenow'), '380');
+  resize(320);
+  assert.equal(handle.getAttribute('aria-valuemax'), '272');
+  resize(1000);
+  assert.equal(handle.getAttribute('aria-valuenow'), '380');
+  const key = name => handle.dispatchEvent(new window.KeyboardEvent('keydown', { key: name, bubbles: true, cancelable: true }));
+  handle.focus();
+  key('Home'); assert.equal(handle.getAttribute('aria-valuenow'), '200');
+  key('ArrowRight'); assert.equal(handle.getAttribute('aria-valuenow'), '208');
+  key('End'); assert.equal(handle.getAttribute('aria-valuenow'), '400');
+  key('ArrowLeft'); assert.equal(handle.getAttribute('aria-valuenow'), '392');
+  handle.dispatchEvent(new window.MouseEvent('dblclick', { bubbles: true }));
+  assert.equal(handle.getAttribute('aria-valuenow'), '224');
+  assert.equal(document.activeElement, handle);
+});
+
+for (const cancellation of ['pointercancel', 'lostpointercapture', 'blur', 'hidden', 'Escape']) {
+  test(`sidebar resize cancels cleanly on ${cancellation}`, async t => {
+    const { window, document } = await setup(t, { 'nero.sidebar.pinned': 'true', 'nero.sidebar.pinned.width': '280' });
+    const shell = document.querySelector('.navigation-shell'), handle = shell.querySelector('[role="separator"]');
+    shell.getBoundingClientRect = () => ({ width: 1000 });
+    window.dispatchEvent(new window.Event('resize'));
+    const pointer = (type, x) => handle.dispatchEvent(new window.PointerEvent(type, { pointerId: 1, button: 0, isPrimary: true, clientX: x, bubbles: true }));
+    pointer('pointerdown', 280); pointer('pointermove', 380);
+    await new Promise(resolve => window.requestAnimationFrame(resolve));
+    if (cancellation === 'blur') window.dispatchEvent(new window.Event('blur'));
+    else if (cancellation === 'hidden') { Object.defineProperty(document, 'hidden', { value: true, configurable: true }); document.dispatchEvent(new window.Event('visibilitychange')); }
+    else if (cancellation === 'Escape') handle.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    else handle.dispatchEvent(new window.PointerEvent(cancellation, { pointerId: 1 }));
+    assert.equal(shell.classList.contains('nav-resizing'), false);
+    assert.equal(shell.style.getPropertyValue('--navigation-width'), '280px');
+    assert.equal(window.localStorage.getItem('nero.sidebar.pinned.width'), '280');
+    assert.equal(shell.classList.contains('nav-pinned'), true);
+  });
+}

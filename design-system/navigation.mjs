@@ -1,3 +1,5 @@
+import { mountNavigationWidth } from './navigation-width.mjs';
+
 export function renderMeetingMenu(meeting, { escape, icon, disabled = false }) {
   const actions = meeting.deletedAt != null ? [['restore', '복원'], ['purge', '영구 삭제']] : [['rename', '이름 변경'], ['move', '폴더로 이동'], ['trash', '휴지통으로 이동']];
   return `<details class="meeting-menu document-export" data-meeting-menu="${escape(meeting.id)}"><summary aria-label="${escape(meeting.title)} 더보기" title="${escape(meeting.title)} 더보기">${icon('ellipsis')}</summary><div class="action-menu">${actions.map(([action, label]) => `<button type="button" class="${['trash', 'purge'].includes(action) ? 'danger-text' : ''}" aria-label="${escape(label)}" data-library-action="${action}" data-library-target="${escape(meeting.id)}"${disabled ? ' disabled' : ''}>${escape(label)}</button>`).join('')}</div></details>`;
@@ -11,11 +13,22 @@ export function recentMeetingRow({ id, title, metadata, active = false, disabled
 
 export function mountNavigationSidebar({ shell, aside, content, trigger, backdrop, storage, storageKey = 'nero.sidebar.pinned', icons = globalThis.NeroIcons }) {
   const document = shell.ownerDocument;
-  const read = () => { try { return (storage ?? globalThis.localStorage)?.getItem(storageKey); } catch { return null; } };
+  let preferenceStorage = storage;
+  if (!preferenceStorage) { try { preferenceStorage = document.defaultView?.localStorage; } catch {} }
+  const read = () => { try { return preferenceStorage?.getItem(storageKey); } catch { return null; } };
   let pinned = read() === 'true', temporary = false, timer, renderedState;
   const brand = aside.querySelector('.navigation-brand') || aside.querySelector('.brand');
   const edge = shell.querySelector('.navigation-edge');
   const triggerHome = trigger.parentElement;
+  const handle = document.createElement('div');
+  handle.className = 'navigation-resize';
+  handle.tabIndex = 0;
+  handle.setAttribute('role', 'separator');
+  handle.setAttribute('aria-label', '사이드바 너비 조절');
+  handle.setAttribute('aria-orientation', 'vertical');
+  if (aside.id) handle.setAttribute('aria-controls', aside.id);
+  shell.append(handle);
+  const width = mountNavigationWidth({ shell, handle, storage: preferenceStorage, storageKey: `${storageKey}.width`, onDragging: active => { if (active) clearTimeout(timer); else hide(); } });
   const unavailable = () => shell.dataset.onboarding === 'true';
   function render() {
     if (unavailable()) temporary = false;
@@ -27,6 +40,7 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
     shell.classList.toggle('nav-peek', temporary && !pinned);
     shell.classList.toggle('nav-pinned', pinned);
     aside.inert = !open;
+    width.update(open);
     aside.setAttribute('aria-label', '회의 탐색');
     trigger.setAttribute('aria-expanded', String(open));
     const destination = open ? brand : triggerHome;
@@ -41,14 +55,14 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
     clearTimeout(timer);
     timer = setTimeout(() => {
       const focused = document.activeElement;
-      const interacting = aside.contains(focused) && (focused.matches('input,textarea') || focused.matches(':focus-visible'));
-      if (!interacting && !edge?.matches(':hover') && !trigger.matches(':hover') && !aside.matches(':hover')) { temporary = false; render(); }
+      const interacting = (aside.contains(focused) || handle.contains(focused)) && (focused.matches('input,textarea') || focused.matches(':focus-visible'));
+      if (!width.isDragging() && !handle.matches(':hover') && !interacting && !edge?.matches(':hover') && !trigger.matches(':hover') && !aside.matches(':hover')) { temporary = false; render(); }
     }, 180);
   }
   function pin(value) {
     if (unavailable()) return;
     clearTimeout(timer); pinned = value; temporary = false;
-    try { (storage ?? globalThis.localStorage)?.setItem(storageKey, String(pinned)); } catch {}
+    try { preferenceStorage?.setItem(storageKey, String(pinned)); } catch {}
     render(); trigger.focus({ preventScroll: true });
   }
   const hover = event => { if (event.pointerType === 'mouse') reveal(); };
@@ -58,6 +72,9 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
   aside.addEventListener('pointerenter', () => clearTimeout(timer));
   aside.addEventListener('pointerleave', hide);
   aside.addEventListener('focusout', hide);
+  handle.addEventListener('pointerenter', reveal);
+  handle.addEventListener('pointerleave', hide);
+  handle.addEventListener('focusout', hide);
   trigger.addEventListener('click', () => {
     if (unavailable()) return;
     if (pinned) pin(false);
@@ -65,12 +82,12 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
     else pin(true);
   });
   document.addEventListener('pointerdown', event => {
-    if (temporary && !aside.contains(event.target) && !edge?.contains(event.target) && !trigger.contains(event.target)) { temporary = false; render(); }
+    if (temporary && !handle.contains(event.target) && !aside.contains(event.target) && !edge?.contains(event.target) && !trigger.contains(event.target)) { temporary = false; render(); }
   });
   document.addEventListener('keydown', event => {
     const popup = event.target.closest?.('dialog[open],[role="dialog"],[role="alertdialog"],[role="menu"],[role="listbox"]')
       || document.querySelector('dialog[open],:is([role="dialog"],[role="alertdialog"],[role="menu"],[role="listbox"])[data-open],[data-slot="popover-content"][data-open],[data-slot="select-content"][data-open],details[data-meeting-menu][open],details.library-folder-menu[open]');
-    if (unavailable() || event.defaultPrevented || popup) return;
+    if (unavailable() || event.defaultPrevented || event.isComposing || event.keyCode === 229 || popup) return;
     if (event.key === 'Escape' && temporary) { temporary = false; render(); trigger.focus(); }
     if ((event.metaKey || event.ctrlKey) && event.code === 'Backslash') { event.preventDefault(); pin(!pinned); }
   });
