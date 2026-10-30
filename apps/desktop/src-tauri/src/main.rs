@@ -941,9 +941,11 @@ async fn start_recording(
     require_main(&window)?;
     state.processing.require_meeting_models()?;
     microphone_permission::ensure_authorized(&app).await?;
+    let transition = state.lifecycle.begin_transition()?;
     let processing = state.processing.clone();
     let core = state.core.clone();
-    let snapshot = tauri::async_runtime::spawn_blocking(move || {
+    tauri::async_runtime::spawn_blocking(move || {
+        let _transition = transition;
         processing.recording_start(|| {
             let selected = match device_id {
                 Some(id) => id,
@@ -955,15 +957,16 @@ async fn start_recording(
                     .map(|device| device.id)
                     .unwrap_or_default(),
             };
-            core.start(&meeting_id, &selected)
-                .map_err(|e| e.to_string())
+            let snapshot = core
+                .start(&meeting_id, &selected)
+                .map_err(|e| e.to_string())?;
+            publish(&app, &snapshot);
+            start_live_speech(&app, &snapshot);
+            Ok(snapshot)
         })
     })
     .await
-    .map_err(|_| "녹음을 시작하지 못했습니다.".to_string())??;
-    publish(&app, &snapshot);
-    start_live_speech(&app, &snapshot);
-    Ok(snapshot)
+    .map_err(|_| "녹음을 시작하지 못했습니다.".to_string())?
 }
 
 #[tauri::command]
@@ -1030,14 +1033,17 @@ async fn change_recording(
     // dropped. There is no idle gap between capture EOF and job admission.
     tauri::async_runtime::spawn_blocking(move || {
         let _transition = transition;
-        let snapshot = match action {
-            RecordingAction::Pause => core.pause(&session_id),
-            RecordingAction::Resume => core.resume(&session_id),
-            RecordingAction::Stop => core.stop(&session_id),
-        }
-        .map_err(|error| error.to_string())?;
+        let snapshot = processing.recording_change(|| {
+            match action {
+                RecordingAction::Pause => core.pause(&session_id),
+                RecordingAction::Resume => core.resume(&session_id),
+                RecordingAction::Stop => core.stop(&session_id),
+            }
+            .map_err(|error| error.to_string())
+        })?;
         publish(&app, &snapshot);
         if matches!(action, RecordingAction::Stop) {
+            // Job admission takes the same gate, after the capture change releases it.
             match processing.transcribe_recording(core, &snapshot) {
                 Ok(Some(progress)) => {
                     let _ = app.emit_to("main", "nero://processing", progress);

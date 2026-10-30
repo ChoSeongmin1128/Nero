@@ -1951,6 +1951,17 @@ impl Processing {
         result
     }
 
+    pub fn recording_change<T>(
+        &self,
+        action: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        let _running = self.running.lock().unwrap();
+        if self.shutting_down.load(Ordering::Acquire) {
+            return Err("앱을 종료하고 있습니다.".into());
+        }
+        action()
+    }
+
     pub fn acknowledge(&self, id: &str) -> Result<Progress, String> {
         let _retry = self.retry_gate.lock().unwrap();
         let _running = self.running.lock().unwrap();
@@ -2608,6 +2619,123 @@ mod job_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod recording_ownership_tests {
+        use super::*;
+        use crate::lifecycle::{ExitKind, Lifecycle};
+        use crate::live_speech::waiting_fixture;
+        use std::sync::mpsc;
+
+        #[test]
+        fn current_live_job_survives_a_delayed_prior_registration() {
+            let (_temporary, process) = setup();
+            let (captured, ready) = mpsc::channel();
+            let (register, allowed) = mpsc::channel();
+            let old_process = process.clone();
+            let old = thread::spawn(move || {
+                old_process
+                    .recording_start(|| {
+                        captured.send(()).unwrap();
+                        allowed.recv().unwrap();
+                        drop(waiting_fixture(&old_process, "old-meeting", "old-session"));
+                        Ok(())
+                    })
+                    .unwrap();
+            });
+            ready.recv().unwrap();
+            assert!(process.running.try_lock().is_err());
+            let next_process = process.clone();
+            let next = thread::spawn(move || {
+                next_process
+                    .recording_change(|| {
+                        assert_eq!(
+                            next_process
+                                .live
+                                .lock()
+                                .unwrap()
+                                .as_ref()
+                                .unwrap()
+                                .meeting_id,
+                            "old-meeting",
+                        );
+                        next_process.recording.store(false, Ordering::Release);
+                        Ok(())
+                    })
+                    .unwrap();
+                next_process
+                    .recording_start(|| {
+                        drop(waiting_fixture(&next_process, "new-meeting", "new-session"));
+                        Ok(())
+                    })
+                    .unwrap();
+            });
+            register.send(()).unwrap();
+            old.join().unwrap();
+            next.join().unwrap();
+            let (meeting_id, still_running) = {
+                let live = process.live.lock().unwrap();
+                let job = live.as_ref().unwrap();
+                (job.meeting_id.clone(), job.running.load(Ordering::Acquire))
+            };
+            process.cancel_live().unwrap();
+            assert!(still_running);
+            assert_eq!(meeting_id, "new-meeting");
+        }
+
+        #[tokio::test]
+        async fn dropped_start_waiter_keeps_live_initialization_and_exit_ownership() {
+            let (_temporary, process) = setup();
+            let lifecycle = Lifecycle::default();
+            let transition = lifecycle.begin_transition().unwrap();
+            let (captured, ready) = tokio::sync::oneshot::channel();
+            let (register, allowed) = mpsc::channel();
+            let (finished, done) = tokio::sync::oneshot::channel();
+            let starting = process.clone();
+            let work = tokio::task::spawn_blocking(move || {
+                starting
+                    .recording_start(|| {
+                        captured.send(()).unwrap();
+                        allowed.recv().unwrap();
+                        drop(waiting_fixture(&starting, "meeting", "session"));
+                        Ok(())
+                    })
+                    .unwrap();
+                drop(transition);
+                finished.send(()).unwrap();
+            });
+            ready.await.unwrap();
+            let waiter = tokio::spawn(async move {
+                work.await.unwrap();
+            });
+            waiter.abort();
+            let _ = waiter.await;
+            assert!(process.running.try_lock().is_err());
+            assert!(lifecycle.begin_exit(ExitKind::Quit).is_err());
+            assert!(lifecycle.begin_exit(ExitKind::Update).is_err());
+            register.send(()).unwrap();
+            done.await.unwrap();
+            let registered = process
+                .live
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .meeting_id
+                .clone();
+            process.cancel_live().unwrap();
+            assert_eq!(registered, "meeting");
+            assert!(lifecycle.begin_exit(ExitKind::Update).is_ok());
+        }
+
+        #[test]
+        fn worker_failure_does_not_prevent_capture_state_changes() {
+            let (_temporary, process) = setup();
+            process.cleanup_failed();
+            assert_eq!(process.recording_change(|| Ok(42)).unwrap(), 42);
+            process.shutting_down.store(true, Ordering::Release);
+            assert!(process.recording_change(|| Ok(())).is_err());
+        }
+    }
 
     fn completed_recording(session_id: &str, meeting_id: &str) -> Snapshot {
         serde_json::from_value(serde_json::json!({

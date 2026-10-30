@@ -513,10 +513,13 @@ pub async fn start_calendar_recording(
         return Ok(current);
     }
     microphone_permission::ensure_authorized(&app).await?;
+    let transition = state.lifecycle.begin_transition()?;
     let core = state.core.clone();
     let processing = state.processing.clone();
     let recording_calendar = service.clone();
+    let recording_app = app.clone();
     let (meeting, snapshot) = tauri::async_runtime::spawn_blocking(move || {
+        let _transition = transition;
         processing.recording_start(|| {
             let current = core.snapshot().map_err(|error| error.to_string())?;
             if recording_busy(&current) {
@@ -529,13 +532,20 @@ pub async fn start_calendar_recording(
                 .find(|device| device.is_default)
                 .map(|device| device.id)
                 .unwrap_or_default();
-            recording_calendar.with_current_reminder(&ticket, calendar::now_ms(), |event| {
-                core.create_calendar_recording(
-                    calendar_reference(event, jiff::tz::TimeZone::system())?,
-                    &selected,
-                )
-                .map_err(|error| error.to_string())
-            })
+            let result = recording_calendar.with_current_reminder(
+                &ticket,
+                calendar::now_ms(),
+                |event| {
+                    core.create_calendar_recording(
+                        calendar_reference(event, jiff::tz::TimeZone::system())?,
+                        &selected,
+                    )
+                    .map_err(|error| error.to_string())
+                },
+            )?;
+            crate::publish(&recording_app, &result.1);
+            crate::start_live_speech(&recording_app, &result.1);
+            Ok(result)
         })
     })
     .await
@@ -543,8 +553,6 @@ pub async fn start_calendar_recording(
     let _ = service.dismiss(&key);
     let _ = service.tick(calendar::now_ms(), true);
     sync_windows(&app, &service);
-    crate::publish(&app, &snapshot);
-    crate::start_live_speech(&app, &snapshot);
     crate::show_main(&app);
     let _ = app.emit_to(
         "main",
