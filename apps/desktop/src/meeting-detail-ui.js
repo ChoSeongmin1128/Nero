@@ -7,7 +7,7 @@ export function mountMeetingDetail({ byId, finishEditing, onReveal = () => {}, o
   const inspector = byId('detail-inspector'), close = byId('detail-inspector-close');
   const notesEditor = byId('meeting-notes'), memories = new Map();
   let meetingId = null, request = 0, renderedId = null, renderedView = null;
-  let summaryVisible = true, notesInline = false, requestedInline = false, transcriptInline = false;
+  let summaryVisible = true, notesInline = false, requestedInline = false, transcriptInline = false, transcriptAvailable = false;
   let ready = {}, pendingRestore = new Set(views);
   const memory = () => memories.get(meetingId);
   function rememberScroll() {
@@ -26,7 +26,7 @@ export function mountMeetingDetail({ byId, finishEditing, onReveal = () => {}, o
     if (transcript.parentNode !== transcriptDestination) transcriptDestination.append(transcript);
     transcript.querySelector('h2')?.classList.toggle('sr-only', !inlineTranscript);
     byId('meeting-detail').dataset.inlineTranscript = String(inlineTranscript);
-    controls.get('transcript').hidden = inlineTranscript;
+    controls.get('transcript').hidden = !transcriptAvailable || inlineTranscript;
     const home = byId('draft-notes-home');
     home.hidden = !inline;
     const notes = panels.get('notes'), notesDestination = inline ? home : inspector;
@@ -59,7 +59,7 @@ export function mountMeetingDetail({ byId, finishEditing, onReveal = () => {}, o
     }
     if (focus) (inlineTranscript ? transcript : view === 'summary' ? controls.get(memory().lastPanel || 'transcript') : close).focus({ preventScroll: true });
   }
-  function update({ id, recording = false, summaryLoaded = false, transcriptLoaded = false, hasSummary = false, hasTranscript = false, hasPreview = false, showSummary = true, inlineNotes = false }) {
+  function update({ id, recording = false, summaryLoaded = false, transcriptLoaded = false, hasSummary = false, hasTranscript = false, hasPreview = false, hasAudio = false, showSummary = true, inlineNotes = false }) {
     close.setAttribute('aria-label', hasSummary ? '요약으로 돌아가기' : '본문으로 돌아가기');
     const back = close.querySelector('.inspector-back');
     if (back) back.textContent = hasSummary ? '요약으로' : '본문으로';
@@ -69,6 +69,7 @@ export function mountMeetingDetail({ byId, finishEditing, onReveal = () => {}, o
     requestedInline = inlineNotes;
     summaryVisible = showSummary; notesInline = inlineNotes || editingInline;
     transcriptInline = !recording && !hasSummary && (hasTranscript || hasPreview);
+    transcriptAvailable = hasAudio || hasTranscript || hasPreview;
     ready = { summary: summaryLoaded, transcript: transcriptLoaded, notes: true };
     for (const view of views) if (!ready[view]) pendingRestore.add(view);
     if (id && !memories.has(id)) memories.set(id, { view: recording && !hasSummary && !hasTranscript ? 'notes' : 'summary', explicit: false, recordingConsidered: false, lastPanel: 'transcript', scroll: { summary: 0, transcript: 0, notes: 0, notesEditor: 0 } });

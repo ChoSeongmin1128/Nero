@@ -323,7 +323,6 @@ function render() {
   setHTML('meeting-attendees', `${icon('users')}<span>참석자${meeting?.attendees?.length ? ` ${meeting.attendees.length}명` : ''}</span>`);
   byId('create-calendar-meeting').hidden = !meeting || Boolean(meeting.audio || meeting.calendarReference || activeSession()?.meetingId === meeting.id);
   byId('import-audio').hidden = !meeting || Boolean(meeting.audio || activeSession()?.meetingId === meeting.id);
-  byId('detail-transcript-open').hidden = !meeting?.audio && !liveTranscriptRows(state.processing.liveTranscript, meeting?.id, state.snapshot.session?.id).length;
   byId('library-screen').hidden = state.notificationsOpen || setupVisible || !state.connected || (!state.libraryOpen && !modelsReady() && !state.snapshot.meetings.length) || (!state.libraryOpen && Boolean(meeting));
   byId('welcome').hidden = state.notificationsOpen || !byId('library-screen').hidden || setupVisible || Boolean(meeting);
   byId('meeting-detail').hidden = state.notificationsOpen || setupVisible || state.libraryOpen || !meeting;
@@ -339,7 +338,7 @@ function render() {
   renderTranscript(meeting);
   renderSummary(meeting);
   const showSummary = Boolean(state.summary?.document || resultPreview(meeting).visible || pendingJob(state.processing, { meetingId: meeting.id, kind: 'summary' }) || state.summaryLoadError);
-  detail.update({ inlineNotes: !showSummary, showSummary, id: byId('meeting-detail').hidden ? null : meeting.id, recording: Boolean(activeSession()?.meetingId === meeting.id && ['recording', 'paused'].includes(activeSession().state)), summaryLoaded: state.summaryLoaded, transcriptLoaded: state.transcriptLoaded, hasSummary: Boolean(state.summary?.document), hasTranscript: Boolean(state.transcriptDraft?.doc?.segments?.length), hasPreview: resultPreview(meeting).rows.length > 0 });
+  detail.update({ inlineNotes: !showSummary, showSummary, id: byId('meeting-detail').hidden ? null : meeting.id, recording: Boolean(activeSession()?.meetingId === meeting.id && ['recording', 'paused'].includes(activeSession().state)), summaryLoaded: state.summaryLoaded, transcriptLoaded: state.transcriptLoaded, hasSummary: Boolean(state.summary?.document), hasTranscript: Boolean(state.transcriptDraft?.doc?.segments?.length), hasPreview: resultPreview(meeting).rows.length > 0, hasAudio: Boolean(meeting.audio) });
   if (byId('meeting-detail').hidden) summaryEvidence?.reset();
   renderNotesSearch();
   documentSearch.refresh();

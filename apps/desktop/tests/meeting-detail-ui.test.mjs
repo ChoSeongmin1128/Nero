@@ -160,3 +160,14 @@ test('recording keeps its note workspace until capture finishes, then reveals th
   assert.equal(app.node('transcript-section').hidden,false);
   assert.equal(app.node('transcript-section').parentNode,app.node('result-transcript-home'));
 });
+
+test('empty meetings hide transcript entry while recorded meetings retain its recovery path', () => {
+  const app=page(); app.update({});
+  assert.equal(app.node('detail-transcript-open').hidden,true);
+  app.update({hasAudio:true});
+  assert.equal(app.node('detail-transcript-open').hidden,false);
+  app.update({hasTranscript:true});
+  assert.equal(app.node('detail-transcript-open').hidden,true);
+  app.update({hasTranscript:true,hasSummary:true});
+  assert.equal(app.node('detail-transcript-open').hidden,false);
+});
