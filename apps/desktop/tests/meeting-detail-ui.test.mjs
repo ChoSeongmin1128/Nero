@@ -115,3 +115,16 @@ test('recording waits for result discovery and keeps completed meetings on summa
     const completed=page(), loaded={summaryLoaded:true,transcriptLoaded:true,...result}; completed.update(loaded); completed.update({...loaded,recording:true}); assert.equal(completed.controller.active(),'summary');
   }
 });
+
+test('automatic recording notes close at completion while explicit notes stay open', async () => {
+  const loaded = { summaryLoaded: true, transcriptLoaded: true };
+  const automatic = page(); automatic.update({ ...loaded, recording: true });
+  assert.equal(automatic.controller.active(), 'notes');
+  automatic.update({ ...loaded, hasTranscript: true });
+  assert.equal(automatic.controller.active(), 'summary');
+  assert.equal(automatic.node('detail-inspector').hidden, true);
+  const explicit = page(); explicit.update({ ...loaded, recording: true });
+  await explicit.controller.select('notes');
+  explicit.update({ ...loaded, hasTranscript: true });
+  assert.equal(explicit.controller.active(), 'notes');
+});

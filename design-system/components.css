@@ -1081,3 +1081,8 @@ button.danger:hover:not(:disabled), button.danger-text:hover:not(:disabled) { co
 .summary-document .source-reference:has(.search-match.is-current) { outline: 2px solid var(--focus); outline-offset: 1px; }
 
 .summary-document .source-reference svg { width: 16px; height: 16px; }
+
+.transcript-preview-row { padding: 12px 0; }
+.transcript-preview-row + .transcript-preview-row { border-top: 1px solid var(--border); }
+.transcript-preview-meta { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 5px; color: var(--text-secondary); font-size: var(--text-caption-size); font-variant-numeric: tabular-nums; }
+.transcript-preview-row p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; word-break: keep-all; line-height: var(--leading-reading); display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 6; overflow: hidden; }

@@ -42,8 +42,8 @@ test('all live work stays visible across meetings and the current meeting never 
       job('active-b', 'b', 'running', 15), job('older-a', 'a', 'failed', 5)],
   } });
   assert.deepEqual(projected.map(item => item.id), ['queued-a', 'active-a', 'active-b']);
-  assert.equal(projected.find(item => item.id === 'active-a').feedback.title, '화자 구분 중');
-  assert.equal(projected.find(item => item.id === 'active-b').feedback.title, '음성 기록 변환 중');
+  assert.equal(projected.find(item => item.id === 'active-a').feedback.title, '음성 기록 처리 중');
+  assert.equal(projected.find(item => item.id === 'active-b').feedback.title, '음성 기록 처리 중');
   assert.equal(projected.find(item => item.id === 'active-b').selected, false);
   assert.equal(projected.find(item => item.id === 'active-a').selected, true);
 });

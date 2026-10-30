@@ -16,6 +16,7 @@ import { mountSpeakers } from './speakers-ui.js';
 import { createMeetingSearch, mountDocumentSearch } from './meeting-search.js';
 import { mountTranscriptActions } from './transcript-actions.js';
 import { liveTranscriptRows } from './live-transcript.js';
+import { meetingResultPreview } from './meeting-result-preview.js';
 import { mountMeetingDetail } from './meeting-detail-ui.js';
 import { mountSummaryEvidence } from './summary-evidence.js';
 import { mountAgentConnectionDialog } from './agent-connection-dialog.jsx';
@@ -61,6 +62,7 @@ let pendingQuitSessionId = null;
 let selectionRequest = 0;
 let speakerReplay = null;
 let summaryEvidence = null;
+let lastLiveTranscript = null;
 const processingActions = new Map();
 const processingErrors = new Map();
 let processingFocus = null;
@@ -297,8 +299,8 @@ function render() {
   renderRecording(meeting);
   renderTranscript(meeting);
   renderSummary(meeting);
-  const showSummary = Boolean(state.summary?.document || state.transcriptDraft?.doc?.segments?.length || pendingJob(state.processing, { meetingId: meeting.id, kind: 'summary' }) || state.summaryLoadError);
-  detail.update({ inlineNotes: !showSummary, showSummary, id: byId('meeting-detail').hidden ? null : meeting.id, recording: Boolean(activeSession()?.meetingId === meeting.id), summaryLoaded: state.summaryLoaded, transcriptLoaded: state.transcriptLoaded, hasSummary: Boolean(state.summary?.document), hasTranscript: Boolean(state.transcriptDraft?.doc?.segments?.length) });
+  const showSummary = Boolean(state.summary?.document || resultPreview(meeting).visible || pendingJob(state.processing, { meetingId: meeting.id, kind: 'summary' }) || state.summaryLoadError);
+  detail.update({ inlineNotes: !showSummary, showSummary, id: byId('meeting-detail').hidden ? null : meeting.id, recording: Boolean(activeSession()?.meetingId === meeting.id && ['recording', 'paused'].includes(activeSession().state)), summaryLoaded: state.summaryLoaded, transcriptLoaded: state.transcriptLoaded, hasSummary: Boolean(state.summary?.document), hasTranscript: Boolean(state.transcriptDraft?.doc?.segments?.length) });
   if (byId('meeting-detail').hidden) summaryEvidence?.reset();
   renderNotesSearch();
   documentSearch.refresh();
@@ -1056,8 +1058,7 @@ function renderTranscript(meeting) {
   const job = { ...state.processing, ...pendingJob(state.processing, { meetingId: meeting.id }) };
   const ownJob = Boolean(pendingJob(job, { meetingId: meeting.id }));
   const draft = state.transcriptDraft;
-  const preview = state.processing.liveTranscript;
-  const liveRows = !draft?.doc ? liveTranscriptRows(preview, meeting.id, state.snapshot.session?.id) : [];
+  const liveRows = !draft?.doc ? resultPreview(meeting).rows : [];
   byId('transcript-history').hidden = !draft?.doc;
   byId('transcript-history').disabled = state.busy;
   byId('transcribe').hidden = ownJob || !state.transcriptLoaded || Boolean(state.transcriptLoadError);
@@ -1071,8 +1072,7 @@ function renderTranscript(meeting) {
   else if (state.transcriptLoadError) message = '음성 기록을 불러오지 못했습니다.';
   else if (draft?.dirty) message = '저장되지 않은 수정이 있습니다.';
   else if (ownJob) message = job.kind === 'diarize' || job.phase === 'diarizing' ? '' : processingFeedback(job).title;
-  else if (preview?.meetingId === meeting.id && preview?.sessionId === state.snapshot.session?.id && (preview.finishing || preview.deferred)) message = preview.message;
-  else if (liveRows.length) message = preview.deferred ? preview.message : '녹음 중 초안 - 마지막 구간은 바뀔 수 있습니다.';
+  else if (liveRows.length) message = activeSession()?.meetingId === meeting.id ? '초안' : '';
   else if (!draft?.doc && !meeting.audio) message = '음성 기록을 준비하고 있습니다.';
   else if (!draft?.doc && !job.supported) message = '이 환경에서는 음성 기록을 변환할 수 없습니다.';
   else if (!draft?.doc && !job.modelReady) message = '음성 인식 모델을 먼저 준비해 주세요.';
@@ -1084,7 +1084,7 @@ function renderTranscript(meeting) {
   byId('transcribe').classList?.toggle('primary', !draft?.doc);
   byId('transcribe').classList?.toggle('quiet', Boolean(draft?.doc));
   byId('transcript-section').setAttribute('aria-busy', String(ownJob || !state.transcriptLoaded));
-  const key = `${transcriptRenderKey()}:${liveRows.length ? preview.generation : ''}`;
+  const key = `${transcriptRenderKey()}:${liveRows.length ? JSON.stringify(liveRows) : ''}`;
   if (key !== state.transcriptKey) {
     state.transcriptKey = key;
     const scroll = byId('transcript-scroll').scrollTop;
@@ -1149,6 +1149,7 @@ async function acceptProcessing(progress) {
   const key = JSON.stringify(progress);
   if (state.processingKey === key) return;
   state.processingKey = key;
+  if (progress.liveTranscript) lastLiveTranscript = progress.liveTranscript;
   state.processing = progress;
   for (const [id, action] of processingActions) {
     const job = processingJobs(progress).find(item => item.id === id);
@@ -1172,35 +1173,56 @@ function summaryIsStale() {
   return Boolean(state.summary?.stale || notesChanged || state.transcriptDraft?.dirty || (doc && state.transcriptLoaded && (doc.sourceVersion.id !== transcript?.version.id || doc.sourceVersion.revision !== transcript?.version.revision)));
 }
 
+function resultPreview(meeting) {
+  return meetingResultPreview({ meeting, session: state.snapshot.session, preview: state.processing.liveTranscript || lastLiveTranscript, transcript: state.transcriptDraft?.doc, processing: state.processing });
+}
+
 function renderSummary(meeting) {
   const progress = { ...state.processing, ...pendingJob(state.processing, { meetingId: meeting.id, kind: 'summary' }) };
   const doc = state.summary?.document;
+  const result = resultPreview(meeting);
+  const previewing = !doc && result.visible;
   const hasTranscript = Boolean(state.transcriptDraft?.doc?.segments?.length);
   const stale = summaryIsStale();
   const ownJob = Boolean(pendingJob(progress, { meetingId: meeting.id, kind: 'summary' }));
-  byId('summary-section').setAttribute('aria-busy', String(ownJob || !state.summaryLoaded));
-  byId('prepare-summary').hidden = progress.summaryReady || !progress.summarySupported;
+  byId('summary-section').setAttribute('aria-busy', String(ownJob || result.busy || !state.summaryLoaded || !state.transcriptLoaded));
+  byId('summary-section').setAttribute('aria-label', previewing ? '음성 기록' : '요약');
+  setText('meeting-result-title', previewing ? '음성 기록' : '요약');
+  byId('summary-content').hidden = previewing;
+  byId('meeting-result-preview').hidden = !previewing;
+  byId('meeting-result-draft').hidden = !result.draft;
+  const excerpt = result.rows.slice(0, 5).map(row => ({ text: row.text, time: Number.isFinite(row.start) ? duration(row.start * 1000) : '', speaker: result.draft ? (row.speaker ? `화자 ${row.speaker}` : '') : speakers.label(row) }));
+  setHTML('meeting-result-rows', previewing ? globalThis.NeroUI.transcriptPreview(excerpt) : '');
+  byId('meeting-result-open').hidden = !result.rows.length && !state.transcriptLoadError;
+  byId('prepare-summary').hidden = progress.summaryReady || !progress.summarySupported || !hasTranscript;
   byId('prepare-summary').disabled = Boolean(pendingJob(progress, { models: true })) || state.busy;
   byId('summarize').hidden = !hasTranscript || Boolean(state.summaryLoadError) || !state.summaryLoaded || !progress.summaryReady || !progress.summarySupported;
   byId('summary-template-choice').hidden = byId('summarize').hidden;
-  byId('summarize').disabled = !hasTranscript || !progress.summaryReady || !progress.summarySupported || ownJob || state.busy;
+  byId('summarize').disabled = !hasTranscript || !progress.summaryReady || !progress.summarySupported || ownJob || result.busy || state.busy;
   const latest = latestMeetingProcessing(state.processing, meeting.id);
   const failed = latest?.kind === 'summary' && latest.status === 'failed' && canDismissProcessing(latest);
   byId('summarize').textContent = failed ? '현재 내용 요약' : doc ? '다시 요약' : '요약하기';
   byId('summarize').className = doc ? 'small quiet' : 'small primary';
   documentActions.summary.update({ id: meeting.id, available: Boolean(doc), busy: state.busy || ownJob });
   let message = '';
-  if (!state.summaryLoaded) message = '회의록 불러오는 중';
+  if (!state.summaryLoaded && !result.rows.length) message = '불러오는 중';
   else if (state.summaryLoadError) message = '회의록을 불러오지 못했습니다.';
   else if (doc && stale) message = '이전 내용으로 만든 요약';
   else if (ownJob || failed) message = '';
+  else if (previewing && result.busy) message = pendingJob(state.processing, { meetingId: meeting.id }) ? '' : '처리 중';
+  else if (previewing && !state.transcriptLoaded) message = '불러오는 중';
+  else if (previewing && state.transcriptLoadError) message = '음성 기록을 불러오지 못했습니다.';
+  else if (previewing && result.rows.length) message = '';
+  else if (previewing && state.transcriptDraft?.doc) message = '인식된 음성이 없습니다.';
+  else if (previewing && latest && ['failed', 'cancelled', 'interrupted'].includes(latest.status)) message = '';
   else if (!doc && !hasTranscript) message = '음성 기록을 변환한 뒤 요약할 수 있습니다.';
   else if (!doc && !progress.summarySupported) message = '이 기기에서는 요약을 사용할 수 없습니다.';
   else if (!doc && !progress.summaryReady) message = '요약 모델을 준비해 주세요.';
   else if (!doc) message = '아직 요약하지 않은 회의입니다.';
   byId('retry-summary-load').hidden = !state.summaryLoadError;
   byId('summary-message').hidden = !message;
-  if (!state.summaryLoaded) setHTML('summary-message', '<span class="activity-spinner" aria-hidden="true"></span> ' + escape(message));
+  const loading = !state.summaryLoaded || (previewing && (result.busy || !state.transcriptLoaded));
+  if (loading && message) setHTML('summary-message', '<span class="activity-spinner" aria-hidden="true"></span> ' + escape(message));
   else setText('summary-message', message);
   const key = JSON.stringify([meeting.id, doc?.id, state.transcriptDraft?.doc?.version, Boolean(stale), documentSearch.query()]);
   if (key !== state.summaryKey) {
@@ -1377,6 +1399,7 @@ const detail = mountMeetingDetail({ byId, finishEditing, onError: showError, onR
   for (const actions of Object.values(documentActions)) actions.close();
   globalThis.NeroControls.close?.();
 } });
+byId('meeting-result-open').addEventListener('click', () => { void detail.select('transcript', { focus: true }); });
 summaryEvidence = mountSummaryEvidence({
   container: byId('summary-content'), panel: byId('summary-evidence'),
   onOpen: () => detail.select('transcript'),

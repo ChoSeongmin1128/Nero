@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import vm from 'node:vm';
 import { liveTranscriptRows } from '../src/live-transcript.js';
+import { meetingResultPreview } from '../src/meeting-result-preview.js';
 import { mountNotificationCenter } from '../src/notification-center.js';
 import { Window } from 'happy-dom';
 import { renderMeetingMenu } from '../../../design-system/navigation.mjs';
@@ -128,7 +129,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
   };
   const copied = [], agentDialogCalls = [];
   const templateSettings = { setActive() {}, beforeLeave: async () => true, isConfirming: () => false, hide() {} };
-  const context = vm.createContext({ liveTranscriptRows, renderMeetingMenu, testMountNotificationCenter: mountNotificationCenter,
+  const context = vm.createContext({ liveTranscriptRows, meetingResultPreview, renderMeetingMenu, testMountNotificationCenter: mountNotificationCenter,
     navigator: { clipboard: { writeText: async text => { copied.push(text); } } },
     document, testBridge: bridge, testAgentDialogCalls: agentDialogCalls, testTemplateSettings: templateSettings, localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
     NeroControls: { enhanceAll() {} },
@@ -1316,7 +1317,7 @@ test('processing stays visibly active until cancellation actually finishes', asy
   await page.app.acceptProcessing({ id: 'recognition', revision: 3, status: 'running', kind: 'transcribe', meetingId: 'a', supported: true, modelReady: true, message: '텍스트로 변환 중' });
   assert.equal(page.element('processing-spinner').hidden, false);
   assert.equal(page.element('processing-progress').hidden, true);
-  assert.match(page.element('processing-title').textContent, /변환 중/);
+  assert.match(page.element('processing-title').textContent, /처리 중/);
   let requests = 0;
   page.bridge.cancelProcessing = async () => { requests++; };
   await page.app.cancelProcessing();
