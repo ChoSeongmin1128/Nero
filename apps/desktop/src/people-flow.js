@@ -1,6 +1,17 @@
 const clone = value => JSON.parse(JSON.stringify(value));
 export const attendeeLabel = (attendee, attendees) => attendee.name?.trim() || `참석자 ${Math.max(0, attendees.filter(item => !item.name?.trim()).findIndex(item => item.id === attendee.id)) + 1}`;
 
+export function nameUnnamedAttendees(attendees) {
+  const used = new Set(attendees.map(item => item.name?.trim()).filter(Boolean));
+  let number = 1;
+  return attendees.map(item => {
+    if (item.name?.trim()) return { ...item };
+    while (used.has(`참석자 ${number}`)) number++;
+    const name = `참석자 ${number++}`; used.add(name);
+    return { ...item, name };
+  });
+}
+
 export function addPeople(attendees, people, uuid = () => crypto.randomUUID()) {
   const selected = new Set(attendees.map(item => item.personId).filter(Boolean));
   return [...attendees, ...people.filter(person => !selected.has(person.id) && selected.add(person.id))
@@ -14,7 +25,7 @@ export function createAttendeeFlow({ bridge, onChanged = () => {}, uuid = () => 
   const publish = changes => { state = { ...state, ...changes }; listeners.forEach(listener => listener()); };
   const dirty = () => JSON.stringify(saved) !== JSON.stringify(state.attendees);
   const accept = value => {
-    saved = clone(value.meeting.attendees || []); expected = value.editVersion;
+    saved = nameUnnamedAttendees(clone(value.meeting.attendees || [])); expected = value.editVersion;
     publish({ meeting: value.meeting, attendees: clone(saved) });
   };
   const operate = async task => {
@@ -47,7 +58,7 @@ export function createAttendeeFlow({ bridge, onChanged = () => {}, uuid = () => 
     },
     close() { if (state.busy && !state.loading) return false; epoch += 1; publish({ open: false, busy: false, loading: false }); return true; },
     add(persons) { if (!state.busy) publish({ attendees: addPeople(state.attendees, persons, uuid) }); },
-    addTemporary(name = '') { if (!state.busy) publish({ attendees: [...state.attendees, { id: uuid(), ...(name.trim() ? { name: name.trim() } : {}) }] }); },
+    addTemporary(name = '') { if (!state.busy) publish({ attendees: nameUnnamedAttendees([...state.attendees, { id: uuid(), ...(name.trim() ? { name: name.trim() } : {}) }]) }); },
     rename(id, name) { if (!state.busy) publish({ attendees: state.attendees.map(item => item.id === id ? { ...item, name: name || undefined } : item) }); },
     remove(id) { if (!state.busy) publish({ attendees: state.attendees.filter(item => item.id !== id) }); },
     save() { return operate(persist); },
@@ -112,4 +123,16 @@ export function createPeopleCatalogFlow({ bridge, uuid = () => crypto.randomUUID
     dispose() { active = false; epoch += 1; listeners.clear(); },
   };
   return flow;
+}
+
+export function attendeeInputAction(catalog, attendees, query) {
+  const name = query.trim();
+  if (!name || !catalog) return null;
+  const matches = item => item.name.trim().toLocaleLowerCase() === name.toLocaleLowerCase();
+  const people = catalog.people.filter(matches), groups = catalog.groups.filter(matches);
+  if (people.length + groups.length > 1) return null;
+  if (people.length) return { kind: 'people', people };
+  if (groups.length) return { kind: 'people', people: catalog.people.filter(person => groups[0].personIds.includes(person.id)) };
+  if (attendees.some(item => item.name && matches(item))) return null;
+  return { kind: 'create', name };
 }

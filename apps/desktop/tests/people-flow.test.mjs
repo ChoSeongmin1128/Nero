@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addPeople, attendeeLabel, createAttendeeFlow, createPeopleCatalogFlow } from '../src/people-flow.js';
+import { nameUnnamedAttendees, attendeeInputAction, addPeople, attendeeLabel, createAttendeeFlow, createPeopleCatalogFlow } from '../src/people-flow.js';
 
 const empty = () => ({ people: [], groups: [], editVersion: 'catalog:1' });
 const meeting = (id = 'meeting', attendees = [], editVersion = 'meeting:1') => ({ meeting: { id, attendees }, editVersion });
@@ -157,4 +157,23 @@ test('unnamed attendees count independently of saved and named participants',()=
  const attendees=[{id:'saved',personId:'p',name:'김민서'},{id:'named',name:'방문자'},{id:'a'},{id:'b'}];
  assert.equal(attendeeLabel(attendees[2],attendees),'참석자 1');
  assert.equal(attendeeLabel(attendees[3],attendees),'참석자 2');
+});
+
+test('typed names resolve exact groups and people consistently without ambiguous creation',()=>{
+ const catalog={people:[{id:'a',name:'민서'},{id:'b',name:'도윤'}],groups:[{id:'g',name:'제품팀',personIds:['a','b']}]};
+ assert.deepEqual(attendeeInputAction(catalog,[],' 제품팀 '),{kind:'people',people:catalog.people});
+ assert.deepEqual(attendeeInputAction(catalog,[],'민서'),{kind:'people',people:[catalog.people[0]]});
+ assert.deepEqual(attendeeInputAction(catalog,[],'새 이름'),{kind:'create',name:'새 이름'});
+ assert.equal(attendeeInputAction(catalog,[{name:'새 이름'}],'새 이름'),null);
+ assert.equal(attendeeInputAction({...catalog,groups:[...catalog.groups,{id:'same',name:'민서',personIds:[]}]},[],'민서'),null);
+ assert.equal(attendeeInputAction(catalog,[],' '),null);
+});
+
+test('temporary names start at one and remain stable after other participants are renamed or removed',()=>{
+ const first=nameUnnamedAttendees([{id:'p',personId:'person',name:'민서'},{id:'a'},{id:'b'}]);
+ assert.equal(first[1].name,'참석자 1'); assert.equal(first[2].name,'참석자 2');
+ const changed=nameUnnamedAttendees([{...first[1],name:'방문자'},first[2],{id:'new'}]);
+ assert.equal(changed[1].name,'참석자 2');
+ assert.equal(changed[2].name,'참석자 1');
+ assert.equal(attendeeInputAction({people:[],groups:[]},[{name:' 방문자 '}],'방문자'),null);
 });

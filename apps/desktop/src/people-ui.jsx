@@ -2,7 +2,7 @@ import * as React from 'react';
 import { createRoot } from 'react-dom/client';
 import { Plus, Pencil, Trash2, UserPlus, X, Search, Users, UserRound } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '../../../design-system/components/ui/dialog.jsx';
-import { attendeeLabel, createAttendeeFlow, createPeopleCatalogFlow } from './people-flow.js';
+import { attendeeInputAction, attendeeLabel, createAttendeeFlow, createPeopleCatalogFlow } from './people-flow.js';
 import { ConfirmDialog } from '../../../design-system/components/ui/confirm-dialog.jsx';
 import './people-ui.css';
 
@@ -69,7 +69,7 @@ function AttendeeChip({ item, label, busy, flow, onPromote }) {
   return <div className="attendee-chip">
     {editing ? <input autoFocus aria-label={`${label} 이름`} value={item.name || ''} placeholder={label} maxLength={120} disabled={busy}
       onChange={event => flow.rename(item.id, event.target.value)} onBlur={() => setEditing(false)}
-      onKeyDown={event => { if (event.key === 'Enter' && !event.isComposing && event.keyCode !== 229) { event.preventDefault(); event.currentTarget.blur(); } }} />
+      onKeyDown={event => { if (event.key === 'Enter' && !event.nativeEvent?.isComposing && !event.isComposing && event.keyCode !== 229) { event.preventDefault(); event.currentTarget.blur(); } }} />
       : <button type="button" className="quiet attendee-chip-name" title="이름 수정" disabled={busy} onClick={() => setEditing(true)}>{label}</button>}
     {!item.personId && <button type="button" className="quiet small icon" aria-label={`${label} 인원 목록에 저장`} title="인원 목록에 저장" disabled={busy} onClick={onPromote}><UserPlus size={14} aria-hidden="true" /></button>}
     <button type="button" className="quiet small icon" aria-label={`${label} 회의에서 제외`} title="회의에서 제외" disabled={busy} onClick={() => flow.remove(item.id)}><X size={14} aria-hidden="true" /></button>
@@ -88,14 +88,16 @@ function AttendeeDialog({ flow, container, origin, controls }) {
     return flow.close();
   };
   controls.current = { beforeLeave: close };
+  const searchInput = React.useRef(null);
   const selected = new Set(state.attendees.map(item => item.personId).filter(Boolean));
   const matches = item => item.name.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
   const matchingGroups = state.catalog?.groups.filter(group => matches(group) && group.personIds.some(id => !selected.has(id))) || [];
   const matchingPeople = state.catalog?.people.filter(person => matches(person) && !selected.has(person.id)) || [];
-  const add = people => { flow.add(people); setQuery(''); };
-  const addNew = () => { flow.addTemporary(query); setQuery(''); };
+  const add = people => { flow.add(people); setQuery(''); searchInput.current?.focus(); };
+  const addNew = () => { flow.addTemporary(query); setQuery(''); searchInput.current?.focus(); };
   const typedName = query.trim();
-  const canAddName = typedName && !state.catalog?.people.some(person => person.name.toLocaleLowerCase() === typedName.toLocaleLowerCase()) && !state.attendees.some(person => person.name?.toLocaleLowerCase() === typedName.toLocaleLowerCase());
+  const inputAction = attendeeInputAction(state.catalog, state.attendees, query);
+  const canAddName = inputAction?.kind === 'create';
   return <>
     <Dialog open={state.open} onOpenChange={open => { if (!open) void close(); }}>
       <DialogContent container={container} className="people-dialog" data-nero-ui-owned="" finalFocus={() => origin.current?.isConnected ? origin.current : false}>
@@ -105,7 +107,7 @@ function AttendeeDialog({ flow, container, origin, controls }) {
           {state.error && !state.busy && <button type="button" className="small" onClick={async () => { if (!flow.isDirty() || await confirmation.ask('최신 내용을 불러올까요?', '불러오기에 성공하면 저장하지 않은 참석자 변경이 바뀝니다.', '불러오기', false)) await flow.reload(); }}>다시 불러오기</button>}
           {state.meeting && <>
             <section className="attendee-add" aria-label="참석자 추가">
-              <label className="attendee-search"><Search size={16} aria-hidden="true" /><span className="sr-only">사람, 그룹 검색 또는 새 이름 입력</span><input type="search" value={query} placeholder="사람, 그룹 검색 또는 새 이름 입력" onChange={event => setQuery(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.isComposing && event.keyCode !== 229 && canAddName) { event.preventDefault(); addNew(); } }} disabled={state.busy} /></label>
+              <label className="attendee-search"><Search size={16} aria-hidden="true" /><span className="sr-only">사람, 그룹 검색 또는 새 이름 입력</span><input ref={searchInput} type="search" maxLength={120} value={query} placeholder="사람, 그룹 검색 또는 새 이름 입력" onChange={event => setQuery(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.nativeEvent?.isComposing && !event.isComposing && event.keyCode !== 229 && inputAction) { event.preventDefault(); if (inputAction.kind === 'people') add(inputAction.people); else addNew(); } }} disabled={state.busy} /></label>
               <div className="attendee-options">
                 {matchingGroups.length > 0 && <><h4 className="attendee-option-heading">그룹</h4>{matchingGroups.map(group => <button type="button" className="people-option" key={group.id} disabled={state.busy} onClick={() => add(state.catalog.people.filter(person => group.personIds.includes(person.id)))}><Users size={16} aria-hidden="true" /><span>{group.name}</span><span className="muted type-caption">{group.personIds.filter(id => !selected.has(id)).length}명 추가</span></button>)}</>}
                 {matchingPeople.length > 0 && <><h4 className="attendee-option-heading">사람</h4>{matchingPeople.map(person => <button type="button" className="people-option" key={person.id} disabled={state.busy} aria-label={`${person.name} 추가`} onClick={() => add([person])}><UserRound size={16} aria-hidden="true" /><span>{person.name}</span><Plus size={15} aria-hidden="true" /></button>)}</>}
