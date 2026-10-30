@@ -1,3 +1,4 @@
+import { createIntegrationMonitor } from './integration-notifications.js';
 import { mountNotificationCenter } from './notification-center.js';
 import './notification-center.css';
 import { returnFocusTarget } from './focus-return.js';
@@ -31,7 +32,9 @@ const terminologySettings = { info: null, error: '', request: 0, saving: null };
 const agentConnection = { info: null, loading: false, error: '', request: 0, refresh: 0, timer: null, pending: {}, errors: {} };
 const agentConnectionDialog = mountAgentConnectionDialog({ container: byId('settings-dialog'), fallbackTrigger: () => byId('settings-agent-manual') });
 const templateSettings = mountTemplateSettings({ container: byId('settings-dialog'), panel: byId('settings-templates-panel'), bridge });
-const calendarSettings = mountCalendarSettings({ panel: byId('calendar-settings'), bridge });
+let integrationNotices = [];
+const integrationMonitor = createIntegrationMonitor({ bridge, onChange(notices) { integrationNotices = notices; render(); } });
+const calendarSettings = mountCalendarSettings({ panel: byId('calendar-settings'), bridge, onSnapshot: value => integrationMonitor.acceptCalendar(value) });
 const calendarReference = mountCalendarMeetingReference({ container: byId('calendar-meeting-reference') });
 const calendarPicker = mountCalendarMeetingPicker({ container: document.body, bridge,
   onPrepared: async meeting => {
@@ -280,7 +283,7 @@ function render() {
   for (const id of ['library-create', 'library-record']) byId(id).disabled = !state.connected || state.busy || state.libraryBusy;
   setHTML('library-record', `${icon(activeSession() ? 'audio-lines' : 'mic')}<span>${activeSession() ? '녹음으로 돌아가기' : '녹음 시작'}</span>`);
   const setupVisible = renderSetup();
-  notificationCenter.update({ processing: state.processing, meetings: state.snapshot.meetings, selectedMeetingId: state.selectedId, connected: state.connected, actions: processingActions });
+  notificationCenter.update({ processing: state.processing, meetings: state.snapshot.meetings, selectedMeetingId: state.selectedId, connected: state.connected, actions: processingActions, integrations: integrationNotices });
   const notificationCount = notificationCenter.counts().unread;
   setText('notification-count', notificationCount ? String(notificationCount) : '');
   byId('notification-count').hidden = !notificationCount;
@@ -574,6 +577,7 @@ async function loadAgentConnection(force = false, forceHostRefresh = false) {
     const info = await bridge.agentConnectionInfo(forceHostRefresh);
     if (request !== agentConnection.request || refresh !== agentConnection.refresh || !agentConnectionActive()) return;
     agentConnection.info = info;
+    integrationMonitor.acceptAgents(info);
   } catch {
     if (request !== agentConnection.request || refresh !== agentConnection.refresh || !agentConnectionActive()) return;
     agentConnection.error = '연결 상태를 불러오지 못했습니다.';
@@ -600,6 +604,7 @@ async function connectAgentClient(client) {
   try {
     const info = await (checking ? bridge.agentConnectionInfo(true) : bridge.connectAgentClient(client));
     if (request !== agentConnection.request || !agentConnectionActive()) return;
+    integrationMonitor.acceptAgents(info);
     const updated = info.clients?.find(item => item.id === client);
     if (updated) agentConnection.info = { ...agentConnection.info, clients: agentConnection.info.clients.map(item => item.id === client ? updated : item) };
   } catch (error) {
@@ -1480,7 +1485,11 @@ const transcriptActions = mountTranscriptActions({ byId, bridge, finishEditing, 
 });
 const library = mountLibrary({ bridge, getState: () => state, byId, finishEditing, acceptSnapshot, selectMeeting, render, showError, escape, icon, meetingTimestamp, recordingStatus, duration, onViewChanged() { meetingSearch.update(byId('search').value, state.libraryFilter === 'trash'); } });
 const notificationAction = action => async id => { await action(id); const error = processingErrors.get(id); if (error) throw new Error(error); };
-const notificationCenter = mountNotificationCenter({ container: byId('notification-center'), bridge, onOpenMeeting: id => selectMeeting(id), onRetry: notificationAction(retryProcessing), onCancel: notificationAction(cancelProcessing), onAcknowledge: notificationAction(acknowledgeProcessing), showError, icon });
+const notificationCenter = mountNotificationCenter({ container: byId('notification-center'), bridge, onOpenMeeting: id => selectMeeting(id), onRetry: notificationAction(retryProcessing), onCancel: notificationAction(cancelProcessing), onAcknowledge: notificationAction(acknowledgeProcessing), showError, icon, onOpenIntegration: async service => {
+  await openSettings('agent', 'notifications-open');
+  const target = service === 'google-calendar' ? byId('calendar-settings').querySelector('.calendar-settings-account button:not(:disabled)') : byId(`settings-${service}-connect`);
+  target?.scrollIntoView?.({ block: 'nearest' });
+}, onChanged: () => render() });
 byId('notifications-open').addEventListener('click', () => run(() => finishEditing(() => { state.notificationsOpen = true; state.setupRequested = false; state.libraryOpen = false; render(); byId('notification-center').querySelector('h1')?.focus({ preventScroll: true }); })));
 const speakers = mountSpeakers({ bridge, getState: () => state, byId, finishEditing, showError,
   canPlay: () => Boolean(byId('audio-player').getAttribute('src')),
@@ -1520,6 +1529,8 @@ try {
   await bridge.subscribeCloseRequest(() => run(async () => { if (await templateSettings.beforeLeave()) await finishEditing(() => bridge.hideMain()); }));
   acceptSnapshot(await bridge.readSnapshot());
   await refreshDevices();
+  await integrationMonitor.refresh();
+  integrationMonitor.start();
 } catch (error) {
   if (!state.connected) byId('welcome-message').textContent = '데스크톱 앱에서 열어 주세요.';
   showError(error);

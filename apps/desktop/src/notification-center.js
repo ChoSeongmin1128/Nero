@@ -3,7 +3,7 @@ import { processingFeedback, canRetryProcessing, canDismissProcessing } from './
 
 const activeStatuses = new Set(['queued', 'running', 'cancelling']);
 const terminalStatuses = new Set(['completed', 'failed', 'cancelled', 'interrupted', 'needsReview']);
-const canAcknowledge = job => canDismissProcessing(job) || (job.status === 'completed' && job.acknowledged !== true && !job.retrySuccessorId);
+const canAcknowledge = job => job.category === 'integration' ? job.unread : canDismissProcessing(job) || (job.status === 'completed' && job.acknowledged !== true && !job.retrySuccessorId);
 const escape = value => String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
 
 export function notificationProjection({ processing = {}, meetings = [], selectedMeetingId = null } = {}) {
@@ -32,7 +32,8 @@ export function notificationProjection({ processing = {}, meetings = [], selecte
     });
 }
 
-export function mountNotificationCenter({ container, bridge = {}, onOpenMeeting, onRetry, onCancel, onAcknowledge, onAcceptProcessing, showError = () => {}, icon = () => '' }) {
+export function mountNotificationCenter({ container, bridge = {}, onOpenMeeting, onRetry, onCancel, onAcknowledge, onAcceptProcessing, onOpenIntegration, onChanged = () => {}, showError = () => {}, icon = () => '' }) {
+  const confirmedIntegrations = new Set();
   const pending = new Map();
   const errors = new Map();
   const observedActive = new Set();
@@ -41,7 +42,7 @@ export function mountNotificationCenter({ container, bridge = {}, onOpenMeeting,
   let disposed = false;
   let focusReturn = null;
   let confirming = false;
-  const rows = () => notificationProjection(snapshot).filter(job => job.status !== 'completed' || observedActive.has(job.id));
+  const rows = () => [...notificationProjection(snapshot).filter(job => job.status !== 'completed' || observedActive.has(job.id)), ...(snapshot.integrations || []).map(item => ({ ...item, category: 'integration', active: false, unread: !confirmedIntegrations.has(item.id) }))];
   const actionPending = id => pending.has(id) || snapshot.actions?.has(id);
   const canAct = job => !disposed && snapshot.connected !== false && !actionPending(job.id);
   const method = (callback, fallback) => callback || bridge[fallback]?.bind(bridge);
@@ -84,6 +85,7 @@ export function mountNotificationCenter({ container, bridge = {}, onOpenMeeting,
     const button = (job, action, label, quiet = true, disabled = false) => `<button type="button" class="${quiet ? 'quiet ' : ''}small" data-notification-job="${escape(job.id)}" data-notification-action="${action}"${disabled || !canAct(job) ? ' disabled' : ''}>${label}</button>`;
     const expandedDiagnostics = new Set([...container.querySelectorAll('details[data-notification-diagnostics]')].filter(node => node.open).map(node => node.dataset.notificationDiagnostics));
     container.innerHTML = `<header class="notification-heading"><div><h1 tabindex="-1">알림</h1><p aria-live="polite">${active}개 진행 중 / ${unread}개 확인 필요</p></div><button type="button" class="quiet small" data-notification-action="ack-all"${jobs.some(job => canAcknowledge(job) && canAct(job)) && !confirming ? '' : ' disabled'}>${confirming ? '확인 중' : '모두 확인'}</button></header><div class="notification-list">${jobs.map(job => {
+      if (job.category === 'integration') return `<article class="notification-item" data-notification-id="${escape(job.id)}"><div class="notification-copy"><strong class="notification-title">${escape(job.title)}</strong><p>${escape(job.message)}</p></div><div class="notification-actions">${button(job, 'settings', '연동 설정', false)}${job.unread ? button(job, 'ack', '확인') : ''}</div></article>`;
       const cancelling = pending.get(job.id) === 'cancel' || snapshot.actions?.get(job.id) === 'cancel';
       const feedback = processingFeedback(job, { cancelling });
       const status = feedback.title;
@@ -102,6 +104,8 @@ export function mountNotificationCenter({ container, bridge = {}, onOpenMeeting,
     const incoming = value.processing?.revision;
     const processing = incoming != null && previous != null && incoming < previous ? snapshot.processing : value.processing || snapshot.processing;
     snapshot = { ...snapshot, ...value, processing };
+    const integrationIds = new Set((snapshot.integrations || []).map(item => item.id));
+    for (const id of confirmedIntegrations) if (!integrationIds.has(id)) confirmedIntegrations.delete(id);
     for (const job of processingJobs(processing)) if (activeStatuses.has(job.status)) observedActive.add(job.id);
     for (const [id, action] of pending) {
       const job = processingJobs(processing).find(item => item.id === id);
@@ -113,6 +117,15 @@ export function mountNotificationCenter({ container, bridge = {}, onOpenMeeting,
   async function perform(action, id) {
     const job = rows().find(item => item.id === id);
     if (!job || !canAct(job)) return;
+    if (job.category === 'integration') {
+      try {
+        if (action === 'settings') await onOpenIntegration?.(job.service);
+        else if (action === 'ack') confirmedIntegrations.add(job.id);
+        else return;
+      } catch (error) { showError(error); }
+      finally { render(); onChanged(); }
+      return;
+    }
     const feedback = processingFeedback(job);
     if (action === 'open' && !job.hasMeeting) return;
     if (action === 'retry' && !canRetryProcessing(job)) return;

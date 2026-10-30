@@ -1,3 +1,4 @@
+import { createIntegrationMonitor } from '../src/integration-notifications.js';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
@@ -26,7 +27,7 @@ function harness({ load = async () => info, write = async () => {}, connect = as
   let calls = 0;
   const copied = [], timers = new Map();
   const dialog = { opened: [], triggers: [], updates: [], closed: [], open(value, trigger) { dialog.opened.push(value); dialog.triggers.push(trigger); }, update: value => dialog.updates.push(value), close: value => dialog.closed.push(value) };
-  const context = vm.createContext({ byId, state, agentConnection, agentConnectionDialog: dialog, bridge: { agentConnectionInfo: force => { calls += 1; return load(force); }, connectAgentClient: connect },
+  const context = vm.createContext({ integrationMonitor: createIntegrationMonitor({ bridge: {} }), byId, state, agentConnection, agentConnectionDialog: dialog, bridge: { agentConnectionInfo: force => { calls += 1; return load(force); }, connectAgentClient: connect },
     navigator: { clipboard: { writeText: async text => { copied.push(text); await write(text); } } },
     copyFeedbackTimers: new Map(), setTimeout: callback => { const key = {}; timers.set(key, callback); return key; }, clearTimeout: key => timers.delete(key),
   });

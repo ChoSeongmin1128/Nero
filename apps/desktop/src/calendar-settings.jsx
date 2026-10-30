@@ -33,8 +33,9 @@ function CalendarSettings({ flow }) {
   </section>;
 }
 
-export function mountCalendarSettings({ panel, bridge }) {
+export function mountCalendarSettings({ panel, bridge, onSnapshot = () => {} }) {
   const flow = createCalendarSettingsFlow({ bridge });
+  const unsubscribeSnapshot = flow.subscribe(() => onSnapshot(flow.getSnapshot().snapshot));
   panel.dataset.neroUiOwned = '';
   const root = createRoot(panel);
   let disposed = false;
@@ -46,6 +47,6 @@ export function mountCalendarSettings({ panel, bridge }) {
     hide: () => flow.setActive(false),
     beforeLeave: async () => true,
     isConfirming: () => false,
-    dispose() { disposed = true; unlisten?.(); flow.dispose(); root.unmount(); },
+    dispose() { disposed = true; unlisten?.(); unsubscribeSnapshot(); flow.dispose(); root.unmount(); },
   };
 }

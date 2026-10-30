@@ -197,3 +197,34 @@ test('the real application HTML boots and opens all settings tabs without stale 
   assert.equal(window.document.getElementById('processing-jobs'), null);
   assert.deepEqual(errors, []);
 });
+
+test('startup integration alerts appear without visiting settings and route to the matching connection', async t => {
+  const window = new Window({ url: 'http://nero.test', settings: { enableJavaScriptEvaluation: true, suppressInsecureJavaScriptEnvironmentWarning: true, disableCSSFileLoading: true, disableJavaScriptFileLoading: true } });
+  t.after(() => window.happyDOM.abort()); window.document.write(html);
+  for (const name of ['appearance', 'icons', 'components']) window.eval(await readFile(new URL(`../../../design-system/${name}.js`, import.meta.url), 'utf8'));
+  let connects = 0;
+  const stubs = {
+    readSnapshot: () => ({ revision: 1, meetings: [], folders: [], session: null }), listDevices: () => [], setAutoRecorder() {},
+    processingStatus: () => ({ status: 'idle', supported: true, modelReady: true, summarySupported: true, summaryReady: true }),
+    readTerminologySettings: () => ({ available: false }), listTemplates: () => [],
+    agentConnectionInfo: () => ({ available: true, clients: [{ id: 'claude', name: 'Claude', state: 'update_required', packageVersion: '28' }, { id: 'codex', name: 'ChatGPT', state: 'connected' }] }),
+    readCalendarSettings: () => ({ revision: 1, configured: true, connected: false, accountLabel: 'Test account', error: 'Reconnect', calendars: [], selectedCalendars: [] }),
+    connectAgentClient: () => { connects += 1; },
+  };
+  window.testBridge = Object.fromEntries(bridgeNames.map(name => [name, async (...args) => {
+    if (name.startsWith('subscribe')) return () => {};
+    assert.ok(Object.hasOwn(stubs, name), `Unexpected native call: ${name}`); return stubs[name](...args);
+  }]));
+  window.eval(bundled.outputFiles[0].text); await window.neroBoot;
+  const el = id => window.document.getElementById(id);
+  assert.equal(el('notification-count').textContent, '2');
+  el('notifications-open').click();
+  await new Promise(resolve => setTimeout(resolve, 10));
+  const notice = [...el('notification-center').querySelectorAll('article')].find(row => row.textContent.includes('Claude'));
+  assert.ok(notice); notice.querySelector('[data-notification-action="settings"]').click();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(el('settings-dialog').open, true);
+  assert.equal(el('settings-agent-tab').getAttribute('aria-selected'), 'true');
+  assert.equal(el('settings-claude-connect').hidden, false);
+  assert.equal(connects, 0);
+});

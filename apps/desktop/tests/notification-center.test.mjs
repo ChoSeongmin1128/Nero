@@ -246,3 +246,26 @@ test('reading failure details survives another job progress update', t => {
   view.update([failed, job('live', 'b', 'running', 11, { phase: 'saving' })], 2);
   assert.equal(view.container.querySelector('details[data-notification-diagnostics]').open, true);
 });
+
+test('integration notices share the bell count, open their settings and acknowledge without mutating jobs', async t => {
+  const opened = [], changed = [];
+  const f = harness(t, { onOpenIntegration: async service => opened.push(service), onChanged: () => changed.push(true) });
+  const notice = { id: 'integration:codex:28', service: 'codex', title: 'ChatGPT 연동', message: '업데이트 필요' };
+  f.update([], 1, { integrations: [notice] });
+  assert.equal(f.controller.counts().unread, 1);
+  await f.click(notice.id, 'settings'); assert.deepEqual(opened, ['codex']);
+  await f.click(notice.id, 'ack'); assert.equal(f.controller.counts().unread, 0);
+  f.update([], 2, { integrations: [notice] }); assert.equal(f.controller.counts().unread, 0);
+  f.update([], 3, { integrations: [] }); assert.equal(f.controller.counts().total, 0);
+  f.update([], 4, { integrations: [notice] }); assert.equal(f.controller.counts().unread, 1);
+  assert.ok(changed.length); assert.deepEqual(f.errors, []);
+});
+
+test('confirming mixed job and integration notifications cannot cancel or acknowledge an unrelated job', async t => {
+  const acknowledged = [];
+  const f = harness(t, { onAcknowledge: async id => { acknowledged.push(id); return { revision: 2, jobs: [job('failed', 'a', 'failed', 10, { acknowledged: true })] }; } });
+  const notice = { id: 'integration:claude:28', service: 'claude', title: 'Claude 연동', message: '업데이트 필요' };
+  f.update([job('failed')], 1, { integrations: [notice] });
+  f.container.querySelector('[data-notification-action="ack-all"]').click(); await settle(); await settle();
+  assert.deepEqual(acknowledged, ['failed']); assert.equal(f.controller.counts().unread, 0);
+});

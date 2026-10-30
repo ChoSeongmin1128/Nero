@@ -61,3 +61,16 @@ Recognition's saved baseline and its speaker continuation share the cancellation
 A cancelled optional terminology pass is skipped on retry; saved text is used for the
 speaker stage. Legacy jobs without a validated continuation retain conflict protection
 and can be replaced by an explicit operation from the meeting.
+
+## Integration notifications
+
+The notification center includes confirmed agent-package updates and connection issues
+for an already configured Google Calendar account. Optional unconnected services, active
+authorization, restore/check states and prior conversation sessions do not create alerts.
+Each service/target version has one entry. Resolved entries disappear; confirming an entry
+clears its unread badge for the current application session without changing the connection.
+The action opens integration settings, never installs or reconnects without a user action.
+
+Agent checks run at startup, on focus and at a bounded interval while the document is
+visible. Calendar snapshots share the settings flow and revision guard. Late background
+responses cannot restore an update superseded by an explicit connection operation.
