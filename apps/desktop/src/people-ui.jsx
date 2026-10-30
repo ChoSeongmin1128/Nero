@@ -36,7 +36,7 @@ function PeopleSettings({ flow, container, controls }) {
   const catalog = state.catalog, draft = state.draft;
   const remove = async (kind, item) => {
     const description = kind === 'person' ? '인원 목록에서 삭제합니다. 이전 회의의 참석자 정보는 유지됩니다.' : '그룹을 삭제합니다. 인원과 이전 회의는 유지됩니다.';
-    if (await confirmation.ask(`${item.name}을 삭제할까요?`, description)) await flow.remove(kind, item.id);
+    if (await confirmation.ask(`${item.name} 삭제`, description)) await flow.remove(kind, item.id);
   };
   return <div className="people-settings" data-nero-ui-owned="" aria-busy={state.busy}>
     <h3 className="settings-panel-title">참석자</h3>
