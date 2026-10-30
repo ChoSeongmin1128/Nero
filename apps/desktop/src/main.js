@@ -82,6 +82,7 @@ document.querySelectorAll('[data-detail-icon]').forEach(node => { node.innerHTML
 
 byId('create-meeting').innerHTML = `${icon('plus')}<span>새 회의</span>`;
 byId('welcome-create').innerHTML = `${icon('plus')}<span>새 회의</span>`;
+byId('library-create').innerHTML = `${icon('plus')}<span>새 회의 만들기</span>`;
 document.querySelector('.welcome-icon').innerHTML = icon('notebook-pen');
 byId('recording-icon').innerHTML = icon('mic');
 
@@ -119,12 +120,21 @@ function renderList() {
     const snippet = query && matchLabel ? `<span class="meeting-item-match"><span>${matchLabel}</span> ${globalThis.NeroUI.highlightText(hit.text, query)}</span>` : '';
     const content = `<span class="meeting-item-content"><strong title="${escape(meeting.title || '제목 없는 회의')}">${escape(meeting.title || '제목 없는 회의')}</strong><span class="meeting-item-meta"><span class="meeting-item-time" title="${escape(timestampDescription)}" aria-label="${escape(timestampDescription)}">${escape(timestampLabel)}</span>${length ? `<span>${escape(length)}</span>` : ''}${state.libraryFilter === 'all' ? `<span>${escape(state.snapshot.folders?.find(folder => folder.id === meeting.folderId)?.name || '미분류')}</span>` : ''}</span>${snippet}</span><span class="meeting-item-state ${['recording','paused'].includes(phase) ? 'recording' : ''}">${escape(recordingStatus(phase))}</span>`;
     return `<article class="meeting-entry${selected ? ' is-selected' : ''}" data-meeting-id="${escape(meeting.id)}"${meeting.deletedAt == null ? ' draggable="true"' : ''}>${checkbox}${globalThis.NeroUI.button({ className: 'meeting-item', attrs: { 'data-open-meeting': meeting.id, 'aria-current': String(meeting.id === state.selectedId), title: meeting.title }, html: content })}${more}</article>`;
-  }).join('') || `<p class="list-empty">${query ? '검색 결과가 없습니다.' : state.libraryFilter === 'trash' ? '휴지통이 비어 있습니다.' : '회의가 없습니다.'}</p>`;
+  }).join('') || renderLibraryEmpty(query);
   byId('meeting-list').classList.toggle('has-selection', state.librarySelection.size > 0);
   byId('meeting-list').scrollTop = scroll;
   if (focused) [...byId('meeting-list').querySelectorAll('[data-meeting-id]')].find(node => node.dataset.meetingId === focused)?.querySelector(focusSelector)?.focus({ preventScroll: true });
 }
 
+
+function renderLibraryEmpty(query) {
+  const trash = state.libraryFilter === 'trash';
+  const folders = state.libraryFilter === 'all' && state.libraryView === 'folders' && state.snapshot.folders?.length;
+  const filtered = state.libraryFilter !== 'all';
+  const title = query ? '검색 결과가 없습니다.' : trash ? '휴지통이 비어 있습니다.' : folders ? '미분류 회의가 없습니다.' : filtered ? '이 폴더에 회의가 없습니다.' : '첫 회의를 시작해 보세요';
+  const description = query ? '다른 검색어로 다시 찾아보세요.' : trash ? '삭제한 회의가 여기에 표시됩니다.' : folders ? '폴더를 열거나 새 회의를 만들어 보세요.' : '새 회의를 만들어 메모하거나, 녹음 시작을 눌러 바로 기록하세요.';
+  return `<div class="library-empty"><span class="library-empty-icon" aria-hidden="true">${icon(query ? 'search' : trash ? 'trash-2' : 'notebook-pen')}</span><h2>${escape(title)}</h2><p>${escape(description)}</p></div>`;
+}
 
 function refreshMeetingSearch() { if (byId('search').value.trim()) meetingSearch.update(byId('search').value, state.libraryFilter === 'trash'); }
 
@@ -267,6 +277,8 @@ function render() {
   byId('create-meeting').disabled = !state.connected || state.busy;
   byId('create-calendar-meeting').disabled = !state.connected || state.busy;
   byId('welcome-create').disabled = !state.connected || state.busy;
+  for (const id of ['library-create', 'library-record']) byId(id).disabled = !state.connected || state.busy || state.libraryBusy;
+  setHTML('library-record', `${icon(activeSession() ? 'audio-lines' : 'mic')}<span>${activeSession() ? '녹음으로 돌아가기' : '녹음 시작'}</span>`);
   const setupVisible = renderSetup();
   notificationCenter.update({ processing: state.processing, meetings: state.snapshot.meetings, selectedMeetingId: state.selectedId, connected: state.connected, actions: processingActions });
   const notificationCount = notificationCenter.counts().unread;
@@ -731,9 +743,15 @@ async function run(action) {
   }
 }
 
-async function createMeeting() {
+async function createMeeting({ record = false } = {}) {
+  if (record && activeSession()) return selectMeeting(activeSession().meetingId);
   if (!modelsReady()) return openSetup();
   await finishEditing(async () => {
+    if (record) {
+      await refreshDevices();
+      if (microphoneIssue()) return openSettings('recording', 'library-record');
+      if (activeSession()) return selectMeeting(activeSession().meetingId);
+    }
     state.setupRequested = false;
     const meeting = await bridge.createMeeting('새 회의', '');
     acceptSnapshot(await bridge.readSnapshot());
@@ -741,9 +759,25 @@ async function createMeeting() {
       try { acceptSnapshot(await bridge.moveMeetings([meeting.id], state.libraryFilter)); } catch (error) { showError(error); }
     }
     await selectMeeting(meeting.id);
-    byId('meeting-title').focus();
-    byId('meeting-title').select();
+    if (record) {
+      await startSelectedRecording();
+      byId('recording-controls').tabIndex = -1;
+      byId('recording-controls').focus({ preventScroll: true });
+    } else {
+      byId('meeting-title').focus();
+      byId('meeting-title').select();
+    }
   });
+}
+
+async function startSelectedRecording() {
+  if (activeSession()) return selectMeeting(activeSession().meetingId);
+  if (!modelsReady()) return openSetup();
+  await saveDraft();
+  await refreshDevices();
+  if (microphoneIssue()) return;
+  if (activeSession()) return selectMeeting(activeSession().meetingId);
+  acceptSnapshot(await bridge.startRecording(state.selectedId, state.deviceId));
 }
 
 function onEdit() {
@@ -775,6 +809,8 @@ byId('meeting-list').addEventListener('click', event => {
   if (library.handleRowSelection(id, event)) { event.preventDefault(); return; }
   if (meeting?.deletedAt != null) library.toggleSelection(id, event); else { const hit = state.librarySearchHits.find(hit => hit.meetingId === id); void selectMeeting(id, hit && hit.kind !== 'title' ? { query: byId('search').value.trim(), hit } : null); }
 });
+byId('library-create').addEventListener('click', () => run(createMeeting));
+byId('library-record').addEventListener('click', () => run(() => createMeeting({ record: true })));
 byId('create-meeting').addEventListener('click', () => run(createMeeting));
 byId('welcome-create').addEventListener('click', () => run(createMeeting));
 byId('setup-start').addEventListener('click', () => run(createMeeting));
@@ -844,13 +880,7 @@ byId('recording-controls').addEventListener('click', (event) => {
     if (action === 'open-active' && session) return selectMeeting(session.meetingId);
     if (action === 'show-recorder' && session) return bridge.showRecorder(session.id);
     if (action === 'setup') return openSetup();
-    if (action === 'start') {
-      if (!modelsReady()) return openSetup();
-      await saveDraft();
-      await refreshDevices();
-      if (microphoneIssue()) return;
-      acceptSnapshot(await bridge.startRecording(state.selectedId, state.deviceId));
-    }
+    if (action === 'start') await startSelectedRecording();
     if (action === 'pause' && session) acceptSnapshot(await bridge.pauseRecording(session.id));
     if (action === 'resume' && session) acceptSnapshot(await bridge.resumeRecording(session.id));
     if (action === 'stop' && session) acceptSnapshot(await bridge.stopRecording(session.id));
