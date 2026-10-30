@@ -4,13 +4,10 @@ use policy::ReleaseIdentity;
 use serde::{Deserialize, Serialize};
 use std::{
     path::{Path, PathBuf},
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Mutex,
-    },
+    sync::{atomic::Ordering, Mutex},
     time::Duration,
 };
-use tauri::{Emitter, WebviewWindow};
+use tauri::{Emitter, Manager, WebviewWindow};
 use tauri_plugin_updater::{Update, UpdaterExt};
 
 pub const PUBLIC_KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEVBNzRBQ0ZEREVGOUNFQzAKUldUQXp2bmUvYXgwNnV6Wm96TDMxaDJvTlhoU2loZnZETmxhMGZ0dHQxOFh3a3NzdTFRUE9ROUgK";
@@ -51,7 +48,6 @@ pub struct AppUpdates {
     status: Mutex<Status>,
     candidate: Mutex<Option<Update>>,
     operation: tokio::sync::Mutex<()>,
-    pub installing: AtomicBool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -64,17 +60,23 @@ struct PendingInstall {
 struct IdleFence {
     core: nero_core::CoreHandle,
     processing: std::sync::Arc<crate::processing::Processing>,
+    lease: Option<crate::lifecycle::ExitLease>,
     armed: bool,
 }
 impl IdleFence {
     fn prepare(
         core: nero_core::CoreHandle,
         processing: std::sync::Arc<crate::processing::Processing>,
+        lease: crate::lifecycle::ExitLease,
     ) -> Result<Self, String> {
+        if !lease.owns(crate::lifecycle::ExitKind::Update) {
+            return Err("업데이트 설치 권한을 확인하지 못했습니다.".into());
+        }
         processing.quiesce_for_update()?;
         let fence = Self {
             core,
             processing,
+            lease: Some(lease),
             armed: true,
         };
         fence
@@ -88,6 +90,13 @@ impl IdleFence {
             return Ok(());
         }
         self.armed = false;
+        if !self
+            .lease
+            .as_ref()
+            .is_some_and(|lease| lease.owns(crate::lifecycle::ExitKind::Update))
+        {
+            return Err("다른 종료 작업이 진행 중이므로 업데이트 복구를 중단했습니다.".into());
+        }
         let resumed = self.core.resume_after_failed_shutdown();
         self.processing.resume();
         resumed.map_err(|_| {
@@ -96,6 +105,7 @@ impl IdleFence {
     }
     fn commit(mut self) {
         self.armed = false;
+        self.lease.take().unwrap().commit();
     }
 }
 impl Drop for IdleFence {
@@ -140,7 +150,6 @@ impl AppUpdates {
             status: Mutex::new(status),
             candidate: Mutex::new(None),
             operation: tokio::sync::Mutex::new(()),
-            installing: AtomicBool::new(false),
         })
     }
     fn view(&self) -> Status {
@@ -317,8 +326,8 @@ pub async fn app_update_check(
         .operation
         .try_lock()
         .map_err(|_| "업데이트 작업이 진행 중입니다.")?;
-    if state.installing.load(Ordering::Acquire) {
-        return Err("업데이트를 설치하고 있습니다.".into());
+    if app.state::<crate::DesktopState>().lifecycle.is_closing() {
+        return Err("앱을 종료하거나 업데이트하고 있습니다.".into());
     }
     state.publish(&app, "checking", "새 업데이트를 확인하고 있습니다.");
     let result = async {
@@ -478,18 +487,19 @@ pub async fn app_update_install(
     if desktop.quitting.load(Ordering::Acquire) {
         return Err("앱을 종료하고 있습니다.".into());
     }
-    state.installing.store(true, Ordering::Release);
+    let lease = desktop
+        .lifecycle
+        .begin_exit(crate::lifecycle::ExitKind::Update)?;
     let processing = desktop.processing.clone();
     let core = desktop.core.clone();
     let prepared =
-        tauri::async_runtime::spawn_blocking(move || IdleFence::prepare(core, processing))
+        tauri::async_runtime::spawn_blocking(move || IdleFence::prepare(core, processing, lease))
             .await
             .map_err(|_| "앱의 작업 상태를 확인하지 못했습니다.".to_string())
             .and_then(|result| result);
     let mut fence = match prepared {
         Ok(fence) => fence,
         Err(error) => {
-            state.installing.store(false, Ordering::Release);
             return Ok(state.publish(&app, "waiting", &error));
         }
     };
@@ -505,7 +515,10 @@ pub async fn app_update_install(
     let receipt =
         serde_json::to_vec(&pending).map_err(|_| "업데이트 기록을 만들지 못했습니다.".to_string());
     let cache = state.cache.clone();
-    let installed = tauri::async_runtime::spawn_blocking(move || {
+    let quitting = desktop.quitting.clone();
+    let polling = desktop.polling.clone();
+    let install_app = app.clone();
+    let installed = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
         let result = (|| {
             write_atomic(&cache.join("pending.json"), &receipt?)?;
             update.install(&bytes).map_err(|_| {
@@ -516,25 +529,21 @@ pub async fn app_update_install(
             fence.rollback()?;
             return Err(error);
         }
-        Ok(fence)
+        // Keep successful ownership through restart in this task as well. A
+        // dropped IPC future cannot reopen admission after the Mac app swap.
+        quitting.store(true, Ordering::Release);
+        polling.store(false, Ordering::Release);
+        fence.commit();
+        install_app.restart();
     })
     .await
     .map_err(|_| "업데이트 설치를 완료하지 못했습니다.".to_string())
     .and_then(|result| result);
-    let fence = match installed {
-        Ok(fence) => fence,
-        Err(error) => {
-            // Keep the verified download for retry; never touch meetings or models.
-            state.installing.store(false, Ordering::Release);
-            return Ok(state.publish(&app, "error", &error));
-        }
-    };
-    // Windows exits inside official install(). macOS returns after an atomic
-    // app-only swap (or restores its old app on error), then needs a restart.
-    desktop.quitting.store(true, Ordering::Release);
-    desktop.polling.store(false, Ordering::Release);
-    fence.commit();
-    app.restart();
+    if let Err(error) = installed {
+        // Keep the verified download for retry; never touch meetings or models.
+        return Ok(state.publish(&app, "error", &error));
+    }
+    Ok(state.view())
 }
 
 #[cfg(test)]
@@ -547,11 +556,19 @@ mod tests {
         let core = nero_core::CoreHandle::open(&root).unwrap();
         let meeting = core.create_meeting("보존", "기존 메모").unwrap();
         let processing = crate::processing::Processing::new(root.clone(), root);
-        let fence = IdleFence::prepare(core.clone(), processing.clone()).unwrap();
+        let lifecycle = crate::lifecycle::Lifecycle::default();
+        let lease = lifecycle
+            .begin_exit(crate::lifecycle::ExitKind::Update)
+            .unwrap();
+        let fence = IdleFence::prepare(core.clone(), processing.clone(), lease).unwrap();
         assert!(core.create_folder("설치 중 변경").is_err());
         assert!(processing.recording_start(|| Ok(())).is_err());
+        assert!(lifecycle
+            .begin_exit(crate::lifecycle::ExitKind::Quit)
+            .is_err());
         // A launcher failure/early return drops the same guard used by install.
         drop(fence);
+        assert!(!lifecycle.is_closing());
         core.create_folder("다시 작업").unwrap();
         assert_eq!(core.list_meetings().unwrap()[0].id, meeting.id);
         assert_eq!(core.list_meetings().unwrap()[0].notes, "기존 메모");

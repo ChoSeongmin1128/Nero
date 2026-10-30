@@ -13,6 +13,7 @@ mod downloads;
 mod export;
 mod identity_migration;
 mod job_journal;
+mod lifecycle;
 mod live_asr;
 mod live_speech;
 mod live_speech_worker;
@@ -58,16 +59,17 @@ struct DesktopState {
     quitting: Arc<AtomicBool>,
     polling: Arc<AtomicBool>,
     processing: Arc<Processing>,
+    lifecycle: lifecycle::Lifecycle,
     recorder: Mutex<recorder_policy::RecorderPolicy>,
 }
 
 fn require_main(window: &WebviewWindow) -> Result<(), String> {
     if window
         .app_handle()
-        .try_state::<app_updater::AppUpdates>()
-        .is_some_and(|state| state.installing.load(Ordering::Acquire))
+        .try_state::<DesktopState>()
+        .is_some_and(|state| state.lifecycle.is_closing())
     {
-        return Err("업데이트를 설치하고 있습니다. 잠시 기다려 주세요.".into());
+        return Err("앱을 종료하거나 업데이트하고 있습니다. 잠시 기다려 주세요.".into());
     }
     if window.label() == "main" {
         Ok(())
@@ -1021,50 +1023,42 @@ async fn change_recording(
     action: RecordingAction,
 ) -> Result<Snapshot, String> {
     let state = app.state::<DesktopState>();
-    let snapshot = on_core(state.core.clone(), move |core| match action {
-        RecordingAction::Pause => core.pause(&session_id),
-        RecordingAction::Resume => core.resume(&session_id),
-        RecordingAction::Stop => core.stop(&session_id),
-    })
-    .await?;
-    publish(&app, &snapshot);
-    if !matches!(action, RecordingAction::Stop) {
-        return Ok(snapshot);
-    }
+    let transition = state.lifecycle.begin_transition()?;
     let processing = state.processing.clone();
     let core = state.core.clone();
-    let completed = snapshot.clone();
-    let completed_meeting = completed
-        .session
-        .as_ref()
-        .map(|session| session.meeting_id.clone());
-    tauri::async_runtime::spawn(async move {
-        match tauri::async_runtime::spawn_blocking(move || {
-            processing.transcribe_recording(core, &completed)
-        })
-        .await
-        {
-            Ok(Ok(Some(progress))) => {
-                let _ = app.emit_to("main", "nero://processing", progress);
-            }
-            Ok(Ok(None)) => (),
-            result => {
-                let message = match result {
-                    Ok(Err(error)) => error,
-                    _ => "음성 인식을 시작하지 못했습니다.".into(),
-                };
-                let _ = app.emit_to(
-                    "main",
-                    "nero://processing-error",
-                    ProcessingError {
-                        meeting_id: completed_meeting,
-                        message,
-                    },
-                );
+    // This blocking task owns the whole handoff, even if the IPC future is
+    // dropped. There is no idle gap between capture EOF and job admission.
+    tauri::async_runtime::spawn_blocking(move || {
+        let _transition = transition;
+        let snapshot = match action {
+            RecordingAction::Pause => core.pause(&session_id),
+            RecordingAction::Resume => core.resume(&session_id),
+            RecordingAction::Stop => core.stop(&session_id),
+        }
+        .map_err(|error| error.to_string())?;
+        publish(&app, &snapshot);
+        if matches!(action, RecordingAction::Stop) {
+            match processing.transcribe_recording(core, &snapshot) {
+                Ok(Some(progress)) => {
+                    let _ = app.emit_to("main", "nero://processing", progress);
+                }
+                Ok(None) => (),
+                Err(message) => {
+                    let _ = app.emit_to(
+                        "main",
+                        "nero://processing-error",
+                        ProcessingError {
+                            meeting_id: snapshot.session.as_ref().map(|session| session.meeting_id.clone()),
+                            message,
+                        },
+                    );
+                }
             }
         }
-    });
-    Ok(snapshot)
+        Ok(snapshot)
+    })
+    .await
+    .map_err(|_| "녹음 상태와 후속 작업을 확인하지 못했습니다.".to_string())?
 }
 
 #[derive(Clone, Serialize)]
@@ -1245,31 +1239,34 @@ async fn request_quit(
     session_id: Option<String>,
 ) -> Result<(), String> {
     require_main(&window)?;
+    let exit_lease = state.lifecycle.begin_exit(lifecycle::ExitKind::Quit)?;
     let processing = state.processing.clone();
-    let stopped = tauri::async_runtime::spawn_blocking(move || processing.shutdown())
-        .await
-        .map_err(|_| "음성 처리를 종료하지 못했습니다.".to_string())
-        .and_then(|result| result);
-    if let Err(error) = stopped {
-        state.processing.resume();
-        return Err(error);
-    }
-    let result = on_core(state.core.clone(), move |core| {
-        core.prepare_shutdown(session_id.as_deref())
-    })
-    .await;
-    let snapshot = match result {
-        Ok(snapshot) => snapshot,
-        Err(error) => {
-            state.processing.resume();
+    let core = state.core.clone();
+    let quitting = state.quitting.clone();
+    let polling = state.polling.clone();
+    // Own the lease inside the side-effecting task, so dropping the IPC future
+    // cannot release it while shutdown is still running in the background.
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Err(error) = processing.shutdown() {
+            processing.resume();
             return Err(error);
         }
-    };
-    publish(&app, &snapshot);
-    state.quitting.store(true, Ordering::Release);
-    state.polling.store(false, Ordering::Release);
-    app.exit(0);
-    Ok(())
+        let snapshot = match core.prepare_shutdown(session_id.as_deref()) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                processing.resume();
+                return Err(error.to_string());
+            }
+        };
+        publish(&app, &snapshot);
+        quitting.store(true, Ordering::Release);
+        polling.store(false, Ordering::Release);
+        exit_lease.commit();
+        app.exit(0);
+        Ok(())
+    })
+    .await
+    .map_err(|_| "음성 처리를 종료하지 못했습니다.".to_string())?
 }
 
 #[tauri::command]
@@ -1774,6 +1771,7 @@ fn main() {
                 polling: polling.clone(),
                 recorder: Mutex::new(recorder_policy::RecorderPolicy::default()),
                 processing: processing.clone(),
+                lifecycle: lifecycle::Lifecycle::default(),
             });
             calendar_desktop::install(app.handle(), root.clone());
             let menu = tauri::menu::Menu::with_items(
