@@ -232,6 +232,8 @@ pub(crate) struct StoredMeeting {
     pub schema_version: u32,
     pub meeting: Meeting,
     pub capture_id: Option<String>,
+    #[serde(default)]
+    pub generated_title: bool,
 }
 
 pub(crate) fn hydrate_capture_metadata(meeting: &mut Meeting, manifest: &Manifest) {
@@ -343,7 +345,7 @@ impl Store {
     }
 
     pub fn create(&self, title: String, notes: String) -> Result<StoredMeeting> {
-        self.create_with_calendar(title, notes, None)
+        self.create_with_calendar(title, notes, None, false)
     }
 
     pub fn create_with_calendar(
@@ -351,9 +353,16 @@ impl Store {
         title: String,
         notes: String,
         calendar_reference: Option<crate::CalendarReference>,
+        generated_title: bool,
     ) -> Result<StoredMeeting> {
         validate_text(&title, &notes)?;
         let timestamp = now();
+        let meeting_date = calendar_reference
+            .as_ref()
+            .and_then(|event| event.start_date.clone());
+        if let Some(date) = &meeting_date {
+            validate_meeting_date(date)?;
+        }
         let meeting = Meeting {
             id: Uuid::new_v4().to_string(),
             title,
@@ -361,7 +370,7 @@ impl Store {
             calendar_reference,
             created_at: timestamp,
             updated_at: timestamp,
-            meeting_date: None,
+            meeting_date,
             recorded_at: None,
             status: MeetingStatus::Draft,
             audio: None,
@@ -379,6 +388,7 @@ impl Store {
             schema_version: SCHEMA_VERSION,
             meeting,
             capture_id: None,
+            generated_title,
         };
         self.save(&stored)?;
         Ok(stored)

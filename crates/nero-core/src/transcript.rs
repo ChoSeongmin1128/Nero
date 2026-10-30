@@ -1762,6 +1762,7 @@ pub(crate) mod tests {
             start_at: 1,
             end_at: 2,
             calendar_name: "Calendar".into(),
+            start_date: Some("2026-10-30".into()),
             join_urls: vec![],
         };
         let target = engine.draft_attachment_target(&draft.id).unwrap();

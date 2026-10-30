@@ -43,7 +43,13 @@ requested IANA time zone, including daylight-saving transitions. Queries are bou
 fully paged. They do not replace the separate reminder cache or change its horizon.
 Preparation refetches the selected occurrence and validates account/calendar generation
 before the core creates or reuses its meeting. Existing recordings and manual fields are
-not replaced, and trashed meetings are not silently restored. A stale API authentication
+not replaced, and trashed meetings are not silently restored. An untouched generated
+meeting title adopts the selected event title. Its start date in the picker's time zone
+fills an unset meeting date, including events that span midnight; reminder recording uses
+the system time zone. Creation/recording timestamps remain separate. Title origin is
+persisted on new drafts, cleared by title edits and not guessed for older drafts.
+Reference and defaults are committed together. Reopening an already linked occurrence
+never reapplies provider defaults. A stale API authentication
 response cannot invalidate a refreshed access token.
 
 ## Cancelled processing

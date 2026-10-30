@@ -62,7 +62,8 @@ impl Engine {
         if self.quitting {
             return Err(CoreError::Unavailable);
         }
-        let title = if title == "새 회의" {
+        let generated_title = title == "새 회의";
+        let title = if generated_title {
             let titles: std::collections::BTreeSet<_> = self
                 .meetings
                 .values()
@@ -75,7 +76,9 @@ impl Engine {
         } else {
             title
         };
-        let stored = self.store.create(title, notes)?;
+        let stored = self
+            .store
+            .create_with_calendar(title, notes, None, generated_title)?;
         let meeting = stored.meeting.clone();
         self.meetings.insert(meeting.id.clone(), stored);
         Ok(meeting)
@@ -152,6 +155,13 @@ impl Engine {
                 "이미 다른 회의에 연결된 일정입니다. 연결된 회의를 열어 주세요.".into(),
             ));
         }
+        if stored.generated_title {
+            stored.meeting.title = reference.title.clone();
+            stored.generated_title = false;
+        }
+        if stored.meeting.meeting_date.is_none() {
+            stored.meeting.meeting_date = reference.start_date.clone();
+        }
         stored.meeting.calendar_reference = Some(reference);
         stored.meeting.updated_at = store::now();
         self.commit_meeting(stored)
@@ -166,6 +176,9 @@ impl Engine {
             return Err(CoreError::InvalidInput(
                 "일정 정보를 확인하지 못했습니다.".into(),
             ));
+        }
+        if let Some(date) = &reference.start_date {
+            store::validate_meeting_date(date)?;
         }
         store::validate_text(&reference.title, "")
     }
@@ -191,6 +204,7 @@ impl Engine {
             reference.title.clone(),
             String::new(),
             Some(reference),
+            false,
         )?;
         let meeting = stored.meeting.clone();
         self.meetings.insert(meeting.id.clone(), stored);
@@ -399,6 +413,9 @@ impl Engine {
             .get(id)
             .ok_or(CoreError::MeetingNotFound)?
             .clone();
+        if stored.meeting.title != title {
+            stored.generated_title = false;
+        }
         stored.meeting.title = title;
         stored.meeting.notes = notes;
         stored.meeting.updated_at = store::now();
@@ -778,6 +795,7 @@ mod tests {
             start_at: 1_000_000,
             end_at: 2_000_000,
             calendar_name: "Synthetic calendar".into(),
+            start_date: Some("2026-10-30".into()),
             join_urls: vec!["https://example.test/meeting".into()],
         }
     }
@@ -812,6 +830,115 @@ mod tests {
         drop(engine);
         let reopened = Engine::open(root).unwrap();
         assert_eq!(reopened.meetings[&draft.id].meeting, attached);
+    }
+
+    #[test]
+    fn calendar_defaults_replace_generated_titles_after_reopen_without_replacing_notes() {
+        let (_temporary, mut engine) = engine();
+        engine.create_meeting("새 회의".into(), "".into()).unwrap();
+        let draft = engine
+            .create_meeting("새 회의".into(), "Notes".into())
+            .unwrap();
+        assert_eq!(draft.title, "새 회의 (1)");
+        engine
+            .update_meeting(&draft.id, draft.title.clone(), "Edited notes".into())
+            .unwrap();
+        let root = engine.store.root.clone();
+        drop(engine);
+        let mut engine = Engine::open(root).unwrap();
+        let target = engine.draft_attachment_target(&draft.id).unwrap();
+        let reference = calendar_reference("a");
+        let attached = engine
+            .attach_calendar_to_draft(target, reference.clone())
+            .unwrap();
+        assert_eq!(attached.title, reference.title);
+        assert_eq!(attached.meeting_date, reference.start_date);
+        assert_eq!(attached.notes, "Edited notes");
+        assert_eq!(attached.created_at, draft.created_at);
+        assert_eq!(attached.recorded_at, None);
+        assert_eq!(attached.id, draft.id);
+        assert!(!engine.meetings[&draft.id].generated_title);
+        let root = engine.store.root.clone();
+        drop(engine);
+        assert_eq!(
+            Engine::open(root).unwrap().meetings[&draft.id].meeting,
+            attached
+        );
+    }
+
+    #[test]
+    fn calendar_defaults_preserve_explicit_title_and_date_even_when_title_matches_default() {
+        let (_temporary, mut engine) = engine();
+        let draft = engine
+            .create_meeting("새 회의".into(), "Notes".into())
+            .unwrap();
+        engine
+            .update_meeting(&draft.id, "Custom".into(), "Notes".into())
+            .unwrap();
+        engine
+            .update_meeting(&draft.id, "새 회의".into(), "Notes".into())
+            .unwrap();
+        engine
+            .set_meeting_date(&draft.id, Some("2027-01-03".into()))
+            .unwrap();
+        let target = engine.draft_attachment_target(&draft.id).unwrap();
+        let attached = engine
+            .attach_calendar_to_draft(target, calendar_reference("a"))
+            .unwrap();
+        assert_eq!(attached.title, "새 회의");
+        assert_eq!(attached.meeting_date.as_deref(), Some("2027-01-03"));
+    }
+
+    #[test]
+    fn calendar_defaults_do_not_guess_title_origin_for_older_meetings() {
+        let (_temporary, mut engine) = engine();
+        let draft = engine
+            .create_meeting("새 회의".into(), "Notes".into())
+            .unwrap();
+        let path = engine
+            .store
+            .root
+            .join("meetings")
+            .join(&draft.id)
+            .join("meeting.json");
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        json.as_object_mut().unwrap().remove("generatedTitle");
+        fs::write(&path, serde_json::to_vec(&json).unwrap()).unwrap();
+        let root = engine.store.root.clone();
+        drop(engine);
+        let mut engine = Engine::open(root).unwrap();
+        let target = engine.draft_attachment_target(&draft.id).unwrap();
+        let attached = engine
+            .attach_calendar_to_draft(target, calendar_reference("a"))
+            .unwrap();
+        assert_eq!(attached.title, draft.title);
+        assert_eq!(attached.meeting_date.as_deref(), Some("2026-10-30"));
+    }
+
+    #[test]
+    fn invalid_calendar_defaults_do_not_partially_update_draft_or_create_meeting() {
+        let (_temporary, mut engine) = engine();
+        let draft = engine
+            .create_meeting("새 회의".into(), "Notes".into())
+            .unwrap();
+        let target = engine.draft_attachment_target(&draft.id).unwrap();
+        let path = engine
+            .store
+            .root
+            .join("meetings")
+            .join(&draft.id)
+            .join("meeting.json");
+        let bytes = fs::read(&path).unwrap();
+        let mut reference = calendar_reference("a");
+        reference.start_date = Some("2026-02-30".into());
+        assert!(engine
+            .attach_calendar_to_draft(target, reference.clone())
+            .is_err());
+        assert!(engine.create_meeting_from_calendar(reference).is_err());
+        assert_eq!(engine.meetings.len(), 1);
+        assert_eq!(engine.meetings[&draft.id].meeting, draft);
+        assert_eq!(fs::read(path).unwrap(), bytes);
     }
 
     #[test]
@@ -911,6 +1038,8 @@ mod tests {
             .unwrap();
         assert_eq!(meeting.status, MeetingStatus::Draft);
         assert_eq!(meeting.title, reference.title);
+        assert_eq!(meeting.meeting_date, reference.start_date);
+        assert_eq!(meeting.recorded_at, None);
         assert_eq!(meeting.notes, "");
         assert_eq!(meeting.calendar_reference, Some(reference.clone()));
         assert!(engine.capture.is_none());
