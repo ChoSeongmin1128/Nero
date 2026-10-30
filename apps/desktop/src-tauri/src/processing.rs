@@ -593,8 +593,11 @@ impl Processing {
         } else {
             None
         };
-        let input = serde_json::json!({"audio":meeting.audio,"transcript":transcript,"summary":summary,
+        let mut input = serde_json::json!({"audio":meeting.audio,"transcript":transcript,"summary":summary,
             "notes": if kind == "summary" { Some(&meeting.notes) } else { None }});
+        if kind == "summary" {
+            input["attendees"] = serde_json::json!(meeting.attendees);
+        }
         Ok(format!(
             "{:x}",
             Sha256::digest(serde_json::to_vec(&input).map_err(message)?)
@@ -2653,6 +2656,47 @@ mod tests {
         let root = temporary.path().canonicalize().unwrap();
         let process = Processing::new(root.clone(), root.clone());
         (temporary, process)
+    }
+
+    #[test]
+    fn summary_fingerprint_tracks_roster_without_changing_speech_job_identity() {
+        let (_temporary, process) = setup();
+        let core = CoreHandle::open(&process.root).unwrap();
+        let meeting = core
+            .create_meeting("Synthetic meeting", "Original notes")
+            .unwrap();
+        let kinds = ["summary", "transcribe", "diarize"];
+        let before =
+            kinds.map(|kind| Processing::source_fingerprint(&core, &meeting.id, kind).unwrap());
+        let attendee = nero_core::MeetingAttendee {
+            id: uuid::Uuid::new_v4().to_string(),
+            person_id: None,
+            name: Some("Meeting reference".into()),
+        };
+        core.replace_meeting_attendees(
+            &meeting.id,
+            &nero_core::agent_control::meeting_edit_version(&meeting).unwrap(),
+            vec![attendee],
+        )
+        .unwrap();
+        let after =
+            kinds.map(|kind| Processing::source_fingerprint(&core, &meeting.id, kind).unwrap());
+        assert_ne!(before[0], after[0]);
+        assert_eq!(before[1..], after[1..]);
+        let catalog = core.people_catalog().unwrap();
+        core.replace_people_catalog(
+            &catalog.edit_version,
+            vec![nero_core::Person {
+                id: uuid::Uuid::new_v4().to_string(),
+                name: "Catalog reference".into(),
+            }],
+            Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            after[0],
+            Processing::source_fingerprint(&core, &meeting.id, "summary").unwrap()
+        );
     }
 
     fn raw_transcript(text: &str) -> Vec<u8> {
