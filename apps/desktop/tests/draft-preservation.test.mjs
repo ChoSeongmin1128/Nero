@@ -1677,3 +1677,41 @@ test('audio picker cancellation stays in the same saved draft and uses an explic
   assert.equal(page.app.state.selectedId, id);
   assert.equal(JSON.stringify(page.app.state.snapshot.meetings), before);
 });
+
+test('a committed attendee change stays stale when the post-write summary read fails', async () => {
+  const page = await openApp(transcriptDocument());
+  const document = { id: 'summary', text: '기존 요약', attendeesSha256: 'a'.repeat(64), sourceVersion: structuredClone(page.app.state.transcriptDraft.doc.version) };
+  page.app.state.summary = { document, stale: false };
+  page.app.state.summaryLoaded = true;
+  const snapshot = structuredClone(page.app.state.snapshot);
+  snapshot.revision += 1;
+  snapshot.meetings[0].attendees = [{ id: 'attendee', name: '변경된 이름' }];
+  page.bridge.agentWriteReady = async () => { page.app.acceptSnapshot(snapshot); };
+  page.bridge.readSnapshot = async () => structuredClone(snapshot);
+  page.bridge.readSummary = async () => { throw Error('요약 조회 실패'); };
+  await page.app.onAgentWriteRequest({ requestId: '11111111-1111-4111-8111-111111111111' });
+  assert.equal(page.app.state.summaryLoadError, true);
+  assert.equal(page.app.state.summary.stale, true);
+  assert.equal(page.app.state.summary.document.id, 'summary');
+});
+
+test('a summary read for an earlier attendee snapshot cannot replace the current stale view', async () => {
+  const page = await openApp(transcriptDocument());
+  const document = { id: 'summary', text: '기존 요약', attendeesSha256: 'a'.repeat(64), sourceVersion: structuredClone(page.app.state.transcriptDraft.doc.version) };
+  page.app.state.summary = { document, stale: false };
+  page.app.state.summaryLoaded = true;
+  const earlier = deferred(), latest = deferred();
+  let reads = 0;
+  page.bridge.readSummary = () => ++reads === 1 ? earlier.promise : latest.promise;
+  const reading = page.app.loadSummary('a');
+  const snapshot = structuredClone(page.app.state.snapshot);
+  snapshot.revision += 1;
+  snapshot.meetings[0].attendees = [{ id: 'attendee', name: '변경된 이름' }];
+  page.app.acceptSnapshot(snapshot);
+  earlier.resolve({ document: { ...document, text: '이전 조회 응답' }, stale: false });
+  await reading;
+  assert.equal(page.app.state.summary.stale, true);
+  assert.equal(page.app.state.summary.document.text, '기존 요약');
+  latest.resolve({ document, stale: true });
+  await tick();
+});

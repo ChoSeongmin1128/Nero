@@ -66,7 +66,7 @@ export function createAttendeeFlow({ bridge, onChanged = () => {}, uuid = () => 
 
 export function createPeopleCatalogFlow({ bridge, uuid = () => crypto.randomUUID() }) {
   let state = { catalog: null, busy: false, draft: null, error: '' }, active = false, epoch = 0;
-  let originalDraft = null;
+  let originalDraft = null, refreshAfterBusy = false;
   const listeners = new Set();
   const publish = changes => { state = { ...state, ...changes }; listeners.forEach(listener => listener()); };
   const run = async (task, apply) => {
@@ -77,16 +77,19 @@ export function createPeopleCatalogFlow({ bridge, uuid = () => crypto.randomUUID
       if (generation !== epoch || !active) return false;
       publish(apply(result)); return true;
     } catch (error) { if (generation === epoch) publish({ error: error?.message || '인원 목록을 저장하지 못했습니다.' }); return false; }
-    finally { if (generation === epoch) publish({ busy: false }); }
+    finally { if (generation === epoch) {
+      publish({ busy: false });
+      if (refreshAfterBusy) { refreshAfterBusy = false; if (active && !state.draft) void flow.reload(); }
+    } }
   };
   const commit = (people, groups) => run(() => bridge.replacePeopleCatalog(state.catalog.editVersion, people, groups), catalog => ({ catalog, draft: null }));
   const flow = {
     getSnapshot: () => state,
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     isDirty: () => Boolean(state.draft) && JSON.stringify(state.draft) !== originalDraft,
-    setActive(value) { if (active === value) return; epoch += 1; active = value; publish({ busy: false }); if (value && !state.draft) void flow.reload(); },
+    setActive(value) { if (active === value) return; epoch += 1; active = value; refreshAfterBusy = false; publish({ busy: false }); if (value && !state.draft) void flow.reload(); },
     reload() { return run(() => bridge.readPeopleCatalog(), catalog => ({ catalog, draft: null })); },
-    refreshIfClean() { if (active && !state.busy && !state.draft) return flow.reload(); },
+    refreshIfClean() { if (!active) return; if (state.busy) { refreshAfterBusy = true; return; } if (!state.draft) return flow.reload(); },
     edit(kind, item = { id: uuid(), name: '', personIds: [] }) { if (state.catalog && !state.busy) { const draft = { kind, ...clone(item) }; originalDraft = JSON.stringify(draft); publish({ draft, error: '' }); } },
     change(changes) { if (state.draft && !state.busy) publish({ draft: { ...state.draft, ...changes } }); },
     discard() { publish({ draft: null }); },
