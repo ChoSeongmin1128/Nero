@@ -1,12 +1,16 @@
 # Nero 릴리스 이력
 
-## 미배포: Windows 설치 보호와 연동 경로
+## 0.0.1 / build 37 (개인 설치 및 연동 업데이트 확인 완료)
 
-- build37/연동27의 소스를 통합했다. 설치된 Mac build36을 교체한 기록이 아니다. Windows 경로의 구분자를 native Path로 비교해 기존 연결 테스트11실패를 해결한 변경이며, portable 패키지 경로와 토큰/세대/다른 실행 대상 거절은 유지한다.
+- clean source `f9b7835ce4bcf208e7c6bc469ead46645f2d7ee3`, 제품0.0.1/build37, 연동0.0.1-nero.27을 공증하고 개인 Mac 설치 앱을 교체했다. 실제 사용자 공유 전 버전이다. Windows 경로의 구분자를 native Path로 비교해 기존 연결 테스트11실패를 해결한 변경이며, portable 패키지 경로와 토큰/세대/다른 실행 대상 거절은 유지한다.
 - Windows standalone CLI의 CRT 정적 연결, NSIS의 실행 중 앱 강제종료 거부, current-user 설치 및 제품버전 downgrade 방지를 추가했다. 같은0.0.1 build 순서 방지나 자동 업데이트를 제공하는 것은 아니다.
 - 요약 실행기 준비 시 검증 기준 미만 Windows CRT를 거부하고 stage의 pin/파일/링크를 검사한다. Windows CI의 speech 준비와 요약 startup 검사를 추가했으며 원격 CI는 실행하지 않았다.
 - Windows 작성자 검증:desktop279통과/5제외,Core218/CLI38/frontend426,summary6/NSIS4 통과. Mac 통합 검증:desktop320통과/5제외,frontend426,추가 링크 회귀 포함summary7,NSIS구성1통과/Windows실행3제외. 고정 archive에서 Mac 준비 정보를 갱신했으며 실행기 payload SHA는 유지됐다.
-- 개발용 unsigned Windows NSIS를 빌드한 결과와 실제 설치/업데이트/제거/마이크/8GB 기기 수락은 구분한다. 기존 설치 앱과 회의/모델/host 설정은 변경하지 않았다.
+- Mac 최종 검증: Core227, CLI39, desktop320(실기5제외), frontend426, speech packaging17, summary packaging7 통과. 네이티브 패키지 검사와 clean release 빌드를 통과했다. Windows 구성1통과/실행3제외는 Mac에서 수행한 검사이며 실제 Windows 설치/업데이트/제거/마이크/8GB 기기 수락을 뜻하지 않는다.
+- 앱 공증 `2fc94620-1ded-43c7-a12e-1c4a23deeed6`, DMG 공증 `858862ba-ce57-4c11-82e2-14f0fa9219ef` Accepted. ZIP SHA256 `6a93047c32ed474240530d6901d113d2751457e16c3b4ce155a2fdc427847ce1`, DMG SHA256 `690cfc1a7402998466b0f12fa3661a5e33ca0abb29ad4506ce537dc38772aae1`. 서명/티켓/Gatekeeper/DMG 포함 앱 일치 확인. 업로드 ZIP은 임시 폴더에서 정리했다.
+- 유휴3회/쓰기잠금/정상종료 뒤 정본 installer로 앱만 rename 교체했다. 교체 직전562파일과 모델 메타데이터, 연결 등록을 보존했다. 시작 후 캘린더 갱신과 앱 제어 정보 외 회의/원음/음성 기록/요약 변경은 없다. 전체 library snapshot/모델 복제/기존 회의 자동 재처리는 없다.
+- 실제 설치 앱의 일반/녹음/연동/요약 템플릿 화면을 확인했다. Claude와 ChatGPT 모두 연동27 설치/활성화 및 연결됨을 확인했으며 각 CLI의 서명과 앱 포함 CLI와의 바이트 일치를 검증했다. 사용자가 연동 동작 시험과 업데이트 확인을 완료했다. 에이전트가 새 AI 대화나 테스트 회의를 만들지는 않았다.
+- 이전 대화에 남은 구세대 연결은 새 대화 사용 안내로 구분한다. 사이드바 기본 항목의 선택 배경과 클릭/초점 경계 불일치는 추가 UI 수정 대상으로 남아 있다. build37에서 수정 완료한 것으로 취급하지 않는다.
 
 ## 0.0.1 / build 36 (개인 설치, 화면 검증 대기)
 
