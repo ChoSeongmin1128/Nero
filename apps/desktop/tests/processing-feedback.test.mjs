@@ -55,7 +55,7 @@ test('recognition and summary stay visibly active without inventing an inference
   const recognition = processingFeedback(running('transcribe', { message: '텍스트로 변환 중' }));
   assert.equal(recognition.visible, true);
   assert.equal(recognition.active, true);
-  assert.equal(recognition.title, '음성 기록 변환 중');
+  assert.equal(recognition.title, '음성 기록 처리 중');
   assert.equal(recognition.detail, '');
   assert.equal(recognition.progress, null);
   assert.equal(recognition.cancelVisible, true);
@@ -203,7 +203,7 @@ test('terminology classification stays cancellable until the final transcript co
   assert.equal(saving.active, true);
   assert.equal(saving.cancelVisible, false);
   assert.equal(saving.cancelDisabled, true);
-  assert.equal(saving.detail, '음성 기록 저장 중');
+  assert.equal(saving.detail, '');
   assert.equal(saving.progress, null);
 });
 
@@ -259,7 +259,7 @@ test('speaker analysis uses real phases and model bytes without exposing chunk l
   const saving = processingFeedback(running('diarize', { phase: 'saving', committing: true }));
   assert.equal(saving.title, '저장 중');
   assert.equal(saving.cancelVisible, false);
-  assert.equal(processingFeedback(running('transcribe', { phase: 'diarizing' })).title, '화자 구분 중');
+  assert.equal(processingFeedback(running('transcribe', { phase: 'diarizing' })).title, '음성 기록 처리 중');
   assert.equal(processingFeedback(running('speaker-model', { bytes: 50, totalBytes: 100 })).progress.percent, 50);
 });
 

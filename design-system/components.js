@@ -47,6 +47,9 @@
       : `<p class="transcript-text">${highlightText(text, searchQuery)}</p>${original}`;
     return `<article${attributes({ class: "transcript-row" + (editing ? " is-editing" : "") + (speakerVisible ? " has-speaker" : ""), "data-transcript-row": index, tabindex: -1 })}>${button({ text: time, className: "transcript-time quiet small", attrs: { "data-seek": start, "aria-label": time + " 발언 재생" } })}${speakerVisible ? button({ html: highlightText(speaker || "화자 미지정", searchQuery), className: "transcript-speaker quiet small", disabled, attrs: { "data-speaker-edit": index, "aria-label": label + " 화자 변경: " + (speaker || "화자 미지정"), title: speaker || "화자 미지정" } }) : ""}<div class="transcript-content">${content}</div>${editing ? "" : `<div class="transcript-row-actions">${button({ text: "수정", className: "quiet small", disabled, attrs: { "data-transcript-edit": index, "aria-label": label + " 수정" } })}</div>`}</article>`;
   }
+  function transcriptPreview(rows) {
+    return `<div class="transcript-preview">${rows.map(({ time, speaker, text }) => `<article class="transcript-preview-row">${time || speaker ? `<div class="transcript-preview-meta">${time ? `<span>${escape(time)}</span>` : ''}${speaker ? `<span>${escape(speaker)}</span>` : ''}</div>` : ''}<p>${escape(text)}</p></article>`).join('')}</div>`;
+  }
   function minutes(sections) {
     return `<article class="minutes-document">${sections.map(({ title, text, emptyText = "작성된 내용이 없습니다." }) => `<section><h3>${escape(title)}</h3><div class="minutes-text">${String(text || "").trim() ? escape(text) : `<span class="muted">${escape(emptyText)}</span>`}</div></section>`).join("")}</article>`;
   }
@@ -166,7 +169,7 @@
   function dialogContent({ title, titleId = "modal-title", bodyHTML = "", actionsHTML = "" }) {
     return `<h2${attributes({ id: titleId })}>${escape(title)}</h2>${bodyHTML}${actionsHTML ? `<div class="modal-footer"><span></span><div class="row">${actionsHTML}</div></div>` : ""}`;
   }
-  const api = { escape, highlightText, button, badge, status, meetingRow, personRow, personOption, utterance, transcriptRow, minutes, summaryDocument, dialogContent };
+  const api = { escape, highlightText, button, badge, status, meetingRow, personRow, personOption, utterance, transcriptRow, transcriptPreview, minutes, summaryDocument, dialogContent };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.NeroUI = api;
 })(typeof globalThis === "object" ? globalThis : this);

@@ -93,6 +93,7 @@ export function processingFeedback(job = {}, { cancelling = false } = {}) {
   if (job.status === 'interrupted') message = message || '기존 녹음과 결과는 유지됩니다.';
   if (job.status === 'needsReview') message = '회의를 열어 저장된 결과를 확인해 주세요.';
   if (speakerPhase) message = '';
+  if (active && job.kind === 'transcribe' && !cancelRequested) { heading = '음성 기록 처리 중'; message = ''; }
   if (job.kind === 'diarize' && job.status === 'failed') {
     message = (Object.hasOwn(speakerFailures, job.failureKind) ? speakerFailures[job.failureKind] : '')
       || '화자를 구분하지 못했습니다. 원인을 확인하지 못했습니다. 기존 음성 기록은 유지됩니다.';
