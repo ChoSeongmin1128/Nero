@@ -61,3 +61,20 @@ test('saving a renamed person keeps the editor open on a catalog conflict', asyn
   flow.setActive(true); await wait(() => !flow.getSnapshot().busy); flow.edit('person', { id: 'p', name: '기존' }); flow.change({ name: '수정' });
   assert.equal(await flow.save(), false); assert.equal(flow.getSnapshot().draft.name, '수정'); assert.equal(flow.getSnapshot().catalog.people[0].name, '기존');
 });
+
+test('initial roster read failure can retry the same meeting without closing the dialog', async () => {
+  let fail = true;
+  const reads = [];
+  const flow = createAttendeeFlow({ bridge: {
+    readMeetingAttendees: async id => { reads.push(id); if (fail) throw Error('읽기 실패'); return meeting(id); },
+    readPeopleCatalog: async () => empty(),
+  } });
+  await flow.open('retry-meeting');
+  assert.equal(flow.getSnapshot().meeting, null);
+  assert.equal(flow.getSnapshot().open, true);
+  fail = false;
+  assert.equal(await flow.reload(), true);
+  assert.equal(flow.getSnapshot().meeting.id, 'retry-meeting');
+  assert.equal(flow.getSnapshot().error, '');
+  assert.deepEqual(reads, ['retry-meeting', 'retry-meeting']);
+});

@@ -1,8 +1,10 @@
-.people-dialog { width: min(540px, calc(100vw - 32px)); }
-.people-dialog-body { overflow: auto; max-height: min(60vh, 560px); padding: 20px 24px; }
+.people-dialog { width: min(540px, calc(100vw - 32px)); display: flex; flex-direction: column; overflow: hidden; }
+.people-dialog > .nero-dialog-header, .people-dialog > .nero-dialog-footer { flex: none; }
+.people-dialog-body { min-height: 0; overflow: auto; display: grid; align-content: start; gap: 20px; padding-top: 20px; }
 .people-settings, .people-editor, .people-section { display: grid; gap: 16px; }
 .people-settings { gap: 24px; }
-.people-section + .people-section { margin-top: 20px; }
+.people-section h4, .people-editor > h4 { margin: 0; font-weight: var(--weight-semibold); }
+.people-confirm .people-editor { margin-top: 20px; }
 .people-section > header, .people-row, .people-actions, .people-option { display: flex; align-items: center; gap: 8px; }
 .people-section > header { justify-content: space-between; }
 .people-row { min-height: 44px; padding: 8px 12px; }
@@ -22,4 +24,3 @@
 .people-option > span { min-width: 0; overflow-wrap: anywhere; }
 .people-option:hover:not(:disabled) { background: var(--hover); }
 .people-section input[type="search"] { width: 100%; }
-@media (max-width: 700px) { .people-dialog-body { padding: 16px; } }

@@ -9,7 +9,7 @@ export function addPeople(attendees, people, uuid = () => crypto.randomUUID()) {
 
 export function createAttendeeFlow({ bridge, onChanged = () => {}, uuid = () => crypto.randomUUID() }) {
   let state = { open: false, busy: false, meeting: null, catalog: null, attendees: [], error: '' };
-  let saved = [], expected = '', epoch = 0;
+  let saved = [], expected = '', epoch = 0, meetingId = null;
   const listeners = new Set();
   const publish = changes => { state = { ...state, ...changes }; listeners.forEach(listener => listener()); };
   const dirty = () => JSON.stringify(saved) !== JSON.stringify(state.attendees);
@@ -35,6 +35,7 @@ export function createAttendeeFlow({ bridge, onChanged = () => {}, uuid = () => 
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     isDirty: dirty,
     async open(id) {
+      meetingId = id;
       const generation = ++epoch;
       publish({ open: true, busy: true, meeting: null, catalog: null, attendees: [], error: '' }); saved = [];
       try {
@@ -50,7 +51,7 @@ export function createAttendeeFlow({ bridge, onChanged = () => {}, uuid = () => 
     rename(id, name) { if (!state.busy) publish({ attendees: state.attendees.map(item => item.id === id ? { ...item, name: name || undefined } : item) }); },
     remove(id) { if (!state.busy) publish({ attendees: state.attendees.filter(item => item.id !== id) }); },
     save() { return operate(persist); },
-    reload() { return operate(async () => { const [meeting, catalog] = await Promise.all([bridge.readMeetingAttendees(state.meeting.id), bridge.readPeopleCatalog()]); accept(meeting); publish({ catalog }); }); },
+    reload() { return operate(async () => { const [meeting, catalog] = await Promise.all([bridge.readMeetingAttendees(meetingId), bridge.readPeopleCatalog()]); accept(meeting); publish({ catalog }); }); },
     promote(id, name) {
       return operate(async () => {
         const personName = name.trim();
