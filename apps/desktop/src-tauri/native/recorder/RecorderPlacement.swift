@@ -22,9 +22,13 @@ struct RecorderDisplay: Equatable {
     }
 
     var headerHeight: CGFloat { notch.map { $0.height + 4 } ?? 30 }
-    var compactWidth: CGFloat {
+    var clockWidth: CGFloat {
         let clockWidth = ("99:59:59" as NSString).size(withAttributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: RecorderTokens.caption, weight: .semibold)]).width
-        return notch.map { $0.width + max(72, ceil(clockWidth + 16)) * 2 } ?? 124
+        return ceil(clockWidth)
+    }
+    var compactWidth: CGFloat {
+        let wing = max(clockWidth + 38, 80)
+        return notch.map { $0.width + wing * 2 } ?? clockWidth + 114
     }
     var center: CGFloat { notch?.midX ?? workArea.midX }
 
@@ -46,9 +50,13 @@ struct RecorderDisplay: Equatable {
     }
 
     func timeFrame(in panel: NSRect, floating: Bool) -> NSRect {
-        let x: CGFloat = floating ? 38 : notch.map { $0.maxX - panel.minX + 8 } ?? 32
+        let x: CGFloat = floating ? 38 : 32
         return NSRect(x: x, y: (floating ? 44 : headerHeight) / 2 - 8,
-                      width: floating ? 72 : max(0, panel.width - x - 8), height: 20)
+                      width: floating ? 72 : clockWidth, height: 20)
+    }
+    func primaryControlFrame(index: Int, in panel: NSRect) -> NSRect {
+        let start = notch.map { $0.maxX - panel.minX + 8 } ?? panel.width - 72
+        return NSRect(x: start + CGFloat(index) * 32, y: (headerHeight - 28) / 2, width: 28, height: 28)
     }
 }
 

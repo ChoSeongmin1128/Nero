@@ -183,24 +183,31 @@ struct RecorderUpdate: Decodable {
         if controlsKey != lastControls {
             lastControls = controlsKey
             for button in buttons { button.removeFromSuperview() }; buttons = []
-            if placement.floating || expanded {
-                let actions: [(String, String, String)] = [
-                    ("open", "arrow.up.right.square", "회의 열기"),
-                    ("pause", state?.phase == "paused" ? "play.fill" : "pause", state?.phase == "paused" ? "계속 녹음" : "일시정지"),
-                    ("stop", "stop", "녹음 종료"),
-                ] + (placement.floating ? [("dock", "arrow.up.to.line", "상단에 붙이기")] : []) + [("hide", "xmark", "녹음 표시 숨기기")]
-                let y: CGFloat = placement.floating ? 8 : display.headerHeight + 6
-                let start: CGFloat = placement.floating ? 112 : target.width - CGFloat(actions.count) * 34 - 10
-                for (index, action) in actions.enumerated() {
-                    let button = NSButton(image: NSImage(systemSymbolName: action.1, accessibilityDescription: action.2)!, target: self, action: #selector(pressed(_:)))
-                    button.identifier = NSUserInterfaceItemIdentifier(action.0)
-                    button.image = button.image?.withSymbolConfiguration(.init(pointSize: RecorderTokens.caption, weight: .medium))
-                    button.isBordered = false; button.contentTintColor = action.0 == "stop" ? RecorderTokens.recording : RecorderTokens.text
-                    button.setAccessibilityLabel(action.2); button.toolTip = action.2
-                    button.isEnabled = action.0 == "hide" || action.0 == "dock" || (pendingSession == nil && (action.0 == "open" || state?.phase != "finalizing"))
-                    button.frame = NSRect(x: start + CGFloat(index) * 32, y: y, width: 28, height: 28)
-                    surface.addSubview(button); buttons.append(button)
+            let primary: [(String, String, String)] = [
+                ("pause", state?.phase == "paused" ? "play.fill" : "pause", state?.phase == "paused" ? "계속 녹음" : "일시정지"),
+                ("stop", "stop", "녹음 종료"),
+            ]
+            let auxiliary: [(String, String, String)] = [("open", "arrow.up.right.square", "회의 열기")]
+                + (placement.floating ? [("dock", "arrow.up.to.line", "상단에 붙이기")] : [])
+                + [("hide", "xmark", "녹음 표시 숨기기")]
+            let actions = placement.floating ? [auxiliary[0]] + primary + Array(auxiliary.dropFirst())
+                                             : primary + (expanded ? auxiliary : [])
+            for (index, action) in actions.enumerated() {
+                let button = NSButton(image: NSImage(systemSymbolName: action.1, accessibilityDescription: action.2)!, target: self, action: #selector(pressed(_:)))
+                button.identifier = NSUserInterfaceItemIdentifier(action.0)
+                button.image = button.image?.withSymbolConfiguration(.init(pointSize: RecorderTokens.caption, weight: .medium))
+                button.isBordered = false; button.contentTintColor = action.0 == "stop" ? RecorderTokens.recording : RecorderTokens.text
+                button.setAccessibilityLabel(action.2); button.toolTip = action.2
+                button.isEnabled = action.0 == "hide" || action.0 == "dock" || (pendingSession == nil && (action.0 == "open" || state?.phase != "finalizing"))
+                if placement.floating {
+                    button.frame = NSRect(x: 112 + CGFloat(index) * 32, y: 8, width: 28, height: 28)
+                } else if index < primary.count {
+                    button.frame = display.primaryControlFrame(index: index, in: target)
+                } else {
+                    button.frame = NSRect(x: target.width - CGFloat(auxiliary.count) * 32 - 10 + CGFloat(index - primary.count) * 32,
+                                          y: display.headerHeight + 6, width: 28, height: 28)
                 }
+                surface.addSubview(button); buttons.append(button)
             }
         }
         surface.toolTip = [state?.meetingTitle, actionError ?? state?.error ?? state?.warning].compactMap { $0 }.joined(separator: "\n")

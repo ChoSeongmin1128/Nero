@@ -26,9 +26,14 @@ import AppKit
             let action = String(cString: action), session = String(cString: session)
             MainActor.assumeIsolated { harness?.perform(action, session: session) }
         }, defaults: nil)
+        if ProcessInfo.processInfo.arguments.contains("--notch-display"),
+           let screen = NSScreen.screens.first(where: { RecorderDisplay(screen: $0).notch != nil }) {
+            presenter.placement.displayID = RecorderDisplay(screen: screen).id
+        }
         presenter.panel.title = "Nero 녹음 패널 테스트"
         if ProcessInfo.processInfo.arguments.contains("--self-test") { exerciseOrdering() }
         update()
+        if ProcessInfo.processInfo.arguments.contains("--self-test") { exercisePrimaryControls() }
         events = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]) { [weak self] event in
             MainActor.assumeIsolated { self?.report(["event": "mouse", "type": event.type.rawValue, "window": event.windowNumber, "point": NSStringFromPoint(event.locationInWindow)]) }
             return event
@@ -72,6 +77,28 @@ import AppKit
         assert(!presenter.panel.isVisible)
         revision = 16
         report(["event": "ordering-tests", "passed": true, "cases": ["late update after hide", "explicit reopen", "older snapshot", "capture ends"]])
+    }
+
+    func exercisePrimaryControls() {
+        func button(_ id: String) -> NSButton? {
+            presenter.surface.subviews.compactMap { $0 as? NSButton }.first { $0.identifier?.rawValue == id }
+        }
+        assert(!presenter.expanded)
+        assert(button("pause")?.isEnabled == true && button("stop")?.isEnabled == true)
+        assert(button("open") == nil && button("hide") == nil)
+        button("pause")!.performClick(nil)
+        assert(phase == "paused" && button("pause")?.accessibilityLabel() == "계속 녹음")
+        button("pause")!.performClick(nil)
+        assert(phase == "recording")
+        phase = "finalizing"; revision += 1; update()
+        assert(button("pause")?.isEnabled == false && button("stop")?.isEnabled == false)
+        phase = "recording"; revision += 1; update()
+        presenter.toggleControls()
+        assert(button("open") != nil && button("hide") != nil)
+        presenter.toggleControls()
+        assert(button("open") == nil && button("pause") != nil)
+        report(["event": "primary-control-tests", "passed": true,
+                "cases": ["collapsed controls", "pause", "resume", "finalizing disabled", "auxiliary expansion"]])
     }
 
     func exerciseDrag() {

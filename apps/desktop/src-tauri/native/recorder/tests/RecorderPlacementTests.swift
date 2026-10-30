@@ -14,12 +14,19 @@ import AppKit
         for expanded in [false, true] {
             let panel = laptop.docked(expanded: expanded)
             let time = laptop.timeFrame(in: panel, floating: false)
-            assert(panel.minX + time.minX >= laptop.notch!.maxX + 8)
-            assert(time.maxX <= panel.width - 8)
+            assert(panel.minX + time.maxX <= laptop.notch!.minX - 6)
+            let pause = laptop.primaryControlFrame(index: 0, in: panel)
+            let stop = laptop.primaryControlFrame(index: 1, in: panel)
+            assert(panel.minX + pause.minX >= laptop.notch!.maxX + 8)
+            assert(stop.maxX <= panel.width - 8)
+            assert(!pause.intersects(stop))
             for value in ["01:35", "1:23:45", "3:00:00", "99:59:59"] {
                 assert((value as NSString).size(withAttributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: RecorderTokens.caption, weight: .semibold)]).width <= time.width)
             }
         }
+        let plain = external.docked(expanded: false)
+        assert(external.timeFrame(in: plain, floating: false).maxX + 8 <= external.primaryControlFrame(index: 0, in: plain).minX)
+        assert(external.primaryControlFrame(index: 1, in: plain).maxX <= plain.width - 8)
         assert(external.docked(expanded: false).maxY == external.workArea.maxY)
         assert(external.docked(expanded: true).midX == external.workArea.midX)
         assert(laptop.acceptsDock(at: NSPoint(x: 756, y: 955)))
