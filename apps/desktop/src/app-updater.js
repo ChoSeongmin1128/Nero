@@ -25,22 +25,25 @@ export function createAppUpdater({ invoke, listen, saveEdits, onChange = () => {
       return false;
     } finally { busy = false; }
   };
-  const check = () => run('app_update_check');
   const download = () => run('app_update_download');
+  const check = async () => {
+    const checked = await run('app_update_check');
+    if (checked && snapshot.phase === 'available') return download();
+    return checked;
+  };
   const install = () => {
     if (disposed || busy) return Promise.resolve(false);
     return run('app_update_install', async () => {
       if (typeof saveEdits !== 'function') throw Error('열려 있는 편집 내용을 먼저 저장해 주세요.');
-      // Lock interaction while saves drain; on a refusal/error release it again.
+      const saved = await saveEdits();
+      if (saved === false || disposed) return false;
       setInstalling(true);
-      try { return await saveEdits(); }
-      finally { if (disposed) setInstalling(false); }
+      return true;
     }).finally(() => { if (snapshot.phase !== 'installing') setInstalling(false); });
   };
   const autoCheck = async () => {
     if (disposed) return;
-    const checked = await check();
-    if (checked && snapshot.phase === 'available') await download();
+    await check();
     if (!disposed) timer = schedule(autoCheck, 6 * 60 * 60 * 1000);
   };
   return {

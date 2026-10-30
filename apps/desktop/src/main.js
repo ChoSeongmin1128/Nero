@@ -1,3 +1,5 @@
+import { mountAppUpdateView } from './app-update-view.js';
+import './app-update-view.css';
 import { mountPeopleSettings, mountMeetingAttendees } from './people-ui.jsx';
 import { bindDialogDismiss } from './dialog-dismiss.js';
 import { createIntegrationMonitor } from './integration-notifications.js';
@@ -37,6 +39,7 @@ const templateSettings = mountTemplateSettings({ container: byId('settings-dialo
 const peopleSettings = mountPeopleSettings({ container: byId('settings-dialog'), panel: byId('settings-people-panel'), bridge });
 const meetingAttendees = mountMeetingAttendees({ container: document.body, bridge, onChanged: async () => { acceptSnapshot(await bridge.readSnapshot()); if (state.selectedId) await loadSummary(state.selectedId); } });
 let integrationNotices = [];
+let appUpdateNotices = [];
 const integrationMonitor = createIntegrationMonitor({ bridge, onChange(notices) { integrationNotices = notices; render(); } });
 const calendarSettings = mountCalendarSettings({ panel: byId('calendar-settings'), bridge, onSnapshot: value => integrationMonitor.acceptCalendar(value) });
 const calendarReference = mountCalendarMeetingReference({ container: byId('calendar-meeting-reference') });
@@ -59,6 +62,15 @@ function readMicrophonePreference() {
 }
 const microphonePreference = readMicrophonePreference();
 const state = { snapshot: { meetings: [], folders: [], session: null }, notificationsOpen: false, libraryOpen: false, libraryFilter: 'all', librarySelection: new Set(), libraryBusy: false, librarySearchIds: null, librarySearchHits: [], pendingSearchIntent: null, setupReturnId: null, librarySearchPending: false, librarySearchUnavailable: 0, selectedId: null, devices: [], devicesLoaded: false, deviceId: microphonePreference.id, deviceName: microphonePreference.name, settingsPanel: 'appearance', summaryFeatureError: '', settingsKey: '', settingsError: '', settingsReturnId: 'settings', setupFromSettings: false, autoRecorder: readAutoRecorder(), recorderSettingBusy: false, snapshotKey: '', processingKey: '', processingCancellingId: null, transcriptEditing: null, audioRequest: 0, audioLoading: null, dateSaving: null, dateKey: '', dateError: null, lastError: null, errorIsSave: false, connected: false, busy: false, composing: false, transcriptComposing: false, editLocks: 0, draft: null, saveTimer: null, saveQueue: Promise.resolve(), listKey: '', controlsKey: '', audioKey: '', processing: { status: 'idle', supported: false, modelReady: false }, transcriptDraft: null, transcriptKey: '', transcriptLoadId: 0, transcriptSaveQueue: Promise.resolve(), summary: null, summaryKey: '', summaryLoadId: 0, summaryLoaded: false, transcriptLoaded: false, summaryLoadError: false, transcriptLoadError: false, setupRequested: false };
+const appUpdateView = mountAppUpdateView({ container: byId('app-update'), bridge,
+  saveEdits: () => prepareAppLeave(() => true),
+  onChange(notices) { appUpdateNotices = notices; render(); },
+  onInstalling(locked) {
+    state.editLocks += locked ? 1 : -1;
+    for (const id of ['meeting-title', 'meeting-notes']) byId(id).readOnly = state.editLocks > 0;
+    render();
+  },
+});
 const fullDate = new Intl.DateTimeFormat('ko-KR', { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 const calendarDay = value => { const date = new Date(value); return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`; };
 const meetingDay = meeting => meeting.meetingDate || calendarDay(meeting.recordedAt ?? meeting.createdAt);
@@ -287,7 +299,7 @@ function render() {
   for (const id of ['library-create', 'library-record']) byId(id).disabled = !state.connected || state.busy || state.libraryBusy;
   setHTML('library-record', `${icon(activeSession() ? 'audio-lines' : 'mic')}<span>${activeSession() ? '녹음으로 돌아가기' : '녹음 시작'}</span>`);
   const setupVisible = renderSetup();
-  notificationCenter.update({ processing: state.processing, meetings: state.snapshot.meetings, selectedMeetingId: state.selectedId, connected: state.connected, actions: processingActions, integrations: integrationNotices });
+  notificationCenter.update({ processing: state.processing, meetings: state.snapshot.meetings, selectedMeetingId: state.selectedId, connected: state.connected, actions: processingActions, integrations: integrationNotices, notices: appUpdateNotices });
   const notificationCount = notificationCenter.counts().unread;
   setText('notification-count', notificationCount ? String(notificationCount) : '');
   byId('notification-count').hidden = !notificationCount;
@@ -1500,7 +1512,7 @@ const transcriptActions = mountTranscriptActions({ byId, bridge, finishEditing, 
 });
 const library = mountLibrary({ bridge, getState: () => state, byId, finishEditing, acceptSnapshot, selectMeeting, render, showError, escape, icon, meetingTimestamp, recordingStatus, duration, onViewChanged() { meetingSearch.update(byId('search').value, state.libraryFilter === 'trash'); } });
 const notificationAction = action => async id => { await action(id); const error = processingErrors.get(id); if (error) throw new Error(error); };
-const notificationCenter = mountNotificationCenter({ container: byId('notification-center'), bridge, onOpenMeeting: id => selectMeeting(id), onRetry: notificationAction(retryProcessing), onCancel: notificationAction(cancelProcessing), onAcknowledge: notificationAction(acknowledgeProcessing), showError, icon, onOpenIntegration: async service => {
+const notificationCenter = mountNotificationCenter({ container: byId('notification-center'), bridge, onOpenMeeting: id => selectMeeting(id), onRetry: notificationAction(retryProcessing), onCancel: notificationAction(cancelProcessing), onAcknowledge: notificationAction(acknowledgeProcessing), showError, icon, onNoticeAction: service => service === 'app-update' ? appUpdateView.perform() : undefined, onOpenIntegration: async service => {
   await openSettings('agent', 'notifications-open');
   const target = service === 'google-calendar' ? byId('calendar-settings').querySelector('.calendar-settings-account button:not(:disabled)') : byId(`settings-${service}-connect`);
   target?.scrollIntoView?.({ block: 'nearest' });
@@ -1546,6 +1558,7 @@ try {
   await refreshDevices();
   await integrationMonitor.refresh();
   integrationMonitor.start();
+  await appUpdateView.start();
 } catch (error) {
   if (!state.connected) byId('welcome-message').textContent = '데스크톱 앱에서 열어 주세요.';
   showError(error);

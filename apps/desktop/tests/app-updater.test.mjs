@@ -20,13 +20,14 @@ test('install waits for editor saves and serializes duplicate clicks', async () 
   const calls = [], locks = [];
   const updater = createAppUpdater({ invoke: async command => { calls.push(command); return { phase: 'waiting' }; }, listen: async () => () => {}, saveEdits: () => saved, setInstalling: value => locks.push(value) });
   const installation = updater.install();
-  assert.equal(locks[0], true);
+  assert.equal(locks.length, 0);
   assert.equal(await updater.install(), false);
-  assert.equal(locks.at(-1), true);
+  assert.equal(locks.length, 0);
   assert.deepEqual(calls, []);
   release(true);
   await installation;
   assert.deepEqual(calls, ['app_update_install']);
+  assert.equal(locks.includes(true), true);
   assert.equal(locks.at(-1), false);
 });
 

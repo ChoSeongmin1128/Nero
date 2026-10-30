@@ -1,0 +1,6 @@
+.settings-app-update { margin-top: 24px; }
+.settings-app-update .settings-row { gap: 16px; }
+.settings-app-update .settings-subtitle, .settings-app-update p { margin: 0; }
+.settings-app-update > p { margin-top: 8px; }
+.settings-app-update progress { width: 100%; margin-top: 10px; }
+.settings-app-update button { flex: none; }

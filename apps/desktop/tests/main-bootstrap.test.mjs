@@ -44,6 +44,7 @@ test('recording completion reveals its draft, then saved text, failure recovery 
     audioUrl: () => 'asset://recording.wav',
   };
   window.testBridge = Object.fromEntries(bridgeNames.map(name => [name, async (...args) => {
+    if (name === 'appUpdateStatus') return { phase: 'idle', currentVersion: '0.0.1', currentBuild: '40' };
     if (name.startsWith('subscribe')) { subscriptions[name] = args[0]; return () => {}; }
     assert.ok(Object.hasOwn(stubs, name), `Unexpected native call: ${name}`);
     return stubs[name](...args);
@@ -131,6 +132,7 @@ test('the real application HTML boots and opens all settings tabs without stale 
   };
   window.testBridge = Object.fromEntries(bridgeNames.map(name => [name, async (...args) => {
     calls.push(name);
+    if (name === 'appUpdateStatus') return { phase: 'idle', currentVersion: '0.0.1', currentBuild: '40' };
     if (name.startsWith('subscribe')) { subscriptions[name] = args[0]; return () => {}; }
     assert.ok(Object.hasOwn(stubs, name), `Unexpected native call: ${name}`);
     return stubs[name](...args);
@@ -161,6 +163,11 @@ test('the real application HTML boots and opens all settings tabs without stale 
   assert.deepEqual(errors, []);
   assert.equal(window.document.getElementById('error').hidden, true);
   assert.ok(calls.includes('readSnapshot'));
+  assert.ok(calls.includes('appUpdateStatus'));
+  assert.equal(typeof subscriptions.subscribeAppUpdate, 'function');
+  subscriptions.subscribeAppUpdate({ phase: 'ready', currentVersion: '0.0.1', currentBuild: '40', availableBuild: '41', message: '업데이트 설치 준비 완료', downloadReady: true });
+  await wait(() => window.document.getElementById('app-update-action').textContent === '다시 시작해 업데이트');
+  assert.match(window.document.getElementById('notification-center').textContent, /업데이트 설치 준비 완료/);
   const recording = { revision: 2, folders: [], meetings: [{ id: 'one', title: '회의', createdAt: 1, notes: '', status: 'recording' }], session: { id: 'capture', meetingId: 'one', state: 'paused', elapsedMs: 1000 } };
   subscriptions.subscribeSnapshots(recording);
   await wait(() => window.document.querySelector('[data-action="show-recorder"]'));
@@ -212,6 +219,7 @@ test('startup integration alerts appear without visiting settings and route to t
     connectAgentClient: () => { connects += 1; },
   };
   window.testBridge = Object.fromEntries(bridgeNames.map(name => [name, async (...args) => {
+    if (name === 'appUpdateStatus') return { phase: 'idle', currentVersion: '0.0.1', currentBuild: '40' };
     if (name.startsWith('subscribe')) return () => {};
     assert.ok(Object.hasOwn(stubs, name), `Unexpected native call: ${name}`); return stubs[name](...args);
   }]));
@@ -243,6 +251,7 @@ test('settings dismiss gestures preserve edits, nested controls, composition and
     readCalendarSettings: () => ({ revision: 1, configured: false, connected: false, calendars: [], selectedCalendars: [] }),
   };
   window.testBridge = Object.fromEntries(bridgeNames.map(name => [name, async (...args) => {
+    if (name === 'appUpdateStatus') return { phase: 'idle', currentVersion: '0.0.1', currentBuild: '40' };
     if (name.startsWith('subscribe')) return () => {};
     assert.ok(Object.hasOwn(stubs, name), `Unexpected native call: ${name}`); return stubs[name](...args);
   }]));

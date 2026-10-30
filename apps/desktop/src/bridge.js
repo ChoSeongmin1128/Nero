@@ -119,3 +119,12 @@ export async function subscribeAgentWriteRequest(callback) {
   if (!isTauri()) return () => {};
   return listen('nero://agent-write-requested', event => { void callback(event.payload); });
 }
+
+export const appUpdateStatus = () => call('app_update_status');
+export const checkAppUpdate = () => call('app_update_check');
+export const downloadAppUpdate = () => call('app_update_download');
+export const installAppUpdate = () => call('app_update_install');
+export async function subscribeAppUpdate(callback) {
+  if (!isTauri()) return () => {};
+  return listen('nero://app-update', event => callback(event.payload));
+}
