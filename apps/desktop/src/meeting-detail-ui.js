@@ -7,7 +7,7 @@ export function mountMeetingDetail({ byId, finishEditing, onReveal = () => {}, o
   const inspector = byId('detail-inspector'), close = byId('detail-inspector-close');
   const notesEditor = byId('meeting-notes'), memories = new Map();
   let meetingId = null, request = 0, renderedId = null, renderedView = null;
-  let summaryVisible = true, notesInline = false, requestedInline = false;
+  let summaryVisible = true, notesInline = false, requestedInline = false, transcriptInline = false;
   let ready = {}, pendingRestore = new Set(views);
   const memory = () => memories.get(meetingId);
   function rememberScroll() {
@@ -18,6 +18,15 @@ export function mountMeetingDetail({ byId, finishEditing, onReveal = () => {}, o
   function display({ reveal = false, focus = false } = {}) {
     const view = memory()?.view || 'summary', changed = renderedId !== meetingId || renderedView !== view;
     const inline = Boolean(meetingId && notesInline && view !== 'transcript');
+    const inlineTranscript = Boolean(meetingId && transcriptInline && view !== 'notes');
+    const transcriptHome = byId('result-transcript-home');
+    const transcript = panels.get('transcript');
+    const transcriptDestination = inlineTranscript ? transcriptHome : inspector;
+    transcriptHome.hidden = !inlineTranscript;
+    if (transcript.parentNode !== transcriptDestination) transcriptDestination.append(transcript);
+    transcript.querySelector('h2')?.classList.toggle('sr-only', !inlineTranscript);
+    byId('meeting-detail').dataset.inlineTranscript = String(inlineTranscript);
+    controls.get('transcript').hidden = inlineTranscript;
     const home = byId('draft-notes-home');
     home.hidden = !inline;
     const notes = panels.get('notes'), notesDestination = inline ? home : inspector;
@@ -26,10 +35,10 @@ export function mountMeetingDetail({ byId, finishEditing, onReveal = () => {}, o
     byId('meeting-detail').dataset.inlineNotes = String(inline);
     controls.get('notes').hidden = notesInline;
     panels.get('summary').hidden = !meetingId || !summaryVisible;
-    inspector.hidden = !meetingId || inline || view === 'summary';
+    inspector.hidden = !meetingId || inline || inlineTranscript || view === 'summary';
     byId('meeting-detail').dataset.inspector = inspector.hidden ? '' : view;
     for (const name of ['transcript', 'notes']) {
-      panels.get(name).hidden = !meetingId || (name === 'notes' && inline ? false : name !== view);
+      panels.get(name).hidden = !meetingId || (name === 'transcript' && inlineTranscript || name === 'notes' && inline ? false : name !== view);
       controls.get(name).setAttribute('aria-expanded', String(!inspector.hidden && name === view));
     }
     const search = byId('document-search'), destination = inspector.hidden ? byId('detail-search-home') : inspector;
@@ -48,9 +57,9 @@ export function mountMeetingDetail({ byId, finishEditing, onReveal = () => {}, o
       if (name === 'notes') notesEditor.scrollTop = memory().scroll.notesEditor;
       pendingRestore.delete(name);
     }
-    if (focus) (view === 'summary' ? controls.get(memory().lastPanel || 'transcript') : close).focus({ preventScroll: true });
+    if (focus) (inlineTranscript ? transcript : view === 'summary' ? controls.get(memory().lastPanel || 'transcript') : close).focus({ preventScroll: true });
   }
-  function update({ id, recording = false, summaryLoaded = false, transcriptLoaded = false, hasSummary = false, hasTranscript = false, showSummary = true, inlineNotes = false }) {
+  function update({ id, recording = false, summaryLoaded = false, transcriptLoaded = false, hasSummary = false, hasTranscript = false, hasPreview = false, showSummary = true, inlineNotes = false }) {
     close.setAttribute('aria-label', hasSummary ? '요약으로 돌아가기' : '본문으로 돌아가기');
     const back = close.querySelector('.inspector-back');
     if (back) back.textContent = hasSummary ? '요약으로' : '본문으로';
@@ -59,6 +68,7 @@ export function mountMeetingDetail({ byId, finishEditing, onReveal = () => {}, o
     if (!sameMeeting) { meetingId = id; request++; pendingRestore = new Set(views); }
     requestedInline = inlineNotes;
     summaryVisible = showSummary; notesInline = inlineNotes || editingInline;
+    transcriptInline = !recording && !hasSummary && (hasTranscript || hasPreview);
     ready = { summary: summaryLoaded, transcript: transcriptLoaded, notes: true };
     for (const view of views) if (!ready[view]) pendingRestore.add(view);
     if (id && !memories.has(id)) memories.set(id, { view: recording && !hasSummary && !hasTranscript ? 'notes' : 'summary', explicit: false, recordingConsidered: false, lastPanel: 'transcript', scroll: { summary: 0, transcript: 0, notes: 0, notesEditor: 0 } });

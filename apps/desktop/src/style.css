@@ -458,3 +458,11 @@ html.recorder-document { background: transparent; }
 .draft-notes-home .section-heading { margin-bottom: 12px; }
 .meeting-detail[data-inline-notes="true"] .detail-panels { display: none; }
 .meeting-detail[data-inline-notes="true"] .recording-section { border-inline: 0; border-radius: 0; padding: 18px 0; }
+
+/* Until a summary exists, reuse the transcript panel as the primary result. */
+.result-transcript-home { display: flex; flex: 1; min-height: 0; flex-direction: column; }
+.result-transcript-home .transcript-section { display: flex; flex: 1; min-height: 0; flex-direction: column; padding: 0; overflow: hidden; }
+.result-transcript-home .transcript-heading { flex: none; padding-block: 12px; }
+.result-transcript-home .transcript-heading > h2 { margin-right: auto; }
+.result-transcript-home .transcript-scroll { padding-inline: 0; }
+.meeting-detail[data-inline-transcript="true"] .summary-section { flex: none; overflow: visible; padding-bottom: 0; }

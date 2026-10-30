@@ -1,3 +1,4 @@
+import { requestAudioPlayback } from './audio-playback.js';
 import { mountAppUpdateRecovery } from './app-update-recovery.jsx';
 import { mountAppUpdateView } from './app-update-view.js';
 import './app-update-view.css';
@@ -337,7 +338,7 @@ function render() {
   renderTranscript(meeting);
   renderSummary(meeting);
   const showSummary = Boolean(state.summary?.document || resultPreview(meeting).visible || pendingJob(state.processing, { meetingId: meeting.id, kind: 'summary' }) || state.summaryLoadError);
-  detail.update({ inlineNotes: !showSummary, showSummary, id: byId('meeting-detail').hidden ? null : meeting.id, recording: Boolean(activeSession()?.meetingId === meeting.id && ['recording', 'paused'].includes(activeSession().state)), summaryLoaded: state.summaryLoaded, transcriptLoaded: state.transcriptLoaded, hasSummary: Boolean(state.summary?.document), hasTranscript: Boolean(state.transcriptDraft?.doc?.segments?.length) });
+  detail.update({ inlineNotes: !showSummary, showSummary, id: byId('meeting-detail').hidden ? null : meeting.id, recording: Boolean(activeSession()?.meetingId === meeting.id && ['recording', 'paused'].includes(activeSession().state)), summaryLoaded: state.summaryLoaded, transcriptLoaded: state.transcriptLoaded, hasSummary: Boolean(state.summary?.document), hasTranscript: Boolean(state.transcriptDraft?.doc?.segments?.length), hasPreview: resultPreview(meeting).rows.length > 0 });
   if (byId('meeting-detail').hidden) summaryEvidence?.reset();
   renderNotesSearch();
   documentSearch.refresh();
@@ -1339,7 +1340,11 @@ byId('recording-quality').addEventListener('click', event => {
 
 function seekRecording(seconds) {
   const player = byId('audio-player');
-  if (player.getAttribute('src')) { player.currentTime = seconds; player.play().catch(showError); }
+  const meetingId = state.selectedId, audioKey = state.audioKey;
+  if (player.getAttribute('src')) {
+    player.currentTime = seconds;
+    void requestAudioPlayback(player, { isCurrent: () => state.selectedId === meetingId && state.audioKey === audioKey, onError: showError });
+  }
 }
 
 const sameTranscriptVersion = (a, b) => Boolean(a && b && a.id === b.id && a.revision === b.revision);

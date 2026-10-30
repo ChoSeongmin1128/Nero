@@ -1,3 +1,4 @@
+import { requestAudioPlayback } from '../src/audio-playback.js';
 import { createIntegrationMonitor } from '../src/integration-notifications.js';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
@@ -131,7 +132,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
   };
   const copied = [], agentDialogCalls = [];
   const templateSettings = { setActive() {}, beforeLeave: async () => true, isConfirming: () => false, hide() {} };
-  const context = vm.createContext({ createIntegrationMonitor, liveTranscriptRows, meetingResultPreview, renderMeetingMenu, testMountNotificationCenter: mountNotificationCenter,
+  const context = vm.createContext({ requestAudioPlayback, createIntegrationMonitor, liveTranscriptRows, meetingResultPreview, renderMeetingMenu, testMountNotificationCenter: mountNotificationCenter,
     navigator: { clipboard: { writeText: async text => { copied.push(text); } } },
     document, testBridge: bridge, testAgentDialogCalls: agentDialogCalls, testTemplateSettings: templateSettings, localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
     NeroControls: { enhanceAll() {} },

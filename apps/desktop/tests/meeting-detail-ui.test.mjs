@@ -128,3 +128,35 @@ test('automatic recording notes close at completion while explicit notes stay op
   explicit.update({ ...loaded, hasTranscript: true });
   assert.equal(explicit.controller.active(), 'notes');
 });
+
+test('ready or provisional transcript is visible without a click until a summary arrives, using one panel', async () => {
+  for (const result of [{hasTranscript:true}, {hasPreview:true}]) {
+    const app=page(), loaded={summaryLoaded:true,transcriptLoaded:true};
+    app.update({...loaded,...result});
+    const panel=app.node('transcript-section');
+    assert.equal(panel.parentNode,app.node('result-transcript-home'));
+    assert.equal(panel.hidden,false);
+    assert.equal(app.node('detail-inspector').hidden,true);
+    assert.equal(app.node('detail-transcript-open').hidden,true);
+    await app.controller.select('notes');
+    assert.equal(panel.hidden,true);
+    await app.controller.select('summary');
+    assert.equal(panel.hidden,false);
+    app.update({...loaded,hasTranscript:true,hasSummary:true});
+    assert.equal(panel.parentNode,app.node('detail-inspector'));
+    assert.equal(panel.hidden,true);
+    assert.equal(app.node('detail-transcript-open').hidden,false);
+    await app.controller.select('transcript');
+    assert.equal(panel.hidden,false);
+    assert.equal(app.node('detail-inspector').hidden,false);
+  }
+});
+
+test('recording keeps its note workspace until capture finishes, then reveals the preserved draft', () => {
+  const app=page(), loaded={summaryLoaded:true,transcriptLoaded:true};
+  app.update({...loaded,recording:true,hasPreview:true});
+  assert.equal(app.node('result-transcript-home').hidden,true);
+  app.update({...loaded,recording:false,hasPreview:true});
+  assert.equal(app.node('transcript-section').hidden,false);
+  assert.equal(app.node('transcript-section').parentNode,app.node('result-transcript-home'));
+});

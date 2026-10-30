@@ -1,3 +1,4 @@
+import { requestAudioPlayback } from './audio-playback.js';
 const playbackRates = [0.75, 1, 1.25, 1.5, 2];
 
 export function formatAudioTime(seconds) {
@@ -59,14 +60,11 @@ export function connectAudioPlayer(document, icons = globalThis.NeroIcons, contr
     clearStatus();
     if (!audio.paused && !audio.ended) { audio.pause(); return; }
     const request = generation;
-    try {
-      if (audio.ended) audio.currentTime = 0;
-      await audio.play();
-    } catch (error) {
-      if (request !== generation || error?.name === 'AbortError') return;
+    if (audio.ended) audio.currentTime = 0;
+    await requestAudioPlayback(audio, { isCurrent: () => request === generation, onError: () => {
       status.textContent = '재생을 시작하지 못했습니다. 다시 재생해 주세요.';
       status.hidden = false; render();
-    }
+    } });
   };
   toggle.addEventListener('click', togglePlayback);
   inspectorToggle?.addEventListener('click', togglePlayback);
