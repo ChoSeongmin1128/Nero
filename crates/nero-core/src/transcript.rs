@@ -584,9 +584,9 @@ fn transcript_dir(meeting_id: &str, transcript_id: &str) -> Result<PathBuf> {
 }
 
 fn immutable_json(root: &Path, relative: &Path, value: &impl Serialize) -> Result<()> {
+    let bytes = store::json_bytes(value)?;
     let mut file = store::create_new(&store::checked_path(root, relative)?)?;
-    serde_json::to_writer(&mut file, value).map_err(|e| CoreError::Storage(e.to_string()))?;
-    file.write_all(b"\n")?;
+    file.write_all(&bytes)?;
     file.sync_all()?;
     Ok(())
 }
@@ -1101,8 +1101,7 @@ impl Engine {
         let mut stored = self.meetings[id].clone();
         stored.meeting.transcript_id = Some(restored.version.id.clone());
         stored.meeting.updated_at = store::now();
-        self.store.save(&stored)?;
-        self.meetings.insert(id.into(), stored);
+        self.commit_meeting(stored)?;
         Ok(restored)
     }
 
@@ -1323,8 +1322,7 @@ impl Engine {
         store::write_json(&self.store.root, &directory.join("current.json"), &document)?;
         stored.meeting.transcript_id = Some(transcript_id);
         stored.meeting.updated_at = store::now();
-        self.store.save(&stored)?;
-        self.meetings.insert(id.into(), stored);
+        self.commit_meeting(stored)?;
         Ok(document)
     }
 
@@ -1525,8 +1523,7 @@ impl Engine {
             let mut stored = self.meetings[id].clone();
             stored.meeting.transcript_id = Some(next_id);
             stored.meeting.updated_at = store::now();
-            self.store.save(&stored)?;
-            self.meetings.insert(id.into(), stored);
+            self.commit_meeting(stored)?;
             return Ok(generation.current);
         }
         let preserve_source_assignments =
@@ -1746,6 +1743,64 @@ pub(crate) mod tests {
             .unwrap();
         (temp, engine, meeting.id, wav_path)
     }
+    fn assert_published_transcript_pointer(engine: &Engine, id: &str) {
+        let path = engine
+            .store
+            .root
+            .join("meetings")
+            .join(id)
+            .join("meeting.json");
+        let persisted: store::StoredMeeting = store::read_json(&path).unwrap();
+        assert_eq!(
+            engine.meetings[id].meeting.transcript_id,
+            persisted.meeting.transcript_id
+        );
+        let current = engine.transcript(id).unwrap().unwrap();
+        let read = crate::reader::LibraryReader::open(&engine.store.root)
+            .unwrap()
+            .query("transcript_get", serde_json::json!({"meetingId": id}))
+            .unwrap();
+        assert_eq!(read["version"], serde_json::json!(current.version));
+    }
+
+    #[test]
+    fn publication_of_new_transcript_pointer_survives_metadata_sync_failure() {
+        let (_temporary, mut engine, id, _) = setup();
+        let path = engine
+            .store
+            .root
+            .join("meetings")
+            .join(&id)
+            .join("meeting.json");
+        store::fail_next_json_sync(path);
+        assert!(matches!(
+            engine.commit_transcript(&id, None, output()),
+            Err(CoreError::Storage(_))
+        ));
+        assert_published_transcript_pointer(&engine, &id);
+    }
+
+    #[test]
+    fn publication_of_restored_transcript_pointer_survives_metadata_sync_failure() {
+        let (_temporary, mut engine, id, _) = setup();
+        let first = engine.commit_transcript(&id, None, output()).unwrap();
+        let second = engine
+            .commit_transcript(&id, Some(first.version.clone()), output())
+            .unwrap();
+        let path = engine
+            .store
+            .root
+            .join("meetings")
+            .join(&id)
+            .join("meeting.json");
+        store::fail_next_json_sync(path);
+        assert!(matches!(
+            engine.restore_transcript(&id, second.version, first.version),
+            Err(CoreError::Storage(_))
+        ));
+        assert_published_transcript_pointer(&engine, &id);
+    }
+
     #[test]
     fn draft_import_keeps_identity_notes_folder_and_calendar() {
         let (_temp, mut engine, _, wav) = setup();

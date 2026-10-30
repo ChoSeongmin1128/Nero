@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 const SCHEMA_VERSION: u32 = 1;
-const MAX_JSON_BYTES: u64 = 16 * 1024 * 1024;
+pub(crate) const MAX_JSON_BYTES: u64 = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -860,6 +860,62 @@ mod json_precision_tests {
 }
 
 #[cfg(test)]
+mod publication_size_tests {
+    use super::*;
+
+    #[test]
+    fn publication_size_rejects_oversized_library_without_replacing_the_readable_catalog() {
+        let temporary = tempfile::tempdir().unwrap();
+        let store = Store::open(temporary.path().canonicalize().unwrap().join("library")).unwrap();
+        let original = Library::default();
+        store.save_library(&original).unwrap();
+        let path = store.root.join("library.json");
+        let before = fs::read(&path).unwrap();
+        let roster: Vec<_> = (1..=1000)
+            .map(|id| crate::MeetingAttendee {
+                id: Uuid::from_u128(id).to_string(),
+                person_id: None,
+                name: Some("가".repeat(120)),
+            })
+            .collect();
+        let mut large = original.clone();
+        for id in 100_000..100_041 {
+            large
+                .meeting_attendees
+                .insert(Uuid::from_u128(id).to_string(), roster.clone());
+        }
+        large.validate().unwrap();
+        assert!(serde_json::to_vec(&large).unwrap().len() as u64 >= MAX_JSON_BYTES);
+        assert!(matches!(
+            store.save_library(&large),
+            Err(CoreError::InvalidInput(_))
+        ));
+        assert_eq!(fs::read(path).unwrap(), before);
+        assert_eq!(store.load_library().unwrap(), original);
+    }
+
+    #[test]
+    fn publication_size_includes_the_final_newline_at_the_read_limit() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let relative = Path::new("boundary.json");
+        let value = "x".repeat(MAX_JSON_BYTES as usize - 3);
+        write_json(&root, relative, &value).unwrap();
+        assert_eq!(
+            fs::metadata(root.join(relative)).unwrap().len(),
+            MAX_JSON_BYTES
+        );
+        assert_eq!(read_json::<String>(&root.join(relative)).unwrap(), value);
+        let oversized = format!("{value}x");
+        assert!(matches!(
+            write_json(&root, relative, &oversized),
+            Err(CoreError::InvalidInput(_))
+        ));
+        assert_eq!(read_json::<String>(&root.join(relative)).unwrap(), value);
+    }
+}
+
+#[cfg(test)]
 thread_local! {
     static FAIL_JSON_SYNC_FOR: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
 }
@@ -869,17 +925,28 @@ pub(crate) fn fail_next_json_sync(path: PathBuf) {
     FAIL_JSON_SYNC_FOR.with(|failure| *failure.borrow_mut() = Some(path));
 }
 
+pub(crate) fn json_bytes(value: &impl Serialize) -> Result<Vec<u8>> {
+    let mut bytes = serde_json::to_vec(value)
+        .map_err(|_| CoreError::Storage("저장 정보를 만들 수 없습니다.".into()))?;
+    if bytes.len() as u64 >= MAX_JSON_BYTES {
+        return Err(CoreError::InvalidInput(
+            "저장 정보가 읽기 한도 16MiB를 넘습니다.".into(),
+        ));
+    }
+    bytes.push(b'\n');
+    Ok(bytes)
+}
+
 pub(crate) fn write_json(root: &Path, relative: &Path, value: &impl Serialize) -> Result<()> {
     let destination = checked_path(root, relative)?;
+    let bytes = json_bytes(value)?;
     let parent = relative
         .parent()
         .ok_or_else(|| CoreError::Storage("저장 경로가 올바르지 않습니다.".into()))?;
     let temporary = parent.join(format!(".{}.json.tmp", Uuid::new_v4()));
     let temporary_path = checked_path(root, &temporary)?;
     let mut file = create_new(&temporary_path)?;
-    serde_json::to_writer(&mut file, value)
-        .map_err(|_| CoreError::Storage("저장 정보를 만들 수 없습니다.".into()))?;
-    file.write_all(b"\n")?;
+    file.write_all(&bytes)?;
     file.sync_all()?;
     checked_path(root, relative)?;
     fs::rename(&temporary_path, &destination)?;

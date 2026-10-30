@@ -9,7 +9,7 @@ use std::path::{Component, Path, PathBuf};
 use uuid::Uuid;
 
 pub const MAX_TEMPLATE_PROMPT_BYTES: usize = 64 * 1024;
-const MAX_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
+const MAX_DOCUMENT_BYTES: usize = store::MAX_JSON_BYTES as usize;
 const FORMAT_VERSION: u32 = 1;
 const DEFAULTS: &str = include_str!("templates/defaults.json");
 

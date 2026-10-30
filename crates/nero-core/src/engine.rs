@@ -420,10 +420,7 @@ impl Engine {
         stored.meeting.title = title;
         stored.meeting.notes = notes;
         stored.meeting.updated_at = store::now();
-        self.store.save(&stored)?;
-        let meeting = stored.meeting.clone();
-        self.meetings.insert(id.into(), stored);
-        Ok(meeting)
+        self.commit_meeting(stored)
     }
 
     pub fn set_meeting_date(&mut self, id: &str, meeting_date: Option<String>) -> Result<Meeting> {
@@ -444,10 +441,7 @@ impl Engine {
         }
         stored.meeting.meeting_date = meeting_date;
         stored.meeting.updated_at = store::now();
-        self.store.save(&stored)?;
-        let meeting = stored.meeting.clone();
-        self.meetings.insert(id.into(), stored);
-        Ok(meeting)
+        self.commit_meeting(stored)
     }
 
     pub fn devices(&self) -> Result<Vec<Device>> {
@@ -731,7 +725,9 @@ impl Engine {
         // Update preparation never finalizes an active capture. Refuse to reopen
         // the gate if a caller tries to use this during capture.
         if self.capture.is_some() {
-            return Err(CoreError::InvalidState("녹음 중에는 종료 준비를 취소할 수 없습니다.".into()));
+            return Err(CoreError::InvalidState(
+                "녹음 중에는 종료 준비를 취소할 수 없습니다.".into(),
+            ));
         }
         self.quitting = false;
         Ok(())
@@ -950,6 +946,49 @@ mod tests {
         assert_eq!(engine.meetings.len(), 1);
         assert_eq!(engine.meetings[&draft.id].meeting, draft);
         assert_eq!(fs::read(path).unwrap(), bytes);
+    }
+
+    fn check_metadata_publication_after_sync_failure(date: bool) {
+        let (_temporary, mut engine) = engine();
+        let meeting = engine
+            .create_meeting("Synthetic meeting".into(), "Original notes".into())
+            .unwrap();
+        let path = engine
+            .store
+            .root
+            .join("meetings")
+            .join(&meeting.id)
+            .join("meeting.json");
+        store::fail_next_json_sync(path.clone());
+        let result = if date {
+            engine.set_meeting_date(&meeting.id, Some("2026-10-30".into()))
+        } else {
+            engine.update_meeting(&meeting.id, "Changed title".into(), "Changed notes".into())
+        };
+        assert!(matches!(result, Err(CoreError::Storage(_))));
+        let persisted: StoredMeeting = store::read_json(&path).unwrap();
+        let current = &engine.meetings[&meeting.id].meeting;
+        assert_eq!(current.title, persisted.meeting.title);
+        assert_eq!(current.notes, persisted.meeting.notes);
+        assert_eq!(current.meeting_date, persisted.meeting.meeting_date);
+        let read = crate::reader::LibraryReader::open(&engine.store.root)
+            .unwrap()
+            .query("meeting_get", serde_json::json!({"meetingId": meeting.id}))
+            .unwrap();
+        assert_eq!(
+            read["editVersion"],
+            crate::agent_control::meeting_edit_version(current).unwrap()
+        );
+    }
+
+    #[test]
+    fn metadata_publication_notes_reflects_replacement_after_sync_failure() {
+        check_metadata_publication_after_sync_failure(false);
+    }
+
+    #[test]
+    fn metadata_publication_date_reflects_replacement_after_sync_failure() {
+        check_metadata_publication_after_sync_failure(true);
     }
 
     #[test]
@@ -2199,10 +2238,15 @@ mod tests {
         let (_temporary, mut engine) = engine();
         let meeting = engine.create_meeting("보존".into(), "메모".into()).unwrap();
         engine.prepare_shutdown(None).unwrap();
-        assert!(matches!(engine.update_meeting(&meeting.id, "변경".into(), "".into()), Err(CoreError::Unavailable)));
+        assert!(matches!(
+            engine.update_meeting(&meeting.id, "변경".into(), "".into()),
+            Err(CoreError::Unavailable)
+        ));
         engine.resume_after_failed_shutdown().unwrap();
         assert_eq!(engine.meetings()[0].notes, "메모");
-        engine.update_meeting(&meeting.id, "계속 작업".into(), "메모".into()).unwrap();
+        engine
+            .update_meeting(&meeting.id, "계속 작업".into(), "메모".into())
+            .unwrap();
         let (_session, _sink) = synthetic(&mut engine, &meeting.id);
         assert!(engine.resume_after_failed_shutdown().is_err());
         assert!(!engine.quitting);

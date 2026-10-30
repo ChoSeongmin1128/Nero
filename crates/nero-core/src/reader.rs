@@ -12,7 +12,7 @@ use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
 const API_VERSION: u32 = 1;
-const MAX_DOCUMENT_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_DOCUMENT_BYTES: u64 = store::MAX_JSON_BYTES;
 pub const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 const MAX_TEXT_CHUNK_BYTES: usize = 4096;
 const MAX_ATTEMPTS: usize = 3;
