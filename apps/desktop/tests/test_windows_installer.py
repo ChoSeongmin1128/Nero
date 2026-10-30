@@ -58,6 +58,7 @@ class RunningAppGuardTests(unittest.TestCase):
                 (f'WriteUninstaller "{uninstaller}"\nSetErrorLevel 0\nSectionEnd\n'
                  'Section "Uninstall"\n' if uninstall else '') +
                 f'!insertmacro CheckIfAppIsRunning "{target}" "Nero"\n'
+                '${If} ${Errors}\nSetErrorLevel 3\nQuit\n${EndIf}\n'
                 'SetErrorLevel 0\nSectionEnd\n', encoding="utf-8-sig")
             built = subprocess.run([str(self.compiler), "/V2", "/WX", str(script)],
                                    capture_output=True, timeout=30)

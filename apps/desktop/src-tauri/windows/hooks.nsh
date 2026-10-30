@@ -16,6 +16,7 @@
     ${IfNot} ${Errors}
       StrCpy $R2 50
     ${EndIf}
+    ClearErrors
     ${Do}
     !insertmacro RestartManager_StartSession $R0
     ${If} $R0 == ""
