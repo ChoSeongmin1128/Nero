@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import vm from 'node:vm';
 
+const dismissSource = await readFile(new URL('../src/dialog-dismiss.js', import.meta.url), 'utf8');
 const source = await readFile(new URL('../src/speakers-ui.js', import.meta.url), 'utf8');
 const processingStateSource = await readFile(new URL('../src/processing-state.js', import.meta.url), 'utf8');
 const tick = () => new Promise(setImmediate);
@@ -76,7 +77,7 @@ function openController(doc = documentForTest()) {
     } }));
   } };
   const context = vm.createContext({ escape, duration: value => `00:${String(Math.floor(value / 1000)).padStart(2, '0')}`, icon: () => '', TextEncoder, document, requestAnimationFrame: callback => callback(), crypto: { randomUUID: () => 'generated-id' }, NeroControls: { enhanceAll() {}, refresh() {}, close() {} } });
-  const functions = vm.runInContext(`${processingStateSource.replace(/^export /gm, '')}\n${source.replace(/^import .*;\r?\n/gm, '').replace(/^export /gm, '')}\n({ mountSpeakers, speakerLabel, copyWorking, assignSelected, mergeSpeakers, nextSpeakerName, validateNames })`, context);
+  const functions = vm.runInContext(`${dismissSource.replace(/^export /gm, '')}\n${processingStateSource.replace(/^export /gm, '')}\n${source.replace(/^import .*;\r?\n/gm, '').replace(/^export /gm, '')}\n({ mountSpeakers, speakerLabel, copyWorking, assignSelected, mergeSpeakers, nextSpeakerName, validateNames })`, context);
   const controller = functions.mountSpeakers({ bridge, getState: () => state, finishEditing: async action => {
     flushes.push(true); state.editLocks += 1;
     try { await beforeFlush?.(); return await action(); }

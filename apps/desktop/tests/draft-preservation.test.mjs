@@ -9,6 +9,7 @@ import { mountNotificationCenter } from '../src/notification-center.js';
 import { Window } from 'happy-dom';
 import { renderMeetingMenu } from '../../../design-system/navigation.mjs';
 
+const dismissSource = await readFile(new URL('../src/dialog-dismiss.js', import.meta.url), 'utf8');
 const source = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
 const qualitySource = await readFile(new URL('../src/recording-quality.js', import.meta.url), 'utf8');
 const uiSource = await readFile(new URL('../src/ui.js', import.meta.url), 'utf8');
@@ -143,6 +144,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
   })()`, context);
   const executable = source.replace(/^import .*;\r?\n/gm, '');
   const app = await vm.runInContext(`(async () => {
+    ${dismissSource.replace(/^export /gm, '')}
     ${qualitySource.replace(/^export /gm, '')}
     ${detailSource.replace(/^export /gm, '')}
     ${feedbackSource.replace(/^export /gm, '')}

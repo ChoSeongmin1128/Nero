@@ -3,7 +3,7 @@
   const windowsDesign = new URLSearchParams(location.search).get("platform") === "windows" && new URLSearchParams(location.search).get("session") === "windows-design";
   const nativeKey = document.documentElement.dataset.appearanceStorage;
   const key = nativeKey || (windowsDesign ? "nero-prototype-v3-windows-design-appearance" : "nero-design-system-v1-appearance");
-  const colors = new Set(["green", "blue", "purple", "mono", "amber", "rose"]);
+  const colors = new Set(["green"]);
   const modes = new Set(["light", "dark", "system"]);
   const legacy = {
     nero: { color: "green", mode: "light" },
@@ -13,11 +13,11 @@
     system: { color: "green", mode: "system" },
   };
   function decode(saved) {
-    if (Object.hasOwn(legacy, saved)) return { ...legacy[saved] };
+    if (Object.hasOwn(legacy, saved)) return { ...legacy[saved], color: "green" };
     try {
       const value = JSON.parse(saved);
-      if (colors.has(value?.color) && modes.has(value?.mode))
-        return { color: value.color, mode: value.mode };
+      if (modes.has(value?.mode))
+        return { color: "green", mode: value.mode };
     } catch {}
     return { color: "green", mode: nativeKey ? "system" : "light" };
   }
@@ -98,6 +98,7 @@
         // Keep the chosen appearance usable when persistence is unavailable.
       }
     });
+    if (nativeKey) return;
     document
       .getElementById("settings-close")
       .addEventListener("click", () => dialog.close());

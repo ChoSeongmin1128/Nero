@@ -1,3 +1,4 @@
+import { bindDialogDismiss } from './dialog-dismiss.js';
 import { mountActionMenus } from '../../../design-system/action-menu.mjs';
 import { mountNavigationSidebar, recentMeetingRow, renderMeetingMenu } from '../../../design-system/navigation.mjs';
 import { pendingJob } from './processing-state.js';
@@ -383,7 +384,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     void mutate(intent.action, () => { resetSelection(); if (state().snapshot.meetings.every(meeting => meeting.id !== state().selectedId || meeting.deletedAt != null)) state().libraryOpen = true; }, { detach: intent.detach });
   });
   dialog.addEventListener('click', event => { if (event.target.closest('[data-library-close]')) closeDialog(); });
-  dialog.addEventListener('cancel', event => { event.preventDefault(); closeDialog(); });
+  bindDialogDismiss(dialog, { dismiss: closeDialog, blocked: () => state().libraryBusy });
   byId('new-folder').addEventListener('click', () => folderDialog());
   byId('library-empty-trash').addEventListener('click', emptyTrashDialog);
   byId('folder-list').addEventListener('click', event => {

@@ -1,3 +1,4 @@
+import { bindDialogDismiss } from './dialog-dismiss.js';
 import { pendingJob } from './processing-state.js';
 import { escape, duration, icon } from './ui.js';
 
@@ -300,7 +301,7 @@ export function mountSpeakers({ bridge, getState, finishEditing, onUpdated, onPr
   }
 
   trigger.addEventListener('click', () => { void open(); });
-  dialog.addEventListener('cancel', event => { event.preventDefault(); if (!saving) close(); });
+  bindDialogDismiss(dialog, { dismiss: close, blocked: () => saving });
   dialog.addEventListener('close', () => { if (!saving) editing = null; });
   dialog.addEventListener('keydown', event => {
     const shortcut = (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's';

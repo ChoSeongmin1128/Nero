@@ -4,7 +4,7 @@
 
 | 소스 | 책임 |
 | --- | --- |
-| `../appearance.css` | 6색 x light/dark의 의미 색상 |
+| `../appearance.css` | 중립색, 녹색 강조와 light/dark의 의미 색상 |
 | `../typography.css` | 공통 글꼴과 글자 역할 |
 | `../components.css`, `../components.js` | 공통 컨트롤 스타일과 반복 뷰 |
 | `../controls.css`, `../controls.js` | 선택 메뉴와 날짜/시간 |

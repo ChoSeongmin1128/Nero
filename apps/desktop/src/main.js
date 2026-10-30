@@ -1,3 +1,4 @@
+import { bindDialogDismiss } from './dialog-dismiss.js';
 import { createIntegrationMonitor } from './integration-notifications.js';
 import { mountNotificationCenter } from './notification-center.js';
 import './notification-center.css';
@@ -838,10 +839,8 @@ async function selectSettingsPanel(name, focus = false) {
   });
 }
 byId('settings-close').addEventListener('click', () => { void closeSettings(); });
-byId('settings-dialog').addEventListener('cancel', event => {
-  event.preventDefault();
-  if (!templateSettings.isConfirming()) void closeSettings();
-});
+bindDialogDismiss(byId('settings-dialog'), { dismiss: closeSettings, blocked: () => templateSettings.isConfirming() });
+bindDialogDismiss(byId('quit-dialog'));
 byId('settings-dialog').addEventListener('close', () => { templateSettings.hide(); void summaryTemplatePicker.reload(); resetTerminologySettings(); resetAgentConnection(); globalThis.NeroControls.close?.(); returnFocusTarget(byId(state.settingsReturnId) || byId('settings'), byId('navigation-toggle')).focus({ preventScroll: true }); });
 for (const name of settingsPanels) byId(`settings-${name}-tab`).addEventListener('click', () => { void selectSettingsPanel(name, true); });
 byId('settings-dialog').addEventListener('keydown', event => {

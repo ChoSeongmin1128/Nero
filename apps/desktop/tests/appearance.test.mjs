@@ -42,14 +42,14 @@ test('native default follows system while explicit light or dark ignores system 
   assert.equal(app.root.dataset.mode, 'light');
 });
 
-test('six colors and independent brightness persist and apply before app initialization', () => {
+test('legacy colors normalize to the single accent while preserving brightness', () => {
   const app = openAppearance();
   for (const color of ['green', 'blue', 'purple', 'mono', 'amber', 'rose']) {
-    app.change('color', color);
+    app.listeners.get('storage')({ key: 'nero.appearance.v1', newValue: JSON.stringify({ color, mode: 'light' }) });
     for (const mode of ['light', 'dark', 'system']) {
       app.change('mode', mode);
       const reopened = openAppearance({ saved: app.storage.get('nero.appearance.v1') });
-      assert.equal(reopened.root.dataset.appearancePreference, `${color}-${mode}`);
+      assert.equal(reopened.root.dataset.appearancePreference, `green-${mode}`);
       assert.equal(reopened.inputs.filter(input => input.checked).length, 2);
     }
   }
@@ -58,20 +58,20 @@ test('six colors and independent brightness persist and apply before app initial
 test('recorder appearance follows the shared preference storage event', () => {
   const recorder = openAppearance();
   recorder.listeners.get('storage')({ key: 'nero.appearance.v1', newValue: JSON.stringify({ color: 'mono', mode: 'dark' }) });
-  assert.equal(recorder.root.dataset.appearance, 'mono-dark');
+  assert.equal(recorder.root.dataset.appearance, 'green-dark');
   recorder.listeners.get('storage')({ key: 'unrelated', newValue: null });
-  assert.equal(recorder.root.dataset.appearance, 'mono-dark');
+  assert.equal(recorder.root.dataset.appearance, 'green-dark');
   recorder.listeners.get('storage')({ key: 'nero.appearance.v1', newValue: null });
   assert.equal(recorder.root.dataset.appearancePreference, 'green-system');
 });
 
 test('invalid saved values and blocked storage keep theme controls usable', () => {
   const invalid = openAppearance({ saved: JSON.stringify({ color: 'invalid', mode: 'dark' }) });
-  assert.equal(invalid.root.dataset.appearancePreference, 'green-system');
+  assert.equal(invalid.root.dataset.appearancePreference, 'green-dark');
   const blocked = openAppearance({ blocked: true });
   blocked.change('color', 'blue');
   blocked.change('mode', 'dark');
-  assert.equal(blocked.root.dataset.appearance, 'blue-dark');
+  assert.equal(blocked.root.dataset.appearance, 'green-dark');
   const prototype = openAppearance({ native: false });
   assert.equal(prototype.root.dataset.appearancePreference, 'green-light');
 });

@@ -1,3 +1,4 @@
+import { bindDialogDismiss } from './dialog-dismiss.js';
 import { pendingJob } from './processing-state.js';
 const sameVersion = (a, b) => (a == null && b == null) || (a?.id === b?.id && a?.revision === b?.revision);
 const versionOf = context => context?.transcript?.version ? { ...context.transcript.version } : null;
@@ -195,7 +196,7 @@ export function mountTranscriptActions({ byId, bridge, getContext, finishEditing
       if (owner.kind === 'history') await load(owner, true);
     } finally { if (active(owner)) { owner.saving = false; draw(); } }
   }
-  dialog.addEventListener('cancel', event => { event.preventDefault(); close(); });
+  bindDialogDismiss(dialog, { dismiss: close, blocked: () => Boolean(pending?.saving) });
   dialog.addEventListener('submit', event => { event.preventDefault(); void confirm(); });
   body.addEventListener('click', event => {
     if (event.target.closest?.('[data-transcript-actions-close]')) close();

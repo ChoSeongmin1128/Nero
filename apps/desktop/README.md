@@ -271,11 +271,11 @@ the native input events and existing app controllers remain the interface for sa
 recording and processing. The component catalog builds the same source. Upstream MIT
 and runtime license notices are included in the generated app assets.
 
-Settings / Screen exposes six color themes and independent Light / Dark / System
-brightness. The main app and compact recorder use the same shared appearance code
+Settings / General exposes Light / Dark / System brightness with neutral surfaces
+and a single green accent. Older color preferences normalize to this accent. The main app and compact recorder use the same shared appearance code
 and app-local preference. System follows the OS; an explicit brightness remains fixed.
 Theme changes do not change meetings or model preparation.
-Large surfaces retain a warm neutral tone across accent colors. Recent meetings show recording
+Large surfaces, selection, hover and focus use neutral tones. Recent meetings show recording
 or creation time; opening a detail selects only that meeting in the recent list.
 Returning to the library restores its previous folder filter.
 

@@ -2,13 +2,13 @@
 
 재작성 UI의 공통 글자 규칙, 컨트롤, 반복 뷰와 브라우저 예제를 관리한다. 이 디렉터리가 정본이며 legacy Swift 앱과 사용자 라이브러리는 사용하지 않는다. Tauri 앱은 `apps/desktop/scripts/prepare-shared.mjs`로 공통 소스를 `.generated/shared`에 복사해 빌드한다. 생성본은 수정하지 않는다. 브라우저 예제는 네이티브 기능 검증을 대신하지 않는다.
 
-넓은 배경, 본문, 보조 글자와 테두리는 모든 강조색에서 같은 중립색을 사용한다. 색상 선택은 주요 동작, 선택 표시와 작은 강조 면에 적용하며 화면 전체를 착색하지 않는다. light/dark의 명암 구분과 오류/녹음 상태 색상은 강조색 선택과 독립적으로 유지한다.
+배경, 본문, 보조 글자, 테두리, 선택과 hover는 중립색을 사용한다. 녹색은 주요 동작의 작은 강조 면에 사용한다. light/dark의 명암 구분과 오류/녹음 상태 색상을 유지한다.
 
 ## 책임
 
 | 파일/경로 | 소유하는 것 |
 | --- | --- |
-| `appearance.css`, `appearance.js` | 역할 색상, 6색과 light/dark/system 선택 |
+| `appearance.css`, `appearance.js` | 중립색과 단일 녹색 강조, light/dark/system 선택 |
 | `typography.css` | 시스템/한글/코드 글꼴, 크기/굵기/줄간격/자간 역할 |
 | `components.css` | 버튼, 입력, 필드, 배지, 선택, 내용 탭, 오류, 모달, 설정 선택의 기본 스타일 |
 | `navigation.mjs`, `navigation.css`, `action-menu.mjs` | 최근 회의 행/회의 작업 메뉴, hover 탐색과 메뉴 위치/키보드/닫기 동작. 제품과 탐색 시안이 같은 구현 사용 |
@@ -94,7 +94,7 @@ python3 -m http.server 8792 --bind 127.0.0.1 --directory .work/design-system-pre
 
 `/catalog/`, `/prototype/`, `/windows-preview/`에서 검토한다. 소스 변경 후 생성 토큰을 검토하고 다시 만든다. `tokens.json`을 직접 편집하지 않는다. 생성기는 원본 아래 출력, 심볼릭 링크, 소유 표식 없는 기존 출력과 무관한 파일이 있는 출력을 거부한다.
 
-브라우저 예제 저장은 `nero-design-system-v1-*` 전용 namespace다. 실제 앱은 `nero.appearance.v1`의 독립 색상/밝기를 같은 `appearance.js`로 초기 적용하며 메인/작은 창이 공유한다. 원래 v3 시안의 데이터를 자동으로 가져오지 않는다. 카탈로그는 페이지 메모리, Windows는 분리된 시연 세션을 사용한다. 실제 마이크/외부 계정/OS 알림은 사용하지 않는다.
+브라우저 예제 저장은 `nero-design-system-v1-*` 전용 namespace다. 실제 앱은 `nero.appearance.v1`의 밝기 설정을 같은 `appearance.js`로 초기 적용하며 메인/작은 창이 공유한다. 원래 v3 시안의 데이터를 자동으로 가져오지 않는다. 카탈로그는 페이지 메모리, Windows는 분리된 시연 세션을 사용한다. 실제 마이크/외부 계정/OS 알림은 사용하지 않는다.
 
 ## 목록 선택과 삭제 동작
 

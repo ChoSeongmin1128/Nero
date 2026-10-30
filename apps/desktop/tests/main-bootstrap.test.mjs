@@ -228,3 +228,86 @@ test('startup integration alerts appear without visiting settings and route to t
   assert.equal(el('settings-claude-connect').hidden, false);
   assert.equal(connects, 0);
 });
+
+test('settings dismiss gestures preserve edits, nested controls, composition and return focus', async t => {
+  const window = new Window({ url: 'http://nero.test', settings: { enableJavaScriptEvaluation: true, suppressInsecureJavaScriptEnvironmentWarning: true, disableCSSFileLoading: true, disableJavaScriptFileLoading: true } });
+  t.after(() => window.happyDOM.abort());
+  window.document.write(html);
+  for (const name of ['appearance', 'icons', 'components']) window.eval(await readFile(new URL(`../../../design-system/${name}.js`, import.meta.url), 'utf8'));
+  window.document.dispatchEvent(new window.Event('DOMContentLoaded'));
+  const stubs = {
+    readSnapshot: () => ({ revision: 1, meetings: [], folders: [], session: null }), listDevices: () => [{ id: "mic", name: "Test microphone", isDefault: true }], setAutoRecorder() {},
+    processingStatus: () => ({ status: 'idle', supported: true, modelReady: true, summarySupported: true, summaryReady: true }),
+    readTerminologySettings: () => ({ available: false }), listTemplates: () => [],
+    agentConnectionInfo: () => ({ available: false, clients: [] }),
+    readCalendarSettings: () => ({ revision: 1, configured: false, connected: false, calendars: [], selectedCalendars: [] }),
+  };
+  window.testBridge = Object.fromEntries(bridgeNames.map(name => [name, async (...args) => {
+    if (name.startsWith('subscribe')) return () => {};
+    assert.ok(Object.hasOwn(stubs, name), `Unexpected native call: ${name}`); return stubs[name](...args);
+  }]));
+  window.eval(bundled.outputFiles[0].text); await window.neroBoot;
+  const el = id => window.document.getElementById(id);
+  const dialog = el('settings-dialog');
+  const wait = async predicate => {
+    for (let attempt = 0; attempt < 100; attempt++) {
+      if (predicate()) return;
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    assert.fail('Settings did not reach expected state');
+  };
+  const key = (target = window.document.activeElement, options = {}) => target.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true, ...options }));
+  const pointer = (type, target = dialog, options = {}) => target.dispatchEvent(new window.PointerEvent(type, { pointerId: 1, isPrimary: true, button: 0, clientX: 10, clientY: 10, bubbles: true, ...options }));
+  const open = async () => { el('settings').click(); await wait(() => dialog.open); };
+  dialog.getBoundingClientRect = () => ({ left: 100, top: 100, right: 600, bottom: 600 });
+  await open();
+  key(dialog, { isComposing: true }); assert.equal(dialog.open, true);
+  dialog.dispatchEvent(new window.CompositionEvent('compositionstart', { bubbles: true }));
+  dialog.dispatchEvent(new window.Event('cancel', { cancelable: true }));
+  assert.equal(dialog.open, true);
+  dialog.dispatchEvent(new window.CompositionEvent('compositionend', { bubbles: true }));
+  pointer('pointerdown', el('settings-title')); pointer('pointerup'); assert.equal(dialog.open, true);
+  pointer('pointerdown'); pointer('pointerup', el('settings-title')); assert.equal(dialog.open, true);
+  pointer('pointerdown', dialog, { button: 2 }); pointer('pointerup', dialog, { button: 2 }); assert.equal(dialog.open, true);
+  pointer('pointerdown'); pointer('pointercancel'); pointer('pointerup'); assert.equal(dialog.open, true);
+  pointer('pointerdown'); pointer('pointerup'); await wait(() => !dialog.open);
+  await wait(() => window.document.activeElement.id === 'navigation-toggle');
+  await open();
+  el('settings-recording-tab').click();
+  await wait(() => !el('settings-recording-panel').hidden);
+  await wait(() => el('settings-microphone').parentElement.querySelector('button'));
+  const selectTrigger = el('settings-microphone').parentElement.querySelector('button');
+  selectTrigger.focus();
+  selectTrigger.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+  await wait(() => window.NeroControls.isOpen());
+  key(); await wait(() => !window.NeroControls.isOpen()); assert.equal(dialog.open, true);
+  key(); await wait(() => !dialog.open);
+  await open();
+  el('settings-templates-tab').click();
+  await wait(() => !el('settings-templates-panel').hidden && !el('settings-templates-panel').querySelector('button').disabled);
+  el('settings-templates-panel').querySelector('button').click();
+  await wait(() => dialog.querySelector('.template-settings-form input'));
+  const input = dialog.querySelector('.template-settings-form input');
+  Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(input, '수정한 템플릿');
+  input.dispatchEvent(new window.Event('input', { bubbles: true }));
+  await new Promise(resolve => setTimeout(resolve, 10));
+  el('settings-close').click();
+  await wait(() => dialog.querySelector('[role="dialog"]'));
+  assert.equal(dialog.open, true);
+  key(dialog.querySelector('[role="dialog"] button'));
+  await wait(() => !dialog.querySelector('[role="dialog"]'));
+  assert.equal(dialog.open, true); assert.equal(input.value, '수정한 템플릿');
+  pointer('pointerdown'); pointer('pointerup');
+  await wait(() => dialog.querySelector('[role="dialog"]'));
+  key(dialog.querySelector('[role="dialog"] button'));
+  await wait(() => !dialog.querySelector('[role="dialog"]'));
+  assert.equal(dialog.open, true); assert.equal(input.value, '수정한 템플릿');
+  key(input);
+  await wait(() => dialog.querySelector('[role="dialog"]'));
+  [...dialog.querySelectorAll('[role="dialog"] button')].find(button => button.textContent === '버리기').click();
+  await wait(() => !dialog.open);
+  el('navigation-toggle').click();
+  await open();
+  key(dialog); await wait(() => !dialog.open);
+  await wait(() => window.document.activeElement === el('settings'));
+});
