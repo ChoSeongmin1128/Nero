@@ -481,13 +481,35 @@ output window. Structural coverage and a normal stop do not establish factual ac
 or guarantee that extraction retained every important statement.
 
 Validated stage responses are checkpointed under each meeting's `summary-work`
-directory. Identity binds the frozen transcript, notes, pinned model/runtime, prompts
+directory. Identity binds the frozen transcript, original notes, attendee roster, pinned model/runtime, prompts
 and request settings. Retry reuses matching complete results; changed input invalidates
 reuse. Incomplete or corrupt responses are never reused, and corrupt files are retained
 when replaced. Meeting deletion includes these private intermediate files. The source,
-notes, audio and earlier summary remain untouched until the existing final commit gate.
+notes, attendee snapshots, audio and earlier summary remain untouched until the existing final commit gate.
+Attendees are separately typed reference data in every stage. Their order/count never
+identifies transcript speakers or assigns an anonymous first-person promise to a name.
+Roster changes invalidate in-flight/queued summaries and mark saved bound results stale;
+catalog-only renames preserve meeting name snapshots and summary freshness.
+The notes digest always covers the original notes alone. Receipt/archive attendance
+digests and cache identity bind the exact separate roster JSON.
 References retain original 1-based segment order and are rendered in bounded clickable
 groups. Source changes preserve the frozen archive rather than rebinding old numbers.
+
+An explicit local attendance comparison is available as the ignored Rust test
+`summary::live_tests::local_summary_attendance_comparison`. Provide absolute paths in
+`NERO_SUMMARY_SOURCE` (an existing approximately three-minute Transcript JSON excerpt),
+`NERO_SUMMARY_ATTENDEES` (a `MeetingAttendee` array),
+`NERO_SUMMARY_FIXTURE_MANIFEST` (JSON containing the excerpt file's `fixtureSha256`),
+`NERO_SUMMARY_WEIGHTS` (existing pinned GGUF), `NERO_SUMMARY_RESOURCES` (existing app
+Resources directory), and `NERO_SUMMARY_OUTPUT` (a new isolated directory under `.work`).
+`NERO_SUMMARY_NOTES` optionally supplies original notes. Run only that test with
+`--ignored --exact --test-threads=1`. It does not initialize a meeting library or alter
+source/speaker metadata, load recognition models, or copy model/audio files. The same
+summary server runs one empty-roster baseline and one roster variant sequentially;
+requests, responses and receipts remain in the isolated output. `evaluation.json`
+contains literal name-source and numeric-line review aids, with meaning/conditions,
+amounts/units and assignee/name correctness explicitly unreviewed. Structural success
+and name matching do not establish semantic accuracy or verified voice identity.
 
 OS memory observations are advisory and never block or cancel a summary. macOS reads
 an undocumented pressure sysctl on a best-effort basis; Windows queries the official

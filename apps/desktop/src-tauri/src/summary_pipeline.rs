@@ -8,7 +8,7 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 #[path = "summary_change_links.rs"]
 mod change_links;
 
-pub(super) const VERSION: &str = "nero-minutes-evidence-agendas-v10";
+pub(super) const VERSION: &str = "nero-minutes-evidence-agendas-v11";
 const EXTRACT: &str = "원문 구간에서 회의록 작성에 필요한 사실 자료를 추출하세요. 완성 회의록이나 참석자 목록을 쓰지 마세요. 발언을 한 문장씩 옮기지 말고 같은 논점의 질문/답변/설명을 하나의 독립적으로 이해되는 사실로 묶으세요. 짧은 맞장구, 반복 질문, 말 고침, 의미가 완결되지 않은 조각은 별도 항목으로 만들지 마세요. 질문은 이후 답변으로 해결되지 않은 문제만 남기세요. 문제와 결론의 차이, 조건, 이유를 이해하는 데 필요한 내용은 합치는 과정에서 빠뜨리지 마세요. 안건별로 구체적인 보고, 판단 이유, 제안, 결정, 할 일, 미정 사항, 숫자, 명시된 담당/기한, 조건, 정정/철회를 간결하게 보존하세요. 제안/결정/완료/조건/철회를 구분하세요. 참고 메모만의 내용을 발언 사실로 만들지 마세요. 각 사실의 sources에는 실제 원문 발언 번호를 쓰세요. 불명료한 고유명사는 추측하지 마세요. 유의미한 내용이 없는 구간도 그 사실을 context 항목 하나로 기록하세요. JSON의 topics/title/facts(kind,text,sources)만 반환하세요.";
 const PLAN: &str = "아래는 같은 회의의 모든 구간에서 추출한 안건 색인입니다. 같은 문제에 관한 연속 또는 재등장 논의를 묶어 최종 회의록의 안건을 구성하세요. 같은 제품에 관한 내용도 해결할 문제가 다르면 하위 안건으로 나누세요. 다른 문제를 억지로 합치지 마세요. 각 번호를 정확히 한 번만 members에 포함하고 누락/복제하지 마세요. 정정/철회가 뒤에서 등장한 같은 안건은 함께 묶으세요. 제목은 짧은 일반 텍스트이며 []/줄바꿈을 쓰지 마세요. JSON agendas(title,members)만 반환하세요.";
 const WRITE: &str = "이 안건의 각 사실을 회의록에 바로 넣을 수 있는 짧은 완결 문장으로 정돈하세요. 새로 요약하거나 합쳐서 일부 사실을 지우지 마세요. 입력 fact의 의미, 제안/확정/완료/미정의 차이, 조건, 정정/철회, 숫자, 명시된 담당/기한과 이유를 그대로 보존하세요. 후속 정정 표시가 있는 이전 논의를 현재 결정이나 완료로 바꾸지 마세요. 불명료한 단어나 담당자를 추측하지 마세요. 항목 번호와 분류/원문 연결은 앱이 관리합니다. JSON 객체에 입력 id를 문자열 키로 정확히 한 번씩 쓰고, 값은 해당 fact의 정돈된 문장만 반환하세요. 다른 키, 분류 배열, sources, inputs, 참석자 목록과 설명을 추가하지 마세요.";
@@ -35,13 +35,18 @@ struct Session<'a> {
     checkpoints: Checkpoints,
     cancel: &'a AtomicBool,
     events: Vec<Value>,
+    attendees: &'a [nero_core::MeetingAttendee],
 }
 
 impl Session<'_> {
     async fn fits(&self, user: &str) -> SummaryResult<bool> {
         Ok(self
             .server
-            .input_tokens_for(JSON_SYSTEM, user, self.cancel)
+            .input_tokens_for(
+                JSON_SYSTEM,
+                &with_reference_attendees(user.to_owned(), self.attendees),
+                self.cancel,
+            )
             .await?
             + OUTPUT
             + MARGIN
@@ -57,6 +62,7 @@ impl Session<'_> {
         validate: impl Fn(&str) -> SummaryResult<T>,
     ) -> SummaryResult<T> {
         check_cancel(self.cancel)?;
+        let user = with_reference_attendees(user, self.attendees);
         let system = if schema.is_some() {
             JSON_SYSTEM.to_owned()
         } else {
@@ -239,24 +245,52 @@ pub(super) async fn run(
     process: &Processing,
     cancel: &AtomicBool,
 ) -> SummaryResult<(String, Value)> {
-    run_with_template(server, source, notes, cache_base, process, cancel, None).await
+    run_with_template(
+        server,
+        source,
+        notes,
+        &[],
+        cache_base,
+        process,
+        cancel,
+        None,
+    )
+    .await
 }
 
 pub(super) async fn run_with_template(
     server: &Server,
     source: &Transcript,
     notes: &str,
+    attendees: &[nero_core::MeetingAttendee],
     cache_base: &Path,
     process: &Processing,
     cancel: &AtomicBool,
     template: Option<&nero_core::templates::PromptTemplate>,
 ) -> SummaryResult<(String, Value)> {
     check_cancel(cancel)?;
+    let attendees_sha256 = nero_core::people::attendees_digest(attendees)
+        .map_err(|error| Failure::new(FailureKind::Input, error.to_string()))?;
+    let notes_sha256 = format!("{:x}", Sha256::digest(notes.as_bytes()));
+    let references =
+        with_reference_attendees(with_reference_notes(String::new(), notes), attendees);
+    if server
+        .input_tokens_for(JSON_SYSTEM, &references, cancel)
+        .await?
+        .saturating_add(OUTPUT)
+        .saturating_add(MARGIN)
+        > CONTEXT
+    {
+        return Err(Failure::new(
+            FailureKind::InputLimit,
+            "회의 메모나 참석 명단이 요약 입력 한도를 넘습니다. 내용을 줄인 뒤 다시 요약해 주세요.",
+        ));
+    }
     let binary_hash = format!(
         "{:x}",
         Sha256::digest(fs::read(executable(process, server.gpu)).map_err(storage)?)
     );
-    let identity = json!({"source":source,"notes":notes,"modelManifest":MANIFEST,
+    let identity = json!({"source":source,"notes":notes,"attendees":attendees,"modelManifest":MANIFEST,
         "runtime":"llama.cpp b11734-f3fb2fcdb","runtimeSha256":binary_hash,"gpu":server.gpu,"pipeline":VERSION,"system":SYSTEM,
         "extract":EXTRACT,"plan":PLAN,"write":WRITE,"template":template,
         "context":CONTEXT,"output":OUTPUT,"margin":MARGIN});
@@ -266,6 +300,7 @@ pub(super) async fn run_with_template(
         checkpoints,
         cancel,
         events: Vec::new(),
+        attendees,
     };
     if let Some(template) = template {
         if !session
@@ -295,7 +330,9 @@ pub(super) async fn run_with_template(
         ),
         notes,
     );
-    let input = server.input_tokens(&full, cancel).await?;
+    let input = server
+        .input_tokens(&with_reference_attendees(full.clone(), attendees), cancel)
+        .await?;
     if let Some(limit) = remaining_output(input) {
         process.update(|p| {
             p.phase = Some("summarizing".into());
@@ -312,7 +349,7 @@ pub(super) async fn run_with_template(
             Ok(text) => {
                 return Ok((
                     text,
-                    json!({"strategy":"whole","promptVersion":VERSION,"events":session.events}),
+                    json!({"strategy":"whole","promptVersion":VERSION,"notesSha256":notes_sha256,"attendeesSha256":attendees_sha256,"events":session.events}),
                 ))
             }
             Err(error) if split_recoverable(&error) => (),
@@ -425,7 +462,7 @@ pub(super) async fn run_with_template(
     Ok((
         text,
         json!({"strategy":"evidence-agenda-sections","promptVersion":VERSION,
-        "sourceCount":lines.len(),"ranges":ranges,"sourcePieces":pieces,"topics":topics,"agendaPlan":plan,
+        "notesSha256":notes_sha256,"attendeesSha256":attendees_sha256,"sourceCount":lines.len(),"ranges":ranges,"sourcePieces":pieces,"topics":topics,"agendaPlan":plan,
         "sections":sections,"templateSections":template_sections,"template":template.map(|v|json!({"id":v.id,"revision":v.revision})),"changeLinks":change_receipt,"events":session.events}),
     ))
 }

@@ -428,6 +428,7 @@ fn three_hour_template_pipeline_preserves_all_facts_and_invalidates_changed_prom
             &fixture.server,
             &source,
             "",
+            &[],
             &cache,
             &process,
             &AtomicBool::new(false),
@@ -448,6 +449,7 @@ fn three_hour_template_pipeline_preserves_all_facts_and_invalidates_changed_prom
             &fixture.server,
             &source,
             "",
+            &[],
             &cache,
             &process,
             &AtomicBool::new(false),
@@ -460,4 +462,189 @@ fn three_hour_template_pipeline_preserves_all_facts_and_invalidates_changed_prom
         .unwrap()
         .iter()
         .all(|event| event["request"]["cached"] == false));
+}
+
+fn roster() -> Vec<nero_core::MeetingAttendee> {
+    vec![nero_core::MeetingAttendee {
+        id: "11111111-1111-4111-8111-111111111111".into(),
+        person_id: None,
+        name: Some("Reference name".into()),
+    }]
+}
+
+#[test]
+fn attendance_references_reach_all_stages_and_invalidate_cache_without_changing_notes() {
+    let temporary = tempfile::tempdir().unwrap();
+    let fixture = scripted_server(temporary.path(), tokenize, |request| {
+        let value = request_data(request);
+        if value.get("change").is_some() {
+            return completed(json!({"previous":[]}));
+        }
+        let mut result = respond(request);
+        if value.get("transcript").is_some() {
+            let mut content: Value =
+                serde_json::from_str(result["choices"][0]["message"]["content"].as_str().unwrap())
+                    .unwrap();
+            for fact in content["topics"][0]["facts"].as_array_mut().unwrap() {
+                if fact["sources"][0] == 48 {
+                    fact["kind"] = json!("condition");
+                }
+            }
+            result["choices"][0]["message"]["content"] = json!(content.to_string());
+        }
+        result
+    });
+    let (process, cache) = prepare(temporary.path());
+    let source = source();
+    let original = serde_json::to_vec(&source).unwrap();
+    let notes = "Original notes only";
+    let mut attendees = roster();
+    let cancel = AtomicBool::new(false);
+    let (_, receipt) = runtime()
+        .block_on(pipeline::run_with_template(
+            &fixture.server,
+            &source,
+            notes,
+            &attendees,
+            &cache,
+            &process,
+            &cancel,
+            None,
+        ))
+        .unwrap();
+    for stage in ["evidence", "link-changes", "agenda", "write-agenda"] {
+        assert!(receipt["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["request"]["stage"] == stage));
+    }
+    let reference = serde_json::to_string(&AttendanceReference {
+        attendees: &attendees,
+    })
+    .unwrap();
+    for request in requests(&fixture) {
+        let user = request["messages"][1]["content"].as_str().unwrap();
+        assert_eq!(user.matches("<attendance_reference>").count(), 1);
+        assert!(user.contains(&reference));
+        assert!(user.contains(&json!({"meetingNotes":notes}).to_string()));
+        assert!(user
+            .contains("명단에만 있는 이름으로 익명 발언이나 1인칭 약속의 담당자를 채우지 마세요"));
+        assert!(
+            !user.contains("별도의 참석자 명단/회의 일시/장소 메타데이터는 제공되지 않았습니다")
+        );
+    }
+    assert_eq!(
+        receipt["notesSha256"],
+        format!("{:x}", Sha256::digest(notes.as_bytes()))
+    );
+    assert_eq!(
+        receipt["attendeesSha256"],
+        nero_core::people::attendees_digest(&attendees).unwrap()
+    );
+    let first_requests = requests(&fixture).len();
+    attendees[0].name = Some("Changed reference".into());
+    let (_, changed) = runtime()
+        .block_on(pipeline::run_with_template(
+            &fixture.server,
+            &source,
+            notes,
+            &attendees,
+            &cache,
+            &process,
+            &cancel,
+            None,
+        ))
+        .unwrap();
+    assert_eq!(changed["notesSha256"], receipt["notesSha256"]);
+    assert_ne!(changed["attendeesSha256"], receipt["attendeesSha256"]);
+    assert!(changed["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|event| event["request"]["cached"] == false));
+    assert!(requests(&fixture)[first_requests..]
+        .iter()
+        .all(|request| request["messages"][1]["content"]
+            .as_str()
+            .unwrap()
+            .contains("Changed reference")));
+    assert_eq!(serde_json::to_vec(&source).unwrap(), original);
+    assert_eq!(fs::read_dir(cache).unwrap().count(), 2);
+}
+
+#[test]
+fn whole_summary_uses_separate_attendance_data_and_keeps_unverified_speakers_unassigned() {
+    let temporary = tempfile::tempdir().unwrap();
+    let fixture = scripted_server(
+        temporary.path(),
+        |_| 1000,
+        |request| {
+            let user = request["messages"][1]["content"].as_str().unwrap();
+            assert!(user.contains("<attendance_reference>"));
+            assert!(user.contains("화자 미지정"));
+            assert!(
+                user.contains("명단 순서/인원수/임시 참석자 번호를 화자 번호에 연결하지 마세요")
+            );
+            assert!(user.contains("숫자/금액/단위/조건/정정과 미정 상태를 보존하세요"));
+            json!({"choices":[{"finish_reason":"stop","message":{"content":"담당 미정 [1]"}}],"usage":{"prompt_tokens":1000,"completion_tokens":100}})
+        },
+    );
+    let (process, cache) = prepare(temporary.path());
+    let source = numbered_source(2);
+    let attendees = roster();
+    let (text, receipt) = runtime()
+        .block_on(pipeline::run_with_template(
+            &fixture.server,
+            &source,
+            "Original notes",
+            &attendees,
+            &cache,
+            &process,
+            &AtomicBool::new(false),
+            None,
+        ))
+        .unwrap();
+    assert_eq!(text, "담당 미정 [1]");
+    assert_eq!(receipt["strategy"], "whole");
+    assert_eq!(
+        receipt["attendeesSha256"],
+        nero_core::people::attendees_digest(&attendees).unwrap()
+    );
+    assert!(!source
+        .speakers
+        .iter()
+        .any(|speaker| speaker.name == "Reference name"));
+}
+
+#[test]
+fn oversized_attendance_fails_before_generation_without_dropping_references() {
+    let temporary = tempfile::tempdir().unwrap();
+    let fixture = scripted_server(
+        temporary.path(),
+        |user| {
+            if user.contains("<attendance_reference>") {
+                CONTEXT
+            } else {
+                100
+            }
+        },
+        |_| panic!("oversized reference must not reach generation"),
+    );
+    let (process, cache) = prepare(temporary.path());
+    let error = runtime()
+        .block_on(pipeline::run_with_template(
+            &fixture.server,
+            &numbered_source(2),
+            "",
+            &roster(),
+            &cache,
+            &process,
+            &AtomicBool::new(false),
+            None,
+        ))
+        .unwrap_err();
+    assert_eq!(error.kind, FailureKind::InputLimit);
+    assert!(requests(&fixture).is_empty());
+    assert_eq!(fs::read_dir(cache).unwrap().count(), 0);
 }
