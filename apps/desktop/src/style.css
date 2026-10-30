@@ -266,6 +266,12 @@ html.recorder-document { background: transparent; }
 
 .library-screen { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; padding: 24px 32px; overflow: hidden; }
 .library-screen-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+.library-primary-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.library-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; min-height: 280px; padding: 40px 16px; text-align: center; }
+.library-empty-icon { display: grid; place-items: center; width: 48px; height: 48px; color: var(--accent); background: var(--surface-secondary); border: 1px solid var(--border); border-radius: var(--radius); }
+.library-empty-icon svg { width: 24px; height: 24px; }
+.library-empty h2 { margin: 4px 0 0; font-size: var(--text-heading-size); font-weight: var(--weight-semibold); }
+.library-empty p { max-width: 360px; margin: 0; color: var(--text-secondary); font-size: var(--text-body-size); line-height: 1.6; text-wrap: pretty; }
 .library-screen-header h1 { font-size: var(--text-title-size); margin-bottom: 4px; }
 .library-screen .meeting-list { padding: 0 4px 16px; }
 .meeting-entry { display: flex; align-items: center; gap: 0; margin-bottom: 4px; border: 1px solid transparent; border-bottom-color: var(--border); border-radius: var(--radius); position: relative; }
@@ -306,7 +312,7 @@ html.recorder-document { background: transparent; }
 .meeting-menu > summary { border-color: transparent; background: transparent; padding: 6px; min-width: 30px; }
 .meeting-menu summary svg { width: 16px; height: 16px; }
 .library-list-actions, .library-batch { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.library-list-actions { margin-left: auto; }
+.library-list-actions { justify-content: space-between; margin-bottom: 16px; min-height: 32px; }
 .library-batch > #library-selected-count { margin-right: 8px; color: var(--text-secondary); font-size: var(--text-label-size); font-variant-numeric: tabular-nums; }
 .library-batch > .library-batch-divider { width: 1px; height: 16px; background: var(--border); margin: 0 2px; }
 .library-batch .icon { flex: none; }
