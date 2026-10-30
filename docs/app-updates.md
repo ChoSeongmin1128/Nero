@@ -39,8 +39,10 @@ is independent of this signature and is not configured by this change.
 ## Installation and failure handling
 
 The UI's `saveEdits` callback must finish or explicitly refuse all open drafts before
-the native command runs. During this interval the consuming screen must honor
-`setInstalling` and stop new user edits. A failed save prevents installation.
+the native command runs. Confirmation dialogs remain interactive while this callback
+runs. Existing save ownership locks the editors while their saves drain; after the
+callback succeeds, `setInstalling` locks app interaction until the native command
+returns or the app restarts. A failed or declined save prevents installation.
 
 Native installation serializes update operations, marks installation in progress,
 and atomically fences new processing/capture admissions using the existing worker
@@ -86,6 +88,15 @@ existing native `invoke`/`listen`, an awaited `saveEdits` callback, `onChange(st
 and `setInstalling(boolean)`. Call `start()` once after the app is initialized and
 `dispose()` on teardown. Settings/theme markup belongs to the consuming screen
 and canonical shared design system, not this controller.
+
+`app-update-view.js` connects this controller to the desktop bridge and the General
+settings row. `main.js` starts it after initialization and supplies
+`prepareAppLeave(() => true)` as the shared leave/save guard. The view owns the
+installation interaction lock; main owns its contribution to `state.editLocks`.
+Available updates download automatically after both scheduled and manual checks.
+Installation is only invoked by the explicit restart action in settings or the
+notification center. Ready updates and recovery messages use the `app-update`
+service in the common notice collection, separately from integration notices.
 
 Commands: `app_update_status`, `app_update_check`, `app_update_download`,
 `app_update_install`. Status events use `nero://app-update`. Public status fields:

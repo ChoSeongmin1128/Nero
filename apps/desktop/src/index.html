@@ -145,6 +145,12 @@
                 <label class="brightness-choice"><input type="radio" name="appearance-mode" value="dark"><span>어둡게</span></label>
               </div>
             </fieldset>
+            <section id="app-update" class="settings-app-update" aria-labelledby="app-update-title">
+              <div class="settings-row"><div><h4 id="app-update-title" class="settings-subtitle">Nero 업데이트</h4><p id="app-update-version" class="muted type-caption"></p></div><button id="app-update-action" type="button" class="small">업데이트 확인</button></div>
+              <p id="app-update-message" class="muted type-caption" role="status"></p>
+              <progress id="app-update-progress" aria-label="앱 업데이트 다운로드" hidden></progress>
+              <p id="app-update-recovery" class="notice type-caption" hidden></p>
+            </section>
             <section class="settings-feature-section" aria-labelledby="settings-features-title">
               <h4 id="settings-features-title" class="settings-subtitle">추가 기능</h4>
               <div class="settings-group"><div class="settings-row"><span>회의 요약</span><span id="settings-summary-control" class="settings-feature-control" tabindex="-1"><span id="settings-summary-state" class="muted type-caption"></span><button id="models" type="button" class="small">추가</button></span></div></div>
