@@ -51,9 +51,10 @@ pub(crate) fn schema(method: &str) -> Map<String, Value> {
                 "transcriptVersion":{"type":"object","properties":{"id":id_schema(),"revision":{"type":"integer","minimum":0}},"required":["id","revision"],"additionalProperties":false},
                 "transcriptSha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
                 "notesSha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+                "attendeesSha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
                 "summaryId":nullable_id
             },
-            "required":["transcriptVersion","transcriptSha256","notesSha256","summaryId"],
+            "required":["transcriptVersion","transcriptSha256","notesSha256","attendeesSha256","summaryId"],
             "additionalProperties":false,
             "description":"Exact context captured by summary_context before reading source pages. Never replace with sourceVersion or editVersion."
         }));
@@ -71,6 +72,27 @@ pub(crate) fn schema(method: &str) -> Map<String, Value> {
             "description":"Agent-reported provenance, not Nero-verified model identity. Omit unknown optional fields. UTF-8 byte limits match field maxima."
         }));
         required.extend(["meetingId", "context", "text", "producer"]);
+    } else if method == "people_update" {
+        fields.insert("expectedVersion".into(), version.clone());
+        fields.insert("people".into(), json!({"type":"array","items":{"type":"object","properties":{"id":id_schema(),"name":{"type":"string","minLength":1,"maxLength":120}},"required":["id","name"],"additionalProperties":false}}));
+        fields.insert("groups".into(), json!({"type":"array","items":{"type":"object","properties":{"id":id_schema(),"name":{"type":"string","minLength":1,"maxLength":120},"personIds":{"type":"array","items":id_schema(),"uniqueItems":true}},"required":["id","name","personIds"],"additionalProperties":false}}));
+        required.extend(["expectedVersion", "people", "groups"]);
+    } else if matches!(method, "meeting_attendees_set" | "meeting_attendee_promote") {
+        fields.insert("meetingId".into(), id_schema());
+        fields.insert("expectedVersion".into(), version.clone());
+        required.extend(["meetingId", "expectedVersion"]);
+        if method == "meeting_attendees_set" {
+            fields.insert("attendees".into(), json!({"type":"array","items":{"type":"object","properties":{"id":id_schema(),"personId":id_schema(),"name":{"type":"string","minLength":1,"maxLength":120}},"required":["id"],"additionalProperties":false},"description":"Stable attendee IDs and optional managed personId/name snapshot. Omit both personId and name for an unnamed temporary attendee. Attendance order never identifies transcript speakers."}));
+            required.push("attendees");
+        } else {
+            fields.insert("attendeeId".into(), id_schema());
+            fields.insert("expectedCatalogVersion".into(), version.clone());
+            fields.insert(
+                "name".into(),
+                json!({"type":"string","minLength":1,"maxLength":120}),
+            );
+            required.extend(["attendeeId", "expectedCatalogVersion", "name"]);
+        }
     } else if matches!(method, "meeting_update" | "meeting_date_set") {
         fields.insert("meetingId".into(), id_schema());
         fields.insert("expectedVersion".into(), version.clone());

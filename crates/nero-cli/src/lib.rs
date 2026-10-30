@@ -13,7 +13,7 @@ use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 
 pub use nero_core::identity::APP_IDENTIFIER;
-pub const METHODS: [&str; 25] = [
+pub const METHODS: [&str; 29] = [
     "jobs_list",
     "job_cancel",
     "meetings_list",
@@ -24,6 +24,10 @@ pub const METHODS: [&str; 25] = [
     "summary_context",
     "summary_import",
     "folders_list",
+    "people_catalog",
+    "people_update",
+    "meeting_attendees_set",
+    "meeting_attendee_promote",
     "status",
     "templates_list",
     "template_get",
@@ -52,6 +56,7 @@ pub fn is_read_only(method: &str) -> bool {
             | "summary_get"
             | "summary_context"
             | "folders_list"
+            | "people_catalog"
             | "status"
             | "templates_list"
             | "template_get"
@@ -68,6 +73,9 @@ pub fn is_destructive(method: &str) -> bool {
             | "template_reset"
             | "meeting_update"
             | "meeting_date_set"
+            | "people_update"
+            | "meeting_attendees_set"
+            | "meeting_attendee_promote"
             | "meetings_trash"
             | "folder_rename"
             | "folder_delete"
