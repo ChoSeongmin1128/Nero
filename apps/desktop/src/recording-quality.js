@@ -26,5 +26,5 @@ export function recordingQuality(quality, sampleRate, frames) {
     if (last && last.kind === event.kind && last.seconds === seconds) continue;
     locations.push({ kind: event.kind, label: policies[event.kind].label, seconds, grouped: Boolean(event.coalesced) });
   }
-  return { visible, severity, title, message, locations };
+  return { visible, severity, requiresAttention: visible && severity !== 'info', title, message, locations };
 }

@@ -18,15 +18,19 @@ test('scheduling and driver delay diagnostics do not claim missing audio or requ
   for (const quality of [{xrunCount:1, events:[{kind:'xrun',firstSavedFrame:0}]},{xrunCount:20}]) {
     const result = recordingQuality(quality,16000,32000);
     assert.equal(result.severity,'info');
+    assert.equal(result.requiresAttention,false);
+    assert.equal(result.visible,true);
     assert.equal(result.title,'녹음 진단');
     assert.match(result.message,/확인할 수는 없습니다/);
   }
 });
 test('device change asks for device selection while terminal faults explain recovery', () => {
   assert.equal(recordingQuality({routeChangedCount:1},16000,32000).severity,'warning');
+  assert.equal(recordingQuality({routeChangedCount:1},16000,32000).requiresAttention,true);
   for (const kind of ['queueOverflow','writerFailure','deviceFailure','formatChanged','captureInterrupted']) {
     const result=recordingQuality({events:[{kind,firstSavedFrame:16000}]},16000,32000);
     assert.equal(result.severity,'error');
+    assert.equal(result.requiresAttention,true);
     assert.match(result.message,/새 녹음/);
     assert.equal(result.locations[0].seconds,1);
   }

@@ -1,5 +1,6 @@
 import * as bridge from './bridge.js';
 import { duration, recordingStatus, icon, ui, applySystemAppearance } from './ui.js';
+import { recordingQuality } from './recording-quality.js';
 
 applySystemAppearance();
 const byId = (id) => document.getElementById(id);
@@ -22,12 +23,14 @@ function render() {
   const active = ['recording', 'paused', 'finalizing'].includes(session?.state);
   const phase = active ? session.state : meeting?.status || 'idle';
   const error = localError || session?.error || meeting?.error || '';
-  const warning = session?.warning || meeting?.warning || '';
-  const status = error ? '녹음 확인 필요' : warning ? '음질 확인 필요' : recordingStatus(phase);
+  const quality = session?.captureQuality || meeting?.captureQuality;
+  const review = recordingQuality(quality, session?.sampleRate || meeting?.audio?.sampleRate, session?.savedFrames ?? meeting?.audio?.frames);
+  const warning = review.visible ? (review.requiresAttention ? review.message : '') : session?.warning || meeting?.warning || '';
+  const status = error ? '녹음 확인 필요' : warning ? (review.requiresAttention ? review.title : '녹음 확인 필요') : recordingStatus(phase);
   const opener = byId('open-meeting');
   opener.disabled = !meeting || busy;
   opener.title = [meeting?.title || '녹음 대기', status, session?.deviceName, error || warning].filter(Boolean).join('\n');
-  opener.setAttribute('aria-label', `${meeting?.title || '회의'} 열기, ${status}${error ? ', 오류 확인' : warning ? ', 음질 경고 확인' : ''}`);
+  opener.setAttribute('aria-label', `${meeting?.title || '회의'} 열기, ${status}`);
   const stateMark = byId('recorder-status');
   stateMark.className = `desktop-overlay-state is-${error || warning ? 'error' : phase}`;
   stateMark.setAttribute('aria-label', status);
