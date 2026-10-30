@@ -71,7 +71,7 @@ function AttendeeDialog({ flow, container, origin, controls }) {
   React.useEffect(() => { if (state.open) { setQuery(''); setPromoting(null); setName(''); } }, [state.open]);
   const close = async () => {
     if (!state.open) return true;
-    if (state.busy || confirmation.request || promoting) return false;
+    if ((state.busy && !state.loading) || confirmation.request || promoting) return false;
     if (flow.isDirty() && !await confirmation.ask('참석자 변경을 버릴까요?', '저장하지 않은 참석자 변경은 반영되지 않습니다.', '버리기')) return false;
     return flow.close();
   };
@@ -103,7 +103,7 @@ function AttendeeDialog({ flow, container, origin, controls }) {
             </section>
           </>}
         </div>
-        <DialogFooter><button type="button" disabled={state.busy} onClick={() => { void close(); }}>취소</button><button type="button" className="primary" disabled={state.busy || !state.meeting} onClick={async () => { if (await flow.save()) flow.close(); }}>적용</button></DialogFooter>
+        <DialogFooter><button type="button" disabled={state.busy && !state.loading} onClick={() => { void close(); }}>취소</button><button type="button" className="primary" disabled={state.busy || !state.meeting} onClick={async () => { if (await flow.save()) flow.close(); }}>적용</button></DialogFooter>
       </DialogContent>
     </Dialog>
     <Dialog open={Boolean(promoting)} onOpenChange={open => { if (!open && !state.busy) setPromoting(null); }}>

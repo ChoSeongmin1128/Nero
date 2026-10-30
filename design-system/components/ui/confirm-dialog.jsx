@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { createRoot } from 'react-dom/client';
 import { AlertDialog } from '@base-ui/react/alert-dialog';
 import { cn } from './utils.js';
 
@@ -15,4 +16,26 @@ export function ConfirmDialog({ request, container, resolve, finalFocus, classNa
       </AlertDialog.Popup>
     </AlertDialog.Portal>
   </AlertDialog.Root>;
+}
+
+export function mountConfirmDialog({ container }) {
+  const host = container.ownerDocument.createElement('div');
+  host.dataset.neroUiOwned = '';
+  container.append(host);
+  const root = createRoot(host);
+  let request = null, settle = null, origin = null;
+  const render = () => root.render(<ConfirmDialog request={request} container={container} resolve={resolve} finalFocus={() => origin?.isConnected ? origin : false} />);
+  function resolve(value) { const finish = settle; settle = null; request = null; render(); finish?.(value); }
+  const cancel = () => resolve(false);
+  container.addEventListener('close', cancel);
+  return {
+    confirm(value) {
+      if (settle) return Promise.resolve(false);
+      origin = container.ownerDocument.activeElement;
+      request = value;
+      const result = new Promise(done => { settle = done; });
+      render(); return result;
+    },
+    dispose() { container.removeEventListener('close', cancel); const finish = settle; settle = null; finish?.(false); root.unmount(); host.remove(); },
+  };
 }

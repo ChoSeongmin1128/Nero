@@ -8,7 +8,7 @@ export function addPeople(attendees, people, uuid = () => crypto.randomUUID()) {
 }
 
 export function createAttendeeFlow({ bridge, onChanged = () => {}, uuid = () => crypto.randomUUID() }) {
-  let state = { open: false, busy: false, meeting: null, catalog: null, attendees: [], error: '' };
+  let state = { open: false, busy: false, loading: false, meeting: null, catalog: null, attendees: [], error: '' };
   let saved = [], expected = '', epoch = 0, meetingId = null;
   const listeners = new Set();
   const publish = changes => { state = { ...state, ...changes }; listeners.forEach(listener => listener()); };
@@ -37,15 +37,15 @@ export function createAttendeeFlow({ bridge, onChanged = () => {}, uuid = () => 
     async open(id) {
       meetingId = id;
       const generation = ++epoch;
-      publish({ open: true, busy: true, meeting: null, catalog: null, attendees: [], error: '' }); saved = [];
+      publish({ open: true, busy: true, loading: true, meeting: null, catalog: null, attendees: [], error: '' }); saved = [];
       try {
         const [meeting, catalog] = await Promise.all([bridge.readMeetingAttendees(id), bridge.readPeopleCatalog()]);
         if (generation !== epoch) return;
         accept(meeting); publish({ catalog });
       } catch (error) { if (generation === epoch) publish({ error: error?.message || '참석자를 불러오지 못했습니다.' }); }
-      finally { if (generation === epoch) publish({ busy: false }); }
+      finally { if (generation === epoch) publish({ busy: false, loading: false }); }
     },
-    close() { if (state.busy) return false; epoch += 1; publish({ open: false }); return true; },
+    close() { if (state.busy && !state.loading) return false; epoch += 1; publish({ open: false, busy: false, loading: false }); return true; },
     add(persons) { if (!state.busy) publish({ attendees: addPeople(state.attendees, persons, uuid) }); },
     addTemporary() { if (!state.busy) publish({ attendees: [...state.attendees, { id: uuid() }] }); },
     rename(id, name) { if (!state.busy) publish({ attendees: state.attendees.map(item => item.id === id ? { ...item, name: name || undefined } : item) }); },

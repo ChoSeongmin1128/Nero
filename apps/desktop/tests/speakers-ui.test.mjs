@@ -78,7 +78,8 @@ function openController(doc = documentForTest()) {
   } };
   const context = vm.createContext({ escape, duration: value => `00:${String(Math.floor(value / 1000)).padStart(2, '0')}`, icon: () => '', TextEncoder, document, requestAnimationFrame: callback => callback(), crypto: { randomUUID: () => 'generated-id' }, NeroControls: { enhanceAll() {}, refresh() {}, close() {} } });
   const functions = vm.runInContext(`${dismissSource.replace(/^export /gm, '')}\n${processingStateSource.replace(/^export /gm, '')}\n${source.replace(/^import .*;\r?\n/gm, '').replace(/^export /gm, '')}\n({ mountSpeakers, speakerLabel, copyWorking, assignSelected, mergeSpeakers, nextSpeakerName, validateNames })`, context);
-  const controller = functions.mountSpeakers({ bridge, getState: () => state, finishEditing: async action => {
+  let confirmDiscard = async () => true;
+  const controller = functions.mountSpeakers({ confirmDiscard: () => confirmDiscard(), bridge, getState: () => state, finishEditing: async action => {
     flushes.push(true); state.editLocks += 1;
     try { await beforeFlush?.(); return await action(); }
     finally { state.editLocks -= 1; }
@@ -95,7 +96,7 @@ function openController(doc = documentForTest()) {
   const name = (id, value) => { const input = nameInput(id); input.value = value; body.listeners.get('input')({ target: input }); return input; };
   const input = (id, value) => { const node = elements.get(id); node.value = value; body.listeners.get('input')({ target: node }); return node; };
   const choose = value => { const node = elements.get('speaker-assignment-target'); node.value = value; change(node); };
-  return { functions, controller, elements, body, dialog, trigger, state, calls, analysisCalls, processing, errors, updates, flushes, plays, click, change, choose, input, name, nameInput, writes: () => writes, beforeFlush: callback => { beforeFlush = callback; }, find: (attribute, value) => body.children.find(node => node.attributes[attribute] === value), compositionStart: () => body.listeners.get('compositionstart')(), compositionEnd: () => body.listeners.get('compositionend')(), document, pauses: () => pauses, endPlayback() { playing = false; controller.syncPlayback(); }, setPlayable(value) { playable = value; controller.syncPlayback(); } };
+  return { confirmDiscard: callback => { confirmDiscard = callback; }, functions, controller, elements, body, dialog, trigger, state, calls, analysisCalls, processing, errors, updates, flushes, plays, click, change, choose, input, name, nameInput, writes: () => writes, beforeFlush: callback => { beforeFlush = callback; }, find: (attribute, value) => body.children.find(node => node.attributes[attribute] === value), compositionStart: () => body.listeners.get('compositionstart')(), compositionEnd: () => body.listeners.get('compositionend')(), document, pauses: () => pauses, endPlayback() { playing = false; controller.syncPlayback(); }, setPlayable(value) { playable = value; controller.syncPlayback(); } };
 }
 
 test('speaker operations preserve text and work without model speaker labels', () => {
@@ -439,4 +440,47 @@ test('recording scope offers another analysis without claiming an attendee count
   app.state.processing = { ...app.state.processing, status: 'running', meetingId: 'other' };
   app.controller.render();
   assert.equal(app.elements.get('speaker-analyze').disabled, false);
+});
+
+test('speaker cancellation and app leave share one discard decision without saving', async () => {
+  const app = openController(); let decisions = 0;
+  app.confirmDiscard(async () => { decisions++; return false; });
+  await app.controller.open(); app.name('S1', '보존할 이름');
+  await app.click('speaker-cancel');
+  assert.equal(app.dialog.open, true);
+  assert.equal(app.nameInput('S1').value, '보존할 이름');
+  assert.equal(await app.controller.beforeLeave(), false);
+  assert.equal(decisions, 2);
+  assert.equal(app.calls.length, 0);
+  app.confirmDiscard(async () => true);
+  assert.equal(await app.controller.beforeLeave(), true);
+  assert.equal(app.dialog.open, false);
+});
+
+test('single new speaker and unapplied assignment input are protected while selection alone is not', async () => {
+  const app = openController(); let decisions = 0;
+  app.confirmDiscard(async () => { decisions++; return false; });
+  await app.controller.open(0); app.choose('__new__'); app.input('speaker-new-name', '새 이름');
+  assert.equal(await app.controller.beforeLeave(), false);
+  assert.equal(app.dialog.open, true);
+  app.controller.reset();
+  await app.controller.open();
+  await app.click(app.find('data-speaker-view', 'utterances'));
+  app.choose('__new__'); app.input('speaker-new-name', '미적용 이름');
+  assert.equal(await app.controller.beforeLeave(), false);
+  assert.equal(decisions, 2);
+  assert.equal(app.calls.length, 0);
+  app.controller.reset(); await app.controller.open();
+  await app.click(app.find('data-speaker-view', 'utterances'));
+  const selected = app.find('data-speaker-segment', 'a'); selected.checked = true; app.change(selected);
+  assert.equal(await app.controller.beforeLeave(), true); assert.equal(decisions, 2);
+});
+
+test('a pending discard confirmation is not duplicated by another leave request', async () => {
+  const app = openController(); let decide, decisions = 0;
+  app.confirmDiscard(() => { decisions++; return new Promise(resolve => { decide = resolve; }); });
+  await app.controller.open(); app.name('S1', '작성 중');
+  const leaving = app.controller.beforeLeave(); await tick();
+  assert.equal(await app.controller.beforeLeave(), false); assert.equal(decisions, 1);
+  decide(false); assert.equal(await leaving, false); assert.equal(app.dialog.open, true);
 });

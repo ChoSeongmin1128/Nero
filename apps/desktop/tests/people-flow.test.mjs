@@ -124,3 +124,31 @@ test('initial roster read failure can retry the same meeting without closing the
   assert.equal(flow.getSnapshot().error, '');
   assert.deepEqual(reads, ['retry-meeting', 'retry-meeting']);
 });
+
+test('initial reads can be cancelled and their late reply cannot populate a later meeting', async () => {
+  let resolveOld;
+  const flow = createAttendeeFlow({ bridge: {
+    readMeetingAttendees: id => id === 'old' ? new Promise(resolve => { resolveOld = resolve; }) : Promise.resolve(meeting(id)),
+    readPeopleCatalog: async () => empty(),
+  } });
+  const opening = flow.open('old');
+  assert.equal(flow.getSnapshot().loading, true);
+  assert.equal(flow.close(), true);
+  assert.equal(flow.getSnapshot().open, false);
+  await flow.open('new');
+  resolveOld(meeting('old')); await opening;
+  assert.equal(flow.getSnapshot().meeting.id, 'new');
+  assert.equal(flow.getSnapshot().loading, false);
+});
+
+test('pending attendee writes remain protected from dismissal', async () => {
+  let resolveSave;
+  const flow = createAttendeeFlow({ bridge: {
+    readMeetingAttendees: async () => meeting(), readPeopleCatalog: async () => empty(),
+    replaceMeetingAttendees: () => new Promise(resolve => { resolveSave = resolve; }),
+  }, uuid: () => 'new' });
+  await flow.open('meeting'); flow.addTemporary(); const saving = flow.save();
+  assert.equal(flow.getSnapshot().loading, false); assert.equal(flow.close(), false);
+  resolveSave(meeting('meeting', [{ id: 'new' }], 'meeting:2')); await saving;
+  assert.equal(flow.close(), true);
+});

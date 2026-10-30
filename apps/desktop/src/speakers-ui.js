@@ -47,7 +47,7 @@ function mergeSpeakers(working, from, into) {
   return { ...working, speakers: working.speakers.filter(speaker => speaker.id !== from).map(speaker => ({ ...speaker })), assignments: working.assignments.map(id => id === from ? into : id) };
 }
 
-export function mountSpeakers({ bridge, getState, finishEditing, onUpdated, onProcessing = async () => {}, showError, byId, onPlay, onPause, isPlaying = () => false, canPlay = () => true }) {
+export function mountSpeakers({ bridge, getState, finishEditing, onUpdated, onProcessing = async () => {}, showError, byId, confirmDiscard = async () => false, onPlay, onPause, isPlaying = () => false, canPlay = () => true }) {
   const dialog = byId('speaker-dialog');
   const body = byId('speaker-dialog-body');
   const trigger = byId('speakers-button');
@@ -57,6 +57,7 @@ export function mountSpeakers({ bridge, getState, finishEditing, onUpdated, onPr
   let saving = false;
   let preparing = false;
   let composing = false;
+  let confirming = false;
   let operation = 0;
   let returnFocus = null;
 
@@ -70,13 +71,19 @@ export function mountSpeakers({ bridge, getState, finishEditing, onUpdated, onPr
 
   const blocked = view => !view || !view.state.connected || view.state.busy || Boolean(pendingJob(view.state.processing, { meetingId: view.id }));
   const unchanged = () => editing && sameState(editing.base, editing.working) && (editing.mode !== 'single' || editing.assignmentTarget === (editing.base.assignments[editing.singleIndex] || ''));
+  const hasPendingAssignment = () => editing?.mode !== 'single' && editing?.assignmentDraft && (
+    editing.assignmentTarget === newSpeakerValue
+      ? editing.newName !== editing.initialNewName || editing.selected.size > 0
+      : editing.working.assignments.some((id, index) => editing.selected.has(editing.working.segments[index].id) && (id || '') !== editing.assignmentTarget)
+  );
+  const dirty = () => Boolean(editing) && (!unchanged() || hasPendingAssignment());
   const nameId = id => `speaker-name-${encodeURIComponent(id)}`;
   const mergeId = id => `speaker-merge-${encodeURIComponent(id)}`;
 
   function analysisBlocked(view) {
     const session = view?.state.snapshot?.session;
     const recording = session?.meetingId === view?.id && ['recording', 'paused', 'finalizing'].includes(session.state);
-    return blocked(view) || Boolean(pendingJob(view?.state.processing, { kind: 'speaker-model' })) || recording || !unchanged() || !view?.state.processing?.speakerSupported;
+    return blocked(view) || Boolean(pendingJob(view?.state.processing, { kind: 'speaker-model' })) || recording || dirty() || !view?.state.processing?.speakerSupported;
   }
 
   function undoFor(view) {
@@ -130,6 +137,24 @@ export function mountSpeakers({ bridge, getState, finishEditing, onUpdated, onPr
     composing = false;
     if (dialog.open) dialog.close();
     focusReturn();
+  }
+
+  async function requestClose() {
+    if (saving || preparing || confirming) return false;
+    const owner = editing;
+    if (!owner) return true;
+    preparing = true;
+    try { await flushComposition(); } finally { preparing = false; }
+    if (editing !== owner) return !editing;
+    if (dirty()) {
+      confirming = true;
+      try { if (!await confirmDiscard()) return false; }
+      catch (error) { showError(error); return false; }
+      finally { confirming = false; }
+      if (editing !== owner) return !editing;
+    }
+    close();
+    return true;
   }
 
   function controls() {
@@ -219,7 +244,7 @@ export function mountSpeakers({ bridge, getState, finishEditing, onUpdated, onPr
         if (segmentId && !latest.doc.segments.some(segment => segment.id === segmentId)) throw new Error('음성 기록이 변경되었습니다. 발언을 다시 선택해 주세요.');
         const base = copyWorking(latest.doc);
         const singleIndex = segmentId ? latest.doc.segments.findIndex(segment => segment.id === segmentId) : null;
-        editing = { id: meetingId, base, working: copyWorking(latest.doc), mode: segmentId ? 'single' : 'names', singleIndex, selected: new Set(segmentId ? [segmentId] : []), mergingId: null, assignmentTarget: singleIndex == null ? '' : base.assignments[singleIndex] || '', newName: nextSpeakerName(base.speakers), newId: null, scrolls: {}, listeningId: null };
+        editing = { id: meetingId, base, working: copyWorking(latest.doc), mode: segmentId ? 'single' : 'names', singleIndex, selected: new Set(segmentId ? [segmentId] : []), mergingId: null, assignmentTarget: singleIndex == null ? '' : base.assignments[singleIndex] || '', newName: nextSpeakerName(base.speakers), initialNewName: nextSpeakerName(base.speakers), assignmentDraft: false, newId: null, scrolls: {}, listeningId: null };
         draw({ restore: false, scroll: 0 });
         if (!dialog.open) dialog.showModal();
         controls();
@@ -301,7 +326,7 @@ export function mountSpeakers({ bridge, getState, finishEditing, onUpdated, onPr
   }
 
   trigger.addEventListener('click', () => { void open(); });
-  bindDialogDismiss(dialog, { dismiss: close, blocked: () => saving });
+  bindDialogDismiss(dialog, { dismiss: requestClose, blocked: () => saving || preparing || confirming });
   dialog.addEventListener('close', () => { if (!saving) editing = null; });
   dialog.addEventListener('keydown', event => {
     const shortcut = (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's';
@@ -316,7 +341,7 @@ export function mountSpeakers({ bridge, getState, finishEditing, onUpdated, onPr
   body.addEventListener('input', event => {
     const id = event.target.dataset.speakerName;
     if (!editing || saving) return;
-    if (event.target.id === 'speaker-new-name') { editing.newName = event.target.value; controls(); return; }
+    if (event.target.id === 'speaker-new-name') { editing.newName = event.target.value; editing.assignmentDraft = true; controls(); return; }
     if (!id) return;
     const speaker = editing.working.speakers.find(item => item.id === id);
     if (speaker) {
@@ -335,6 +360,7 @@ export function mountSpeakers({ bridge, getState, finishEditing, onUpdated, onPr
       selectionChanged();
     } else if (event.target.id === 'speaker-assignment-target') {
       editing.assignmentTarget = event.target.value;
+      editing.assignmentDraft = true;
       byId('speaker-new-name').hidden = event.target.value !== newSpeakerValue;
       if (event.target.value === newSpeakerValue) byId('speaker-new-name').focus({ preventScroll: true });
       controls();
@@ -343,7 +369,7 @@ export function mountSpeakers({ bridge, getState, finishEditing, onUpdated, onPr
   body.addEventListener('click', async event => {
     const target = event.target.closest('button');
     if (!target || !editing || saving || target.disabled) return;
-    if (target.hasAttribute('data-speaker-close')) { close(); return; }
+    if (target.hasAttribute('data-speaker-close')) { await requestClose(); return; }
     if (target.id === 'speaker-analyze') {
       const owner = editing;
       await flushComposition();
@@ -389,6 +415,7 @@ export function mountSpeakers({ bridge, getState, finishEditing, onUpdated, onPr
         draw({ focus: 'speaker-save' });
         message('화자를 합쳤습니다. 저장하면 반영됩니다.');
       } else if (target.id === 'speaker-assign') {
+        editing.assignmentDraft = false;
         editing.working = assignSelected(editing.working, editing.selected, editing.assignmentTarget, editing.newName, () => crypto.randomUUID());
         if (editing.assignmentTarget === newSpeakerValue) {
           editing.assignmentTarget = editing.working.assignments[editing.working.segments.findIndex(segment => editing.selected.has(segment.id))];
@@ -410,5 +437,5 @@ export function mountSpeakers({ bridge, getState, finishEditing, onUpdated, onPr
     } catch (error) { message(error instanceof Error ? error.message : String(error), true); }
   });
 
-  return { render, open, reset, syncPlayback, label: segment => speakerLabel(current()?.doc, segment) };
+  return { render, open, reset, syncPlayback, beforeLeave: requestClose, label: segment => speakerLabel(current()?.doc, segment) };
 }
