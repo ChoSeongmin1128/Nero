@@ -1,0 +1,24 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { fileURLToPath } from 'node:url';
+import { build } from 'esbuild';
+import { Window } from 'happy-dom';
+const root=fileURLToPath(new URL('../',import.meta.url));
+const bundled=await build({stdin:{contents:"export { mountPeopleSettings } from './src/people-ui.jsx'; export { mountTemplateSettings } from './src/template-settings.jsx';",resolveDir:root},bundle:true,write:false,format:'iife',globalName:'Settings',jsx:'automatic',nodePaths:[root+'node_modules'],loader:{'.css':'empty'},define:{'process.env.NODE_ENV':'"production"'}});
+const wait=async condition=>{for(let n=0;n<100;n++){if(condition())return;await new Promise(resolve=>setTimeout(resolve,5));}assert.fail('Settings did not settle');};
+for(const kind of ['people','templates'])test(`${kind} settings can be dismissed while their initial read is pending`,async t=>{
+ const window=new Window({settings:{enableJavaScriptEvaluation:true,suppressInsecureJavaScriptEnvironmentWarning:true}});
+ window.document.body.innerHTML='<dialog><section></section></dialog>';window.eval(bundled.outputFiles[0].text);
+ const container=window.document.querySelector('dialog'),panel=container.querySelector('section');container.showModal();
+ let resolve;const pending=new Promise(done=>resolve=done);
+ const bridge={readPeopleCatalog:()=>pending,listTemplates:()=>pending};
+ const editor=kind==='people'?window.Settings.mountPeopleSettings({panel,container,bridge}):window.Settings.mountTemplateSettings({panel,container,bridge});
+ t.after(()=>{editor.dispose();window.happyDOM.abort();});
+ if(kind==='people')editor.show();else editor.setActive(true);
+ await wait(()=>panel.querySelector('[role="status"]'));
+ assert.equal(await editor.beforeLeave(),true);
+ editor.hide();
+ resolve(kind==='people'?{editVersion:'1',people:[],groups:[]}:[]);
+ await new Promise(done=>setImmediate(done));
+ assert.equal(panel.querySelector('[role="alert"]'),null);
+});

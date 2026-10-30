@@ -26,7 +26,7 @@ function PeopleSettings({ flow, container, controls }) {
   const state = React.useSyncExternalStore(flow.subscribe, flow.getSnapshot);
   const confirmation = useConfirmation();
   const beforeLeave = async () => {
-    if (state.busy || confirmation.request) return false;
+    if (state.writing || confirmation.request) return false;
     if (!state.draft) return true;
     if (!flow.isDirty()) { flow.discard(); return true; }
     if (!await confirmation.ask('수정 내용을 버릴까요?', '저장하지 않은 이름과 그룹 변경은 반영되지 않습니다.', '버리기')) return false;

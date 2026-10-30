@@ -3,21 +3,21 @@ const emptyContent = () => ({ name: '', description: '', prompt: '' });
 
 export function createTemplateSettingsFlow({ bridge }) {
   let epoch = 0;
-  let state = { active: false, items: [], document: null, draft: null, busy: false, error: '', message: '' };
+  let state = { active: false, items: [], document: null, draft: null, busy: false, writing: false, error: '', message: '' };
   const listeners = new Set();
   const publish = changes => { state = { ...state, ...changes }; listeners.forEach(listener => listener()); };
   const dirty = () => state.draft !== null && JSON.stringify(state.draft) !== JSON.stringify(state.document ? contentOf(state.document) : emptyContent());
-  const run = async (operation, apply) => {
+  const run = async (operation, apply, writing = false) => {
     if (!state.active || state.busy) return false;
     const current = ++epoch;
-    publish({ busy: true, error: '', message: '' });
+    publish({ busy: true, writing, error: '', message: '' });
     try {
       const result = await operation();
       if (current !== epoch || !state.active) return false;
-      publish({ ...apply(result), busy: false });
+      publish({ ...apply(result), busy: false, writing: false });
       return true;
     } catch (error) {
-      if (current === epoch && state.active) publish({ busy: false, error: error?.message || '템플릿을 불러오지 못했습니다. 다시 시도해 주세요.' });
+      if (current === epoch && state.active) publish({ busy: false, writing: false, error: error?.message || '템플릿을 불러오지 못했습니다. 다시 시도해 주세요.' });
       return false;
     }
   };
@@ -28,7 +28,7 @@ export function createTemplateSettingsFlow({ bridge }) {
     setActive(active) {
       if (state.active === active) return;
       epoch += 1;
-      publish({ active, busy: false });
+      publish({ active, busy: false, writing: false });
       if (active && !dirty()) void flow.reload();
     },
     reload() {
@@ -54,17 +54,17 @@ export function createTemplateSettingsFlow({ bridge }) {
       if (!state.draft || !state.draft.name.trim() || !state.draft.prompt.trim()) return Promise.resolve(false);
       const content = { ...state.draft };
       const document = state.document;
-      return run(() => document ? bridge.updateTemplate(document.id, document.revision, content) : bridge.createTemplate(content), saved => ({ document: saved, draft: contentOf(saved), message: '저장했습니다.' }));
+      return run(() => document ? bridge.updateTemplate(document.id, document.revision, content) : bridge.createTemplate(content), saved => ({ document: saved, draft: contentOf(saved), message: '저장했습니다.' }), true);
     },
     reset() {
       const document = state.document;
       if (!document?.builtIn) return Promise.resolve(false);
-      return run(() => bridge.resetTemplate(document.id, document.revision), saved => ({ document: saved, draft: contentOf(saved), message: '기본값으로 복원했습니다.' }));
+      return run(() => bridge.resetTemplate(document.id, document.revision), saved => ({ document: saved, draft: contentOf(saved), message: '기본값으로 복원했습니다.' }), true);
     },
     async remove() {
       const document = state.document;
       if (!document || document.builtIn) return false;
-      const removed = await run(() => bridge.deleteTemplate(document.id, document.revision), () => ({ document: null, draft: null }));
+      const removed = await run(() => bridge.deleteTemplate(document.id, document.revision), () => ({ document: null, draft: null }), true);
       if (removed) await flow.reload();
       return removed;
     },
