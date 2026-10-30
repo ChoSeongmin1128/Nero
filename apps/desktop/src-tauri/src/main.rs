@@ -15,6 +15,8 @@ mod job_journal;
 mod live_asr;
 mod live_speech;
 mod live_speech_worker;
+#[cfg(target_os = "macos")]
+mod macos_recorder;
 mod memory;
 mod microphone_permission;
 mod processing;
@@ -43,7 +45,9 @@ use std::sync::{
     Arc, Mutex,
 };
 use std::time::Duration;
-use tauri::{Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::{Emitter, Manager, WebviewWindow};
+#[cfg(not(target_os = "macos"))]
+use tauri::{WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::DialogExt;
 
 struct DesktopState {
@@ -314,6 +318,7 @@ fn snapshot_changed(previous: Option<&Snapshot>, snapshot: &Snapshot) -> bool {
     })
 }
 
+#[cfg(not(target_os = "macos"))]
 fn show_recorder_window(app: &tauri::AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("recorder") {
         window
@@ -353,6 +358,7 @@ fn show_recorder_window(app: &tauri::AppHandle) -> Result<(), String> {
     builder.build().map(|_| ()).map_err(recorder_window_error)
 }
 
+#[cfg(not(target_os = "macos"))]
 fn recorder_window_error(error: tauri::Error) -> String {
     let detail: String = error.to_string().chars().take(512).collect();
     format!("녹음 제어창을 열지 못했습니다. 앱 창에서 녹음을 조작해 주세요.\n{detail}")
@@ -397,6 +403,19 @@ mod snapshot_tests {
 }
 
 fn sync_recorder(app: &tauri::AppHandle, snapshot: &Snapshot) {
+    #[cfg(target_os = "macos")]
+    {
+        let state = app.state::<DesktopState>();
+        let mut recorder = state.recorder.lock().unwrap();
+        recorder.update(active_session(snapshot), false);
+        macos_recorder::sync(app, snapshot, recorder.is_shown());
+    }
+    #[cfg(not(target_os = "macos"))]
+    sync_floating_recorder(app, snapshot);
+}
+
+#[cfg(not(target_os = "macos"))]
+fn sync_floating_recorder(app: &tauri::AppHandle, snapshot: &Snapshot) {
     let Some(main) = app.get_webview_window("main") else {
         return;
     };
@@ -940,13 +959,10 @@ async fn start_recording(
 async fn pause_recording(
     app: tauri::AppHandle,
     window: WebviewWindow,
-    state: tauri::State<'_, DesktopState>,
     session_id: String,
 ) -> Result<Snapshot, String> {
     require_local_window(&window)?;
-    let snapshot = on_core(state.core.clone(), move |core| core.pause(&session_id)).await?;
-    publish(&app, &snapshot);
-    Ok(snapshot)
+    change_recording(app, session_id, RecordingAction::Pause).await
 }
 
 pub(crate) fn start_live_speech(app: &tauri::AppHandle, snapshot: &Snapshot) {
@@ -967,25 +983,45 @@ pub(crate) fn start_live_speech(app: &tauri::AppHandle, snapshot: &Snapshot) {
 async fn resume_recording(
     app: tauri::AppHandle,
     window: WebviewWindow,
-    state: tauri::State<'_, DesktopState>,
     session_id: String,
 ) -> Result<Snapshot, String> {
     require_local_window(&window)?;
-    let snapshot = on_core(state.core.clone(), move |core| core.resume(&session_id)).await?;
-    publish(&app, &snapshot);
-    Ok(snapshot)
+    change_recording(app, session_id, RecordingAction::Resume).await
 }
 
 #[tauri::command]
 async fn stop_recording(
     app: tauri::AppHandle,
     window: WebviewWindow,
-    state: tauri::State<'_, DesktopState>,
     session_id: String,
 ) -> Result<Snapshot, String> {
     require_local_window(&window)?;
-    let snapshot = on_core(state.core.clone(), move |core| core.stop(&session_id)).await?;
+    change_recording(app, session_id, RecordingAction::Stop).await
+}
+
+#[derive(Clone, Copy)]
+enum RecordingAction {
+    Pause,
+    Resume,
+    Stop,
+}
+
+async fn change_recording(
+    app: tauri::AppHandle,
+    session_id: String,
+    action: RecordingAction,
+) -> Result<Snapshot, String> {
+    let state = app.state::<DesktopState>();
+    let snapshot = on_core(state.core.clone(), move |core| match action {
+        RecordingAction::Pause => core.pause(&session_id),
+        RecordingAction::Resume => core.resume(&session_id),
+        RecordingAction::Stop => core.stop(&session_id),
+    })
+    .await?;
     publish(&app, &snapshot);
+    if !matches!(action, RecordingAction::Stop) {
+        return Ok(snapshot);
+    }
     let processing = state.processing.clone();
     let core = state.core.clone();
     let completed = snapshot.clone();
@@ -1103,11 +1139,17 @@ async fn export_text(
 #[tauri::command]
 fn hide_recorder(window: WebviewWindow, app: tauri::AppHandle) -> Result<(), String> {
     require_local_window(&window)?;
+    dismiss_recorder(&app)
+}
+
+fn dismiss_recorder(app: &tauri::AppHandle) -> Result<(), String> {
     app.state::<DesktopState>()
         .recorder
         .lock()
         .unwrap()
         .dismiss();
+    #[cfg(target_os = "macos")]
+    macos_recorder::hide(app);
     if let Some(recorder) = app.get_webview_window("recorder") {
         recorder
             .hide()
