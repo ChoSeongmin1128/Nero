@@ -1,3 +1,6 @@
+#[path = "capture_timing.rs"]
+mod timing;
+
 use crate::store::{
     self, CapturePhase, CaptureQuality, CaptureQualityEvent, CaptureQualityEventKind, Encoding,
     Manifest, CAPTURE_QUALITY_EVENT_KINDS, CAPTURE_QUALITY_INDIVIDUAL_EVENTS,
@@ -147,6 +150,9 @@ pub(crate) struct Signals {
     clock: Instant,
     clock_origin_ms: u64,
     frame_bytes: u64,
+    timing: timing::TimingSignals,
+    epoch: AtomicU64,
+    begin_ns: AtomicU64,
     event_count: AtomicUsize,
     event_totals: [AtomicU64; CAPTURE_QUALITY_EVENT_KINDS],
     event_slots: [EventSlot; CAPTURE_QUALITY_INDIVIDUAL_EVENTS],
@@ -168,6 +174,9 @@ impl Signals {
             clock: Instant::now(),
             clock_origin_ms: store::now(),
             frame_bytes: frame_bytes as u64,
+            timing: timing::TimingSignals::default(),
+            epoch: AtomicU64::new(0),
+            begin_ns: AtomicU64::new(0),
             event_count: AtomicUsize::new(0),
             event_totals: std::array::from_fn(|_| AtomicU64::new(0)),
             event_slots: std::array::from_fn(|_| EventSlot::new()),
@@ -278,6 +287,10 @@ impl Signals {
         );
         events.sort_by_key(|event| (event.first_observed_at_ms, event.kind as u8));
         let quality = CaptureQuality {
+            timing: self.timing.snapshot(
+                self.queued_bytes.load(Ordering::Acquire) / self.frame_bytes,
+                self.saved_bytes.load(Ordering::Acquire) / self.frame_bytes,
+            ),
             xrun_count: self.event_totals[CaptureQualityEventKind::Xrun as usize]
                 .load(Ordering::Acquire),
             realtime_denied_count: self.event_totals
@@ -327,10 +340,16 @@ pub(crate) struct CallbackSink {
     producer: Producer<u8>,
     signals: Arc<Signals>,
     frame_bytes: usize,
+    timing: timing::CallbackTiming,
 }
 
 impl CallbackSink {
+    #[cfg(test)]
     pub fn write(&mut self, input: &[u8]) {
+        self.write_with_timestamp(input, None);
+    }
+
+    fn write_with_timestamp(&mut self, input: &[u8], timestamp: Option<cpal::InputStreamTimestamp>) {
         self.signals.callbacks.fetch_add(1, Ordering::SeqCst);
         if self.signals.accepting.load(Ordering::SeqCst)
             && self.signals.fault.load(Ordering::Acquire) == 0
@@ -338,6 +357,13 @@ impl CallbackSink {
             if input.len() % self.frame_bytes != 0 {
                 self.signals.fail(FAULT_FORMAT);
             } else if !input.is_empty() {
+                if let Some(timestamp) = timestamp {
+                    self.timing.observe(
+                        &self.signals,
+                        timestamp,
+                        (input.len() / self.frame_bytes) as u64,
+                    );
+                }
                 match self.producer.write_chunk(input.len()) {
                     Ok(mut chunk) => {
                         let (first, second) = chunk.as_mut_slices();
@@ -347,6 +373,12 @@ impl CallbackSink {
                         self.signals
                             .queued_bytes
                             .fetch_add(input.len() as u64, Ordering::Release);
+                        let queued = self.signals.queued_bytes.load(Ordering::Acquire);
+                        let saved = self.signals.saved_bytes.load(Ordering::Acquire);
+                        self.signals.timing.max_pending_frames.fetch_max(
+                            queued.saturating_sub(saved) / self.frame_bytes as u64,
+                            Ordering::Relaxed,
+                        );
                         chunk.commit_all();
                     }
                     Err(_) => self.signals.fail(FAULT_OVERFLOW),
@@ -494,6 +526,7 @@ impl Capture {
             producer,
             signals: signals.clone(),
             frame_bytes: manifest.frame_bytes(),
+            timing: timing::CallbackTiming::new(manifest.sample_rate),
         };
         Ok((
             Self {
@@ -518,7 +551,7 @@ impl Capture {
             .build_input_stream_raw(
                 config.config(),
                 config.sample_format(),
-                move |data, _| sink.write(data.bytes()),
+                move |data, info| sink.write_with_timestamp(data.bytes(), Some(info.timestamp())),
                 move |error| signals.device_event(error),
                 Some(Duration::from_secs(5)),
             )
@@ -537,6 +570,11 @@ impl Capture {
 
     pub fn begin(&mut self) {
         self.manifest.phase = CapturePhase::Recording;
+        self.signals.begin_ns.store(
+            timing::elapsed_ns(self.signals.clock),
+            Ordering::Relaxed,
+        );
+        self.signals.epoch.fetch_add(1, Ordering::Release);
         self.signals.phase.store(1, Ordering::Release);
         if self.signals.fault.load(Ordering::Acquire) == 0 {
             self.signals.accepting.store(true, Ordering::Release);
@@ -559,6 +597,7 @@ impl Capture {
         if let Some(error) = self.signals.error() {
             return Err(CoreError::Audio(error));
         }
+        self.signals.epoch.fetch_add(1, Ordering::Release);
         self.signals.phase.store(1, Ordering::Release);
         self.manifest.phase = CapturePhase::Recording;
         self.signals.accepting.store(true, Ordering::SeqCst);
@@ -735,8 +774,13 @@ fn drain_audio(
             .read_chunk(count)
             .map_err(|_| CoreError::Storage("녹음 저장 대기열을 읽을 수 없습니다.".into()))?;
         let (first, second) = chunk.as_slices();
+        let started = Instant::now();
         raw.write_all(first)?;
         raw.write_all(second)?;
+        signals
+            .timing
+            .max_writer_batch_ns
+            .fetch_max(timing::elapsed_ns(started), Ordering::Relaxed);
         chunk.commit_all();
         signals
             .saved_bytes
@@ -747,6 +791,7 @@ fn drain_audio(
 }
 
 fn checkpoint(root: &Path, raw: &File, manifest: &mut Manifest, signals: &Signals) -> Result<u64> {
+    let started = Instant::now();
     raw.sync_data()?;
     manifest.saved_frames = raw.metadata()?.len() / manifest.frame_bytes() as u64;
     manifest.phase = match signals.phase.load(Ordering::Acquire) {
@@ -757,6 +802,10 @@ fn checkpoint(root: &Path, raw: &File, manifest: &mut Manifest, signals: &Signal
     manifest.quality = signals.quality();
     manifest.warning = manifest.quality.as_ref().and_then(CaptureQuality::warning);
     store::write_manifest(root, manifest)?;
+    signals
+        .timing
+        .max_checkpoint_ns
+        .fetch_max(timing::elapsed_ns(started), Ordering::Relaxed);
     Ok(manifest.saved_frames)
 }
 
@@ -914,6 +963,39 @@ mod tests {
         let (capture, sink) =
             Capture::prepare_with_capacity(&store.root, manifest, raw, capacity).unwrap();
         (temporary, store, capture, sink)
+    }
+
+    #[test]
+    fn host_timing_is_saved_with_frame_evidence_and_resets_across_pause() {
+        let (_temp, store, mut capture, mut sink) = setup(4096);
+        let stamp = |seconds| cpal::InputStreamTimestamp {
+            callback: cpal::StreamInstant::new(seconds, 0),
+            capture: cpal::StreamInstant::new(seconds, 0),
+        };
+        capture.begin();
+        sink.write_with_timestamp(&[0.25_f32.to_le_bytes(); 2].concat(), Some(stamp(1)));
+        capture.pause().unwrap();
+        sink.write_with_timestamp(&0.5_f32.to_le_bytes(), Some(stamp(2)));
+        capture.resume().unwrap();
+        sink.write_with_timestamp(&0.75_f32.to_le_bytes(), Some(stamp(100)));
+        let outcome = capture.finish(CapturePhase::Completed, None).unwrap();
+        let quality = outcome.manifest.quality.as_ref().unwrap();
+        assert!(quality.warning().is_none());
+        let timing = quality.timing.as_ref().unwrap();
+        assert_eq!(timing.callback_count, 2);
+        assert_eq!(timing.input_frames, 3);
+        assert_eq!(timing.queued_frames, 3);
+        assert_eq!(timing.saved_frames, 3);
+        assert_eq!(timing.timestamp_gap_count, 0);
+        let path = store.root.join(outcome.manifest.relative_dir());
+        assert_eq!(fs::metadata(path.join("audio.pcm")).unwrap().len(), 12);
+        assert_eq!(
+            hound::WavReader::open(path.join("audio.wav")).unwrap().duration(),
+            3,
+        );
+        let persisted: Manifest =
+            serde_json::from_slice(&fs::read(path.join("manifest.json")).unwrap()).unwrap();
+        assert_eq!(persisted.quality, outcome.manifest.quality);
     }
 
     #[test]

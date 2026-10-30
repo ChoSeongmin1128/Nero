@@ -86,7 +86,29 @@ pub struct CaptureQualityEvent {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+pub struct CaptureTiming {
+    pub callback_count: u64,
+    pub input_frames: u64,
+    pub first_callback_after_begin_ns: u64,
+    pub timestamp_gap_count: u64,
+    pub timestamp_overlap_count: u64,
+    pub timestamp_reversal_count: u64,
+    pub max_timestamp_gap_ns: u64,
+    pub max_timestamp_overlap_ns: u64,
+    pub max_arrival_interval_ns: u64,
+    pub max_host_interval_ns: u64,
+    pub max_pending_frames: u64,
+    pub queued_frames: u64,
+    pub saved_frames: u64,
+    pub max_writer_batch_ns: u64,
+    pub max_checkpoint_ns: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct CaptureQuality {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timing: Option<CaptureTiming>,
     pub xrun_count: u64,
     pub realtime_denied_count: u64,
     pub route_changed_count: u64,
