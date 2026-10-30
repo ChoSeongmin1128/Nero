@@ -1,5 +1,16 @@
 # Nero 릴리스 이력
 
+## 0.0.1 / build 43 (Mac/Windows 개인 설치 확인)
+
+- 날짜: 2026-10-30. clean source `8627858577e7a2409e060211d3a622275cfb54c6`, tree `79df24d4d38ccc10718b9fc7829be351cfb01dd8`, 연동 `0.0.1-nero.30`. 후속 문서 커밋은 설치 소스와 구분한다.
+- 전체 검토에서 확인한 저장/녹음 작업 소유권과 편집 보호 수정을 통합했다. 참석자 통합 검색/선택, 임시 이름 순서와 입력 조합 보존, 원문 단일 화면 재사용, 흑백 light/dark, 승인 고양이 헤더/앱 아이콘, 별도 메뉴바/트레이 제거를 포함한다. 녹음 HUD와 일반 앱 메뉴는 유지한다.
+- 기능 소스의 Mac Core251/CLI41/native349(선택 실기6개 제외)/frontend511, build/check와 Windows frontend511/native302(선택 실기6개 제외)/build/check가 통과했다. 최종43은 버전/연동 메타데이터만 변경했고 frontend511, 버전 검사, 양 OS release 포장을 별도로 통과했다. 브라우저 fixture와 실제 설치 화면 검증은 구분한다.
+- Mac 앱 공증 `6fd154a4-fa65-47e7-8e78-034b390fce10`, DMG 공증 `7aaf1257-73d3-42aa-b9ab-1aef99e22207` Accepted. ZIP SHA256 `4f36778e4bad723d14c38839f56caa53af76930eea4f19e5e19bcaf8b4b85fc3`, DMG SHA256 `b6102920ffd24d335011c2651c802dd663f6d7027a75905e887dbc19efdc0bff`. 서명/티켓/Gatekeeper/DMG 체크섬과 포함 앱 일치를 확인했다.
+- Mac 유휴 확인, 정상 종료와 writer lock 후 정본 installer로41에서43으로 앱만 rename 교체했다. 기존640파일과 모델 메타데이터/연결 state를 보존했고, 앱 실행 후 캘린더 상태 갱신과 제어 파일 생성 외 회의/원음/음성 기록/요약 변경은 없었다. 전체 library snapshot/모델 복제 없음. 실제 고양이 헤더, light/dark, 요약 없는 회의의 원문 표시, 참석자 선택, 설정 Esc/바깥 클릭, 창 닫기/재열기를 확인했다. Claude/ChatGPT 연동30을 업데이트하고 연결됨을 확인했다. 이전 대화의 기존 연결은 강제 종료하지 않았다.
+- Windows 담당 기기의 실제 current-user NSIS40에서43으로 설치/실행 영수증을 수신하고 source/tree/hash를 확인했다. unsigned NSIS SHA256 `4b8f009429c0f78bc86046282469de3aca26b6dfe28454be8864fdea5ccf9562`. 고양이 헤더/제목표시줄 아이콘, dark 화면과 정상 종료/재실행을 확인했다. 기존 파일5개/JSON 해시3개/클라이언트 설정1개를 보존했다. 포함 CLI는30이며 기존 Windows AI 클라이언트의 실제 새 세대 연결은 별도다. 보안 설정 변경이나 원음/모델 복제 없음.
+- 공개 updater feed/assets 게시와 온라인 자동 업데이트 전체 수락은 수행하지 않았다. 참석자 수를 모델의 강제 화자 수로 전달하거나 목소리로 신원을 자동 식별하는 기능은 포함하지 않는다. 설치 성공은 인식/화자/요약 품질 개선의 증거가 아니다. 외부 사용자 공유 없음.
+- 설치/화면 검증 후 임시 rollback 앱과 업로드 ZIP, 오래된 DMG를 휴지통으로 이동했다. 현재43/직전41 DMG와 작은 서명/공증/설치 영수증을 보존한다.
+
 ## 0.0.1 / build 42 (검토 중 보류, 미설치)
 
 - clean source `74cd8e530a32e5b774709e38a4bb27475a2da145`, tree `b692b7950829d35fc736e5ddf1f571b74e4da432`. build41에 중첩 확인창을 닫던 Esc 전파 수정이 포함됐다.
