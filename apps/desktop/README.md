@@ -53,10 +53,13 @@ the app. An early GUI check also precedes maintenance paths which can invoke an
 older uninstaller. Finish recording/processing and quit Nero before proceeding. This is a
 point-in-time process check, not a lock preventing a later app start.
 
-Initially, updates use a new verified setup executable for the same application
-identity. Automatic updates are not implemented: there is no updater plugin,
-public verification key or update endpoint. A future automatic route must retain
-the app's normal save/quit boundary and verify signed update artifacts.
+The app checks for signed updates and downloads a newer product/build in the
+background. Installation requires the user's restart action after every editor
+finishes and recording/processing is idle. The native updater verifies the exact
+bytes and signed product/build, and owns the same lifecycle gate as normal quit.
+The configured public feed is a deployment requirement; it has not been published
+by implementing the client. See `docs/app-updates.md` for packaging and recovery.
+Older builds without this client need a verified setup executable first.
 Downgrades across product versions are disabled. Rebuilds sharing `0.0.1` are
 still the same NSIS version; the separate build receipt does not prevent an older
 development build from being installed. Follow the first-user-sharing version

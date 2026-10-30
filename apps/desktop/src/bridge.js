@@ -124,6 +124,7 @@ export const appUpdateStatus = () => call('app_update_status');
 export const checkAppUpdate = () => call('app_update_check');
 export const downloadAppUpdate = () => call('app_update_download');
 export const installAppUpdate = () => call('app_update_install');
+export const quitAppUpdateRecovery = () => call('app_update_recovery_quit');
 export async function subscribeAppUpdate(callback) {
   if (!isTauri()) return () => {};
   return listen('nero://app-update', event => callback(event.payload));
