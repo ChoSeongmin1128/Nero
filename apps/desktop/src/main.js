@@ -163,8 +163,11 @@ function renderLibraryEmpty(query) {
 function refreshMeetingSearch() { if (byId('search').value.trim()) meetingSearch.update(byId('search').value, state.libraryFilter === 'trash'); }
 
 function renderSearchStatus() {
-  const text = state.librarySearchPending ? '회의 내용 검색 중' : state.librarySearchUnavailable ? '일부 회의 내용을 검색하지 못했습니다.' : '';
-  setHTML('library-search-status', state.librarySearchPending ? '<span class="activity-spinner" aria-hidden="true"></span> ' + escape(text) : escape(text));
+  const query = byId('search').value.trim();
+  const status = state.librarySearchPending ? '회의 내용 검색 중' : state.librarySearchUnavailable ? '일부 회의 내용을 검색하지 못했습니다.' : '';
+  const text = [query ? `검색: ${query}` : '', status].filter(Boolean).join(' - ');
+  setHTML('library-search-message', state.librarySearchPending ? '<span class="activity-spinner" aria-hidden="true"></span> ' + escape(text) : escape(text));
+  byId('library-search-clear').hidden = !query;
   byId('library-search-status').hidden = !text;
 }
 
@@ -217,18 +220,25 @@ function renderRecording(meeting) {
   prepareAudio(meeting, Boolean(ownSession));
 }
 
+function clearAudio() {
+  state.audioKey = ''; state.audioRequest++; state.audioLoading = null;
+  const player = byId('audio-player');
+  player.pause(); player.removeAttribute('src'); player.load();
+  byId('audio-region').hidden = true;
+  byId('retry-audio').hidden = true;
+  byId('audio-message').textContent = '';
+}
+
 async function prepareAudio(meeting, recording, force = false) {
   const key = recording || !meeting.audio ? '' : `${meeting.id}:${meeting.audio.relativePath}:${meeting.audio.frames}`;
+  byId('audio-region').hidden = !key;
   if (state.audioKey === key && !force) return state.audioLoading;
-  const request = ++state.audioRequest;
-  byId('retry-audio').hidden = true;
+  clearAudio();
+  if (!key) return;
+  const request = state.audioRequest;
   state.audioKey = key;
   const player = byId('audio-player');
-  player.pause();
-  player.removeAttribute('src');
-  player.load();
-  byId('audio-region').hidden = !key;
-  if (!key) { state.audioLoading = null; return; }
+  byId('audio-region').hidden = false;
   byId('audio-message').dataset.state = 'loading';
   byId('audio-message').textContent = '녹음 파일을 여는 중입니다.';
   const loading = (async () => {
@@ -400,7 +410,7 @@ function acceptSnapshot(snapshot) {
   state.snapshot = snapshot;
   state.snapshotKey = key;
   state.connected = true;
-  if (state.selectedId && !snapshot.meetings.some(meeting => meeting.id === state.selectedId && meeting.deletedAt == null)) { state.selectedId = null; state.draft = null; state.transcriptDraft = null; state.summary = null; state.libraryOpen = true; speakers.reset(); state.audioKey = ''; state.audioRequest++; byId('audio-player').pause(); byId('audio-player').removeAttribute('src'); byId('audio-player').load(); }
+  if (state.selectedId && !snapshot.meetings.some(meeting => meeting.id === state.selectedId && meeting.deletedAt == null)) { state.selectedId = null; state.draft = null; state.transcriptDraft = null; state.summary = null; state.libraryOpen = true; speakers.reset(); clearAudio(); }
   const saved = currentMeeting();
   const draft = state.draft;
   if (saved && draft?.id === saved.id && !draft.dirty && !draft.saving && (draft.title !== saved.title || draft.notes !== (saved.notes || ''))) {
@@ -833,6 +843,12 @@ for (const id of ['meeting-title', 'meeting-notes']) {
   byId(id).addEventListener('compositionstart', () => { state.composing = true; clearTimeout(state.saveTimer); });
   byId(id).addEventListener('compositionend', () => { state.composing = false; onEdit(); });
 }
+byId('library-search-clear').addEventListener('click', () => {
+  byId('search').value = '';
+  meetingSearch.update('', state.libraryFilter === 'trash');
+  render();
+  byId('library-title').focus({ preventScroll: true });
+});
 byId('search').addEventListener('input', () => {
   state.notificationsOpen = false; state.libraryOpen = true; library.resetSelection(); render();
   meetingSearch.update(byId('search').value, state.libraryFilter === 'trash');
@@ -1340,10 +1356,10 @@ byId('recording-quality').addEventListener('click', event => {
 
 function seekRecording(seconds) {
   const player = byId('audio-player');
-  const meetingId = state.selectedId, audioKey = state.audioKey;
+  const meetingId = state.selectedId, audioKey = state.audioKey, audioRequest = state.audioRequest;
   if (player.getAttribute('src')) {
     player.currentTime = seconds;
-    void requestAudioPlayback(player, { isCurrent: () => state.selectedId === meetingId && state.audioKey === audioKey, onError: showError });
+    void requestAudioPlayback(player, { isCurrent: () => state.selectedId === meetingId && state.audioKey === audioKey && state.audioRequest === audioRequest, onError: showError });
   }
 }
 

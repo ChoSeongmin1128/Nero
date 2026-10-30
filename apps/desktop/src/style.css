@@ -466,3 +466,7 @@ html.recorder-document { background: transparent; }
 .result-transcript-home .transcript-heading > h2 { margin-right: auto; }
 .result-transcript-home .transcript-scroll { padding-inline: 0; }
 .meeting-detail[data-inline-transcript="true"] .summary-section { flex: none; overflow: visible; padding-bottom: 0; }
+
+.library-search-summary { display: flex; align-items: center; gap: 10px; margin-block: 0 12px; }
+.library-search-summary > span { min-width: 0; overflow-wrap: anywhere; }
+.library-search-summary > button { flex: none; }

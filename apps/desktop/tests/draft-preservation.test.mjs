@@ -1718,3 +1718,31 @@ test('a summary read for an earlier attendee snapshot cannot replace the current
   latest.resolve({ document, stale: true });
   await tick();
 });
+
+test('trashing a playing meeting clears the player before an empty draft or recording is shown', async()=>{
+ const page=await openApp();
+ const meeting=page.app.state.snapshot.meetings[0];
+ meeting.audio={relativePath:'audio.wav',frames:16000,sampleRate:16000};
+ page.bridge.audioUrl=async()=> 'asset://old-audio';
+ await page.app.prepareAudio(meeting,false);
+ assert.equal(page.element('audio-region').hidden,false);
+ page.app.acceptSnapshot({...page.app.state.snapshot,revision:100,meetings:page.app.state.snapshot.meetings.map(item=>({...item,deletedAt:1}))});
+ assert.equal(page.element('audio-region').hidden,true);
+ assert.equal(page.element('audio-player').getAttribute('src'),null);
+ await page.app.prepareAudio({id:'draft'},false);
+ assert.equal(page.element('audio-region').hidden,true);
+ await page.app.prepareAudio({id:'draft'},true);
+ assert.equal(page.element('audio-region').hidden,true);
+});
+
+test('active library search remains visible and clearable when navigation is collapsed', async()=>{
+ const page=await openApp();
+ page.element('search').value='검토';
+ await page.element('search').listeners.get('input')();
+ assert.equal(page.element('library-search-status').hidden,false);
+ assert.match(page.element('library-search-message').innerHTML,/검토/);
+ assert.equal(page.element('library-search-clear').hidden,false);
+ await page.element('library-search-clear').listeners.get('click')();
+ assert.equal(page.element('search').value,'');
+ assert.equal(page.element('library-search-status').hidden,true);
+});
