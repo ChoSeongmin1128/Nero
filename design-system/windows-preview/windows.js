@@ -3,7 +3,6 @@
   const $$ = selector => [...document.querySelectorAll(selector)];
   const icon = window.NeroIcons;
   const state = {phase:'idle',title:'10월 독서 모임',elapsedLabel:'00:00',error:null,color:'green',mode:'light',toast:'upcoming',notification:'upcoming',countdownLabel:'5분 후',control:true,closed:false,minimized:false,maximized:false,ready:false};
-  const system = matchMedia('(prefers-color-scheme: dark)');
   const frame = $('#windows-app-frame');
   const desktop = $('#windows-desktop');
   const appWindow = $('#app-window');
@@ -14,7 +13,7 @@
   const active = () => ['recording','paused'].includes(state.phase)||!!state.error;
   function feedback(text){$('#windows-feedback').textContent=text;}
   function send(action,extra={}) { frame.contentWindow?.postMessage({type:'windows-nero:command',action,...extra},location.origin); }
-  function appearance(){const resolved=state.mode==='system'?(system.matches?'dark':'light'):state.mode;document.documentElement.dataset.color=state.color;document.documentElement.dataset.mode=resolved;send('appearance',{color:state.color,mode:state.mode});}
+  function appearance(){const resolved=state.mode;document.documentElement.dataset.color=state.color;document.documentElement.dataset.mode=resolved;send('appearance',{color:state.color,mode:state.mode});}
   function showWindow(){state.closed=false;state.minimized=false;appWindow.hidden=false;$('#window-hidden-note').hidden=true;$('#taskbar-nero').classList.remove('is-minimized');send('open');render();feedback('Nero 창을 열었습니다.');}
   function hideWindow(closed=false){state.closed=closed;state.minimized=!closed;appWindow.hidden=true;$('#window-hidden-note').hidden=false;$('#taskbar-nero').classList.add('is-minimized');$('#window-hidden-note strong').textContent=closed?'Nero 창이 닫혀 있습니다':'Nero 창이 최소화되어 있습니다';render();$('#taskbar-nero').focus();feedback(active()?'녹음은 계속됩니다. 알림 영역에서 다시 열 수 있습니다.':'알림 영역과 작업 표시줄에서 다시 열 수 있습니다.');}
   function closeTray(){ $('#tray-flyout').hidden=true;$('#tray-toggle-menu').setAttribute('aria-expanded','false'); }
@@ -44,7 +43,7 @@
   function openToast(){showWindow();if(state.toast!=='finished')send('prepare');state.toast=null;render();}
   $('#toast-body').addEventListener('click',openToast);$('#toast-open').addEventListener('click',openToast);$('#notification-toggle').addEventListener('click',()=>{if(active()){feedback('진행 중인 녹음은 알림 영역에서 확인할 수 있습니다.');return;}state.toast=state.phase==='finished'?'finished':'upcoming';closeTray();render();});
   dialog.addEventListener('click',e=>{if(e.target.id==='stop-cancel')dialog.close();if(e.target.id==='stop-confirm'){send('stop',{ownerId:stopOwnerId});dialog.close();closeTray();render();}});dialog.addEventListener('close',()=>{if(modalReturnFocus?.isConnected&&!modalReturnFocus.closest('[hidden]'))modalReturnFocus.focus();else $('#tray-toggle-menu').focus();});
-  $('#windows-color').addEventListener('change',e=>{state.color=e.target.value;appearance();});$('#windows-mode').addEventListener('change',e=>{state.mode=e.target.value;appearance();});system.addEventListener('change',()=>{if(state.mode==='system')appearance();});
+  $('#windows-mode').addEventListener('change',e=>{state.mode=e.target.value;appearance();});
   function resetPositions(){state.maximized=false;appWindow.classList.remove('is-maximized');appWindow.style.removeProperty('left');appWindow.style.removeProperty('top');$('#floating-recorder').style.removeProperty('left');$('#floating-recorder').style.removeProperty('right');$('#floating-recorder').style.removeProperty('top');$('#window-maximize').innerHTML=icon('square');$('#window-maximize').setAttribute('aria-label','창 최대화');showWindow();feedback('창과 녹음 제어기의 위치를 복원했습니다.');}
   $('#windows-reset').addEventListener('click',resetPositions);$('#windows-advance').addEventListener('click',()=>send('advance'));
   function draggable(handle,target,isWindow){let drag=null;handle.addEventListener('pointerdown',e=>{if(e.button!==0||e.target.closest('button')||(isWindow&&state.maximized))return;const box=target.getBoundingClientRect();const bounds=desktop.getBoundingClientRect();drag={x:e.clientX,y:e.clientY,left:box.left-bounds.left,top:box.top-bounds.top};handle.setPointerCapture(e.pointerId);});handle.addEventListener('pointermove',e=>{if(!drag)return;const maxX=Math.max(0,desktop.clientWidth-target.offsetWidth);const maxY=Math.max(0,desktop.clientHeight-48-target.offsetHeight);target.style.left=Math.max(0,Math.min(maxX,drag.left+e.clientX-drag.x))+'px';target.style.top=Math.max(0,Math.min(maxY,drag.top+e.clientY-drag.y))+'px';if(!isWindow)target.style.right='auto';});const end=()=>drag=null;handle.addEventListener('pointerup',end);handle.addEventListener('pointercancel',end);handle.addEventListener('lostpointercapture',end);}

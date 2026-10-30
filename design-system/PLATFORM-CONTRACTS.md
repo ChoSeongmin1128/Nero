@@ -3,7 +3,7 @@
 | 책임 | 공통 | macOS 브라우저 예제 | Windows 브라우저 예제 |
 | --- | --- | --- | --- |
 | 제품 화면 | 회의, 참석자/그룹, 자료, 전사, 질문, 회의록 | `prototype/` 재사용 | 동일 `prototype/` iframe 재사용 |
-| 색상 | 단일 녹색 강조와 light/dark/system, 역할/상태 구분 | 공유 CSS | 공유 CSS |
+| 색상 | 단일 녹색 강조와 light/dark, 역할/상태 구분 | 공유 CSS | 공유 CSS |
 | 글꼴 | system/Korean fallback | 공유 `--font-ui/--font-code` | 외곽/iframe 모두 같은 공통 글꼴 계약 |
 | 녹음 상태 | 준비/녹음/일시정지/종료/오류 의미 | 메뉴 막대, 노치/부유 제어기 | 트레이, 부유 제어기 |
 | 알림 | 제목, 남은 시간, 열기/미루기/닫기 | 한 줄 compact 알림 | Windows 형식의 브라우저 알림 |

@@ -3,8 +3,7 @@
   const windowsDesign = new URLSearchParams(location.search).get("platform") === "windows" && new URLSearchParams(location.search).get("session") === "windows-design";
   const nativeKey = document.documentElement.dataset.appearanceStorage;
   const key = nativeKey || (windowsDesign ? "nero-prototype-v3-windows-design-appearance" : "nero-design-system-v1-appearance");
-  const colors = new Set(["green"]);
-  const modes = new Set(["light", "dark", "system"]);
+  const modes = new Set(["light", "dark"]);
   const legacy = {
     nero: { color: "green", mode: "light" },
     slate: { color: "blue", mode: "light" },
@@ -12,31 +11,29 @@
     graphite: { color: "purple", mode: "dark" },
     system: { color: "green", mode: "system" },
   };
+  const media = window.matchMedia("(prefers-color-scheme: dark)");
+  const initialMode = nativeKey && media.matches ? "dark" : "light";
+  function mode(value) { return modes.has(value) ? value : initialMode; }
   function decode(saved) {
-    if (Object.hasOwn(legacy, saved)) return { ...legacy[saved], color: "green" };
+    if (Object.hasOwn(legacy, saved)) return { color: "green", mode: mode(legacy[saved].mode) };
     try {
       const value = JSON.parse(saved);
-      if (modes.has(value?.mode))
-        return { color: "green", mode: value.mode };
+      if (value && typeof value === "object")
+        return { color: "green", mode: mode(value.mode) };
     } catch {}
-    return { color: "green", mode: nativeKey ? "system" : "light" };
+    return { color: "green", mode: initialMode };
   }
-  const media = window.matchMedia("(prefers-color-scheme: dark)");
   let preference = decode(null);
   try {
     preference = decode(localStorage.getItem(key));
+    localStorage.setItem(key, JSON.stringify(preference));
   } catch {
     // Browsers that block storage can still switch for this page session.
   }
   function apply() {
     const root = document.documentElement;
     root.setAttribute("data-appearance-changing", "");
-    const mode =
-      preference.mode === "system"
-        ? media.matches
-          ? "dark"
-          : "light"
-        : preference.mode;
+    const mode = preference.mode;
     root.dataset.color = preference.color;
     root.dataset.mode = mode;
     root.dataset.appearance = `${preference.color}-${mode}`;
@@ -58,9 +55,6 @@
   }
   window.NeroAppearance = { apply };
   apply();
-  media.addEventListener("change", () => {
-    if (preference.mode === "system") apply();
-  });
   window.addEventListener("storage", (event) => {
     if (event.key !== key && event.key !== null) return;
     preference = decode(event.newValue);
@@ -82,15 +76,8 @@
     });
     dialog.addEventListener("change", (event) => {
       const input = event.target;
-      const axis =
-        input.name === "appearance-color"
-          ? "color"
-          : input.name === "appearance-mode"
-            ? "mode"
-            : null;
-      if (!axis || !(axis === "color" ? colors : modes).has(input.value))
-        return;
-      preference = { ...preference, [axis]: input.value };
+      if (input.name !== "appearance-mode" || !modes.has(input.value)) return;
+      preference = { color: "green", mode: input.value };
       apply();
       try {
         localStorage.setItem(key, JSON.stringify(preference));

@@ -8,7 +8,7 @@
 
 | 파일/경로 | 소유하는 것 |
 | --- | --- |
-| `appearance.css`, `appearance.js` | 중립색과 단일 녹색 강조, light/dark/system 선택 |
+| `appearance.css`, `appearance.js` | 중립색과 단일 녹색 강조, light/dark 선택 |
 | `typography.css` | 시스템/한글/코드 글꼴, 크기/굵기/줄간격/자간 역할 |
 | `components.css` | 버튼, 입력, 필드, 배지, 선택, 내용 탭, 오류, 모달, 설정 선택의 기본 스타일 |
 | `navigation.mjs`, `navigation-width.mjs`, `navigation.css`, `action-menu.mjs` | 최근 회의 행/회의 작업 메뉴, hover 탐색, 너비 조절과 메뉴 위치/키보드/닫기 동작. 제품과 탐색 시안이 같은 구현 사용 |

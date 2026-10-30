@@ -117,9 +117,9 @@ function build() {
     if (!match) throw new Error(`Missing appearance set: ${name}`);
     return [...match[1].matchAll(/"([^"]+)"/g)].map((entry) => entry[1]);
   };
-  const colorIds = setValues('colors');
+  const colorIds = ['green'];
   const preferenceModes = setValues('modes');
-  const labels = { green: 'Nero', blue: 'Slate', purple: 'Iris', mono: 'Mono', amber: 'Ochre', rose: 'Rose' };
+  const labels = { green: 'Nero' };
   const tokens = declarations.filter((item) => item.property.startsWith('--')).map(({ property, ...item }) => ({
     ...item,
     name: property,
@@ -180,7 +180,6 @@ function build() {
       colors: colorIds.map((id) => ({ id, label: labels[id] || id })),
       preferenceModes,
       resolvedModes: ['light', 'dark'],
-      system: { rule: 'prefers-color-scheme: dark resolves dark; otherwise light', source: { file: 'appearance.js', line: appearanceJS.slice(0, appearanceJS.indexOf('preference.mode === "system"')).split('\n').length } },
       status: {
         names: statusNames, independentOfColor: independentStatus, modeDependent: true,
         roles: statusNames.map((name) => ({
@@ -188,7 +187,7 @@ function build() {
           independentOfColor: ['light', 'dark'].every((mode) => new Set(resolved.filter((theme) => theme.mode === mode).map((theme) => theme.values[name])).size === 1),
           values: Object.fromEntries(resolved.map((theme) => [theme.id, theme.values[name]])),
         })),
-        exception: 'Mono overrides ready to gray. Warning and recording keep their semantic hues.',
+        exception: null,
       },
       resolved,
       desktop: {

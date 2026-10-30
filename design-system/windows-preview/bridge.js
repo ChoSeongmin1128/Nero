@@ -4,13 +4,12 @@
   document.body.classList.add("windows-design");
   let adapter, engine, timer;
   let appearance = { color: "green", mode: "light" };
-  const media = matchMedia("(prefers-color-scheme: dark)");
   const scenarios = { upcoming: "upcoming", recording: "recording", paused: "paused", error: "mic-disconnected", permission: "permission", finished: "finished", long: "long-title", unbroken: "unbroken-title" };
   const send = (message) => { if (parent !== root) parent.postMessage(message, location.origin); };
   function applyAppearance(value) {
-    if (!["green", "blue", "purple", "mono", "amber", "rose"].includes(value?.color) || !["light", "dark", "system"].includes(value?.mode)) return;
-    appearance = { color: value.color, mode: value.mode };
-    const mode = appearance.mode === "system" ? media.matches ? "dark" : "light" : appearance.mode;
+    if (!["light", "dark"].includes(value?.mode)) return;
+    appearance = { color: "green", mode: value.mode };
+    const mode = appearance.mode;
     document.documentElement.dataset.color = appearance.color;
     document.documentElement.dataset.mode = mode;
     document.documentElement.dataset.appearance = appearance.color + "-" + mode;
@@ -89,6 +88,5 @@
     event.preventDefault();
     send({ type: "windows-nero:open-window" });
   }, true);
-  media.addEventListener("change", () => { if (appearance.mode === "system") applyAppearance(appearance); });
   window.addEventListener("pagehide", () => clearInterval(timer));
 })(window);

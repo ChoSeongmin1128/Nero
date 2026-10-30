@@ -29,24 +29,31 @@ function openAppearance({ saved, dark = false, native = true, blocked = false } 
   return { root, storage, inputs, media, listeners, change(name, value) { listeners.get('dialog-change')({ target: { name: `appearance-${name}`, value } }); } };
 }
 
-test('native default follows system while explicit light or dark ignores system changes', () => {
+test('initial brightness resolves once and only explicit light or dark remains selectable', () => {
   const app = openAppearance({ dark: true });
-  assert.equal(app.root.dataset.appearancePreference, 'green-system');
+  assert.equal(app.root.dataset.appearancePreference, 'green-dark');
+  app.media.matches = false;
+  assert.equal(app.listeners.has('system'), false);
   assert.equal(app.root.dataset.mode, 'dark');
   app.change('mode', 'light');
-  app.listeners.get('system')();
-  assert.equal(app.root.dataset.mode, 'light');
   app.change('mode', 'system');
-  app.media.matches = false;
-  app.listeners.get('system')();
   assert.equal(app.root.dataset.mode, 'light');
+  assert.equal(openAppearance({ saved: app.storage.get('nero.appearance.v1'), dark: true }).root.dataset.mode, 'light');
+});
+
+test('legacy system mode resolves to a persisted fixed brightness', () => {
+  for (const saved of ['system', JSON.stringify({ color: 'blue', mode: 'system' })]) {
+    const app = openAppearance({ saved, dark: true });
+    const reopened = openAppearance({ saved: app.storage.get('nero.appearance.v1'), dark: false });
+    assert.equal(reopened.root.dataset.appearancePreference, 'green-dark');
+  }
 });
 
 test('legacy colors normalize to the single accent while preserving brightness', () => {
   const app = openAppearance();
   for (const color of ['green', 'blue', 'purple', 'mono', 'amber', 'rose']) {
     app.listeners.get('storage')({ key: 'nero.appearance.v1', newValue: JSON.stringify({ color, mode: 'light' }) });
-    for (const mode of ['light', 'dark', 'system']) {
+    for (const mode of ['light', 'dark']) {
       app.change('mode', mode);
       const reopened = openAppearance({ saved: app.storage.get('nero.appearance.v1') });
       assert.equal(reopened.root.dataset.appearancePreference, `green-${mode}`);
@@ -62,7 +69,7 @@ test('recorder appearance follows the shared preference storage event', () => {
   recorder.listeners.get('storage')({ key: 'unrelated', newValue: null });
   assert.equal(recorder.root.dataset.appearance, 'green-dark');
   recorder.listeners.get('storage')({ key: 'nero.appearance.v1', newValue: null });
-  assert.equal(recorder.root.dataset.appearancePreference, 'green-system');
+  assert.equal(recorder.root.dataset.appearancePreference, 'green-light');
 });
 
 test('invalid saved values and blocked storage keep theme controls usable', () => {
