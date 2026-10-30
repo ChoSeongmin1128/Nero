@@ -376,6 +376,7 @@ async function changeMeetingDate() {
 
 function acceptSnapshot(snapshot) {
   if (snapshot.revision != null && state.snapshot.revision != null && snapshot.revision < state.snapshot.revision) return;
+  const previousMeeting = currentMeeting();
   const key = JSON.stringify([snapshot.meetings, snapshot.folders || [], snapshot.session]);
   const changed = !state.connected || state.snapshotKey !== key;
   const stableSession = session => session ? { ...session, elapsedMs: 0, savedFrames: 0 } : null;
@@ -387,12 +388,18 @@ function acceptSnapshot(snapshot) {
   const saved = currentMeeting();
   const draft = state.draft;
   if (saved && draft?.id === saved.id && !draft.dirty && !draft.saving && (draft.title !== saved.title || draft.notes !== (saved.notes || ''))) {
-    const notesChanged = draft.savedNotes !== (saved.notes || '');
     state.draft = { ...draft, title: saved.title, notes: saved.notes || '', savedNotes: saved.notes || '', version: draft.version + 1 };
     byId('meeting-title').value = saved.title;
     byId('meeting-notes').value = saved.notes || '';
-    if (notesChanged && state.summary?.document?.notesSha256 != null) {
-      state.summary = { ...state.summary, stale: true };
+  }
+  if (saved && previousMeeting?.id === saved.id) {
+    const notesChanged = (previousMeeting.notes || '') !== (saved.notes || '');
+    const attendeesChanged = JSON.stringify(previousMeeting.attendees || []) !== JSON.stringify(saved.attendees || []);
+    const document = state.summary?.document;
+    if ((!draft?.saving && notesChanged && document?.notesSha256 != null)
+      || (attendeesChanged && document?.attendeesSha256 != null)
+      || (!state.summaryLoaded && (notesChanged || attendeesChanged))) {
+      if (state.summary) state.summary = { ...state.summary, stale: true };
       void loadSummary(saved.id);
     }
   }
@@ -1275,12 +1282,18 @@ function renderSummary(meeting) {
 }
 async function loadSummary(id) {
   const request = ++state.summaryLoadId;
+  const references = () => {
+    const meeting = state.snapshot.meetings.find(item => item.id === id);
+    return JSON.stringify([meeting?.notes || '', meeting?.attendees || []]);
+  };
+  const startingReferences = references();
+  const current = () => request === state.summaryLoadId && id === state.selectedId && startingReferences === references();
   try {
     const summary = await bridge.readSummary(id);
-    if (request !== state.summaryLoadId || id !== state.selectedId) return;
+    if (!current()) return;
     state.summary = summary; state.summaryKey = ''; state.summaryLoaded = true; state.summaryLoadError = false;
     render();
-  } catch (error) { if (request === state.summaryLoadId && id === state.selectedId) { state.summaryLoaded = true; state.summaryLoadError = true; showError(error); render(); } }
+  } catch (error) { if (current()) { state.summaryLoaded = true; state.summaryLoadError = true; showError(error); render(); } }
 }
 byId('retry-transcript-load').addEventListener('click', () => { if (state.selectedId) void loadTranscript(state.selectedId); });
 byId('retry-summary-load').addEventListener('click', () => { if (state.selectedId) void loadSummary(state.selectedId); });

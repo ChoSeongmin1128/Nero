@@ -61,3 +61,49 @@ test('saving a renamed person keeps the editor open on a catalog conflict', asyn
   flow.setActive(true); await wait(() => !flow.getSnapshot().busy); flow.edit('person', { id: 'p', name: '기존' }); flow.change({ name: '수정' });
   assert.equal(await flow.save(), false); assert.equal(flow.getSnapshot().draft.name, '수정'); assert.equal(flow.getSnapshot().catalog.people[0].name, '기존');
 });
+
+test('a completed external write refreshes the catalog after an older in-flight read', async () => {
+  let finishFirst, reads = 0;
+  const updated = { ...empty(), editVersion: 'catalog:2', people: [{ id: 'p', name: '저장된 이름' }] };
+  const flow = createPeopleCatalogFlow({ bridge: { readPeopleCatalog: () => ++reads === 1 ? new Promise(resolve => { finishFirst = resolve; }) : Promise.resolve(updated) } });
+  flow.setActive(true);
+  flow.refreshIfClean();
+  finishFirst(empty());
+  await wait(() => !flow.getSnapshot().busy);
+  assert.equal(reads, 2);
+  assert.equal(flow.getSnapshot().catalog.editVersion, 'catalog:2');
+});
+
+test('completed-write refresh signals coalesce while busy and a failed refresh does not loop', async () => {
+  let finishFirst, reads = 0;
+  const flow = createPeopleCatalogFlow({ bridge: { readPeopleCatalog: () => ++reads === 1 ? new Promise(resolve => { finishFirst = resolve; }) : Promise.reject(Error('목록 조회 실패')) } });
+  flow.setActive(true);
+  flow.refreshIfClean(); flow.refreshIfClean(); flow.refreshIfClean();
+  finishFirst(empty());
+  await wait(() => !flow.getSnapshot().busy);
+  assert.equal(reads, 2);
+  assert.match(flow.getSnapshot().error, /조회 실패/);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(reads, 2);
+});
+
+test('a completed external write during a successful catalog save is refreshed after saving', async () => {
+  let save, reads = 0;
+  const current = { ...empty(), people: [{ id: 'p', name: '기존 이름' }] };
+  const newest = { ...current, editVersion: 'catalog:3', people: [{ id: 'p', name: '다른 화면에서 저장한 이름' }] };
+  const flow = createPeopleCatalogFlow({ bridge: {
+    readPeopleCatalog: async () => ++reads === 1 ? current : newest,
+    replacePeopleCatalog: () => new Promise(resolve => { save = resolve; }),
+  } });
+  flow.setActive(true); await wait(() => !flow.getSnapshot().busy);
+  flow.edit('person', current.people[0]); flow.change({ name: '내가 저장한 이름' });
+  const saving = flow.save(); flow.refreshIfClean();
+  save({ ...current, editVersion: 'catalog:2', people: [{ id: 'p', name: '내가 저장한 이름' }] });
+  await saving; await wait(() => !flow.getSnapshot().busy);
+  assert.equal(reads, 2);
+  assert.equal(flow.getSnapshot().catalog.editVersion, 'catalog:3');
+  flow.edit('person', newest.people[0]); flow.change({ name: '미저장 초안' });
+  flow.refreshIfClean();
+  assert.equal(reads, 2);
+  assert.equal(flow.getSnapshot().draft.name, '미저장 초안');
+});
