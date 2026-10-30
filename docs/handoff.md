@@ -1,89 +1,51 @@
 # Nero handoff
 
-## Windows distribution source review (2026-10-30)
+## Current integration (2026-10-30)
 
-Native Windows path comparison now preserves separator equivalence for installed
-agent commands and session directories while retaining executable, token, source
-and generation checks. The earlier eleven agent-connection failures below are
-resolved in this source. The Windows desktop suite passes 279 tests with five
-explicit acceptance skips; Core/CLI/frontend checks also pass.
+Build40 uses clean source `80f8b47eaa1191d56eb581a99e8f063ce8f60d55` and
+agent28. Mac signed/notarized app and DMG were installed through the canonical
+writer-locked, app-only installer after idle checks and normal UI quit. Existing
+library hashes, model metadata and connection registrations were preserved without
+copying the library or models. Native settings, notification center and both current
+agent registrations were checked. Windows independently built and installed the same
+source as an unsigned current-user development NSIS, preserving its existing models
+and agent files. Receipts are private; source/hash boundaries are in
+[Release history](release-history.md). No public release or product push occurred.
 
-NSIS checks reject an active app instead of force-closing it, including before
-interactive maintenance can invoke an older uninstaller. Downgrades across product
-versions are disabled; same-version development build ordering is not enforced.
-Windows agent generation 27 uses a static MSVC CRT and CI checks its imports, so a
-separately copied CLI does not need a global C++ redistributable. The summary
-packager rejects CRTs older than the qualified baseline and verifies staged files;
-CI verifies CPU/Vulkan executable startup without loading model weights. Windows
-CI also stages the pinned speech package before building an installer.
+The integrated changes cover informational recording diagnostics, immediate preserved
+transcript previews when a summary is absent, native macOS notch controls, calendar
+title/date defaults, shared Windows creation/recording actions and matching sidebar
+selection/hit areas. Actionable integration updates and existing-account reconnection
+issues share the notification center. Temporary checks and optional unconnected
+features do not generate notices. Resolved notices disappear; acknowledgement stays
+in session memory. Opening a notice routes to the corresponding settings section
+without initiating an installation or connection.
 
-An unsigned development NSIS installer was built locally. This is not a user
-release or evidence of real-library installation, update/removal, live client,
-microphone, long-recording or 8 GB laptop acceptance. Automatic updates and a
-model-only/full-data cleanup interface remain unimplemented. See the desktop
-README for the standard uninstaller's data and retained-agent behavior.
+Mac Core231/CLI39/desktop323 (five hardware acceptance skips) and frontend445
+passed for39. Windows Core222/CLI38/desktop281 (five skips) and frontend445 passed
+on its device. Build40 changes frontend only: its453 tests and both native release
+builds passed. Earlier Rust results are referenced, not represented as rerun on40.
+Browser checks use actual product components with an isolated native bridge. They
+verify interactions and layout, not microphone capture, model accuracy or live OAuth.
+The full integration diff was self-reviewed; no independent reviewer was used.
 
-## Live speech source work (2026-10-30)
+The signed Mac CLI28 and generated integration payloads remain byte-identical
+across39/40. Windows also reuses its verified39 CLI28 and all generated payload
+files after source-contract/hash checks; its local packaging override is recorded
+in the private receipt. Host registration generation matches the installed Mac
+payload; no client reinstall was needed for40. Read-only queries still share
+`LibraryReader`, and explicit mutations retain writer/CAS boundaries.
 
-The working tree adds recording-time saved-PCM consumption, persistent independent
-ASR/speaker streams, 60–180 second provisional text publication and final evidence
-reuse through ordinary transcript checkpoints. See [live speech](live-speech.md).
-This source work does not replace an installed app or establish macOS, microphone,
-8 GB laptop performance or accuracy acceptance. Existing private evaluations retain
-their original scope; do not attribute them to this implementation.
-
-Windows source validation passed: 216 core tests, 38 CLI tests, 426 frontend tests,
-frontend build, native desktop check and development executable build. The extra
-desktop Rust suite has 262 passes, 11 agent-connection failures and five explicit
-acceptance skips. The supplied live-artifact publication/reopen acceptance was run
-separately and passed. The agent-connection failures remain unresolved; do not
-report the full native test suite as passing. Private audio measurements are kept
-outside product Git. No installer or existing user library was changed.
+Automatic updates remain research work. Real microphone/device interruption,
+natural three-hour full-pipeline processing, eight-person speaker quality, low-memory
+laptop performance, reminder delivery and failure/rollback acceptance remain separate.
+The implemented native notch placement/event checks are not a physical-drag or
+Spaces/fullscreen hardware acceptance. Prior81-minute and combined three-hour text
+summary checks do not establish a natural three-hour capture pipeline.
 
 AI-assisted working document. Current user instructions, live state, source and tests
-take precedence. This public handoff describes code, not a user's installed app,
-machine, recordings or evaluation results. Machine-local installation receipts and
-detailed validation logs remain in ignored `.work/`. The root `HANDOFF.md` points to
-the private installation and evaluation receipts.
-
-## Release state
-
-Nero 0.0.1 build 34/agent24 has signed/notarized macOS arm64 artifacts and was
-locally installed by the canonical app-only installer. Existing library hashes,
-model metadata and agent connection state were preserved without copying audio,
-models or a full snapshot. Visual acceptance is incomplete: the creation action,
-navigation hierarchy and historical processing-notice presentation require revision.
-No further app replacement is scheduled until the revised visual flow is reviewed.
-
-Current source scopes processing feedback to the selected meeting's latest relevant
-job using journal creation time and retry lineage. Older results are not global
-notifications; other running work has a compact collapsed disclosure. Existing job
-history is not changed or acknowledged by this projection. This source change is not
-in the installed build34. The navigation prototype is a visual proposal, not proof of
-native operation or completion of shared component adoption.
-
-External agents can read a summary context and explicitly save their generated summary
-through the running application's writer. Source/notes/current-summary checks reject
-stale output, prior summaries remain archived and open summaries reload after writes.
-Host package updates and actual live tool acceptance remain separate from app packaging;
-client configuration was not rewritten. Windows-device and model-quality qualification
-remain separate. Source commits and hashes are in [Release history](release-history.md).
-
-Build29 installed-screen checks establish Google account authorization, calendar choice
-and initial sync, but not a new agent-run capture, reminder delivery, browser auto-close
-or Windows-device qualification.
-Host package installation and existing live sessions remain separate; a current enabled
-installation remains connected while per-conversation sessions start or stop. Older-only
-sessions have a new-conversation notice without requiring reinstall or whole-app restart.
-
-## Latest installed verification
-
-Build29/source91a8561 retains the signed agent23 payload. App/DMG notarization and
-embedded-app identity are verified. After capture and processing ended, normal app quit
-and the canonical writer-locked installer preserved existing library hashes, models and
-connection registrations. Native settings show Claude/ChatGPT connected and a selected
-Google calendar after real authorization/sync. Actual reminder delivery and browser
-close behavior remain separate from successful connection and the callback tests.
+take precedence. Detailed historical source notes below do not override the current
+integration or its explicitly unverified acceptance boundaries.
 
 ## Native rewrite source
 
@@ -212,14 +174,12 @@ close behavior remain separate from successful connection and the callback tests
   [Local terminology correction](terminology.md). This source contract does not state
   that the installed app or existing meetings have changed.
 
-- Settings > Connections opens a native Claude Desktop MCPB or the Codex local plugin
-  installation page. Client registration, install files and a live initialized MCP session
-  are distinct: only the matching live session of the current package is shown connected.
-  Agent and template changes enable a package update; copies preserve the signed CLI and
-  do not depend on the app staying at its initial path. Session management files live
-  outside the meeting library. Existing client settings are owned by the client's install
-  flow; advanced manual config/CLI copy remains available. Native host acceptance and
-  Windows execution are separate validation gates. See [Local agent integration](local-agent.md).
+- Settings > Integrations opens the official Claude Desktop extension or ChatGPT local
+  plugin installation flow. Verified enabled host installation determines readiness;
+  lazy per-conversation session starts/stops do not flip an established connection.
+  Older-only sessions explain that an update applies to new conversations. Other agents
+  use the scoped prompt/copy dialog. Client configuration stays owned by the host flow.
+  See [Local agent integration](local-agent.md).
 
 - CLI and stdio MCP queries share `LibraryReader`, without opening the writer,
   recovery, migration, microphone or model paths. Folder/date filters, IANA timezones,
