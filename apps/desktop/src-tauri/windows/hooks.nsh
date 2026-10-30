@@ -8,6 +8,15 @@
 
 !macro CheckIfAppIsRunning executablePath productName
   ${If} ${FileExists} "${executablePath}"
+    ; Official updater starts this installer just before the old process exits.
+    ; Only /UPDATE gets a bounded grace period; never terminate any process.
+    StrCpy $R2 1
+    ClearErrors
+    ${GetOptions} $CMDLINE "/UPDATE" $R3
+    ${IfNot} ${Errors}
+      StrCpy $R2 50
+    ${EndIf}
+    ${Do}
     !insertmacro RestartManager_StartSession $R0
     ${If} $R0 == ""
       SetErrorLevel 2
@@ -23,6 +32,17 @@
     ; Preserve the RmGetList result before ending the session.
     StrCpy $R1 $0
     !insertmacro RestartManager_EndSession $R0
+    ${If} $R1 == 0
+      ${ExitDo}
+    ${EndIf}
+    ${If} $R1 == 234
+    ${AndIf} $R2 > 1
+      IntOp $R2 $R2 - 1
+      Sleep 100
+    ${Else}
+      ${ExitDo}
+    ${EndIf}
+    ${Loop}
     ${If} $R1 != 0
       SetErrorLevel 2
       Abort "${productName}가 실행 중이거나 실행 상태를 확인하지 못했습니다. 녹음과 처리를 마친 뒤 앱을 종료하고 다시 실행해 주세요."

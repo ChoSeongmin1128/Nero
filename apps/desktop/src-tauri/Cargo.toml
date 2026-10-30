@@ -15,6 +15,9 @@ libloading = "=0.7.4"
 tauri = { version = "2", features = ["tray-icon", "protocol-asset", "macos-private-api"] }
 tauri-plugin-single-instance = "2"
 tauri-plugin-dialog = "2"
+tauri-plugin-updater = { version = "=2.14.1", default-features = false, features = ["rustls-tls", "system-proxy"] }
+minisign-verify = "0.3"
+semver = "1"
 reqwest = { version = "0.13", features = ["json"] }
 tokio = { version = "1", features = ["rt", "time", "macros", "sync"] }
 base64 = "=0.22.1"

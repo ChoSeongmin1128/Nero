@@ -727,6 +727,16 @@ impl Engine {
         Ok(self.snapshot())
     }
 
+    pub fn resume_after_failed_shutdown(&mut self) -> Result<()> {
+        // Update preparation never finalizes an active capture. Refuse to reopen
+        // the gate if a caller tries to use this during capture.
+        if self.capture.is_some() {
+            return Err(CoreError::InvalidState("녹음 중에는 종료 준비를 취소할 수 없습니다.".into()));
+        }
+        self.quitting = false;
+        Ok(())
+    }
+
     pub fn shutdown(&mut self) {
         if self.capture.is_some() {
             let _ = self.finish(
@@ -2182,6 +2192,20 @@ mod tests {
             Err(CoreError::Unavailable)
         ));
         assert!(engine.prepare_shutdown(None).is_ok());
+    }
+
+    #[test]
+    fn failed_idle_update_can_resume_without_changing_meetings_or_capture() {
+        let (_temporary, mut engine) = engine();
+        let meeting = engine.create_meeting("보존".into(), "메모".into()).unwrap();
+        engine.prepare_shutdown(None).unwrap();
+        assert!(matches!(engine.update_meeting(&meeting.id, "변경".into(), "".into()), Err(CoreError::Unavailable)));
+        engine.resume_after_failed_shutdown().unwrap();
+        assert_eq!(engine.meetings()[0].notes, "메모");
+        engine.update_meeting(&meeting.id, "계속 작업".into(), "메모".into()).unwrap();
+        let (_session, _sink) = synthetic(&mut engine, &meeting.id);
+        assert!(engine.resume_after_failed_shutdown().is_err());
+        assert!(!engine.quitting);
     }
 
     #[test]
