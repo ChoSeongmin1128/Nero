@@ -1,5 +1,18 @@
 # Nero 릴리스 이력
 
+## 0.0.1 / build 42 (검토 중 보류, 미설치)
+
+- clean source `74cd8e530a32e5b774709e38a4bb27475a2da145`, tree `b692b7950829d35fc736e5ddf1f571b74e4da432`. build41에 중첩 확인창을 닫던 Esc 전파 수정이 포함됐다.
+- 앱 공증 `dba1b95a-7d75-410b-80a0-c3951f3dd6d8`, DMG 공증 `fe2dda79-2849-4589-a59d-eb1b0d93abb4` Accepted. ZIP SHA256 `1789336a96b2ffeb4dfe642ab94b716d209811edfa38cc9dfe057922a811ce90`, DMG SHA256 `bb4f73d65b2c3796809722afb4be9efa24f786eb6ac5f6cfd39afa5bff6223d9`.
+- 실제 앱 교체 전 전체 코드/UX 검토에서 추가 저장/녹음 소유권/편집 보존 문제가 확인되어 설치와 공개 배포를 보류했다. 이 소스로 만든 업데이트 archive의 서명 검사는 통과했지만 공개 feed는 게시하지 않았다. 서명/공증 영수증을 보존하고 미설치 앱/ZIP/DMG/업데이트 archive는 휴지통으로 정리했다.
+
+## 0.0.1 / build 41 (Mac 개인 설치, 후속 검토 중)
+
+- clean source `71bd344e5bcaa64c59a55666aa5c69c80f494791`, tree `92bdfd8982aaf903069e3f62ca08b9d6fc61f0bd`, 연동29. 참석자/그룹/임시 명단, 요약 입력의 참석자 출처, 라이트/다크, 사이드바 너비 조절, 편집 종료 보호, 앱 업데이트와 실패 복구 UI를 통합했다.
+- 앱 공증 `25602dee-1b15-4d20-9904-574b7b80d216`, DMG 공증 `75b29500-b8ba-47e2-bdba-2a7ea3f0f6ff` Accepted. ZIP SHA256 `323fb8bf57c54861438795243455a029c5e80f0411de1c104d221fb05fab8dda`, DMG SHA256 `c9521a96c4170653c3c5b10311a794fff55df06df2c76289d0f6060cb5618680`.
+- 유휴 상태와 정상 종료, writer lock을 확인한 정본 installer가 앱만 rename 교체했다. 기존640파일과 모델 메타데이터/연결 state 해시를 보존했으며 전체 library snapshot/모델 복제는 없다. 실제 앱의 일반 설정 화면까지 확인했으나 새 기능 전체의 native GUI 수락 완료로 표시하지 않는다. 후속 전체 리뷰 수정은 아직 설치되지 않았다.
+- Windows의 이 버전 설치나 공개 updater feed 게시, 외부 사용자 공유는 수행하지 않았다. 참석자 수를 강제 화자 수로 사용하거나 참석 순서를 화자 이름으로 추정하지 않는다.
+
 ## 0.0.1 / build 40 (Mac/Windows 개인 설치 확인)
 
 - clean source `80f8b47eaa1191d56eb581a99e8f063ce8f60d55`, tree `2882612efae8277eb546e9352edfa325407f0cdd`. build39의 통합 기능에 연동 알림을 추가했다. 확인된 Claude/ChatGPT 업데이트와 기존 Google 계정의 연결 문제를 알림함에 모으고 해결 시 제거한다. 확인 중/복원 중/선택 기능 미연결은 알리지 않는다. 중복 알림과 늦은 조회 응답을 차단하며, 설정으로 이동해 사용자가 조치한다.
