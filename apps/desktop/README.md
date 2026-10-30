@@ -58,7 +58,7 @@ background. Installation requires the user's restart action after every editor
 finishes and recording/processing is idle. The native updater verifies the exact
 bytes and signed product/build, and owns the same lifecycle gate as normal quit.
 The configured public feed is a deployment requirement; it has not been published
-by implementing the client. See `docs/app-updates.md` for packaging and recovery.
+by implementing the client. See `../../docs/app-updates.md` for packaging and recovery.
 Older builds without this client need a verified setup executable first.
 Downgrades across product versions are disabled. Rebuilds sharing `0.0.1` are
 still the same NSIS version; the separate build receipt does not prevent an older
