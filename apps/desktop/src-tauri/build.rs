@@ -37,6 +37,7 @@ fn main() {
         );
     }
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        build_recorder(root);
         for path in [
             "scripts/native-moss-harness/verify_worker_package.py",
             "scripts/native-moss-harness/apply-runtime-patch.py",
@@ -64,4 +65,33 @@ fn main() {
         );
     }
     tauri_build::build()
+}
+
+fn build_recorder(root: &std::path::Path) {
+    for path in [
+        "scripts/native-recorder/build.py",
+        "apps/desktop/src-tauri/native/recorder",
+        "design-system/desktop-preview.css",
+        "design-system/typography.css",
+    ] {
+        println!("cargo:rerun-if-changed={}", root.join(path).display());
+    }
+    let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("recorder-panel");
+    let status = std::process::Command::new("python3")
+        .arg(root.join("scripts/native-recorder/build.py"))
+        .arg("--out")
+        .arg(&out)
+        .arg("--target")
+        .arg(std::env::var("TARGET").unwrap())
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .status()
+        .expect("Swift is required for the macOS recorder panel");
+    assert!(status.success(), "macOS recorder panel compilation failed");
+    println!("cargo:rustc-link-search=native={}", out.display());
+    println!("cargo:rustc-link-lib=static=nero_recorder_panel");
+    println!("cargo:rustc-link-search=native=/usr/lib/swift");
+    println!("cargo:rustc-link-arg=-Wl,-rpath,/usr/lib/swift");
+    println!("cargo:rustc-link-lib=dylib=swiftCore");
+    println!("cargo:rustc-link-lib=framework=AppKit");
+    println!("cargo:rustc-link-lib=framework=Foundation");
 }

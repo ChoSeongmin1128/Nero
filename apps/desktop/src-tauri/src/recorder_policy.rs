@@ -31,6 +31,18 @@ impl Default for RecorderPolicy {
 }
 
 impl RecorderPolicy {
+    pub fn is_shown(&self) -> bool {
+        self.shown
+    }
+
+    pub fn dismiss_session(&mut self, session: &str) -> bool {
+        if self.session.as_deref() != Some(session) {
+            return false;
+        }
+        self.dismiss();
+        true
+    }
+
     pub fn moved(&mut self, now: std::time::Instant) {
         self.last_moved = Some(now);
     }
@@ -94,6 +106,16 @@ impl RecorderPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_old_panel_cannot_hide_a_new_recording() {
+        let mut policy = RecorderPolicy::default();
+        policy.update(Some("new"), false);
+        assert!(!policy.dismiss_session("old"));
+        assert!(policy.is_shown());
+        assert!(policy.dismiss_session("new"));
+        assert!(!policy.is_shown());
+    }
 
     #[test]
     fn reopening_a_dismissed_window_does_not_change_the_automatic_preference() {
