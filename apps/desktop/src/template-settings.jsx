@@ -67,7 +67,7 @@ export function mountTemplateSettings({ container, panel, bridge }) {
   const beforeLeave = async () => {
     if (confirmation || flow.getSnapshot().busy) return false;
     if (!flow.isDirty()) return true;
-    if (!await confirm('수정 내용을 버릴까요?', '저장하지 않은 수정 내용이 사라집니다.', '버리기')) return false;
+    if (!await confirm('수정 내용을 버릴까요?', '저장하지 않은 수정 내용이 사라집니다.', '버리기', true)) return false;
     flow.discard();
     return true;
   };
