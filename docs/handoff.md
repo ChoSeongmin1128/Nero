@@ -1,5 +1,28 @@
 # Nero handoff
 
+## Windows distribution source review (2026-10-30)
+
+Native Windows path comparison now preserves separator equivalence for installed
+agent commands and session directories while retaining executable, token, source
+and generation checks. The earlier eleven agent-connection failures below are
+resolved in this source. The Windows desktop suite passes 279 tests with five
+explicit acceptance skips; Core/CLI/frontend checks also pass.
+
+NSIS checks reject an active app instead of force-closing it, including before
+interactive maintenance can invoke an older uninstaller. Downgrades across product
+versions are disabled; same-version development build ordering is not enforced.
+Windows agent generation 27 uses a static MSVC CRT and CI checks its imports, so a
+separately copied CLI does not need a global C++ redistributable. The summary
+packager rejects CRTs older than the qualified baseline and verifies staged files;
+CI verifies CPU/Vulkan executable startup without loading model weights. Windows
+CI also stages the pinned speech package before building an installer.
+
+An unsigned development NSIS installer was built locally. This is not a user
+release or evidence of real-library installation, update/removal, live client,
+microphone, long-recording or 8 GB laptop acceptance. Automatic updates and a
+model-only/full-data cleanup interface remain unimplemented. See the desktop
+README for the standard uninstaller's data and retained-agent behavior.
+
 ## Live speech source work (2026-10-30)
 
 The working tree adds recording-time saved-PCM consumption, persistent independent

@@ -19,6 +19,7 @@ on:
       - 'apps/desktop/**'
       - 'design-system/**'
       - 'scripts/native-summary/**'
+      - 'scripts/native-diarization/**'
       - 'scripts/audio-prepare/**'
       - 'scripts/native-moss-harness/**'
 
@@ -90,12 +91,47 @@ jobs:
       - name: Bundle read-only agent
         working-directory: apps/desktop
         run: npm run prepare:agent
+      - name: Verify Windows agent has no external MSVC runtime dependency
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $locator = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $installation = & $locator -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ($LASTEXITCODE -ne 0 -or -not $installation) { throw 'MSVC inspection tools are missing.' }
+          $versions = @(Get-ChildItem -LiteralPath (Join-Path $installation 'VC/Tools/MSVC') -Directory | Sort-Object -Property { [version]$_.Name } -Descending)
+          if ($versions.Count -eq 0) { throw 'MSVC inspection tools are missing.' }
+          $dumpbin = Join-Path $versions[0].FullName 'bin/Hostx64/x64/dumpbin.exe'
+          $dependencies = & $dumpbin /DEPENDENTS apps/desktop/.generated/agent/nero.exe
+          if ($LASTEXITCODE -ne 0) { throw 'Could not inspect the Windows agent.' }
+          if ($dependencies -match '(?i)\b(?:vcruntime|msvcp|concrt|vcomp)\d[^\s]*\.dll\b') {
+            throw 'The standalone agent still needs an external MSVC runtime DLL.'
+          }
       - name: Bundle pinned summary runtime
         run: |
           if [ "$RUNNER_OS" = Windows ]; then
             python scripts/native-summary/prepare.py --target windows-x64
           else
             python3 scripts/native-summary/prepare.py --target macos-arm64
+          fi
+      - name: Bundle pinned Windows speech runtime
+        # Version startup checks do not load model weights or qualify inference.
+        if: runner.os == 'Windows'
+        run: |
+          python scripts/native-diarization/prepare.py --target windows-x64
+          python scripts/native-diarization/prepare.py --verify-staged apps/desktop/.generated/native/diarization --target windows-x64 --execute-runtime
+      - name: Verify pinned summary package
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            python scripts/native-summary/prepare.py --target windows-x64 --verify-staged apps/desktop/.generated/native/summary --execute-runtime
+          else
+            python3 scripts/native-summary/prepare.py --target macos-arm64 --verify-staged apps/desktop/.generated/native/summary
+          fi
+      - name: Test summary packaging contract
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            python -B -m unittest discover -s scripts/native-summary -p 'test_*.py'
+          else
+            python3 -B -m unittest discover -s scripts/native-summary -p 'test_*.py'
           fi
       - name: Test checked MOSS runtime build contract
         if: runner.os == 'macOS'
@@ -115,3 +151,8 @@ jobs:
           $installers = @(Get-ChildItem -Path '.work/rust-target/release/bundle/nsis' -Filter '*.exe' -File -ErrorAction Stop)
           if ($installers.Count -eq 0) { throw 'No NSIS installer was produced.' }
           $installers | Select-Object Name, Length
+      - name: Test Windows installer running-app protection
+        if: runner.os == 'Windows' && github.event_name == 'workflow_dispatch' && inputs.build_windows_installer
+        env:
+          NERO_REQUIRE_NSIS_TESTS: '1'
+        run: python -B -m unittest discover -s apps/desktop/tests -p test_windows_installer.py -v

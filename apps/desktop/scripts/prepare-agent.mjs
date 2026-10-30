@@ -21,10 +21,19 @@ const targetDir = resolve(root, process.env.CARGO_TARGET_DIR || '.work/rust-targ
 const cargoArgs = ['build', '-p', 'nero-cli', '--release', '--locked', '--target', target, '--target-dir', targetDir];
 const command = process.platform === 'win32' ? 'cargo' : 'nice';
 const commandArgs = process.platform === 'win32' ? cargoArgs : ['-n', '10', 'cargo', ...cargoArgs];
+const cargoEnvironment = { ...process.env, CARGO_BUILD_JOBS: '2' };
+const windowsStaticCrt = target.endsWith('-windows-msvc');
+if (windowsStaticCrt) {
+  if (cargoEnvironment.CARGO_ENCODED_RUSTFLAGS !== undefined) {
+    cargoEnvironment.CARGO_ENCODED_RUSTFLAGS = [cargoEnvironment.CARGO_ENCODED_RUSTFLAGS, '-C', 'target-feature=+crt-static'].filter(Boolean).join('\x1f');
+  } else {
+    cargoEnvironment.RUSTFLAGS = `${cargoEnvironment.RUSTFLAGS || ''} -C target-feature=+crt-static`;
+  }
+}
 const result = spawnSync(command, commandArgs, {
   cwd: root,
   stdio: 'inherit',
-  env: { ...process.env, CARGO_BUILD_JOBS: '2' },
+  env: cargoEnvironment,
 });
 if (result.error) throw result.error;
 if (result.status !== 0) process.exit(result.status || 1);
@@ -45,6 +54,7 @@ const metadata = {
   target,
   binary,
   buildSha256: createHash('sha256').update(bytes).digest('hex'),
+  ...(windowsStaticCrt ? { windowsStaticCrt: true } : {}),
 };
 await prepareAgentPackages({
   source: join(root, 'apps/desktop/agent'),

@@ -22,6 +22,82 @@ On Windows use `--bundles nsis` instead of `--bundles app`. Build outputs are un
 the workspace's `.work/rust-target`. Run Rust tests from the repository root with
 `cargo test -p nero-core --locked`. Build/test one native target at a time.
 
+## Windows installation and updates
+
+Prepare both native packages before creating a Windows installer. These commands
+download pinned runtime binaries, never model weights:
+
+```sh
+python scripts/native-summary/prepare.py --target windows-x64
+python scripts/native-summary/prepare.py --target windows-x64 --verify-staged apps/desktop/.generated/native/summary --execute-runtime
+python scripts/native-diarization/prepare.py --target windows-x64
+python scripts/native-diarization/prepare.py --verify-staged apps/desktop/.generated/native/diarization --target windows-x64 --execute-runtime
+```
+
+Run them from the repository root. The summary packager needs a licensed MSVC
+redistributable directory with the required x64 DLLs at or above the qualified
+14.44.35211.0 baseline; `--msvc-redist` selects it
+explicitly when the newest Build Tools installation lacks that component. The
+speech packager preserves the CRT from its verified official archives. Do not
+substitute arbitrary DLLs or infer compatibility from filenames alone. The summary
+packager rejects older CRT metadata and copies only known CRT names. Verification
+checks the exact package files and the pinned recipe; CI additionally starts both
+Windows summary backends with `--version`. That startup check loads no model and
+does not establish summary quality or GPU inference.
+
+NSIS installs for the current Windows user and registers an uninstaller. Its
+running-app check is replaced by `src-tauri/windows/hooks.nsh`: installation,
+manual update and removal stop when the target executable is in use or the
+Restart Manager check fails. Neither interactive nor silent mode may force-close
+the app. An early GUI check also precedes maintenance paths which can invoke an
+older uninstaller. Finish recording/processing and quit Nero before proceeding. This is a
+point-in-time process check, not a lock preventing a later app start.
+
+Initially, updates use a new verified setup executable for the same application
+identity. Automatic updates are not implemented: there is no updater plugin,
+public verification key or update endpoint. A future automatic route must retain
+the app's normal save/quit boundary and verify signed update artifacts.
+Downgrades across product versions are disabled. Rebuilds sharing `0.0.1` are
+still the same NSIS version; the separate build receipt does not prevent an older
+development build from being installed. Follow the first-user-sharing version
+policy rather than claiming build-order protection.
+
+Ordinary removal preserves the data directory, including recordings, transcripts
+and downloaded models. Tauri's optional **Delete app data** checkbox permanently
+removes the identifier's Roaming and Local data folders. It is not a separate
+model-only cleaner and does not remove the separately prepared agent connections
+or revoke OAuth credentials. Disconnect those integrations explicitly in their
+own clients before a full personal-data cleanup. No new model-only or complete
+cleanup interface is provided by this source change.
+
+The packaged CLI and generated integration copies use different paths: prepared
+connections retain generation-specific executables outside the app installation.
+The Windows MSVC agent is built with static CRT linkage and CI inspects its PE
+imports. A copied MCP/CLI executable must not need a separately installed MSVC
+runtime; DLLs inside Nero's speech package cannot satisfy that standalone use.
+They survive an app update/removal, and existing reader integrations can still
+read retained meeting data. Mutations requiring the running app fail while it is
+absent. Do not erase a host client's configuration from an installer.
+
+The guard tests compile tiny NSIS fixtures and run both installation and removal
+checks against an active process, an unopened file and a missing file. They do
+not install Nero or access a real library. Set `NERO_NSIS_COMPILER` if `makensis`
+is outside PATH and Tauri's normal cache, then run:
+
+```sh
+python -B -m unittest discover -s apps/desktop/tests -p test_windows_installer.py -v
+```
+
+The Windows CI prepares and verifies speech packages. A manually requested NSIS
+build also runs the guard tests with missing-compiler skips forbidden. A compiled
+fixture or source check does not establish full app installation, update, removal,
+code signing, live client connection or 8 GB laptop acceptance.
+
+References: [Tauri Windows installers](https://v2.tauri.app/distribute/windows-installer/),
+[Tauri CLI 2.12.3 NSIS template](https://github.com/tauri-apps/tauri/blob/tauri-cli-v2.12.3/crates/tauri-bundler/src/bundle/windows/nsis/installer.nsi),
+[upstream running-app helper](https://github.com/tauri-apps/tauri/blob/tauri-cli-v2.12.3/crates/tauri-bundler/src/bundle/windows/nsis/utils.nsh),
+[signed automatic updates](https://v2.tauri.app/plugin/updater/).
+
 For a macOS local test bundle, apply ad hoc signing after bundling and then run
 `codesign --verify --deep --strict` on that bundle. This does not provide Developer ID
 signing or notarization; use a separate distribution configuration for a release.

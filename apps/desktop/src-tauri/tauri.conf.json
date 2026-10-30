@@ -48,10 +48,19 @@
     "category": "Productivity",
     "macOS": {
       "minimumSystemVersion": "13.0",
-      "bundleVersion": "36",
+      "bundleVersion": "37",
       "infoPlist": "Info.plist"
     },
     "windows": {
+      "allowDowngrades": false,
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": [
+          "Korean",
+          "English"
+        ],
+        "installerHooks": "windows/hooks.nsh"
+      },
       "webviewInstallMode": {
         "type": "downloadBootstrapper",
         "silent": true

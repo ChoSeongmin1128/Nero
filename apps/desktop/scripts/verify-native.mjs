@@ -11,6 +11,11 @@ const speechTarget = target
     : process.platform === 'darwin' && process.arch === 'arm64' ? 'macos-arm64' : null);
 if (speechTarget) {
   execFileSync(process.env.PYTHON || 'python3', [
+    resolve(root, 'scripts/native-summary/prepare.py'),
+    '--verify-staged', resolve(root, 'apps/desktop/.generated/native/summary'),
+    '--target', speechTarget, '--optional',
+  ], { cwd: root, stdio: 'inherit', env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' } });
+  execFileSync(process.env.PYTHON || 'python3', [
     resolve(root, 'scripts/native-diarization/prepare.py'),
     '--verify-staged', resolve(root, 'apps/desktop/.generated/native/diarization'),
     '--target', speechTarget, '--optional',

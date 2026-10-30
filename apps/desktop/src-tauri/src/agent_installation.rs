@@ -501,7 +501,10 @@ fn installed_payload(
         || !super::connection_args_match(&config["args"], root)
         || environment["NERO_CONNECTION_CLIENT"] != client
         || environment["NERO_CONNECTION_TOKEN"] != registration["token"]
-        || environment["NERO_CONNECTION_DIR"] != serde_json::json!(connection.join("sessions"))
+        || !super::connection_path_matches(
+            &environment["NERO_CONNECTION_DIR"],
+            &connection.join("sessions"),
+        )
         || environment
             .as_object()
             .map_or(true, |values| values.len() != 4)
@@ -532,7 +535,7 @@ fn installed_payload(
             .join(generation)
             .join("plugins/nero/server")
             .join(executable_name());
-        if config["command"] != serde_json::json!(expected) {
+        if !super::connection_path_matches(&config["command"], &expected) {
             return Err("설치된 연결 실행 경로가 일치하지 않습니다.".into());
         }
         if !plain_tree(connection, expected.parent().unwrap_or(connection))

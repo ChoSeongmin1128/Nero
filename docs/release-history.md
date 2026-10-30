@@ -1,5 +1,13 @@
 # Nero 릴리스 이력
 
+## 미배포: Windows 설치 보호와 연동 경로
+
+- build37/연동27의 소스를 통합했다. 설치된 Mac build36을 교체한 기록이 아니다. Windows 경로의 구분자를 native Path로 비교해 기존 연결 테스트11실패를 해결한 변경이며, portable 패키지 경로와 토큰/세대/다른 실행 대상 거절은 유지한다.
+- Windows standalone CLI의 CRT 정적 연결, NSIS의 실행 중 앱 강제종료 거부, current-user 설치 및 제품버전 downgrade 방지를 추가했다. 같은0.0.1 build 순서 방지나 자동 업데이트를 제공하는 것은 아니다.
+- 요약 실행기 준비 시 검증 기준 미만 Windows CRT를 거부하고 stage의 pin/파일/링크를 검사한다. Windows CI의 speech 준비와 요약 startup 검사를 추가했으며 원격 CI는 실행하지 않았다.
+- Windows 작성자 검증:desktop279통과/5제외,Core218/CLI38/frontend426,summary6/NSIS4 통과. Mac 통합 검증:desktop320통과/5제외,frontend426,추가 링크 회귀 포함summary7,NSIS구성1통과/Windows실행3제외. 고정 archive에서 Mac 준비 정보를 갱신했으며 실행기 payload SHA는 유지됐다.
+- 개발용 unsigned Windows NSIS를 빌드한 결과와 실제 설치/업데이트/제거/마이크/8GB 기기 수락은 구분한다. 기존 설치 앱과 회의/모델/host 설정은 변경하지 않았다.
+
 ## 0.0.1 / build 36 (개인 설치, 화면 검증 대기)
 
 - 공통 기능 source `f7e4630a88ddaaaf5f551359fbcee8bd685c22d0`, Mac PR47 source `5afd730ad379a5381f19bdb15d42fb07ecae2c88`. 최종 clean source `f66c072ffa051adc6238c2ca6c01efd4f27a7b78`, 연동26. build36 공증과 앱 교체를 완료했다.

@@ -521,6 +521,12 @@ fn connection_root_matches(value: &Value, root: &Path) -> bool {
     nero_core::identity::migrated_data_dir(Path::new(path)).is_some_and(|resolved| resolved == root)
 }
 
+fn connection_path_matches(value: &Value, path: &Path) -> bool {
+    value
+        .as_str()
+        .is_some_and(|stored| Path::new(stored) == path)
+}
+
 fn connection_args_match(value: &Value, root: &Path) -> bool {
     value.as_array().is_some_and(|args| {
         args.len() == 3
@@ -730,12 +736,15 @@ fn historical_release(
     };
     let entry = &config["mcpServers"]["nero"];
     let environment = &entry["env"];
-    entry["command"] == json!(executable)
+    connection_path_matches(&entry["command"], &executable)
         && connection_args_match(&entry["args"], root)
         && environment["NERO_CONNECTION_CLIENT"] == client
         && environment["NERO_CONNECTION_TOKEN"] == registration["token"]
         && environment["NERO_CONNECTION_GENERATION"] == generation
-        && environment["NERO_CONNECTION_DIR"] == json!(directory.join("sessions"))
+        && connection_path_matches(
+            &environment["NERO_CONNECTION_DIR"],
+            &directory.join("sessions"),
+        )
 }
 
 fn read_json(path: &Path) -> Result<Value, String> {
@@ -1310,7 +1319,11 @@ mod tests {
         assert!(!root.exists());
         let registration = fs::read(connections.join("codex/state.json")).unwrap();
         let state: Value = serde_json::from_slice(&registration).unwrap();
-        let marketplace_path = connections.join("codex/.agents/plugins/marketplace.json");
+        let marketplace_path = connections
+            .join("codex")
+            .join(".agents")
+            .join("plugins")
+            .join("marketplace.json");
         assert_eq!(
             action.target,
             format!(
@@ -1382,7 +1395,10 @@ mod tests {
         let original_catalog =
             json!({"plugins":[{"source":{"source":"local","path":"./plugins/nero"}}]}).to_string();
         fs::write(&legacy_catalog, &original_catalog).unwrap();
-        let stable_path = client.join(".agents/plugins/marketplace.json");
+        let stable_path = client
+            .join(".agents")
+            .join("plugins")
+            .join("marketplace.json");
         let first_catalog = read_json(&stable_path).unwrap();
         fs::write(
             resource_agent_path(&resources),
@@ -1441,7 +1457,10 @@ mod tests {
         fs::write(&legacy_catalog, &legacy_bytes).unwrap();
         let old_registration = json!({"schemaVersion":1,"client":"codex","token":"11111111-1111-4111-8111-111111111111","dataDir":root,"generation":old_generation});
         fs::write(client.join("state.json"), old_registration.to_string()).unwrap();
-        let stable_path = client.join(".agents/plugins/marketplace.json");
+        let stable_path = client
+            .join(".agents")
+            .join("plugins")
+            .join("marketplace.json");
         assert!(!stable_path.exists());
 
         let action = prepare_connection(&resources, &root, &connections, "codex").unwrap();
@@ -1742,6 +1761,51 @@ mod tests {
             claude: installation::HostInstallation::Missing,
             codex,
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn installed_windows_paths_accept_native_separators_but_reject_other_targets() {
+        let temp = tempfile::tempdir().unwrap();
+        let resources = resources(temp.path());
+        let root = temp.path().join("missing library");
+        let connections = temp.path().join("connections");
+        prepare_connection(&resources, &root, &connections, "codex").unwrap();
+        let target = temp.path().join("installed");
+        let installed = hosts(installed_codex(&connections, &root, &target));
+        let config_path = target.join(".mcp.json");
+        let mut config = read_json(&config_path).unwrap();
+        for pointer in [
+            "/mcpServers/nero/command",
+            "/mcpServers/nero/env/NERO_CONNECTION_DIR",
+        ] {
+            let value = config.pointer_mut(pointer).unwrap();
+            *value = json!(value.as_str().unwrap().replace('\\', "/"));
+        }
+        let portable_path = target.join("mcp.json");
+        let mut portable = read_json(&portable_path).unwrap();
+        portable["mcpServers"]["nero"]["env"] = config["mcpServers"]["nero"]["env"].clone();
+        fs::write(&portable_path, portable.to_string()).unwrap();
+        fs::write(&config_path, config.to_string()).unwrap();
+        let info =
+            connection_info_with_installations(&resources, &root, &connections, Some(&installed));
+        assert_eq!(info.clients[1].state, "connected");
+        for command in [
+            json!(target.join("other.exe")),
+            json!(target.join("server").join("..").join(executable_name())),
+            Value::Null,
+        ] {
+            config["mcpServers"]["nero"]["command"] = command;
+            fs::write(&config_path, config.to_string()).unwrap();
+            let info = connection_info_with_installations(
+                &resources,
+                &root,
+                &connections,
+                Some(&installed),
+            );
+            assert_eq!(info.clients[1].installation_state, "unknown");
+        }
+        assert!(!root.exists());
     }
 
     #[test]
