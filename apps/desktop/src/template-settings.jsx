@@ -42,7 +42,7 @@ function TemplateSettings({ flow, confirm, beforeLeave }) {
       <div className="template-settings-list-actions"><button type="button" className="small" disabled={state.busy} onClick={() => { void reload(); }}>새로고침</button></div>
     </>}
     {state.busy && <p className="inline-feedback" role="status"><span className="activity-spinner" aria-hidden="true" /> 처리 중</p>}
-    {state.message && <p className="notice" role="status">{state.message}</p>}
+    {state.message && <p className="inline-feedback" role="status">{state.message}</p>}
     {state.error && <div className="template-settings-error"><p className="notice" role="alert">{state.error}</p><button type="button" className="small" disabled={state.busy} onClick={() => { void reload(); }}>다시 불러오기</button></div>}
   </div>;
 }
