@@ -37,10 +37,14 @@
   "plugins": {
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEVBNzRBQ0ZEREVGOUNFQzAKUldUQXp2bmUvYXgwNnV6Wm96TDMxaDJvTlhoU2loZnZETmxhMGZ0dHQxOFh3a3NzdTFRUE9ROUgK",
-      "endpoints": ["https://github.com/ChoSeongmin1128/Nero/releases/latest/download/latest.json"],
+      "endpoints": [
+        "https://github.com/ChoSeongmin1128/Nero/releases/latest/download/latest.json"
+      ],
       "requireSignedVersion": true,
       "allowDowngrades": false,
-      "windows": { "installMode": "passive" }
+      "windows": {
+        "installMode": "passive"
+      }
     }
   },
   "bundle": {
@@ -57,7 +61,7 @@
     "category": "Productivity",
     "macOS": {
       "minimumSystemVersion": "13.0",
-      "bundleVersion": "40",
+      "bundleVersion": "41",
       "infoPlist": "Info.plist"
     },
     "windows": {
