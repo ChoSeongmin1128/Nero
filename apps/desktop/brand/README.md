@@ -1,12 +1,13 @@
-# Nero brand mark
+# Nero brand assets
 
-`mark.svg` is the canonical mark, selected from 23-B r7 A. All sizes retain the same geometry and orientation.
+`nero-cat.png` is the approved application icon artwork. Preserve its composition,
+background and colors. Desktop icons use this PNG directly, with only the resizing
+and native icon encoding provided by the pinned Tauri CLI.
 
-- Four identical modules, rotated by 90 degrees around (256, 256).
-- Horizontal/vertical step spacing and terminal band thickness: 64 units.
-- Outer circular arc radius: 96. Small circular corner radius: 16.
-- Colors: `#174D39`, `#78B987`.
+`logo/` contains the transparent cat symbol and Nero lettering for application
+surfaces, including light and dark variants. These SVG assets are separate from
+the application icon artwork.
 
-Run `npm run prepare:icons` from `apps/desktop` to regenerate the checked-in desktop assets with the pinned Tauri CLI. No additional image package is required.
-
-The application icon is colored. macOS uses a monochrome template for its menu bar; Windows uses monochrome tray images selected from the window's reported theme and refreshed on theme-change events. Windows taskbar and application themes can be configured separately; actual tray contrast still requires a Windows check.
+Run `npm run prepare:icons` from `apps/desktop` to regenerate the checked-in
+ICNS, ICO and 512px PNG. No additional image package is required. The application
+does not create a separate macOS menu-bar or Windows system-tray icon.

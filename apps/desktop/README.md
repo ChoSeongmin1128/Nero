@@ -362,12 +362,18 @@ optional summary preparation and download progress without a separate model page
 
 ## Brand assets
 
-The application and tray icons use the approved Nero 23-B r7 A mark.
-`brand/mark.svg` owns the geometry; `brand/app-background.svg` supplies the light
-application-icon background. `npm run prepare:icons` composes these for macOS/Windows
-app assets using the pinned Tauri CLI. Tray assets retain the transparent mark. macOS uses a monochrome menu-bar template.
-Windows switches the monochrome tray asset on reported window-theme changes;
-contrast on separately configured taskbar/application themes needs Windows validation.
+The sidebar uses the approved light/dark cat logo lockups under `brand/logo/`.
+The lettering is part of the vector artwork, so no extra Nero label is added.
+`brand/nero-cat.png` is the approved 1254 x 1254 application-icon source.
+`npm run prepare:icons` converts this PNG directly to ICNS, ICO and a 512px PNG
+with the pinned Tauri CLI; it does not compose the old mark or add a background.
+Agent packages copy the same generated application PNG.
+
+The app does not register a macOS status-bar item or Windows tray icon.
+On macOS, closing the main window hides it and Dock reopening restores it.
+On Windows, closing the main window requests normal quit through the existing
+unsaved-edit and recording guards. Minimize, the recording HUD and its dismissal
+remain separate actions.
 
 ## Native speech workers
 

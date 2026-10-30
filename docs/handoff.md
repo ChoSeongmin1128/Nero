@@ -303,11 +303,12 @@ integration or its explicitly unverified acceptance boundaries.
   The macOS app declares Korean localization and translates its existing standard menu;
   Windows retains its previous menu configuration.
 
-- The approved Nero mark is 23-B r7 A, with source in `apps/desktop/brand/mark.svg`.
-  Desktop app icons compose it with the approved light `brand/app-background.svg`;
-  macOS menu-bar uses a transparent monochrome template and
-  Windows tray selects monochrome assets from the reported window theme. Icon
-  source/build integration does not establish Windows shell appearance or installation.
+- The approved cat lockups in `apps/desktop/brand/logo/` are used in the sidebar,
+  with light/dark artwork selected by the shared appearance mode. Application
+  icons derive directly from the approved `brand/nero-cat.png`. No separate
+  macOS status-bar or Windows tray icon is registered. macOS Dock reopening and
+  Windows guarded quit replace tray-dependent window recovery. Source changes
+  and generated assets do not establish installation or OS shell acceptance.
 
 - `apps/desktop` is the Nero Tauri app, with identity
   `io.github.choseongmin1128.nero.desktop`. Existing development libraries require explicit installer migration; ordinary reads do not migrate. Original Swift app/data archival receipts remain private.

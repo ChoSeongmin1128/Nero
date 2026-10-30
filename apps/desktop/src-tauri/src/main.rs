@@ -2,9 +2,9 @@
 
 mod agent_connection;
 mod agent_mutations;
-mod app_updater;
 #[cfg(target_os = "macos")]
 mod app_menu;
+mod app_updater;
 mod asr;
 mod calendar;
 mod calendar_desktop;
@@ -1054,7 +1054,10 @@ async fn change_recording(
                         "main",
                         "nero://processing-error",
                         ProcessingError {
-                            meeting_id: snapshot.session.as_ref().map(|session| session.meeting_id.clone()),
+                            meeting_id: snapshot
+                                .session
+                                .as_ref()
+                                .map(|session| session.meeting_id.clone()),
                             message,
                         },
                     );
@@ -1597,19 +1600,6 @@ async fn save_speakers(
     .await
 }
 
-#[cfg(target_os = "macos")]
-fn tray_icon(_theme: tauri::Theme) -> tauri::image::Image<'static> {
-    tauri::include_image!("icons/tray-template.png")
-}
-
-#[cfg(not(target_os = "macos"))]
-fn tray_icon(theme: tauri::Theme) -> tauri::image::Image<'static> {
-    match theme {
-        tauri::Theme::Dark => tauri::include_image!("icons/tray-on-dark.png"),
-        _ => tauri::include_image!("icons/tray-on-light.png"),
-    }
-}
-
 fn main() {
     // This isolated child only loads the packaged speech library. It must run
     // before single-instance registration, windows, recording or model setup.
@@ -1781,29 +1771,6 @@ fn main() {
                 lifecycle: lifecycle::Lifecycle::default(),
             });
             calendar_desktop::install(app.handle(), root.clone());
-            let menu = tauri::menu::Menu::with_items(
-                app,
-                &[
-                    &tauri::menu::MenuItem::with_id(app, "open", "Nero 열기", true, None::<&str>)?,
-                    &tauri::menu::PredefinedMenuItem::separator(app)?,
-                    &tauri::menu::MenuItem::with_id(app, "quit", "종료", true, None::<&str>)?,
-                ],
-            )?;
-            tauri::tray::TrayIconBuilder::with_id("nero")
-                .icon(tray_icon(
-                    app.get_webview_window("main")
-                        .and_then(|window| window.theme().ok())
-                        .unwrap_or(tauri::Theme::Light),
-                ))
-                .icon_as_template(cfg!(target_os = "macos"))
-                .tooltip("Nero")
-                .menu(&menu)
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "open" => show_main(app),
-                    "quit" => ask_quit(app),
-                    _ => (),
-                })
-                .build(app)?;
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 let mut previous: Option<Snapshot> = None;
@@ -1850,17 +1817,12 @@ fn main() {
             {
                 request_recorder_sync(window.app_handle());
             }
-            #[cfg(target_os = "windows")]
-            if let tauri::WindowEvent::ThemeChanged(theme) = event {
-                if window.label() == "main" {
-                    if let Some(tray) = window.app_handle().tray_by_id("nero") {
-                        let _ = tray.set_icon(Some(tray_icon(*theme)));
-                    }
-                }
-            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 if window.label() == "main" {
+                    #[cfg(target_os = "windows")]
+                    ask_quit(window.app_handle());
+                    #[cfg(not(target_os = "windows"))]
                     let _ = window.emit("nero://close-requested", ());
                 } else {
                     window
@@ -1877,6 +1839,10 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("Nero를 시작하지 못했습니다.");
     app.run(|app, event| {
+        #[cfg(target_os = "macos")]
+        if matches!(&event, tauri::RunEvent::Reopen { .. }) {
+            show_main(app);
+        }
         if let tauri::RunEvent::ExitRequested { ref api, .. } = event {
             if !app.state::<DesktopState>().quitting.load(Ordering::Acquire) {
                 api.prevent_exit();

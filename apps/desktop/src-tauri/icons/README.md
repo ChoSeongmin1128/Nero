@@ -1,7 +1,8 @@
 Generated with `npm run prepare:icons` in `apps/desktop`.
 
-- `../../brand/mark.svg`: approved Nero 23-B r7 A geometry and colors.
-- `../../brand/app-background.svg`: approved light application-icon background.
-- App ICNS/ICO/PNG compose both sources; tray images use only the transparent mark.
+- Source: `../../brand/nero-cat.png`, the approved application artwork.
+- Outputs: `icon.icns`, `icon.ico` and the 512px `icon.png`.
+- Preserve the original artwork; resize and encode it without adding a background,
+  redrawing, cropping or combining it with the interface logo.
 
-Preserve identical mark geometry at every size.
+No separate menu-bar or system-tray icon is generated.
