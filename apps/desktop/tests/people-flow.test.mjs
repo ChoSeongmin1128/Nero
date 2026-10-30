@@ -10,7 +10,7 @@ test('adding a group preserves existing names, skips duplicates and never assign
   const attendees = [{ id: 'a', personId: 'p', name: '회의 당시 이름' }]; let id = 0;
   const result = addPeople(attendees, [{ id: 'p', name: '변경된 이름' }, { id: 'q', name: '이서연' }, { id: 'q', name: '중복' }], () => String(++id));
   assert.deepEqual(result, [...attendees, { id: '1', personId: 'q', name: '이서연' }]);
-  assert.equal(attendeeLabel({ id: 'guest' }, 1), '참석자 2');
+  assert.equal(attendeeLabel({ id: 'guest' }, [{id:'first'}, {id:'guest'}]), '참석자 2');
   assert.equal(id, 1);
 });
 
@@ -151,4 +151,10 @@ test('pending attendee writes remain protected from dismissal', async () => {
   assert.equal(flow.getSnapshot().loading, false); assert.equal(flow.close(), false);
   resolveSave(meeting('meeting', [{ id: 'new' }], 'meeting:2')); await saving;
   assert.equal(flow.close(), true);
+});
+
+test('unnamed attendees count independently of saved and named participants',()=>{
+ const attendees=[{id:'saved',personId:'p',name:'김민서'},{id:'named',name:'방문자'},{id:'a'},{id:'b'}];
+ assert.equal(attendeeLabel(attendees[2],attendees),'참석자 1');
+ assert.equal(attendeeLabel(attendees[3],attendees),'참석자 2');
 });

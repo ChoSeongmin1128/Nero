@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { createRoot } from 'react-dom/client';
-import { Plus, Pencil, Trash2, UserPlus, Check } from 'lucide-react';
+import { Plus, Pencil, Trash2, UserPlus, X, Search, Users, UserRound } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '../../../design-system/components/ui/dialog.jsx';
 import { attendeeLabel, createAttendeeFlow, createPeopleCatalogFlow } from './people-flow.js';
 import { ConfirmDialog } from '../../../design-system/components/ui/confirm-dialog.jsx';
@@ -64,6 +64,18 @@ export function mountPeopleSettings({ panel, container, bridge }) {
   return { refreshIfClean: () => flow.refreshIfClean(), show: () => flow.setActive(true), hide: () => flow.setActive(false), beforeLeave: () => controls.current?.beforeLeave() ?? true, isConfirming: () => controls.current?.isConfirming() ?? false, dispose() { flow.dispose(); root.unmount(); } };
 }
 
+function AttendeeChip({ item, label, busy, flow, onPromote }) {
+  const [editing, setEditing] = React.useState(false);
+  return <div className="attendee-chip">
+    {editing ? <input autoFocus aria-label={`${label} 이름`} value={item.name || ''} placeholder={label} maxLength={120} disabled={busy}
+      onChange={event => flow.rename(item.id, event.target.value)} onBlur={() => setEditing(false)}
+      onKeyDown={event => { if (event.key === 'Enter' && !event.isComposing && event.keyCode !== 229) { event.preventDefault(); event.currentTarget.blur(); } }} />
+      : <button type="button" className="quiet attendee-chip-name" title="이름 수정" disabled={busy} onClick={() => setEditing(true)}>{label}</button>}
+    {!item.personId && <button type="button" className="quiet small icon" aria-label={`${label} 인원 목록에 저장`} title="인원 목록에 저장" disabled={busy} onClick={onPromote}><UserPlus size={14} aria-hidden="true" /></button>}
+    <button type="button" className="quiet small icon" aria-label={`${label} 회의에서 제외`} title="회의에서 제외" disabled={busy} onClick={() => flow.remove(item.id)}><X size={14} aria-hidden="true" /></button>
+  </div>;
+}
+
 function AttendeeDialog({ flow, container, origin, controls }) {
   const state = React.useSyncExternalStore(flow.subscribe, flow.getSnapshot);
   const confirmation = useConfirmation();
@@ -78,8 +90,12 @@ function AttendeeDialog({ flow, container, origin, controls }) {
   controls.current = { beforeLeave: close };
   const selected = new Set(state.attendees.map(item => item.personId).filter(Boolean));
   const matches = item => item.name.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
-  const matchingGroups = state.catalog?.groups.filter(matches) || [];
-  const matchingPeople = state.catalog?.people.filter(matches) || [];
+  const matchingGroups = state.catalog?.groups.filter(group => matches(group) && group.personIds.some(id => !selected.has(id))) || [];
+  const matchingPeople = state.catalog?.people.filter(person => matches(person) && !selected.has(person.id)) || [];
+  const add = people => { flow.add(people); setQuery(''); };
+  const addNew = () => { flow.addTemporary(query); setQuery(''); };
+  const typedName = query.trim();
+  const canAddName = typedName && !state.catalog?.people.some(person => person.name.toLocaleLowerCase() === typedName.toLocaleLowerCase()) && !state.attendees.some(person => person.name?.toLocaleLowerCase() === typedName.toLocaleLowerCase());
   return <>
     <Dialog open={state.open} onOpenChange={open => { if (!open) void close(); }}>
       <DialogContent container={container} className="people-dialog" data-nero-ui-owned="" finalFocus={() => origin.current?.isConnected ? origin.current : false}>
@@ -88,18 +104,18 @@ function AttendeeDialog({ flow, container, origin, controls }) {
           <Feedback state={state} />
           {state.error && !state.busy && <button type="button" className="small" onClick={async () => { if (!flow.isDirty() || await confirmation.ask('최신 내용을 불러올까요?', '불러오기에 성공하면 저장하지 않은 참석자 변경이 바뀝니다.', '불러오기', false)) await flow.reload(); }}>다시 불러오기</button>}
           {state.meeting && <>
-            <section className="people-section"><header><h4 className="type-label">이 회의 <span className="muted">{state.attendees.length}명</span></h4><button type="button" className="small quiet with-icon" disabled={state.busy} onClick={() => flow.addTemporary()}><Plus size={14} aria-hidden="true" />임시 참석자</button></header>
-              <div className="people-roster">{state.attendees.map((item, index) => <div className="people-row" key={item.id}>
-                <label className="people-name"><span className="sr-only">{attendeeLabel(item, index)} 이름</span><input value={item.name || ''} placeholder={attendeeLabel(item, index)} maxLength={120} disabled={state.busy} onChange={event => flow.rename(item.id, event.target.value)} /></label>
-                {!item.personId && <button type="button" className="small quiet icon" aria-label={`${attendeeLabel(item, index)} 인원 목록에 추가`} title="인원 목록에 추가" disabled={state.busy} onClick={() => { setName(item.name || ''); setPromoting(item.id); }}><UserPlus size={16} aria-hidden="true" /></button>}
-                <button type="button" className="small quiet icon danger" aria-label={`${attendeeLabel(item, index)} 제외`} title="회의에서 제외" disabled={state.busy} onClick={() => flow.remove(item.id)}><Trash2 size={16} aria-hidden="true" /></button>
-              </div>)}{!state.attendees.length && <p className="people-empty">참석자를 추가해 주세요.</p>}</div>
-            </section>
-            <section className="people-section"><h4 className="type-label">인원 목록에서 추가</h4><label><span className="sr-only">사람 또는 그룹 검색</span><input type="search" value={query} placeholder="사람 또는 그룹 검색" onChange={event => setQuery(event.target.value)} disabled={state.busy} /></label>
-              <div className="people-picker">{matchingGroups.map(group => <button type="button" className="people-option" key={group.id} disabled={state.busy || group.personIds.every(id => selected.has(id))} onClick={() => flow.add(state.catalog.people.filter(person => group.personIds.includes(person.id)))}><span>{group.name}</span><span className="muted">그룹, {group.personIds.length}명</span></button>)}
-                {matchingPeople.map(person => <button type="button" className="people-option" key={person.id} aria-label={`${person.name}${selected.has(person.id) ? ' 추가됨' : ' 추가'}`} disabled={state.busy || selected.has(person.id)} onClick={() => flow.add([person])}><span>{person.name}</span>{selected.has(person.id) ? <><Check size={15} aria-hidden="true" /><span className="sr-only">추가됨</span></> : <Plus size={15} aria-hidden="true" />}</button>)}
-                {!matchingPeople.length && !matchingGroups.length && <p className="people-empty" role="status">{query.trim() ? '검색 결과가 없습니다.' : '인원 목록이 비어 있습니다.'}</p>}
+            <section className="attendee-add" aria-label="참석자 추가">
+              <label className="attendee-search"><Search size={16} aria-hidden="true" /><span className="sr-only">사람, 그룹 검색 또는 새 이름 입력</span><input type="search" value={query} placeholder="사람, 그룹 검색 또는 새 이름 입력" onChange={event => setQuery(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.isComposing && event.keyCode !== 229 && canAddName) { event.preventDefault(); addNew(); } }} disabled={state.busy} /></label>
+              <div className="attendee-options">
+                {matchingGroups.length > 0 && <><h4 className="attendee-option-heading">그룹</h4>{matchingGroups.map(group => <button type="button" className="people-option" key={group.id} disabled={state.busy} onClick={() => add(state.catalog.people.filter(person => group.personIds.includes(person.id)))}><Users size={16} aria-hidden="true" /><span>{group.name}</span><span className="muted type-caption">{group.personIds.filter(id => !selected.has(id)).length}명 추가</span></button>)}</>}
+                {matchingPeople.length > 0 && <><h4 className="attendee-option-heading">사람</h4>{matchingPeople.map(person => <button type="button" className="people-option" key={person.id} disabled={state.busy} aria-label={`${person.name} 추가`} onClick={() => add([person])}><UserRound size={16} aria-hidden="true" /><span>{person.name}</span><Plus size={15} aria-hidden="true" /></button>)}</>}
+                {canAddName && <button type="button" className="people-option attendee-create" disabled={state.busy} onClick={addNew}><Plus size={16} aria-hidden="true" /><span>{typedName} 추가</span></button>}
+                {!typedName && <button type="button" className="people-option attendee-create" disabled={state.busy} onClick={addNew}><Plus size={16} aria-hidden="true" /><span>이름 없이 추가</span></button>}
+                {typedName && !matchingPeople.length && !matchingGroups.length && !canAddName && <p className="people-empty" role="status">이미 선택한 참석자입니다.</p>}
               </div>
+            </section>
+            <section className="people-section attendee-selected" aria-label="선택한 참석자"><h4 className="type-label">선택한 참석자 <span className="muted">{state.attendees.length}명</span></h4>
+              <div className="attendee-chips">{state.attendees.map(item => <AttendeeChip key={item.id} item={item} label={attendeeLabel(item, state.attendees)} busy={state.busy} flow={flow} onPromote={() => { setName(item.name || ''); setPromoting(item.id); }} />)}{!state.attendees.length && <p className="people-empty">아직 선택한 참석자가 없습니다.</p>}</div>
             </section>
           </>}
         </div>

@@ -1,5 +1,5 @@
 const clone = value => JSON.parse(JSON.stringify(value));
-export const attendeeLabel = (attendee, index) => attendee.name?.trim() || `참석자 ${index + 1}`;
+export const attendeeLabel = (attendee, attendees) => attendee.name?.trim() || `참석자 ${Math.max(0, attendees.filter(item => !item.name?.trim()).findIndex(item => item.id === attendee.id)) + 1}`;
 
 export function addPeople(attendees, people, uuid = () => crypto.randomUUID()) {
   const selected = new Set(attendees.map(item => item.personId).filter(Boolean));
@@ -47,7 +47,7 @@ export function createAttendeeFlow({ bridge, onChanged = () => {}, uuid = () => 
     },
     close() { if (state.busy && !state.loading) return false; epoch += 1; publish({ open: false, busy: false, loading: false }); return true; },
     add(persons) { if (!state.busy) publish({ attendees: addPeople(state.attendees, persons, uuid) }); },
-    addTemporary() { if (!state.busy) publish({ attendees: [...state.attendees, { id: uuid() }] }); },
+    addTemporary(name = '') { if (!state.busy) publish({ attendees: [...state.attendees, { id: uuid(), ...(name.trim() ? { name: name.trim() } : {}) }] }); },
     rename(id, name) { if (!state.busy) publish({ attendees: state.attendees.map(item => item.id === id ? { ...item, name: name || undefined } : item) }); },
     remove(id) { if (!state.busy) publish({ attendees: state.attendees.filter(item => item.id !== id) }); },
     save() { return operate(persist); },
