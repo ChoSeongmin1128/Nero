@@ -3,6 +3,7 @@
 .people-dialog-body { min-height: 0; overflow: auto; display: grid; align-content: start; gap: 20px; padding-top: 20px; }
 .people-settings, .people-editor, .people-section { display: grid; gap: 16px; }
 .people-settings { gap: 24px; }
+.people-settings > .settings-panel-title { margin: 0; }
 .people-section h4, .people-editor > h4 { margin: 0; font-weight: var(--weight-semibold); }
 .people-confirm .people-editor { margin-top: 20px; }
 .people-section > header, .people-row, .people-actions, .people-option { display: flex; align-items: center; gap: 8px; }
