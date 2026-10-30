@@ -8,7 +8,7 @@ export function renderMeetingMenu(meeting, { escape, icon, disabled = false }) {
 export function recentMeetingRow({ id, title, metadata, active = false, disabled = false, menu = '', escape }) {
   const [folder, timestamp, duration] = metadata;
   const description = [folder, timestamp].filter(Boolean);
-  return `<article class="navigation-recent-row" data-recent-row="${escape(id)}"><button type="button" class="quiet recent-meeting" data-recent-meeting="${escape(id)}"${active ? ' aria-current="page"' : ''}${disabled ? ' disabled' : ''}><span class="recent-title-line"><strong title="${escape(title)}">${escape(title)}</strong>${duration ? `<span class="recent-meeting-duration">${escape(duration)}</span>` : ''}</span><span class="recent-meeting-meta" title="${escape(description.join(', '))}">${description.map(value => `<span>${escape(value)}</span>`).join('')}</span></button>${menu}</article>`;
+  return `<article class="navigation-recent-row" data-recent-row="${escape(id)}"><button type="button" class="quiet recent-meeting" data-recent-meeting="${escape(id)}" aria-label="${escape([title, ...description, duration].filter(Boolean).join(', '))}"${active ? ' aria-current="page"' : ''}${disabled ? ' disabled' : ''}><span class="recent-title-line"><strong title="${escape(title)}">${escape(title)}</strong>${duration ? `<span class="recent-meeting-duration">${escape(duration)}</span>` : ''}</span><span class="recent-meeting-meta" title="${escape(description.join(', '))}">${description.map(value => `<span>${escape(value)}</span>`).join('')}</span></button>${menu}</article>`;
 }
 
 export function mountNavigationSidebar({ shell, aside, content, trigger, backdrop, storage, storageKey = 'nero.sidebar.pinned', icons = globalThis.NeroIcons }) {
