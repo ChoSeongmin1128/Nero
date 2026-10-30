@@ -2,6 +2,7 @@
 
 mod agent_connection;
 mod agent_mutations;
+mod app_updater;
 #[cfg(target_os = "macos")]
 mod app_menu;
 mod asr;
@@ -60,6 +61,13 @@ struct DesktopState {
 }
 
 fn require_main(window: &WebviewWindow) -> Result<(), String> {
+    if window
+        .app_handle()
+        .try_state::<app_updater::AppUpdates>()
+        .is_some_and(|state| state.installing.load(Ordering::Acquire))
+    {
+        return Err("업데이트를 설치하고 있습니다. 잠시 기다려 주세요.".into());
+    }
     if window.label() == "main" {
         Ok(())
     } else {
@@ -1603,6 +1611,25 @@ fn main() {
     // before single-instance registration, windows, recording or model setup.
     let mut arguments = std::env::args_os().skip(1);
     let mode = arguments.next();
+    if mode.as_deref() == Some(std::ffi::OsStr::new("--nero-verify-app-update")) {
+        let values: Vec<_> = arguments.collect();
+        let result = if values.len() == 3 {
+            app_updater::verify_release_file(
+                std::path::Path::new(&values[0]),
+                std::path::Path::new(&values[1]),
+                &values[2].to_string_lossy(),
+            )
+        } else {
+            Err("업데이트 검증 인수가 올바르지 않습니다.".into())
+        };
+        if let Err(error) = &result {
+            eprintln!("{error}");
+        }
+        if let Ok(digest) = &result {
+            println!("{digest}");
+        }
+        std::process::exit(if result.is_ok() { 0 } else { 1 });
+    }
     if mode.as_deref() == Some(std::ffi::OsStr::new("--nero-live-speech-worker")) {
         let request = arguments.next();
         if request.is_none() || arguments.next().is_some() {
@@ -1638,7 +1665,12 @@ fn main() {
             show_main(app)
         }))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
+            app_updater::app_update_status,
+            app_updater::app_update_check,
+            app_updater::app_update_download,
+            app_updater::app_update_install,
             agent_write_ready,
             calendar_desktop::read_calendar_settings,
             calendar_desktop::read_calendar_meeting_occurrences,
@@ -1714,6 +1746,9 @@ fn main() {
         ])
         .setup(|app| {
             let root = app.path().app_data_dir()?;
+            app.manage(app_updater::AppUpdates::new(
+                app.path().app_cache_dir()?.join("app-update"),
+            )?);
             identity_migration::validate_startup(&root)?;
             let core = CoreHandle::open(&root)?;
             let processing = Processing::new(root.clone(), app.path().resource_dir()?);

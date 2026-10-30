@@ -693,6 +693,9 @@ impl Processing {
         let invalid_state = |message: &str| ControlError::new("invalid_state", message);
         let storage_error = |message: String| ControlError::new("storage_error", message);
         let running = self.running.lock().unwrap();
+        if self.shutting_down.load(Ordering::Acquire) {
+            return Err(invalid_state("앱을 종료하고 있습니다."));
+        }
         let mut pending = self.pending.lock().unwrap();
         if let Some(index) = pending.iter().position(|job| job.record.id == id) {
             let mut record = pending[index].record.clone();
@@ -1272,6 +1275,26 @@ impl Processing {
         }
         self.worker_ready()
     }
+    pub fn quiesce_for_update(&self) -> Result<(), String> {
+        // Capture admission, queue admission and drive all take running first.
+        // Keep that lock until the fence is set; do not cancel any user's work.
+        let _retry = self.retry_gate.lock().unwrap();
+        let running = self.running.lock().unwrap();
+        let pending = self.pending.lock().unwrap();
+        self.worker_ready()?;
+        if self.shutting_down.load(Ordering::Acquire)
+            || self.recording.load(Ordering::Acquire)
+            || running.as_ref().is_some_and(|job| !job.handle.is_finished())
+            || !pending.is_empty()
+            || self.live.lock().unwrap().as_ref()
+                .is_some_and(|job| job.running.load(Ordering::Acquire))
+        {
+            return Err("녹음과 진행 중인 작업을 마친 뒤 업데이트해 주세요.".into());
+        }
+        self.shutting_down.store(true, Ordering::Release);
+        Ok(())
+    }
+
     pub fn resume(&self) {
         self.shutting_down.store(false, Ordering::Release);
     }
@@ -1928,6 +1951,9 @@ impl Processing {
     pub fn acknowledge(&self, id: &str) -> Result<Progress, String> {
         let _retry = self.retry_gate.lock().unwrap();
         let _running = self.running.lock().unwrap();
+        if self.shutting_down.load(Ordering::Acquire) {
+            return Err("앱을 종료하고 있습니다.".into());
+        }
         let mut record = self
             .records
             .lock()
@@ -1966,6 +1992,9 @@ impl Processing {
     ) -> Result<Progress, String> {
         let _retry = self.retry_gate.lock().unwrap();
         self.job_ready()?;
+        if self.shutting_down.load(Ordering::Acquire) {
+            return Err("앱을 종료하고 있습니다.".into());
+        }
         let record = self
             .records
             .lock()
@@ -2646,6 +2675,30 @@ mod tests {
         changed = first.clone();
         changed.model_ready = true;
         assert!(first != changed);
+    }
+
+    #[test]
+    fn update_fences_new_capture_and_refuses_to_cancel_running_work() {
+        let (_temporary, process) = setup();
+        process.quiesce_for_update().unwrap();
+        assert!(process.recording_start(|| Ok(())).is_err());
+        process.resume();
+        process.recording_start(|| Ok(())).unwrap();
+        assert!(process.quiesce_for_update().is_err());
+        assert!(!process.shutting_down.load(Ordering::Acquire));
+        process.recording.store(false, Ordering::Release);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let child_flag = cancelled.clone();
+        let handle = thread::spawn(move || { while !child_flag.load(Ordering::Acquire) { thread::yield_now(); } });
+        *process.running.lock().unwrap() = Some(Running { id: "update-test".into(), cancel: cancelled.clone(), handle, import_existing: None });
+        assert!(process.quiesce_for_update().is_err());
+        assert!(!cancelled.load(Ordering::Acquire));
+        assert!(!process.shutting_down.load(Ordering::Acquire));
+        cancelled.store(true, Ordering::Release);
+        process.running.lock().unwrap().take().unwrap().handle.join().unwrap();
+        process.quiesce_for_update().unwrap();
+        process.resume();
+        assert!(!process.shutting_down.load(Ordering::Acquire));
     }
 
     fn setup() -> (tempfile::TempDir, Arc<Processing>) {

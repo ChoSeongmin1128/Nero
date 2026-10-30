@@ -7,6 +7,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 
@@ -39,7 +40,7 @@ class RunningAppGuardTests(unittest.TestCase):
                 raise RuntimeError("A Windows installer build must provide its NSIS compiler")
             raise unittest.SkipTest("NSIS compiler unavailable; set NERO_NSIS_COMPILER")
 
-    def run_guard(self, target, uninstall=False):
+    def run_guard(self, target, uninstall=False, update=False, before_run=None):
         with tempfile.TemporaryDirectory(prefix="nero-nsis-guard-") as folder:
             directory = Path(folder)
             output = directory / "guard.exe"
@@ -62,12 +63,39 @@ class RunningAppGuardTests(unittest.TestCase):
                                    capture_output=True, timeout=30)
             self.assertEqual(built.returncode, 0, built.stdout.decode(errors="replace") +
                              built.stderr.decode(errors="replace"))
-            completed = subprocess.run([str(output), "/S"], capture_output=True, timeout=15)
+            if before_run:
+                before_run()
+            completed = subprocess.run([str(output), "/S"] + (["/UPDATE"] if update else []), capture_output=True, timeout=15)
             if uninstall:
                 self.assertEqual(completed.returncode, 0)
                 completed = subprocess.run([str(uninstaller), "/S", f"_?={directory}"],
                                            capture_output=True, timeout=15)
             return completed.returncode
+
+    def test_update_waits_for_natural_exit_without_terminating_a_process(self):
+        with tempfile.TemporaryDirectory(prefix="nero-updater-exit-") as folder:
+            executable = Path(folder) / "synthetic-helper.exe"
+            shutil.copy2(sys.executable, executable)
+            environment = dict(os.environ, PYTHONHOME=sys.prefix)
+            environment["PATH"] = str(Path(sys.executable).parent) + os.pathsep + environment.get("PATH", "")
+            child = None
+            def start_child():
+                nonlocal child
+                child = subprocess.Popen([str(executable), "-c", "import time; time.sleep(1)"], env=environment)
+                time.sleep(0.1)
+                self.assertIsNone(child.poll())
+            try:
+                self.assertEqual(self.run_guard(executable, update=True, before_run=start_child), 0)
+                self.assertEqual(child.wait(timeout=5), 0)
+            finally:
+                if child is not None and child.poll() is None:
+                    child.terminate()
+                    child.wait(timeout=5)
+
+    def test_update_timeout_keeps_the_running_process_alive(self):
+        started = time.monotonic()
+        self.assertEqual(self.run_guard(Path(sys.executable), update=True), 2)
+        self.assertGreater(time.monotonic() - started, 4)
 
     def test_running_executable_is_rejected_without_killing_its_process(self):
         # This test process owns the real Python executable; it must survive.

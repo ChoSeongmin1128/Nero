@@ -265,6 +265,20 @@ impl CoreHandle {
         &self,
         action: impl FnOnce(&mut Engine) -> Result<T> + Send + 'static,
     ) -> Result<T> {
+        // Check on the actor, not the sending thread: requests already queued
+        // when update preparation closes the gate must not write afterwards.
+        self.call_unfenced(move |engine| {
+            if engine.quitting {
+                return Err(CoreError::Unavailable);
+            }
+            action(engine)
+        })
+    }
+
+    fn call_unfenced<T: Send + 'static>(
+        &self,
+        action: impl FnOnce(&mut Engine) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
         let (reply, result) = mpsc::sync_channel(1);
         self.inner
             .commands
@@ -543,7 +557,7 @@ impl CoreHandle {
     }
 
     pub fn snapshot(&self) -> Result<Snapshot> {
-        self.call(|engine| Ok(engine.snapshot()))
+        self.call_unfenced(|engine| Ok(engine.snapshot()))
     }
 
     pub fn capture_reader(&self, session_id: &str) -> Result<CaptureReader> {
@@ -560,11 +574,35 @@ impl CoreHandle {
 
     pub fn prepare_shutdown(&self, expected_session_id: Option<&str>) -> Result<Snapshot> {
         let expected_session_id = expected_session_id.map(str::to_owned);
-        self.call(move |engine| engine.prepare_shutdown(expected_session_id.as_deref()))
+        self.call_unfenced(move |engine| engine.prepare_shutdown(expected_session_id.as_deref()))
+    }
+
+    pub fn resume_after_failed_shutdown(&self) -> Result<()> {
+        self.call_unfenced(|engine| engine.resume_after_failed_shutdown())
     }
 
     pub fn audio_path(&self, meeting_id: &str) -> Result<PathBuf> {
         let meeting_id = meeting_id.to_owned();
         self.call(move |engine| engine.audio_path(&meeting_id))
+    }
+}
+
+#[cfg(test)]
+mod shutdown_gate_tests {
+    use super::*;
+
+    #[test]
+    fn update_shutdown_fences_all_actor_requests_and_failure_reopens_them() {
+        let temporary = tempfile::tempdir().unwrap();
+        let core = CoreHandle::open(temporary.path().canonicalize().unwrap()).unwrap();
+        let meeting = core.create_meeting("보존", "메모").unwrap();
+        core.prepare_shutdown(None).unwrap();
+        assert!(matches!(core.create_folder("설치 중 변경"), Err(CoreError::Unavailable)));
+        assert!(matches!(core.list_meetings(), Err(CoreError::Unavailable)));
+        assert_eq!(core.snapshot().unwrap().meetings[0].id, meeting.id);
+        assert!(core.prepare_shutdown(None).is_ok());
+        core.resume_after_failed_shutdown().unwrap();
+        core.create_folder("작업 재개").unwrap();
+        assert_eq!(core.list_meetings().unwrap()[0].notes, "메모");
     }
 }
