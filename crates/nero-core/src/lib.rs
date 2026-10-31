@@ -42,6 +42,12 @@ use std::thread;
 
 pub type Result<T> = std::result::Result<T, CoreError>;
 
+/// Original audio formats the library can retain after the desktop prepares PCM.
+/// Decoder availability remains the desktop adapter's responsibility.
+pub const AUDIO_IMPORT_EXTENSIONS: &[&str] = &[
+    "wav", "m4a", "mp3", "aac", "aiff", "aif", "caf", "flac", "ogg",
+];
+
 #[derive(Debug, thiserror::Error)]
 pub enum CoreError {
     #[error("{0}")]

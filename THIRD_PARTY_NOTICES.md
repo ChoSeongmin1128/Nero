@@ -44,7 +44,10 @@ Source: https://github.com/HEnquist/rubato/tree/v0.16.2 .
 
 ## Portable audio decoding
 
-Audio import uses the unmodified Symphonia 0.6.1 crates (Mozilla Public License 2.0).
+Audio import uses Symphonia 0.6.1 (Mozilla Public License 2.0). The AAC decoder
+contains one strict rejection check for unsupported in-band SBR; its complete
+modified source, original archive pin and change description are included under
+`vendor/symphonia-codec-aac/`. Other Symphonia crates are unmodified.
 The exact enabled codecs, containers, and dependency checksums are recorded in
 `apps/desktop/src-tauri/Cargo.toml` and `Cargo.lock`. Complete license notices and
 source archive links for the decoder and its added dependencies are bundled under

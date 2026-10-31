@@ -1,8 +1,5 @@
+use nero_core::AUDIO_IMPORT_EXTENSIONS as IMPORT_EXTENSIONS;
 use std::path::Path;
-
-const IMPORT_EXTENSIONS: &[&str] = &[
-    "wav", "m4a", "mp3", "aac", "aiff", "aif", "caf", "flac", "ogg",
-];
 
 pub(crate) fn import_extensions() -> &'static [&'static str] {
     IMPORT_EXTENSIONS

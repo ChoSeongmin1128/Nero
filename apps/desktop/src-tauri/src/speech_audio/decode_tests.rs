@@ -111,6 +111,9 @@ fn encoded_codec_matrix_preserves_duration_originals_and_rejects_incomplete_file
     let manifest: serde_json::Value =
         serde_json::from_slice(&fs::read(fixtures.join("manifest.json")).unwrap()).unwrap();
     let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().canonicalize().unwrap();
+    let library = root.join("library");
+    let core = nero_core::CoreHandle::open(library.clone()).unwrap();
     let cancel = AtomicBool::new(false);
     for case in manifest["cases"].as_array().unwrap() {
         let name = case["file"].as_str().unwrap();
@@ -120,7 +123,7 @@ fn encoded_codec_matrix_preserves_duration_originals_and_rejects_incomplete_file
             case["sha256"].as_str().unwrap(),
             "fixture {name}"
         );
-        let destination = temporary.path().join(format!("{name}.wav"));
+        let destination = root.join(format!("{name}.wav"));
         let frames = if name.ends_with(".wav") {
             super::super::wav::prepare(&source, &destination, &cancel)
         } else {
@@ -142,18 +145,70 @@ fn encoded_codec_matrix_preserves_duration_originals_and_rejects_incomplete_file
             .map(|sample| f64::from(sample.unwrap()).powi(2))
             .sum();
         assert!(energy / frames as f64 > 100_000.0, "decoded silence {name}");
+        if let Some(reference) = case["reference"].as_str() {
+            let normalized = root.join(format!("reference-{name}.wav"));
+            super::super::wav::prepare(&fixtures.join(reference), &normalized, &cancel).unwrap();
+            let reference: Vec<i16> = hound::WavReader::open(&normalized)
+                .unwrap()
+                .into_samples()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            let actual: Vec<i16> = hound::WavReader::open(&destination)
+                .unwrap()
+                .into_samples()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            assert_eq!(actual.len(), reference.len(), "reference duration {name}");
+            let noise: f64 = actual
+                .iter()
+                .zip(&reference)
+                .map(|(a, b)| (f64::from(*a) - f64::from(*b)).powi(2))
+                .sum();
+            let power: f64 = reference.iter().map(|v| f64::from(*v).powi(2)).sum();
+            assert!(
+                noise / power < 0.005,
+                "presentation offset/waveform {name}: {}",
+                noise / power
+            );
+        }
+
         assert_eq!(
             super::super::digest(&source).unwrap(),
             case["sha256"].as_str().unwrap(),
             "original {name}"
         );
 
+        let meeting = core.import_audio(name, &source, &destination).unwrap();
+        let audio = meeting.audio.unwrap();
+        let retained = library
+            .join(&audio.relative_path)
+            .parent()
+            .unwrap()
+            .join(format!(
+                "source.{}",
+                source.extension().unwrap().to_str().unwrap()
+            ));
+        assert_eq!(
+            super::super::digest(&retained).unwrap(),
+            case["sha256"].as_str().unwrap(),
+            "stored original {name}"
+        );
+        assert_eq!(audio.frames, frames, "stored frame identity {name}");
+        let playback = hound::WavReader::open(library.join(&audio.relative_path)).unwrap();
+        assert_eq!(
+            u64::from(playback.duration()),
+            frames,
+            "stored playback {name}"
+        );
+        assert_eq!(playback.spec().sample_rate, 16000);
+        assert_eq!(playback.spec().channels, 1);
+
         // Raw MP3 without a length tag has no authoritative total. Its reader
         // treats a final short packet as EOF. Do not claim truncation detection.
         if case["noLengthTag"] == true {
             continue;
         }
-        let broken = temporary.path().join(format!("broken-{name}"));
+        let broken = root.join(format!("broken-{name}"));
         let mut raw = fs::read(&source).unwrap();
         raw.truncate(if name.ends_with(".m4a") {
             raw.len() / 2
@@ -161,7 +216,7 @@ fn encoded_codec_matrix_preserves_duration_originals_and_rejects_incomplete_file
             raw.len() - 17
         });
         fs::write(&broken, &raw).unwrap();
-        let output = temporary.path().join(format!("broken-{name}.wav"));
+        let output = root.join(format!("broken-{name}.wav"));
         let result = if name.ends_with(".wav") {
             super::super::wav::prepare(&broken, &output, &cancel)
         } else {
@@ -172,8 +227,8 @@ fn encoded_codec_matrix_preserves_duration_originals_and_rejects_incomplete_file
     }
     for name in manifest["unsupported"].as_array().unwrap() {
         let source = fixtures.join(name.as_str().unwrap());
-        let output = temporary.path().join("unsupported.wav");
-        assert!(prepare(&source, &output, &cancel).is_err());
+        let output = root.join("unsupported.wav");
+        assert!(prepare(&source, &output, &cancel).is_err(), "accepted unsupported {}", name);
         assert!(!output.exists());
     }
 }
@@ -213,6 +268,23 @@ fn multiple_container_tracks_are_rejected_instead_of_selecting_one_silently() {
     let error = prepare(&source, &destination, &AtomicBool::new(false)).unwrap_err();
     assert!(error.message.contains("트랙"), "{}", error.message);
     assert!(!destination.exists());
+    #[cfg(target_os = "macos")]
+    {
+        let process = crate::processing::Processing::new(
+            temporary.path().join("library"),
+            temporary.path().join("absent-resources"),
+        );
+        let error = super::super::AnalysisAudio::prepare(
+            &process,
+            &source,
+            temporary.path(),
+            &AtomicBool::new(false),
+        )
+        .err()
+        .unwrap();
+        assert!(error.message.contains("트랙"));
+        assert!(!destination.exists());
+    }
 }
 
 #[cfg(target_os = "macos")]

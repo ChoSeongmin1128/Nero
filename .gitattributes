@@ -14,3 +14,7 @@ scripts/native-diarization/patches/*.patch text eol=lf -whitespace
 
 # Preserve the unmodified decoder license notice.
 apps/desktop/licenses/audio-decode/MPL-2.0.txt -whitespace
+
+# Keep the small patched upstream AAC dependency reproducible across hosts.
+vendor/symphonia-codec-aac/** text eol=lf
+vendor/symphonia-codec-aac/LICENSE -whitespace

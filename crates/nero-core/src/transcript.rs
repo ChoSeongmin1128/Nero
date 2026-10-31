@@ -702,6 +702,16 @@ impl Engine {
                 "분석용 음성 형식이 올바르지 않습니다.".into(),
             ));
         }
+        let extension = source
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("audio")
+            .to_ascii_lowercase();
+        if extension != "audio" && !crate::AUDIO_IMPORT_EXTENSIONS.contains(&extension.as_str()) {
+            return Err(CoreError::Audio(
+                "지원하지 않는 음성 파일 형식입니다.".into(),
+            ));
+        }
         let source_file = store::open_read(&source)?;
         let metadata = source_file.metadata()?;
         let attaching = target.is_some();
@@ -725,18 +735,6 @@ impl Engine {
                 self.store.save(&stored)?;
             }
             let directory = manifest.relative_dir();
-            let extension = source
-                .extension()
-                .and_then(|x| x.to_str())
-                .unwrap_or("audio")
-                .to_ascii_lowercase();
-            if !["wav", "m4a", "mp3", "aac", "aiff", "aif", "caf", "audio"]
-                .contains(&extension.as_str())
-            {
-                return Err(CoreError::Audio(
-                    "지원하지 않는 음성 파일 형식입니다.".into(),
-                ));
-            }
             let destination = store::checked_path(
                 &self.store.root,
                 &directory.join(format!("source.{extension}")),
@@ -1903,6 +1901,21 @@ pub(crate) mod tests {
         let reopened = Engine::open(root).unwrap();
         assert_eq!(reopened.meetings[&draft.id].meeting, published);
         assert_eq!(std::fs::read(&audio).unwrap(), audio_before);
+    }
+
+    #[test]
+    fn rejected_new_import_does_not_leave_an_empty_meeting() {
+        let (_temp, mut engine, _, wav) = setup();
+        let unsupported = wav.with_extension("unsupported");
+        std::fs::write(&unsupported, b"Synthetic source").unwrap();
+        let directory = engine.store.root.join("meetings");
+        let before = std::fs::read_dir(&directory).unwrap().count();
+        let meetings = engine.meetings.len();
+        assert!(engine
+            .import_audio("Rejected".into(), unsupported, wav)
+            .is_err());
+        assert_eq!(engine.meetings.len(), meetings);
+        assert_eq!(std::fs::read_dir(directory).unwrap().count(), before);
     }
 
     #[test]

@@ -78,7 +78,7 @@ fn float16k_import_is_converted_to_the_storage_and_model_pcm16_contract() {
 fn missing_converter_and_log_creation_failures_keep_their_categories() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
-    let source = root.join("recorded.m4a");
+    let source = root.join("recorded.mp3");
     wav(&source, 48000, true, 480);
     let process = Processing::new(root.join("library"), root.join("absent-resources"));
     let cancel = AtomicBool::new(false);
@@ -147,9 +147,9 @@ fn source_changes_and_non_normalized_converter_output_are_rejected() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
     let process = converter(&root);
-    let source = root.join("recorded.m4a");
+    let source = root.join("recorded.mp3");
     wav(&source, 48000, true, 480);
-    wav(&root.join("recorded.m4a.converted"), 48000, true, 480);
+    wav(&root.join("recorded.mp3.converted"), 48000, true, 480);
     let work = root.join("first");
     fs::create_dir(&work).unwrap();
     let cancel = AtomicBool::new(false);
@@ -160,7 +160,7 @@ fn source_changes_and_non_normalized_converter_output_are_rejected() {
             .kind,
         FailureKind::Input
     );
-    wav(&root.join("recorded.m4a.converted"), 16000, false, 160);
+    wav(&root.join("recorded.mp3.converted"), 16000, false, 160);
     let work = root.join("second");
     fs::create_dir(&work).unwrap();
     let audio = AnalysisAudio::prepare(&process, &source, &work, &cancel).unwrap();

@@ -1,4 +1,6 @@
 //! Whisper entry points. PCM ownership, native projection, runtime trust and execution are separate.
+#[cfg(test)]
+mod acceptance;
 mod backend;
 mod buffered;
 mod native;

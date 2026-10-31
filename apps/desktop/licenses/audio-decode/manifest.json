@@ -41,7 +41,9 @@
     "files": [
       "MPL-2.0.txt"
     ],
-    "modified": false
+    "modified": true,
+    "modifiedSource": "vendor/symphonia-codec-aac",
+    "changes": "Reject in-band SBR before returning incomplete AAC-LC PCM"
   },
   {
     "name": "symphonia-codec-alac",

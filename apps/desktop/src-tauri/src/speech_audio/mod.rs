@@ -13,6 +13,7 @@ mod import;
 pub(crate) mod normalize;
 mod output;
 mod platform;
+mod presentation;
 mod wav;
 
 pub(crate) use formats::import_extensions;

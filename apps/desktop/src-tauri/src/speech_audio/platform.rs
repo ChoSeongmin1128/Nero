@@ -18,6 +18,12 @@ pub(super) fn prepare(
     #[cfg(target_os = "macos")]
     {
         if !formats::portable_on_macos(source) {
+            if source
+                .extension()
+                .is_some_and(|value| value.eq_ignore_ascii_case("m4a"))
+            {
+                decode::validate_container(source)?;
+            }
             let arguments = [
                 source.as_os_str().to_os_string(),
                 destination.as_os_str().to_os_string(),
