@@ -788,7 +788,8 @@ html[data-appearance-changing] button {
   cursor: pointer;
 }
 
-.settings-dialog input[type="radio"] {
+.theme-option input[type="radio"],
+.brightness-choice input[type="radio"] {
   position: absolute;
   width: 1px;
   height: 1px;
