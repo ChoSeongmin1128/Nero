@@ -532,17 +532,14 @@ pub async fn start_calendar_recording(
                 .find(|device| device.is_default)
                 .map(|device| device.id)
                 .unwrap_or_default();
-            let result = recording_calendar.with_current_reminder(
-                &ticket,
-                calendar::now_ms(),
-                |event| {
+            let result =
+                recording_calendar.with_current_reminder(&ticket, calendar::now_ms(), |event| {
                     core.create_calendar_recording(
                         calendar_reference(event, jiff::tz::TimeZone::system())?,
                         &selected,
                     )
                     .map_err(|error| error.to_string())
-                },
-            )?;
+                })?;
             crate::publish(&recording_app, &result.1);
             crate::start_live_speech(&recording_app, &result.1);
             Ok(result)
@@ -562,6 +559,32 @@ pub async fn start_calendar_recording(
     Ok(snapshot)
 }
 
+#[tauri::command]
+pub async fn open_calendar_join_url(window: WebviewWindow, url: String) -> Result<(), String> {
+    crate::require_main(&window)?;
+    let parsed = checked_join_url(&url)?;
+    tauri::async_runtime::spawn_blocking(move || open_default_browser(&parsed))
+        .await
+        .map_err(|_| "참가 링크를 열지 못했습니다.".to_string())?
+        .map_err(|_| "참가 링크를 열지 못했습니다.".to_string())
+}
+
+fn checked_join_url(value: &str) -> Result<reqwest::Url, String> {
+    let invalid = || "참가 링크를 확인하지 못했습니다.".to_string();
+    if value.chars().any(char::is_control) {
+        return Err(invalid());
+    }
+    let parsed = reqwest::Url::parse(value).map_err(|_| invalid())?;
+    if parsed.scheme() != "https"
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+    {
+        return Err(invalid());
+    }
+    Ok(parsed)
+}
+
 fn open_authorization(url: &str) -> Result<(), String> {
     let parsed = reqwest::Url::parse(url).map_err(|_| "Google 연결 주소를 확인하지 못했습니다.")?;
     if parsed.scheme() != "https"
@@ -572,6 +595,12 @@ fn open_authorization(url: &str) -> Result<(), String> {
     {
         return Err("Google 연결 주소를 확인하지 못했습니다.".into());
     }
+    open_default_browser(&parsed)
+        .map_err(|_| "기본 브라우저를 열지 못했습니다. 다시 연결해 주세요.".into())
+}
+
+fn open_default_browser(url: &reqwest::Url) -> Result<(), ()> {
+    let url = url.as_str();
     #[cfg(target_os = "macos")]
     if std::process::Command::new("/usr/bin/open")
         .arg(url)
@@ -616,12 +645,29 @@ fn open_authorization(url: &str) -> Result<(), String> {
             return Ok(());
         }
     }
-    Err("기본 브라우저를 열지 못했습니다. 다시 연결해 주세요.".into())
+    Err(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn join_links_only_open_validated_https_and_preserve_participation_tokens() {
+        let url = checked_join_url("https://example.test/join?token=abc#meeting").unwrap();
+        assert_eq!(url.as_str(), "https://example.test/join?token=abc#meeting");
+        for value in [
+            "javascript:alert(1)",
+            "file:///tmp/example",
+            "http://example.test/join",
+            "https://user:password@example.test",
+            "https://example.test/join\0",
+            "https://example.test/\njoin",
+            "not a url",
+        ] {
+            assert!(checked_join_url(value).is_err(), "{value:?}");
+        }
+    }
+
     #[test]
     fn calendar_defaults_use_actual_start_in_selected_zone_including_overnight_events() {
         let start: jiff::Timestamp = "2026-10-29T15:30:00Z".parse().unwrap();

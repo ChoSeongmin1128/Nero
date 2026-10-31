@@ -4,21 +4,37 @@ import { createRoot } from 'react-dom/client';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '../../../design-system/components/ui/dialog.jsx';
 import { Calendar } from '../../../design-system/components/ui/calendar.jsx';
 import { Popover, PopoverTrigger, PopoverContent, PopoverClose } from '../../../design-system/components/ui/popover.jsx';
-import { CalendarDays, ChevronLeft, ChevronRight } from 'lucide-react';
+import { CalendarDays, ChevronLeft, ChevronRight, Copy, Check } from 'lucide-react';
 import { createCalendarMeetingFlow, calendarOccurrenceTime, calendarJoinUrls, calendarDay, parseCalendarDay, moveCalendarDay } from './calendar-meeting-flow.js';
 import './calendar-meeting-picker.css';
 
-function CalendarLinks({ reference }) {
-  const [feedback, setFeedback] = React.useState('');
-  React.useEffect(() => setFeedback(''), [reference?.occurrenceKey]);
+function CalendarLinks({ reference, onOpen }) {
+  const [feedback, setFeedback] = React.useState({ text: '', error: false });
+  const [copied, setCopied] = React.useState('');
+  const operation = React.useRef(0);
+  React.useEffect(() => {
+    operation.current++; setFeedback({ text: '', error: false }); setCopied('');
+    return () => { operation.current++; };
+  }, [reference?.occurrenceKey]);
   const links = calendarJoinUrls(reference);
+  const open = onOpen && (async (event, url) => {
+    if (event.type === 'auxclick' && event.button !== 1) return;
+    event.preventDefault();
+    const request = ++operation.current;
+    setFeedback({ text: '', error: false });
+    try { await onOpen(url); }
+    catch { if (request === operation.current) setFeedback({ text: '참가 링크를 열지 못했습니다. 링크를 복사해 브라우저에서 열어 주세요.', error: true }); }
+  });
   return links.length > 0 && <div className="calendar-meeting-links">{links.map(url => <div key={url}>
-    <span className="calendar-meeting-url" title={url}>{url}</span>
-    <button type="button" className="small quiet" onClick={async () => {
-      try { await navigator.clipboard.writeText(url); setFeedback('참가 링크를 복사했습니다.'); }
-      catch { setFeedback('참가 링크를 복사하지 못했습니다.'); }
-    }}>참가 링크 복사</button>
-  </div>)}<span className="type-caption" role="status">{feedback}</span></div>;
+    <a className="calendar-meeting-url" href={url} target="_blank" rel="noopener noreferrer" title={url}
+      onClick={open ? event => { void open(event, url); } : undefined}
+      onAuxClick={open ? event => { void open(event, url); } : undefined}>{url}</a>
+    <button type="button" className="small quiet icon" aria-label="참가 링크 복사" title={copied === url ? '복사됨' : '참가 링크 복사'} onClick={async () => {
+      const request = ++operation.current;
+      try { await navigator.clipboard.writeText(url); if (request === operation.current) { setCopied(url); setFeedback({ text: '참가 링크를 복사했습니다.', error: false }); } }
+      catch { if (request === operation.current) { setCopied(''); setFeedback({ text: '참가 링크를 복사하지 못했습니다.', error: true }); } }
+    }}>{copied === url ? <Check size={16} aria-hidden="true" /> : <Copy size={16} aria-hidden="true" />}</button>
+  </div>)}<span className={feedback.error ? 'type-caption' : 'sr-only'} role="status">{feedback.text}</span></div>;
 }
 
 function CalendarDateControls({ flow, state, container }) {
@@ -43,7 +59,7 @@ function CalendarDateControls({ flow, state, container }) {
   </div>;
 }
 
-function CalendarMeetingPicker({ flow, container, finalFocus }) {
+function CalendarMeetingPicker({ flow, container, finalFocus, onOpenLink }) {
   const state = React.useSyncExternalStore(flow.subscribe, flow.getSnapshot);
   const selected = state.occurrences.find(event => event.key === state.selectedKey);
   const busy = state.loading || state.creating;
@@ -61,7 +77,7 @@ function CalendarMeetingPicker({ flow, container, finalFocus }) {
           <input type="radio" name="calendar-meeting" checked={state.selectedKey === event.key} onChange={() => flow.select(event.key)} />
           <span><strong>{event.title}</strong><span>{calendarOccurrenceTime(event, state.timeZone)}</span><span>{event.calendarName}</span></span>
         </label>)}</fieldset>}
-        {selected && <CalendarLinks reference={{ ...selected, occurrenceKey: selected.key }} />}
+        {selected && <CalendarLinks reference={{ ...selected, occurrenceKey: selected.key }} onOpen={onOpenLink} />}
         {state.error && <p className="notice" role="alert">{state.error}</p>}
       </div>
       <DialogFooter><button type="button" disabled={busy} onClick={() => { void flow.refresh(); }}>새로고침</button><button type="button" disabled={state.creating} onClick={() => flow.close()}>취소</button><button type="button" className="primary" disabled={busy || !selected} onClick={() => { void flow.prepare(); }}>{state.creating ? '연결 중' : '일정 연결'}</button></DialogFooter>
@@ -77,7 +93,7 @@ export function mountCalendarMeetingPicker({ container, bridge, onPrepared, onCo
   const root = createRoot(mount);
   const flow = createCalendarMeetingFlow({ bridge, onPrepared, onConfigure });
   let origin = null;
-  root.render(<CalendarMeetingPicker flow={flow} container={container} finalFocus={() => returnFocusTarget(origin, document.getElementById('navigation-toggle')) || false} />);
+  root.render(<CalendarMeetingPicker flow={flow} container={container} finalFocus={() => returnFocusTarget(origin, document.getElementById('navigation-toggle')) || false} onOpenLink={bridge.openCalendarJoinUrl} />);
   return {
     open(trigger = document.activeElement, target = null) { origin = trigger; globalThis.NeroControls?.close?.(); flow.open(target); },
     close: () => flow.close(),
@@ -86,14 +102,14 @@ export function mountCalendarMeetingPicker({ container, bridge, onPrepared, onCo
   };
 }
 
-export function mountCalendarMeetingReference({ container }) {
+export function mountCalendarMeetingReference({ container, bridge }) {
   container.dataset.neroUiOwned = '';
   const root = createRoot(container);
   return {
     render(meeting) {
       const reference = meeting?.calendarReference;
       container.hidden = !reference;
-      root.render(reference ? <div className="calendar-meeting-reference" aria-label="연결된 일정"><span className="calendar-meeting-reference-label">일정</span><strong>{reference.title}</strong><span>{calendarOccurrenceTime(reference)}</span><span>{reference.calendarName}</span><CalendarLinks reference={reference} /></div> : null);
+      root.render(reference ? <div className="calendar-meeting-reference" aria-label="연결된 일정"><span className="calendar-meeting-reference-label">일정</span><strong>{reference.title}</strong><span>{calendarOccurrenceTime(reference)}</span><span>{reference.calendarName}</span><CalendarLinks reference={reference} onOpen={bridge?.openCalendarJoinUrl} /></div> : null);
     },
     dispose() { root.unmount(); },
   };

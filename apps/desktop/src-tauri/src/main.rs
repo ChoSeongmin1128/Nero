@@ -1686,6 +1686,7 @@ fn main() {
             agent_write_ready,
             calendar_desktop::read_calendar_settings,
             calendar_desktop::read_calendar_meeting_occurrences,
+            calendar_desktop::open_calendar_join_url,
             calendar_desktop::create_meeting_from_calendar,
             calendar_desktop::begin_calendar_connect,
             calendar_desktop::finish_calendar_connect,

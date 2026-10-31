@@ -67,3 +67,39 @@ test('calendar picker renders one explicit selection and keeps linked metadata s
   reference.render({ title: 'Plain meeting' });
   assert.equal(window.document.getElementById('reference').hidden, true);
 });
+
+
+test('calendar join links open externally and keep an accessible icon copy action', async t => {
+  const app = fileURLToPath(new URL('../', import.meta.url));
+  const bundle = await build({ entryPoints: [app + 'src/calendar-meeting-picker.jsx'], nodePaths: [app + 'node_modules'], bundle: true, write: false, format: 'iife', globalName: 'CalendarMeetingUI', loader: { '.css': 'empty' }, define: { 'process.env.NODE_ENV': '\"production\"' } });
+  const window = new Window({ url: 'http://nero.test', settings: { enableJavaScriptEvaluation: true, suppressInsecureJavaScriptEnvironmentWarning: true } });
+  t.after(() => window.happyDOM.abort());
+  window.document.body.innerHTML = '<div id="reference"></div>';
+  window.eval(bundle.outputFiles[0].text);
+  const opened = [], copied = [];
+  let failOpen = false, failCopy = false;
+  Object.defineProperty(window.navigator, 'clipboard', { value: { async writeText(value) { if (failCopy) throw Error('denied'); copied.push(value); } } });
+  const reference = window.CalendarMeetingUI.mountCalendarMeetingReference({ container: window.document.getElementById('reference'), bridge: { async openCalendarJoinUrl(url) { opened.push(url); if (failOpen) throw Error('unavailable'); } } });
+  t.after(() => reference.dispose());
+  const url = 'https://example.test/join?token=synthetic#meeting';
+  reference.render({ calendarReference: { occurrenceKey: 'one', title: 'Synthetic schedule', startAt: 1_000_000, endAt: 2_000_000, calendarName: 'Synthetic', joinUrls: [url, 'javascript:alert(1)', 'https://user:secret@example.test'] } });
+  const wait = async predicate => { for (let i = 0; i < 100; i++) { if (predicate()) return; await new Promise(resolve => setTimeout(resolve, 5)); } assert.fail('Expected calendar join link state'); };
+  await wait(() => window.document.querySelector('a'));
+  const link = window.document.querySelector('a'), copy = window.document.querySelector('[aria-label="참가 링크 복사"]');
+  assert.equal(window.document.querySelectorAll('a').length, 1);
+  assert.equal(link.href, url); assert.equal(link.target, '_blank'); assert.equal(link.rel, 'noopener noreferrer');
+  assert.equal(copy.textContent, ''); assert.ok(copy.querySelector('svg'));
+  const click = new window.MouseEvent('click', { bubbles: true, cancelable: true });
+  link.dispatchEvent(click);
+  await wait(() => opened.length === 1);
+  assert.equal(click.defaultPrevented, true); assert.deepEqual(opened, [url]);
+  copy.click(); await wait(() => copy.title === '복사됨');
+  assert.deepEqual(copied, [url]); assert.equal(opened.length, 1);
+  assert.match(window.document.querySelector('[role="status"]').textContent, /복사했습니다/);
+  failCopy = true; copy.click();
+  await wait(() => window.document.querySelector('[role="status"]').textContent.includes('복사하지 못했습니다'));
+  assert.equal(copy.title, '참가 링크 복사');
+  failOpen = true; link.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }));
+  await wait(() => window.document.querySelector('[role="status"]').textContent.includes('열지 못했습니다'));
+  assert.equal(link.href, url); assert.equal(window.location.href, 'http://nero.test/');
+});

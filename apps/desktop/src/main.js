@@ -47,7 +47,7 @@ let integrationNotices = [];
 let appUpdateNotices = [];
 const integrationMonitor = createIntegrationMonitor({ bridge, onChange(notices) { integrationNotices = notices; render(); } });
 const calendarSettings = mountCalendarSettings({ panel: byId('calendar-settings'), bridge, onSnapshot: value => integrationMonitor.acceptCalendar(value) });
-const calendarReference = mountCalendarMeetingReference({ container: byId('calendar-meeting-reference') });
+const calendarReference = mountCalendarMeetingReference({ container: byId('calendar-meeting-reference'), bridge });
 const calendarPicker = mountCalendarMeetingPicker({ container: document.body, bridge,
   onPrepared: async meeting => {
     acceptSnapshot(await bridge.readSnapshot());

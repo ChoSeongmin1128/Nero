@@ -11,8 +11,10 @@
 .calendar-meeting-option > span { display: grid; gap: 5px; min-width: 0; overflow-wrap: anywhere; }
 .calendar-meeting-option > span > span { color: var(--text-secondary); font-size: var(--text-caption-size); }
 .calendar-meeting-links { display: grid; gap: 8px; margin-top: 12px; min-width: 0; }
-.calendar-meeting-links > div { display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap; }
-.calendar-meeting-url { color: var(--text-secondary); font-size: var(--text-caption-size); overflow-wrap: anywhere; min-width: 0; }
+.calendar-meeting-links > div { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.calendar-meeting-links > div > button { flex: none; }
+.calendar-meeting-url { display: block; min-width: 0; max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--link); font-size: var(--text-caption-size); text-decoration: underline; text-underline-offset: 3px; }
+.calendar-meeting-url:focus-visible { outline-offset: 2px; }
 .calendar-meeting-reference { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; padding-block: 10px; color: var(--text-secondary); font-size: var(--text-caption-size); }
 .calendar-meeting-reference strong { font-weight: var(--weight-medium); overflow-wrap: anywhere; }
 .calendar-meeting-reference-label { color: var(--text-secondary); }
