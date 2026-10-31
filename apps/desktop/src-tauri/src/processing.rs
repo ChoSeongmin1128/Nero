@@ -2831,6 +2831,9 @@ mod speech_choice_tests {
         for path in [
             resources.join("native/diarization/cpu/bin/nemo-speech.exe"),
             crate::whisper_asr::executable(&resources),
+            resources.join("native/whisper/runtime.json"),
+            resources.join("native/whisper/bin/nero-vulkan-probe.exe"),
+            resources.join("native/whisper/vulkan/bin/whisper-cli.exe"),
         ] {
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(path, b"synthetic unexecuted runtime").unwrap();
