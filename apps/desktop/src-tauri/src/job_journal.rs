@@ -35,6 +35,8 @@ pub(super) enum JobStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct JobRecord {
+    #[serde(default)]
+    pub speech_engine: crate::speech_choice::SpeechEngine,
     pub schema_version: u32,
     pub id: String,
     pub kind: String,
@@ -474,6 +476,7 @@ mod tests {
 
     fn record(status: JobStatus) -> JobRecord {
         JobRecord {
+            speech_engine: crate::speech_choice::SpeechEngine::default(),
             schema_version: 1,
             id: Uuid::new_v4().to_string(),
             kind: "transcribe".into(),
@@ -685,6 +688,7 @@ mod tests {
         let original = record(JobStatus::Queued);
         for malformed in [
             JobRecord {
+                speech_engine: crate::speech_choice::SpeechEngine::default(),
                 schema_version: 2,
                 ..original.clone()
             },

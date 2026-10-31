@@ -67,6 +67,18 @@ pub(crate) struct Word {
     pub(crate) end: f64,
     #[serde(default)]
     pub(crate) confidence: Option<f64>,
+    #[serde(
+        rename = "timingScope",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) timing_scope: Option<String>,
+}
+
+impl Word {
+    fn context_only(&self) -> bool {
+        self.timing_scope.as_deref() == Some("nativeSegmentContext")
+    }
 }
 
 #[derive(Deserialize)]
@@ -200,6 +212,7 @@ pub(crate) fn project_words(
     let mut sentence_end = 0.0;
     for word in words {
         if word.word.trim().is_empty()
+            || (projection.model != crate::whisper::MODEL && word.timing_scope.is_some())
             || word.word.contains('\0')
             || word.word.len() > 2 * 1024 * 1024
             || !word.start.is_finite()
@@ -215,13 +228,16 @@ pub(crate) fn project_words(
                 "음성 인식의 단어 또는 시각이 올바르지 않습니다. 모델 원본은 보관했습니다.".into(),
             ));
         }
+        if word.context_only() && !sentence.is_empty() {
+            push_sentence(&mut segments, &mut sentence, sentence_start, sentence_end)?;
+        }
         if sentence.is_empty() {
             sentence_start = word.start.min(duration);
         }
         previous_start = word.start;
         previous_end = word.end;
         sentence_end = word.end.min(duration);
-        let ends_sentence = word.word.trim_end().ends_with(['.', '!', '?']);
+        let ends_sentence = word.context_only() || word.word.trim_end().ends_with(['.', '!', '?']);
         sentence.push(word.word);
         if ends_sentence {
             push_sentence(&mut segments, &mut sentence, sentence_start, sentence_end)?;
@@ -310,6 +326,13 @@ fn word_projector(model: &str) -> &'static str {
 
 fn unassigned_cause(atom: &WordAtom, model: &str, words: &[Word]) -> String {
     if !atom.preserved
+        && model == crate::whisper::MODEL
+        && words[atom.word_start..atom.word_end]
+            .iter()
+            .any(Word::context_only)
+    {
+        "native_segment_context".into()
+    } else if !atom.preserved
         && model == crate::whisper::MODEL
         && words[atom.word_start..atom.word_end]
             .iter()
@@ -513,7 +536,9 @@ fn materialize(
         || hash(output.canonical_asr_raw.as_bytes()) != output.canonical_asr_sha256
         || output.word_slots.len() != words.len()
         || output.word_slots.iter().zip(words).any(|(slot, word)| {
-            if output.parent.model == crate::whisper::MODEL && word.start == word.end {
+            if output.parent.model == crate::whisper::MODEL
+                && (word.start == word.end || word.context_only())
+            {
                 *slot != 0
             } else {
                 !(1..=8).contains(slot)
@@ -808,7 +833,7 @@ pub(crate) fn create_speaker_generation(
     let mut slots = crate::diarization::posterior_slots(&draft, &positions, frames, sample_rate)?;
     if baseline.model == crate::whisper::MODEL {
         for (slot, word) in slots.iter_mut().zip(&parsed.words) {
-            if word.start == word.end {
+            if word.start == word.end || word.context_only() {
                 *slot = 0;
             }
         }

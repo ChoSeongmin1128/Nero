@@ -25,6 +25,13 @@ This file applies to the entire repository.
   identity, successful native completion evidence and valid word timestamps. Preserve
   native output, the execution receipt and original audio; completion evidence does
   not prove that every spoken word was recognized. Never silently switch to chunk ASR.
+- Explicit selection also supports pinned Whisper large-v3-turbo Q5 through the
+  packaged CLI with bounded PCM windows and contextual overlap. Preserve native
+  token bytes before UTF-8 validation, actual time anchors, window/EOF evidence
+  and separate provider generations. Never interpolate word times or confidence.
+  Native segment context and zero-duration words have unknown speakers. Selection
+  applies to future work, is frozen per job/session and never silently switches
+  models or reprocesses old meetings. See `docs/windows-speech-models.md`.
 - During new recording, a background saved-PCM reader may feed one persistent ASR
   stream and an independent speaker stream. Publish provisional replacements at
   60–180 seconds without resetting models, finish only after successful capture EOF,
@@ -51,7 +58,7 @@ This file applies to the entire repository.
   source recipe and hashes are owned by `scripts/native-diarization/runtime.json`;
   Core and all workers use `speech_runtime` rather than independent pin strings.
   macOS uses only the verified PR47 mmap backport. Windows keeps Nemotron as the
-  final ASR and independent speaker models; its CPU runtime uses PR47 plus the
+  default ASR and independent speaker models; its CPU runtime uses PR47 plus the
   pinned bounded scheduler-allocation patch, while Vulkan retains the official
   base. The Windows target identity describes this composite package, not a
   patched Vulkan binary. Stored base artifacts stay

@@ -133,6 +133,10 @@ pub(crate) fn decode_asr(raw: &[u8], duration: f64, session: &str, id: &str) -> 
             let end_frame = (word.end * SAMPLE_RATE as f64).round();
             let center = (start_frame + end_frame) * 0.5;
             if word.confidence.is_some()
+                || word
+                    .timing_scope
+                    .as_deref()
+                    .is_some_and(|scope| scope != "nativeSegmentContext")
                 || !center.is_finite()
                 || (word.start * SAMPLE_RATE as f64 - start_frame).abs() > 1e-6
                 || (word.end * SAMPLE_RATE as f64 - end_frame).abs() > 1e-6
@@ -274,6 +278,34 @@ pub(crate) mod tests {
         );
         let read = engine.transcript(&id).unwrap().unwrap();
         assert_eq!(read.version, after.version);
+    }
+
+    #[test]
+    fn native_segment_context_preserves_text_and_is_never_projected_as_word_timing() {
+        let (_temp, mut engine, id, _audio) = crate::transcript::tests::setup();
+        let mut v = one_second_value();
+        v["words"][0]["timingScope"] = "nativeSegmentContext".into();
+        let baseline = engine
+            .commit_whisper_transcript(&id, None, serde_json::to_vec(&v).unwrap())
+            .unwrap();
+        let after = engine
+            .apply_diarization(&id, crate::nemotron::tests::posterior_draft(baseline))
+            .unwrap();
+        assert!(after.segments[0].speaker_id.is_none());
+        assert_eq!(after.segments[0].text, "예시");
+        assert_eq!(
+            after
+                .speaker_analysis
+                .as_ref()
+                .unwrap()
+                .review_causes
+                .get("native_segment_context"),
+            Some(&1)
+        );
+        assert_eq!(
+            engine.transcript(&id).unwrap().unwrap().version,
+            after.version
+        );
     }
 
     #[test]

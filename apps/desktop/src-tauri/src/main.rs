@@ -23,11 +23,14 @@ mod memory;
 mod microphone_permission;
 mod people_desktop;
 mod processing;
+mod process_tree;
 mod recorder_geometry;
 mod recorder_policy;
 mod speaker_worker;
 mod speech_audio;
 mod speech_library;
+mod speech_choice;
+mod whisper_asr;
 mod storage_space;
 mod summary;
 mod summary_checkpoint;
@@ -1303,6 +1306,15 @@ fn processing_status(
     Ok(state.processing.snapshot())
 }
 #[tauri::command]
+fn set_speech_engine(
+    window: WebviewWindow,
+    state: tauri::State<'_, DesktopState>,
+    engine: speech_choice::SpeechEngine,
+) -> Result<Progress,String> {
+    require_main(&window)?;
+    state.processing.set_speech_engine(engine)
+}
+#[tauri::command]
 fn prepare_model(
     window: WebviewWindow,
     state: tauri::State<'_, DesktopState>,
@@ -1722,6 +1734,7 @@ fn main() {
             open_meeting,
             request_quit,
             processing_status,
+            set_speech_engine,
             prepare_model,
             prepare_meeting_models,
             draft_attachment_target,

@@ -1,4 +1,5 @@
 use crate::job_journal::{JobRecord, JobStatus, Journal};
+use crate::speech_choice::{SpeechChoice, SpeechEngine};
 use nero_core::{CoreHandle, SessionState, Snapshot};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -15,7 +16,6 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use uuid::Uuid;
 
-const MODEL: &str = crate::asr::MANIFEST;
 const MODEL_LABEL: &str = crate::asr::LABEL;
 
 fn moss_worker_failure(log: &str) -> Option<(crate::summary_failure::FailureKind, &'static str)> {
@@ -79,6 +79,8 @@ pub(super) struct Model {
 #[derive(Clone, Serialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Progress {
+    pub speech_engine: Option<SpeechEngine>,
+    pub speech_choices: Vec<SpeechChoice>,
     pub revision: u64,
     pub id: Option<String>,
     pub kind: String,
@@ -112,6 +114,7 @@ pub struct Progress {
 #[derive(Clone, Serialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct JobView {
+    pub speech_engine: SpeechEngine,
     pub id: String,
     pub kind: String,
     pub meeting_id: Option<String>,
@@ -193,6 +196,8 @@ impl RecordingTranscription {
 }
 
 pub struct Processing {
+    speech_engine: Mutex<SpeechEngine>,
+    speech_preference_error: Mutex<Option<String>>,
     pub(super) root: PathBuf,
     pub(super) resources: PathBuf,
     progress: Mutex<Progress>,
@@ -343,6 +348,10 @@ impl Drop for Worker {
 
 impl Processing {
     pub fn new(root: PathBuf, resources: PathBuf) -> Arc<Self> {
+        let (speech_engine, speech_preference_error) = match crate::speech_choice::load(&root) {
+            Ok(engine) => (engine, None),
+            Err(error) => (SpeechEngine::default(), Some(error)),
+        };
         let journal = Journal::new(root.clone());
         let (records, issues, journal_error) = match journal.recover_available() {
             Ok(report) => (report.records, report.issues, None),
@@ -361,6 +370,15 @@ impl Processing {
             })
             .unwrap_or_default();
         let mut startup_issues = startup_issues;
+        if let Some(error) = &speech_preference_error {
+            startup_issues.push(Progress {
+                id: Some(Uuid::new_v4().to_string()),
+                kind: "speech-settings".into(),
+                status: "failed".into(),
+                message: error.clone(),
+                ..Default::default()
+            });
+        }
         if !issues.is_empty() {
             startup_issues.push(Progress {
                 id: Some(Uuid::new_v4().to_string()),
@@ -372,6 +390,8 @@ impl Processing {
             });
         }
         Arc::new(Self {
+            speech_engine: Mutex::new(speech_engine),
+            speech_preference_error: Mutex::new(speech_preference_error),
             root,
             resources,
             progress: Mutex::new(Progress::default()),
@@ -393,19 +413,86 @@ impl Processing {
         })
     }
     pub(super) fn model(&self) -> Model {
-        serde_json::from_str(MODEL).expect("bundled speech recognition manifest")
+        Self::model_for(self.speech_engine())
+    }
+    pub(super) fn model_for(engine: SpeechEngine) -> Model {
+        serde_json::from_str(engine.manifest()).expect("bundled speech recognition manifest")
+    }
+    pub(super) fn speech_engine(&self) -> SpeechEngine {
+        *self.speech_engine.lock().unwrap()
     }
     pub(super) fn model_dir(&self) -> Result<PathBuf, String> {
+        self.model_dir_for(self.speech_engine())
+    }
+    pub(super) fn model_dir_for(&self, engine: SpeechEngine) -> Result<PathBuf, String> {
         directory(
             &self.root,
-            &format!("models/{MODEL_LABEL}-{}", self.model().revision),
+            &format!(
+                "models/{}-{}",
+                engine.label(),
+                Self::model_for(engine).revision
+            ),
         )
     }
     pub(super) fn worker(&self, name: &str) -> PathBuf {
         self.resources.join("native").join(name)
     }
     fn supported(&self) -> bool {
-        platform_supported() && crate::asr::supported(self) && crate::speech_audio::supported(self)
+        self.speech_preference_error.lock().unwrap().is_none()
+            && self.supported_for(self.speech_engine())
+    }
+    fn supported_for(&self, engine: SpeechEngine) -> bool {
+        platform_supported()
+            && crate::speech_audio::supported(self)
+            && match engine {
+                SpeechEngine::Nemotron => crate::asr::supported(self),
+                SpeechEngine::WhisperTurbo => crate::whisper_asr::supported(&self.resources),
+            }
+    }
+    fn model_ready_for(&self, engine: SpeechEngine) -> bool {
+        let Ok(path) = self.model_dir_for(engine) else {
+            return false;
+        };
+        let marker = plain_file(&path.join("verified.json"))
+            .ok()
+            .and_then(|file| {
+                let mut value = String::new();
+                file.take(65536).read_to_string(&mut value).ok()?;
+                Some(value)
+            });
+        marker.as_deref() == Some(engine.manifest())
+            && Self::model_for(engine).files.iter().all(|file| {
+                fs::symlink_metadata(path.join(&file.name)).is_ok_and(|meta| {
+                    meta.is_file() && !meta.file_type().is_symlink() && meta.len() == file.bytes
+                })
+            })
+    }
+    pub fn set_speech_engine(&self, engine: SpeechEngine) -> Result<Progress, String> {
+        let running = self.running.lock().unwrap();
+        if self.shutting_down.load(Ordering::Acquire)
+            || self.recording.load(Ordering::Acquire)
+            || running
+                .as_ref()
+                .is_some_and(|job| !job.handle.is_finished())
+            || !self.pending.lock().unwrap().is_empty()
+            || self
+                .live
+                .lock()
+                .unwrap()
+                .as_ref()
+                .is_some_and(|job| job.running.load(Ordering::Acquire))
+        {
+            return Err("녹음과 처리 작업을 마친 뒤 음성 인식 모델을 변경해 주세요.".into());
+        }
+        if !self.supported_for(engine) {
+            return Err("이 기기에 선택한 음성 인식 실행기가 준비되지 않았습니다.".into());
+        }
+        crate::speech_choice::save(&self.root, engine)?;
+        *self.speech_engine.lock().unwrap() = engine;
+        *self.speech_preference_error.lock().unwrap() = None;
+        self.update(|_| ());
+        drop(running);
+        Ok(self.snapshot())
     }
     pub fn snapshot(&self) -> Progress {
         let mut progress = {
@@ -415,6 +502,7 @@ impl Processing {
             progress.jobs = records
                 .iter()
                 .map(|record| JobView {
+                    speech_engine: record.speech_engine,
                     id: record.id.clone(),
                     kind: record.kind.clone(),
                     meeting_id: record.meeting_id.clone(),
@@ -446,6 +534,27 @@ impl Processing {
             progress
         };
         progress.supported = self.supported();
+        progress.speech_engine = self
+            .speech_preference_error
+            .lock()
+            .unwrap()
+            .is_none()
+            .then(|| self.speech_engine());
+        progress.speech_choices = SpeechEngine::ALL
+            .into_iter()
+            .map(|engine| SpeechChoice {
+                id: engine,
+                label: engine.title(),
+                description: engine.description(),
+                model_bytes: Self::model_for(engine)
+                    .files
+                    .iter()
+                    .map(|file| file.bytes)
+                    .sum(),
+                ready: self.model_ready_for(engine),
+                supported: self.supported_for(engine),
+            })
+            .collect();
         (
             progress.summary_supported,
             progress.summary_ready,
@@ -458,25 +567,9 @@ impl Processing {
         ) = crate::diarization::availability(self);
         let model = self.model();
         progress.model_bytes = model.files.iter().map(|file| file.bytes).sum();
-        let Ok(path) = self.model_dir() else {
-            return progress;
-        };
-        progress.model_ready = plain_file(&path.join("verified.json"))
-            .and_then(|file| {
-                let mut marker = String::new();
-                file.take(64 * 1024)
-                    .read_to_string(&mut marker)
-                    .map_err(message)?;
-                Ok(marker)
-            })
-            .ok()
-            .as_deref()
-            == Some(MODEL)
-            && model.files.iter().all(|f| {
-                fs::symlink_metadata(path.join(&f.name))
-                    .map(|m| m.is_file() && !m.file_type().is_symlink() && m.len() == f.bytes)
-                    .unwrap_or(false)
-            });
+        progress.model_ready = progress
+            .speech_engine
+            .is_some_and(|engine| self.model_ready_for(engine));
         progress
     }
     pub(super) fn observe_memory(&self, state: crate::memory::MemoryState) -> bool {
@@ -1287,9 +1380,15 @@ impl Processing {
         self.worker_ready()?;
         if self.shutting_down.load(Ordering::Acquire)
             || self.recording.load(Ordering::Acquire)
-            || running.as_ref().is_some_and(|job| !job.handle.is_finished())
+            || running
+                .as_ref()
+                .is_some_and(|job| !job.handle.is_finished())
             || !pending.is_empty()
-            || self.live.lock().unwrap().as_ref()
+            || self
+                .live
+                .lock()
+                .unwrap()
+                .as_ref()
                 .is_some_and(|job| job.running.load(Ordering::Acquire))
         {
             return Err("녹음과 진행 중인 작업을 마친 뒤 업데이트해 주세요.".into());
@@ -1356,6 +1455,30 @@ impl Processing {
             + Send
             + 'static,
     ) -> Result<Progress, String> {
+        self.start_meeting_with_engine(
+            kind,
+            meeting_id,
+            core,
+            required_fingerprint,
+            template,
+            requested_id,
+            None,
+            action,
+        )
+    }
+    fn start_meeting_with_engine(
+        self: &Arc<Self>,
+        kind: &str,
+        meeting_id: String,
+        core: &CoreHandle,
+        required_fingerprint: Option<String>,
+        template: Option<crate::summary_template::TemplateRef>,
+        requested_id: Option<String>,
+        engine: Option<SpeechEngine>,
+        action: impl FnOnce(Arc<Self>, Arc<AtomicBool>, PathBuf) -> Result<Option<String>, String>
+            + Send
+            + 'static,
+    ) -> Result<Progress, String> {
         let fingerprint = Self::source_fingerprint(core, &meeting_id, kind)?;
         if required_fingerprint
             .as_ref()
@@ -1363,7 +1486,7 @@ impl Processing {
         {
             return Err("회의 내용이 변경되어 이전 작업을 다시 실행하지 않았습니다.".into());
         }
-        self.start_scoped(
+        self.start_scoped_with_engine(
             kind,
             Some(meeting_id),
             None,
@@ -1371,6 +1494,7 @@ impl Processing {
             false,
             template,
             requested_id,
+            engine,
             action,
         )
     }
@@ -1384,6 +1508,32 @@ impl Processing {
         include_summary: bool,
         template: Option<crate::summary_template::TemplateRef>,
         requested_id: Option<String>,
+        action: impl FnOnce(Arc<Self>, Arc<AtomicBool>, PathBuf) -> Result<Option<String>, String>
+            + Send
+            + 'static,
+    ) -> Result<Progress, String> {
+        self.start_scoped_with_engine(
+            kind,
+            meeting_id,
+            importing_core,
+            source,
+            include_summary,
+            template,
+            requested_id,
+            None,
+            action,
+        )
+    }
+    fn start_scoped_with_engine(
+        self: &Arc<Self>,
+        kind: &str,
+        meeting_id: Option<String>,
+        importing_core: Option<CoreHandle>,
+        source: Option<(CoreHandle, String)>,
+        include_summary: bool,
+        template: Option<crate::summary_template::TemplateRef>,
+        requested_id: Option<String>,
+        engine: Option<SpeechEngine>,
         action: impl FnOnce(Arc<Self>, Arc<AtomicBool>, PathBuf) -> Result<Option<String>, String>
             + Send
             + 'static,
@@ -1402,7 +1552,7 @@ impl Processing {
         } else if matches!(kind, "diarize" | "speaker-model") {
             crate::diarization::availability(self).0
         } else {
-            self.supported()
+            self.supported_for(engine.unwrap_or_else(|| self.speech_engine()))
         };
         if !supported {
             return Err("이 기기의 처리 실행기가 아직 준비되지 않았습니다.".into());
@@ -1444,6 +1594,7 @@ impl Processing {
         }
         let created_at = now();
         let record = JobRecord {
+            speech_engine: engine.unwrap_or_else(|| self.speech_engine()),
             schema_version: 1,
             id: id.clone(),
             kind: kind.into(),
@@ -1615,22 +1766,24 @@ impl Processing {
         self: &Arc<Self>,
         include_summary: bool,
     ) -> Result<Progress, String> {
-        self.prepare_meeting_models_with_id(include_summary, None)
+        self.prepare_meeting_models_with_id(include_summary, None, None)
     }
 
     fn prepare_meeting_models_with_id(
         self: &Arc<Self>,
         include_summary: bool,
         requested_id: Option<String>,
+        required_engine: Option<SpeechEngine>,
     ) -> Result<Progress, String> {
         if self.shutting_down.load(Ordering::Acquire) {
             return Err("앱을 종료하고 있습니다.".into());
         }
+        let engine = required_engine.unwrap_or_else(|| self.speech_engine());
         let progress = self.snapshot();
-        if !progress.supported || (include_summary && !progress.summary_supported) {
+        if !self.supported_for(engine) || (include_summary && !progress.summary_supported) {
             return Err("이 환경에서는 음성 인식과 회의 요약을 아직 사용할 수 없습니다.".into());
         }
-        let required = self.remaining_model_bytes(MODEL, MODEL_LABEL)?
+        let required = self.remaining_model_bytes(engine.manifest(), engine.label())?
             + if progress.speaker_supported {
                 self.remaining_model_bytes(crate::diarization::MANIFEST, "Nemotron3")?
             } else {
@@ -1642,7 +1795,7 @@ impl Processing {
                 0
             };
         crate::storage_space::check(&self.root, required)?;
-        self.start_scoped(
+        self.start_scoped_with_engine(
             "setup",
             None,
             None,
@@ -1650,9 +1803,14 @@ impl Processing {
             include_summary,
             None,
             requested_id,
+            Some(engine),
             move |this, cancel, _path| {
                 let progress = this.snapshot();
-                let total = progress.model_bytes
+                let total = Self::model_for(engine)
+                    .files
+                    .iter()
+                    .map(|file| file.bytes)
+                    .sum::<u64>()
                     + if progress.speaker_supported {
                         progress.speaker_bytes
                     } else {
@@ -1663,7 +1821,8 @@ impl Processing {
                     } else {
                         0
                     };
-                let mut first = this.prepare_files(MODEL, MODEL_LABEL, &cancel, 0, total)?;
+                let mut first =
+                    this.prepare_files(engine.manifest(), engine.label(), &cancel, 0, total)?;
                 if progress.speaker_supported {
                     first += this.prepare_files(
                         crate::diarization::MANIFEST,
@@ -1773,14 +1932,14 @@ impl Processing {
                 self.update(|p| {
                     p.model_stage = Some(
                         match label {
-                            MODEL_LABEL => "speech",
+                            MODEL_LABEL | "WhisperTurbo" => "speech",
                             "Nemotron3" => "speakers",
                             _ => "summary",
                         }
                         .into(),
                     );
                     p.message = match label {
-                        MODEL_LABEL => "음성 인식 모델 확인 중",
+                        MODEL_LABEL | "WhisperTurbo" => "음성 인식 모델 확인 중",
                         "Nemotron3" => "화자 구분 모델 확인 중",
                         _ => "요약 모델 확인 중",
                     }
@@ -1794,7 +1953,7 @@ impl Processing {
                 if !matches {
                     self.update(|p| {
                         p.message = match label {
-                            MODEL_LABEL => "음성 인식 모델 다운로드 중",
+                            MODEL_LABEL | "WhisperTurbo" => "음성 인식 모델 다운로드 중",
                             "Nemotron3" => "화자 구분 모델 다운로드 중",
                             _ => "요약 모델 다운로드 중",
                         }
@@ -2089,8 +2248,13 @@ impl Processing {
             "setup" => self.prepare_meeting_models_with_id(
                 record.include_summary,
                 Some(successor_id.into()),
+                Some(record.speech_engine),
             )?,
-            "model" => self.prepare_meeting_models_with_id(false, Some(successor_id.into()))?,
+            "model" => self.prepare_meeting_models_with_id(
+                false,
+                Some(successor_id.into()),
+                Some(record.speech_engine),
+            )?,
             "summary-model" => self.prepare_named_model_with_id(
                 crate::summary::MANIFEST,
                 "summary-model",
@@ -2109,6 +2273,7 @@ impl Processing {
                 record.source_fingerprint.clone(),
                 Some(successor_id.into()),
                 None,
+                Some(record.speech_engine),
             )?,
             "summary" => self.summarize_bound_with_template(
                 core,
@@ -2272,7 +2437,7 @@ impl Processing {
         core: CoreHandle,
         meeting_id: String,
     ) -> Result<Progress, String> {
-        self.transcribe_bound(core, meeting_id, None, None, None)
+        self.transcribe_bound(core, meeting_id, None, None, None, None)
     }
     fn transcribe_bound(
         self: &Arc<Self>,
@@ -2281,6 +2446,7 @@ impl Processing {
         required_fingerprint: Option<String>,
         requested_id: Option<String>,
         required_session: Option<String>,
+        required_engine: Option<SpeechEngine>,
     ) -> Result<Progress, String> {
         let session_id = core
             .snapshot()
@@ -2303,17 +2469,28 @@ impl Processing {
             .transcript(&meeting_id)
             .map_err(message)?
             .map(|d| d.version);
-        if !self.snapshot().model_ready {
+        let engine = required_engine
+            .or_else(|| {
+                self.live
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .filter(|job| job.session_id == session_id)
+                    .map(|job| job.engine)
+            })
+            .unwrap_or_else(|| self.speech_engine());
+        if !self.supported_for(engine) || !self.model_ready_for(engine) {
             return Err("먼저 음성 인식 모델을 준비해 주세요.".into());
         }
         let source_core = core.clone();
-        self.start_meeting_with_template(
+        self.start_meeting_with_engine(
             "transcribe",
             meeting_id.clone(),
             &source_core,
             required_fingerprint,
             None,
             requested_id,
+            Some(engine),
             move |this, cancel, path| {
                 if core.audio_path(&meeting_id).map_err(message)? != audio
                     || core
@@ -2340,8 +2517,8 @@ impl Processing {
                     p.phase = Some("preparing".into());
                     p.message = "모델을 확인하고 있습니다.".into();
                 });
-                let model = this.model();
-                let directory = this.model_dir()?;
+                let model = Self::model_for(engine);
+                let directory = this.model_dir_for(engine)?;
                 for item in &model.files {
                     cancelled(&cancel)?;
                     let matches = matches_file(&directory.join(&item.name), item, &cancel);
@@ -2359,7 +2536,13 @@ impl Processing {
                 let live = match this.take_live(&meeting_id, &session_id) {
                     Some(live) => Some(live),
                     None => this.recover_live(&meeting_id, &session_id, &audio, &cancel)?,
-                };
+                }
+                .filter(|live| {
+                    serde_json::from_slice::<serde_json::Value>(&live.raw).is_ok_and(|value| {
+                        value["model"] == model.repository
+                            && value["modelRevision"] == model.revision
+                    })
+                });
                 let prepared = match &live {
                     Some(live) => {
                         crate::speech_audio::AnalysisAudio::from_live(&audio, &live.audio, &cancel)
@@ -2378,9 +2561,28 @@ impl Processing {
                 });
                 let raw = match &live {
                     Some(live) => Ok(live.raw.clone()),
-                    None => {
-                        crate::asr::recognize(&this, prepared.path(), &path, &cancel, &directory)
-                    }
+                    None => match engine {
+                        SpeechEngine::Nemotron => crate::asr::recognize(
+                            &this,
+                            prepared.path(),
+                            &path,
+                            &cancel,
+                            &directory,
+                        ),
+                        SpeechEngine::WhisperTurbo => crate::whisper_asr::recognize(
+                            &this.resources,
+                            prepared.path(),
+                            &path,
+                            &cancel,
+                            &directory,
+                        )
+                        .map_err(|message| {
+                            crate::summary_failure::Failure::new(
+                                crate::summary_failure::FailureKind::Output,
+                                message,
+                            )
+                        }),
+                    },
                 }
                 .map_err(|error| {
                     this.update(|progress| progress.failure_kind = Some(error.kind));
@@ -2403,7 +2605,14 @@ impl Processing {
                 cancelled(&cancel)?;
                 let source = this.checkpoint_transcript_following(
                     &cancel,
-                    || core.commit_nemotron_transcript(&meeting_id, expected, raw),
+                    || match engine {
+                        SpeechEngine::Nemotron => {
+                            core.commit_nemotron_transcript(&meeting_id, expected, raw)
+                        }
+                        SpeechEngine::WhisperTurbo => {
+                            core.commit_whisper_transcript(&meeting_id, expected, raw)
+                        }
+                    },
                     |progress, source| {
                         this.bind_speaker_continuation(progress, &core, &meeting_id, source)
                     },
@@ -2607,8 +2816,105 @@ impl Processing {
             None,
             None,
             snapshot.session.as_ref().map(|session| session.id.clone()),
+            None,
         )
         .map(Some)
+    }
+}
+
+#[cfg(all(test, windows))]
+mod speech_choice_tests {
+    use super::*;
+    fn fixture() -> (tempfile::TempDir, Arc<Processing>) {
+        let directory = tempfile::tempdir().unwrap();
+        let resources = directory.path().join("resources");
+        for path in [
+            resources.join("native/diarization/cpu/bin/nemo-speech.exe"),
+            crate::whisper_asr::executable(&resources),
+        ] {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, b"synthetic unexecuted runtime").unwrap();
+        }
+        let root = directory.path().join("library");
+        fs::create_dir(&root).unwrap();
+        let process = Processing::new(root, resources);
+        (directory, process)
+    }
+    #[test]
+    fn choices_use_real_manifest_sizes_and_selection_does_not_download_or_reprocess() {
+        let (_temporary, process) = fixture();
+        let before = process.snapshot();
+        assert_eq!(before.speech_engine, Some(SpeechEngine::Nemotron));
+        assert_eq!(before.speech_choices.len(), 2);
+        let after = process
+            .set_speech_engine(SpeechEngine::WhisperTurbo)
+            .unwrap();
+        assert_eq!(after.speech_engine, Some(SpeechEngine::WhisperTurbo));
+        assert!(!after.model_ready);
+        assert_eq!(after.model_bytes, 574041195);
+        assert!(after.jobs.is_empty());
+        assert!(!process.root.join("meetings").exists());
+        assert_eq!(
+            crate::speech_choice::load(&process.root).unwrap(),
+            SpeechEngine::WhisperTurbo
+        );
+        assert!(!process
+            .model_dir()
+            .unwrap()
+            .join("ggml-large-v3-turbo-q5_0.bin")
+            .exists());
+    }
+    #[test]
+    fn running_jobs_keep_the_captured_engine_and_reject_preference_changes() {
+        let (_temporary, process) = fixture();
+        let (started, begin) = std::sync::mpsc::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        let job = process
+            .start_scoped_with_engine(
+                "transcribe",
+                None,
+                None,
+                None,
+                false,
+                None,
+                None,
+                Some(SpeechEngine::WhisperTurbo),
+                move |_, _, _| {
+                    started.send(()).unwrap();
+                    wait.recv_timeout(Duration::from_secs(5)).unwrap();
+                    Ok(None)
+                },
+            )
+            .unwrap();
+        begin.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(process
+            .set_speech_engine(SpeechEngine::WhisperTurbo)
+            .is_err());
+        assert_eq!(process.speech_engine(), SpeechEngine::Nemotron);
+        assert_eq!(
+            process
+                .records
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|record| Some(&record.id) == job.id.as_ref())
+                .unwrap()
+                .speech_engine,
+            SpeechEngine::WhisperTurbo
+        );
+        release.send(()).unwrap();
+    }
+    #[test]
+    fn corrupt_preference_has_no_confirmed_selection_until_the_user_reselects() {
+        let (_temporary, process) = fixture();
+        fs::create_dir_all(process.root.join("preferences")).unwrap();
+        fs::write(process.root.join("preferences/speech.json"), b"invalid").unwrap();
+        let reopened = Processing::new(process.root.clone(), process.resources.clone());
+        assert_eq!(reopened.snapshot().speech_engine, None);
+        assert!(!reopened.snapshot().supported);
+        let fixed = reopened.set_speech_engine(SpeechEngine::Nemotron).unwrap();
+        assert_eq!(fixed.speech_engine, Some(SpeechEngine::Nemotron));
+        assert!(fixed.supported);
     }
 }
 
@@ -2820,13 +3126,30 @@ mod tests {
         process.recording.store(false, Ordering::Release);
         let cancelled = Arc::new(AtomicBool::new(false));
         let child_flag = cancelled.clone();
-        let handle = thread::spawn(move || { while !child_flag.load(Ordering::Acquire) { thread::yield_now(); } });
-        *process.running.lock().unwrap() = Some(Running { id: "update-test".into(), cancel: cancelled.clone(), handle, import_existing: None });
+        let handle = thread::spawn(move || {
+            while !child_flag.load(Ordering::Acquire) {
+                thread::yield_now();
+            }
+        });
+        *process.running.lock().unwrap() = Some(Running {
+            id: "update-test".into(),
+            cancel: cancelled.clone(),
+            handle,
+            import_existing: None,
+        });
         assert!(process.quiesce_for_update().is_err());
         assert!(!cancelled.load(Ordering::Acquire));
         assert!(!process.shutting_down.load(Ordering::Acquire));
         cancelled.store(true, Ordering::Release);
-        process.running.lock().unwrap().take().unwrap().handle.join().unwrap();
+        process
+            .running
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap()
+            .handle
+            .join()
+            .unwrap();
         process.quiesce_for_update().unwrap();
         process.resume();
         assert!(!process.shutting_down.load(Ordering::Acquire));
@@ -3413,6 +3736,7 @@ mod tests {
         });
         let created_at = now();
         let queued = JobRecord {
+            speech_engine: crate::speech_choice::SpeechEngine::default(),
             schema_version: 1,
             id: Uuid::new_v4().to_string(),
             kind: "summary".into(),
