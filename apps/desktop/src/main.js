@@ -355,7 +355,7 @@ function render() {
   notificationCenter.update({ processing: state.processing, meetings: state.snapshot.meetings, selectedMeetingId: state.selectedId, connected: state.connected, actions: processingActions, integrations: integrationNotices, notices: appUpdateNotices });
   sidebarViews?.updateCounts(notificationCenter.counts());
   if (setupVisible) sidebarViews?.close({ focus: false });
-  byId('navigation-home').setAttribute('aria-current', state.libraryOpen && state.libraryFilter === 'all' ? 'page' : 'false');
+  for (const button of document.querySelectorAll('[data-navigation-preview]')) { const category = state.libraryFilter === 'trash' ? 'trash' : !['all', 'unfiled'].includes(state.libraryFilter) ? 'folders' : 'all'; button.setAttribute('aria-current', state.libraryOpen && category === button.dataset.navigationPreview ? 'page' : 'false'); }
   library.render();
   renderList();
   speakers.render();
@@ -1583,8 +1583,8 @@ const notificationCenter = mountNotificationCenter({ container: byId('notificati
   const target = service === 'google-calendar' ? byId('calendar-settings').querySelector('.calendar-settings-account button:not(:disabled)') : byId(`settings-${service}-connect`);
   target?.scrollIntoView?.({ block: 'nearest' });
 }, onChanged: () => render() });
-sidebarViews = mountSidebarViews({ aside: byId('navigation-sidebar'), navigation: byId('sidebar-navigation-view'), notifications: byId('notification-center'), trigger: byId('notifications-open'), badge: byId('notification-count') });
-byId('navigation-home').addEventListener('click', () => { sidebarViews.close({ focus: false }); void library.show('all'); });
+sidebarViews = mountSidebarViews({ aside: byId('navigation-sidebar'), navigation: byId('sidebar-navigation-view'), notifications: byId('notification-center'), trigger: byId('notifications-open'), badge: byId('notification-count'), onPreview: view => library.preview(view) });
+byId('sidebar-preview-open').addEventListener('click', () => { const filter = byId('sidebar-preview-open').dataset.sidebarFilter; void library.show(filter === 'trash' ? 'trash' : 'all'); });
 viewHistory = createViewHistory({
   canVisit: route => route.kind === 'meeting' ? state.snapshot.meetings.some(meeting => meeting.id === route.id && !meeting.deletedAt) : ['all', 'unfiled', 'trash'].includes(route.filter) || state.snapshot.folders.some(folder => folder.id === route.filter),
   async navigate(route, { isCurrent }) {

@@ -3,6 +3,7 @@ import test from 'node:test';
 import { readFile } from 'node:fs/promises';
 import { Window } from 'happy-dom';
 import { mountLibrary, renderMeetingMenu, formatRecentDuration } from '../src/library-ui.js';
+import { mountSidebarViews } from '../src/sidebar-views.js';
 
 const settle = () => new Promise(resolve => setImmediate(resolve));
 async function setup(t, preferences = {}) {
@@ -17,24 +18,29 @@ async function setup(t, preferences = {}) {
     { id: 'deleted', title: '삭제한 회의', folderId: 'project', createdAt: 3, deletedAt: 4 },
   ], folders: [{ id: 'project', name: '프로젝트' }] } };
   const escape = value => String(value ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+  const navigationCalls = [];
   let library;
-  library = mountLibrary({ bridge: {}, duration: milliseconds => `${milliseconds / 1000}초`, getState: () => state, byId: id => document.getElementById(id), finishEditing: async action => action(), acceptSnapshot() {}, selectMeeting(id) { state.selectedId = id; state.libraryOpen = false; library.render(); }, render() { library.render(); }, showError(error) { throw error; }, escape, icon: name => `<svg data-icon="${name}"></svg>` });
+  library = mountLibrary({ bridge: {}, duration: milliseconds => `${milliseconds / 1000}초`, getState: () => state, byId: id => document.getElementById(id), finishEditing: async action => action(), acceptSnapshot() {}, selectMeeting(id) { state.selectedId = id; state.libraryOpen = false; library.render(); }, render() { library.render(); }, showError(error) { throw error; }, beginNavigation(history) { navigationCalls.push(history); return () => true; }, escape, icon: name => `<svg data-icon="${name}"></svg>` });
   library.render();
-  return { window, document, state, library };
+  const byId = id => document.getElementById(id);
+  const sidebarViews = mountSidebarViews({ aside: byId('navigation-sidebar'), navigation: byId('sidebar-navigation-view'), notifications: byId('notification-center'), trigger: byId('notifications-open'), badge: byId('notification-count'), onPreview: view => library.preview(view) });
+  t.after(() => sidebarViews.destroy());
+  return { window, document, state, library, navigationCalls };
 }
 
 test('product shares hover, pin and close navigation without hiding the meeting content', async t => {
   const { window, document } = await setup(t);
   const shell = document.querySelector('.workspace'), trigger = document.getElementById('navigation-toggle');
-  document.querySelector('.navigation-edge').dispatchEvent(new window.PointerEvent('pointerenter', { pointerType: 'mouse' }));
+  document.querySelector('[data-navigation-preview="all"]').dispatchEvent(new window.PointerEvent('pointerenter', { pointerType: 'mouse' }));
+  await new Promise(resolve => setTimeout(resolve, 160));
   assert.equal(shell.classList.contains('nav-peek'), true);
-  assert.equal(trigger.parentElement.className, 'navigation-toggle-slot');
+  assert.equal(trigger.parentElement.id, 'navigation-toggle-expanded');
   assert.equal(document.querySelector('main').inert, false);
   trigger.click();
   assert.equal(window.localStorage.getItem('nero.sidebar.pinned'), 'true');
   trigger.click();
   assert.equal(shell.classList.contains('collapsed'), true);
-  assert.equal(trigger.parentElement.className, 'navigation-toggle-slot');
+  assert.equal(trigger.parentElement.id, 'navigation-toggle-collapsed');
   assert.equal(document.getElementById('navigation-sidebar').inert, true);
   assert.equal(document.querySelectorAll('#navigation-toggle').length, 1);
 });
@@ -89,7 +95,7 @@ test('initial setup suppresses navigation while preserving the saved pin prefere
   const { window, document, library } = await setup(t, { 'nero.sidebar.pinned': 'true' });
   const shell = document.querySelector('.workspace'), trigger = document.getElementById('navigation-toggle');
   shell.dataset.onboarding = 'true'; library.render();
-  document.querySelector('.navigation-edge').dispatchEvent(new window.PointerEvent('pointerenter', { pointerType: 'mouse' }));
+  document.querySelector('[data-navigation-preview="all"]').click();
   trigger.click();
   document.dispatchEvent(new window.KeyboardEvent('keydown', { code: 'Backslash', ctrlKey: true, bubbles: true }));
   assert.equal(trigger.getAttribute('aria-expanded'), 'false');
@@ -162,15 +168,21 @@ test('new meeting has one sidebar action and draft owns calendar and audio actio
   }
 });
 
-test('closing a recent-action dialog returns to the header after temporary navigation closes', async t => {
+test('closing a recent-action dialog returns to the compact toggle after temporary navigation closes', async t => {
   const { window, document } = await setup(t);
-  document.querySelector('.navigation-edge').dispatchEvent(new window.PointerEvent('pointerenter', { pointerType: 'mouse' }));
+  document.querySelector('[data-navigation-preview="recent"]').focus();
   const row = document.querySelector('[data-recent-row="unfiled"]');
   row.dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2 }));
   row.querySelector('[data-library-action="rename"]').click();
   document.getElementById('library-meeting-name').dispatchEvent(new window.PointerEvent('pointerdown', { bubbles: true }));
+  assert.equal(document.getElementById('navigation-sidebar').inert, false);
+  document.querySelector('main').dispatchEvent(new window.PointerEvent('pointerdown', { bubbles: true }));
+  assert.equal(document.getElementById('navigation-sidebar').inert, true);
   document.querySelector('[data-library-close]').click();
-  assert.equal(document.activeElement, document.getElementById('navigation-toggle'));
+  const trigger = document.getElementById('navigation-toggle');
+  assert.equal(document.activeElement, trigger);
+  assert.equal(trigger.parentElement.id, 'navigation-toggle-collapsed');
+  assert.equal(trigger.closest('[data-navigation-compact]').inert, false);
 });
 
 
@@ -220,7 +232,7 @@ for (const popup of [
 
 test('open shared menus retain shortcut priority and Escape closes only the menu', async t => {
   const { window, document } = await setup(t);
-  document.querySelector('.navigation-edge').dispatchEvent(new window.PointerEvent('pointerenter', { pointerType: 'mouse' }));
+  document.querySelector('[data-navigation-preview="recent"]').focus();
   const row = document.querySelector('[data-recent-row="filed"]');
   row.dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2 }));
   const menu = row.querySelector('details'), button = menu.querySelector('button');
@@ -242,7 +254,7 @@ test('product sidebar has one resize separator only while pinned or peeking and 
   assert.equal(shell.querySelectorAll('[role="separator"][aria-controls="navigation-sidebar"]').length, 1);
   shell.getBoundingClientRect = () => ({ width: 1000 });
   window.dispatchEvent(new window.Event('resize'));
-  document.querySelector('.navigation-edge').dispatchEvent(new window.PointerEvent('pointerenter', { pointerType: 'mouse' }));
+  document.querySelector('[data-navigation-preview="all"]').click();
   assert.equal(handle.hidden, false);
   const pointer = (type, x, options = {}) => handle.dispatchEvent(new window.PointerEvent(type, { pointerId: 1, button: 0, isPrimary: true, clientX: x, bubbles: true, ...options }));
   pointer('pointerdown', 224);
@@ -273,14 +285,16 @@ test('sidebar keyboard sizing and viewport bounds preserve the saved preference'
   resize(1000);
   assert.equal(handle.getAttribute('aria-valuenow'), '380');
   resize(700);
-  assert.equal(handle.getAttribute('aria-valuemax'), '248');
-  assert.equal(handle.getAttribute('aria-valuenow'), '248');
+  assert.equal(handle.getAttribute('aria-valuemax'), '300');
+  assert.equal(handle.getAttribute('aria-valuenow'), '300');
   assert.equal(window.localStorage.getItem('nero.sidebar.pinned.width'), '380');
   resize(640);
-  assert.equal(shell.classList.contains('nav-overlay'), true);
-  assert.equal(handle.getAttribute('aria-valuenow'), '380');
+  assert.equal(shell.classList.contains('nav-overlay'), false);
+  assert.equal(handle.getAttribute('aria-valuemax'), '240');
+  assert.equal(handle.getAttribute('aria-valuenow'), '240');
   resize(320);
-  assert.equal(handle.getAttribute('aria-valuemax'), '220');
+  assert.equal(shell.classList.contains('nav-overlay'), true);
+  assert.equal(handle.getAttribute('aria-valuemax'), '272');
   resize(1000);
   assert.equal(handle.getAttribute('aria-valuenow'), '380');
   const key = name => handle.dispatchEvent(new window.KeyboardEvent('keydown', { key: name, bubbles: true, cancelable: true }));
@@ -315,32 +329,72 @@ for (const cancellation of ['pointercancel', 'lostpointercapture', 'blur', 'hidd
 }
 
 
-test('persistent rail owns one home, notification, settings and update control', async t => {
+test('compact navigation owns four categories while the sidebar header and utility slots keep singleton controls', async t => {
   const { document } = await setup(t);
   const rail = document.querySelector('.navigation-rail'), aside = document.getElementById('navigation-sidebar');
   assert.equal(aside.inert, true);
-  for (const id of ['navigation-home', 'notifications-open', 'settings', 'sidebar-app-update']) {
+  assert.deepEqual([...rail.querySelectorAll('[data-navigation-preview]')].map(button => button.dataset.navigationPreview), ['all', 'folders', 'trash', 'recent']);
+  const header = document.getElementById('navigation-header');
+  for (const id of ['navigation-back', 'navigation-forward', 'notifications-open']) {
     assert.equal(document.querySelectorAll(`#${id}`).length, 1);
-    assert.ok(rail.contains(document.getElementById(id)));
+    assert.ok(header.contains(document.getElementById(id)));
+    assert.equal(rail.contains(document.getElementById(id)), false);
   }
+  const trigger = document.getElementById('navigation-toggle');
+  for (const [id, slot] of [['settings', 'sidebar-settings'], ['sidebar-app-update', 'sidebar-update']]) {
+    assert.equal(document.querySelectorAll(`#${id}`).length, 1);
+    assert.equal(document.getElementById(id).parentElement.id, `${slot}-collapsed`);
+  }
+  trigger.click();
+  assert.equal(rail.hidden, true);
+  assert.equal(rail.inert, true);
+  for (const [id, slot] of [['settings', 'sidebar-settings'], ['sidebar-app-update', 'sidebar-update']]) assert.equal(document.getElementById(id).parentElement.id, `${slot}-expanded`);
+  assert.equal(trigger.parentElement.id, 'navigation-toggle-expanded');
+  trigger.click();
+  assert.equal(rail.hidden, false);
+  assert.equal(rail.inert, false);
   assert.equal(document.querySelectorAll('#create-meeting').length, 1);
   assert.ok(aside.contains(document.getElementById('create-meeting')));
   assert.equal(rail.contains(document.getElementById('create-meeting')), false);
   assert.equal(document.querySelector('.navigation-search-toggle'), null);
 });
 
-test('sidebar can be revealed by its view controller without moving the toolbar toggle', async t => {
+test('sidebar view reveal and outside dismissal move the same toggle between header and compact footer', async t => {
   const { window, document } = await setup(t);
   const shell = document.querySelector('.workspace'), aside = document.getElementById('navigation-sidebar');
   const trigger = document.getElementById('navigation-toggle');
   aside.dispatchEvent(new window.CustomEvent('nero:sidebar-reveal'));
   assert.equal(shell.classList.contains('nav-peek'), true);
   assert.equal(aside.inert, false);
-  assert.equal(trigger.parentElement.className, 'navigation-toggle-slot');
+  assert.equal(trigger.parentElement.id, 'navigation-toggle-expanded');
   document.querySelector('main').dispatchEvent(new window.PointerEvent('pointerdown', { bubbles: true }));
   assert.equal(shell.classList.contains('nav-peek'), false);
   assert.equal(aside.inert, true);
   assert.equal(document.querySelector('.navigation-rail').inert, false);
+  assert.equal(trigger.parentElement.id, 'navigation-toggle-collapsed');
+});
+
+test('compact category previews preserve the active meeting, library scope, selection and navigation history', async t => {
+  const { document, state, library, navigationCalls } = await setup(t);
+  state.libraryFilter = 'project'; state.libraryOpen = false; state.selectedId = 'filed'; state.librarySelection.add('filed');
+  library.render();
+  const notes = document.getElementById('meeting-notes'), content = document.querySelector('main');
+  notes.value = '저장 전 메모';
+  const aside = document.getElementById('navigation-sidebar');
+  for (const view of ['all', 'folders', 'trash', 'recent']) {
+    document.querySelector(`[data-navigation-preview="${view}"]`).click();
+    assert.equal(aside.dataset.sidebarView, view);
+    assert.equal(aside.inert, false);
+    assert.equal(state.libraryFilter, 'project');
+    assert.equal(state.libraryOpen, false);
+    assert.equal(state.selectedId, 'filed');
+    assert.deepEqual([...state.librarySelection], ['filed']);
+    assert.deepEqual(navigationCalls, []);
+  }
+  assert.equal(document.getElementById('meeting-notes'), notes);
+  assert.equal(notes.value, '저장 전 메모');
+  assert.equal(content.hidden, false);
+  assert.equal(content.inert, false);
 });
 
 test('recent duration distinguishes recorded length from the calendar timestamp', () => {

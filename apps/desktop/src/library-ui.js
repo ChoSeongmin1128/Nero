@@ -36,7 +36,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
   const readPreference = key => { try { return storage?.getItem(key); } catch { return null; } };
   const savePreference = (key, value) => { try { storage?.setItem(key, value); } catch {} };
   const shell = owner.querySelector?.('.workspace');
-  const sidebar = shell ? mountNavigationSidebar({ shell, aside: byId('navigation-sidebar'), content: owner.querySelector('.main-content'), trigger: byId('navigation-toggle'), storage, icons: icon }) : null;
+  const sidebar = shell ? mountNavigationSidebar({ shell, aside: byId('navigation-sidebar'), content: owner.querySelector('.main-content'), trigger: byId('navigation-toggle'), storage, icons: icon, relocate: [['settings', 'sidebar-settings-expanded', 'sidebar-settings-collapsed'], ['sidebar-app-update', 'sidebar-update-expanded', 'sidebar-update-collapsed']].map(([node, expanded, compact]) => ({ node: byId(node), expanded: byId(expanded), compact: byId(compact) })).filter(item => item.node && item.expanded && item.compact) }) : null;
   const savedView = getState().libraryView || readPreference('nero.library.view');
   getState().libraryView = ['folders', 'all'].includes(savedView) ? savedView : 'folders';
   const recents = byId('recent-section');
@@ -45,7 +45,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
   let navigationKey = '', cardsKey = '', breadcrumbKey = '';
   const folderOverview = () => state().libraryFilter === 'all' && state().libraryView === 'folders' && !query();
   const dragPreview = createDragPreview(owner);
-  let folderKey = '', recentKey = '', pending = null, returnFocus = null, returnRecentId = null, dragSources = [];
+  let folderKey = '', recentKey = '', previewKey = '', pending = null, returnFocus = null, returnRecentId = null, dragSources = [];
   let dropTarget = null, selectionAnchor = null;
   const menus = mountActionMenus({ owner, onEscape: clearDrag });
   const state = () => getState();
@@ -153,9 +153,11 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
   function restoreFocus(onlyIfIdle = false) {
     const active = dialog.ownerDocument?.activeElement;
     if (onlyIfIdle && active && active !== dialog.ownerDocument.body && !dialog.contains?.(active)) return;
-    const recentTarget = returnRecentId && [...byId('recent-meetings').querySelectorAll('[data-recent-row]')].find(node => node.dataset.recentRow === returnRecentId)?.querySelector('summary');
+    const previewRows = byId('sidebar-meeting-list');
+    const recentRoot = previewRows && !previewRows.hidden ? previewRows : byId('recent-meetings');
+    const recentTarget = returnRecentId && [...recentRoot.querySelectorAll('[data-recent-row]')].find(node => node.dataset.recentRow === returnRecentId)?.querySelector('summary');
     let target = recentTarget || (returnFocus?.isConnected && !returnFocus.disabled && !returnFocus.hidden ? returnFocus : byId(state().libraryOpen ? 'library-title' : 'new-folder'));
-    if (target?.closest?.('.navigation-sidebar')?.inert || target?.closest?.('.recent-section')?.inert) target = byId('navigation-toggle');
+    if (target?.closest?.('.navigation-sidebar')?.inert || target?.closest?.('.recent-section')?.inert || target?.closest?.('#sidebar-library-navigation[hidden],#sidebar-meeting-list[hidden],#sidebar-recent-preview[hidden]')) target = byId('navigation-toggle');
     target?.focus({ preventScroll: true });
   }
   function openDialog({ title, content, confirm = '저장', destructive = false, action, detach = false }) {
@@ -291,6 +293,35 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     state().libraryOpen = true;
     resetSelection();
   }
+  function navigationRows(meetings, disabled, activeId) {
+    const folders = state().snapshot.folders || [];
+    return meetings.map(meeting => recentMeetingRow({
+      id: meeting.id, title: meeting.title, active: activeId === meeting.id, disabled, escape,
+      metadata: [folders.find(folder => folder.id === meeting.folderId)?.name || '미분류', recentDate.format(meeting.recordedAt ?? meeting.createdAt ?? 0), meeting.audio?.sampleRate ? formatRecentDuration(meeting.audio.frames / meeting.audio.sampleRate * 1000) : ''],
+      menu: renderMeetingMenu(meeting, { escape, icon, disabled }),
+    })).join('');
+  }
+  function preview(view = byId('navigation-sidebar')?.dataset.sidebarView) {
+    const container = byId('sidebar-meeting-list');
+    if (!container || !['all', 'trash'].includes(view)) return;
+    const snapshot = state().snapshot;
+    const found = state().librarySearchIds;
+    const ids = query() && found != null ? new Set(found) : null;
+    const meetings = filterLibraryMeetings(snapshot.meetings, view, ids ? '' : query())
+      .filter(meeting => !ids || ids.has(meeting.id))
+      .sort((a, b) => (b.recordedAt ?? b.createdAt ?? 0) - (a.recordedAt ?? a.createdAt ?? 0) || a.id.localeCompare(b.id));
+    const disabled = Boolean(state().libraryBusy || !state().connected);
+    const activeId = state().libraryOpen ? null : state().selectedId;
+    const key = JSON.stringify([view, query(), disabled, activeId, snapshot.folders, meetings]);
+    if (key === previewKey) return;
+    previewKey = key;
+    const focused = owner.activeElement?.closest?.('[data-recent-row]')?.dataset.recentRow;
+    const focusMenu = owner.activeElement?.matches?.('summary');
+    container.setAttribute('aria-label', view === 'trash' ? '휴지통의 회의' : '전체 회의');
+    container.innerHTML = navigationRows(meetings, disabled, activeId) || `<p class="list-empty">${view === 'trash' ? '휴지통이 비어 있습니다.' : '회의가 없습니다.'}</p>`;
+    if (focused) [...container.querySelectorAll('[data-recent-row]')].find(row => row.dataset.recentRow === focused)?.querySelector(focusMenu ? 'summary' : '[data-recent-meeting]')?.focus({ preventScroll: true });
+    if (menus.active?.isConnected === false) closeMenu();
+  }
   function render() {
     sidebar?.render();
     const snapshot = state().snapshot;
@@ -302,7 +333,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     if (!selection().size || !visibleIds.has(selectionAnchor)) selectionAnchor = null;
     const filter = state().libraryFilter;
     const disabled = Boolean(state().libraryBusy || !state().connected);
-    const navigation = [{ id: 'all', name: '회의 목록', icon: 'notebook-pen' }, { id: 'unfiled', name: '미분류', icon: 'inbox' }, ...folders.map(folder => ({ ...folder, icon: 'folder' })), { id: 'trash', name: '휴지통', icon: 'trash-2' }];
+    const navigation = [{ id: 'all', name: '전체 목록', icon: 'notebook-pen' }, { id: 'unfiled', name: '미분류', icon: 'inbox' }, ...folders.map(folder => ({ ...folder, icon: 'folder' })), { id: 'trash', name: '휴지통', icon: 'trash-2' }];
     const key = JSON.stringify([filter, state().libraryOpen, folders, disabled, snapshot.meetings.map(meeting => [meeting.id, meeting.folderId, meeting.deletedAt])]);
     if (key !== folderKey) {
       clearDropTarget();
@@ -318,16 +349,13 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     const activeId = state().libraryOpen || state().notificationsOpen ? null : state().selectedId;
     const nextRecentKey = JSON.stringify([disabled, activeId, folders, recent.map(meeting => [meeting.id, meeting.title, meeting.folderId, meeting.recordedAt, meeting.createdAt, meeting.audio?.frames, meeting.audio?.sampleRate])]);
     byId('recent-section').hidden = !recent.length;
+    byId('recent-section').dataset.hasItems = String(Boolean(recent.length));
     if (recentKey !== nextRecentKey) {
       recentKey = nextRecentKey;
       const active = owner.activeElement;
       const focused = active?.closest?.('[data-recent-row]')?.dataset.recentRow || active?.dataset?.recentMeeting;
       const focusMenu = active?.matches?.('summary');
-      byId('recent-meetings').innerHTML = recent.map(meeting => recentMeetingRow({
-        id: meeting.id, title: meeting.title, active: activeId === meeting.id, disabled, escape,
-        metadata: [folders.find(folder => folder.id === meeting.folderId)?.name || '미분류', recentDate.format(meeting.recordedAt ?? meeting.createdAt ?? 0), meeting.audio?.sampleRate ? formatRecentDuration(meeting.audio.frames / meeting.audio.sampleRate * 1000) : ''],
-        menu: renderMeetingMenu(meeting, { escape, icon, disabled }),
-      })).join('');
+      byId('recent-meetings').innerHTML = navigationRows(recent, disabled, activeId) || '<p class="list-empty">최근 회의가 없습니다.</p>';
       if (focused) [...byId('recent-meetings').querySelectorAll('[data-recent-row]')].find(node => node.dataset.recentRow === focused)?.querySelector(focusMenu ? 'summary' : '[data-recent-meeting]')?.focus({ preventScroll: true });
       if (menus.active?.isConnected === false) closeMenu();
     }
@@ -381,6 +409,8 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     }
     byId('meeting-move').disabled = disabled || !meeting || meeting.deletedAt != null;
     byId('meeting-trash').disabled = disabled || !meeting || meeting.deletedAt != null || Boolean(meeting && runningRecording([meeting.id]));
+    preview();
+    if (sidebar) byId('navigation-sidebar').dispatchEvent(new owner.defaultView.CustomEvent('nero:sidebar-content-updated'));
   }
   function actionFor(action, ids) {
     if (!ids.length || state().libraryBusy) return;
@@ -435,7 +465,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     savePreference('nero.library.view', mode);
     resetSelection(); renderApp();
   });
-  byId('recent-meetings').addEventListener('click', event => {
+  for (const container of [byId('recent-meetings'), byId('sidebar-meeting-list')].filter(Boolean)) container.addEventListener('click', event => {
     const action = event.target.closest('[data-library-action]');
     if (action) {
       event.preventDefault(); event.stopPropagation();
@@ -446,7 +476,8 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     if (event.defaultPrevented || event.target.closest('summary')) return;
     const target = event.target.closest('[data-recent-meeting]');
     const meeting = target && current(target.dataset.recentMeeting);
-    if (!meeting || meeting.deletedAt != null || state().libraryBusy || !state().connected) return;
+    if (!meeting || state().libraryBusy || !state().connected) return;
+    if (meeting.deletedAt != null) { void show('trash'); return; }
     void selectMeeting(meeting.id);
   });
   byId('library-back').addEventListener('click', () => void show(state().libraryFilter));
@@ -478,7 +509,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     menu.open = true; positionMenu(menu);
     menu.querySelector('button:not(:disabled)')?.focus({ preventScroll: true });
   }
-  for (const id of ['meeting-list', 'recent-meetings']) {
+  for (const id of ['meeting-list', 'recent-meetings', 'sidebar-meeting-list'].filter(id => byId(id))) {
     byId(id).addEventListener('contextmenu', openRowMenu);
     byId(id).addEventListener('keydown', event => {
       if (id === 'meeting-list') handleSelectionKeydown(event);
@@ -533,5 +564,5 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
       else void mutate(() => moveChecked(sources, destination.destination), resetSelection);
     });
   }
-  return { render, show, resetSelection, toggleSelection, handleRowSelection, selectedIds, visibleMeetings };
+  return { render, show, preview, resetSelection, toggleSelection, handleRowSelection, selectedIds, visibleMeetings };
 }
