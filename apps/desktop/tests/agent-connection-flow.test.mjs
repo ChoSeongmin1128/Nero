@@ -124,7 +124,7 @@ test('manual connection owns a contextual dialog rather than a detached copy but
   assert.match(html, /다른 에이전트/);
   assert.match(html, /id="settings-agent-manual"[^>]+aria-label="다른 에이전트 연결"/);
   assert.match(component, /DialogContent container=\{container\}/);
-  assert.match(component, /<DialogTitle>에이전트로 연결<\/DialogTitle>/);
+  assert.match(component, /<DialogTitle>연결 프롬프트<\/DialogTitle>/);
   assert.match(component, /<pre aria-labelledby="agent-prompt-label"/);
-  assert.match(component, /Claude Code, ChatGPT, Cursor 등의 대화에 붙여넣으세요/);
+  assert.match(component, /연결할 에이전트의 대화에 붙여넣으세요/);
 });

@@ -1,7 +1,3 @@
-const bytesLabel = value => !Number.isFinite(value) || value <= 0 ? ''
-  : value >= 1_000_000_000 ? `${(value / 1_000_000_000).toLocaleString('ko-KR', { maximumFractionDigits: 2 })} GB`
-    : `${(value / 1_000_000).toLocaleString('ko-KR', { maximumFractionDigits: 1 })} MB`;
-
 export function mountSpeechModelPicker({ node, onSelect, onPrepare }) {
   const document = node.ownerDocument;
   const element = (tag, className, text) => {
@@ -11,17 +7,16 @@ export function mountSpeechModelPicker({ node, onSelect, onPrepare }) {
     return result;
   };
   const group = element('fieldset', 'speech-model-picker');
-  group.append(element('legend', 'settings-subtitle', '음성 인식 모델'));
+  group.append(element('legend', 'settings-subtitle', '음성 처리 모델'));
   const choices = element('div', 'speech-model-choices');
-  const hint = element('p', 'muted type-caption', '선택한 모델은 다음 처리부터 사용합니다. 기존 회의는 자동으로 다시 처리하지 않습니다.');
   const status = element('p', 'muted type-caption');
   status.setAttribute('role', 'status');
   const error = element('p', 'notice type-caption');
   error.setAttribute('role', 'alert');
-  const prepare = element('button', 'small', '음성 인식 모델 다운로드');
+  const prepare = element('button', 'small', '모델 다운로드');
   prepare.type = 'button'; prepare.id = `${node.id}-prepare`;
   prepare.addEventListener('click', () => onPrepare?.());
-  group.append(choices, hint, status, error, prepare);
+  group.append(choices, status, error, prepare);
   node.replaceChildren(group);
   let current = '', order = '';
   const rows = new Map();
@@ -60,10 +55,10 @@ export function mountSpeechModelPicker({ node, onSelect, onPrepare }) {
       const row = rows.get(choice.id);
       row.input.checked = choice.id === current;
       row.input.disabled = choice.supported !== true;
-      row.title.textContent = choice.label;
-      row.description.textContent = choice.description || '';
-      const size = bytesLabel(choice.modelBytes);
-      row.metadata.textContent = [size && `모델 파일 ${size}`, choice.supported !== true ? '이 기기에서 사용할 수 없음' : choice.ready ? '준비됨' : '다운로드 필요'].filter(Boolean).join(' / ');
+      row.title.textContent = choice.id === 'nemotron' ? 'Nemo' : choice.id === 'whisperTurbo' ? 'Whisper' : choice.label;
+      row.description.textContent = choice.id === 'nemotron' ? '기본' : choice.id === 'whisperTurbo' ? '다른 인식 결과가 필요할 때' : '';
+      row.description.hidden = !row.description.textContent;
+      row.metadata.textContent = choice.supported !== true ? '사용할 수 없음' : choice.ready ? '준비됨' : '다운로드 필요';
     }
     status.textContent = message; status.hidden = !message;
     error.textContent = failure; error.hidden = !failure;

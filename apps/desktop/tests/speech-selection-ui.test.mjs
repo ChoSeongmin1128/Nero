@@ -53,8 +53,9 @@ test('onboarding and settings share both choices and wait for native selection b
   const f=await fixture(t,{ready:false,select:()=>pending});
   for(const place of ['setup','settings']){
     assert.equal(f.get(`${place}-speech-picker`).querySelectorAll('input[type=radio]').length,2);
-    assert.match(f.get(`${place}-speech-picker`).textContent,/모델 파일 574 MB/);
-    assert.match(f.get(`${place}-speech-picker`).textContent,/추가 시간/);
+    assert.match(f.get(`${place}-speech-picker`).textContent,/음성 처리 모델/);
+    assert.doesNotMatch(f.get(`${place}-speech-picker`).textContent,/모델 파일|MB|GB|GPU|CPU/);
+    assert.match(f.get(`${place}-speech-picker`).textContent,/다른 인식 결과가 필요할 때/);
   }
   f.radio('setup','whisperTurbo').focus();
   f.radio('setup','whisperTurbo').click();

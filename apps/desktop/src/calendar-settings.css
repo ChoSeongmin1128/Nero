@@ -5,8 +5,11 @@
 .calendar-settings-account p { color: var(--text-secondary); font-size: var(--text-caption-size); margin: 4px 0 0; }
 .calendar-settings-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .calendar-settings-subtitle { font-size: var(--text-caption-size); font-weight: var(--weight-semibold); margin: 24px 0 10px; }
-.calendar-settings-list { margin-bottom: 12px; }
+.calendar-settings-list { margin-bottom: 12px; overflow-anchor: none; }
 .calendar-settings-calendar { display: flex; align-items: center; gap: 10px; padding: 12px 16px; cursor: pointer; min-width: 0; }
 .calendar-settings-calendar + .calendar-settings-calendar { border-top: 1px solid var(--border); }
 .calendar-settings-calendar span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .calendar-settings-synced { color: var(--text-secondary); font-size: var(--text-caption-size); }
+
+.calendar-settings-calendar:has(input[aria-disabled="true"]) { cursor: default; }
+.calendar-settings-calendar input[aria-disabled="true"] { opacity: 0.55; }
