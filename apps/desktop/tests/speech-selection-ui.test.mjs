@@ -56,13 +56,16 @@ test('onboarding and settings share both choices and wait for native selection b
     assert.match(f.get(`${place}-speech-picker`).textContent,/모델 파일 574 MB/);
     assert.match(f.get(`${place}-speech-picker`).textContent,/추가 시간/);
   }
+  f.radio('setup','whisperTurbo').focus();
   f.radio('setup','whisperTurbo').click();
+  f.window.document.body.focus();
   assert.equal(f.radio('setup','nemotron').checked,true);
   assert.equal(f.radio('settings','nemotron').checked,true);
   assert.equal(f.get('setup-download').disabled,true);
   assert.equal(f.get('settings-speech-picker').querySelector('fieldset').disabled,true);
   finish({...f.progress,revision:2,speechEngine:'whisperTurbo',modelReady:false});
   await wait(()=>f.radio('settings','whisperTurbo').checked&&!f.get('setup-download').disabled);
+  assert.equal(f.window.document.activeElement.id,'setup-speech-picker-engine-whisperTurbo');
   assert.equal(f.calls.filter(call=>call.name==='setSpeechEngine').length,1);
   assert.equal(f.calls.some(call=>call.name==='prepareMeetingModels'||call.name==='transcribeAudio'),false);
   f.get('setup-download').click();await wait(()=>f.calls.some(call=>call.name==='prepareMeetingModels'));

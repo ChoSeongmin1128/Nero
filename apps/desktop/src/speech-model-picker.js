@@ -19,7 +19,7 @@ export function mountSpeechModelPicker({ node, onSelect, onPrepare }) {
   const error = element('p', 'notice type-caption');
   error.setAttribute('role', 'alert');
   const prepare = element('button', 'small', '음성 인식 모델 다운로드');
-  prepare.type = 'button';
+  prepare.type = 'button'; prepare.id = `${node.id}-prepare`;
   prepare.addEventListener('click', () => onPrepare?.());
   group.append(choices, hint, status, error, prepare);
   node.replaceChildren(group);
@@ -38,6 +38,7 @@ export function mountSpeechModelPicker({ node, onSelect, onPrepare }) {
         const label = element('label', 'speech-model-choice');
         const input = element('input');
         input.type = 'radio'; input.name = `${node.id}-engine`; input.value = choice.id;
+        input.id = `${node.id}-engine-${choice.id}`;
         const copy = element('span', 'speech-model-copy');
         const title = element('strong');
         const description = element('span', 'muted type-caption');
