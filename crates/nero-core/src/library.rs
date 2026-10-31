@@ -10,6 +10,21 @@ pub struct Folder {
     pub name: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FolderMeetingState {
+    pub id: String,
+    pub deleted_at: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FolderDeleteRequest {
+    pub folder: Folder,
+    pub meetings: Vec<FolderMeetingState>,
+    pub trash_meetings: bool,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Placement {

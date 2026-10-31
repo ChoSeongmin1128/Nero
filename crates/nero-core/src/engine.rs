@@ -307,6 +307,58 @@ impl Engine {
         self.commit_library(library)
     }
 
+    pub fn validate_folder_delete(&self, request: &crate::FolderDeleteRequest) -> Result<()> {
+        let conflict = || {
+            CoreError::InvalidState(
+                "폴더 내용이 변경되었습니다. 삭제 대상을 다시 확인해 주세요.".into(),
+            )
+        };
+        if self.library.folders.get(&request.folder.id) != Some(&request.folder) {
+            return Err(conflict());
+        }
+        let expected: BTreeMap<_, _> = request
+            .meetings
+            .iter()
+            .map(|meeting| (meeting.id.clone(), meeting.deleted_at))
+            .collect();
+        let actual: BTreeMap<_, _> = self
+            .meetings()
+            .into_iter()
+            .filter(|meeting| meeting.folder_id.as_deref() == Some(&request.folder.id))
+            .map(|meeting| (meeting.id, meeting.deleted_at))
+            .collect();
+        if expected.len() != request.meetings.len() || expected != actual {
+            return Err(conflict());
+        }
+        if request.trash_meetings
+            && self
+                .capture
+                .as_ref()
+                .is_some_and(|capture| actual.contains_key(&capture.manifest.meeting_id))
+        {
+            return Err(CoreError::InvalidState(
+                "녹음을 종료한 뒤 삭제해 주세요.".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn delete_folder_checked(&mut self, request: &crate::FolderDeleteRequest) -> Result<()> {
+        self.validate_folder_delete(request)?;
+        let mut library = self.library.clone();
+        library.folders.remove(&request.folder.id);
+        let now = store::now();
+        for placement in library.placements.values_mut() {
+            if placement.folder_id.as_deref() == Some(&request.folder.id) {
+                placement.folder_id = None;
+                if request.trash_meetings {
+                    placement.deleted_at.get_or_insert(now);
+                }
+            }
+        }
+        self.commit_library(library)
+    }
+
     fn library_ids(&self, ids: &[String], allow_purged: bool) -> Result<BTreeSet<String>> {
         if self.quitting {
             return Err(CoreError::Unavailable);
@@ -2403,6 +2455,132 @@ mod tests {
             .meetings()
             .iter()
             .all(|meeting| meeting.deleted_at.is_none()));
+    }
+
+    fn folder_delete_request(
+        engine: &Engine,
+        folder: Folder,
+        trash_meetings: bool,
+    ) -> crate::FolderDeleteRequest {
+        let meetings = engine
+            .meetings()
+            .into_iter()
+            .filter(|meeting| meeting.folder_id.as_deref() == Some(&folder.id))
+            .map(|meeting| crate::FolderMeetingState {
+                id: meeting.id,
+                deleted_at: meeting.deleted_at,
+            })
+            .collect();
+        crate::FolderDeleteRequest {
+            folder,
+            meetings,
+            trash_meetings,
+        }
+    }
+
+    #[test]
+    fn checked_folder_delete_rejects_membership_and_trash_changes_before_atomic_commit() {
+        let (_temporary, mut engine) = engine();
+        let folder = engine.create_folder("Folder".into()).unwrap();
+        let first = engine
+            .create_meeting("First".into(), "Preserved".into())
+            .unwrap();
+        let second = engine.create_meeting("Second".into(), "".into()).unwrap();
+        engine
+            .move_meetings(&[first.id.clone()], Some(folder.id.clone()))
+            .unwrap();
+        let request = folder_delete_request(&engine, folder.clone(), true);
+        engine
+            .move_meetings(&[second.id.clone()], Some(folder.id.clone()))
+            .unwrap();
+        assert!(engine.delete_folder_checked(&request).is_err());
+        assert_eq!(engine.folders(), vec![folder.clone()]);
+        assert!(engine
+            .meetings()
+            .iter()
+            .all(|meeting| meeting.deleted_at.is_none()));
+        let request = folder_delete_request(&engine, folder.clone(), true);
+        engine.trash_meetings(&[second.id.clone()]).unwrap();
+        assert!(engine.delete_folder_checked(&request).is_err());
+        let request = folder_delete_request(&engine, folder.clone(), true);
+        let earlier = engine
+            .meetings()
+            .iter()
+            .find(|meeting| meeting.id == second.id)
+            .unwrap()
+            .deleted_at;
+        engine.delete_folder_checked(&request).unwrap();
+        let root = engine.store.root.clone();
+        drop(engine);
+        let reopened = Engine::open(root).unwrap();
+        assert!(reopened.folders().is_empty());
+        assert!(reopened
+            .meetings()
+            .iter()
+            .all(|meeting| meeting.folder_id.is_none() && meeting.deleted_at.is_some()));
+        assert_eq!(
+            reopened
+                .meetings()
+                .iter()
+                .find(|meeting| meeting.id == second.id)
+                .unwrap()
+                .deleted_at,
+            earlier
+        );
+        assert_eq!(
+            reopened
+                .meetings()
+                .iter()
+                .find(|meeting| meeting.id == first.id)
+                .unwrap()
+                .notes,
+            "Preserved"
+        );
+    }
+
+    #[test]
+    fn checked_folder_delete_sync_failure_publishes_one_complete_library_state() {
+        let (_temporary, mut engine) = engine();
+        let folder = engine.create_folder("Folder".into()).unwrap();
+        let meeting = engine
+            .create_meeting("Meeting".into(), "Notes".into())
+            .unwrap();
+        engine
+            .move_meetings(&[meeting.id.clone()], Some(folder.id.clone()))
+            .unwrap();
+        let request = folder_delete_request(&engine, folder, true);
+        store::fail_next_json_sync(engine.store.root.join("library.json"));
+        assert!(engine.delete_folder_checked(&request).is_err());
+        assert!(engine.folders().is_empty());
+        assert!(engine.meetings()[0].folder_id.is_none());
+        assert!(engine.meetings()[0].deleted_at.is_some());
+        let root = engine.store.root.clone();
+        drop(engine);
+        let reopened = Engine::open(root).unwrap();
+        assert!(reopened.folders().is_empty());
+        assert!(reopened.meetings()[0].deleted_at.is_some());
+        assert_eq!(reopened.meetings()[0].notes, "Notes");
+    }
+
+    #[test]
+    fn checked_folder_delete_preserves_recording_unless_trash_is_requested() {
+        let (_temporary, mut engine) = engine();
+        let folder = engine.create_folder("Folder".into()).unwrap();
+        let meeting = engine
+            .create_meeting("Recording".into(), "".into())
+            .unwrap();
+        engine
+            .move_meetings(&[meeting.id.clone()], Some(folder.id.clone()))
+            .unwrap();
+        let (session, _) = synthetic(&mut engine, &meeting.id);
+        let mut request = folder_delete_request(&engine, folder.clone(), true);
+        assert!(engine.delete_folder_checked(&request).is_err());
+        assert_eq!(engine.folders(), vec![folder]);
+        request.trash_meetings = false;
+        engine.delete_folder_checked(&request).unwrap();
+        assert!(engine.meetings()[0].deleted_at.is_none());
+        assert!(engine.meetings()[0].folder_id.is_none());
+        engine.stop(&session).unwrap();
     }
 
     #[test]
