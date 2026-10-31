@@ -15,6 +15,7 @@ mod summary;
 pub mod templates;
 pub mod terminology;
 mod transcript;
+mod whisper;
 pub use capture::CaptureReader;
 pub use diarization::{SpeakerAnalysis, SpeakerAnalysisDraft, SpeakerPosterior};
 pub use library::Folder;
@@ -425,6 +426,16 @@ impl CoreHandle {
         self.call(move |engine| engine.commit_nemotron_transcript(&id, expected, raw))
     }
 
+    pub fn commit_whisper_transcript(
+        &self,
+        id: &str,
+        expected: Option<TranscriptVersion>,
+        raw: Vec<u8>,
+    ) -> Result<Transcript> {
+        let id = id.to_string();
+        self.call(move |engine| engine.commit_whisper_transcript(&id, expected, raw))
+    }
+
     pub fn edit_transcript(
         &self,
         id: &str,
@@ -601,7 +612,10 @@ mod shutdown_gate_tests {
         let core = CoreHandle::open(temporary.path().canonicalize().unwrap()).unwrap();
         let meeting = core.create_meeting("보존", "메모").unwrap();
         core.prepare_shutdown(None).unwrap();
-        assert!(matches!(core.create_folder("설치 중 변경"), Err(CoreError::Unavailable)));
+        assert!(matches!(
+            core.create_folder("설치 중 변경"),
+            Err(CoreError::Unavailable)
+        ));
         assert!(matches!(core.list_meetings(), Err(CoreError::Unavailable)));
         assert_eq!(core.snapshot().unwrap().meetings[0].id, meeting.id);
         assert!(core.prepare_shutdown(None).is_ok());

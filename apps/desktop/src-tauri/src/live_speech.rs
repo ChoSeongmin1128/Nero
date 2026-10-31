@@ -1,6 +1,8 @@
 //! Recording follows its original writer. This consumer may block or fall
 //! behind on disk without backpressuring the device callback.
+use crate::process_tree::TreeChild as Child;
 use crate::processing::{directory, Processing};
+use crate::speech_choice::SpeechEngine;
 use nero_core::{CaptureReader, CoreHandle, SessionState, Snapshot};
 use rubato::{FftFixedIn, Resampler};
 use serde_json::{json, Value};
@@ -8,7 +10,7 @@ use sha2::{Digest, Sha256};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
@@ -27,7 +29,8 @@ pub(super) struct Completed {
 }
 pub(super) struct LiveJob {
     pub(super) meeting_id: String,
-    session_id: String,
+    pub(super) session_id: String,
+    pub(super) engine: SpeechEngine,
     cancel: Arc<AtomicBool>,
     child: Arc<Mutex<Option<Child>>>,
     handle: Mutex<Option<JoinHandle<()>>>,
@@ -85,6 +88,19 @@ impl Drop for FinalizationGuard<'_> {
             if job.running.load(Ordering::Acquire) && job.stop().is_err() {
                 self.process.cleanup_failed();
             }
+            if !job.running.load(Ordering::Acquire) {
+                let mut slot = self.process.live.lock().unwrap();
+                let old = if slot
+                    .as_ref()
+                    .is_some_and(|current| Arc::ptr_eq(current, job))
+                {
+                    slot.take()
+                } else {
+                    None
+                };
+                drop(slot);
+                drop(old);
+            }
         }
     }
 }
@@ -136,7 +152,9 @@ impl Processing {
         let cancel = Arc::new(AtomicBool::new(false));
         let running = Arc::new(AtomicBool::new(true));
         let child = Arc::new(Mutex::new(None));
+        let engine = self.speech_engine();
         let job = Arc::new(LiveJob {
+            engine,
             meeting_id: session.meeting_id.clone(),
             session_id: session.id.clone(),
             cancel: cancel.clone(),
@@ -162,6 +180,7 @@ impl Processing {
                         &session_id,
                         cancel,
                         child,
+                        engine,
                     );
                     if let Err(error) = result {
                         let _ = fs::write(
@@ -293,13 +312,14 @@ fn run(
     session_id: &str,
     cancel: Arc<AtomicBool>,
     child: Arc<Mutex<Option<Child>>>,
+    engine: SpeechEngine,
 ) -> Result<(), String> {
     let _guard = ChildGuard {
         child: child.clone(),
         process: process.clone(),
     };
-    let asr = process.model();
-    let model_path = process.model_dir()?.join(&asr.files[0].name);
+    let asr = Processing::model_for(engine);
+    let model_path = process.model_dir_for(engine)?.join(&asr.files[0].name);
     let speaker_model = crate::diarization::model();
     let speaker_weights =
         crate::diarization::model_dir(&process)?.join(&speaker_model.files[0].name);
@@ -317,7 +337,8 @@ fn run(
     let speaker_path = path.join("speaker");
     fs::create_dir(&speaker_path).map_err(|e| e.to_string())?;
     let audio = path.join("analysis.wav");
-    let request = json!({"asrModel":model_path,"asrLibrary":library,"meetingId":meeting_id,"sessionId":session_id,
+    let request = json!({"asrEngine":engine,"whisperExecutable":crate::whisper_asr::executable(&process.resources),
+        "asrModel":model_path,"asrLibrary":library,"meetingId":meeting_id,"sessionId":session_id,
         "speaker":{"schemaVersion":1,"audio":audio,"model":speaker_weights,"library":library,
             "output":speaker_path,"backend":backend,"modelSha256":speaker_model.files[0].sha256,
             "runtimePin":nero_core::speech_runtime::pin()}});
@@ -341,7 +362,7 @@ fn run(
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x08000000 | 0x00004000);
     }
-    let mut spawned = command.spawn().map_err(|e| e.to_string())?;
+    let mut spawned = crate::process_tree::spawn(&mut command)?;
     let mut stdin = BufWriter::new(spawned.stdin.take().ok_or("Missing live input pipe")?);
     let stdout = spawned.stdout.take().ok_or("Missing live result pipe")?;
     *child.lock().unwrap() = Some(spawned);
@@ -449,7 +470,7 @@ fn run(
     let status = loop {
         if stream_result.is_ok() && asr_ready.load(Ordering::Acquire) && !published {
             publish_asr(
-                &process, &core, path, meeting_id, session_id, &backend, sent, &input_sha,
+                &process, &core, path, meeting_id, session_id, &backend, sent, &input_sha, engine,
             )?;
             published = true;
         }
@@ -476,7 +497,7 @@ fn run(
     stream_result?;
     if !published {
         publish_asr(
-            &process, &core, path, meeting_id, session_id, &backend, sent, &input_sha,
+            &process, &core, path, meeting_id, session_id, &backend, sent, &input_sha, engine,
         )?;
     }
     fs::write(
@@ -497,13 +518,24 @@ fn publish_asr(
     backend: &Value,
     frames: u64,
     pcm_sha: &str,
+    engine: SpeechEngine,
 ) -> Result<(), String> {
     let raw = read_limited(&path.join("recognition.json"), 16 * 1024 * 1024)?;
     let result: Value = serde_json::from_slice(&raw).map_err(|e| e.to_string())?;
-    if result["streamFramesFed"] != frames
-        || result["inputAudioFrames"] != frames
-        || result["nativeStreamFinished"] != true
+    let model: Value = serde_json::from_str(engine.manifest()).map_err(|e| e.to_string())?;
+    if result["inputAudioFrames"] != frames
         || result["inputPcmSha256"] != pcm_sha
+        || result["model"] != model["repository"]
+        || result["modelRevision"] != model["revision"]
+        || match engine {
+            SpeechEngine::Nemotron => {
+                result["streamFramesFed"] != frames || result["nativeStreamFinished"] != true
+            }
+            SpeechEngine::WhisperTurbo => {
+                result["completed"] != true
+                    || result["completionEvidence"] != "whisper-cli-windows-exit0-v1"
+            }
+        }
     {
         return Err("Live ASR input identity differs from capture".into());
     }
@@ -517,7 +549,7 @@ fn publish_asr(
     }
     let audio = path.join("analysis.wav");
     let source = core.audio_path(meeting).map_err(|e| e.to_string())?;
-    let receipt = json!({"schemaVersion":1,"meetingId":meeting,"sessionId":session,"backend":backend,
+    let receipt = json!({"schemaVersion":1,"speechEngine":engine,"meetingId":meeting,"sessionId":session,"backend":backend,
         "audioSha256":crate::speech_audio::digest(&audio).map_err(|e|e.message)?,
         "sourceSha256":crate::speech_audio::digest(&source).map_err(|e|e.message)?,
         "recognitionSha256":format!("{:x}",Sha256::digest(&raw))});
@@ -776,6 +808,7 @@ pub(super) fn waiting_fixture(process: &Processing, meeting: &str, session: &str
         }
     });
     let job = Arc::new(LiveJob {
+        engine: SpeechEngine::Nemotron,
         meeting_id: meeting.into(),
         session_id: session.into(),
         cancel,
@@ -811,6 +844,7 @@ mod lifecycle_tests {
         });
         let child = Arc::new(Mutex::new(Some(child)));
         *process.live.lock().unwrap() = Some(Arc::new(LiveJob {
+            engine: SpeechEngine::Nemotron,
             meeting_id: "meeting".into(),
             session_id: "session".into(),
             cancel: Arc::new(AtomicBool::new(false)),
@@ -867,7 +901,8 @@ mod recovery_tests {
         fs::copy(&input, path.join("analysis.wav")).unwrap();
         let pcm = format!("{:x}", Sha256::digest(vec![0u8; 32000]));
         let raw = serde_json::to_vec(&json!({"streamFramesFed":16000,"inputAudioFrames":16000,
-            "nativeStreamFinished":true,"inputPcmSha256":pcm}))
+            "nativeStreamFinished":true,"inputPcmSha256":pcm,
+            "model":"nvidia/nemotron-3.5-asr-streaming-0.6b","modelRevision":"1c8deaecc64b91f034d73e08dd8b64625eb3395d"}))
         .unwrap();
         fs::write(path.join("recognition.json"), &raw).unwrap();
         let live = waiting_fixture(&process, &meeting.id, session);
@@ -880,6 +915,7 @@ mod recovery_tests {
             &json!("cpu"),
             16000,
             &pcm,
+            SpeechEngine::Nemotron,
         )
         .unwrap();
         let cancel = AtomicBool::new(false);

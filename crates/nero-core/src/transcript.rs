@@ -229,6 +229,7 @@ enum TranscriptCommitPolicy {
     Moss,
     WholeMoss,
     Nemotron,
+    Whisper,
 }
 
 fn present_chunk<'de, D>(
@@ -902,13 +903,11 @@ impl Engine {
         let source = document.source.as_ref().ok_or_else(|| {
             CoreError::Storage("음성 기록의 원본 연결을 확인할 수 없습니다.".into())
         })?;
-        let valid_source = matches!(
+        let valid_source = (matches!(
             source.projector_version.as_str(),
-            PROJECTOR_VERSION
-                | RECORDING_PROJECTOR_VERSION
-                | crate::nemotron::PROJECTOR_VERSION
-                | crate::nemotron::WORD_PROJECTOR_VERSION
-        ) && source.raw_sha256 == sha256(&raw)
+            PROJECTOR_VERSION | RECORDING_PROJECTOR_VERSION
+        ) || crate::nemotron::is_projector(&source.projector_version))
+            && source.raw_sha256 == sha256(&raw)
             && match source.association.as_str() {
                 "direct" => initial.source.as_ref() == Some(source),
                 LEGACY_ASSOCIATION => initial.source.is_none(),
@@ -929,10 +928,7 @@ impl Engine {
                 "음성 기록의 원본 연결을 확인할 수 없습니다.".into(),
             ));
         }
-        let projection = if matches!(
-            source.projector_version.as_str(),
-            crate::nemotron::PROJECTOR_VERSION | crate::nemotron::WORD_PROJECTOR_VERSION
-        ) {
+        let projection = if crate::nemotron::is_projector(&source.projector_version) {
             crate::nemotron::decode(&raw, duration, &audio.session_id, transcript_id)?
         } else {
             MossOutput::decode_with_policy(
@@ -944,10 +940,8 @@ impl Engine {
             )?
         };
         if projection.model != initial.model
-            || (matches!(
-                source.projector_version.as_str(),
-                crate::nemotron::PROJECTOR_VERSION | crate::nemotron::WORD_PROJECTOR_VERSION
-            ) && projection.model_revision != initial.model_revision)
+            || (crate::nemotron::is_projector(&source.projector_version)
+                && projection.model_revision != initial.model_revision)
             || projection.segments.len() != initial.segments.len()
             || (source.association == "direct" && projection.source.as_ref() != Some(source))
             || (source.association == LEGACY_ASSOCIATION
@@ -959,7 +953,7 @@ impl Engine {
                 "모델 원본과 발언의 연결을 확인할 수 없습니다.".into(),
             ));
         }
-        if source.projector_version == crate::nemotron::WORD_PROJECTOR_VERSION {
+        if crate::nemotron::is_word_projector(&source.projector_version) {
             if initial.speaker_analysis != projection.speaker_analysis
                 || initial.speakers != projection.speakers
                 || initial
@@ -1269,6 +1263,15 @@ impl Engine {
         self.commit_transcript_with_policy(id, expected, raw, TranscriptCommitPolicy::Nemotron)
     }
 
+    pub fn commit_whisper_transcript(
+        &mut self,
+        id: &str,
+        expected: Option<TranscriptVersion>,
+        raw: Vec<u8>,
+    ) -> Result<Transcript> {
+        self.commit_transcript_with_policy(id, expected, raw, TranscriptCommitPolicy::Whisper)
+    }
+
     fn commit_transcript_with_policy(
         &mut self,
         id: &str,
@@ -1299,10 +1302,14 @@ impl Engine {
         file.write_all(&raw)?;
         file.sync_all()?;
         let duration = audio.frames as f64 / audio.sample_rate as f64;
-        let document = if matches!(policy, TranscriptCommitPolicy::Nemotron) {
-            crate::nemotron::decode_asr(&raw, duration, &audio.session_id, &transcript_id)?
-        } else {
-            MossOutput::decode(&raw, duration, &audio.session_id, &transcript_id)?
+        let document = match policy {
+            TranscriptCommitPolicy::Nemotron => {
+                crate::nemotron::decode_asr(&raw, duration, &audio.session_id, &transcript_id)?
+            }
+            TranscriptCommitPolicy::Whisper => {
+                crate::whisper::decode_asr(&raw, duration, &audio.session_id, &transcript_id)?
+            }
+            _ => MossOutput::decode(&raw, duration, &audio.session_id, &transcript_id)?,
         };
         immutable_json(&self.store.root, &directory.join("initial.json"), &document)?;
         if matches!(policy, TranscriptCommitPolicy::WholeMoss)
@@ -1435,7 +1442,10 @@ impl Engine {
             .as_ref()
             .ok_or_else(|| CoreError::InvalidState("원음 정보가 없습니다.".into()))?;
         if draft.posterior.is_some()
-            && draft.source.model == "nvidia/nemotron-3.5-asr-streaming-0.6b"
+            && matches!(
+                draft.source.model.as_str(),
+                "nvidia/nemotron-3.5-asr-streaming-0.6b" | crate::whisper::MODEL
+            )
         {
             let before = draft.source.version.clone();
             let before_digest = crate::summary::transcript_digest(&draft.source)?;

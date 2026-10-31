@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import posixpath
 from pathlib import Path, PurePosixPath
 import re
 import shutil
@@ -133,7 +134,10 @@ def signed_transition(root, before):
     for old, new in zip(before['files'], after):
         with (root / new['path']).open('rb') as stream:
             binary = stream.read(4) in MACHO
-        if old != new and not binary:
+        relative = PurePosixPath(new['path'])
+        signable = relative.as_posix() == 'bin/whisper-cli' or (
+            relative.parts[:1] == ('lib',) and relative.suffix == '.dylib')
+        if old != new and not (binary and signable):
             raise ValueError('Whisper resource changed during signing')
     verify_macos_links(root)
     return {'beforeSigning': before, 'signedFiles': after}
@@ -173,6 +177,14 @@ def macos_files(root):
     return [root / 'bin/whisper-cli', *sorted((root / 'lib').glob('*.dylib'))]
 
 
+def system_dependency(dependency):
+    if dependency.startswith(('/usr/lib/', '/System/Library/')):
+        if posixpath.normpath(dependency) != dependency:
+            raise ValueError('Noncanonical system library path')
+        return True
+    return False
+
+
 def macos_dependencies(path):
     lines = subprocess.check_output(['otool', '-L', str(path)], text=True).splitlines()[1:]
     return [line.strip().split(' (', 1)[0] for line in lines]
@@ -192,8 +204,10 @@ def relocate_macos(root):
             args += ['-id', '@rpath/' + path.name]
             dependencies = dependencies[1:]  # otool's first dylib entry is its install ID.
         for dependency in dependencies:
-            if dependency.startswith(('/usr/lib/', '/System/Library/')):
+            if system_dependency(dependency):
                 continue
+            if not dependency.startswith(('@rpath/', '@loader_path/', '@executable_path/')):
+                raise ValueError('Unexpected absolute Whisper build dependency')
             if not (root / 'lib' / Path(dependency).name).is_file():
                 raise ValueError('Unpackaged Whisper dynamic dependency')
             args += ['-change', dependency, '@rpath/' + Path(dependency).name]
@@ -219,7 +233,7 @@ def verify_macos_links(root):
                 raise ValueError('Whisper dylib install ID differs from its package name')
             dependencies = dependencies[1:]
         for dependency in dependencies:
-            if dependency.startswith(('/usr/lib/', '/System/Library/')):
+            if system_dependency(dependency):
                 continue
             if (not dependency.startswith('@rpath/') or dependency != '@rpath/' + Path(dependency).name
                     or not (root / 'lib' / Path(dependency).name).is_file()):

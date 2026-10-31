@@ -502,9 +502,11 @@ impl Engine {
                     .iter()
                     .map(|segment| (segment.id.clone(), vec![segment.id.clone()]))
                     .collect();
-            } else if current.source.as_ref().is_some_and(|source| {
-                source.projector_version == crate::nemotron::WORD_PROJECTOR_VERSION
-            }) {
+            } else if current
+                .source
+                .as_ref()
+                .is_some_and(|source| crate::nemotron::is_word_projector(&source.projector_version))
+            {
                 let raw_path = Path::new("meetings")
                     .join(id)
                     .join("transcripts")

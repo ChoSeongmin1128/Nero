@@ -7,8 +7,9 @@ separate playback WAV. A background reader consumes only complete frames already
 written to disk. Saved PCM is the backlog when inference falls behind; inference
 never waits inside the device callback. Original audio is retained.
 
-One isolated child holds a Nemotron 3.5 Q8 ASR stream and an independent Nemotron 3
-speaker stream for the capture session. Pause/resume retains both states. ASR
+The engine is captured at session start. One isolated child holds an independent
+Nemotron 3 speaker stream throughout capture. With the default engine it also
+holds a Nemotron 3.5 Q8 ASR stream. Pause/resume retains both states. ASR
 endpointing is disabled. Publication does not reset the models. The integrated ASR
 diarizer is not used; the independent speaker stream exports probability frames
 before native compaction using the existing geometry and final onset attribution.
@@ -21,32 +22,60 @@ interim text without word offsets, so previews have no invented times or speaker
 labels. They are read-only and bound to the meeting and capture session. A new
 hypothesis replaces its predecessor; interim text and boundaries can change.
 
+With Whisper large-v3-turbo Q5, the child instead accumulates bounded PCM for the
+packaged CLI. It chooses an owned boundary near quiet samples between 90 and 120
+seconds, with up to three seconds of context on either side. EOF processes the
+remainder. Each temporary PCM WAV is source-bound; a CLI duration option against
+a longer file is not an input boundary. A word belongs to one window by its
+midpoint sample address. Ownership covers the full input without gaps. The
+speaker stream receives every sample continuously. Inference can block this
+saved-PCM reader, never the recorder callback.
+
+Whisper previews use completed windows and actual native times. Native token bytes
+are reconstructed before UTF-8 validation. No time or confidence is invented.
+Unusable word anchors retain the complete native segment as
+`nativeSegmentContext`, with its actual segment interval and no speaker.
+Zero-duration words also remain unassigned. Invalid generated UTF-8, invalid
+segment bounds or text mismatches fail processing with raw output/audio preserved.
+Boundary wording may differ between native runs; this is not a guarantee that
+every spoken boundary word is recognized.
+
 On successful recording stop, the reader drains saved frames and flushes its
 bounded resampler into a mono 16 kHz PCM16 analysis WAV. It closes and synchronizes
 the WAV before sending an explicit final frame count. The child checks that the
 finalized WAV's PCM hash/count equal the samples actually fed, verifies model and
-runtime identity, and finishes ASR once. It saves the ASR artifact before speaker
+runtime identity, and finishes the selected ASR path once. It saves ASR before speaker
 finalization; a later speaker failure preserves recognition. The parent verifies
 its independently accumulated input hash/count and atomically records source,
 analysis WAV and ASR hashes as soon as the synchronized ASR artifact is announced.
 The ordinary job checkpoints canonical text before waiting for speaker completion,
 then uses the existing terminology and speaker continuation paths. An explicit
 retry after restart can recover a source/session/hash-matched ASR artifact without
-replaying ASR; changed or unrelated artifacts are not reused. Speaker retry does not
+replaying ASR; a different model, changed or unrelated artifacts are not reused. Speaker retry does not
 rerun saved ASR. Final word times and speaker assignments are projected after EOF.
 
 Final publication retains source/CAS checks, canonical words, revision history and
-manual corrections. Live artifacts use `whole-recording-stateful-live-v1` with
+manual corrections. Nemotron live artifacts use `whole-recording-stateful-live-v1` with
 `native-stream-finish-cabi-v1`, exact fed-frame count, explicit native finish and
 the input PCM SHA-256. Core validation still checks the native final duration and
 word ranges. A valid final ASR artifact can survive a subsequent child failure;
 ASR completion does not claim successful speaker analysis.
 
+Whisper uses `whisper-context-windows-v1`, `native-token-span-v1` and
+`whisper-cli-windows-exit0-v1` (windows of audio on either platform). The envelope
+binds the full PCM hash/frame count, pinned model/runtime/target, window input and
+owned ranges, native-output hash, exit status, word ranges and backend evidence.
+Windows explicitly disables GPU. macOS requires positive Metal initialization;
+only confirmed unavailable GPU permits a separately recorded CPU attempt.
+Allocation and generic failures do not permit fallback. Neither engine silently
+changes the chosen model.
+
 Stop returns after audio finalization while speech drains in the background.
 The finalized recording immediately becomes an ordinary durable, cancellable job.
 Its action waits for the matching session; other inference waits while the live
 child is active. A queued or running cancellation stops only its owned live child.
-Shutdown/removal terminates and joins it. A new capture can interrupt a prior finishing child; completed ASR
+Shutdown/removal terminates and joins its owned process tree, including a running
+Whisper CLI. A new capture can interrupt a prior finishing child; completed ASR
 remains session-bound for the queued job. Interrupted or failed live processing preserves original audio and
 uses the existing finalized-file processing path. Restart does not reconstruct
 decoder state or automatically replay recordings. Interim text is not a saved,

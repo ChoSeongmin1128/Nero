@@ -14,6 +14,10 @@ type Result<T> = std::result::Result<T, String>;
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Request {
+    #[serde(default)]
+    asr_engine: crate::speech_choice::SpeechEngine,
+    #[serde(default)]
+    whisper_executable: Option<PathBuf>,
     asr_model: PathBuf,
     asr_library: PathBuf,
     speaker: speaker::Request,
@@ -43,7 +47,8 @@ pub(super) fn entry(path: &Path) -> Result<ExitPolicy> {
     let request: Request =
         serde_json::from_reader(File::open(path).map_err(|e| e.to_string())?.take(65537))
             .map_err(|e| e.to_string())?;
-    let manifest: Value = serde_json::from_str(crate::asr::MANIFEST).map_err(|e| e.to_string())?;
+    let manifest: Value =
+        serde_json::from_str(request.asr_engine.manifest()).map_err(|e| e.to_string())?;
     let model_sha = digest(&request.asr_model)?;
     if Some(model_sha.as_str()) != manifest["files"][0]["sha256"].as_str()
         || std::fs::metadata(&request.asr_model)
@@ -63,11 +68,34 @@ pub(super) fn entry(path: &Path) -> Result<ExitPolicy> {
     let speaker_library_sha = digest(&request.speaker.library)?;
     // Unfinished multi-model destruction faults on the pinned Windows runtime.
     // Preserve those handles on error; completed streams close in reverse order.
-    let mut asr = ManuallyDrop::new(Asr::open(
-        &request.asr_library,
-        &request.asr_model,
-        request.speaker.backend.gpu(),
-    )?);
+    let mut asr = if request.asr_engine == crate::speech_choice::SpeechEngine::Nemotron {
+        Some(ManuallyDrop::new(Asr::open(
+            &request.asr_library,
+            &request.asr_model,
+            request.speaker.backend.gpu(),
+        )?))
+    } else {
+        None
+    };
+    let mut whisper = if request.asr_engine == crate::speech_choice::SpeechEngine::WhisperTurbo {
+        Some(crate::whisper_asr::Buffered::new(
+            request
+                .whisper_executable
+                .clone()
+                .ok_or("Missing Whisper executable")?,
+            request.asr_model.clone(),
+            request
+                .speaker
+                .output
+                .parent()
+                .ok_or("Missing live work root")?
+                .to_path_buf(),
+            true,
+        )?)
+    } else {
+        None
+    };
+    let whisper_cancel = std::sync::atomic::AtomicBool::new(false);
     let mut speaker_api = ManuallyDrop::new(
         speaker::Api::load(&request.speaker.library, request.speaker.backend)
             .map_err(|e| e.to_string()),
@@ -134,9 +162,24 @@ pub(super) fn entry(path: &Path) -> Result<ExitPolicy> {
             }
         }
         count += size as u64;
-        asr.push(&samples)?;
-        if let Some(result) = asr.drain()? {
-            latest = Some(result);
+        let mut new_window = false;
+        if let Some(asr) = asr.as_mut() {
+            asr.push(&samples)?;
+            if let Some(result) = asr.drain()? {
+                latest = Some(result);
+            }
+        }
+        if let Some(whisper) = whisper.as_mut() {
+            let before = whisper.generation;
+            let pcm = bytes
+                .chunks_exact(2)
+                .map(|b| i16::from_le_bytes([b[0], b[1]]))
+                .collect::<Vec<_>>();
+            whisper.push(&pcm, &whisper_cancel)?;
+            if whisper.generation != before {
+                latest = Some(whisper.preview());
+                new_window = true;
+            }
         }
         if let Some(native) = &diar {
             if let Err(error) = native
@@ -152,7 +195,10 @@ pub(super) fn entry(path: &Path) -> Result<ExitPolicy> {
                 .as_ref()
                 .and_then(|r| r["text"].as_str())
                 .is_some_and(|text| text.trim_end().ends_with(['.', '!', '?']));
-        if count - last_preview >= 60 * 16000 && (boundary || count - last_preview >= 180 * 16000) {
+        if new_window
+            || count - last_preview >= 60 * 16000
+                && (boundary || count - last_preview >= 180 * 16000)
+        {
             if let Some(result) = &latest {
                 posterior.flush().map_err(|e| e.to_string())?;
                 let words = preview_speakers(&result["words"], &probability_path)?;
@@ -187,18 +233,25 @@ pub(super) fn entry(path: &Path) -> Result<ExitPolicy> {
     {
         return Err("Live audio/model/runtime changed".into());
     }
-    asr.finish()?;
-    let result = asr.drain()?.ok_or("No final ASR result")?;
-    if result["final"] != true {
-        return Err("ASR did not complete its native stream".into());
-    }
-    let raw = json!({"schemaVersion":1,"model":manifest["repository"],"modelRevision":manifest["revision"],
+    let raw = if let Some(asr) = asr.as_mut() {
+        asr.finish()?;
+        let result = asr.drain()?.ok_or("No final ASR result")?;
+        if result["final"] != true {
+            return Err("ASR did not complete its native stream".into());
+        }
+        json!({"schemaVersion":1,"model":manifest["repository"],"modelRevision":manifest["revision"],
         "runtime":nero_core::speech_runtime::current(),
         "processingPolicy":"whole-recording-stateful-live-v1","completionEvidence":"native-stream-finish-cabi-v1",
         "completed":true,"inputAudioFrames":count,"audioSampleRate":16000,
         "audioDurationSeconds":count as f64/16000.0,"nativeDurationSeconds":result["duration"],
         "streamFramesFed":count,"nativeStreamFinished":true,"inputPcmSha256":fed_sha,
-        "words":result["words"]});
+        "words":result["words"]})
+    } else {
+        whisper
+            .as_mut()
+            .ok_or("Missing ASR engine")?
+            .finish(count, &fed_sha, &whisper_cancel)?
+    };
     save(
         &request
             .speaker
@@ -236,7 +289,9 @@ pub(super) fn entry(path: &Path) -> Result<ExitPolicy> {
         unsafe {
             #[cfg(windows)]
             eprintln!("native-cleanup: asr-close");
-            ManuallyDrop::drop(&mut asr);
+            if let Some(asr) = asr.as_mut() {
+                ManuallyDrop::drop(asr);
+            }
             #[cfg(windows)]
             eprintln!("native-cleanup: asr-closed");
             ManuallyDrop::drop(&mut speaker_api);
@@ -267,6 +322,9 @@ fn preview_speakers(words: &Value, path: &Path) -> Result<Value> {
     let available = file.metadata().map_err(|e| e.to_string())?.len() / 32;
     let mut words = words.as_array().ok_or("Invalid preview words")?.clone();
     for word in &mut words {
+        if word["timingScope"] == "nativeSegmentContext" || word["start"] == word["end"] {
+            continue;
+        }
         let start = (word["start"].as_f64().ok_or("Invalid preview time")? / f64::from(0.01_f32))
             .floor() as u64;
         let end = (start + 16).min(available);
