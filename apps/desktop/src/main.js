@@ -29,6 +29,8 @@ import { mountMeetingDetail } from './meeting-detail-ui.js';
 import { mountSummaryEvidence } from './summary-evidence.js';
 import { mountAgentConnectionDialog } from './agent-connection-dialog.jsx';
 import { mountTemplateSettings } from './template-settings.jsx';
+import { mountSpeechModelPicker } from './speech-model-picker.js';
+import './speech-model-picker.css';
 
 applySystemAppearance();
 const byId = (id) => document.getElementById(id);
@@ -65,6 +67,11 @@ function readMicrophonePreference() {
 }
 const microphonePreference = readMicrophonePreference();
 const state = { snapshot: { meetings: [], folders: [], session: null }, notificationsOpen: false, libraryOpen: false, libraryFilter: 'all', librarySelection: new Set(), libraryBusy: false, librarySearchIds: null, librarySearchHits: [], pendingSearchIntent: null, setupReturnId: null, librarySearchPending: false, librarySearchUnavailable: 0, selectedId: null, devices: [], devicesLoaded: false, deviceId: microphonePreference.id, deviceName: microphonePreference.name, settingsPanel: 'appearance', summaryFeatureError: '', settingsKey: '', settingsError: '', settingsReturnId: 'settings', setupFromSettings: false, autoRecorder: readAutoRecorder(), recorderSettingBusy: false, snapshotKey: '', processingKey: '', processingCancellingId: null, transcriptEditing: null, audioRequest: 0, audioLoading: null, dateSaving: null, dateKey: '', dateError: null, lastError: null, errorIsSave: false, connected: false, busy: false, composing: false, transcriptComposing: false, editLocks: 0, draft: null, saveTimer: null, saveQueue: Promise.resolve(), listKey: '', controlsKey: '', audioKey: '', processing: { status: 'idle', supported: false, modelReady: false }, transcriptDraft: null, transcriptKey: '', transcriptLoadId: 0, transcriptSaveQueue: Promise.resolve(), summary: null, summaryKey: '', summaryLoadId: 0, summaryLoaded: false, transcriptLoaded: false, summaryLoadError: false, transcriptLoadError: false, setupRequested: false };
+const speechPickers = [
+  mountSpeechModelPicker({ node: byId('setup-speech-picker'), onSelect: selectSpeechEngine }),
+  mountSpeechModelPicker({ node: byId('settings-speech-picker'), onSelect: selectSpeechEngine, onPrepare: prepareSpeechModels }),
+];
+let speechSelectionError = '';
 const appUpdateRecovery = mountAppUpdateRecovery({ document, quit: () => appUpdateView.quitForRecovery() });
 const appUpdateView = mountAppUpdateView({ container: byId('app-update'), bridge,
   onRecovery: status => appUpdateRecovery.update(status),
@@ -307,7 +314,34 @@ async function openSetup(fromSettings = false, returnId = document.activeElement
   await finishEditing(() => { state.setupRequested = true; state.setupFromSettings = fromSettings; state.setupReturnId = returnId; render(); byId('setup-title').focus?.({ preventScroll: true }); });
 }
 
+function renderSpeechModels() {
+  const pending = pendingJob(state.processing);
+  const disabled = !state.connected || state.busy || Boolean(activeSession()) || Boolean(pending);
+  const modelJob = pendingJob(state.processing, { models: true });
+  const feedback = modelJob ? processingFeedback(modelJob) : null;
+  const message = activeSession() ? '녹음을 마친 뒤 모델을 변경할 수 있습니다.'
+    : feedback ? feedback.detail || feedback.title
+      : pending ? '현재 처리가 끝난 뒤 모델을 변경할 수 있습니다.' : '';
+  for (const picker of speechPickers) picker.update({ progress: state.processing, disabled, message, error: speechSelectionError });
+}
+function selectSpeechEngine(engine) {
+  return run(async () => {
+    speechSelectionError = '';
+    renderSpeechModels();
+    try { await acceptProcessing(await bridge.setSpeechEngine(engine)); }
+    catch (error) { speechSelectionError = error.message || '음성 인식 모델을 변경하지 못했습니다.'; }
+  });
+}
+function prepareSpeechModels() {
+  return run(async () => {
+    speechSelectionError = '';
+    renderSpeechModels();
+    try { await acceptProcessing(await bridge.prepareMeetingModels(false)); }
+    catch (error) { speechSelectionError = error.message || '음성 인식 모델을 준비하지 못했습니다.'; }
+  });
+}
 function render() {
+  renderSpeechModels();
   byId('create-meeting').disabled = !state.connected || state.busy;
   byId('create-calendar-meeting').disabled = !state.connected || state.busy;
   byId('welcome-create').disabled = !state.connected || state.busy;
