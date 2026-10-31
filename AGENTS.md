@@ -2,7 +2,7 @@
 
 This file applies to the entire repository.
 
-## Native rewrite
+## Application architecture
 
 - `apps/desktop/` is the new Nero application. `crates/nero-core/` owns its
   platform-independent storage and recording state; CPAL provides native microphone
@@ -91,7 +91,7 @@ This file applies to the entire repository.
 - A development bundle is not a signed/notarized distribution. Native capture,
   device interruption, shutdown and long recordings require hardware acceptance tests.
 
-## Rewrite design system
+## Shared design system
 
 - `design-system/` owns the shared browser design system and examples for the rewrite.
   Its target platforms are macOS and Windows. The retired Swift implementation is isolated in `legacy/swift/`; it is not a current installation target.
@@ -109,18 +109,16 @@ This file applies to the entire repository.
 
 ## Document trust
 
-Documents under `docs/` are wholly or partly AI-assisted working notes. Read them
-critically. Verify claims in this order:
+Public `README.md` is a Korean landing page for people downloading Nero. Keep it
+focused on the product, installation, supported platforms and first-run guidance.
+Public `docs/` contains user guides and current technical contracts that belong
+with source. Personal planning, research/evaluation results, installation receipts,
+session handoffs and work history belong only in private project-notes, not in the
+product tree or release descriptions. Do not add private-note links to public docs.
+Use synthetic data for public screenshots and label it as an example.
 
-1. the current user request
-2. running app state, local files, logs, and measurements
-3. current source code and tests
-4. primary documentation and upstream repositories
-5. Nero planning and handoff documents
-
-If documentation and code differ, the code explains current behavior but does not
-automatically define the correct product requirement. Separate verified facts,
-inference, proposals, and unverified items.
+Verify documentation claims against the current user request, source and observed
+behavior. Separate implemented behavior, proposals and unverified platform support.
 
 ## Private data
 
@@ -142,9 +140,10 @@ inference, proposals, and unverified items.
   when a development change affects it. Do not initialize or discard it implicitly.
   Preserve historical commits, tags and release metadata rather than rewriting labels.
   Undistributed development binaries follow the bounded retention rules below.
-- Record release source commits in `docs/release-history.md`. A dirty build must not
-  be attributed to its HEAD alone. Distribution bundles require clean source provenance;
-  keep generated binaries, signing/notary receipts and private compatibility evidence in `.work/`.
+- Published release tags, assets and public release notes identify distributed source.
+  A dirty build must not be attributed to its HEAD alone. Distribution bundles require
+  clean source provenance. Keep personal installation history and evaluation in private
+  project-notes; generated binaries and signing/notary receipts stay in `.work/`.
 
 - `/Applications/Nero.app` is the macOS installation target, not proof that the
   new app is installed. Development bundles stay in `.work/rust-target`.
@@ -185,7 +184,9 @@ inference, proposals, and unverified items.
 
 ## Git and verification
 
-- Use the personal ChoSeongmin1128 account without switching global authentication. Product push and PR creation require an explicit user request.
-- Read `HANDOFF.md` and task-specific current docs. Keep private meeting data and evaluation results outside product Git.
+- Do not change global authentication settings. Publication requires explicit authorization.
+- Read the current technical docs for the affected feature. If private project-notes
+  are configured, read applicable instructions there without publishing their contents.
+  Keep meeting data, personal handoffs and evaluation results outside product Git.
 - Sequential validation: `cargo test -p nero-core --locked -- --test-threads=1`, `cargo test -p nero-cli --locked -- --test-threads=1`, `npm --prefix apps/desktop test`, `npm --prefix apps/desktop run build`, `cargo check -p nero-desktop --locked`.
 - Native bundle, recording hardware, live OAuth and Windows execution are separate checks; record omissions explicitly. Do not initialize dummy user meetings to validate a release.
