@@ -147,7 +147,8 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
   const app = await vm.runInContext(`(async () => {
     ${dismissSource.replace(/^export /gm, '')}
     ${qualitySource.replace(/^export /gm, '')}
-    ${detailSource.replace(/^export /gm, '')}
+    const mountNotesWidth = () => ({update(){}});
+    ${detailSource.replace(/^import .*;\r?\n/gm, '').replace(/^export /gm, '')}
     ${feedbackSource.replace(/^export /gm, '')}
     ${processingStateSource.replace(/^export /gm, '')}
     ${searchSource.replace(/^export /gm, '')}
@@ -1226,7 +1227,8 @@ test('transcript reading stays compact until a row is explicitly edited', async 
   assert.equal(page.app.state.transcriptEditing, null);
   assert.doesNotMatch(page.element('transcript-rows').innerHTML, /textarea/);
   assert.match(page.element('transcript-rows').innerHTML, /읽고 수정한 내용/);
-  assert.match(page.element('transcript-rows').innerHTML, /원문 보기/);
+  assert.doesNotMatch(page.element('transcript-rows').innerHTML, /원문 보기|transcript-original/);
+  assert.equal(page.app.state.transcriptDraft.doc.segments[0].originalText, '모델 원문');
 });
 
 test('row completion failure preserves the editor and cancellation only discards unsaved edits', async () => {

@@ -130,7 +130,7 @@ export function calendarConnectionView(state) {
   return {
     connecting, cancelling, retryable,
     label: cancelling ? '연결 취소 중' : connecting ? '브라우저에서 승인 중' : snapshot.restoring ? '연결 확인 중' : snapshot.connected ? snapshot.accountLabel : '연결 안 됨',
-    action: retryable ? '다시 시도' : snapshot.connected ? '다시 연결' : 'Google 연결',
+    action: retryable ? '다시 시도' : snapshot.connected ? null : 'Google 연결',
     error: state.error || (!connecting && snapshot.error) || '',
   };
 }

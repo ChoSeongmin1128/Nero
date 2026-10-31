@@ -11,8 +11,8 @@ test('width preferences reject non-numeric shapes and retain valid numeric strin
 
 test('desktop bounds protect the document while narrow overlay bounds leave an outside target', () => {
   assert.deepEqual(navigationWidthBounds(1000), { min: 200, max: 400, overlay: false });
-  assert.deepEqual(navigationWidthBounds(700), { min: 200, max: 300, overlay: false });
+  assert.deepEqual(navigationWidthBounds(700), { min: 200, max: 248, overlay: false });
   assert.deepEqual(navigationWidthBounds(640), { min: 200, max: 400, overlay: true });
-  assert.deepEqual(navigationWidthBounds(320), { min: 200, max: 272, overlay: true });
-  assert.deepEqual(navigationWidthBounds(200), { min: 152, max: 152, overlay: true });
+  assert.deepEqual(navigationWidthBounds(320), { min: 200, max: 220, overlay: true });
+  assert.deepEqual(navigationWidthBounds(200), { min: 100, max: 100, overlay: true });
 });
