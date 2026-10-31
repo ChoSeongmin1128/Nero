@@ -66,4 +66,4 @@ These checks do not establish execution on every supported Mac or laptop.
 The optional quality model pin is `config/models/whisper-turbo.json`. Recognition
 must retain native output and token timestamps, report the actual backend, and
 validate full input coverage independently of the NeMo stateful-stream protocol.
-Building this package alone does not enable a second engine in the product.
+Preparing this package never selects or downloads a model.
