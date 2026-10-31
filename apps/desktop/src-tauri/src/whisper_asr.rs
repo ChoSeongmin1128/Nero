@@ -31,6 +31,14 @@ pub(super) fn supported(resources: &Path) -> bool {
     (cfg!(all(target_os = "windows", target_arch = "x86_64"))
         || cfg!(all(target_os = "macos", target_arch = "aarch64")))
         && executable(resources).is_file()
+        && (!cfg!(windows)
+            || [
+                "runtime.json",
+                "bin/nero-vulkan-probe.exe",
+                "vulkan/bin/whisper-cli.exe",
+            ]
+            .iter()
+            .all(|path| resources.join("native/whisper").join(path).is_file()))
 }
 
 fn failure() -> String {
