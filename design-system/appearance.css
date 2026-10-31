@@ -87,6 +87,13 @@
   --link-surface: #292929;
 }
 
+/* Theme snapshots must never intercept the next click. */
+::view-transition,
+::view-transition-group(root),
+::view-transition-image-pair(root),
+::view-transition-old(root),
+::view-transition-new(root) { pointer-events: none; }
+
 ::view-transition-old(root),
 ::view-transition-new(root) {
   animation-duration: 180ms;
