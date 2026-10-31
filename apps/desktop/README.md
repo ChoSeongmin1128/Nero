@@ -1,7 +1,7 @@
 # Nero desktop
 
-First native development slice for macOS and Windows. The application is named
-Nero. It has a separate identity and never opens the legacy Swift library.
+Native Tauri application for macOS and Windows. User installation and first-run
+guidance are in the [project README](../../README.md) and [user guide](../../docs/README.md).
 
 ## Build
 
@@ -125,8 +125,8 @@ node apps/desktop/scripts/version.mjs set 0.0.1 --build 3
 
 Before first user sharing, development changes may keep `0.0.1` and advance the build.
 The [version policy](../../docs/versioning.md) separates product versions, monotonic
-build numbers and data formats. [Release history](../../docs/release-history.md)
-records source hashes and distribution status. Generated `build-info.json` records
+build numbers and data formats. [GitHub Releases](https://github.com/ChoSeongmin1128/Nero/releases)
+records published versions, source tags and distribution assets. Generated `build-info.json` records
 the exact Git commit/tree, dirty state, version/build and build host. It is packaged
 as an app resource; signing a distribution refuses a dirty or mismatched source.
 

@@ -57,4 +57,4 @@ the existing Previous records workflow; automatic correction does not delete raw
 
 Validation distinguishes deterministic span/storage tests, mocked protocol tests and
 actual local-model runs. None establish general Korean accuracy, speaker identity or
-Windows runtime qualification. Windows ASR remains unconnected.
+Windows runtime qualification. Platform packaging and runtime support must be verified independently.
