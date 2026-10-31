@@ -90,7 +90,7 @@
           <div class="detail-primary" id="detail-body-scroll">
           <div id="detail-search-home"></div>
           <div id="document-search" class="document-search" role="search" aria-label="회의 내용 검색" hidden><label><span class="sr-only">검색어</span><input id="document-query" class="text-input text-input--compact" type="search" placeholder="회의 내용 검색" autocomplete="off"></label><span id="document-search-count" class="type-caption muted" role="status"></span><button id="document-search-prev" type="button" class="quiet small icon" data-ui-icon="chevron-up" aria-label="이전 검색 결과" title="이전 검색 결과"><span class="sr-only">이전 검색 결과</span></button><button id="document-search-next" type="button" class="quiet small icon" data-ui-icon="chevron-down" aria-label="다음 검색 결과" title="다음 검색 결과"><span class="sr-only">다음 검색 결과</span></button><button id="document-search-close" type="button" class="quiet small icon" data-ui-icon="x" aria-label="내용 검색 닫기" title="내용 검색 닫기"><span class="sr-only">내용 검색 닫기</span></button></div>
-          <div id="draft-notes-home" class="draft-notes-home" hidden></div>
+          
           <div class="detail-panels">
             <section id="summary-section" class="summary-section detail-panel" role="region" aria-label="요약" tabindex="0">
               <div class="section-heading detail-panel-toolbar"><h2 id="meeting-result-title">요약</h2><div class="row"><button id="prepare-summary" type="button" class="small" hidden>요약 기능 준비</button><span id="summary-template-choice"><select id="summary-template" aria-label="요약 템플릿" disabled><option>템플릿 확인 중</option></select></span><button id="summarize" type="button" class="small primary" disabled>요약하기</button></div></div>
@@ -134,8 +134,8 @@
             </div>
             <section id="settings-speech-picker" aria-label="음성 인식 모델 선택" hidden></section>
             <div class="settings-group settings-recording-options">
-            <label class="setup-choice settings-row"><span>녹음 중 제어창 표시</span><input id="auto-recorder" type="checkbox" checked></label>
-            <label id="settings-terminology-row" class="setup-choice settings-row" hidden><span>용어 자동 정리</span><input id="terminology-enabled" type="checkbox" disabled></label>
+            <label class="settings-row"><span>녹음 중 제어창 표시</span><input id="auto-recorder" type="checkbox" role="switch" checked></label>
+            <label id="settings-terminology-row" class="settings-row" hidden><span>용어 자동 정리</span><input id="terminology-enabled" type="checkbox" role="switch" disabled></label>
             </div>
           </section>
           <section id="settings-appearance-panel" role="tabpanel" aria-labelledby="settings-appearance-tab">

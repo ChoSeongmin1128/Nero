@@ -23,7 +23,7 @@ const bundled = await build({
   } }],
 });
 
-test('one transcript panel stays visible through processing and moves to the inspector after summary completion', async t => {
+test('one transcript panel stays in the body through processing and summary completion with notes open', async t => {
   const window = new Window({ url: 'http://nero.test', settings: { enableJavaScriptEvaluation: true, suppressInsecureJavaScriptEnvironmentWarning: true, disableCSSFileLoading: true, disableJavaScriptFileLoading: true } });
   t.after(() => window.happyDOM.abort());
   window.document.write(html);
@@ -59,11 +59,11 @@ test('one transcript panel stays visible through processing and moves to the ins
     }
     assert.fail('Missing result state: ' + el('error-message').textContent + ' / ' + el('summary-message').textContent);
   };
-  await wait(() => el('meeting-detail').dataset.inlineNotes === 'true');
+  await wait(() => !el('notes-section').hidden);
   snapshot = { ...snapshot, revision: 2, session: { ...snapshot.session, state: 'finalizing' } };
   subscriptions.subscribeSnapshots(snapshot);
   await wait(() => el('summary-message').textContent.includes('처리하고 있습니다.'));
-  assert.equal(el('detail-inspector').hidden, true);
+  assert.equal(el('detail-inspector').hidden, false);
   assert.doesNotMatch(el('summary-section').textContent, /검토 내용을 담은 초안/);
   assert.ok(el('summary-message').querySelector('.activity-spinner'));
   snapshot = { ...snapshot, revision: 3, session: null, meetings: [{ ...snapshot.meetings[0], status: 'completed', audio: { sessionId: 'capture', relativePath: 'audio.wav', frames: 48000, sampleRate: 48000, channels: 1 } }] };
@@ -71,7 +71,7 @@ test('one transcript panel stays visible through processing and moves to the ins
   const recognizing = { ...ready, id: 'job', meetingId: 'one', kind: 'transcribe', status: 'running', phase: 'recognizing', message: '마지막 구간과 화자를 정리하고 있습니다.', retryable: true };
   await subscriptions.subscribeProcessing({ ...recognizing, revision: 2, liveTranscript: null });
   await wait(() => el('summary-message').textContent.includes('처리하고 있습니다.'));
-  assert.equal(el('detail-inspector').hidden, true);
+  assert.equal(el('detail-inspector').hidden, false);
   assert.equal(el('meeting-result-title').textContent, '요약');
   assert.doesNotMatch(el('summary-section').textContent, /검토 내용을 담은 초안/);
   assert.equal(el('meeting-result-preview'), null);
@@ -103,11 +103,11 @@ test('one transcript panel stays visible through processing and moves to the ins
   assert.equal(el('meeting-result-preview'), null);
   assert.equal(el('meeting-result-title').textContent, '요약');
   assert.equal(el('summary-content').hidden, false);
-  assert.equal(el('result-transcript-home').hidden, true);
-  assert.equal(el('detail-inspector').hidden, true);
+  assert.equal(el('result-transcript-home').hidden, false);
+  assert.equal(el('detail-inspector').hidden, false);
   el('detail-transcript-open').click();
   await wait(() => !el('detail-inspector').hidden);
-  assert.equal(el('transcript-section').parentNode,el('detail-inspector'));
+  assert.equal(el('transcript-section').parentNode,el('result-transcript-home'));
   assert.match(el('transcript-rows').textContent,/확정된 검토 내용/);
   assert.deepEqual(errors, []);
 });
@@ -163,16 +163,17 @@ test('the real application HTML boots and opens all settings tabs without stale 
   }
   window.document.getElementById('settings-close').click();
   await wait(() => !window.document.getElementById('settings-dialog').open);
-  await wait(() => window.document.activeElement.id === 'navigation-toggle');
-  assert.equal(window.document.activeElement.id, 'navigation-toggle');
+  await wait(() => window.document.activeElement.id === 'settings');
+  assert.equal(window.document.activeElement.id, 'settings');
   assert.deepEqual(errors, []);
   assert.equal(window.document.getElementById('error').hidden, true);
   assert.ok(calls.includes('readSnapshot'));
   assert.ok(calls.includes('appUpdateStatus'));
   assert.equal(typeof subscriptions.subscribeAppUpdate, 'function');
   subscriptions.subscribeAppUpdate({ phase: 'ready', currentVersion: '0.0.1', currentBuild: '40', availableBuild: '41', message: '업데이트 설치 준비 완료', downloadReady: true });
-  await wait(() => window.document.getElementById('app-update-action').textContent === '다시 시작해 업데이트');
-  assert.match(window.document.getElementById('notification-center').textContent, /업데이트 설치 준비 완료/);
+  await wait(() => !window.document.getElementById('sidebar-app-update').hidden);
+  assert.equal(window.document.getElementById('sidebar-app-update').querySelector('[data-app-update-label]').textContent, '업데이트');
+  assert.doesNotMatch(window.document.getElementById('notification-center').textContent, /업데이트 설치 준비 완료/);
   const recording = { revision: 2, folders: [], meetings: [{ id: 'one', title: '회의', createdAt: 1, notes: '', status: 'recording' }], session: { id: 'capture', meetingId: 'one', state: 'paused', elapsedMs: 1000 } };
   subscriptions.subscribeSnapshots(recording);
   await wait(() => window.document.querySelector('[data-action="show-recorder"]'));
@@ -285,7 +286,7 @@ test('settings dismiss gestures preserve edits, nested controls, composition and
   pointer('pointerdown', dialog, { button: 2 }); pointer('pointerup', dialog, { button: 2 }); assert.equal(dialog.open, true);
   pointer('pointerdown'); pointer('pointercancel'); pointer('pointerup'); assert.equal(dialog.open, true);
   pointer('pointerdown'); pointer('pointerup'); await wait(() => !dialog.open);
-  await wait(() => window.document.activeElement.id === 'navigation-toggle');
+  await wait(() => window.document.activeElement.id === 'settings');
   await open();
   el('settings-recording-tab').click();
   await wait(() => !el('settings-recording-panel').hidden);

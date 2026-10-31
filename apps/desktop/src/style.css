@@ -40,6 +40,7 @@ body { overflow: hidden; }
 .welcome-icon { color: var(--accent); background: var(--accent-subtle); padding: 16px; border-radius: var(--radius); }
 .welcome-icon svg { width: 28px; height: 28px; display: block; }
 .welcome > button { margin-top: 8px; }
+.meeting-detail:focus { outline: none; }
 .meeting-detail { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: auto minmax(0, 1fr); flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
 .detail-primary { grid-column: 1; grid-row: 2; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: auto; scroll-padding-top: 12px; padding: 0 28px 24px; }
 .detail-common { grid-column: 1 / -1; min-width: 0; padding: 12px 28px 0; }
@@ -89,6 +90,8 @@ body { overflow: hidden; }
 .recording-section:has(#audio-region:not([hidden])) .recording-toolbar:has(#recording-controls:empty) { display: none; }
 .recording-section:has(#audio-region:not([hidden])):has(#recording-controls:empty) { padding: 4px 0 14px; margin-top: 0; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; }
 .recording-section:has(#recording-controls:empty) .audio-controls { margin-top: 0; }
+.detail-primary > .document-search { position: sticky; top: 0; z-index: 3; background: var(--surface); border-bottom: 1px solid var(--border); }
+.detail-primary:has(> .document-search:not([hidden])) { scroll-padding-top: 60px; }
 .detail-panels { display: grid; align-content: start; gap: var(--section-gap); min-width: 0; }
 .detail-panel { min-width: 0; scroll-margin-top: 12px; padding: 0 0 20px; }
 .detail-panel:focus-visible { outline: none; }
@@ -240,8 +243,8 @@ html.recorder-document { background: transparent; }
 .settings-microphone-control .nero-select-trigger { width: 100%; min-width: 0; }
 .settings-microphone-control > button { flex: none; }
 .settings-recording-options { margin-top: 12px; }
-.settings-recording-options .setup-choice { min-height: 48px; color: var(--text); }
-.settings-recording-options .setup-choice > span { min-width: 0; }
+.settings-recording-options .settings-row { min-height: 48px; color: var(--text); }
+.settings-recording-options .settings-row > span { min-width: 0; }
 .settings-model-status { margin: 0; }
 .settings-model-status dt { font-size: var(--text-label-size); font-weight: var(--weight-medium); }
 .settings-model-status dd { margin: 0; color: var(--text-secondary); font-size: var(--text-caption-size); text-align: right; overflow-wrap: anywhere; }

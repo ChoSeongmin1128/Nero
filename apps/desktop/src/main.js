@@ -1546,7 +1546,7 @@ summaryEvidence = mountSummaryEvidence({
     if (rows.some(row => !row)) return false;
     byId('transcript-rows').querySelectorAll('[data-citation-active]').forEach(node => node.removeAttribute('data-citation-active'));
     rows.forEach(row => row.setAttribute('data-citation-active', 'true'));
-    rows[0].scrollIntoView({ block: 'center', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' }); rows[0].focus({ preventScroll: true });
+    rows[0].scrollIntoView({ block: 'center', behavior: globalThis.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches ? 'instant' : 'smooth' }); rows[0].focus({ preventScroll: true });
     return true;
   },
   onPlay(entry, response, context) {

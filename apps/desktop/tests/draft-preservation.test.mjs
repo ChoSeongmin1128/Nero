@@ -1139,7 +1139,7 @@ test('notes-aware summaries retain frozen citations and refresh after persistenc
   page.updates[0].pending.resolve(); await save;
   assert.equal(reads, 1);
   assert.equal(page.app.state.summary.stale, true);
-  assert.equal(page.app.detail.active(), 'notes');
+  assert.equal(page.app.detail.notesOpen(), true);
   assert.equal(player.playbackRate, 1.5);
   assert.equal(player.currentTime, 15);
   assert.equal(loads, 0);
@@ -1378,17 +1378,17 @@ test('setup verification has activity without a misleading zero percent bar', as
 test('inspector switches preserve Korean composition and stay on the editor if saving fails', async () => {
   const page = await openApp();
   await page.app.detail.select('notes');
-  assert.equal(page.app.detail.active(), 'notes');
+  assert.equal(page.app.detail.notesOpen(), true);
   page.app.state.composing = true;
   page.element('meeting-notes').focus();
   page.element('meeting-notes').value = '회의에서 결정한 사항';
   const changing = page.app.detail.select('summary');
   await tick();
-  assert.equal(page.app.detail.active(), 'notes');
+  assert.equal(page.app.detail.notesOpen(), true);
   assert.equal(page.updates[0].notes, '회의에서 결정한 사항');
   page.updates[0].pending.reject(new Error('저장 실패'));
   assert.equal(await changing, false);
-  assert.equal(page.app.detail.active(), 'notes');
+  assert.equal(page.app.detail.notesOpen(), true);
   assert.equal(page.app.state.draft.notes, '회의에서 결정한 사항');
   assert.equal(page.app.state.draft.dirty, true);
   assert.equal(page.element('meeting-notes').readOnly, false);
@@ -1405,10 +1405,10 @@ test('a long transcript does not need scrolling to reveal the summary and loadin
   await page.app.detail.select('notes');
   pending.resolve({document: {id: 'summary-a', text: '결정 사항 [201]', sourceVersion: doc.version}, stale: false});
   await loading;
-  assert.equal(page.app.detail.active(), 'notes');
+  assert.equal(page.app.detail.notesOpen(), true);
   await page.app.detail.select('summary');
   assert.equal(page.element('summary-section').hidden, false);
-  assert.equal(page.element('transcript-section').hidden, true);
+  assert.equal(page.element('transcript-section').hidden, false);
   assert.match(page.element('summary-content').innerHTML, /결정 사항/);
   assert.match(page.element('transcript-rows').innerHTML, /발언 300/);
 });
@@ -1431,7 +1431,8 @@ test('summary evidence navigates by verified segment ID without playing and retu
   assert.equal(await evidence.onNavigate(entry, {currentVersion: doc.version}, evidence.getContext()), true);
   assert.equal(page.app.detail.active(), 'transcript');
   assert.equal(scrolled && focused, true);
-  assert.equal(page.element('detail-inspector').hidden, false);
+  assert.equal(page.element('detail-inspector').hidden, true);
+  assert.equal(page.element('transcript-section').hidden, false);
   assert.equal(page.element('audio-player').currentTime, 7);
   assert.equal(played, 0);
   await page.app.detail.select('summary');
@@ -1508,18 +1509,17 @@ test('summary retry and failure retain the existing summary stale-source notice'
   }
 });
 
-test('meeting switching captures all scroll positions before replacing the shared document DOM', async () => {
+test('meeting switching preserves shared body and independent notes positions', async () => {
   const page = await openApp(transcriptDocument());
-  page.element('summary-section').scrollTop = 410;
-  await page.app.detail.select('transcript'); page.element('transcript-scroll').scrollTop = 1200;
+  await page.app.detail.select('transcript');
+  page.element('detail-body-scroll').scrollTop = 1200;
   await page.app.detail.select('notes'); page.element('meeting-notes').scrollTop = 320;
   await page.app.selectMeeting('b'); await tick();
   assert.equal(page.element('meeting-notes').scrollTop, 0);
   await page.app.selectMeeting('a'); await tick();
-  assert.equal(page.app.detail.active(), 'notes');
+  assert.equal(page.app.detail.notesOpen(), true);
   assert.equal(page.element('meeting-notes').scrollTop, 320);
-  assert.equal(page.element('summary-section').scrollTop, 410);
-  await page.app.detail.select('transcript'); assert.equal(page.element('transcript-scroll').scrollTop, 1200);
+  assert.equal(page.element('detail-body-scroll').scrollTop, 1200);
 });
 test('a frozen utterance mapped into multiple speaker rows highlights every verified fragment and scrolls only to the first', async () => {
   const doc = transcriptDocument();

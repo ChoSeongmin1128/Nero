@@ -68,7 +68,10 @@ export function mountMeetingDetail({ byId, finishEditing, onReveal = () => {}, o
           const reduced = body.ownerDocument?.defaultView?.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
           section.scrollIntoView?.({ block: 'start', behavior: reduced ? 'instant' : 'smooth' });
           if (focus) section.focus({ preventScroll: true });
-        } else if (focus) (current.notesOpen ? editor : controls.get('notes')).focus({ preventScroll: true });
+        } else if (focus) {
+          const preview = byId('notes-search-preview');
+          (current.notesOpen ? preview && !preview.hidden ? preview : editor : controls.get('notes')).focus({ preventScroll: true });
+        }
         return true;
       }));
     } catch (error) { onError(error); return false; }

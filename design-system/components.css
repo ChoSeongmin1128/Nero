@@ -1120,4 +1120,9 @@ button.danger:hover:not(:disabled), button.danger-text:hover:not(:disabled) { co
 .transcript-preview-meta { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 5px; color: var(--text-secondary); font-size: var(--text-caption-size); font-variant-numeric: tabular-nums; }
 .transcript-preview-row p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; word-break: keep-all; line-height: var(--leading-reading); display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 6; overflow: hidden; }
 
-.settings-row > input[type="checkbox"] { display: block; flex: none; margin: 0; align-self: center; }
+.settings-row > input[role="switch"] { appearance: none; display: block; position: relative; flex: none; margin: 0; align-self: center; width: 32px; height: 20px; border: 1px solid var(--border-control); border-radius: 999px; background: var(--surface-tint-strong); cursor: pointer; }
+.settings-row > input[role="switch"]::before { content: ""; display: block; position: absolute; width: 14px; height: 14px; left: 2px; top: 2px; border-radius: 50%; background: var(--text-secondary); transition: transform var(--motion-duration) ease-out; }
+.settings-row > input[role="switch"]:checked { border-color: var(--accent-fill); background: var(--accent-fill); }
+.settings-row > input[role="switch"]:checked::before { transform: translateX(12px); background: var(--on-accent); }
+@media (prefers-reduced-motion: reduce) { .settings-row > input[role="switch"]::before { transition: none; } }
+@media (forced-colors: active) { .settings-row > input[role="switch"] { appearance: auto; } .settings-row > input[role="switch"]::before { display: none; } }

@@ -2,7 +2,8 @@
 .people-dialog > .nero-dialog-header, .people-dialog > .nero-dialog-footer { flex: none; }
 .people-dialog-body { min-height: 0; overflow: auto; display: grid; align-content: start; gap: 20px; padding-top: 20px; }
 .people-settings, .people-editor, .people-section { display: grid; gap: 16px; }
-.people-settings { gap: 16px; }
+.people-settings { display: flex; flex-direction: column; gap: 16px; height: 100%; min-height: 0; }
+#settings-people-panel { height: 100%; min-height: 0; }
 .people-settings > .settings-panel-title { margin: 0; }
 .people-section h4, .people-editor > h4 { margin: 0; font-weight: var(--weight-semibold); }
 .people-confirm .people-editor { margin-top: 20px; }
@@ -25,7 +26,9 @@
 .people-option > span { min-width: 0; overflow-wrap: anywhere; }
 .people-option:hover:not(:disabled) { background: var(--hover); }
 .people-section input[type="search"] { width: 100%; }
-.people-tabs, .people-tab-panel { min-width: 0; display: grid; gap: 16px; }
+.people-tabs, .people-tab-panel { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 12px; flex: 1; }
+.people-tabs > .content-tabs, .people-list-tools, .people-quick-add, .people-list-count { flex: none; }
+.people-tab-panel:has(.people-editor) { overflow: auto; }
 .people-tabs > .content-tabs { display: flex; margin: 0; border-bottom: 1px solid var(--border); }
 .people-tab-panel[hidden] { display: none; }
 .people-list-tools { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -41,7 +44,7 @@
 .people-quick-controls > button { flex: none; }
 .people-input-hint { margin: 0; color: var(--text-secondary); font-size: var(--text-caption-size); line-height: var(--leading-ui); }
 .people-list-count { margin-bottom: -8px; }
-.people-catalog-list { max-height: min(440px, 48vh); overflow: auto; }
+.people-catalog-list { flex: 1; min-height: 96px; overflow: auto; }
 .people-row-copy { flex: 1; min-width: 0; display: grid; gap: 0; }
 .people-row-copy > .people-name { line-height: 20px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .people-memberships { display: block; color: var(--text-secondary); line-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

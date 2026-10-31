@@ -55,10 +55,11 @@ export function mountSpeechModelPicker({ node, onSelect, onPrepare }) {
       const row = rows.get(choice.id);
       row.input.checked = choice.id === current;
       row.input.disabled = choice.supported !== true;
-      row.title.textContent = choice.id === 'nemotron' ? 'Nemo' : choice.id === 'whisperTurbo' ? 'Whisper' : choice.label;
+      row.title.textContent = choice.id === 'nemotron' ? 'Nemotron 3.5' : choice.id === 'whisperTurbo' ? 'Whisper large-v3-turbo' : choice.label;
       row.description.textContent = choice.id === 'nemotron' ? '기본' : choice.id === 'whisperTurbo' ? '다른 인식 결과가 필요할 때' : '';
       row.description.hidden = !row.description.textContent;
-      row.metadata.textContent = choice.supported !== true ? '사용할 수 없음' : choice.ready ? '준비됨' : '다운로드 필요';
+      row.metadata.textContent = choice.supported !== true ? '사용할 수 없음' : choice.ready ? '' : '다운로드 필요';
+      row.metadata.hidden = !row.metadata.textContent;
     }
     status.textContent = message; status.hidden = !message;
     error.textContent = failure; error.hidden = !failure;

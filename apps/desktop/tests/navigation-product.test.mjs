@@ -80,7 +80,7 @@ test('title and playback have one shared owner outside the narrow inspector repl
   assert.equal(document.querySelectorAll('#audio-player').length, 1);
   assert.equal(common.contains(document.getElementById('detail-transcript-open')), true);
   assert.equal(document.querySelector('.detail-primary').contains(document.getElementById('summary-section')), true);
-  assert.equal(document.querySelector('.detail-inspector').contains(document.getElementById('transcript-section')), true);
+  assert.equal(document.querySelector('.detail-primary').contains(document.getElementById('transcript-section')), true);
   assert.equal(document.getElementById('audio-speed').selectedOptions[0].textContent, '1x');
 });
 

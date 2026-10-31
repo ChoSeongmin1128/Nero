@@ -314,7 +314,7 @@ test('detail selection moves from the preserved navigation scope to the open rec
   const navigation = app.byId('folder-list').innerHTML;
   app.state.libraryOpen = false;
   app.controller.render();
-  assert.match(navigation, /data-library-filter="all" aria-current="page"/);
+  assert.match(navigation, /data-library-filter="all"[^>]*aria-current="page"/);
   assert.doesNotMatch(app.byId('folder-list').innerHTML, /aria-current/);
   assert.match(app.byId('recent-meetings').innerHTML, /data-recent-meeting="one"[^>]*aria-current="page"/);
   assert.match(app.byId('recent-meetings').innerHTML, /aria-label="주간 회의, 프로젝트, 1\. 1\. 09:00"/);
@@ -331,7 +331,7 @@ test('detail selection moves from the preserved navigation scope to the open rec
   assert.equal(app.byId('meeting-folder-context').textContent, '미분류');
   app.state.libraryOpen = true;
   app.controller.render();
-  assert.match(app.byId('folder-list').innerHTML, /data-library-filter="project" aria-current="page"/);
+  assert.match(app.byId('folder-list').innerHTML, /data-library-filter="project"[^>]*aria-current="page"/);
   assert.doesNotMatch(app.byId('recent-meetings').innerHTML, /aria-current/);
 });
 
@@ -798,11 +798,11 @@ test('recent duration updates after finalization without navigation or title cha
   h.state.snapshot.meetings[0].audio = { sampleRate: 16000, frames: 32000 };
   h.controller.render();
   assert.notEqual(h.byId('recent-meetings').innerHTML, before);
-  assert.match(h.byId('recent-meetings').innerHTML, /2000ms/);
+  assert.match(h.byId('recent-meetings').innerHTML, /녹음 길이 2초/);
   h.state.snapshot.meetings[0].audio.frames = 48000;
   h.controller.render();
-  assert.match(h.byId('recent-meetings').innerHTML, /3000ms/);
-  assert.doesNotMatch(h.byId('recent-meetings').innerHTML, /2000ms/);
+  assert.match(h.byId('recent-meetings').innerHTML, /녹음 길이 3초/);
+  assert.doesNotMatch(h.byId('recent-meetings').innerHTML, /녹음 길이 2초/);
 });
 
  test('built-in views, user folders and trash occupy separate navigation groups', () => {
