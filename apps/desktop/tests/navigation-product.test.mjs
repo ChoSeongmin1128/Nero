@@ -144,7 +144,7 @@ test('recent context actions target their row while preserving the current meeti
   assert.equal(document.getElementById('library-dialog-title').textContent, '폴더로 이동');
   document.querySelector('[data-library-close]').click();
   open(); row.querySelector('[data-library-action="trash"]').click();
-  assert.equal(document.getElementById('library-dialog-title').textContent, '휴지통으로 이동할까요?');
+  assert.equal(document.getElementById('library-dialog-title').textContent, '휴지통으로 이동');
   assert.match(document.getElementById('library-dialog-body').textContent, /미분류 회의/);
   assert.equal(state.selectedId, 'filed');
 });
@@ -179,7 +179,7 @@ test('main-list actions close their menu before opening a dialog and restore the
   const meeting = state.snapshot.meetings.find(meeting => meeting.id === 'filed');
   document.getElementById('meeting-list').innerHTML = `<article data-meeting-id="filed">${renderMeetingMenu(meeting, { escape: value => String(value), icon: name => `<svg data-icon="${name}"></svg>` })}</article>`;
   const row = document.querySelector('#meeting-list [data-meeting-id="filed"]'), menu = row.querySelector('details'), summary = menu.querySelector('summary');
-  for (const [action, title] of [['rename', '회의 이름 변경'], ['move', '폴더로 이동'], ['trash', '휴지통으로 이동할까요?']]) {
+  for (const [action, title] of [['rename', '회의 이름 변경'], ['move', '폴더로 이동'], ['trash', '휴지통으로 이동']]) {
     row.dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2 }));
     const command = row.querySelector(`[data-library-action="${action}"]`);
     command.focus(); command.click();
@@ -237,9 +237,9 @@ test('product sidebar has one resize separator only while pinned or peeking and 
   const { window, document } = await setup(t);
   const shell = document.querySelector('.navigation-shell');
   const trigger = document.getElementById('navigation-toggle');
-  const handle = shell.querySelector('[role="separator"]');
+  const handle = shell.querySelector('[role="separator"][aria-controls="navigation-sidebar"]');
   assert.equal(handle.hidden, true);
-  assert.equal(shell.querySelectorAll('[role="separator"]').length, 1);
+  assert.equal(shell.querySelectorAll('[role="separator"][aria-controls="navigation-sidebar"]').length, 1);
   shell.getBoundingClientRect = () => ({ width: 1000 });
   window.dispatchEvent(new window.Event('resize'));
   document.querySelector('.navigation-edge').dispatchEvent(new window.PointerEvent('pointerenter', { pointerType: 'mouse' }));
@@ -266,21 +266,21 @@ test('product sidebar has one resize separator only while pinned or peeking and 
 
 test('sidebar keyboard sizing and viewport bounds preserve the saved preference', async t => {
   const { window, document } = await setup(t, { 'nero.sidebar.pinned': 'true', 'nero.sidebar.pinned.width': '380' });
-  const shell = document.querySelector('.navigation-shell'), handle = shell.querySelector('[role="separator"]');
+  const shell = document.querySelector('.navigation-shell'), handle = shell.querySelector('[role="separator"][aria-controls="navigation-sidebar"]');
   let viewport = 1000;
   shell.getBoundingClientRect = () => ({ width: viewport });
   const resize = value => { viewport = value; window.dispatchEvent(new window.Event('resize')); };
   resize(1000);
   assert.equal(handle.getAttribute('aria-valuenow'), '380');
   resize(700);
-  assert.equal(handle.getAttribute('aria-valuemax'), '300');
-  assert.equal(handle.getAttribute('aria-valuenow'), '300');
+  assert.equal(handle.getAttribute('aria-valuemax'), '248');
+  assert.equal(handle.getAttribute('aria-valuenow'), '248');
   assert.equal(window.localStorage.getItem('nero.sidebar.pinned.width'), '380');
   resize(640);
   assert.equal(shell.classList.contains('nav-overlay'), true);
   assert.equal(handle.getAttribute('aria-valuenow'), '380');
   resize(320);
-  assert.equal(handle.getAttribute('aria-valuemax'), '272');
+  assert.equal(handle.getAttribute('aria-valuemax'), '220');
   resize(1000);
   assert.equal(handle.getAttribute('aria-valuenow'), '380');
   const key = name => handle.dispatchEvent(new window.KeyboardEvent('keydown', { key: name, bubbles: true, cancelable: true }));
@@ -297,7 +297,7 @@ test('sidebar keyboard sizing and viewport bounds preserve the saved preference'
 for (const cancellation of ['pointercancel', 'lostpointercapture', 'blur', 'hidden', 'Escape']) {
   test(`sidebar resize cancels cleanly on ${cancellation}`, async t => {
     const { window, document } = await setup(t, { 'nero.sidebar.pinned': 'true', 'nero.sidebar.pinned.width': '280' });
-    const shell = document.querySelector('.navigation-shell'), handle = shell.querySelector('[role="separator"]');
+    const shell = document.querySelector('.navigation-shell'), handle = shell.querySelector('[role="separator"][aria-controls="navigation-sidebar"]');
     shell.getBoundingClientRect = () => ({ width: 1000 });
     window.dispatchEvent(new window.Event('resize'));
     const pointer = (type, x) => handle.dispatchEvent(new window.PointerEvent(type, { pointerId: 1, button: 0, isPrimary: true, clientX: x, bubbles: true }));

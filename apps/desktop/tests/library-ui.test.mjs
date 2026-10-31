@@ -827,7 +827,7 @@ test('folder deletion defaults to unfiled and freezes the confirmed membership',
   const app = harness();
   const folder = app.state.snapshot.folders[0];
   app.delegated('folder-list', { folderDelete: folder.id }, ['data-folder-delete']);
-  assert.match(app.byId('library-dialog-body').innerHTML, /회의도 함께 휴지통/);
+  assert.match(app.byId('library-dialog-body').innerHTML, /회의 1개도 휴지통/);
   await app.submit();
   const call = app.calls.find(call => call.name === 'deleteFolder');
   assert.equal(call.args[1].trashMeetings, false);

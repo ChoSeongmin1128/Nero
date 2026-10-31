@@ -169,7 +169,7 @@ test('focus follows a retry successor and acknowledging the final notice moves f
   await app.click('old', 'retry');
   assert.equal(app.window.document.activeElement.dataset.notificationJob, 'new');
   app.update([job('new', 'a', 'cancelled', 20, { acknowledged: true })], 3);
-  assert.equal(app.window.document.activeElement.tagName, 'H1');
+  assert.equal(app.window.document.activeElement.hasAttribute('data-notification-heading'), true);
 });
 
 test('old completed work is not injected at startup and newly observed completion can be acknowledged', async t => {

@@ -881,12 +881,14 @@ for (const id of ['meeting-title', 'meeting-notes']) {
   byId(id).addEventListener('compositionend', () => { state.composing = false; onEdit(); });
 }
 byId('library-search-clear').addEventListener('click', () => {
+  beginNavigation();
   byId('search').value = '';
   meetingSearch.update('', state.libraryFilter === 'trash');
   render();
   byId('library-title').focus({ preventScroll: true });
 });
 byId('search').addEventListener('input', () => {
+  beginNavigation();
   state.libraryOpen = true; library.resetSelection(); render();
   meetingSearch.update(byId('search').value, state.libraryFilter === 'trash');
 });

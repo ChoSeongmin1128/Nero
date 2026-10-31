@@ -66,7 +66,7 @@ export function mountNotificationCenter({ container, bridge = {}, onOpenMeeting,
     const index = saved.ids.indexOf(saved.id);
     const following = [...saved.ids.slice(index + 1), ...saved.ids.slice(0, index).reverse()];
     const target = same.find(button => button.dataset.notificationAction === saved.action) || same[0]
-      || controls.find(button => button.dataset.notificationJob === successorId)
+      || (successorId && controls.find(button => button.dataset.notificationJob === successorId))
       || following.map(id => controls.find(button => button.dataset.notificationJob === id)).find(Boolean)
       || controls.find(button => button.dataset.notificationAction === 'open')
       || container.querySelector('[data-notification-heading]');
