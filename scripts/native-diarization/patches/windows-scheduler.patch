@@ -1,0 +1,98 @@
+--- a/src/runtime/ggml/runtime.h
++++ b/src/runtime/ggml/runtime.h
+@@ -474,6 +474,7 @@
+     std::vector<ggml_backend_t> backends;
+ 
+     ggml_backend_sched_ptr sched;
++    size_t sched_graph_capacity_ = 2048;
+     std::vector<uint8_t> sched_meta;
+ 
+     // Captured when a graph is built and reused by dump_schedule().
+--- a/src/runtime/ggml/session.cpp
++++ b/src/runtime/ggml/session.cpp
+@@ -10,6 +10,7 @@
+ #include <unordered_set>
+ 
+ #include "runtime.h"
++#include "scheduler_capacity.h"
+ 
+ namespace ggml_runtime {
+ 
+@@ -76,8 +77,11 @@
+ 
+ void
+ Session::init_schedule() {
++    // Windows charges scheduler graph-copy storage to commit even when untouched.
++    // Start small; graph construction below grows to the original maximum as needed.
++    sched_graph_capacity_ = 2048;
+     sched.reset(ggml_backend_sched_new(
+-        backends.data(), nullptr, backends.size(), kSchedGraphSize, false, false));
++        backends.data(), nullptr, backends.size(), sched_graph_capacity_, false, false));
+     // A re-setup() replaces the scheduler and model tensors; cached runs
+     // reference the old ones, and the fresh sched's pools start at 0 so the
+     // size tracker would never flag a change.
+@@ -87,7 +91,7 @@
+     sched_pool_generation_ = 0;
+     // Graph-sizing scratch is allocated on demand.
+     if (memstats_enabled()) {
+-        fprintf(stderr, "[memstats] session-init sched_graph_size=%zu\n", kSchedGraphSize);
++        fprintf(stderr, "[memstats] session-init sched_graph_size=%zu\n", sched_graph_capacity_);
+     }
+ }
+ 
+@@ -760,6 +764,24 @@
+                 "graph has %d nodes, above %.0f%% of scheduler cap %zu — bump "
+                 "kSchedGraphSize in session.cpp",
+                 actual_nodes, 100.0 * kSchedGraphErrorFrac, kSchedGraphSize));
++        }
++        const size_t required_capacity = scheduler_capacity_for(
++            static_cast<size_t>(actual_nodes), sched_graph_capacity_, kSchedGraphSize);
++        if (required_capacity != sched_graph_capacity_) {
++            // Cached placements reference the old scheduler pools. Keep stream/model
++            // state, but discard placements before releasing and rebuilding the pool.
++            ggml_backend_sched_synchronize(sched.get());
++            run_cache_.clear();
++            run_cache_lru_.clear();
++            sched_pool_sizes_.clear();
++            ++sched_pool_generation_;
++            sched.reset();
++            sched_graph_capacity_ = required_capacity;
++            sched.reset(ggml_backend_sched_new(
++                backends.data(), nullptr, backends.size(), sched_graph_capacity_, false, false));
++            if (memstats_enabled()) {
++                fprintf(stderr, "[memstats] scheduler-grown capacity=%zu\n", sched_graph_capacity_);
++            }
+         }
+         if (actual_nodes > static_cast<int>(kSchedGraphWarnFrac * kSchedGraphSize)) {
+             GGMLF_LOG_WARN(
+--- /dev/null
++++ b/src/runtime/ggml/scheduler_capacity.h
+@@ -0,0 +1,12 @@
++// SPDX-License-Identifier: Apache-2.0
++#pragma once
++#include <cstddef>
++namespace ggml_runtime {
++// Retain scheduler headroom and the original upper bound; no model/audio changes.
++inline size_t scheduler_capacity_for(size_t nodes, size_t current, size_t maximum) {
++    while (current < maximum && nodes > current * 9 / 10) {
++        current = current > maximum / 2 ? maximum : current * 2;
++    }
++    return current;
++}
++}
+--- /dev/null
++++ b/tests/cpp/asr/test_windows_scheduler_capacity.cpp
+@@ -0,0 +1,13 @@
++// SPDX-License-Identifier: Apache-2.0
++#include "scheduler_capacity.h"
++#include <cstdio>
++int main() {
++    using ggml_runtime::scheduler_capacity_for;
++    if (scheduler_capacity_for(63, 2048, 65536) != 2048) return 1;
++    if (scheduler_capacity_for(2733, 2048, 65536) != 4096) return 2;
++    if (scheduler_capacity_for(4000, 2048, 65536) != 8192) return 3;
++    if (scheduler_capacity_for(60000, 2048, 65536) != 65536) return 4;
++    if (scheduler_capacity_for(65536, 65536, 65536) != 65536) return 5;
++    std::puts("scheduler capacity/headroom/bound checks passed");
++    return 0;
++}

@@ -58,20 +58,23 @@ def patch_source(source, profile, root, env):
         if before != item["baseSha256"]:
             raise ValueError("Runtime source differs before patch: " + item["path"])
     for option in (["--check"], []):
-        subprocess.run(["git", "apply", *option, str(path)], cwd=source, env=env, check=True)
+        subprocess.run(["git", "-c", "core.autocrlf=false", "apply", *option, str(path)], cwd=source, env=env, check=True)
     for item in patch["files"]:
         if digest(source / item["path"]) != item["resultSha256"]:
             raise ValueError("Runtime source differs after patch: " + item["path"])
 
 
 def build(profile, cache, destination, cmake, package_path):
+    if profile.get("sourceBackends") == ["cpu"]:
+        return build_windows_cpu(profile, cache, destination, cmake, package_path)
     if platform.system() != "Darwin" or platform.machine() != "arm64":
         raise ValueError("The patched source runtime is qualified only for native macOS arm64")
     cache.mkdir(parents=True, exist_ok=True)
     archives = [archive(item, cache) for item in profile["sources"]]
     with tempfile.TemporaryDirectory(prefix="speech-source-", dir=cache.parent) as directory:
         work = Path(directory).resolve()
-        env = dict(os.environ, GIT_CEILING_DIRECTORIES=str(work), CMAKE_BUILD_PARALLEL_LEVEL="2")
+        env = dict(os.environ, GIT_CEILING_DIRECTORIES=str(work), CMAKE_BUILD_PARALLEL_LEVEL="2",
+                   GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="core.autocrlf", GIT_CONFIG_VALUE_0="false")
         source, llama, sentencepiece = [unpack(path, work / str(index)) for index, path in enumerate(archives)]
         patch_source(source, profile, Path(__file__).resolve().parent, env)
         (source / "llama.cpp").rmdir()
@@ -114,5 +117,79 @@ def build(profile, cache, destination, cmake, package_path):
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(path, target)
             target.chmod(0o755 if relative.startswith("bin/") or path.suffix == ".dylib" else 0o644)
+        if not (destination / "share/licenses/nemo-speech/LICENSE").is_file():
+            raise ValueError("Runtime license is missing")
+
+
+def build_windows_cpu(profile, cache, destination, cmake, package_path):
+    """Pinned CPU mmap build; the separate Vulkan backend retains its official archive."""
+    if platform.system() != "Windows" or platform.machine().lower() not in ("amd64", "x86_64"):
+        raise ValueError("The CPU source runtime requires native Windows x64")
+    cache.mkdir(parents=True, exist_ok=True)
+    archives = [archive(item, cache) for item in profile["sources"]]
+    with tempfile.TemporaryDirectory(prefix="speech-source-", dir=cache.parent) as directory:
+        work = Path(directory).resolve()
+        env = dict(os.environ, GIT_CEILING_DIRECTORIES=str(work), CMAKE_BUILD_PARALLEL_LEVEL="2",
+                   GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="core.autocrlf", GIT_CONFIG_VALUE_0="false")
+        source, llama, sentencepiece = [unpack(path, work / str(index)) for index, path in enumerate(archives)]
+        patch_source(source, profile, Path(__file__).resolve().parent, env)
+        patch_source(source, {"patch": profile["windowsPatch"]}, Path(__file__).resolve().parent, env)
+        (source / "llama.cpp").rmdir()
+        llama.rename(source / "llama.cpp")
+        # Apply the base archive's own ggml series with explicit LF handling.
+        # CMake's Windows staging copy otherwise depends on Git checkout settings.
+        for line in (source / "patches/series").read_text().splitlines():
+            name = line.split("#", 1)[0].strip()
+            if not name:
+                continue
+            if Path(name).name != name or not name.endswith(".patch"):
+                raise ValueError("Unsafe upstream dependency patch")
+            subprocess.run(["git", "-c", "core.autocrlf=false", "apply", "--whitespace=nowarn",
+                            str(source / "patches" / name)], cwd=source / "llama.cpp", env=env, check=True)
+        dependency = work / "dependency-build"
+        subprocess.run([*cmake, "-G", "Ninja", "-S", str(sentencepiece), "-B", str(dependency),
+                        "-DCMAKE_BUILD_TYPE=Release", "-DSPM_BUILD_TEST=OFF", "-DSPM_ENABLE_SHARED=OFF",
+                        "-DSPM_ENABLE_TCMALLOC=OFF", "-DSPM_USE_BUILTIN_PROTOBUF=ON"], env=env, check=True)
+        subprocess.run([*cmake, "--build", str(dependency), "--target", "sentencepiece-static", "-j", "2"], env=env, check=True)
+        prefix = source / ".deps/sentencepiece"
+        (prefix / "lib").mkdir(parents=True)
+        (prefix / "include").mkdir()
+        shutil.copyfile(dependency / "src/sentencepiece.lib", prefix / "lib/sentencepiece.lib")
+        shutil.copyfile(sentencepiece / "src/sentencepiece_processor.h", prefix / "include/sentencepiece_processor.h")
+        licenses = prefix / "share/licenses/nemo-speech/third_party/sentencepiece"
+        licenses.mkdir(parents=True)
+        for name, original in {
+            "LICENSE": "LICENSE", "absl-LICENSE": "third_party/absl/LICENSE",
+            "darts-clone-LICENSE": "third_party/darts_clone/LICENSE",
+            "protobuf-lite-LICENSE": "third_party/protobuf-lite/LICENSE",
+        }.items():
+            shutil.copyfile(sentencepiece / original, licenses / name)
+        build_dir, install = work / "build", work / "install"
+        subprocess.run([*cmake, "-S", str(source), "-B", str(build_dir), *profile["cmakeFlags"],
+                        "-DNEMO_SPEECH_LLAMA_CPP_SOURCE_DIR=" + str(source / "llama.cpp"),
+                        "-DCMAKE_PREFIX_PATH=" + str(prefix), "-DCMAKE_INSTALL_PREFIX=" + str(install)], env=env, check=True)
+        subprocess.run([*cmake, "--build", str(build_dir), "-j", "2"], env=env, check=True)
+        # The base archive's full test suite references a missing source file.
+        # Compile the pinned independent scheduler-capacity check instead.
+        unit = work / "scheduler-capacity-test.exe"
+        subprocess.run(["cl", "/nologo", "/EHsc", "/std:c++17", "/utf-8",
+                        "/I" + str(source / "src/runtime/ggml"),
+                        str(source / "tests/cpp/asr/test_windows_scheduler_capacity.cpp"),
+                        "/Fe:" + str(unit), "/Fo:" + str(work / "scheduler-capacity-test.obj")],
+                       cwd=work, env=env, check=True)
+        subprocess.run([str(unit)], env=env, check=True)
+        subprocess.run([*cmake, "--install", str(build_dir)], env=env, check=True)
+        destination.mkdir()
+        for path in sorted(install.rglob("*")):
+            if not path.is_file():
+                continue
+            relative = path.relative_to(install).as_posix()
+            if package_path("package/" + relative, "package") is None:
+                continue
+            if not path.resolve().is_relative_to(install.resolve()):
+                raise ValueError("External runtime install alias")
+            target = destination / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(path, target)
         if not (destination / "share/licenses/nemo-speech/LICENSE").is_file():
             raise ValueError("Runtime license is missing")

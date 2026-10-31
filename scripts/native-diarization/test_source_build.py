@@ -66,6 +66,23 @@ class SourceBuildTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 build.build({}, Path("unused"), Path("unused"), "cmake", None)
 
+    def test_windows_cpu_recipe_rejects_other_hosts_before_download(self):
+        for system, machine in [("Darwin", "arm64"), ("Windows", "ARM64")]:
+            with self.subTest(system=system, machine=machine), patch.object(build.platform, "system", return_value=system), patch.object(build.platform, "machine", return_value=machine), patch.object(build, "archive", side_effect=AssertionError("download")):
+                with self.assertRaises(ValueError):
+                    build.build({"sourceBackends": ["cpu"]}, Path("unused"), Path("unused"), ["cmake"], None)
+
+    def test_patch_application_overrides_host_checkout_line_endings(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "patch").write_bytes(b"patch")
+            profile = {"patch": {"file": "patch", "bytes": 5, "sha256": build.digest(root / "patch"), "files": []}}
+            with patch.object(build.subprocess, "run") as run:
+                build.patch_source(root, profile, root, {})
+            self.assertEqual(run.call_count, 2)
+            for call in run.call_args_list:
+                self.assertEqual(call.args[0][:4], ["git", "-c", "core.autocrlf=false", "apply"])
+
 
 if __name__ == "__main__":
     unittest.main()

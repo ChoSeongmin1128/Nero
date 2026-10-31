@@ -46,19 +46,31 @@ fn for_target(target: &str) -> &'static str {
 mod tests {
     use super::*;
     #[test]
-    fn source_patch_identity_is_distinct_and_windows_keeps_its_official_runtime() {
+    fn target_recipe_identities_are_distinct_and_base_artifacts_remain_readable() {
         let mac = for_target("macos-arm64");
+        let windows = for_target("windows-x64");
         assert_ne!(mac, BASE.as_str());
-        assert_eq!(for_target("windows-x64"), BASE.as_str());
-        let recipe = &SPEC["sourceBuilds"]["macos-arm64"];
+        assert_ne!(windows, BASE.as_str());
+        assert_ne!(windows, mac);
         assert_eq!(
-            mac.split_once('@').unwrap().1,
-            recipe["pin"].as_str().unwrap()
+            SPEC["sourceBuilds"]["windows-x64"]["sourceBackends"],
+            serde_json::json!(["cpu"])
         );
-        assert!(mac.ends_with(recipe["patch"]["sha256"].as_str().unwrap()));
+        for target in ["macos-arm64", "windows-x64"] {
+            let identity = for_target(target);
+            let recipe = &SPEC["sourceBuilds"][target];
+            assert_eq!(
+                identity.split_once('@').unwrap().1,
+                recipe["pin"].as_str().unwrap()
+            );
+            assert!(identity.contains(recipe["patch"]["sha256"].as_str().unwrap()));
+            if let Some(hash) = recipe["windowsPatch"]["sha256"].as_str() {
+                assert!(identity.ends_with(hash));
+            }
+            assert!(known(identity));
+            assert!(!known(&format!("{identity}-changed")));
+        }
         assert!(known(&BASE));
-        assert!(known(mac));
         assert!(!known("nemo-speech-0.2.0@unverified"));
-        assert!(!known(&format!("{mac}-changed")));
     }
 }

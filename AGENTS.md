@@ -50,8 +50,11 @@ This file applies to the entire repository.
 - ASR and diarization share the pinned native speech package. Its target identity,
   source recipe and hashes are owned by `scripts/native-diarization/runtime.json`;
   Core and all workers use `speech_runtime` rather than independent pin strings.
-  macOS uses only the verified PR47 mmap backport; Windows retains its existing
-  official base until a separate runtime qualification. Stored base artifacts stay
+  macOS uses only the verified PR47 mmap backport. Windows keeps Nemotron as the
+  final ASR and independent speaker models; its CPU runtime uses PR47 plus the
+  pinned bounded scheduler-allocation patch, while Vulkan retains the official
+  base. The Windows target identity describes this composite package, not a
+  patched Vulkan binary. Stored base artifacts stay
   readable without rewriting provenance. GPU is preferred;
   only a confirmed unavailable GPU backend permits the packaged CPU route. Allocation
   and generic runtime failures do not authorize CPU fallback. Windows packages contain

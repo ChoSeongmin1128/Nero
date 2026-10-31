@@ -177,8 +177,13 @@ def prepare(target, cache, output, redist=None, cmake=None):
             spec = importlib.util.spec_from_file_location("nero_speech_source", Path(__file__).with_name("source_build.py"))
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
-            module.build(profile, cache, stage / "gpu", cmake, archive_path)
-        for item in ([] if profile else SPEC["assets"][target]):
+            for backend in profile.get("sourceBackends", ["gpu"]):
+                module.build(profile, cache, stage / backend, cmake, archive_path)
+        for item in SPEC["assets"][target]:
+            source_backend = profile and item["backend"] in profile.get("sourceBackends", ["gpu"])
+            # Source-built Windows CPU still uses the app-local CRT from its verified official archive.
+            if source_backend and not target.startswith("windows"):
+                continue
             archive = cache / item["name"]
             if not archive.is_file() or archive.stat().st_size != item["bytes"] or sha(archive) != item["sha256"]:
                 partial = cache / (item["name"] + ".part")
@@ -195,8 +200,16 @@ def prepare(target, cache, output, redist=None, cmake=None):
                     raise ValueError("Runtime archive checksum mismatch")
                 partial.replace(archive)
             destination = stage / item["backend"]
-            destination.mkdir()
-            extract(archive, destination, item)
+            if source_backend:
+                with tempfile.TemporaryDirectory(prefix="speech-crt-", dir=stage.parent) as crt_directory:
+                    crt = Path(crt_directory)
+                    extract(archive, crt, item)
+                    for file in (crt / "bin").glob("*.dll"):
+                        if file.name.lower().startswith(("msvcp", "vcruntime", "concrt", "vcomp")):
+                            shutil.copyfile(file, destination / "bin" / file.name)
+            else:
+                destination.mkdir()
+                extract(archive, destination, item)
             binary = destination / "bin" / ("nemo-speech.exe" if target.startswith("windows") else "nemo-speech")
             if not binary.is_file():
                 raise ValueError("Missing diarization executable")

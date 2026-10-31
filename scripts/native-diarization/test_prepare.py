@@ -191,6 +191,31 @@ class WindowsCrtTests(unittest.TestCase):
             with patch.object(build,"SPEC",spec):
                 with self.assertRaises(ValueError):build.prepare("windows-x64",cache,root/"out")
             self.assertFalse((root/"out").exists())
+    def test_windows_composite_recipe_requires_both_backends_and_pinned_crt(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for backend in ("cpu", "gpu"):
+                for name in ("bin/nemo-speech.exe", "bin/msvcp140.dll", "bin/vcruntime140.dll", "bin/vcruntime140_1.dll", "share/licenses/nemo-speech/LICENSE"):
+                    file = root / backend / name
+                    file.parent.mkdir(parents=True, exist_ok=True)
+                    file.write_bytes(b"fixture")
+            receipt = {"target": "windows-x64", "runtime": build.SPEC,
+                       "sourceArchiveHashesVerified": True,
+                       "sourceBuild": build.SPEC["sourceBuilds"]["windows-x64"],
+                       "files": build.package_files(root)}
+            (root / "runtime.json").write_text(json.dumps(receipt))
+            self.assertEqual(build.verify_staged(root, "windows-x64"), receipt)
+            receipt["sourceBuild"] = None
+            (root / "runtime.json").write_text(json.dumps(receipt))
+            with self.assertRaises(ValueError):
+                build.verify_staged(root, "windows-x64")
+            receipt["sourceBuild"] = build.SPEC["sourceBuilds"]["windows-x64"]
+            (root / "cpu/bin/vcruntime140.dll").unlink()
+            receipt["files"] = build.package_files(root)
+            (root / "runtime.json").write_text(json.dumps(receipt))
+            with self.assertRaises(ValueError):
+                build.verify_staged(root, "windows-x64")
+
 
 if __name__ == "__main__":
     unittest.main()

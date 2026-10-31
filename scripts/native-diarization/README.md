@@ -1,9 +1,14 @@
 # Shared native speech worker
 
 This build-only preparation stages the shared NVIDIA NeMo-Speech.cpp runtime for
-Nemotron ASR and speaker analysis. Windows retains the official v0.2.0 Vulkan/CPU
-archives. macOS arm64 builds the same base with only the nine-file upstream PR47
-mmap patch; it does not include the rest of that merge's source changes.
+Nemotron ASR and speaker analysis. Windows uses a composite package: the official
+v0.2.0 Vulkan archive and a pinned CPU source build with the nine-file PR47 mmap
+backport plus `windows-scheduler.patch`. The Windows patch starts scheduler
+storage at 2048 graph nodes and grows to the original 65536-node limit when
+needed, synchronizing and invalidating cached placements without resetting model
+or stream state. It changes storage capacity, not recognition parameters.
+macOS arm64 retains only the nine-file PR47 mmap backport. Neither target includes
+the rest of that upstream merge's changes.
 `runtime.json` owns the base commit, target identities, source/archive hashes,
 patch hash, exact patched file identities and compiler flags. It never downloads model weights or reads a user library.
 
@@ -12,11 +17,15 @@ python3 scripts/native-diarization/prepare.py --target macos-arm64
 python3 scripts/native-diarization/prepare.py --verify-staged apps/desktop/.generated/native/diarization --target macos-arm64 --execute-runtime
 ```
 
-On native Windows builds use `--target windows-x64`. Packaging includes Vulkan
-and CPU executables with the app-local Microsoft C++ runtime DLLs already present
+On native Windows builds use `--target windows-x64` from an x64 MSVC developer
+environment with CMake, Ninja and Git. CPU compilation uses the pinned AVX2 flags
+and UTF-8 source decoding; it requires an AVX2/FMA/F16C-capable end-user CPU.
+The target receipt distinguishes the source-built CPU backend from official Vulkan.
+Packaging includes Vulkan and CPU executables with the app-local Microsoft C++ runtime DLLs already present
 in the hash-verified official archives. They are never replaced by an older local
 Visual Studio toolchain. An incomplete pinned archive is rejected instead of
-mixing CRT versions. `--msvc-redist` is retained as an ignored compatibility input
+mixing CRT versions. The CPU source build copies only the verified official
+archive's app-local CRT, rather than its original speech binaries. `--msvc-redist` is retained as an ignored compatibility input
 for this speech preparer; the separate summary preparer has its own contract. macOS builds the Metal runtime,
 whose executable also supports CPU operation. Source preparation requires Python
 3.12+, CMake, Xcode command-line tools and Git on the developer machine. If CMake
@@ -87,3 +96,9 @@ original provenance. Native workers emit the current target identity; unknown
 identities remain invalid. Receipts require the exact target source recipe and
 all staged file hashes before signing. Source package changes require re-preparing
 the generated package; do not manually relabel a previously prepared binary.
+
+Windows product model selection is documented in
+[Windows speech models](../../docs/windows-speech-models.md). Existing model
+weights and their download hashes are unchanged; runtime preparation never copies
+or re-downloads user models. Stored official-base artifacts remain readable with
+their original identity. Runtime changes do not authorize automatic reprocessing.
