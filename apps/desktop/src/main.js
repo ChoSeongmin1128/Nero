@@ -34,7 +34,7 @@ import './speech-model-picker.css';
 
 applySystemAppearance();
 const byId = (id) => document.getElementById(id);
-const summaryTemplatePicker = mountSummaryTemplatePicker({ node: byId('summary-template'), bridge });
+const summaryTemplatePicker = mountSummaryTemplatePicker({ node: byId('summary-template'), bridge, onAvailabilityChange: () => queueMicrotask(() => render()) });
 void summaryTemplatePicker.reload();
 const settingsPanels = [...byId('settings-dialog').querySelectorAll('.app-settings-tabs [role="tab"][data-settings-panel]')].map(tab => tab.dataset.settingsPanel);
 const terminologySettings = { info: null, error: '', request: 0, saving: null };
@@ -1316,7 +1316,7 @@ function renderSummary(meeting) {
   byId('prepare-summary').disabled = Boolean(pendingJob(progress, { models: true })) || state.busy;
   byId('summarize').hidden = !hasTranscript || Boolean(state.summaryLoadError) || !state.summaryLoaded || !progress.summaryReady || !progress.summarySupported;
   byId('summary-template-choice').hidden = byId('summarize').hidden;
-  byId('summarize').disabled = !hasTranscript || !progress.summaryReady || !progress.summarySupported || ownJob || result.busy || state.busy;
+  byId('summarize').disabled = !hasTranscript || !summaryTemplatePicker.isAvailable() || !progress.summaryReady || !progress.summarySupported || ownJob || result.busy || state.busy;
   const latest = latestMeetingProcessing(state.processing, meeting.id);
   const failed = latest?.kind === 'summary' && latest.status === 'failed' && canDismissProcessing(latest);
   byId('summarize').textContent = failed ? '현재 내용 요약' : doc ? '다시 요약' : '요약하기';

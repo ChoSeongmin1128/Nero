@@ -168,7 +168,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     const mountCalendarSettings = () => ({ setActive() {} });
     const mountCalendarMeetingPicker = () => ({open(){}, close(){}, isOpen(){return false;}});
     const mountCalendarMeetingReference = () => ({render(){}});
-    const mountSummaryTemplatePicker = () => ({reload:async()=>{},selected:async()=>({id:'meeting',revision:'test'})});
+    const mountSummaryTemplatePicker = () => ({reload:async()=>{},isAvailable:()=>true,selected:async()=>({id:'meeting',revision:'test'})});
     const mountDocumentActions = () => ({ update() {}, close() {} });
     const mountAgentConnectionDialog = () => ({ open(...args) { testAgentDialogCalls.push(args); }, update() {}, close() {}, isOpen: () => false });
     const mountLibrary = ({getState}) => ({ render() {}, resetSelection() {}, toggleSelection() {}, handleRowSelection: () => false, show: async () => {}, visibleMeetings() {

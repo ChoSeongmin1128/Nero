@@ -34,13 +34,14 @@ test('one transcript panel stays in the body through processing and summary comp
   let snapshot = { revision: 1, folders: [], meetings: [{ id: 'one', title: '회의', notes: '', createdAt: 1, status: 'recording' }], session: { id: 'capture', meetingId: 'one', state: 'recording', elapsedMs: 1000 } };
   const ready = { supported: true, modelReady: true, summarySupported: true, summaryReady: true };
   let transcript = null, summary = null;
+  let templates = [{id:'meeting',name:'회의 요약',revision:'r1',builtIn:true}];
   const preview = { meetingId: 'one', sessionId: 'capture', generation: 1, words: [], text: '검토 내용을 담은 초안' };
   const stubs = {
     readSnapshot: () => snapshot, listDevices: () => [], setAutoRecorder() {},
     processingStatus: () => ({ ...ready, revision: 1, status: 'idle', liveTranscript: preview }),
     readTerminologySettings: () => ({ available: false }), agentConnectionInfo: () => ({ available: false, clients: [] }),
     readCalendarSettings: () => ({ revision: 1, configured: false, connected: false, calendars: [], selectedCalendars: [] }),
-    listTemplates: () => [], readTranscript: id => id === 'one' ? transcript : null, readSummary: id => id === 'one' ? summary : null,
+    listTemplates: () => templates, readTemplateCatalog: () => ({revision:'catalog:1',templates}), readTranscript: id => id === 'one' ? transcript : null, readSummary: id => id === 'one' ? summary : null,
     audioUrl: () => 'asset://recording.wav',
   };
   window.testBridge = Object.fromEntries(bridgeNames.map(name => [name, async (...args) => {
@@ -109,6 +110,18 @@ test('one transcript panel stays in the body through processing and summary comp
   await wait(() => !el('detail-inspector').hidden);
   assert.equal(el('transcript-section').parentNode,el('result-transcript-home'));
   assert.match(el('transcript-rows').textContent,/확정된 검토 내용/);
+  templates = [];
+  el('settings').click(); await wait(() => el('settings-dialog').open);
+  el('settings-close').click();
+  await wait(() => el('summarize').disabled && el('summary-template').disabled);
+  templates = [{id:'custom',name:'다른 요약',revision:'r2',builtIn:false}];
+  el('settings').click(); await wait(() => el('settings-dialog').open);
+  el('settings-close').click();
+  await wait(() => !el('summary-template').disabled);
+  assert.equal(el('summarize').disabled,true);
+  assert.equal(el('summary-template').value,'');
+  el('summary-template').value='custom'; el('summary-template').dispatchEvent(new window.Event('change',{bubbles:true}));
+  await wait(() => !el('summarize').disabled);
   assert.deepEqual(errors, []);
 });
 
@@ -129,7 +142,7 @@ test('the real application HTML boots and opens all settings tabs without stale 
     readTerminologySettings: () => ({ available: false }),
     agentConnectionInfo: () => ({ available: false, clients: [] }),
     readCalendarSettings: () => ({ revision: 1, configured: false, connected: false, calendars: [], selectedCalendars: [] }),
-    listTemplates: () => [],
+    listTemplates: () => [], readTemplateCatalog: () => ({revision:'catalog:1',templates:[]}),
     readTranscript: () => null, readSummary: () => null,
     showRecorder: id => assert.equal(id, 'capture'),
     acknowledgeProcessing: id => ({ id, status: 'acknowledged', jobs: [{ id, kind: 'transcribe', status: 'cancelled', retryable: false, acknowledged: true }] }),
@@ -219,7 +232,7 @@ test('startup integration alerts appear without visiting settings and route to t
   const stubs = {
     readSnapshot: () => ({ revision: 1, meetings: [], folders: [], session: null }), listDevices: () => [], setAutoRecorder() {},
     processingStatus: () => ({ status: 'idle', supported: true, modelReady: true, summarySupported: true, summaryReady: true }),
-    readTerminologySettings: () => ({ available: false }), listTemplates: () => [],
+    readTerminologySettings: () => ({ available: false }), listTemplates: () => [], readTemplateCatalog: () => ({revision:'catalog:1',templates:[]}),
     agentConnectionInfo: () => ({ available: true, clients: [{ id: 'claude', name: 'Claude', state: 'update_required', packageVersion: '28' }, { id: 'codex', name: 'ChatGPT', state: 'connected' }] }),
     readCalendarSettings: () => ({ revision: 1, configured: true, connected: false, accountLabel: 'Test account', error: 'Reconnect', calendars: [], selectedCalendars: [] }),
     connectAgentClient: () => { connects += 1; },
@@ -252,7 +265,7 @@ test('settings dismiss gestures preserve edits, nested controls, composition and
   const stubs = {
     readSnapshot: () => ({ revision: 1, meetings: [], folders: [], session: null }), listDevices: () => [{ id: "mic", name: "Test microphone", isDefault: true }], setAutoRecorder() {},
     processingStatus: () => ({ status: 'idle', supported: true, modelReady: true, summarySupported: true, summaryReady: true }),
-    readTerminologySettings: () => ({ available: false }), listTemplates: () => [],
+    readTerminologySettings: () => ({ available: false }), listTemplates: () => [], readTemplateCatalog: () => ({revision:'catalog:1',templates:[]}),
     agentConnectionInfo: () => ({ available: false, clients: [] }),
     readCalendarSettings: () => ({ revision: 1, configured: false, connected: false, calendars: [], selectedCalendars: [] }),
   };
