@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="apps/desktop/brand/nero-cat.png" width="112" alt="노트북 뒤의 피곤한 검은 고양이, Nero 앱 아이콘">
+  <img src="docs/images/nero-icon.png" width="112" alt="노트북 뒤의 피곤한 검은 고양이, Nero 앱 아이콘">
 </p>
 <p align="center">
   <picture>
@@ -22,7 +22,7 @@
 
 | 라이트 | 다크 |
 | :---: | :---: |
-| [![라이트 모드의 Nero, 회의 요약과 음성 기록 예시](docs/images/nero-light.jpg)](docs/images/nero-light.jpg) | [![다크 모드의 Nero, 회의 요약과 음성 기록 예시](docs/images/nero-dark.jpg)](docs/images/nero-dark.jpg) |
+| [![라이트 모드의 Nero, 회의 요약, 음성 기록과 메모 예시](docs/images/nero-light.png)](docs/images/nero-light.png) | [![다크 모드의 Nero, 회의 요약, 음성 기록과 메모 예시](docs/images/nero-dark.png)](docs/images/nero-dark.png) |
 
 화면은 실제 앱 UI에 예시 데이터를 표시한 모습입니다. 이미지를 누르면 크게 볼 수 있습니다.
 
