@@ -104,6 +104,10 @@ class PackageTests(unittest.TestCase):
                     p.signed_transition(root, before)
                 with self.assertRaises(ValueError):
                     p.verify_signed(root, transition)
+                # A forged binary header must never make a license signable.
+                (root / 'share/licenses/whisper.cpp/LICENSE').write_bytes(b'\xcf\xfa\xed\xfe forged')
+                with self.assertRaises(ValueError):
+                    p.signed_transition(root, before)
 
     def test_loader_checks_reject_external_or_missing_dependencies(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -115,11 +119,22 @@ class PackageTests(unittest.TestCase):
                 return (['@rpath/' + path.name] if path.suffix == '.dylib' else []) + ['/usr/lib/libSystem.B.dylib']
             with patch.object(p, 'macos_rpaths', side_effect=rpath), patch.object(p, 'macos_dependencies', side_effect=dependencies):
                 p.verify_macos_links(root)
-            for bad in ('/tmp/build/libwhisper.dylib', '@rpath/missing.dylib', '@rpath/../libwhisper.1.dylib'):
+            for bad in ('/tmp/build/libwhisper.dylib', '@rpath/missing.dylib', '@rpath/../libwhisper.1.dylib',
+                        '/usr/lib/../../tmp/unpackaged.dylib', '/System/Library/../tmp/unpackaged.dylib'):
                 with self.subTest(bad=bad), patch.object(p, 'macos_rpaths', side_effect=rpath), \
                         patch.object(p, 'macos_dependencies', return_value=[bad]):
                     with self.assertRaises(ValueError):
                         p.verify_macos_links(root)
+
+    def test_relocation_rejects_system_path_traversal_before_mutating(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            self.fixture(root, 'macos-arm64')
+            with patch.object(p, 'macos_dependencies', return_value=['/usr/lib/../../tmp/unpackaged.dylib']), \
+                    patch.object(p.subprocess, 'run') as mutation:
+                with self.assertRaises(ValueError):
+                    p.relocate_macos(root)
+                mutation.assert_not_called()
 
 
 if __name__ == '__main__':
