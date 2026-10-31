@@ -73,6 +73,12 @@ pub(crate) struct Word {
         skip_serializing_if = "Option::is_none"
     )]
     pub(crate) timing_scope: Option<String>,
+    #[serde(
+        rename = "nativeSegmentEndFrame",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) native_segment_end_frame: Option<u64>,
 }
 
 impl Word {
@@ -212,7 +218,8 @@ pub(crate) fn project_words(
     let mut sentence_end = 0.0;
     for word in words {
         if word.word.trim().is_empty()
-            || (projection.model != crate::whisper::MODEL && word.timing_scope.is_some())
+            || (projection.model != crate::whisper::MODEL
+                && (word.timing_scope.is_some() || word.native_segment_end_frame.is_some()))
             || word.word.contains('\0')
             || word.word.len() > 2 * 1024 * 1024
             || !word.start.is_finite()

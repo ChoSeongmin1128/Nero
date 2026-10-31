@@ -110,8 +110,28 @@ fn native_words(raw: &[u8], frames: u64, start: u64) -> Result<Vec<Value>, Strin
         return Err(failure());
     }
     let mut words = Vec::new();
-    for segment in native.transcription {
-        if !within(&segment.offsets, frames) || segment.offsets.from > segment.offsets.to {
+    let segment_count = native.transcription.len();
+    for (index, segment) in native.transcription.into_iter().enumerate() {
+        // b5454 cli.cpp::times_o serializes native centiseconds as t * 10 ms.
+        // Only its final segment may meet the next 10ms tick after exact PCM EOF.
+        // This is retained as segment context, never normalized word timing.
+        let terminal_tick = frames.div_ceil(160).checked_mul(160).ok_or_else(failure)?;
+        let terminal_context = index + 1 == segment_count
+            && terminal_tick > frames
+            && terminal_tick - frames < 160
+            && segment.offsets.from >= 0
+            && segment.offsets.from % 10 == 0
+            && segment.offsets.to % 10 == 0
+            && (segment.offsets.from as u64)
+                .checked_mul(16)
+                .is_some_and(|v| v <= frames)
+            && u64::try_from(segment.offsets.to)
+                .ok()
+                .and_then(|v| v.checked_mul(16))
+                == Some(terminal_tick);
+        if (!within(&segment.offsets, frames) && !terminal_context)
+            || segment.offsets.from > segment.offsets.to
+        {
             return Err(failure());
         }
         let tokens = segment
@@ -129,6 +149,21 @@ fn native_words(raw: &[u8], frames: u64, start: u64) -> Result<Vec<Value>, Strin
             return Err(failure());
         }
         if text.trim().is_empty() {
+            continue;
+        }
+        if terminal_context {
+            if tokens.iter().any(|token| {
+                !within(&token.offsets, terminal_tick)
+                    || token.offsets.from % 10 != 0
+                    || token.offsets.to % 10 != 0
+            }) {
+                return Err(failure());
+            }
+            words.push(json!({"word":text.trim(),
+                "start":(start + segment.offsets.from as u64 * 16) as f64 / RATE as f64,
+                "end":(start + frames) as f64 / RATE as f64,
+                "timingScope":"nativeSegmentContext",
+                "nativeSegmentEndFrame":start.checked_add(terminal_tick).ok_or_else(failure)?}));
             continue;
         }
         let mut groups: Vec<Vec<&Token>> = Vec::new();
@@ -361,14 +396,20 @@ impl Buffered {
         let raw = read(&run.native, 16 * 1024 * 1024)?;
         let projected = native_words(&raw, input_end - input_start, input_start)?;
         let begin = self.words.len();
+        let mut terminal_contexts = Vec::new();
         for word in projected {
             let center = ((word["start"].as_f64().ok_or_else(failure)? * RATE as f64).round()
                 + (word["end"].as_f64().ok_or_else(failure)? * RATE as f64).round())
                 * 0.5;
-            if center >= self.owned as f64
+            let retained = center >= self.owned as f64
                 && (center < owned_end as f64
-                    || (owned_end == self.received && center == owned_end as f64))
-            {
+                    || (owned_end == self.received && center == owned_end as f64));
+            if let Some(native_end) = word.get("nativeSegmentEndFrame") {
+                terminal_contexts.push(json!({"nativeSegmentEndFrame":native_end,
+                    "sourceContextStartFrame":(word["start"].as_f64().ok_or_else(failure)?*RATE as f64).round() as u64,
+                    "sourceContextEndFrame":input_end,"retainedInOwnedOutput":retained}));
+            }
+            if retained {
                 self.words.push(word);
             }
         }
@@ -376,11 +417,14 @@ impl Buffered {
             "ownedStartFrame":self.owned,"ownedEndFrame":owned_end,"inputPcmSha256":format!("{:x}",pcm.finalize()),
             "nativeResultSha256":format!("{:x}",Sha256::digest(&raw)),"nativeExitCode":0,
             "actualBackend":run.backend,"backendEvidence":run.evidence,"wordStart":begin,"wordCount":self.words.len()-begin});
+        let mut completion = receipt.clone();
+        completion["tokenTimestampPolicy"] = "native-token-span-terminal-context-v2".into();
+        completion["terminalContexts"] = json!(terminal_contexts);
         save(
             &self
                 .work
                 .join(format!("whisper-window-{index}-completion.json")),
-            &receipt,
+            &completion,
         )?;
         self.windows.push(receipt);
         self.owned = owned_end;
@@ -419,7 +463,7 @@ impl Buffered {
             json!({"schemaVersion":1,"model":model["repository"],"modelRevision":model["revision"],"modelSha256":self.model_sha,
             "runtime":runtime["identity"],"target":if cfg!(windows){"windows-x64"}else{"macos-arm64"},
             "processingPolicy":"whisper-context-windows-v1","completionEvidence":"whisper-cli-windows-exit0-v1",
-            "tokenTimestampPolicy":"native-token-span-v1","completed":true,"inputAudioFrames":frames,
+            "tokenTimestampPolicy":"native-token-span-terminal-context-v2","completed":true,"inputAudioFrames":frames,
             "audioSampleRate":16000,"audioDurationSeconds":frames as f64/RATE as f64,"inputPcmSha256":pcm_sha,
             "windows":self.windows,"words":self.words}),
         )
@@ -742,7 +786,7 @@ mod tests {
             vec![json!({"word":"가","start":0.0,"end":1.0,"timingScope":"nativeSegmentContext"})]
         );
         let raw = native("가".as_bytes(), &[("가".as_bytes(), 0, 1000)]);
-        assert!(native_words(&raw, 15999, 0).is_err()); // segment itself exceeds exact PCM.
+        assert!(native_words(&raw, 15840, 0).is_err()); // one whole extra tick, not sub-tick EOF.
     }
 
     #[test]
@@ -757,6 +801,69 @@ mod tests {
         )
         .unwrap();
         assert_eq!(words[0]["start"], 0.5);
+    }
+
+    fn terminal_fixture() -> Value {
+        let mut value: Value =
+            serde_json::from_slice(&native("가".as_bytes(), &[("가".as_bytes(), 68000, 69140)]))
+                .unwrap();
+        value["transcription"][0]["offsets"] = json!({"from":68000,"to":69140});
+        value
+    }
+
+    #[test]
+    fn final_sub_centisecond_overrun_is_audited_context_not_word_timing() {
+        let raw = serde_json::to_vec(&terminal_fixture()).unwrap();
+        let original = raw.clone();
+        let words = native_words(&raw, 1_106_171, 1_773_829).unwrap();
+        assert_eq!(raw, original);
+        assert_eq!(
+            words,
+            vec![json!({"word":"가","start":2_861_829_f64/16000.0,
+            "end":180.0,"timingScope":"nativeSegmentContext","nativeSegmentEndFrame":2_880_069_u64})]
+        );
+        assert!(words[0].get("confidence").is_none());
+        // One sample short of a full tick is also explicit context, never a
+        // fabricated positive-duration native word.
+        let raw = native("가".as_bytes(), &[("가".as_bytes(), 500, 1000)]);
+        assert_eq!(
+            native_words(&raw, 15999, 0).unwrap()[0]["nativeSegmentEndFrame"],
+            16000
+        );
+    }
+
+    #[test]
+    fn terminal_context_does_not_relax_other_native_time_or_text_failures() {
+        for (pointer, value) in [
+            ("/transcription/0/offsets/to", json!(69150)),
+            ("/transcription/0/offsets/to", json!(78140)),
+            ("/transcription/0/offsets/from", json!(-10)),
+            ("/transcription/0/offsets/from", json!(69140)),
+            ("/transcription/0/tokens/0/offsets/to", json!(69150)),
+            ("/transcription/0/tokens/0/offsets/to", json!(69139)),
+        ] {
+            let mut raw = terminal_fixture();
+            *raw.pointer_mut(pointer).unwrap() = value;
+            assert!(
+                native_words(&serde_json::to_vec(&raw).unwrap(), 1_106_171, 0).is_err(),
+                "{pointer}"
+            );
+        }
+        let mut raw = terminal_fixture();
+        raw["transcription"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"text":"","offsets":{"from":0,"to":0},"tokens":[]}));
+        assert!(native_words(&serde_json::to_vec(&raw).unwrap(), 1_106_171, 0).is_err());
+        // An aligned input has no partial terminal tick to normalize.
+        assert!(native_words(
+            &serde_json::to_vec(&terminal_fixture()).unwrap(),
+            1_106_080,
+            0
+        )
+        .is_err());
+        let broken = &[0xeb, 0xb7];
+        assert!(native_words(&native(broken, &[(broken, 0, 1000)]), 15999, 0).is_err());
     }
 
     #[test]

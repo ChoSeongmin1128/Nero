@@ -40,6 +40,16 @@ segment bounds or text mismatches fail processing with raw output/audio preserve
 Boundary wording may differ between native runs; this is not a guarantee that
 every spoken boundary word is recognized.
 
+The pinned b5454 CLI serializes segment/token times as native centiseconds times
+10 ms. A partial final PCM tick has one explicit exception: only the last native
+segment may end exactly at the next 10 ms tick, less than 160 samples beyond its
+exact input. Its start must remain inside the input and every text-token offset
+must remain on the same grid within that horizon. The entire segment is then
+context with an unknown speaker, with its context end at exact PCM EOF and its
+original absolute end retained as `nativeSegmentEndFrame`. Raw native JSON and
+its hash are unchanged. This is not a normalized word timestamp. Aligned inputs,
+larger overruns, other segments, invalid text and forged metadata remain rejected.
+
 On successful recording stop, the reader drains saved frames and flushes its
 bounded resampler into a mono 16 kHz PCM16 analysis WAV. It closes and synchronizes
 the WAV before sending an explicit final frame count. The child checks that the
@@ -61,7 +71,7 @@ the input PCM SHA-256. Core validation still checks the native final duration an
 word ranges. A valid final ASR artifact can survive a subsequent child failure;
 ASR completion does not claim successful speaker analysis.
 
-Whisper uses `whisper-context-windows-v1`, `native-token-span-v1` and
+Whisper uses `whisper-context-windows-v1`, `native-token-span-terminal-context-v2` and
 `whisper-cli-windows-exit0-v1` (windows of audio on either platform). The envelope
 binds the full PCM hash/frame count, pinned model/runtime/target, window input and
 owned ranges, native-output hash, exit status, word ranges and backend evidence.
@@ -69,6 +79,8 @@ Windows explicitly disables GPU. macOS requires positive Metal initialization;
 only confirmed unavailable GPU permits a separately recorded CPU attempt.
 Allocation and generic failures do not permit fallback. Neither engine silently
 changes the chosen model.
+Stored `native-token-span-v1` results retain their original strict bounds; terminal
+normalization metadata is allowed only by the explicit v2 policy.
 
 Stop returns after audio finalization while speech drains in the background.
 The finalized recording immediately becomes an ordinary durable, cancellable job.

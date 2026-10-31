@@ -29,7 +29,10 @@ This file applies to the entire repository.
   packaged CLI with bounded PCM windows and contextual overlap. Preserve native
   token bytes before UTF-8 validation, actual time anchors, window/EOF evidence
   and separate provider generations. Never interpolate word times or confidence.
-  Native segment context and zero-duration words have unknown speakers. Selection
+  Native segment context and zero-duration words have unknown speakers.
+  A pinned final sub-centisecond EOF overrun may become explicit context only under
+  the v2 policy: preserve its original native end, exact PCM end and raw JSON/hash;
+  never pass it off as word timing or relax arbitrary input bounds. Selection
   applies to future work, is frozen per job/session and never silently switches
   models or reprocesses old meetings. See `docs/windows-speech-models.md`.
 - During new recording, a background saved-PCM reader may feed one persistent ASR

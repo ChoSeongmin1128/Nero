@@ -78,7 +78,10 @@ pub(crate) fn decode_asr(raw: &[u8], duration: f64, session: &str, id: &str) -> 
         || !matches!(output.target.as_str(), "windows-x64" | "macos-arm64")
         || output.processing_policy != POLICY
         || output.completion_evidence != COMPLETION
-        || output.token_timestamp_policy != "native-token-span-v1"
+        || !matches!(
+            output.token_timestamp_policy.as_str(),
+            "native-token-span-v1" | "native-token-span-terminal-context-v2"
+        )
         || !output.completed
         || output.input_audio_frames == 0
         || output.audio_sample_rate != SAMPLE_RATE
@@ -132,7 +135,20 @@ pub(crate) fn decode_asr(raw: &[u8], duration: f64, session: &str, id: &str) -> 
             let start_frame = (word.start * SAMPLE_RATE as f64).round();
             let end_frame = (word.end * SAMPLE_RATE as f64).round();
             let center = (start_frame + end_frame) * 0.5;
+            let terminal_context_valid = word.native_segment_end_frame.is_none_or(|native_end| {
+                let local_frames = window.input_end_frame - window.input_start_frame;
+                let native_tick = local_frames.div_ceil(160) * 160;
+                output.token_timestamp_policy == "native-token-span-terminal-context-v2"
+                    && word.timing_scope.as_deref() == Some("nativeSegmentContext")
+                    && end_frame == window.input_end_frame as f64
+                    && native_tick > local_frames
+                    && native_tick - local_frames < 160
+                    && window.input_start_frame.checked_add(native_tick) == Some(native_end)
+                    && start_frame <= end_frame
+                    && (start_frame - window.input_start_frame as f64) % 160.0 == 0.0
+            });
             if word.confidence.is_some()
+                || !terminal_context_valid
                 || word
                     .timing_scope
                     .as_deref()
@@ -308,6 +324,80 @@ pub(crate) mod tests {
         );
     }
 
+    fn terminal_value() -> Value {
+        let mut v = one_second_value();
+        v["tokenTimestampPolicy"] = "native-token-span-terminal-context-v2".into();
+        v["windows"][0]["inputEndFrame"] = 8001.into();
+        v["windows"][0]["ownedEndFrame"] = 8001.into();
+        v["windows"][0]["wordCount"] = 0.into();
+        let mut last = v["windows"][0].clone();
+        last["index"] = 1.into();
+        last["inputStartFrame"] = 1.into();
+        last["inputEndFrame"] = 16000.into();
+        last["ownedStartFrame"] = 8001.into();
+        last["ownedEndFrame"] = 16000.into();
+        last["wordCount"] = 1.into();
+        v["windows"].as_array_mut().unwrap().push(last);
+        v["words"] = json!([{"word":"예시","start":8001_f64/16000.0,"end":1.0,
+            "timingScope":"nativeSegmentContext","nativeSegmentEndFrame":16001}]);
+        v
+    }
+
+    #[test]
+    fn explicit_terminal_context_keeps_native_end_and_replays_as_unknown_speaker() {
+        let (_temp, mut engine, id, _audio) = crate::transcript::tests::setup();
+        let raw = serde_json::to_vec(&terminal_value()).unwrap();
+        let baseline = engine
+            .commit_whisper_transcript(&id, None, raw.clone())
+            .unwrap();
+        let after = engine
+            .apply_diarization(&id, crate::nemotron::tests::posterior_draft(baseline))
+            .unwrap();
+        assert_eq!(after.segments.len(), 1);
+        assert_eq!(after.segments[0].end, 1.0);
+        assert!(after.segments[0].speaker_id.is_none());
+        assert_eq!(
+            engine.transcript(&id).unwrap().unwrap().version,
+            after.version
+        );
+        let reader = crate::reader::LibraryReader::open(&engine.store.root).unwrap();
+        assert_eq!(
+            reader
+                .query("transcript_get", json!({"meetingId":id}))
+                .unwrap()["segments"][0]["text"],
+            "예시"
+        );
+    }
+
+    #[test]
+    fn terminal_context_rejects_forged_metadata_and_never_changes_nemo_policy() {
+        for (pointer, value) in [
+            ("/tokenTimestampPolicy", json!("native-token-span-v1")),
+            ("/words/0/timingScope", json!(null)),
+            ("/words/0/nativeSegmentEndFrame", json!(16161)),
+            ("/words/0/nativeSegmentEndFrame", json!(16000)),
+            ("/words/0/end", json!(0.99)),
+            ("/words/0/start", json!(8002_f64 / 16000.0)),
+            ("/windows/1/inputStartFrame", json!(0)),
+        ] {
+            let mut v = terminal_value();
+            *v.pointer_mut(pointer).unwrap() = value;
+            assert!(
+                decode_asr(&serde_json::to_vec(&v).unwrap(), 1.0, "session", "id").is_err(),
+                "{pointer}"
+            );
+        }
+        let mut nemo: Value = serde_json::from_slice(&crate::nemotron::tests::raw()).unwrap();
+        nemo["words"][0]["nativeSegmentEndFrame"] = 16001.into();
+        assert!(crate::nemotron::decode_asr(
+            &serde_json::to_vec(&nemo).unwrap(),
+            1.0,
+            "session",
+            "id"
+        )
+        .is_err());
+    }
+
     #[test]
     fn whisper_source_is_distinct_from_nemo_and_readable_on_other_hosts() {
         let transcript = decode_asr(&raw(), 2.0, "session", "id").unwrap();
@@ -318,6 +408,38 @@ pub(crate) mod tests {
         );
         assert_eq!(transcript.segments[0].text, "예시 문장.");
         assert!(crate::nemotron::decode_asr(&raw(), 2.0, "session", "id").is_err());
+    }
+
+    #[test]
+    fn unaligned_recording_eof_is_context_with_the_original_native_tick() {
+        let frames = 2_879_931_u64;
+        let mut v = value();
+        v["tokenTimestampPolicy"] = "native-token-span-terminal-context-v2".into();
+        v["inputAudioFrames"] = frames.into();
+        v["audioDurationSeconds"] = json!(frames as f64 / 16000.0);
+        v["windows"][0]["inputEndFrame"] = frames.into();
+        v["windows"][0]["ownedEndFrame"] = frames.into();
+        v["windows"][0]["wordCount"] = 1.into();
+        v["words"] = json!([{"word":"예시","start":179.0,"end":frames as f64/16000.0,
+            "timingScope":"nativeSegmentContext","nativeSegmentEndFrame":2_880_000}]);
+        let decoded = decode_asr(
+            &serde_json::to_vec(&v).unwrap(),
+            frames as f64 / 16000.0,
+            "session",
+            "id",
+        )
+        .unwrap();
+        assert_eq!(decoded.segments.len(), 1);
+        assert_eq!(decoded.segments[0].end, frames as f64 / 16000.0);
+        assert!(decoded.segments[0].speaker_id.is_none());
+        v["words"][0]["nativeSegmentEndFrame"] = 2_880_160.into();
+        assert!(decode_asr(
+            &serde_json::to_vec(&v).unwrap(),
+            frames as f64 / 16000.0,
+            "session",
+            "id"
+        )
+        .is_err());
     }
 
     #[test]

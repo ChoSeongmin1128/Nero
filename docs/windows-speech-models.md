@@ -50,6 +50,11 @@ segment as context with an unknown speaker; invalid generated UTF-8 is rejected
 with audio and raw output preserved. ASR is saved before speaker finalization;
 speaker retry reuses that artifact. See [live speech](live-speech.md).
 
+Only a pinned final sub-10 ms terminal tick can be retained as explicitly audited
+segment context: the exact PCM end closes its context range, the original native
+end remains recorded, and its speaker is unknown. This does not interpolate word
+times or allow arbitrary out-of-input results.
+
 Memory optimization does not establish acceptance on every 8 GB or low-power
 notebook, long microphone recording, battery life, Korean meeting accuracy or
 speaker accuracy. Those limits must remain separate from native file-fed runtime
