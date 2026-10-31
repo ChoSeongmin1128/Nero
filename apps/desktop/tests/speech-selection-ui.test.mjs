@@ -92,3 +92,17 @@ test('unsupported choices and recording lock selection without invoking a change
   await wait(()=>f.get('settings-speech-picker').querySelector('fieldset').disabled);
   assert.match(f.get('settings-speech-picker').textContent,/녹음을 마친 뒤/);
 });
+
+
+test('model choices keep visible native radio indicators while appearance uses its custom indicator',async t=>{
+  const f=await fixture(t);
+  const style=f.window.document.createElement('style');
+  style.textContent=await readFile(new URL('../../../design-system/components.css',import.meta.url),'utf8')+'\n'+await readFile(new URL('../src/speech-model-picker.css',import.meta.url),'utf8');
+  f.window.document.head.append(style);
+  const native=f.window.getComputedStyle(f.radio('settings','nemotron'));
+  assert.notEqual(native.position,'absolute');
+  assert.notEqual(native.clipPath,'inset(50%)');
+  const appearance=f.window.getComputedStyle(f.window.document.querySelector('.brightness-choice input'));
+  assert.equal(appearance.position,'absolute');
+  assert.equal(appearance.clipPath,'inset(50%)');
+});
