@@ -102,3 +102,11 @@ Windows product model selection is documented in
 weights and their download hashes are unchanged; runtime preparation never copies
 or re-downloads user models. Stored official-base artifacts remain readable with
 their original identity. Runtime changes do not authorize automatic reprocessing.
+
+The macOS source recipe declares an explicit ARM CPU baseline, disables host-native
+optimization and fixes the standalone runtime deployment target to macOS 13.0,
+consistent with the standalone Whisper runtime. The sentencepiece dependency uses the same architecture/deployment settings.
+Preparation checks the actual CMake cache before compilation. Full speech features
+still have their separate macOS 26 converter requirement. The new runtime identity
+is used for execution; the earlier PR47 identity remains accepted only for reading
+stored provenance and does not authorize using its old executable as a fallback.

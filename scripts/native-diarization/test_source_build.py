@@ -84,5 +84,29 @@ class SourceBuildTests(unittest.TestCase):
                 self.assertEqual(call.args[0][:4], ["git", "-c", "core.autocrlf=false", "apply"])
 
 
+    def test_mac_recipe_requires_explicit_portable_cpu_and_deployment(self):
+        import json
+        spec = json.loads(Path(__file__).with_name("runtime.json").read_text())
+        profile = spec["sourceBuilds"]["macos-arm64"]
+        settings = build.macos_settings(profile)
+        self.assertEqual(settings["GGML_NATIVE:BOOL"], "OFF")
+        self.assertEqual(settings["CMAKE_OSX_DEPLOYMENT_TARGET:STRING"], "13.0")
+        self.assertEqual(settings["GGML_CPU_ARM_ARCH:STRING"], "armv8.2-a+dotprod+fp16")
+        for bad in ({}, {"cmakeFlags": [flag.replace("GGML_NATIVE:BOOL=OFF", "GGML_NATIVE:BOOL=ON") for flag in profile["cmakeFlags"]]}):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                build.macos_settings(bad)
+
+    def test_actual_cache_must_match_the_declared_portable_settings(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "CMakeCache.txt").write_text("GGML_NATIVE:BOOL=ON\nCMAKE_OSX_DEPLOYMENT_TARGET:STRING=27.0\n")
+            with self.assertRaises(ValueError):
+                build.verify_cmake_settings(root, {"GGML_NATIVE:BOOL": "OFF"})
+            with self.assertRaises(ValueError):
+                build.verify_cmake_settings(root, {"CMAKE_OSX_DEPLOYMENT_TARGET:STRING": "13.0"})
+            (root / "CMakeCache.txt").write_text("GGML_NATIVE:BOOL=OFF\nCMAKE_OSX_DEPLOYMENT_TARGET:STRING=13.0\n")
+            build.verify_cmake_settings(root, {"GGML_NATIVE:BOOL": "OFF", "CMAKE_OSX_DEPLOYMENT_TARGET:STRING": "13.0"})
+
+
 if __name__ == "__main__":
     unittest.main()

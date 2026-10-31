@@ -30,9 +30,16 @@ pub fn pin() -> &'static str {
 pub fn known(runtime: &str) -> bool {
     runtime == BASE.as_str()
         || SPEC["sourceBuilds"].as_object().is_some_and(|profiles| {
-            profiles
-                .values()
-                .any(|profile| profile["identity"].as_str() == Some(runtime))
+            profiles.values().any(|profile| {
+                profile["identity"].as_str() == Some(runtime)
+                    || profile["readableIdentities"]
+                        .as_array()
+                        .is_some_and(|previous| {
+                            previous
+                                .iter()
+                                .any(|identity| identity.as_str() == Some(runtime))
+                        })
+            })
         })
 }
 
@@ -70,6 +77,12 @@ mod tests {
             assert!(known(identity));
             assert!(!known(&format!("{identity}-changed")));
         }
+        let previous = SPEC["sourceBuilds"]["macos-arm64"]["readableIdentities"][0]
+            .as_str()
+            .unwrap();
+        assert_ne!(mac, previous);
+        assert!(known(previous));
+        assert!(!known(&format!("{previous}-changed")));
         assert!(known(&BASE));
         assert!(!known("nemo-speech-0.2.0@unverified"));
     }

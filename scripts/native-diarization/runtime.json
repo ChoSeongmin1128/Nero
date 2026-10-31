@@ -28,8 +28,8 @@
   },
   "sourceBuilds": {
     "macos-arm64": {
-      "identity": "nemo-speech-0.2.0@6a3ca369370782acee0dd155e34394ba60b920c4+pr47.848eb12212ae2cf912fd504cca7453d6c2f97b8097ba88b8d70b5d0d69b8dcdf",
-      "pin": "6a3ca369370782acee0dd155e34394ba60b920c4+pr47.848eb12212ae2cf912fd504cca7453d6c2f97b8097ba88b8d70b5d0d69b8dcdf",
+      "identity": "nemo-speech-0.2.0@6a3ca369370782acee0dd155e34394ba60b920c4+pr47.848eb12212ae2cf912fd504cca7453d6c2f97b8097ba88b8d70b5d0d69b8dcdf+armv8.2-macos13",
+      "pin": "6a3ca369370782acee0dd155e34394ba60b920c4+pr47.848eb12212ae2cf912fd504cca7453d6c2f97b8097ba88b8d70b5d0d69b8dcdf+armv8.2-macos13",
       "patch": {
         "file": "patches/pr47-mmap.patch",
         "sha256": "848eb12212ae2cf912fd504cca7453d6c2f97b8097ba88b8d70b5d0d69b8dcdf",
@@ -106,10 +106,12 @@
         "-G",
         "Unix Makefiles",
         "-DCMAKE_BUILD_TYPE=Release",
-        "-DCMAKE_OSX_ARCHITECTURES=arm64",
+        "-DCMAKE_OSX_ARCHITECTURES:STRING=arm64",
+        "-DCMAKE_OSX_DEPLOYMENT_TARGET:STRING=13.0",
+        "-DGGML_CPU_ARM_ARCH:STRING=armv8.2-a+dotprod+fp16",
         "-DGGML_METAL=ON",
         "-DGGML_METAL_EMBED_LIBRARY=ON",
-        "-DGGML_NATIVE=ON",
+        "-DGGML_NATIVE:BOOL=OFF",
         "-DGGML_LLAMAFILE=ON",
         "-DNEMO_SPEECH_BUILD_ASR=ON",
         "-DNEMO_SPEECH_BUILD_DIAR=ON",
@@ -119,6 +121,9 @@
         "-DNEMO_SPEECH_BUILD_HTTP=OFF",
         "-DNEMO_SPEECH_BUILD_TESTS=OFF",
         "-DNEMO_SPEECH_BUILD_EXAMPLES=OFF"
+      ],
+      "readableIdentities": [
+        "nemo-speech-0.2.0@6a3ca369370782acee0dd155e34394ba60b920c4+pr47.848eb12212ae2cf912fd504cca7453d6c2f97b8097ba88b8d70b5d0d69b8dcdf"
       ]
     },
     "windows-x64": {

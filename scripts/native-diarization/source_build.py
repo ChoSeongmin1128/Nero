@@ -64,11 +64,40 @@ def patch_source(source, profile, root, env):
             raise ValueError("Runtime source differs after patch: " + item["path"])
 
 
+def macos_settings(profile):
+    required = {"CMAKE_OSX_ARCHITECTURES:STRING", "CMAKE_OSX_DEPLOYMENT_TARGET:STRING",
+                "GGML_NATIVE:BOOL", "GGML_CPU_ARM_ARCH:STRING"}
+    settings = {}
+    for flag in profile.get("cmakeFlags", []):
+        if not flag.startswith("-D") or "=" not in flag:
+            continue
+        key, value = flag[2:].split("=", 1)
+        if key not in required:
+            continue
+        if key in settings or not value:
+            raise ValueError("Duplicate or empty macOS source build option")
+        settings[key] = value
+    if settings.keys() != required or settings["GGML_NATIVE:BOOL"] != "OFF":
+        raise ValueError("macOS runtime requires explicit portable CPU and deployment settings")
+    return settings
+
+
+def verify_cmake_settings(build, expected):
+    actual = dict(line.split("=", 1) for line in (build / "CMakeCache.txt").read_text().splitlines()
+                  if "=" in line and not line.startswith(("#", "//")))
+    for key, value in expected.items():
+        if actual.get(key) != value:
+            raise ValueError("Native speech build option differs: " + key)
+
+
 def build(profile, cache, destination, cmake, package_path):
     if profile.get("sourceBackends") == ["cpu"]:
         return build_windows_cpu(profile, cache, destination, cmake, package_path)
     if platform.system() != "Darwin" or platform.machine() != "arm64":
         raise ValueError("The patched source runtime is qualified only for native macOS arm64")
+    settings = macos_settings(profile)
+    dependency_settings = {key: settings[key] for key in
+                           ("CMAKE_OSX_ARCHITECTURES:STRING", "CMAKE_OSX_DEPLOYMENT_TARGET:STRING")}
     cache.mkdir(parents=True, exist_ok=True)
     archives = [archive(item, cache) for item in profile["sources"]]
     with tempfile.TemporaryDirectory(prefix="speech-source-", dir=cache.parent) as directory:
@@ -81,9 +110,10 @@ def build(profile, cache, destination, cmake, package_path):
         llama.rename(source / "llama.cpp")
         dependency = work / "dependency-build"
         command = [*cmake, "-G", "Unix Makefiles", "-S", str(sentencepiece), "-B", str(dependency),
-                   "-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_OSX_ARCHITECTURES=arm64",
+                   "-DCMAKE_BUILD_TYPE=Release", *["-D" + key + "=" + value for key, value in dependency_settings.items()],
                    "-DSPM_BUILD_TEST=OFF", "-DSPM_ENABLE_SHARED=OFF", "-DSPM_ENABLE_TCMALLOC=OFF"]
         subprocess.run(command, env=env, check=True)
+        verify_cmake_settings(dependency, dependency_settings)
         subprocess.run([*cmake, "--build", str(dependency), "--target", "sentencepiece-static", "-j", "2"], env=env, check=True)
         prefix = source / ".deps/sentencepiece"
         (prefix / "lib").mkdir(parents=True)
@@ -102,6 +132,7 @@ def build(profile, cache, destination, cmake, package_path):
         install = work / "install"
         subprocess.run([*cmake, "-S", str(source), "-B", str(build_dir), *profile["cmakeFlags"],
                         "-DCMAKE_INSTALL_PREFIX=" + str(install)], env=env, check=True)
+        verify_cmake_settings(build_dir, settings)
         subprocess.run([*cmake, "--build", str(build_dir), "-j", "2"], env=env, check=True)
         subprocess.run([*cmake, "--install", str(build_dir)], env=env, check=True)
         destination.mkdir()
