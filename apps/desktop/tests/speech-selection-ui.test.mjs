@@ -91,6 +91,9 @@ test('unsupported choices and recording lock selection without invoking a change
   f.subscriptions.subscribeSnapshots({revision:2,meetings:[{id:'one',title:'회의',notes:'',createdAt:1,status:'recording'}],folders:[],session:{id:'capture',meetingId:'one',state:'recording',elapsedMs:1000}});
   await wait(()=>f.get('settings-speech-picker').querySelector('fieldset').disabled);
   assert.match(f.get('settings-speech-picker').textContent,/녹음을 마친 뒤/);
+  assert.equal(f.get('settings-microphone-hint').hidden,false);
+  assert.equal(f.get('settings-message').hidden,true);
+  assert.equal(f.get('auto-recorder').disabled,false);
 });
 
 

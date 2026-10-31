@@ -736,6 +736,9 @@ function renderSettings() {
     select.value = state.deviceId || '';
   }
   select.disabled = disabled;
+  byId('settings-microphone-hint').hidden = !activeSession();
+  if (activeSession()) select.setAttribute('aria-describedby', 'settings-microphone-hint');
+  else select.removeAttribute('aria-describedby');
   byId('auto-recorder').checked = state.autoRecorder;
   byId('auto-recorder').disabled = state.recorderSettingBusy;
   byId('settings-refresh-devices').disabled = state.busy;
@@ -760,7 +763,7 @@ function renderSettings() {
     byId('settings-feature-cancel').textContent = feedback.cancelDisabled ? '취소 중' : '취소';
     if (feedback.cancelDisabled) { meter.removeAttribute('value'); byId('settings-feature-stage').textContent = '취소 중'; }
   }
-  const message = recording ? terminologySettings.error || state.settingsError || (activeSession() ? '녹음을 마친 뒤 변경할 수 있습니다.' : recording && state.devicesLoaded ? microphoneIssue() : '') : '';
+  const message = recording ? terminologySettings.error || state.settingsError || (!activeSession() && state.devicesLoaded ? microphoneIssue() : '') : '';
   byId('settings-message').textContent = message;
   byId('settings-message').hidden = !message;
   if (dialog.open) {
@@ -786,7 +789,7 @@ async function openSettings(panel = 'appearance', returnId = 'settings') {
 }
 
 function changeMicrophone() {
-  if (activeSession()) { state.settingsKey = ''; return renderSettings(); }
+  if (activeSession()) { state.settingsError = '녹음을 마친 뒤 마이크를 변경할 수 있습니다.'; state.settingsKey = ''; return renderSettings(); }
   const id = byId('settings-microphone').value || null;
   const device = state.devices.find(item => item.id === id);
   if (id && !device) { state.settingsKey = ''; return renderSettings(); }
