@@ -47,7 +47,8 @@ def build(profile, source_pin, cache, stage, tools, prepare):
         f"https://codeload.github.com/{source_pin['repository']}/tar.gz/{source_pin['commit']}")
     source_module = prepare.load_module('nero_whisper_source', Path(__file__).with_name('macos.py'))
     # Only a child process sees build tool search paths. No machine/user PATH or SDK settings.
-    env = dict(os.environ, VULKAN_SDK=str(sdk), CMAKE_BUILD_PARALLEL_LEVEL='2', CC='cl.exe', CXX='cl.exe')
+    env = dict(os.environ, VULKAN_SDK=str(sdk), CMAKE_BUILD_PARALLEL_LEVEL='2',
+               CC='cl.exe', CXX='cl.exe', VSLANG='1033')
     for name in ('CL', '_CL_', 'CFLAGS', 'CXXFLAGS', 'LDFLAGS', 'CMAKE_TOOLCHAIN_FILE'):
         env.pop(name, None)
     env['PATH'] = str(ninja.parent) + os.pathsep + str(sdk / 'Bin') + os.pathsep + env.get('PATH', '')
@@ -66,19 +67,23 @@ def build(profile, source_pin, cache, stage, tools, prepare):
                 destination = stage / 'share/licenses' / name / license
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(dependencies[name] / license, destination)
-        # Use pinned header sources, not the SDK's generated configuration with
-        # installation-specific include paths. No dependency downloads at configure time.
+        # Upstream b5454 finds SPIRV-Headers but does not link its interface target.
+        # A combined include root matches its <spirv/...> and <vulkan/...> includes
+        # while keeping both header sources pinned independently of the SDK layout.
+        includes = folder / 'includes'
+        shutil.copytree(dependencies['Vulkan-Headers'] / 'include', includes)
+        shutil.copytree(dependencies['SPIRV-Headers'] / 'include', includes, dirs_exist_ok=True)
         spirv_config = folder / 'spirv-config'
         spirv_config.mkdir()
         (spirv_config / 'SPIRV-HeadersConfig.cmake').write_text(
             'add_library(SPIRV-Headers::SPIRV-Headers INTERFACE IMPORTED)\n'
             'set_target_properties(SPIRV-Headers::SPIRV-Headers PROPERTIES '
-            'INTERFACE_INCLUDE_DIRECTORIES "' + (dependencies['SPIRV-Headers'] / 'include').as_posix() + '")\n',
+            'INTERFACE_INCLUDE_DIRECTORIES "' + includes.as_posix() + '")\n',
             encoding='utf-8')
         output = folder / 'build'
         configure = [str(cmake), '-S', str(source), '-B', str(output), *pin['cmakeFlags'],
                      '-DCMAKE_MAKE_PROGRAM:FILEPATH=' + str(ninja),
-                     '-DVulkan_INCLUDE_DIR:PATH=' + str(dependencies['Vulkan-Headers'] / 'include'),
+                     '-DVulkan_INCLUDE_DIR:PATH=' + str(includes),
                      '-DVulkan_LIBRARY:FILEPATH=' + str(sdk / 'Lib/vulkan-1.lib'),
                      '-DVulkan_GLSLC_EXECUTABLE:FILEPATH=' + str(sdk / 'Bin/glslc.exe'),
                      '-DSPIRV-Headers_DIR:PATH=' + str(spirv_config)]
@@ -97,7 +102,7 @@ def build(profile, source_pin, cache, stage, tools, prepare):
         shutil.copyfile(output / 'bin/whisper-cli.exe', destination / 'whisper-cli.exe')
         # Probe has no Vulkan import: missing drivers never prevent the CPU route.
         subprocess.run(['cl.exe', '/nologo', '/std:c++17', '/O2', '/MT', '/EHsc', '/utf-8',
-                        '/I' + str(dependencies['Vulkan-Headers'] / 'include'), str(Path(__file__).with_name('vulkan_probe.cpp')),
+                        '/I' + str(includes), str(Path(__file__).with_name('vulkan_probe.cpp')),
                         '/Fe:' + str(stage / 'bin/nero-vulkan-probe.exe'),
                         '/Fo:' + str(folder / 'vulkan_probe.obj')], env=env, cwd=folder, check=True)
         # Check dependency closure from PE metadata, without executing GPU code.
