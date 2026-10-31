@@ -16,6 +16,7 @@ const qualitySource = await readFile(new URL('../src/recording-quality.js', impo
 const uiSource = await readFile(new URL('../src/ui.js', import.meta.url), 'utf8');
 const librarySource = await readFile(new URL('../src/library-ui.js', import.meta.url), 'utf8');
 const searchSource = await readFile(new URL('../src/meeting-search.js', import.meta.url), 'utf8');
+const historySource = await readFile(new URL('../src/view-history.js', import.meta.url), 'utf8');
 const detailSource = await readFile(new URL('../src/meeting-detail-ui.js', import.meta.url), 'utf8');
 const actionsSource = await readFile(new URL('../src/transcript-actions.js', import.meta.url), 'utf8');
 const feedbackSource = await readFile(new URL('../src/processing-feedback.js', import.meta.url), 'utf8');
@@ -49,6 +50,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
         return this.children.filter(child => names.some(name => child.attributes.has(name)));
       },
       querySelector(selector) {
+        if (this.id === 'notification-center' && selector === '.notification-list') return element('notification-list');
         if (this.id !== 'transcript-rows') return null;
         const match = selector.match(/^\[([\w-]+)="([^"]+)"\]$/);
         return match ? this.children.find(child => child.attributes.get(match[1]) === match[2]) || null : null;
@@ -145,6 +147,8 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
   })()`, context);
   const executable = source.replace(/^import .*;\r?\n/gm, '');
   const app = await vm.runInContext(`(async () => {
+    ${historySource.replace(/^export /gm, '')}
+    const mountSidebarViews=()=>({updateCounts(){},close(){},isOpen:()=>false});
     ${dismissSource.replace(/^export /gm, '')}
     ${qualitySource.replace(/^export /gm, '')}
     const mountNotesWidth = () => ({update(){}});
@@ -482,7 +486,8 @@ test('queued selected work targets its job while background model work stays com
   await page.app.acceptProcessing({ revision: 3, id: 'download', kind: 'summary-model', status: 'running', supported: true, modelReady: true,
     jobs: [{ id: 'waiting', kind: 'summary', meetingId: 'a', status: 'queued', createdAt: 10 }] });
   assert.equal(page.element('processing-title').textContent, '회의록 요약 대기 중');
-  assert.match(page.element('notification-center').innerHTML, /2개 진행 중/);
+  assert.match(page.element('notification-center').innerHTML, /data-notification-id="waiting"/);
+  assert.match(page.element('notification-center').innerHTML, /data-notification-id="download"/);
   assert.match(page.element('notification-center').innerHTML, /요약 모델 준비 중/);
   assert.equal(page.element('cancel-processing').dataset.jobId, 'waiting');
   await page.app.cancelProcessing('waiting');

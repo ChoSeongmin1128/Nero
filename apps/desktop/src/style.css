@@ -445,3 +445,6 @@ html.recorder-document { background: transparent; }
 .library-search-summary { display: flex; align-items: center; gap: 10px; margin-block: 0 12px; }
 .library-search-summary > span { min-width: 0; overflow-wrap: anywhere; }
 .library-search-summary > button { flex: none; }
+
+.navigation-history { display: flex; align-items: center; gap: 2px; flex: none; }
+.navigation-history button { width: 28px; min-width: 28px; min-height: 28px; padding: 5px; }

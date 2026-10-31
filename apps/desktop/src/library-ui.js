@@ -27,7 +27,7 @@ const recentDate = new Intl.DateTimeFormat('ko-KR', { month: 'numeric', day: 'nu
 
 export { renderMeetingMenu } from '../../../design-system/navigation.mjs';
 
-export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnapshot, selectMeeting, render: renderApp, showError, escape, icon, duration, onViewChanged }) {
+export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnapshot, selectMeeting, render: renderApp, showError, escape, icon, duration, onViewChanged, beginNavigation = () => () => true }) {
   const dialog = byId('library-dialog');
   const dialogBody = byId('library-dialog-body');
   const owner = dialog.ownerDocument;
@@ -86,19 +86,25 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     selection().clear();
     selectionAnchor = null;
   }
-  async function show(filter = 'all') {
+  async function show(filter = 'all', { isCurrent = () => true, beforeCommit = () => {} } = {}) {
+    const latest = beginNavigation();
     try {
-      await finishEditing(() => {});
-      const changed = state().libraryFilter !== filter;
-      state().notificationsOpen = false;
-      state().libraryFilter = filter;
-      state().libraryOpen = true;
-      sidebar?.navigate();
-      resetSelection();
-      renderApp();
-      byId('library-title')?.focus({ preventScroll: true });
-      if (changed || query()) await onViewChanged?.(filter);
-    } catch (error) { showError(error); }
+      const changed = await finishEditing(() => {
+        if (!latest() || !isCurrent()) return null;
+        beforeCommit();
+        const changed = state().libraryFilter !== filter;
+        state().libraryFilter = filter;
+        state().libraryOpen = true;
+        sidebar?.navigate();
+        resetSelection();
+        renderApp();
+        byId('library-title')?.focus({ preventScroll: true });
+        return changed || Boolean(query());
+      });
+      if (changed === null) return false;
+      if (changed) await onViewChanged?.(filter);
+      return true;
+    } catch (error) { showError(error); return false; }
   }
   function toggleSelection(id, event = {}) {
     if (state().libraryBusy || !state().connected) return;
@@ -220,7 +226,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     const meetings = state().snapshot.meetings.filter(meeting => meeting.folderId === id).map(({ id, deletedAt }) => ({ id, deletedAt: deletedAt ?? null }));
     const active = meetings.filter(meeting => meeting.deletedAt == null);
     const cancels = active.some(({ id }) => pendingJob(state().processing, { meetingId: id }));
-    openDialog({ title: '폴더 삭제', content: `<p>${escape(folder.name)}</p>${active.length ? `<p class="muted">회의 ${active.length}개는 미분류로 이동합니다.</p><label class="library-folder-trash"><input id="library-folder-trash" type="checkbox"><span>회의도 함께 휴지통으로 이동</span></label>` : ''}`, confirm: '폴더 삭제', destructive: true, detach: true, action: () => {
+    openDialog({ title: '폴더 삭제', content: `<p>${escape(folder.name)}</p>${active.length ? `<label class="library-folder-trash"><input id="library-folder-trash" type="checkbox"><span>회의 ${active.length}개도 휴지통으로 이동</span></label>` : ''}`, confirm: '폴더 삭제', destructive: true, detach: true, action: () => {
       const trashMeetings = Boolean(byId('library-folder-trash')?.checked && active.length);
       if (trashMeetings && runningRecording(meetings.map(meeting => meeting.id))) throw new Error('녹음을 종료한 뒤 삭제해 주세요.');
       return bridge.deleteFolder(id, { folder: { id: folder.id, name: folder.name }, meetings, trashMeetings });
