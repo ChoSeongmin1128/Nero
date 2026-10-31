@@ -340,6 +340,9 @@ impl Buffered {
         }
         writer.finalize().map_err(|e| e.to_string())?;
         input.as_file().sync_all().map_err(|e| e.to_string())?;
+        // Close the writable handle before native CRT/miniaudio opens it on
+        // Windows. Keep TempPath ownership so every exit still removes the WAV.
+        let input = input.into_temp_path();
         let index = self.windows.len();
         let prefix = self.work.join(format!("whisper-window-{index}"));
         let native_path = prefix.with_extension("json");
@@ -349,7 +352,7 @@ impl Buffered {
         let run = run_cli(
             &self.cli,
             &self.model,
-            input.path(),
+            &input,
             &prefix,
             &self.work,
             cancel,
@@ -490,6 +493,13 @@ fn run_attempt(
         .create_new(true)
         .open(&log_path)
         .map_err(|e| e.to_string())?;
+    // Transcribed speech is untrusted text, never runtime/backend evidence.
+    // Keep it separate even when it contains diagnostic-looking words.
+    let stdout = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(prefix.with_extension("stdout.log"))
+        .map_err(|e| e.to_string())?;
     let mut command = Command::new(cli);
     let threads = std::thread::available_parallelism().map_or(2, |n| n.get().min(4).max(1));
     command
@@ -507,7 +517,7 @@ fn run_attempt(
         .arg(prefix)
         .current_dir(work)
         .stdin(Stdio::null())
-        .stdout(Stdio::from(log.try_clone().map_err(|e| e.to_string())?))
+        .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(log));
     if !gpu {
         command.arg("-ng");
@@ -559,8 +569,27 @@ enum MetalState {
 }
 
 fn classify_metal(log: &str) -> Result<MetalState, String> {
-    let lower = log.to_ascii_lowercase();
-    if lower.contains("failed") || lower.contains("error:") || lower.contains("out of memory") {
+    let failure = log.lines().any(|line| {
+        let Some((origin, message)) = line.split_once(':') else {
+            return false;
+        };
+        if origin == "error" {
+            return true;
+        }
+        if !(origin.starts_with("whisper_") || origin.starts_with("ggml_"))
+            || !origin
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || c == b'_')
+        {
+            return false;
+        }
+        let message = message.trim_start().to_ascii_lowercase();
+        message.starts_with("failed")
+            || message.starts_with("error:")
+            || message.contains(" failed ")
+            || message.contains("out of memory")
+    });
+    if failure {
         return Err(
             "Whisper의 Metal 초기화 또는 메모리 확보에 실패했습니다. 원본은 보관했습니다.".into(),
         );
@@ -747,5 +776,21 @@ mod tests {
         ] {
             assert!(classify_metal(&(valid.to_owned() + failure)).is_err());
         }
+        // Even diagnostic-looking ordinary speech is not a native diagnostic.
+        // run_attempt separately captures CLI stdout, and parses only stderr.
+        assert_eq!(
+            classify_metal(&(valid.to_owned() + "build failed, error: deployment failed\n"))
+                .unwrap(),
+            MetalState::Initialized
+        );
+        assert_eq!(
+            classify_metal(&(valid.to_owned() + "main: processing 'failed-example.wav'\n"))
+                .unwrap(),
+            MetalState::Initialized
+        );
+        assert!(classify_metal(
+            &(valid.to_owned() + "ggml_metal_graph_compute: command buffer failed with status 5\n")
+        )
+        .is_err());
     }
 }
