@@ -19,8 +19,8 @@
 
 제품 버전의 정본은 `apps/desktop/package.json`의 `version`이다. `node apps/desktop/scripts/version.mjs set <version> --build <number>`로 Tauri 설정, core/desktop/CLI Rust 패키지와 npm/Cargo 잠금 파일을 함께 갱신하고, `node apps/desktop/scripts/version.mjs check`로 일치 여부를 검사한다.
 
-- macOS는 제품 버전을 표시 버전으로, `bundle.macOS.bundleVersion`을 `CFBundleVersion`으로 사용한다. 이번 제품 기준은 `0.0.1`이며 최종 배포 빌드는 릴리스 이력에서 확인한다.
-- Windows NSIS 설치 버전은 제품 버전 `0.0.1`이다. 독립 빌드 번호는 배포 파일명/영수증에 기록한다. 별도 네 번째 설치 버전 필드가 구현됐다고 가정하지 않는다.
+- macOS는 제품 버전을 표시 버전으로, `bundle.macOS.bundleVersion`을 `CFBundleVersion`으로 사용한다. 현재 제품 버전은 위 정본을 따르며 최종 배포 빌드는 설치 파일의 영수증에서 확인한다.
+- Windows NSIS 설치 버전은 현재 제품 버전과 같다. 독립 빌드 번호는 배포 파일명/영수증에 기록한다. 별도 네 번째 설치 버전 필드가 구현됐다고 가정하지 않는다.
 - 현재 패키지, 이벤트, 앱 식별자와 새 저장 위치는 Nero 이름을 사용한다. 이전 식별자는 명시적인 기존 데이터 이전 코드와 과거 원본 증거에만 남긴다.
 - 사용자 릴리스 태그는 `v<제품 버전>`으로 최종 릴리스 구성 커밋에 붙인다. 기존 개발 태그를 이동하거나 재사용하지 않으며, 새 개발 빌드마다 제품 버전 태그를 만들 필요는 없다. 이미 공증된 앱을 컨테이너만 다시 포장하면 앱 소스와 포장 도구 커밋을 각각 기록한다. 문서만 후속 커밋으로 보강해도 배포본의 소스 해시는 바꾸지 않는다.
 

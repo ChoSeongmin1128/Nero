@@ -749,7 +749,9 @@ mod tests {
     }
 
     #[test]
-    fn legacy_deleted_entries_remain_unchanged_until_explicit_migration() {
+    fn handcrafted_deleted_entry_parser_preserves_bytes() {
+        // Parser-only legacy case. The released 0.0.1 writer removes custom
+        // entries instead of producing this manually injected deleted flag.
         let temp = temporary();
         let store = fixture(temp.path());
         let created = store.create(content("보존할 삭제 전 원문")).unwrap();
@@ -771,6 +773,127 @@ mod tests {
             after["templates"][&created.id],
             catalog["templates"][&created.id]
         );
+    }
+
+    fn public_0_0_1_catalog(root: &Path) -> (TemplateStore, serde_json::Value) {
+        let bytes = include_bytes!("templates/fixtures/public-0.0.1-catalog.json");
+        let provenance: serde_json::Value = serde_json::from_str(include_str!(
+            "templates/fixtures/public-0.0.1-provenance.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            provenance["producer"]["sourceCommit"],
+            "2ab63bd65c1b5ea2e91652f9c53477fd6124fed4"
+        );
+        assert_eq!(provenance["producer"]["version"], "0.0.1");
+        assert_eq!(provenance["producer"]["build"], "45");
+        assert_eq!(
+            provenance["producer"]["integrationVersion"],
+            "0.0.1-nero.31"
+        );
+        assert_eq!(provenance["producer"]["sourceDirty"], false);
+        assert_eq!(
+            format!("{:x}", Sha256::digest(bytes)),
+            provenance["catalogSha256"]
+        );
+        fs::create_dir(root.join("templates")).unwrap();
+        fs::write(root.join("templates/catalog.json"), bytes).unwrap();
+        (TemplateStore::new(root), provenance)
+    }
+
+    #[test]
+    fn actual_public_0_0_1_catalog_reads_preserve_bytes_mtime_and_individual_revisions() {
+        let temp = temporary();
+        let (store, provenance) = public_0_0_1_catalog(temp.path());
+        let path = temp.path().join("templates/catalog.json");
+        let before = fs::read(&path).unwrap();
+        let modified = fs::metadata(&path).unwrap().modified().unwrap();
+        for role in ["builtin", "custom"] {
+            let expected: PromptTemplate =
+                serde_json::from_value(provenance["expected"][role].clone()).unwrap();
+            assert_eq!(store.get(&expected.id).unwrap(), expected);
+            assert!(store.list().unwrap().contains(&expected.summary()));
+            assert!(store
+                .catalog()
+                .unwrap()
+                .templates
+                .contains(&expected.summary()));
+        }
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), modified);
+        assert_eq!(
+            format!("{:x}", Sha256::digest(fs::read(&path).unwrap())),
+            provenance["catalogSha256"]
+        );
+        assert!(!path.parent().unwrap().join("catalog.lock").exists());
+        for name in ["store.lock", "models", "meetings", "templates/history"] {
+            assert!(!temp.path().join(name).exists());
+        }
+    }
+
+    #[test]
+    fn actual_public_0_0_1_catalog_updates_reopen_with_revisions_and_suppression_preserved() {
+        let temp = temporary();
+        let (store, provenance) = public_0_0_1_catalog(temp.path());
+        let builtin: PromptTemplate =
+            serde_json::from_value(provenance["expected"]["builtin"].clone()).unwrap();
+        let custom: PromptTemplate =
+            serde_json::from_value(provenance["expected"]["custom"].clone()).unwrap();
+        let updated = store
+            .update(
+                &builtin.id,
+                &builtin.revision,
+                TemplateContent {
+                    name: "Synthetic Builtin Updated".into(),
+                    description: "Synthetic compatibility fixture".into(),
+                    prompt: "Synthetic builtin override v2.".into(),
+                },
+            )
+            .unwrap();
+        assert_ne!(updated.revision, builtin.revision);
+        drop(store);
+        let reopened = TemplateStore::new(temp.path());
+        assert_eq!(reopened.get(&builtin.id).unwrap(), updated);
+        assert_eq!(reopened.get(&custom.id).unwrap(), custom);
+        reopened.delete(&updated.id, &updated.revision).unwrap();
+        drop(reopened);
+        let reopened = TemplateStore::new(temp.path());
+        assert!(matches!(
+            reopened.get(&builtin.id),
+            Err(TemplateError::NotFound)
+        ));
+        let changed = reopened
+            .update(
+                &custom.id,
+                &custom.revision,
+                TemplateContent {
+                    name: "Synthetic Custom Updated".into(),
+                    description: "Synthetic compatibility fixture".into(),
+                    prompt: "Synthetic custom prompt v2.".into(),
+                },
+            )
+            .unwrap();
+        assert_ne!(changed.revision, custom.revision);
+        drop(reopened);
+        let final_store = TemplateStore::new(temp.path());
+        assert_eq!(final_store.get(&custom.id).unwrap(), changed);
+        assert!(matches!(
+            final_store.get(&builtin.id),
+            Err(TemplateError::NotFound)
+        ));
+        assert!(matches!(
+            final_store.update(&custom.id, &custom.revision, custom.content()),
+            Err(TemplateError::Conflict)
+        ));
+        let catalog: serde_json::Value =
+            serde_json::from_slice(&fs::read(temp.path().join("templates/catalog.json")).unwrap())
+                .unwrap();
+        assert_eq!(catalog["suppressedBuiltins"], json!(["meeting"]));
+        assert!(catalog["templates"].get("meeting").is_none());
+        assert!(!temp.path().join("templates/history").exists());
+        for name in ["store.lock", "models", "meetings"] {
+            assert!(!temp.path().join(name).exists());
+        }
     }
 
     #[test]
@@ -951,10 +1074,10 @@ mod tests {
     }
 
     #[test]
-    fn catalog_revision_covers_default_updates_without_writing_legacy_catalogs() {
+    fn catalog_revision_covers_default_updates_without_rewriting_existing_catalogs() {
         let temp = temporary();
         let first = fixture(temp.path());
-        let created = first.create(content("legacy v1 content")).unwrap();
+        let created = first.create(content("existing v1 content")).unwrap();
         let path = temp.path().join("templates/catalog.json");
         let before = fs::read(&path).unwrap();
         assert!(!String::from_utf8_lossy(&before).contains("suppressedBuiltins"));

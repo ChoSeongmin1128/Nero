@@ -1,0 +1,40 @@
+{
+  "producer": {
+    "sourceCommit": "2ab63bd65c1b5ea2e91652f9c53477fd6124fed4",
+    "sourceTree": "e5f928d59b6c5fb080854fd46bfb04c8b438294e",
+    "sourceDirty": false,
+    "version": "0.0.1",
+    "build": "45",
+    "integrationVersion": "0.0.1-nero.31",
+    "target": "aarch64-apple-darwin",
+    "signedCliSha256": "27fe60eed6bd6cd6ff232b126c7caf608b0f11f477c7c362edb74a67748704ef",
+    "unsignedCliSha256": "6763aeba71f52dd783b3deebcd3dd7c9089e7e5256e49f8e13653daf8bd51091"
+  },
+  "catalogSha256": "89c3e6ad13429c0657f942a98c985b2ed898ffff7e3d68cced4e64c00339cf8f",
+  "operations": [
+    "templates create Synthetic Custom",
+    "templates update meeting Synthetic Builtin Override"
+  ],
+  "expected": {
+    "builtin": {
+      "builtIn": true,
+      "customized": true,
+      "defaultRevision": "sha256:d84138bde837241db15e0099ef4e934a37e7354d9cb3e5a543fd9363b9c545c4",
+      "description": "Synthetic compatibility fixture",
+      "id": "meeting",
+      "name": "Synthetic Builtin Override",
+      "prompt": "Synthetic builtin override v1.",
+      "revision": "sha256:3ca91f03beb97f4fe6343c4828a0c415af75ca9905d740972c277154043fb9aa"
+    },
+    "custom": {
+      "builtIn": false,
+      "customized": false,
+      "defaultRevision": null,
+      "description": "Synthetic compatibility fixture",
+      "id": "dfbd0a22-d20f-46a9-a228-26ec4608e5b0",
+      "name": "Synthetic Custom",
+      "prompt": "Synthetic custom prompt v1.",
+      "revision": "sha256:c6059615754b6497dfcba2013453751bd9f941a7c6b15e88014e08ac89f95064"
+    }
+  }
+}
