@@ -43,7 +43,7 @@ the job. This is capability evidence, not inference acceptance. Successful model
 backend and synchronized GPU-graph diagnostics plus native exit zero establish
 actual Vulkan use. A pinned, hash-checked diagnostic patch reports a completed
 non-empty Vulkan graph after synchronization. It adds one synchronization per CLI
-process and does not change model math, scheduling or transcription policy. A
+process and does not change model math, word timestamps or transcription policy. A
 separate pinned build patch caps internal shader compiler concurrency at one,
 so the outer `-j2` does not hide sixteen extra compiler processes. Only
 known missing/unsupported capability permits CPU; probe failure,
