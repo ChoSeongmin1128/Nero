@@ -3,7 +3,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 
 const root = path.resolve(__dirname, '..');
-const inputs = ['appearance.css', 'typography.css', 'components.css', 'style.css', 'controls.css', 'desktop-preview.css', 'windows-preview/windows.css', 'windows-preview/bridge.css', 'catalog/catalog.css', 'appearance.js', 'components.js', 'controls.js', 'windows-preview/windows.js', 'windows-preview/bridge.js'];
+const inputs = ['appearance.css', 'fonts.css', 'typography.css', 'components.css', 'style.css', 'controls.css', 'desktop-preview.css', 'windows-preview/windows.css', 'windows-preview/bridge.css', 'catalog/catalog.css', 'appearance.js', 'components.js', 'controls.js', 'windows-preview/windows.js', 'windows-preview/bridge.js'];
 const output = path.join(__dirname, 'tokens.json');
 const normalize = (value) => value.replace(/\s+/g, ' ').trim();
 const hash = (value) => crypto.createHash('sha256').update(value).digest('hex');
@@ -199,7 +199,7 @@ function build() {
       windows: {
         palette: 'Browser shell neutral colors depend on light/dark, not brand color.',
         tokens: tokens.filter((item) => item.name.startsWith('--win-')).map((item) => item.id),
-        typography: 'Shared typography.css system/Korean font contract for the Windows shell and common product iframe.',
+        typography: 'Bundled Pretendard Variable with shared typography.css roles for both platform previews and the common product iframe.',
         nativeImplementation: 'unverified',
       },
     },

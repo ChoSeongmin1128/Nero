@@ -3,6 +3,8 @@ Sources/GroveApp/Resources/Fonts/OFL.txt -whitespace
 
 # Keep design token source hashes identical on macOS and Windows.
 design-system/** text eol=lf
+design-system/vendor/pretendard/*.woff2 binary
+design-system/vendor/pretendard/LICENSE.txt -whitespace
 
 # Unified diff context lines contain required spaces; preserve the pinned patch bytes.
 scripts/native-moss-harness/patches/*.patch text eol=lf -whitespace

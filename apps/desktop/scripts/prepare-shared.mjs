@@ -9,7 +9,7 @@ const source = resolve(app, '../../design-system');
 const target = resolve(app, '.generated/shared');
 await mkdir(target, { recursive: true });
 if ((await lstat(target)).isSymbolicLink()) throw new Error('Shared asset output must not be a symlink.');
-for (const name of ['appearance.css', 'appearance.js', 'typography.css', 'components.css', 'controls.css', 'desktop-preview.css', 'components.js', 'icons.js']) {
+for (const name of ['appearance.css', 'appearance.js', 'fonts.css', 'typography.css', 'components.css', 'controls.css', 'desktop-preview.css', 'components.js', 'icons.js']) {
   await copyFile(resolve(source, name), resolve(target, name));
 }
 await buildControls(resolve(target, 'controls.js'));
@@ -36,6 +36,7 @@ for (const folder of runtimePackages) {
 }
 await writeFile(resolve(licenses, 'manifest.json'), JSON.stringify(licenseManifest, null, 2) + '\n');
 await cp(resolve(source, 'vendor/lucide'), resolve(target, 'vendor/lucide'), { recursive: true });
+await cp(resolve(source, 'vendor/pretendard'), resolve(target, 'vendor/pretendard'), { recursive: true });
 
 await mkdir(resolve(app, '.generated/native'), { recursive: true });
 await cp(resolve(app, 'licenses/portable-wav'), resolve(app, '.generated/native/licenses/portable-wav'), { recursive: true });

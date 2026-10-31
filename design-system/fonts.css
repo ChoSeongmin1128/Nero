@@ -1,0 +1,8 @@
+/* App and preview assets only. Standalone OAuth callback pages keep OS fallbacks. */
+@font-face {
+  font-family: "Pretendard Variable";
+  font-style: normal;
+  font-weight: 45 920;
+  font-display: swap;
+  src: url("./vendor/pretendard/PretendardVariable.woff2") format("woff2");
+}

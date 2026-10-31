@@ -9,7 +9,7 @@
 | 파일/경로 | 소유하는 것 |
 | --- | --- |
 | `appearance.css`, `appearance.js` | 흑백 색상과 의미별 상태색, light/dark 선택 |
-| `typography.css` | 시스템/한글/코드 글꼴, 크기/굵기/줄간격/자간 역할 |
+| `fonts.css`, `typography.css` | 동봉 UI 글꼴 로딩, UI/코드 글꼴과 크기/굵기/줄간격/자간 역할 |
 | `components.css` | 버튼, 입력, 필드, 배지, 선택, 내용 탭, 오류, 모달, 설정 선택의 기본 스타일 |
 | `navigation.mjs`, `navigation-width.mjs`, `navigation.css`, `action-menu.mjs` | 최근 회의 행/회의 작업 메뉴, hover 탐색, 너비 조절과 메뉴 위치/키보드/닫기 동작. 제품과 탐색 시안이 같은 구현 사용 |
 | `components.js` | 버튼/상태/회의 행/사람 행/참석자 항목/전사 발언/회의록 읽기/모달 내용 생성 |
@@ -19,7 +19,7 @@
 | `desktop-preview-*`, `windows-preview/` | 각 플랫폼의 창/알림/녹음 표시와 공통 상태 연결 |
 | `catalog/` | 같은 공통 컴포넌트의 역할/상태/상호작용 예제와 생성 토큰 |
 | `checks/` | 공통 뷰와 소비처, 토큰, Windows 연결의 회귀 검사 |
-| `vendor/` | Lucide 원본, 출처와 라이선스 |
+| `vendor/` | Lucide와 Pretendard 원본, 출처와 라이선스 |
 
 그룹 편집, 화자 지정과 자료 연결 같은 기능별 구성은 해당 화면이 소유한다. 모든 화면을 하나의 범용 컴포넌트로 바꾸지 않는다. 공통 뷰가 회의 상태, 참석자 선택, 저장, 스크롤 복원이나 외부 호출을 소유하지 않는다.
 
@@ -48,7 +48,7 @@
 | timer | 13px | 1.5 | UI 글꼴과 `tabular-nums` |
 | code | 12px | 1.5 | 코드 글꼴 |
 
-UI 글꼴은 OS의 `system-ui`와 한글 대체 글꼴을 같은 계약으로 사용한다. 코드 이외의 본문과 타이머에 고정폭 글꼴을 쓰지 않는다. 기존 `--body/--display/--mono`는 호환 alias다. 전사/회의록은 기존 읽기 밀도를 유지해 body 크기와 reading 줄간격을 조합한다. 역할의 실제 계산값은 카탈로그에서 확인한다.
+Mac과 Windows의 웹 UI는 동봉한 Pretendard Variable 1.3.9를 같은 계약으로 사용한다. `fonts.css`는 수정하지 않은 WOFF2 원본을 로컬 상대 경로로 로딩하며 CDN이나 OS 글꼴 설치가 필요 없다. 전체 글꼴과 OFL 1.1 고지·출처·해시는 `vendor/pretendard/`에서 관리하고 앱과 시안에 함께 포함한다. 글꼴 로딩 전이나 미지원 문자는 기존 OS 글꼴로 대체한다. 독립적인 OAuth 콜백 페이지와 OS 네이티브 창 장식은 시스템 글꼴을 유지한다. 코드 이외의 본문과 타이머에 고정폭 글꼴을 쓰지 않는다. 기존 `--body/--display/--mono`는 호환 alias다. 전사/회의록은 기존 읽기 밀도를 유지해 body 크기와 reading 줄간격을 조합한다. 역할의 실제 계산값은 카탈로그에서 확인한다.
 
 일반 컨트롤 높이는 `--control-height` 32px, 작은 동작은 `--control-height-small` 28px를 사용한다. 공통 컨트롤 반경은 6px, 묶음/대화창 반경은 8px다. 긴 문구가 줄바꿈되면 최소 높이보다 늘어날 수 있으며 글자를 잘라 높이를 강제하지 않는다. 편집하지 않는 회의 제목은 입력 테두리를 숨기고 hover/focus에서 편집 경계를 드러낸다.
 
