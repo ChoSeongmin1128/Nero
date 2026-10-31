@@ -829,11 +829,11 @@ mod lifecycle_tests {
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path().canonicalize().unwrap();
         let process = Processing::new(root.clone(), root);
-        let mut child = Command::new("/bin/sh")
+        let mut command = Command::new("/bin/sh");
+        command
             .args(["-c", "exec sleep 30"])
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
+            .stdout(Stdio::piped());
+        let mut child = crate::process_tree::spawn(&mut command).unwrap();
         let mut stdout = child.stdout.take().unwrap();
         let active = Arc::new(AtomicBool::new(true));
         let guard = active.clone();
