@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFile } from 'node:fs/promises';
 import { Window } from 'happy-dom';
-import { mountLibrary, renderMeetingMenu } from '../src/library-ui.js';
+import { mountLibrary, renderMeetingMenu, formatRecentDuration } from '../src/library-ui.js';
 
 const settle = () => new Promise(resolve => setImmediate(resolve));
 async function setup(t, preferences = {}) {
@@ -34,7 +34,8 @@ test('product shares hover, pin and close navigation without hiding the meeting 
   assert.equal(window.localStorage.getItem('nero.sidebar.pinned'), 'true');
   trigger.click();
   assert.equal(shell.classList.contains('collapsed'), true);
-  assert.equal(trigger.parentElement.className, 'navigation-toggle-slot');
+  assert.equal(trigger.parentElement.className, 'navigation-brand');
+  assert.equal(document.getElementById('navigation-sidebar').inert, false);
   assert.equal(document.querySelectorAll('#navigation-toggle').length, 1);
 });
 
@@ -105,7 +106,7 @@ test('recent rows stay compact, show folder/time/length and use the shared meeti
   const { window, document, state, library } = await setup(t, { 'nero.sidebar.pinned': 'true' });
   const row = document.querySelector('[data-recent-row="filed"]');
   assert.equal(row.querySelectorAll('strong').length, 1);
-  assert.match(row.querySelector('.recent-meeting-meta').textContent, /프로젝트/);
+  assert.match(row.querySelector('.recent-meeting-folder').textContent, /프로젝트/);
   assert.equal(row.querySelector('.recent-meeting-duration').textContent, '2초');
   assert.equal(row.querySelector('.recent-meeting-meta').children.length, 2);
   assert.deepEqual([...row.querySelectorAll('[data-library-action]')].map(button => button.dataset.libraryAction), ['rename', 'move', 'trash']);
@@ -122,7 +123,7 @@ test('recent rows stay compact, show folder/time/length and use the shared meeti
   assert.equal(menu.open, false);
   assert.equal(document.activeElement, menu.querySelector('summary'));
   state.snapshot.folders[0].name = '변경한 폴더'; library.render();
-  assert.match(document.querySelector('[data-recent-row="filed"] .recent-meeting-meta').textContent, /변경한 폴더/);
+  assert.match(document.querySelector('[data-recent-row="filed"] .recent-meeting-folder').textContent, /변경한 폴더/);
 });
 
 test('recent context actions target their row while preserving the current meeting and return focus', async t => {
@@ -312,3 +313,55 @@ for (const cancellation of ['pointercancel', 'lostpointercapture', 'blur', 'hidd
     assert.equal(shell.classList.contains('nav-pinned'), true);
   });
 }
+
+
+test('collapsed sidebar keeps the same named actions and search opens the original field', async t => {
+  const { window, document } = await setup(t);
+  const shell = document.querySelector('.workspace'), aside = document.getElementById('navigation-sidebar');
+  const trigger = document.getElementById('navigation-toggle'), create = document.getElementById('create-meeting');
+  const search = document.getElementById('search'), searchToggle = document.querySelector('.navigation-search-toggle');
+  assert.equal(aside.inert, false);
+  assert.equal(aside.contains(trigger), true);
+  assert.equal(document.getElementById('recent-section').inert, true);
+  assert.equal(create.getAttribute('aria-label'), '새 회의');
+  for (const item of aside.querySelectorAll('[data-library-filter]')) {
+    assert.ok(item.getAttribute('aria-label'));
+    assert.equal(item.title, item.getAttribute('aria-label'));
+  }
+  search.value = '유지할 검색';
+  searchToggle.click();
+  assert.equal(shell.classList.contains('nav-peek'), true);
+  assert.equal(document.activeElement, search);
+  assert.equal(search.value, '유지할 검색');
+  assert.equal(document.getElementById('recent-section').inert, false);
+  search.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  assert.equal(shell.classList.contains('nav-peek'), false);
+  assert.equal(document.activeElement, trigger);
+  assert.equal(document.querySelectorAll('#create-meeting').length, 1);
+  assert.equal(document.getElementById('create-meeting'), create);
+  assert.equal(document.querySelectorAll('.navigation-search-toggle').length, 1);
+});
+
+test('hovering the rail reveals an overlay and outside interaction restores the rail', async t => {
+  const { window, document } = await setup(t);
+  const shell = document.querySelector('.workspace'), aside = document.getElementById('navigation-sidebar');
+  aside.dispatchEvent(new window.PointerEvent('pointerenter', { pointerType: 'mouse' }));
+  await new Promise(resolve => setTimeout(resolve, 170));
+  assert.equal(shell.classList.contains('nav-peek'), true);
+  document.querySelector('main').dispatchEvent(new window.PointerEvent('pointerdown', { bubbles: true }));
+  assert.equal(shell.classList.contains('nav-peek'), false);
+  assert.equal(aside.inert, false);
+  assert.equal(aside.contains(document.getElementById('navigation-toggle')), true);
+  aside.dispatchEvent(new window.PointerEvent('pointerenter', { pointerType: 'touch' }));
+  await new Promise(resolve => setTimeout(resolve, 170));
+  assert.equal(shell.classList.contains('nav-peek'), false);
+});
+
+test('recent duration distinguishes recorded length from the calendar timestamp', () => {
+  assert.equal(formatRecentDuration(0), '0초');
+  assert.equal(formatRecentDuration(3510000), '58분30초');
+  assert.equal(formatRecentDuration(3600000), '1시간');
+  assert.equal(formatRecentDuration(3661000), '1시간1분1초');
+  assert.equal(formatRecentDuration(-1), '');
+  assert.equal(formatRecentDuration(NaN), '');
+});

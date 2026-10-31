@@ -8,7 +8,7 @@ export function renderMeetingMenu(meeting, { escape, icon, disabled = false }) {
 export function recentMeetingRow({ id, title, metadata, active = false, disabled = false, menu = '', escape }) {
   const [folder, timestamp, duration] = metadata;
   const description = [folder, timestamp].filter(Boolean);
-  return `<article class="navigation-recent-row" data-recent-row="${escape(id)}"><button type="button" class="quiet recent-meeting" data-recent-meeting="${escape(id)}" aria-label="${escape([title, ...description, duration].filter(Boolean).join(', '))}"${active ? ' aria-current="page"' : ''}${disabled ? ' disabled' : ''}><span class="recent-title-line"><strong title="${escape(title)}">${escape(title)}</strong>${duration ? `<span class="recent-meeting-duration">${escape(duration)}</span>` : ''}</span><span class="recent-meeting-meta" title="${escape(description.join(', '))}">${description.map(value => `<span>${escape(value)}</span>`).join('')}</span></button>${menu}</article>`;
+  return `<article class="navigation-recent-row" data-recent-row="${escape(id)}"><button type="button" class="quiet recent-meeting" data-recent-meeting="${escape(id)}" aria-label="${escape([title, ...description, duration ? `녹음 길이 ${duration}` : ''].filter(Boolean).join(', '))}"${active ? ' aria-current="page"' : ''}${disabled ? ' disabled' : ''}><span class="recent-title-line"><strong title="${escape(title)}">${escape(title)}</strong>${folder ? `<span class="recent-meeting-folder" title="${escape(folder)}">${escape(folder)}</span>` : ''}</span><span class="recent-meeting-meta"><span class="recent-meeting-timestamp" title="${escape(timestamp || '')}">${escape(timestamp || '')}</span>${duration ? `<span class="recent-meeting-duration" aria-label="녹음 길이 ${escape(duration)}">${escape(duration)}</span>` : ''}</span></button>${menu}</article>`;
 }
 
 export function mountNavigationSidebar({ shell, aside, content, trigger, backdrop, storage, storageKey = 'nero.sidebar.pinned', icons = globalThis.NeroIcons }) {
@@ -16,10 +16,27 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
   let preferenceStorage = storage;
   if (!preferenceStorage) { try { preferenceStorage = document.defaultView?.localStorage; } catch {} }
   const read = () => { try { return preferenceStorage?.getItem(storageKey); } catch { return null; } };
-  let pinned = read() === 'true', temporary = false, timer, renderedState;
+  let pinned = read() === 'true', temporary = false, timer, hoverTimer, renderedState;
   const brand = aside.querySelector('.navigation-brand') || aside.querySelector('.brand');
   const edge = shell.querySelector('.navigation-edge');
-  const triggerHome = trigger.parentElement;
+  if (brand && trigger.parentElement !== brand) brand.prepend(trigger);
+  const search = aside.querySelector('input[type="search"], #search');
+  const searchHost = search?.closest('.search-field') || search;
+  let searchToggle;
+  if (searchHost) {
+    searchToggle = document.createElement('button');
+    searchToggle.type = 'button';
+    searchToggle.className = 'quiet small icon navigation-search-toggle';
+    searchToggle.setAttribute('aria-label', '회의 검색');
+    searchToggle.title = '회의 검색';
+    searchToggle.innerHTML = icons?.('search') || '';
+    searchHost.before(searchToggle);
+    searchToggle.addEventListener('click', () => { reveal(); search.focus({ preventScroll: true }); });
+  }
+  for (const [selector, label] of [['#create-meeting', '새 회의'], ['#new', '새 회의']]) {
+    const button = aside.querySelector(selector);
+    if (button) { button.setAttribute('aria-label', label); button.title = label; }
+  }
   const handle = document.createElement('div');
   handle.className = 'navigation-resize';
   handle.tabIndex = 0;
@@ -39,20 +56,20 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
     shell.classList.toggle('collapsed', !pinned);
     shell.classList.toggle('nav-peek', temporary && !pinned);
     shell.classList.toggle('nav-pinned', pinned);
-    aside.inert = !open;
+    aside.inert = unavailable();
+    for (const node of aside.querySelectorAll('.recent-section, .recent')) node.inert = !open;
     width.update(open);
     aside.setAttribute('aria-label', '회의 탐색');
     trigger.setAttribute('aria-expanded', String(open));
-    const destination = open ? brand : triggerHome;
-    if (trigger.parentElement !== destination) destination.append(trigger);
+    if (brand && trigger.parentElement !== brand) brand.prepend(trigger);
     trigger.setAttribute('aria-label', pinned ? '사이드바 접기' : temporary ? '사이드바 펼쳐두기' : '사이드바 열기');
     trigger.title = trigger.getAttribute('aria-label');
     trigger.innerHTML = icons?.(pinned ? 'panel-left-close' : 'panel-left') || '';
     if (backdrop) backdrop.hidden = true;
   }
-  function reveal() { if (unavailable()) return; clearTimeout(timer); if (!pinned) temporary = true; render(); }
+  function reveal() { if (unavailable()) return; clearTimeout(hoverTimer); clearTimeout(timer); if (!pinned) temporary = true; render(); }
   function hide() {
-    clearTimeout(timer);
+    clearTimeout(hoverTimer); clearTimeout(timer);
     timer = setTimeout(() => {
       const focused = document.activeElement;
       const interacting = (aside.contains(focused) || handle.contains(focused)) && (focused.matches('input,textarea') || focused.matches(':focus-visible'));
@@ -61,7 +78,7 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
   }
   function pin(value) {
     if (unavailable()) return;
-    clearTimeout(timer); pinned = value; temporary = false;
+    clearTimeout(hoverTimer); clearTimeout(timer); pinned = value; temporary = false;
     try { preferenceStorage?.setItem(storageKey, String(pinned)); } catch {}
     render(); trigger.focus({ preventScroll: true });
   }
@@ -69,7 +86,10 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
   edge?.addEventListener('pointerenter', hover);
   edge?.addEventListener('pointerleave', hide);
   edge?.addEventListener('focusout', hide);
-  aside.addEventListener('pointerenter', () => clearTimeout(timer));
+  aside.addEventListener('pointerenter', event => {
+    clearTimeout(timer);
+    if (event.pointerType === 'mouse' && !pinned) hoverTimer = setTimeout(reveal, 140);
+  });
   aside.addEventListener('pointerleave', hide);
   aside.addEventListener('focusout', hide);
   handle.addEventListener('pointerenter', reveal);
@@ -82,19 +102,19 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
     else pin(true);
   });
   document.addEventListener('pointerdown', event => {
-    if (temporary && !handle.contains(event.target) && !aside.contains(event.target) && !edge?.contains(event.target) && !trigger.contains(event.target)) { temporary = false; render(); }
+    if (temporary && !handle.contains(event.target) && !aside.contains(event.target) && !edge?.contains(event.target) && !trigger.contains(event.target)) { clearTimeout(hoverTimer); clearTimeout(timer); temporary = false; render(); }
   });
   document.addEventListener('keydown', event => {
     const popup = event.target.closest?.('dialog[open],[role="dialog"],[role="alertdialog"],[role="menu"],[role="listbox"]')
       || document.querySelector('dialog[open],:is([role="dialog"],[role="alertdialog"],[role="menu"],[role="listbox"])[data-open],[data-slot="popover-content"][data-open],[data-slot="select-content"][data-open],details[data-meeting-menu][open],details.library-folder-menu[open]');
     if (unavailable() || event.defaultPrevented || event.isComposing || event.keyCode === 229 || popup) return;
-    if (event.key === 'Escape' && temporary) { temporary = false; render(); trigger.focus(); }
+    if (event.key === 'Escape' && temporary) { event.preventDefault(); clearTimeout(hoverTimer); clearTimeout(timer); temporary = false; render(); trigger.focus(); }
     if ((event.metaKey || event.ctrlKey) && event.code === 'Backslash') { event.preventDefault(); pin(!pinned); }
   });
   render();
   return {
     render,
-    navigate() { if (!pinned) { temporary = false; render(); } },
-    resetTemporary() { temporary = false; render(); },
+    navigate() { clearTimeout(hoverTimer); if (!pinned) { temporary = false; render(); } },
+    resetTemporary() { clearTimeout(hoverTimer); temporary = false; render(); },
   };
 }

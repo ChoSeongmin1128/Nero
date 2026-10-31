@@ -33,7 +33,8 @@ test('hover reveals the sidebar without duplicate controls; the same button pins
   assert.equal(window.localStorage.getItem('nero-proposal-sidebar-pinned'),'true');
   trigger.click();
   assert.ok(shell.classList.contains('collapsed'));
-  assert.equal(trigger.parentElement.className,'navigation-toggle-slot');
+  assert.equal(trigger.parentElement.className,'brand');
+  assert.equal(doc.querySelector('aside').inert,false);
   doc.querySelector('.navigation-edge').dispatchEvent(new window.PointerEvent('pointerenter',{pointerType:'touch'}));
   assert.equal(shell.classList.contains('nav-peek'),false);
 });
@@ -159,7 +160,7 @@ test('recent right click operates on the targeted meeting without navigating or 
   open();row().querySelector('[data-library-action="move"]').click();
   dialog.querySelector('input[name="destination"][value="제품팀"]').checked=true;
   dialog.close('confirm');await new Promise(resolve=>setImmediate(resolve));
-  assert.match(row().querySelector('.recent-meeting-meta').textContent,/제품팀/);
+  assert.match(row().querySelector('.recent-meeting-folder').textContent,/제품팀/);
   open();row().querySelector('[data-library-action="trash"]').click();
   dialog.close('cancel');await new Promise(resolve=>setImmediate(resolve));
   assert.ok(row());
