@@ -39,7 +39,9 @@ await cp(resolve(source, 'vendor/lucide'), resolve(target, 'vendor/lucide'), { r
 await cp(resolve(source, 'vendor/pretendard'), resolve(target, 'vendor/pretendard'), { recursive: true });
 
 await mkdir(resolve(app, '.generated/native'), { recursive: true });
-await cp(resolve(app, 'licenses/portable-wav'), resolve(app, '.generated/native/licenses/portable-wav'), { recursive: true });
+for (const group of ['portable-wav', 'audio-decode']) {
+  await cp(resolve(app, 'licenses', group), resolve(app, '.generated/native/licenses', group), { recursive: true });
+}
 await mkdir(resolve(app, '.generated/agent'), { recursive: true });
 
 await mkdir(resolve(app, '.generated/brand'), { recursive: true });

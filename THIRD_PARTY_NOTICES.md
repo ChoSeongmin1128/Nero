@@ -37,10 +37,20 @@ request. Voice features are stored encrypted; automatic naming remains disabled.
 
 ## Portable WAV preparation
 
-Windows WAV preparation uses rubato 0.16.2 (MIT) and its FFT/numeric dependencies.
+Audio normalization uses rubato 0.16.2 (MIT) and its FFT/numeric dependencies.
 The complete pinned dependency notices are included under
 `Contents/Resources/native/licenses/portable-wav/` (equivalent resources on Windows).
 Source: https://github.com/HEnquist/rubato/tree/v0.16.2 .
+
+## Portable audio decoding
+
+Audio import uses the unmodified Symphonia 0.6.1 crates (Mozilla Public License 2.0).
+The exact enabled codecs, containers, and dependency checksums are recorded in
+`apps/desktop/src-tauri/Cargo.toml` and `Cargo.lock`. Complete license notices and
+source archive links for the decoder and its added dependencies are bundled under
+`native/licenses/audio-decode/manifest.json` and the adjacent package directories.
+The corresponding source is available from those version-pinned archive links.
+Source: https://github.com/pdeljanov/Symphonia/tree/v0.6.1 .
 
 ## Whisper transcription
 

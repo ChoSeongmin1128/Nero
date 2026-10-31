@@ -1376,11 +1376,7 @@ async fn import_audio(
             .file()
             .add_filter(
                 "음성",
-                if cfg!(windows) {
-                    &["wav"][..]
-                } else {
-                    &["wav", "m4a", "mp3", "aac", "aiff", "aif", "caf"][..]
-                },
+                speech_audio::import_extensions(),
             )
             .blocking_pick_file()
     })

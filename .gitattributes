@@ -11,3 +11,6 @@ scripts/native-moss-harness/patches/*.patch text eol=lf -whitespace
 
 # Preserve the exact verified native speech patch, including diff context spaces.
 scripts/native-diarization/patches/*.patch text eol=lf -whitespace
+
+# Preserve the unmodified decoder license notice.
+apps/desktop/licenses/audio-decode/MPL-2.0.txt -whitespace

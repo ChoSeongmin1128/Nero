@@ -2335,47 +2335,8 @@ impl Processing {
                     core.validate_draft_attachment(target.clone())
                         .map_err(message)?;
                 }
-                let source = source.canonicalize().map_err(message)?;
-                let mut input = plain_file(&source)?;
-                let ext = source
-                    .extension()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("audio");
-                #[cfg(windows)]
-                if !ext.eq_ignore_ascii_case("wav") {
-                    return Err("Windows에서는 WAV 음성 파일만 가져올 수 있습니다.".into());
-                }
-                if !["wav", "m4a", "mp3", "aac", "aiff", "aif", "caf"]
-                    .contains(&ext.to_ascii_lowercase().as_str())
-                {
-                    return Err("지원하지 않는 음성 파일입니다.".into());
-                }
-                let copied = directory(&path, "source")?
-                    .join(source.file_name().ok_or("음성 파일 이름이 필요합니다.")?);
-                let mut output = OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(&copied)
-                    .map_err(message)?;
-                let before = input.metadata().map_err(message)?;
-                let mut buffer = [0u8; 128 * 1024];
-                let mut bytes = 0u64;
-                loop {
-                    cancelled(&cancel)?;
-                    let n = input.read(&mut buffer).map_err(message)?;
-                    if n == 0 {
-                        break;
-                    }
-                    output.write_all(&buffer[..n]).map_err(message)?;
-                    bytes += n as u64;
-                }
-                output.sync_all().map_err(message)?;
-                drop(output);
-                if bytes != before.len()
-                    || input.metadata().map_err(message)?.modified().ok() != before.modified().ok()
-                {
-                    return Err("가져오는 동안 파일이 변경됐습니다. 다시 선택해 주세요.".into());
-                }
+                let imported = crate::speech_audio::stage_import(&source, &path, &cancel)?;
+                let copied = imported.path;
                 this.update(|p| p.message = "음성을 준비하고 있습니다.".into());
                 let prepared =
                     crate::speech_audio::AnalysisAudio::prepare(&this, &copied, &path, &cancel)
@@ -2384,13 +2345,7 @@ impl Processing {
                             error.message
                         })?;
                 cancelled(&cancel)?;
-                let title = source
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("가져온 회의")
-                    .chars()
-                    .take(200)
-                    .collect::<String>();
+                let title = imported.title;
                 let meeting = this.commit_transcript_result(&cancel, || {
                     let attaching = target.is_some();
                     let result = match target {

@@ -1,14 +1,12 @@
 use super::{check_cancel, failure, SAMPLE_RATE};
 use crate::processing::plain_file;
 use crate::summary_failure::{Failure, FailureKind};
-use hound::{SampleFormat, WavReader, WavSpec, WavWriter};
-use rubato::{FftFixedIn, Resampler};
-use std::fs::OpenOptions;
-use std::io::{BufReader, BufWriter};
+#[cfg(test)]
+use hound::WavWriter;
+use hound::{SampleFormat, WavReader, WavSpec};
+use std::io::BufReader;
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
-
-const BLOCK_FRAMES: usize = 2048;
 
 pub(super) fn prepare(
     source: &Path,
@@ -64,17 +62,8 @@ pub(super) fn prepare(
     }
 }
 
-fn pcm16(sample: f64) -> Result<i16, Failure> {
-    if !sample.is_finite() {
-        return Err(failure(FailureKind::Input));
-    }
-    Ok((sample.clamp(-1.0, 1.0) * 32768.0)
-        .round()
-        .clamp(-32768.0, 32767.0) as i16)
-}
-
 fn convert(
-    mut samples: impl Iterator<Item = Result<f64, Failure>>,
+    samples: impl Iterator<Item = Result<f64, Failure>>,
     spec: WavSpec,
     frames: u64,
     destination: &Path,
@@ -86,105 +75,14 @@ fn convert(
     if expected == 0 || expected * 2 + 36 > u128::from(u32::MAX) {
         return Err(failure(FailureKind::Input));
     }
-    let expected = expected as u64;
-    let mut resampler = if spec.sample_rate == SAMPLE_RATE {
-        None
-    } else {
-        Some(
-            FftFixedIn::<f64>::new(
-                spec.sample_rate as usize,
-                SAMPLE_RATE as usize,
-                BLOCK_FRAMES,
-                2,
-                1,
-            )
-            .map_err(|_| failure(FailureKind::Input))?,
-        )
-    };
-    let mut delay = resampler
-        .as_ref()
-        .map_or(0, |resampler| resampler.output_delay());
-    let flush_limit = resampler.as_ref().map_or(0, |resampler| {
-        ((delay + resampler.output_frames_max() + 1) as u64 * u64::from(spec.sample_rate))
-            .div_ceil(u64::from(SAMPLE_RATE))
-            + BLOCK_FRAMES as u64
-    });
-    let file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(destination)
-        .map_err(|_| failure(FailureKind::Storage))?;
-    let sync = file
-        .try_clone()
-        .map_err(|_| failure(FailureKind::Storage))?;
-    let mut writer = WavWriter::new(
-        BufWriter::new(file),
-        WavSpec {
-            channels: 1,
-            sample_rate: SAMPLE_RATE,
-            bits_per_sample: 16,
-            sample_format: SampleFormat::Int,
-        },
-    )
-    .map_err(|_| failure(FailureKind::Storage))?;
-    let mut input = vec![vec![0.0; BLOCK_FRAMES]];
-    let mut output = resampler
-        .as_ref()
-        .map(|resampler| resampler.output_buffer_allocate(true));
-    let (mut consumed, mut written, mut padded) = (0_u64, 0_u64, 0_u64);
-    while consumed < frames || written < expected {
-        check_cancel(cancel)?;
-        let read = (frames - consumed).min(BLOCK_FRAMES as u64) as usize;
-        input[0].fill(0.0);
-        for value in &mut input[0][..read] {
-            let mut sum = 0.0;
-            for _ in 0..spec.channels {
-                let sample = samples
-                    .next()
-                    .ok_or_else(|| failure(FailureKind::Input))??;
-                if !sample.is_finite() {
-                    return Err(failure(FailureKind::Input));
-                }
-                sum += sample;
-            }
-            *value = sum / f64::from(spec.channels);
-        }
-        consumed += read as u64;
-        let ready = if let Some(resampler) = resampler.as_mut() {
-            padded += (BLOCK_FRAMES - read) as u64;
-            if padded > flush_limit {
-                return Err(failure(FailureKind::Output));
-            }
-            let output = output.as_mut().unwrap();
-            let (_, produced) = resampler
-                .process_into_buffer(&input, output, None)
-                .map_err(|_| failure(FailureKind::Input))?;
-            &output[0][..produced]
-        } else {
-            &input[0][..read]
-        };
-        let skip = delay.min(ready.len());
-        delay -= skip;
-        for &sample in &ready[skip..] {
-            if written >= expected {
-                break;
-            }
-            writer
-                .write_sample(pcm16(sample)?)
-                .map_err(|_| failure(FailureKind::Storage))?;
-            written += 1;
-        }
-    }
-    if consumed != frames || samples.next().is_some() || written != expected {
-        return Err(failure(FailureKind::Input));
-    }
-    check_cancel(cancel)?;
-    writer
-        .finalize()
-        .map_err(|_| failure(FailureKind::Storage))?;
-    sync.sync_all().map_err(|_| failure(FailureKind::Storage))?;
-    check_cancel(cancel)?;
-    Ok(written)
+    let mut output = super::output::PcmOutput::new(
+        destination,
+        spec.sample_rate,
+        usize::from(spec.channels),
+        cancel,
+    )?;
+    output.push_samples(samples)?;
+    output.finish(Some(frames))
 }
 
 #[cfg(test)]
@@ -210,7 +108,7 @@ mod tests {
                 .map(Result::unwrap)
                 .collect();
             for delivery in [137, 2048] {
-                let mut live = crate::live_speech::Normalizer::new(rate).unwrap();
+                let mut live = crate::speech_audio::normalize::Normalizer::new(rate).unwrap();
                 let mut actual = Vec::new();
                 for block in samples.chunks(delivery) {
                     actual.extend(live.push(block, false).unwrap());
@@ -220,7 +118,7 @@ mod tests {
                 assert!(live.push(&[], true).is_err());
             }
         }
-        assert!(crate::live_speech::Normalizer::new(16000)
+        assert!(crate::speech_audio::normalize::Normalizer::new(16000)
             .unwrap()
             .push(&[f64::NAN], false)
             .is_err());

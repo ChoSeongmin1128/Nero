@@ -221,10 +221,12 @@ frontend, whose actions require the native bridge; it does not supply fake meeti
   target-hardware accuracy and Windows acceptance remain separate checks.
 - Recognition and speaker analysis share an immutable analysis-input contract: mono,
   16kHz PCM16 WAV. Supported normalized files are verified and read directly, including
-  on Windows without a platform converter. Other Windows WAV inputs use a bounded
-  hound/rubato converter for channel averaging, anti-alias resampling and PCM16 output.
-  Windows imports currently accept WAV only; compressed inputs are rejected before copying.
-  macOS retains its packaged converter. Automatic speaker analysis reuses recognition's prepared input. Standalone
+  on Windows without a platform converter. WAV inputs on both platforms use the shared
+  bounded hound/rubato normalizer for channel averaging, anti-alias resampling and PCM16
+  output. Windows compressed imports and FLAC/Ogg imports on both platforms use pinned
+  Symphonia 0.6.1. macOS retains AVFoundation for its existing compressed inputs.
+  See [audio import](../../docs/audio-import.md) for codec support and module boundaries.
+  Automatic speaker analysis reuses recognition's prepared input. Standalone
   analysis/retry prepares and verifies the same format, preserving original audio and
   checking original/prepared hashes before save. Container format is checked as well
   as rate/depth; EXTENSIBLE WAV is re-encoded rather than copied by the converter.
@@ -395,9 +397,9 @@ require Apple silicon/macOS 26. Absent or unsupported workers leave recognition 
 
 The same preparation tool supports `--target windows-x64` with app-local Microsoft C++
 runtime files as described in [the runtime contract](../../scripts/native-diarization/README.md).
-It packages separate Vulkan and CPU bundles. The Windows app prepares WAV through its
-portable converter; compressed imports and end-to-end hardware acceptance remain unavailable
-or unqualified respectively.
+It packages separate Vulkan and CPU bundles. The Windows app prepares imported audio
+through its portable decoder and shared PCM normalizer; see [audio import](../../docs/audio-import.md).
+File-fed checks do not establish microphone/device hardware acceptance.
 ASR and diarization prefer GPU; only confirmed GPU-backend unavailability permits the
 CPU route. Allocation or generic runtime errors do not trigger a CPU fallback.
 

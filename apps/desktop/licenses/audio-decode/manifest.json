@@ -1,0 +1,191 @@
+[
+  {
+    "name": "symphonia",
+    "version": "0.6.1",
+    "license": "MPL-2.0",
+    "source": "https://github.com/pdeljanov/Symphonia",
+    "sourceArchive": "https://crates.io/api/v1/crates/symphonia/0.6.1/download",
+    "files": [
+      "MPL-2.0.txt"
+    ],
+    "modified": false
+  },
+  {
+    "name": "symphonia-bundle-flac",
+    "version": "0.6.1",
+    "license": "MPL-2.0",
+    "source": "https://github.com/pdeljanov/Symphonia",
+    "sourceArchive": "https://crates.io/api/v1/crates/symphonia-bundle-flac/0.6.1/download",
+    "files": [
+      "MPL-2.0.txt"
+    ],
+    "modified": false
+  },
+  {
+    "name": "symphonia-bundle-mp3",
+    "version": "0.6.1",
+    "license": "MPL-2.0",
+    "source": "https://github.com/pdeljanov/Symphonia",
+    "sourceArchive": "https://crates.io/api/v1/crates/symphonia-bundle-mp3/0.6.1/download",
+    "files": [
+      "MPL-2.0.txt"
+    ],
+    "modified": false
+  },
+  {
+    "name": "symphonia-codec-aac",
+    "version": "0.6.1",
+    "license": "MPL-2.0",
+    "source": "https://github.com/pdeljanov/Symphonia",
+    "sourceArchive": "https://crates.io/api/v1/crates/symphonia-codec-aac/0.6.1/download",
+    "files": [
+      "MPL-2.0.txt"
+    ],
+    "modified": false
+  },
+  {
+    "name": "symphonia-codec-alac",
+    "version": "0.6.1",
+    "license": "MPL-2.0",
+    "source": "https://github.com/pdeljanov/Symphonia",
+    "sourceArchive": "https://crates.io/api/v1/crates/symphonia-codec-alac/0.6.1/download",
+    "files": [
+      "MPL-2.0.txt"
+    ],
+    "modified": false
+  },
+  {
+    "name": "symphonia-codec-pcm",
+    "version": "0.6.1",
+    "license": "MPL-2.0",
+    "source": "https://github.com/pdeljanov/Symphonia",
+    "sourceArchive": "https://crates.io/api/v1/crates/symphonia-codec-pcm/0.6.1/download",
+    "files": [
+      "MPL-2.0.txt"
+    ],
+    "modified": false
+  },
+  {
+    "name": "symphonia-codec-vorbis",
+    "version": "0.6.1",
+    "license": "MPL-2.0",
+    "source": "https://github.com/pdeljanov/Symphonia",
+    "sourceArchive": "https://crates.io/api/v1/crates/symphonia-codec-vorbis/0.6.1/download",
+    "files": [
+      "MPL-2.0.txt"
+    ],
+    "modified": false
+  },
+  {
+    "name": "symphonia-common",
+    "version": "0.6.1",
+    "license": "MPL-2.0",
+    "source": "https://github.com/pdeljanov/Symphonia",
+    "sourceArchive": "https://crates.io/api/v1/crates/symphonia-common/0.6.1/download",
+    "files": [
+      "MPL-2.0.txt"
+    ],
+    "modified": false
+  },
+  {
+    "name": "symphonia-core",
+    "version": "0.6.1",
+    "license": "MPL-2.0",
+    "source": "https://github.com/pdeljanov/Symphonia",
+    "sourceArchive": "https://crates.io/api/v1/crates/symphonia-core/0.6.1/download",
+    "files": [
+      "MPL-2.0.txt"
+    ],
+    "modified": false
+  },
+  {
+    "name": "symphonia-format-caf",
+    "version": "0.6.1",
+    "license": "MPL-2.0",
+    "source": "https://github.com/pdeljanov/Symphonia",
+    "sourceArchive": "https://crates.io/api/v1/crates/symphonia-format-caf/0.6.1/download",
+    "files": [
+      "MPL-2.0.txt"
+    ],
+    "modified": false
+  },
+  {
+    "name": "symphonia-format-isomp4",
+    "version": "0.6.1",
+    "license": "MPL-2.0",
+    "source": "https://github.com/pdeljanov/Symphonia",
+    "sourceArchive": "https://crates.io/api/v1/crates/symphonia-format-isomp4/0.6.1/download",
+    "files": [
+      "MPL-2.0.txt"
+    ],
+    "modified": false
+  },
+  {
+    "name": "symphonia-format-ogg",
+    "version": "0.6.1",
+    "license": "MPL-2.0",
+    "source": "https://github.com/pdeljanov/Symphonia",
+    "sourceArchive": "https://crates.io/api/v1/crates/symphonia-format-ogg/0.6.1/download",
+    "files": [
+      "MPL-2.0.txt"
+    ],
+    "modified": false
+  },
+  {
+    "name": "symphonia-format-riff",
+    "version": "0.6.1",
+    "license": "MPL-2.0",
+    "source": "https://github.com/pdeljanov/Symphonia",
+    "sourceArchive": "https://crates.io/api/v1/crates/symphonia-format-riff/0.6.1/download",
+    "files": [
+      "MPL-2.0.txt"
+    ],
+    "modified": false
+  },
+  {
+    "name": "symphonia-metadata",
+    "version": "0.6.1",
+    "license": "MPL-2.0",
+    "source": "https://github.com/pdeljanov/Symphonia",
+    "sourceArchive": "https://crates.io/api/v1/crates/symphonia-metadata/0.6.1/download",
+    "files": [
+      "MPL-2.0.txt"
+    ],
+    "modified": false
+  },
+  {
+    "name": "extended",
+    "version": "0.1.0",
+    "license": "MIT",
+    "source": "https://github.com/depp/extended-rs",
+    "sourceArchive": "https://crates.io/api/v1/crates/extended/0.1.0/download",
+    "files": [
+      "extended-0.1.0/LICENSE.txt"
+    ],
+    "modified": false
+  },
+  {
+    "name": "lazy_static",
+    "version": "1.5.1",
+    "license": "MIT OR Apache-2.0",
+    "source": "https://github.com/rust-lang-nursery/lazy-static.rs",
+    "sourceArchive": "https://crates.io/api/v1/crates/lazy_static/1.5.1/download",
+    "files": [
+      "lazy_static-1.5.1/LICENSE-APACHE",
+      "lazy_static-1.5.1/LICENSE-MIT"
+    ],
+    "modified": false
+  },
+  {
+    "name": "regex-lite",
+    "version": "0.1.9",
+    "license": "MIT OR Apache-2.0",
+    "source": "https://github.com/rust-lang/regex",
+    "sourceArchive": "https://crates.io/api/v1/crates/regex-lite/0.1.9/download",
+    "files": [
+      "regex-lite-0.1.9/LICENSE-APACHE",
+      "regex-lite-0.1.9/LICENSE-MIT"
+    ],
+    "modified": false
+  }
+]

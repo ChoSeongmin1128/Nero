@@ -68,8 +68,9 @@ This file applies to the entire repository.
   readable without rewriting provenance. GPU is preferred;
   only a confirmed unavailable GPU backend permits the packaged CPU route. Allocation
   and generic runtime failures do not authorize CPU fallback. Windows packages contain
-  Vulkan and CPU runtimes. Windows WAV preparation uses the portable bounded converter;
-  compressed imports remain unavailable there. macOS conversion requires Apple silicon/
+  Vulkan and CPU runtimes. WAV preparation shares a bounded portable converter on both platforms. Windows compressed
+  imports and FLAC/Ogg use the pinned portable decoder; see docs/audio-import.md.
+  Existing macOS compressed conversion requires Apple silicon/
   macOS 26. Validate Windows capture, permissions, import, model execution and packaging on Windows separately; source and browser checks do not establish hardware acceptance.
 - Existing chunk speaker labels retain their `asr_chunk` scope; never equate the same
   label across independently recognized chunks. Verified whole-recording labels use
