@@ -460,21 +460,6 @@ fn template_commands_share_the_local_catalog_and_reject_stale_overwrites() {
         "template_not_found"
     );
     let builtin = run(root.path(), &["templates", "get", "meeting"]);
-    let protected = command(root.path())
-        .args([
-            "--json",
-            "templates",
-            "delete",
-            "meeting",
-            "--expected-revision",
-            builtin["template"]["revision"].as_str().unwrap(),
-        ])
-        .output()
-        .unwrap();
-    assert_eq!(
-        serde_json::from_slice::<Value>(&protected.stderr).unwrap()["error"]["code"],
-        "template_builtin_protected"
-    );
     let edited = run(
         root.path(),
         &[
@@ -503,6 +488,22 @@ fn template_commands_share_the_local_catalog_and_reject_stale_overwrites() {
         run(root.path(), &["templates", "get", "meeting"])["template"]["prompt"],
         builtin["template"]["prompt"]
     );
+    let deleted = run(
+        root.path(),
+        &[
+            "templates",
+            "delete",
+            "meeting",
+            "--expected-revision",
+            reset["template"]["revision"].as_str().unwrap(),
+        ],
+    );
+    assert_eq!(deleted["deleted"], true);
+    assert!(!run(root.path(), &["templates", "list"])["templates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["id"] == "meeting"));
     assert!(!root.path().join("store.lock").exists());
 }
 

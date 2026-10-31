@@ -1699,6 +1699,8 @@ fn main() {
             calendar_desktop::dismiss_calendar_reminder,
             calendar_desktop::start_calendar_recording,
             template_settings::list_templates,
+            template_settings::read_template_catalog,
+            template_settings::reset_template_catalog,
             template_settings::get_template,
             template_settings::create_template,
             template_settings::update_template,

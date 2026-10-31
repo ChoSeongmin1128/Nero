@@ -23,8 +23,6 @@ pub enum TemplateError {
     NotFound,
     #[error("템플릿이 변경되었습니다. 최신 내용을 확인한 뒤 다시 저장해 주세요.")]
     Conflict,
-    #[error("기본 템플릿은 삭제할 수 없습니다. 기본값으로 되돌릴 수 있습니다.")]
-    BuiltinProtected,
     #[error("다른 템플릿 변경을 처리 중입니다. 잠시 후 다시 시도해 주세요.")]
     Busy,
     #[error("저장된 템플릿 정보가 손상되었습니다.")]
@@ -67,6 +65,13 @@ pub struct TemplateSummary {
     pub built_in: bool,
     pub customized: bool,
     pub default_revision: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TemplateCatalog {
+    pub revision: String,
+    pub templates: Vec<TemplateSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -144,6 +149,8 @@ struct StoredTemplate {
 struct Catalog {
     version: u32,
     templates: BTreeMap<String, StoredTemplate>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    suppressed_builtins: BTreeSet<String>,
 }
 
 impl Default for Catalog {
@@ -151,6 +158,7 @@ impl Default for Catalog {
         Self {
             version: FORMAT_VERSION,
             templates: BTreeMap::new(),
+            suppressed_builtins: BTreeSet::new(),
         }
     }
 }
@@ -169,22 +177,61 @@ impl TemplateStore {
     }
 
     pub fn list(&self) -> Result<Vec<TemplateSummary>> {
+        Ok(self.catalog()?.templates)
+    }
+
+    pub fn catalog(&self) -> Result<TemplateCatalog> {
         let builtins = self.builtins()?;
         let catalog = self.read_catalog(&builtins)?;
+        self.catalog_view(&catalog, &builtins)
+    }
+
+    fn catalog_view(&self, catalog: &Catalog, builtins: &[Builtin]) -> Result<TemplateCatalog> {
         let mut values = Vec::new();
-        for builtin in &builtins {
-            values.push(self.effective(&catalog, &builtins, &builtin.id)?.summary());
+        for builtin in builtins {
+            if !catalog.suppressed_builtins.contains(&builtin.id) {
+                values.push(self.effective(catalog, builtins, &builtin.id)?.summary());
+            }
         }
         let mut custom = Vec::new();
         for (id, stored) in &catalog.templates {
             if stored.legacy_deleted || builtins.iter().any(|builtin| &builtin.id == id) {
                 continue;
             }
-            custom.push(self.effective(&catalog, &builtins, id)?.summary());
+            custom.push(self.effective(catalog, builtins, id)?.summary());
         }
         custom.sort_by(|a, b| a.name.cmp(&b.name).then(a.id.cmp(&b.id)));
         values.extend(custom);
-        Ok(values)
+        Ok(TemplateCatalog {
+            revision: digest(&("template-catalog-v1", builtins, catalog)),
+            templates: values,
+        })
+    }
+
+    pub fn reset_all(&self, expected_revision: &str) -> Result<TemplateCatalog> {
+        validate_revision(expected_revision)?;
+        self.mutate(|catalog, builtins| {
+            if self.catalog_view(catalog, builtins)?.revision != expected_revision {
+                return Err(TemplateError::Conflict);
+            }
+            // Fresh nonces invalidate editors opened before the reset, including
+            // templates whose visible content already matched bundled defaults.
+            catalog.templates = builtins
+                .iter()
+                .map(|builtin| {
+                    (
+                        builtin.id.clone(),
+                        StoredTemplate {
+                            content: None,
+                            nonce: Uuid::new_v4().to_string(),
+                            legacy_deleted: false,
+                        },
+                    )
+                })
+                .collect();
+            catalog.suppressed_builtins.clear();
+            self.catalog_view(catalog, builtins)
+        })
     }
 
     pub fn get(&self, id: &str) -> Result<PromptTemplate> {
@@ -271,12 +318,14 @@ impl TemplateStore {
             let previous = self.effective(catalog, builtins, id)?;
             require_revision(&previous, expected_revision)?;
             if previous.built_in {
-                return Err(TemplateError::BuiltinProtected);
+                catalog.suppressed_builtins.insert(id.into());
+                catalog.templates.remove(id);
+            } else {
+                catalog
+                    .templates
+                    .remove(id)
+                    .ok_or(TemplateError::NotFound)?;
             }
-            catalog
-                .templates
-                .remove(id)
-                .ok_or(TemplateError::NotFound)?;
             Ok(())
         })
     }
@@ -292,13 +341,7 @@ impl TemplateStore {
             return Err(TemplateError::InvalidDocument);
         }
         for builtin in &defaults.templates {
-            if builtin.id.is_empty()
-                || builtin.id.len() > 64
-                || !builtin
-                    .id
-                    .bytes()
-                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-                || Uuid::parse_str(&builtin.id).is_ok()
+            if !valid_builtin_id(&builtin.id)
                 || !ids.insert(&builtin.id)
                 || validate_content(&builtin.content()).is_err()
             {
@@ -321,6 +364,13 @@ impl TemplateStore {
         if catalog.version != FORMAT_VERSION {
             return Err(TemplateError::UnsupportedFormat);
         }
+        if catalog
+            .suppressed_builtins
+            .iter()
+            .any(|id| !valid_builtin_id(id))
+        {
+            return Err(TemplateError::InvalidDocument);
+        }
         for (id, value) in &catalog.templates {
             validate_id(id, builtins).map_err(|_| TemplateError::InvalidDocument)?;
             if !valid_uuid(&value.nonce)
@@ -330,6 +380,7 @@ impl TemplateStore {
                     .is_some_and(|content| validate_content(content).is_err())
                 || value.content.is_none() && !builtins.iter().any(|builtin| &builtin.id == id)
                 || value.legacy_deleted && builtins.iter().any(|builtin| &builtin.id == id)
+                || catalog.suppressed_builtins.contains(id)
             {
                 return Err(TemplateError::InvalidDocument);
             }
@@ -344,6 +395,9 @@ impl TemplateStore {
         id: &str,
     ) -> Result<PromptTemplate> {
         let builtin = builtins.iter().find(|builtin| builtin.id == id);
+        if catalog.suppressed_builtins.contains(id) {
+            return Err(TemplateError::NotFound);
+        }
         let stored = catalog.templates.get(id);
         if stored.is_some_and(|value| value.legacy_deleted) {
             return Err(TemplateError::NotFound);
@@ -463,6 +517,15 @@ fn valid_uuid(value: &str) -> bool {
         .map(|uuid| uuid.to_string())
         .as_deref()
         == Some(value)
+}
+
+fn valid_builtin_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && Uuid::parse_str(id).is_err()
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
 fn validate_id(id: &str, builtins: &[Builtin]) -> Result<()> {
@@ -725,10 +788,6 @@ mod tests {
         assert!(edited.built_in);
         assert!(edited.customized);
         assert_eq!(edited.default_revision, original.default_revision);
-        assert!(matches!(
-            store.delete("meeting", &edited.revision),
-            Err(TemplateError::BuiltinProtected)
-        ));
         let reset = store.reset("meeting", &edited.revision).unwrap();
         assert_eq!(reset.content(), original.content());
         assert!(!reset.customized);
@@ -768,6 +827,149 @@ mod tests {
     }
 
     #[test]
+    fn deleted_builtin_keeps_only_its_id_and_stays_hidden_after_default_updates() {
+        let temp = temporary();
+        let store = fixture(temp.path());
+        let original = store.get("meeting").unwrap();
+        let edited = store
+            .update(
+                "meeting",
+                &original.revision,
+                content("deleted-prompt-marker"),
+            )
+            .unwrap();
+        assert!(matches!(
+            store.delete("meeting", &original.revision),
+            Err(TemplateError::Conflict)
+        ));
+        store.delete("meeting", &edited.revision).unwrap();
+        let bytes = fs::read(temp.path().join("templates/catalog.json")).unwrap();
+        assert!(!String::from_utf8_lossy(&bytes).contains("deleted-prompt-marker"));
+        let catalog: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(catalog["templates"].get("meeting").is_none());
+        assert_eq!(catalog["suppressedBuiltins"], json!(["meeting"]));
+        let upgraded = fixture_with_default(temp.path(), "updated bundled prompt");
+        assert!(matches!(
+            upgraded.get("meeting"),
+            Err(TemplateError::NotFound)
+        ));
+        assert_eq!(upgraded.list().unwrap().len(), 1);
+        // A later default set may temporarily omit the deleted ID. Keep the
+        // suppression without requiring a retained prompt or a current default.
+        let without_meeting = TemplateStore { root: temp.path().to_owned(), defaults: json!({"version":1,"templates":[
+            {"id":"interview","name":"Interview","description":"Synthetic","prompt":"Instructions"}
+        ]}).to_string() };
+        assert_eq!(without_meeting.list().unwrap().len(), 1);
+        assert!(matches!(
+            fixture(temp.path()).get("meeting"),
+            Err(TemplateError::NotFound)
+        ));
+        assert_eq!(
+            fs::read(temp.path().join("templates/catalog.json")).unwrap(),
+            bytes
+        );
+    }
+
+    #[test]
+    fn reset_all_uses_catalog_cas_and_invalidates_individual_editors() {
+        let temp = temporary();
+        let first = fixture(temp.path());
+        let original = first.get("meeting").unwrap();
+        let old_catalog = first.catalog().unwrap();
+        let second = fixture(temp.path());
+        let custom = second.create(content("custom-prompt-marker")).unwrap();
+        let before = fs::read(temp.path().join("templates/catalog.json")).unwrap();
+        assert!(matches!(
+            first.reset_all(&old_catalog.revision),
+            Err(TemplateError::Conflict)
+        ));
+        assert_eq!(
+            fs::read(temp.path().join("templates/catalog.json")).unwrap(),
+            before
+        );
+        assert_eq!(first.get(&custom.id).unwrap(), custom);
+        let edited = first
+            .update(
+                "meeting",
+                &original.revision,
+                content("override-prompt-marker"),
+            )
+            .unwrap();
+        first.delete("meeting", &edited.revision).unwrap();
+        let latest = first.catalog().unwrap();
+        let reset = first.reset_all(&latest.revision).unwrap();
+        assert_eq!(reset, second.catalog().unwrap());
+        assert_eq!(reset.templates.len(), 2);
+        assert!(reset
+            .templates
+            .iter()
+            .all(|item| item.built_in && !item.customized));
+        assert!(matches!(
+            first.get(&custom.id),
+            Err(TemplateError::NotFound)
+        ));
+        let restored = first.get("meeting").unwrap();
+        assert_eq!(restored.content(), original.content());
+        assert_ne!(restored.revision, original.revision);
+        assert!(matches!(
+            first.update("meeting", &original.revision, content("stale editor")),
+            Err(TemplateError::Conflict)
+        ));
+        let bytes = fs::read(temp.path().join("templates/catalog.json")).unwrap();
+        assert!(!String::from_utf8_lossy(&bytes).contains("custom-prompt-marker"));
+        assert!(!String::from_utf8_lossy(&bytes).contains("override-prompt-marker"));
+        assert!(!temp.path().join("templates/history").exists());
+    }
+
+    #[test]
+    fn empty_catalog_survives_reopen_and_reset_restores_only_defaults() {
+        let temp = temporary();
+        let store = fixture(temp.path());
+        let custom = store.create(content("custom")).unwrap();
+        store.delete(&custom.id, &custom.revision).unwrap();
+        for item in store.list().unwrap() {
+            store.delete(&item.id, &item.revision).unwrap();
+        }
+        assert!(fixture(temp.path()).list().unwrap().is_empty());
+        fs::create_dir(temp.path().join("meetings")).unwrap();
+        let unrelated = temp.path().join("meetings/existing-summary.json");
+        fs::write(
+            &unrelated,
+            b"synthetic archived summary and prompt reference",
+        )
+        .unwrap();
+        let existing = fs::read(&unrelated).unwrap();
+        let empty = store.catalog().unwrap();
+        assert!(empty.templates.is_empty());
+        let defaults = store.reset_all(&empty.revision).unwrap();
+        assert_eq!(defaults.templates.len(), 2);
+        assert_eq!(fs::read(&unrelated).unwrap(), existing);
+        assert!(matches!(
+            store.get(&custom.id),
+            Err(TemplateError::NotFound)
+        ));
+    }
+
+    #[test]
+    fn catalog_revision_covers_default_updates_without_writing_legacy_catalogs() {
+        let temp = temporary();
+        let first = fixture(temp.path());
+        let created = first.create(content("legacy v1 content")).unwrap();
+        let path = temp.path().join("templates/catalog.json");
+        let before = fs::read(&path).unwrap();
+        assert!(!String::from_utf8_lossy(&before).contains("suppressedBuiltins"));
+        let original = first.catalog().unwrap();
+        let upgraded = fixture_with_default(temp.path(), "updated default");
+        assert_ne!(original.revision, upgraded.catalog().unwrap().revision);
+        assert!(matches!(
+            upgraded.reset_all(&original.revision),
+            Err(TemplateError::Conflict)
+        ));
+        assert_eq!(upgraded.get(&created.id).unwrap(), created);
+        assert_eq!(fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
     fn simultaneous_mutation_is_rejected_while_reads_remain_available() {
         let temp = temporary();
         let first = fixture(temp.path());
@@ -775,6 +977,10 @@ mod tests {
         let lock = first.lock().unwrap();
         assert!(matches!(
             second.create(content("새 형식")),
+            Err(TemplateError::Busy)
+        ));
+        assert!(matches!(
+            second.reset_all(&second.catalog().unwrap().revision),
             Err(TemplateError::Busy)
         ));
         assert_eq!(second.list().unwrap().len(), 2);
@@ -793,6 +999,7 @@ mod tests {
             "{broken",
             r#"{"version":2,"templates":{}}"#,
             r#"{"version":1,"templates":{"../escape":{"content":null,"nonce":"bad","deleted":false}}}"#,
+            r#"{"version":1,"templates":{},"suppressedBuiltins":["../escape"]}"#,
         ] {
             fs::write(&path, text).unwrap();
             assert!(store.list().is_err());

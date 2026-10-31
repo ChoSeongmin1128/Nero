@@ -3,7 +3,7 @@ const emptyContent = () => ({ name: '', description: '', prompt: '' });
 
 export function createTemplateSettingsFlow({ bridge }) {
   let epoch = 0;
-  let state = { active: false, items: [], document: null, draft: null, busy: false, writing: false, error: '', message: '' };
+  let state = { active: false, items: [], catalogRevision: null, document: null, draft: null, busy: false, writing: false, error: '', message: '' };
   const listeners = new Set();
   const publish = changes => { state = { ...state, ...changes }; listeners.forEach(listener => listener()); };
   const dirty = () => state.draft !== null && JSON.stringify(state.draft) !== JSON.stringify(state.document ? contentOf(state.document) : emptyContent());
@@ -33,7 +33,7 @@ export function createTemplateSettingsFlow({ bridge }) {
     },
     reload() {
       if (state.document) return run(() => bridge.getTemplate(state.document.id), document => ({ document, draft: contentOf(document) }));
-      return run(() => bridge.listTemplates(), items => ({ items, draft: null }));
+      return run(() => bridge.readTemplateCatalog(), catalog => ({ items: catalog.templates, catalogRevision: catalog.revision, draft: null }));
     },
     open(id) {
       if (dirty()) return;
@@ -63,10 +63,15 @@ export function createTemplateSettingsFlow({ bridge }) {
     },
     async remove() {
       const document = state.document;
-      if (!document || document.builtIn) return false;
-      const removed = await run(() => bridge.deleteTemplate(document.id, document.revision), () => ({ document: null, draft: null }), true);
+      if (!document) return false;
+      const removed = await run(() => bridge.deleteTemplate(document.id, document.revision), () => ({ document: null, draft: null, catalogRevision: null, items: state.items.filter(item => item.id !== document.id) }), true);
       if (removed) await flow.reload();
       return removed;
+    },
+    resetAll() {
+      if (!state.catalogRevision || state.draft) return Promise.resolve(false);
+      const expected = state.catalogRevision;
+      return run(() => bridge.resetTemplateCatalog(expected), catalog => ({ items: catalog.templates, catalogRevision: catalog.revision, document: null, draft: null, message: '기본 템플릿을 복원하고 사용자 추가와 수정을 초기화했습니다.' }), true);
     },
     dispose() { epoch += 1; listeners.clear(); state = { ...state, active: false }; },
   };

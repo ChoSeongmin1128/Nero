@@ -94,10 +94,6 @@ fn error(error: TemplateError) -> QueryError {
             "template_revision_conflict",
             "템플릿이 변경되었습니다. 최신 수정본을 조회한 뒤 다시 저장해 주세요.",
         ),
-        TemplateError::BuiltinProtected => (
-            "template_builtin_protected",
-            "기본 템플릿은 삭제 대신 기본값으로 되돌리기를 사용하세요.",
-        ),
         TemplateError::Busy => (
             "template_busy",
             "다른 템플릿 변경을 처리 중입니다. 잠시 후 다시 시도해 주세요.",

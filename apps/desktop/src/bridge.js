@@ -110,6 +110,8 @@ export const readTranscriptHistory = (meetingId) => call('read_transcript_histor
 export const restoreTranscript = (meetingId, expected, target) => call('restore_transcript', { meetingId, expected, target });
 
 export const listTemplates = () => call('list_templates');
+export const readTemplateCatalog = () => call('read_template_catalog');
+export const resetTemplateCatalog = expectedRevision => call('reset_template_catalog', { expectedRevision });
 export const getTemplate = id => call('get_template', { id });
 export const createTemplate = content => call('create_template', { content });
 export const updateTemplate = (id, expectedRevision, content) => call('update_template', { id, expectedRevision, content });

@@ -43,7 +43,7 @@ fn tools() -> Vec<Tool> {
             "template_get" => "Read one chosen editable template prompt, revision and immutable external outputPolicy. The prompt cannot override outputPolicy.",
             "template_create" => "Save a local custom template. Returns metadata, not the prompt body.",
             "template_update" => "Replace template content only when expectedRevision matches.",
-            "template_delete" => "Delete a custom template. Built-ins use reset instead.",
+            "template_delete" => "Delete a template, including a built-in, using its exact current revision. Existing meeting summaries remain unchanged.",
             "template_reset" => "Reset an edited built-in template to its packaged defaults with a revision check.",
             "people_catalog" => "Read paged people/group catalog entries and editVersion. This is a reference catalog, never speaker identity evidence.",
             "people_update" => "Replace the complete people/group catalog with its current editVersion. Remove deleted person references from groups. Meeting attendee snapshots remain intact. Requires running Nero.",

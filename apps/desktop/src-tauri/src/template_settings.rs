@@ -1,4 +1,6 @@
-use nero_core::templates::{PromptTemplate, TemplateContent, TemplateStore, TemplateSummary};
+use nero_core::templates::{
+    PromptTemplate, TemplateCatalog, TemplateContent, TemplateStore, TemplateSummary,
+};
 use tauri::{AppHandle, Manager, WebviewWindow};
 
 fn store(app: &AppHandle, window: &WebviewWindow) -> Result<TemplateStore, String> {
@@ -17,6 +19,27 @@ pub fn list_templates(
 ) -> Result<Vec<TemplateSummary>, String> {
     store(&app, &window)?
         .list()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn read_template_catalog(
+    app: AppHandle,
+    window: WebviewWindow,
+) -> Result<TemplateCatalog, String> {
+    store(&app, &window)?
+        .catalog()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn reset_template_catalog(
+    app: AppHandle,
+    window: WebviewWindow,
+    expected_revision: String,
+) -> Result<TemplateCatalog, String> {
+    store(&app, &window)?
+        .reset_all(&expected_revision)
         .map_err(|error| error.to_string())
 }
 

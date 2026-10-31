@@ -62,7 +62,7 @@ offset/limit은 조각 수이며 페이지의 본문을 순서대로 연결하�
 doctor는 저장소가 없는 경우에도 설치 상태를 확인합니다.
 mcp는 stdin/stdout으로 MCP를 제공하며 stdout에 진단 문구를 쓰지 않습니다.
 템플릿 JSON은 name/description/prompt 세 문자열입니다. --file -는 stdin을 읽습니다.
-사용자 템플릿은 삭제하며 기본 템플릿은 삭제 대신 reset을 사용합니다.
+기본/사용자 템플릿을 삭제할 수 있으며 기존 회의 요약은 유지됩니다.
 회의 수정은 실행 중인 Nero에 요청합니다. 파일은 update의 title/notes 또는
 일괄 작업의 expectedVersions와 move의 folderId(null=미분류)를 포함합니다.
 회의/폴더 수정본은 조회 응답의 editVersion이며 sourceVersion과 다릅니다.

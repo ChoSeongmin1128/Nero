@@ -11,14 +11,14 @@ for(const kind of ['people','templates'])test(`${kind} settings can be dismissed
  window.document.body.innerHTML='<dialog><section></section></dialog>';window.eval(bundled.outputFiles[0].text);
  const container=window.document.querySelector('dialog'),panel=container.querySelector('section');container.showModal();
  let resolve;const pending=new Promise(done=>resolve=done);
- const bridge={readPeopleCatalog:()=>pending,listTemplates:()=>pending};
+ const bridge={readPeopleCatalog:()=>pending,readTemplateCatalog:()=>pending};
  const editor=kind==='people'?window.Settings.mountPeopleSettings({panel,container,bridge}):window.Settings.mountTemplateSettings({panel,container,bridge});
  t.after(()=>{editor.dispose();window.happyDOM.abort();});
  if(kind==='people')editor.show();else editor.setActive(true);
  await wait(()=>panel.querySelector('[role="status"]'));
  assert.equal(await editor.beforeLeave(),true);
  editor.hide();
- resolve(kind==='people'?{editVersion:'1',people:[],groups:[]}:[]);
+ resolve(kind==='people'?{editVersion:'1',people:[],groups:[]}:{revision:'catalog:1',templates:[]});
  await new Promise(done=>setImmediate(done));
  assert.equal(panel.querySelector('[role="alert"]'),null);
 });

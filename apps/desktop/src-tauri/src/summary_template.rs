@@ -54,6 +54,18 @@ pub(crate) fn instruction(template: &PromptTemplate, structured: bool) -> String
 mod tests {
     use super::*;
     #[test]
+    fn deleting_the_selected_default_never_substitutes_another_template() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let store = TemplateStore::new(&root);
+        let (selected, _) = select(&root, None).unwrap();
+        store.delete(&selected.id, &selected.revision).unwrap();
+        assert!(!store.list().unwrap().is_empty());
+        assert!(selected.resolve(&root).is_err());
+        assert!(select(&root, Some(selected)).is_err());
+        assert!(select(&root, None).is_err());
+    }
+    #[test]
     fn edited_template_does_not_silently_replace_a_queued_selection() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().canonicalize().unwrap();

@@ -7,7 +7,7 @@ const document = { id: 'meeting', name: '회의', description: '회의 요약', 
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 const flush = () => new Promise(resolve => setImmediate(resolve));
 const setup = async overrides => {
-  const bridge = { listTemplates: async () => [document], getTemplate: async () => document, ...overrides };
+  const bridge = { readTemplateCatalog: async () => ({ revision: 'catalog:1', templates: [document] }), getTemplate: async () => document, ...overrides };
   const flow = createTemplateSettingsFlow({ bridge });
   flow.setActive(true);
   await flush();
@@ -17,12 +17,12 @@ const setup = async overrides => {
 test('repeated active rendering does not reload and inactive responses are ignored', async () => {
   const pending = deferred();
   let calls = 0;
-  const flow = createTemplateSettingsFlow({ bridge: { listTemplates: () => { calls++; return pending.promise; } } });
+  const flow = createTemplateSettingsFlow({ bridge: { readTemplateCatalog: () => { calls++; return pending.promise; } } });
   flow.setActive(true);
   flow.setActive(true);
   assert.equal(calls, 1);
   flow.setActive(false);
-  pending.resolve([document]);
+  pending.resolve({ revision: 'catalog:1', templates: [document] });
   await flush();
   assert.deepEqual(flow.getSnapshot().items, []);
 });
@@ -62,14 +62,11 @@ test('blank drafts do not create persisted templates and duplicate saves are blo
   assert.equal(flow.getSnapshot().document.id, 'custom');
 });
 
-test('built-ins cannot be deleted; reset failure preserves local edits', async () => {
-  let deleted = false;
-  const flow = await setup({ deleteTemplate: async () => { deleted = true; }, resetTemplate: async () => { throw Error('복원 실패'); } });
+test('individual reset failure preserves local edits', async () => {
+  const flow = await setup({ resetTemplate: async () => { throw Error('복원 실패'); } });
   await flow.open('meeting');
   flow.edit('prompt', '유지할 내용');
-  await flow.remove();
   await flow.reset();
-  assert.equal(deleted, false);
   assert.equal(flow.getSnapshot().draft.prompt, '유지할 내용');
 });
 
@@ -77,7 +74,7 @@ test('custom deletion uses the current revision and refreshes the single templat
   const custom = { ...document, id: 'custom', builtIn: false, revision: 'r2' };
   let items = [document, custom];
   let args;
-  const flow = await setup({ listTemplates: async () => items, getTemplate: async () => custom, deleteTemplate: async (...values) => { args = values; items = [document]; } });
+  const flow = await setup({ readTemplateCatalog: async () => ({ revision: 'catalog:1', templates: items }), getTemplate: async () => custom, deleteTemplate: async (...values) => { args = values; items = [document]; } });
   await flow.open('custom');
   await flow.remove();
   assert.deepEqual(args, ['custom', 'r2']);
@@ -87,6 +84,54 @@ test('custom deletion uses the current revision and refreshes the single templat
   assert.equal('deleted' in flow.getSnapshot(), false);
   assert.equal('showDeleted' in flow, false);
   assert.equal('restore' in flow, false);
+});
+
+test('built-in deletion uses the individual revision and can leave the catalog empty', async () => {
+  let items = [document], args;
+  const flow = await setup({
+    readTemplateCatalog: async () => ({ revision: items.length ? 'catalog:1' : 'catalog:2', templates: items }),
+    deleteTemplate: async (...values) => { args = values; items = []; },
+  });
+  await flow.open('meeting'); assert.equal(await flow.remove(), true);
+  assert.deepEqual(args, ['meeting', 'r1']);
+  assert.deepEqual(flow.getSnapshot().items, []);
+  assert.equal(flow.getSnapshot().catalogRevision, 'catalog:2');
+});
+
+test('reset-all atomically consumes the observed catalog revision including an empty catalog', async () => {
+  let expected;
+  const flow = await setup({ readTemplateCatalog: async () => ({ revision: 'empty:1', templates: [] }), resetTemplateCatalog: async revision => { expected = revision; return { revision: 'defaults:2', templates: [document] }; } });
+  assert.equal(await flow.resetAll(), true);
+  assert.equal(expected, 'empty:1');
+  assert.equal(flow.getSnapshot().catalogRevision, 'defaults:2');
+  assert.deepEqual(flow.getSnapshot().items, [document]);
+});
+
+test('reset-all conflicts retain the observed list and do not silently retry over a concurrent addition', async () => {
+  const added = { ...document, id: 'new', builtIn: false };
+  let items = [document], revision = 'catalog:1', calls = 0;
+  const flow = await setup({ readTemplateCatalog: async () => ({ revision, templates: items }), resetTemplateCatalog: async expected => {
+    calls++; if (expected !== revision) throw Error('목록이 변경되었습니다.');
+    items = [document]; revision = 'catalog:3'; return { revision, templates: items };
+  } });
+  items = [document, added]; revision = 'catalog:2';
+  assert.equal(await flow.resetAll(), false);
+  assert.equal(calls, 1); assert.equal(items.length, 2);
+  assert.equal(flow.getSnapshot().catalogRevision, 'catalog:1');
+  assert.match(flow.getSnapshot().error, /변경/);
+  await flow.reload(); assert.equal(flow.getSnapshot().items.length, 2);
+  assert.equal(await flow.resetAll(), true); assert.equal(calls, 2);
+});
+
+test('reset-all keeps write admission exclusive and never replaces an open draft', async () => {
+  const pending = deferred(); let calls = 0;
+  const flow = await setup({ resetTemplateCatalog: async () => { calls++; await pending.promise; return { revision: 'catalog:2', templates: [document] }; } });
+  await flow.open('meeting'); flow.edit('prompt', '초안');
+  assert.equal(await flow.resetAll(), false); assert.equal(calls, 0);
+  flow.discard(); await flow.back();
+  const saving = flow.resetAll(); assert.equal(flow.getSnapshot().writing, true);
+  assert.equal(await flow.resetAll(), false); assert.equal(calls, 1);
+  pending.resolve(); await saving; assert.equal(flow.getSnapshot().writing, false);
 });
 
 test('child Escape never reaches the parent and composing Escape does not dismiss', () => {

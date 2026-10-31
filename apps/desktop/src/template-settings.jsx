@@ -25,7 +25,7 @@ function TemplateSettings({ flow, confirm, beforeLeave }) {
         <label>요약 지침<textarea value={draft.prompt} disabled={state.busy} required spellCheck={false} onChange={event => flow.edit('prompt', event.target.value)} /></label>
         <div className="template-settings-actions">
           {state.document?.builtIn && state.document.customized && <button type="button" className="small" disabled={state.busy} onClick={async () => { if (await confirm('기본값으로 복원할까요?', '이 템플릿의 수정 내용이 기본값으로 바뀝니다.', '복원')) void flow.reset(); }}>기본값으로</button>}
-          {state.document && !state.document.builtIn && <button type="button" className="small icon danger" aria-label="템플릿 삭제" title="템플릿 삭제" disabled={state.busy} onClick={async () => { if (await confirm('템플릿을 삭제할까요?', '이 템플릿을 삭제합니다.', '삭제', true)) void flow.remove(); }}><Trash2 size={15} aria-hidden="true" /></button>}
+          {state.document && <button type="button" className="small icon danger" aria-label="템플릿 삭제" title="템플릿 삭제" disabled={state.busy} onClick={async () => { if (await confirm('템플릿을 삭제할까요?', `기존 회의와 저장된 요약은 유지됩니다.${state.document.builtIn ? ' 삭제한 기본 템플릿은 전체 초기화로 다시 불러올 수 있습니다.' : ''}`, '삭제', true)) void flow.remove(); }}><Trash2 size={15} aria-hidden="true" /></button>}
           <button type="submit" className="small primary" disabled={state.busy || !draft.name.trim() || !draft.prompt.trim() || (!flow.isDirty() && Boolean(state.document))}>{state.busy ? '처리 중' : '저장'}</button>
         </div>
       </form>
@@ -38,8 +38,10 @@ function TemplateSettings({ flow, confirm, beforeLeave }) {
           <button type="button" className="small" disabled={state.busy} aria-label={`${item.name} 편집`} onClick={() => { void flow.open(item.id); }}>편집</button>
         </div>)}
       </div>
-      {!state.items.length && !state.busy && !state.error && <p className="template-settings-description">템플릿이 없습니다.</p>}
-      <div className="template-settings-list-actions"><button type="button" className="small" disabled={state.busy} onClick={() => { void reload(); }}>새로고침</button></div>
+      {!state.items.length && !state.busy && !state.error && <p className="template-settings-description">템플릿이 없습니다. 직접 추가하거나 전체 초기화로 기본 템플릿을 복원하세요.</p>}
+      <div className="template-settings-list-actions"><button type="button" className="small danger" disabled={state.busy || !state.catalogRevision} onClick={async () => {
+        if (await confirm('템플릿을 전체 초기화할까요?', '삭제한 기본 템플릿이 다시 생깁니다. 기본 템플릿의 수정과 직접 추가한 템플릿은 모두 지워집니다. 기존 회의와 저장된 요약은 바뀌지 않습니다.', '전체 초기화', true)) void flow.resetAll();
+      }}>전체 초기화</button></div>
     </>}
     {state.busy && <p className="inline-feedback" role="status"><span className="activity-spinner" aria-hidden="true" /> 처리 중</p>}
     {state.message && <p className="inline-feedback" role="status">{state.message}</p>}
