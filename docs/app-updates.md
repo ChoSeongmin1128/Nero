@@ -11,7 +11,9 @@ is independent of this signature and is not configured by this change.
 - The shared UI controller checks 45 seconds after initialization, then every six
   hours. An available update downloads automatically. Installation requires the
   user's restart action, after the consuming screen has saved all open editors.
-  Settings can also invoke a manual check, download or installation retry.
+  The sidebar footer offers the restart action when ready and shows an icon when
+  navigation is collapsed. Settings can also invoke a manual check; recovery
+  actions remain available through the sidebar or notifications when applicable.
 - Native commands are restricted to the main window. No frontend permission grants
   direct access to the updater plugin's download/install commands. The UI cannot
   supply a signing key, endpoint, destination or installer arguments.
@@ -19,7 +21,8 @@ is independent of this signature and is not configured by this change.
   from `tauri.conf.json`. Feed/signature versions use `<product>+<build>`, e.g.
   `0.0.1+41`. Builds are canonical positive `u64` integers, compared exactly;
   JavaScript receives build strings. A candidate must increase the build number
-  and must not decrease the product version. Ordinary development retains `0.0.1`.
+  and must not decrease the product version. Published product changes follow the
+  [version policy](versioning.md); a build number does not replace a product version.
 - Both official verification (`requireSignedVersion`) and the shared policy verify
   package bytes and the authenticated trusted-comment version. The latter checks
   the entire literal version, including build metadata. An unsigned manifest
@@ -110,8 +113,9 @@ immediate running-app guard. User data removal is not part of updating.
 NSIS is not a transactional package manager. A successful installer launch is not
 proof that every later installation step succeeded. The receipt is checked on
 the next app launch: the exact target reports completion, the previous version
-reports an incomplete update with retry, and an unexpected version is reported
-separately. If the executable cannot start after an external interruption, run the
+reports an incomplete update with retry, and a later compatible app supersedes
+the old pending receipt without warning. Other mismatches are reported separately.
+If the executable cannot start after an external interruption, run the
 retained verified installer manually. Whole-install rollback and power-loss
 acceptance are separate from the tested refusal/launch-error paths; do not claim
 they have been established by unit tests.
@@ -124,18 +128,20 @@ and `setInstalling(boolean)`. Call `start()` once after the app is initialized a
 `dispose()` on teardown. Settings/theme markup belongs to the consuming screen
 and canonical shared design system, not this controller.
 
-`app-update-view.js` connects this controller to the desktop bridge and the General
-settings row. `main.js` starts it after initialization and supplies
+`app-update-view.js` connects this controller to the desktop bridge, sidebar footer
+and General settings row. `main.js` starts it after initialization and supplies
 `prepareAppLeave(() => true)` as the shared leave/save guard. The view owns the
 installation interaction lock; main owns its contribution to `state.editLocks`.
 Available updates download automatically after both scheduled and manual checks.
-Installation is only invoked by the explicit restart action in settings or the
-notification center. Ready updates and recovery messages use the `app-update`
-service in the common notice collection, separately from integration notices.
+Installation is only invoked by the explicit restart action in the sidebar or
+notification center. Actionable update failures use the `app-update` service in
+the common notice collection, separately from integration notices. Ready updates
+remain available through the sidebar without creating a completion notification.
 
-The shared settings row shows only the installed version and action when idle.
-Progress uses the action label and download bar; a current-version check result,
-blocked installation or error uses one status line. A successful pending-install
+The shared settings row shows the installed version and manual-check action.
+The sidebar action appears for download, ready, waiting or recovery states.
+Progress uses the action label and download bar; a blocked installation or error
+uses one status line. A successful pending-install
 receipt does not become a recovery warning or notification. Incomplete installs
 and historical restoration failures retain their recovery messages.
 
@@ -167,7 +173,7 @@ alongside the other commands. Do not route that action through normal `request_q
    `.build-info.json` alongside the archive without overwriting existing output.
 2. Sign the final bytes on the designated signing machine using the dedicated
    Nero updater key. Run the installed Tauri CLI `signer sign` with
-   `--app-version 0.0.1+<build>`, `--private-key-path <private-vault-key>` and the
+   `--app-version <product>+<build>`, `--private-key-path <private-vault-key>` and the
    package path. Supply its password through the existing private signing process.
    `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` supplies the password only to that process;
    never put the password in a command-line argument.
