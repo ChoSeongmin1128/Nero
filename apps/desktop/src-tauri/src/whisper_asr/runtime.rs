@@ -63,6 +63,13 @@ fn plain_path(root: &Path, relative: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+fn target_recipe(spec: &Value) -> Option<Value> {
+    let mut common = spec.as_object()?.clone();
+    let profile = common.get("targets")?.get("windows-x64")?.clone();
+    common.insert("targets".into(), json!({"windows-x64": profile}));
+    Some(Value::Object(common))
+}
+
 impl Runtime {
     pub(super) fn open(cli: PathBuf) -> Result<Self, String> {
         let spec: Value = serde_json::from_str(RUNTIME).map_err(|_| failure())?;
@@ -90,7 +97,7 @@ impl Runtime {
         let receipt_path = plain_path(root, "runtime.json")?;
         let raw = read(&receipt_path, 1024 * 1024)?;
         let receipt: Value = serde_json::from_slice(&raw).map_err(|_| failure())?;
-        if receipt["runtime"] != spec
+        if target_recipe(&receipt["runtime"]) != target_recipe(&spec)
             || receipt["target"] != "windows-x64"
             || receipt["sourceArchiveHashesVerified"] != true
         {
@@ -214,5 +221,24 @@ mod tests {
         runtime.verify().unwrap();
         std::fs::write(temp.path().join("bin/nero-vulkan-probe.exe"), b"changed").unwrap();
         assert!(runtime.verify().is_err());
+    }
+
+    #[test]
+    fn other_platform_recipe_changes_preserve_windows_but_target_and_source_changes_fail() {
+        let temp = tempfile::tempdir().unwrap();
+        let cli = fixture(temp.path());
+        let path = temp.path().join("runtime.json");
+        let mut receipt: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        receipt["runtime"]["targets"]["macos-arm64"] = json!({"backend":"unrelated-metal-recipe"});
+        std::fs::write(&path, serde_json::to_vec(&receipt).unwrap()).unwrap();
+        Runtime::open(cli.clone()).unwrap();
+        let accepted = receipt.clone();
+        receipt["runtime"]["targets"]["windows-x64"]["backend"] = "other".into();
+        std::fs::write(&path, serde_json::to_vec(&receipt).unwrap()).unwrap();
+        assert!(Runtime::open(cli.clone()).is_err());
+        let mut receipt = accepted;
+        receipt["runtime"]["source"]["sha256"] = "0".repeat(64).into();
+        std::fs::write(&path, serde_json::to_vec(&receipt).unwrap()).unwrap();
+        assert!(Runtime::open(cli).is_err());
     }
 }
