@@ -6,18 +6,21 @@ import { Window } from 'happy-dom';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const bundle = await build({ entryPoints: [root + 'src/people-ui.jsx'], bundle: true, write: false, format: 'iife', globalName: 'PeopleUI', jsx: 'automatic', nodePaths: [root + 'node_modules'], loader: { '.css': 'empty' }, define: { 'process.env.NODE_ENV': '"production"' } });
-const wait = async condition => { for (let n = 0; n < 100; n++) { if (condition()) return; await new Promise(resolve => setTimeout(resolve, 5)); } assert.fail('People settings did not settle'); };
+// A bridge call can be counted before its promise/React update has settled.
+// Move to the next task before accepting controls left over from the prior event.
+const wait = async condition => { for (let n = 0; n < 100; n++) { await new Promise(resolve => setTimeout(resolve, 5)); if (condition()) return; } assert.fail('People settings did not settle'); };
 const clone = value => JSON.parse(JSON.stringify(value));
 async function fixture(t) {
   const window = new Window({ url: 'http://nero.test', settings: { enableJavaScriptEvaluation: true, suppressInsecureJavaScriptEnvironmentWarning: true } });
   window.document.body.innerHTML = '<dialog><section></section></dialog>'; window.eval(bundle.outputFiles[0].text);
   const dialog = window.document.querySelector('dialog'), panel = dialog.querySelector('section'); dialog.showModal();
   let catalog = { editVersion: 'catalog:1', people: Array.from({ length: 50 }, (_, index) => ({ id: `p${index}`, name: `사람 ${index + 1}` })), groups: [{ id: 'g1', name: '제품팀', personIds: ['p0', 'p1'] }, { id: 'g2', name: '운영팀', personIds: ['p2'] }] };
-  let conflict = false, reads = 0; const writes = [];
+  let conflict = false, reads = 0, writeGate = null; const writes = [];
   const editor = window.PeopleUI.mountPeopleSettings({ panel, container: dialog, bridge: {
     readPeopleCatalog: async () => { reads++; return clone(catalog); },
     replacePeopleCatalog: async (version, people, groups) => {
       assert.equal(version, catalog.editVersion); writes.push({ version, people: clone(people), groups: clone(groups) });
+      if (writeGate) { const pending = writeGate; writeGate = null; await pending; }
       if (conflict) throw Error('다른 곳에서 목록을 수정했습니다.');
       catalog = { editVersion: `catalog:${writes.length + 1}`, people: clone(people), groups: clone(groups) }; return clone(catalog);
     },
@@ -29,7 +32,8 @@ async function fixture(t) {
     element.dispatchEvent(new window.Event('input', { bubbles: true }));
   };
   const tab = kind => [...panel.querySelectorAll('[role="tab"]')].find(node => node.textContent.startsWith(kind));
-  return { window, panel, editor, input, tab, writes, catalog: () => catalog, conflict: () => { conflict = true; }, reads: () => reads };
+  return { window, panel, editor, input, tab, writes, catalog: () => catalog, conflict: () => { conflict = true; }, reads: () => reads,
+    pauseNextWrite() { let release; writeGate = new Promise(resolve => { release = resolve; }); return release; } };
 }
 
 test('groups have their own tab regardless of a fifty-person list', async t => {
@@ -65,6 +69,22 @@ test('membership filter and continuous addition save atomically and keep input f
   await wait(() => f.writes.length === 3 && input.value === '' && !input.readOnly);
   assert.equal(f.window.document.activeElement, input);
   assert.deepEqual(f.writes.map(write => write.version), ['catalog:1', 'catalog:2', 'catalog:3']);
+});
+
+test('continuous input stays focused and read-only until a pending save completes', async t => {
+  const f = await fixture(t), release = f.pauseNextWrite();
+  const input = f.panel.querySelector('[aria-label="사람 이름 연속 추가"]'); input.focus();
+  f.input(input, '첫 사람,');
+  await wait(() => input.readOnly);
+  assert.equal(f.window.document.activeElement, input);
+  assert.equal(await f.editor.beforeLeave(), false);
+  assert.equal(f.catalog().people.length, 50);
+  release(); await wait(() => !input.readOnly && input.value === '');
+  assert.equal(f.window.document.activeElement, input);
+  f.input(input, '다음 사람'); await wait(() => input.value === '다음 사람');
+  input.closest('form').requestSubmit(); await wait(() => f.writes.length === 2 && input.value === '' && !input.readOnly);
+  assert.equal(f.catalog().people.length, 52);
+  assert.equal(f.window.document.activeElement, input);
 });
 
 test('group membership search, save and delete use the actual catalog write flow', async t => {
