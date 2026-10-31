@@ -214,23 +214,12 @@ impl AgentMutations {
         self.gate
             .wait_ready(&lease.id, &pending, Duration::from_secs(10))?;
         let result = if let Some(ids) = request.trash_ids() {
-            let preflight = request.clone();
-            processing.meeting_removal_with_preflight(
-                core,
-                &ids,
-                || {
-                    if self.gate.closing.load(Ordering::Acquire) {
-                        return Err(nero_core::CoreError::Unavailable);
-                    }
-                    core.agent_validate(preflight)
-                },
-                || {
-                    if self.gate.closing.load(Ordering::Acquire) {
-                        return Err(nero_core::CoreError::Unavailable);
-                    }
-                    core.agent_mutate(request)
-                },
-            )
+            processing.meeting_trash(core, &ids, || {
+                if self.gate.closing.load(Ordering::Acquire) {
+                    return Err(nero_core::CoreError::Unavailable);
+                }
+                core.agent_mutate(request)
+            })
         } else if self.gate.closing.load(Ordering::Acquire) {
             Err(nero_core::CoreError::Unavailable)
         } else if let Mutation::SummaryImport { meeting_id, .. } = &request {
