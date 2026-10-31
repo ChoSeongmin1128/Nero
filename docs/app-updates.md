@@ -152,10 +152,19 @@ alongside the other commands. Do not route that action through normal `request_q
    Keep the actual packaged `build-info.json`, native build and signing receipts.
    Use an NSIS `*-setup.exe` on Windows and a signed/notarized `.app.tar.gz` on Mac.
    The existing DMG remains the manual Mac installer; it is not an updater package.
+   Add `--updater-output <new-file.app.tar.gz>` to `sign-macos.py --notarize`, or
+   reuse an already notarized app with `package-macos-update.py --app <Nero.app>
+   --release-receipt <app.zip.receipt.json> --out <new-file.app.tar.gz>`.
+   The packager checks the actual sealed build metadata against the preserved
+   signing receipt, validates the source and extracted app with codesign/stapler/
+   Gatekeeper, and compares content and permissions. It writes `.receipt.json` and
+   `.build-info.json` alongside the archive without overwriting existing output.
 2. Sign the final bytes on the designated signing machine using the dedicated
    Nero updater key. Run the installed Tauri CLI `signer sign` with
    `--app-version 0.0.1+<build>`, `--private-key-path <private-vault-key>` and the
    package path. Supply its password through the existing private signing process.
+   `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` supplies the password only to that process;
+   never put the password in a command-line argument.
    Do not expose it in terminal output, command history, Git, this document or app
    configuration. Automatic `tauri build` signing binds only the product version;
    re-signing with the independent build is required. Windows can transfer its
@@ -168,17 +177,59 @@ alongside the other commands. Do not route that action through normal `request_q
 4. Generate a local combined feed with
    `node apps/desktop/scripts/app-update-feed.mjs --version 0.0.1 --build <build>
    --tag <release-tag> --verifier <native-executable> --mac <app.tar.gz>
-   --mac-provenance <mac-build-info.json> --windows <setup.exe>
-   --windows-provenance <windows-build-info.json> --out <new-folder/latest.json>`.
+   --mac-provenance <mac-build-info.json> --mac-receipt <mac-package.receipt.json>
+   --windows <setup.exe> --windows-provenance <windows-build-info.json>
+   --windows-receipt <windows-package.receipt.json> --out <new-folder/latest.json>`.
    Each signature must be beside its package as `<package>.sig`. The tool requires
-   both supported platforms, matching clean provenance and the native verifier's
-   authenticated hash. It creates the feed plus a local provenance receipt and
+   both supported platforms, matching clean commit/tree/target provenance and
+   package receipts tied to the actual filename, size and SHA256. The native
+   verifier must return that same authenticated hash. It creates the feed plus a local provenance receipt and
    refuses overwrites. It does not upload anything or include local paths/tokens
    in the public feed.
-5. Publication of the feed/assets to a GitHub release is a separate explicit
-   action. The release's actual tag must match the generated asset URLs. Keep the
-   latest-release policy consistent with the pinned `/releases/latest/` endpoint.
-   Validate actual delivery/installation separately when publication is authorized.
+   Each trusted local packaging receipt has `schemaVersion: 1`, `platform`
+   (`darwin-aarch64` or `windows-x86_64`), `version`, canonical string `build`,
+   `sourceCommit`, `sourceTree`, `sourceDirty: false`, and
+   `artifact: {filename, bytes, sha256}`. It is packaging evidence rather than an
+   independent cryptographic signature. The Windows packaging owner must compare
+   the final NSIS payload/build metadata before producing its receipt.
+
+## Publishing and checking delivery
+
+Publication requires explicit authorization. Keep the actual tag/source immutable
+once public, and keep publishing ownership separate from platform packaging.
+
+1. Upload the final Mac archive, Windows NSIS, both `.sig` files, `latest.json`,
+   and the manual DMG to a release whose tag matches the prepared feed. Use a
+   prerelease with latest disabled until remote verification is complete. Do not
+   mark an unverified release latest or replace an already public asset in place.
+2. Run `node apps/desktop/scripts/verify-app-update-release.mjs --feed <latest.json>
+   --receipt <latest.json.receipt.json> --feed-url
+   https://github.com/ChoSeongmin1128/Nero/releases/download/<tag>/latest.json
+   --verifier <native-executable> --out <new-delivery-receipt.json>`.
+   This downloads the public feed, both packages and signatures into an
+   automatically cleaned temporary directory. It compares the exact prepared
+   feed, package sizes/hashes and signatures, then uses the production headless
+   verifier for the signed version/build. Redirects remain HTTPS-only and bounded;
+   short-lived CDN query strings are never retained in receipts.
+3. Only after verification succeeds, promote that same release to stable/latest.
+   GitHub documents that prereleases cannot be latest; the latest-release choice
+   is separate from uploading assets. See the [GitHub release API](https://docs.github.com/en/rest/releases/releases#create-a-release).
+4. Run the same verification with the pinned feed URL
+   `https://github.com/ChoSeongmin1128/Nero/releases/latest/download/latest.json`
+   and a separate new receipt. A successful tag-specific URL does not prove that
+   installed applications see the correct latest channel.
+5. On each OS, use the existing older installed build to check/download/verify
+   and explicitly install the update. Confirm the old process exits normally,
+   the new process reports the exact target source/build, and the window returns.
+   Compare existing meeting/audio/edited transcript/summary hashes and model
+   metadata, distinguishing normal calendar/control/cache changes. Never create
+   dummy meetings, copy the whole library or cancel actual work to prove acceptance.
+
+Remote delivery receipts explicitly report `installationVerified: false`.
+Installer launch success, signature verification and actual post-restart
+installation/data-preservation acceptance are separate results. On failure,
+retain the verified small receipts and previous working channel. If no channel
+has been promoted yet, leave it unpromoted while producing a new candidate.
 
 Installed build40 and earlier have no updater. Install an updater-enabled build
 once through the manual installer before this channel can update that machine.

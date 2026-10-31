@@ -93,7 +93,7 @@ def verify_dmg(path,app,require_ticket):
         return {'readonly_mount_verified':True,'applications_link':'/Applications','embedded_app_matches_source':True}
     finally:
         if devices:run('hdiutil','detach',devices[0])
-p=argparse.ArgumentParser();p.add_argument('--app',required=True,type=Path);p.add_argument('--output',required=True,type=Path);p.add_argument('--notarize',action='store_true');p.add_argument('--dmg-output',type=Path);p.add_argument('--dmg-builder',default='dmgbuild');p.add_argument('--dmg-only',action='store_true');a=p.parse_args()
+p=argparse.ArgumentParser();p.add_argument('--app',required=True,type=Path);p.add_argument('--output',required=True,type=Path);p.add_argument('--notarize',action='store_true');p.add_argument('--dmg-output',type=Path);p.add_argument('--dmg-builder',default='dmgbuild');p.add_argument('--dmg-only',action='store_true');p.add_argument('--updater-output',type=Path);a=p.parse_args()
 app=a.app.resolve();output=a.output.resolve()
 if app.suffix!='.app' or not (app/'Contents/Info.plist').is_file():raise SystemExit('A built .app is required')
 if output.suffix!='.zip' or output.exists()!=a.dmg_only:raise SystemExit('Use a new ZIP output, or an existing verified ZIP with --dmg-only')
@@ -105,6 +105,9 @@ if dmg and not builder:raise SystemExit('Install the dmgbuild build tool or pass
 new_artifacts=[] if a.dmg_only else [Path(str(output)+'.receipt.json'),Path(str(output)+'.notarization.json')]
 if dmg:new_artifacts.extend([Path(str(dmg)+'.receipt.json'),Path(str(dmg)+'.notarization.json')])
 if any(path.exists() or path.is_symlink() for path in new_artifacts):raise SystemExit('A release receipt or upload path exists; preserve or move it first')
+if a.updater_output:
+    if not a.notarize:raise SystemExit('Updater packaging requires notarization')
+    if any(path.exists() or path.is_symlink() for path in [a.updater_output,Path(str(a.updater_output)+'.receipt.json'),Path(str(a.updater_output)+'.build-info.json')]):raise SystemExit('Updater output already exists')
 identity=os.environ['NERO_SIGN_IDENTITY']
 identities=subprocess.check_output(['security','find-identity','-v','-p','codesigning'],text=True)
 if not any(identity in line and 'Developer ID Application:' in line for line in identities.splitlines()):raise SystemExit('Valid Developer ID Application identity required')
@@ -188,3 +191,5 @@ if dmg:
     dmg_receipt.update(dmg_bytes=dmg.stat().st_size,dmg_sha256=digest(dmg),app_notary=receipt.get('notary'))
     write_receipt(Path(str(dmg)+'.receipt.json'),dmg_receipt)
     print('Created:',dmg,flush=True)
+if a.updater_output:
+    run(sys.executable,'-B',str(Path(__file__).with_name('package-macos-update.py')),'--app',str(app),'--release-receipt',str(Path(str(output)+'.receipt.json')),'--out',str(a.updater_output))
