@@ -71,6 +71,8 @@ def copy_runtime(build, source, destination, package_path):
         for line in linked:
             dependency = line.strip().split(' (', 1)[0]
             if dependency.startswith(('/usr/lib/', '/System/Library/')):
+                if os.path.normpath(dependency) != dependency:
+                    raise ValueError('Whisper system dependency is not canonical')
                 continue
             if not dependency.startswith(('@rpath/', '@loader_path/', '@executable_path/')):
                 raise ValueError('Whisper has a non-system absolute runtime dependency')
