@@ -20,6 +20,9 @@ worker_spec.loader.exec_module(worker_package)
 speech_spec=importlib.util.spec_from_file_location('nero_speech_package',ROOT/'scripts/native-diarization/prepare.py')
 speech_package=importlib.util.module_from_spec(speech_spec)
 speech_spec.loader.exec_module(speech_package)
+whisper_spec=importlib.util.spec_from_file_location('nero_whisper_package',ROOT/'scripts/native-whisper/prepare.py') if (ROOT/'scripts/native-whisper/prepare.py').is_file() else None
+whisper_package=importlib.util.module_from_spec(whisper_spec) if whisper_spec is not None else None
+if whisper_spec is not None:whisper_spec.loader.exec_module(whisper_package)
 MACHO={b'\xcf\xfa\xed\xfe',b'\xce\xfa\xed\xfe',b'\xfe\xed\xfa\xcf',b'\xfe\xed\xfa\xce',b'\xca\xfe\xba\xbe',b'\xbe\xba\xfe\xca'}
 def run(*args,**kwargs):return subprocess.run(args,check=True,**kwargs)
 def digest(path):
@@ -66,6 +69,11 @@ def included_worker(app):
 def included_speech(app):
     candidate=app/'Contents/Resources/native/diarization'
     return candidate if candidate.exists() or candidate.is_symlink() else None
+def included_whisper(app):
+    candidate=app/'Contents/Resources/native/whisper'
+    if not (candidate.exists() or candidate.is_symlink()):return None
+    if whisper_package is None:raise SystemExit('Whisper package verification source is missing')
+    return candidate
 def verify_preserved_worker(app,receipt,application_identity):
     worker=included_worker(app)
     if worker is None:
@@ -77,6 +85,11 @@ def verify_preserved_worker(app,receipt,application_identity):
         if receipt.get('speech_package') is not None:raise SystemExit('The signed speech package is missing')
     else:
         speech_package.verify_signed(speech,receipt.get('speech_package'))
+    whisper=included_whisper(app)
+    if whisper is None:
+        if receipt.get('whisper_package') is not None:raise SystemExit('The signed Whisper package is missing')
+    else:
+        whisper_package.verify_signed(whisper,receipt.get('whisper_package'))
 def verify_dmg(path,app,require_ticket):
     run('hdiutil','verify',str(path))
     attached=plistlib.loads(subprocess.check_output(['hdiutil','attach','-readonly','-nobrowse','-noautoopen','-plist',str(path)]))
@@ -148,6 +161,8 @@ else:
     worker_preflight=worker_package.verify_staged(worker,execute_runtime=True) if worker is not None else None
     speech=included_speech(app)
     speech_preflight=speech_package.verify_staged(speech,target='macos-arm64',execute_runtime=True) if speech is not None else None
+    whisper=included_whisper(app)
+    whisper_preflight=whisper_package.verify_staged(whisper,target='macos-arm64',execute_runtime=True) if whisper is not None else None
     for file in files:
         with file.open('rb') as f:magic=f.read(4)
         if magic in MACHO and not (preserved_agent and file==agent):
@@ -161,9 +176,11 @@ else:
         if digest(agent)!=preserved_agent['sha256'] or preserved_agent['teamIdentifier']!=application_identity['TeamIdentifier']:raise SystemExit('The preserved agent differs from the app signing team')
     worker_receipt=worker_package.verify_signed_transition(worker,worker_preflight,application_identity['TeamIdentifier']) if worker is not None else None
     speech_receipt=speech_package.signed_transition(speech,speech_preflight) if speech is not None else None
+    whisper_receipt=whisper_package.signed_transition(whisper,whisper_preflight) if whisper is not None else None
     output.parent.mkdir(parents=True,exist_ok=True)
     receipt={'bundle_id':info['CFBundleIdentifier'],'version':info['CFBundleShortVersionString'],'build':info['CFBundleVersion'],'source_commit':build_info['sourceCommit'],'source_tree':build_info['sourceTree'],'source_dirty':False,'architecture':subprocess.check_output(['lipo','-archs',str(app/'Contents/MacOS'/info['CFBundleExecutable'])],text=True).strip(),'signed':True,'notarized':False,'app_signature':application_identity,'moss_package':worker_receipt}
     receipt['speech_package']=speech_receipt
+    receipt['whisper_package']=whisper_receipt
     receipt['preserved_agent']=preserved_agent
     if a.notarize:
         receipt['notary']=notarize_bundle(app,output)
