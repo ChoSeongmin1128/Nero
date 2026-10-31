@@ -2,7 +2,6 @@
 use super::*;
 use serde::Deserialize;
 use std::process::{Command, Stdio};
-use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 pub(super) struct Selection {
