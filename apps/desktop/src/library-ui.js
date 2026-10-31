@@ -86,8 +86,8 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     selection().clear();
     selectionAnchor = null;
   }
-  async function show(filter = 'all', { isCurrent = () => true, beforeCommit = () => {} } = {}) {
-    const latest = beginNavigation();
+  async function show(filter = 'all', { isCurrent = () => true, beforeCommit = () => {}, history = false } = {}) {
+    const latest = beginNavigation(history);
     try {
       const changed = await finishEditing(() => {
         if (!latest() || !isCurrent()) return null;

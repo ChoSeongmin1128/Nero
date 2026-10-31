@@ -856,9 +856,7 @@ async fn delete_folder(
         if request.folder.id != id { return Err(nero_core::CoreError::InvalidState("폴더 정보가 변경되었습니다. 다시 확인해 주세요.".into())); }
         if request.trash_meetings && !request.meetings.is_empty() {
             let ids = request.meetings.iter().map(|meeting| meeting.id.clone()).collect::<Vec<_>>();
-            processing.meeting_removal_with_preflight(&core, &ids,
-                || core.validate_folder_delete(request.clone()),
-                || core.delete_folder_checked(request.clone()))
+            processing.meeting_trash(&core, &ids, || core.delete_folder_checked(request.clone()))
         } else { core.delete_folder_checked(request) }
     }).await;
     finish_library_change(&app, state.core.clone(), result).await
@@ -890,7 +888,7 @@ async fn trash_meetings(
     require_main(&window)?;
     let processing = state.processing.clone();
     let result = on_core(state.core.clone(), move |core| {
-        processing.meeting_removal(&core, &ids, || core.trash_meetings(ids.clone()))
+        processing.meeting_trash(&core, &ids, || core.trash_meetings(ids.clone()))
     })
     .await;
     finish_library_change(&app, state.core.clone(), result).await

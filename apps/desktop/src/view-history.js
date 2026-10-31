@@ -32,5 +32,5 @@ export function createViewHistory({ navigate, canVisit = () => true, onChange = 
       if (request === epoch) { pending = null; publish(); }
     }
   }
-  return { visit, go, status };
+  return { visit, go, status, cancel() { if (!pending) return; pending = null; epoch++; publish(); } };
 }

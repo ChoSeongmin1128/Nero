@@ -28,3 +28,8 @@ test('a cancelled restoration cannot change a newer direct view after a slow sav
  let release;let screen='initial';const h=createViewHistory({navigate:async(route,{isCurrent})=>{await new Promise(resolve=>release=resolve);if(!isCurrent())return false;screen=route.id;return true;}});
  h.visit(meeting('a'));h.visit(meeting('b'));const pending=h.go(-1);screen='newer';h.visit(meeting('newer'));release();assert.equal(await pending,false);assert.equal(screen,'newer');
 });
+
+test('a new explicit search cancels pending history even when it opens the same target route',async()=>{
+ let release;const h=createViewHistory({navigate:async(r,{isCurrent})=>{await new Promise(resolve=>release=resolve);return isCurrent();}});
+ h.visit(library());h.visit(meeting('m'));const back=h.go(-1);h.cancel();h.visit(library('all','new query'));release();assert.equal(await back,false);assert.equal(h.status().busy,false);assert.equal(h.status().canBack,true);assert.equal(h.status().canForward,false);
+});

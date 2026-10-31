@@ -94,7 +94,7 @@ const listTime = new Intl.DateTimeFormat('ko-KR', { hour: '2-digit', minute: '2-
 const meetingTimestamp = meeting => meeting.recordedAt ?? meeting.createdAt;
 let pendingQuitSessionId = null;
 let selectionRequest = 0;
-function beginNavigation() { const request = ++selectionRequest; return () => request === selectionRequest; }
+function beginNavigation(history = false) { if (!history) viewHistory?.cancel(); const request = ++selectionRequest; return () => request === selectionRequest; }
 let speakerReplay = null;
 let summaryEvidence = null;
 let lastLiveTranscript = null;
@@ -502,11 +502,12 @@ function saveDraft() {
   });
 }
 
-async function selectMeeting(id, searchIntent = null, isHistoryCurrent = () => true) {
-  const latest = beginNavigation();
+async function selectMeeting(id, searchIntent = null, isHistoryCurrent = null) {
+  const latest = beginNavigation(Boolean(isHistoryCurrent));
+  const historyValid = isHistoryCurrent || (() => true);
   try {
     await finishEditing(() => {
-      if (!latest() || !isHistoryCurrent()) return;
+      if (!latest() || !historyValid()) return;
       const meeting = state.snapshot.meetings.find(item => item.id === id);
       if (!meeting || meeting.deletedAt) return;
       const changed = state.selectedId !== id;
@@ -529,7 +530,7 @@ async function selectMeeting(id, searchIntent = null, isHistoryCurrent = () => t
       }
       render();
     });
-    if (latest() && isHistoryCurrent() && state.selectedId === id && !searchIntent) byId('meeting-detail').focus({ preventScroll: true });
+    if (latest() && historyValid() && state.selectedId === id && !searchIntent) byId('meeting-detail').focus({ preventScroll: true });
   } catch { return; }
 }
 
@@ -1589,7 +1590,7 @@ viewHistory = createViewHistory({
   async navigate(route, { isCurrent }) {
     sidebarViews.close({ focus: false });
     if (route.kind === 'meeting') { await selectMeeting(route.id, null, isCurrent); return isCurrent() && !state.libraryOpen && state.selectedId === route.id; }
-    return await library.show(route.filter, { isCurrent, beforeCommit() { byId('search').value = route.query || ''; state.libraryView = route.view || 'folders'; } });
+    return await library.show(route.filter, { isCurrent, history: true, beforeCommit() { byId('search').value = route.query || ''; state.libraryView = route.view || 'folders'; } });
   },
   onChange(status) { byId('navigation-back').disabled = !status.canBack; byId('navigation-forward').disabled = !status.canForward; },
 });
