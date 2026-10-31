@@ -7,7 +7,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 #[derive(PartialEq)]
 enum Phase {
@@ -146,7 +146,8 @@ impl AgentMutations {
         let worker_core = core.clone();
         let job_state = weak.clone();
         let job_processing = processing.clone();
-        let server = Server::start_with_jobs(
+        let metadata_app = app.clone();
+        let server = Server::start_with_metadata(
             root,
             core,
             move |request| {
@@ -169,6 +170,11 @@ impl AgentMutations {
                         expected_version,
                     } => job_processing.agent_cancel(&job_id, &expected_version),
                 }
+            },
+            move || {
+                Ok(metadata_app
+                    .state::<crate::app_updater::AppUpdates>()
+                    .agent_metadata(metadata_app.path().resource_dir().ok().as_deref()))
             },
         );
         match server {

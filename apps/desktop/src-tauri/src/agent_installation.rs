@@ -656,9 +656,7 @@ pub(super) fn client_info(
         "current" => {
             info.state = "connected".into();
             info.action = "none".into();
-            info.detail = (info.session_state == "outdated").then(|| {
-                format!("업데이트는 완료됐습니다. 이전 대화에는 예전 연결이 남아 있으므로 {name}에서 새 대화로 Nero를 사용해 주세요.")
-            });
+            info.detail = None;
         }
         _ if current_live => {
             info.state = "connected".into();
@@ -693,6 +691,57 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::cell::Cell;
+
+    #[test]
+    fn current_installation_stays_connected_without_historical_session_copy() {
+        let temp = tempfile::tempdir_in(fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
+        let root = temp.path().join("library");
+        let connection = temp.path().join("connection");
+        let installed = temp.path().join("installed");
+        fs::create_dir_all(installed.join("server")).unwrap();
+        fs::write(
+            installed.join("server").join(executable_name()),
+            b"synthetic executable",
+        )
+        .unwrap();
+        fs::write(installed.join("icon.png"), b"synthetic icon").unwrap();
+        let manifest = json!({"name":"nero","version":"0.1.0-nero.33","server":{"mcp_config":{
+            "command":format!("${{__dirname}}/server/{}", executable_name()),
+            "args":["--data-dir",root,"mcp"],
+            "env":{"NERO_CONNECTION_GENERATION":"a".repeat(64),"NERO_CONNECTION_CLIENT":"claude","NERO_CONNECTION_TOKEN":"synthetic token","NERO_CONNECTION_DIR":connection.join("sessions")}
+        }}});
+        fs::write(installed.join("manifest.json"), manifest.to_string()).unwrap();
+        let generation = payload_generation("claude", b"synthetic executable", |name| {
+            Ok(if name == "icon.png" {
+                b"synthetic icon".to_vec()
+            } else {
+                manifest.to_string().into_bytes()
+            })
+        })
+        .unwrap();
+        let registration = json!({"token":"synthetic token"});
+        let installation = HostInstallation::Installed {
+            directory: installed,
+            version: "0.1.0-nero.33".into(),
+            enabled: true,
+        };
+        let info = client_info(
+            "claude",
+            "Claude",
+            &temp.path().join("resources"),
+            &root,
+            &connection,
+            Some(&registration),
+            Some(&generation),
+            &["b".repeat(64)],
+            Some(&installation),
+        );
+        assert_eq!(info.installation_state, "current");
+        assert_eq!(info.session_state, "outdated");
+        assert_eq!(info.state, "connected");
+        assert_eq!(info.action, "none");
+        assert!(info.detail.is_none());
+    }
 
     #[test]
     fn native_probe_fixture() {

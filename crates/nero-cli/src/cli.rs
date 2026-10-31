@@ -59,7 +59,8 @@ offset/limit은 조각 수이며 페이지의 본문을 순서대로 연결하�
 날짜 경계가 없는 날이나 모호한 자정은 거부하며 epoch 경계로 명시할 수 있습니다.
 다음 페이지는 pagination.nextOffset과 첫 sourceVersion을 사용합니다. 예산에 따라 limit보다 적게 반환할 수 있습니다.
 음성 기록 start/end는 초 단위이며 지정 구간과 겹치는 발언을 조회합니다.
-doctor는 저장소가 없는 경우에도 설치 상태를 확인합니다.
+doctor는 저장소가 없어도 실행 중인 연동 버전과 앱 동봉 버전을 비교합니다.
+공개 연동 최신 버전은 확인하지 않으며 네트워크 조회나 자동 설치를 하지 않습니다.
 mcp는 stdin/stdout으로 MCP를 제공하며 stdout에 진단 문구를 쓰지 않습니다.
 템플릿 JSON은 name/description/prompt 세 문자열입니다. --file -는 stdin을 읽습니다.
 기본/사용자 템플릿을 삭제할 수 있으며 기존 회의 요약은 유지됩니다.
@@ -699,7 +700,13 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> i32 {
     };
     match options.action {
         Action::Help => return write_stdout(HELP),
-        Action::Version => return write_stdout(&format!("nero {}\n", env!("CARGO_PKG_VERSION"))),
+        Action::Version => {
+            return write_stdout(&format!(
+                "nero {} (integration {}; API 1)\n",
+                env!("CARGO_PKG_VERSION"),
+                crate::versions::integration_version()
+            ))
+        }
         _ => {}
     }
     let root = match options
@@ -941,6 +948,21 @@ fn render(method: &str, value: &Value, timezone: &TimeZone) -> String {
             output.push('\n');
         }
         "status" => {
+            output.push_str(&format!(
+                "실행 중 연동: {}\n",
+                text(&value["versions"]["running"]["integrationVersion"])
+            ));
+            if let Some(version) = value["versions"]["app"]["integrationVersion"].as_str() {
+                output.push_str(&format!("앱 동봉 연동: {version}\n"));
+                output.push_str(if value["versions"]["matchesAppBundle"] == true {
+                    "앱 동봉 버전과 같음\n"
+                } else {
+                    "앱 동봉 버전과 다름: Nero 설정 > 연동에서 확인\n"
+                });
+            } else {
+                output.push_str("앱 동봉 연동: 확인 불가(앱 실행/동봉 정보 확인 필요)\n");
+            }
+            output.push_str("공개 연동 최신 버전: 확인 안 됨\n");
             output.push_str("조회: 읽기 전용\n템플릿 관리: 가능\n회의 수정: Nero 실행 필요\n");
             output.push_str(if value["rootExists"] == true {
                 "데이터 폴더: 있음\n"
