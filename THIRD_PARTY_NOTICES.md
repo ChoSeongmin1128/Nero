@@ -50,6 +50,15 @@ Copyright (c) 2023-2026 The ggml authors. The complete runtime license is includ
 at `native/whisper/share/licenses/whisper.cpp/LICENSE` in app resources.
 [Runtime license](https://github.com/ggml-org/whisper.cpp/blob/d1be6fde11ac6e0407606b4e42fe72d34add8037/LICENSE).
 
+The Windows Vulkan build also uses Khronos Vulkan-Headers commit
+`2cd90f9d20df57eac214c148f3aed885372ddcfe` (Apache-2.0 OR MIT) and
+SPIRV-Headers commit `2a611a970fdbc41ac2e3e328802aed9985352dca` (MIT for
+the included SPIR-V headers). Their complete license texts are packaged beneath
+`native/whisper/share/licenses/Vulkan-Headers/` and `SPIRV-Headers/`.
+LunarG Vulkan SDK 1.4.321.0, CMake and Ninja are build-only tools; the SDK is not
+distributed or installed on users' systems. Runtime Vulkan loading uses the
+graphics driver's system loader, and CPU operation does not require Vulkan.
+
 The separately downloaded large-v3-turbo Q5_0 model is pinned in
 `config/models/whisper-turbo.json`. Its conversion repository identifies the model
 as MIT-licensed. Model weights are not bundled with the application.

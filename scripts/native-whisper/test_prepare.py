@@ -3,6 +3,7 @@ import importlib.util
 import json
 from pathlib import Path
 import tempfile
+import struct
 import unittest
 from unittest.mock import patch
 
@@ -12,21 +13,66 @@ spec.loader.exec_module(p)
 
 
 class PackageTests(unittest.TestCase):
+    def pe_fixture(self, path, dependencies=()):
+        data = bytearray(4096)
+        data[:2] = b'MZ'
+        struct.pack_into('<I', data, 60, 128)
+        data[128:134] = b'PE\0\0\x64\x86'
+        struct.pack_into('<H', data, 134, 1)
+        struct.pack_into('<H', data, 148, 240)
+        data[152:154] = b'\x0b\x02'
+        struct.pack_into('<IIII', data, 392 + 8, 2048, 4096, 2048, 1024)
+        if dependencies:
+            struct.pack_into('<II', data, 152 + 112 + 8, 4096, (len(dependencies) + 1) * 20)
+            for i, name in enumerate(dependencies):
+                struct.pack_into('<I', data, 1024 + i * 20 + 12, 4096 + 512 + i * 256)
+                raw = name.encode() + b'\0'
+                data[1536 + i * 256:1536 + i * 256 + len(raw)] = raw
+        path.write_bytes(data)
+
     def fixture(self, root, target='windows-x64'):
         names = ['share/licenses/whisper.cpp/LICENSE']
         if target == 'windows-x64':
             names += ['bin/' + name for name in ('whisper-cli.exe', 'whisper.dll', 'ggml.dll',
-                'ggml-base.dll', 'ggml-cpu-x64.dll', 'msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll')]
+                'ggml-base.dll', 'ggml-cpu-x64.dll', 'msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll',
+                'nero-vulkan-probe.exe')]
+            names += ['vulkan/bin/whisper-cli.exe', 'share/licenses/vulkan-sdk/LICENSE.txt']
+            names += [f"share/licenses/{item['repository'].split('/')[-1]}/{license}"
+                      for item in p.SPEC['targets']['windows-x64']['vulkan']['dependencies']
+                      for license in item['licenses']]
         else:
             names += ['bin/whisper-cli', 'lib/libwhisper.1.dylib', 'lib/libggml-metal.0.dylib']
         for name in names:
             path = root / name
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(b'\xcf\xfa\xed\xfe fixture' if not name.endswith('LICENSE') else b'license')
+            if target == 'windows-x64' and path.suffix in ('.exe', '.dll'):
+                self.pe_fixture(path, ['vulkan-1.dll'] if name.startswith('vulkan/') else [])
+            else:
+                path.write_bytes(b'\xcf\xfa\xed\xfe fixture' if not name.endswith('LICENSE') else b'license')
         receipt = {'runtime': copy.deepcopy(p.SPEC), 'target': target,
                    'sourceArchiveHashesVerified': True, 'files': p.package_files(root)}
+        if target == 'windows-x64':
+            receipt['windowsBuild'] = {'flags': p.SPEC['targets'][target]['vulkan']['cmakeFlags'],
+                'toolchainReceiptSha256': 'a'*64, 'cmakeCacheSha256': 'b'*64, 'compiler': {'sha256': 'c'*64}}
+            pe = p.load_module('nero_test_pe', Path(__file__).with_name('windows_pe.py'))
+            receipt['windowsDependencies'] = pe.verify_closure(root)
         self.write_receipt(root, receipt)
         return receipt
+
+    def test_missing_vulkan_build_or_dependency_evidence_is_rejected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            receipt = self.fixture(root)
+            receipt.pop('windowsBuild')
+            self.write_receipt(root, receipt)
+            with self.assertRaisesRegex(ValueError, 'build evidence'):
+                p.verify_staged(root)
+            receipt = self.fixture(root)
+            pe = p.load_module('nero_test_pe', Path(__file__).with_name('windows_pe.py'))
+            for dependencies in [['unpackaged.dll'], ['vulkan-1.dll']]:
+                self.pe_fixture(root / 'bin/nero-vulkan-probe.exe', dependencies)
+                with self.assertRaises(ValueError):
+                    pe.verify_closure(root)
 
     def write_receipt(self, root, receipt):
         (root / 'runtime.json').write_text(json.dumps(receipt), encoding='utf-8')
@@ -63,6 +109,18 @@ class PackageTests(unittest.TestCase):
             self.write_receipt(root, receipt)
             with self.assertRaisesRegex(ValueError, 'pinned'):
                 p.verify_staged(root)
+
+    def test_other_target_recipe_changes_do_not_invalidate_unchanged_metal_receipt(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            receipt = self.fixture(root, 'macos-arm64')
+            receipt['runtime']['targets']['windows-x64'] = {'backend': 'old-cpu-recipe'}
+            self.write_receipt(root, receipt)
+            p.package_receipt(root, 'macos-arm64')
+            receipt['runtime']['targets']['macos-arm64']['backend'] = 'other'
+            self.write_receipt(root, receipt)
+            with self.assertRaises(ValueError):
+                p.package_receipt(root, 'macos-arm64')
 
     def test_duplicate_receipt_and_traversal_are_rejected(self):
         with tempfile.TemporaryDirectory() as folder:

@@ -41,11 +41,18 @@ def package_path(name, prefix):
             or path.as_posix() != name or not path.parts or path.parts[0] != prefix):
         raise ValueError('Unsafe Whisper runtime path')
     relative = PurePosixPath(*path.parts[1:])
-    if relative.as_posix() == 'share/licenses/whisper.cpp/LICENSE':
+    if relative.as_posix() in {'share/licenses/whisper.cpp/LICENSE',
+                              'share/licenses/vulkan-sdk/LICENSE.txt'}:
+        return relative
+    if any(relative.as_posix() == f"share/licenses/{item['repository'].split('/')[-1]}/{license}"
+           for item in SPEC['targets']['windows-x64']['vulkan']['dependencies']
+           for license in item['licenses']):
+        return relative
+    if relative.as_posix() == 'vulkan/bin/whisper-cli.exe':
         return relative
     if relative.parts[:1] == ('bin',) and len(relative.parts) == 2:
         if relative.name in {'whisper-cli', 'whisper-cli.exe', 'whisper.dll',
-                              'ggml.dll', 'ggml-base.dll'} | CRT:
+                              'ggml.dll', 'ggml-base.dll', 'nero-vulkan-probe.exe'} | CRT:
             return relative
         if re.fullmatch(r'ggml-cpu-[a-z0-9]+\.dll', relative.name):
             return relative
@@ -68,6 +75,14 @@ def package_files(root):
     return entries
 
 
+def target_recipe(spec, target):
+    # A change to the other platform must not invalidate an unchanged, signed
+    # package. Source identity and every property of this target remain pinned.
+    if not isinstance(spec, dict) or not isinstance(spec.get('targets'), dict):
+        return None
+    return dict(spec, targets={target: spec['targets'].get(target)})
+
+
 def package_receipt(root, target=None):
     root = Path(root)
     if root.is_symlink() or not root.is_dir():
@@ -76,7 +91,8 @@ def package_receipt(root, target=None):
     if path.is_symlink() or not path.is_file() or path.stat().st_size > 1024 * 1024:
         raise ValueError('Missing Whisper runtime receipt')
     receipt = json.loads(path.read_text(encoding='utf-8'))
-    if (receipt.get('runtime') != SPEC or receipt.get('sourceArchiveHashesVerified') is not True
+    if (target_recipe(receipt.get('runtime'), receipt.get('target')) != target_recipe(SPEC, receipt.get('target'))
+            or receipt.get('sourceArchiveHashesVerified') is not True
             or receipt.get('target') not in SPEC['targets']
             or target is not None and receipt['target'] != target):
         raise ValueError('Whisper runtime differs from its pinned source and target')
@@ -97,7 +113,17 @@ def package_receipt(root, target=None):
     if receipt['target'] == 'windows-x64':
         required |= {'bin/' + name for name in ('whisper-cli.exe', 'whisper.dll', 'ggml.dll',
                     'ggml-base.dll', 'ggml-cpu-x64.dll', 'msvcp140.dll',
-                    'vcruntime140.dll', 'vcruntime140_1.dll')}
+                    'vcruntime140.dll', 'vcruntime140_1.dll', 'nero-vulkan-probe.exe')}
+        required |= {'vulkan/bin/whisper-cli.exe', 'share/licenses/vulkan-sdk/LICENSE.txt'}
+        required |= {f"share/licenses/{item['repository'].split('/')[-1]}/{license}"
+                     for item in SPEC['targets']['windows-x64']['vulkan']['dependencies']
+                     for license in item['licenses']}
+        build = receipt.get('windowsBuild', {})
+        if (build.get('flags') != SPEC['targets']['windows-x64']['vulkan']['cmakeFlags']
+                or re.fullmatch(r'[0-9a-f]{64}', build.get('toolchainReceiptSha256', '')) is None
+                or re.fullmatch(r'[0-9a-f]{64}', build.get('cmakeCacheSha256', '')) is None
+                or re.fullmatch(r'[0-9a-f]{64}', build.get('compiler', {}).get('sha256', '')) is None):
+            raise ValueError('Missing pinned Windows Vulkan build evidence')
         if any(name.startswith('lib/') or name == 'bin/whisper-cli' for name in names):
             raise ValueError('Unexpected macOS file in Windows runtime')
     else:
@@ -116,6 +142,10 @@ def verify_staged(root, target=None, execute_runtime=False):
         raise ValueError('Whisper runtime files differ from their receipt')
     if receipt['target'] == 'macos-arm64':
         verify_macos_links(root)
+    else:
+        pe = load_module('nero_whisper_pe', Path(__file__).with_name('windows_pe.py'))
+        if pe.verify_closure(root) != receipt.get('windowsDependencies'):
+            raise ValueError('Windows dependency inventory differs from its receipt')
     if execute_runtime:
         binary = root / 'bin' / ('whisper-cli.exe' if receipt['target'] == 'windows-x64' else 'whisper-cli')
         result = subprocess.run([str(binary), '--help'], capture_output=True, timeout=15, check=True)
@@ -240,7 +270,7 @@ def verify_macos_links(root):
                 raise ValueError('Whisper dependency escapes its package')
 
 
-def prepare(target, cache, output, redist=None, cmake=None):
+def prepare(target, cache, output, redist=None, cmake=None, toolchain=None):
     if output.exists() or output.is_symlink():
         raise ValueError('Destination exists; preserve it and use a new destination')
     cache.mkdir(parents=True, exist_ok=True)
@@ -248,6 +278,7 @@ def prepare(target, cache, output, redist=None, cmake=None):
     profile = SPEC['targets'][target]
     with tempfile.TemporaryDirectory(prefix='whisper-stage-', dir=output.parent) as folder:
         stage = Path(folder) / 'whisper'
+        windows_build = None
         if target == 'macos-arm64':
             module = load_module('nero_whisper_macos', Path(__file__).with_name('macos.py'))
             module.build(dict(profile, source=SPEC['source']), cache, stage, cmake or ['cmake'], package_path)
@@ -293,8 +324,16 @@ def prepare(target, cache, output, redist=None, cmake=None):
                 destination.parent.mkdir(parents=True)
                 with bundle.extractfile(license) as source, destination.open('xb') as out:
                     shutil.copyfileobj(source, out)
+            module = load_module('nero_whisper_windows', Path(__file__).with_name('windows.py'))
+            preparer = load_module('nero_whisper_preparer', Path(__file__))
+            windows_build = module.build(profile, source_pin, cache, stage,
+                toolchain or ROOT / '.work/toolchains/whisper-vulkan-1.4.321.0', preparer)
         receipt = {'runtime': SPEC, 'target': target, 'sourceArchiveHashesVerified': True,
                    'fileHashScope': 'before Developer ID code signing', 'files': package_files(stage)}
+        if windows_build is not None:
+            receipt['windowsBuild'] = windows_build
+            pe = load_module('nero_whisper_pe', Path(__file__).with_name('windows_pe.py'))
+            receipt['windowsDependencies'] = pe.verify_closure(stage)
         (stage / 'runtime.json').write_text(json.dumps(receipt, indent=2) + '\n', encoding='utf-8')
         verify_staged(stage, target, execute_runtime=True)
         os.rename(stage, output)
@@ -310,8 +349,15 @@ if __name__ == '__main__':
     parser.add_argument('--verify-staged', type=Path)
     parser.add_argument('--optional', action='store_true')
     parser.add_argument('--execute-runtime', action='store_true')
+    parser.add_argument('--toolchain-root', type=Path, default=ROOT / '.work/toolchains/whisper-vulkan-1.4.321.0')
+    parser.add_argument('--prepare-tools', action='store_true')
+    parser.add_argument('--download-only', action='store_true')
     args = parser.parse_args()
-    if args.verify_staged is not None:
+    if args.prepare_tools:
+        module = load_module('nero_whisper_tools', Path(__file__).with_name('toolchain.py'))
+        module.prepare(args.toolchain_root, args.cache, download, sha, args.download_only)
+        print('Verified pinned Whisper build tools.' if not args.download_only else 'Verified build tool archives.')
+    elif args.verify_staged is not None:
         if args.optional and not args.verify_staged.exists() and not args.verify_staged.is_symlink():
             print('Whisper runtime absent: quality recognition unavailable.')
         else:
@@ -320,4 +366,4 @@ if __name__ == '__main__':
     elif args.target is None:
         parser.error('--target is required to prepare a runtime')
     else:
-        prepare(args.target, args.cache, args.output, args.msvc_redist, [args.cmake])
+        prepare(args.target, args.cache, args.output, args.msvc_redist, [args.cmake], args.toolchain_root)

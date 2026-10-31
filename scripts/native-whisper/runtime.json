@@ -14,7 +14,8 @@
     "macos-arm64": {
       "backend": "metal",
       "cmakeFlags": [
-        "-G", "Unix Makefiles",
+        "-G",
+        "Unix Makefiles",
         "-DCMAKE_BUILD_TYPE=Release",
         "-DCMAKE_OSX_ARCHITECTURES=arm64",
         "-DCMAKE_OSX_DEPLOYMENT_TARGET:STRING=13.0",
@@ -32,13 +33,89 @@
       ]
     },
     "windows-x64": {
-      "backend": "cpu",
+      "backend": "vulkan+cpu",
       "archive": {
         "name": "whisper-bin-x64.zip",
         "bytes": 8928640,
         "sha256": "6ba69e3482d7826214f90a6a9c84ca07782aec1e1d0c6a7c30c994fd5d816ccb"
       },
-      "minimumMsvcCrt": [14, 44, 35211, 0]
+      "minimumMsvcCrt": [
+        14,
+        44,
+        35211,
+        0
+      ],
+      "identity": "whisper.cpp-b5454@d1be6fde11ac6e0407606b4e42fe72d34add8037+windows-vulkan1.graph.33c5d49012996dbbed6ae7f3def06564c7947698a33b4739d665ba55957f27ba",
+      "vulkan": {
+        "toolchainSha256": "73092cc76a017b1c88659f690719a1ec0cd7cd64eec6f9ca02b1ac51036f3268",
+        "probeSourceSha256": "a4d1e714e2f9e11886666d635b976d0fc41cc2bfeefe28cc0a6f8a4eaf8d513b",
+        "cmakeFlags": [
+          "-G",
+          "Ninja",
+          "-DCMAKE_BUILD_TYPE:STRING=Release",
+          "-DBUILD_SHARED_LIBS:BOOL=OFF",
+          "-DCMAKE_MSVC_RUNTIME_LIBRARY:STRING=MultiThreaded",
+          "-DGGML_BACKEND_DL:BOOL=OFF",
+          "-DGGML_NATIVE:BOOL=OFF",
+          "-DGGML_CPU_ALL_VARIANTS:BOOL=OFF",
+          "-DGGML_AVX:BOOL=OFF",
+          "-DGGML_AVX2:BOOL=OFF",
+          "-DGGML_AVX512:BOOL=OFF",
+          "-DGGML_FMA:BOOL=OFF",
+          "-DGGML_F16C:BOOL=OFF",
+          "-DGGML_OPENMP:BOOL=OFF",
+          "-DGGML_CUDA:BOOL=OFF",
+          "-DGGML_VULKAN:BOOL=ON",
+          "-DGGML_VULKAN_VALIDATE:BOOL=OFF",
+          "-DWHISPER_BUILD_TESTS:BOOL=OFF",
+          "-DWHISPER_BUILD_EXAMPLES:BOOL=ON",
+          "-DWHISPER_BUILD_SERVER:BOOL=OFF",
+          "-DWHISPER_COMMON_FFMPEG:BOOL=OFF",
+          "-DWHISPER_CURL:BOOL=OFF",
+          "-DWHISPER_COREML:BOOL=OFF",
+          "-DCMAKE_C_FLAGS:STRING=/utf-8",
+          "-DCMAKE_CXX_FLAGS:STRING=/utf-8"
+        ],
+        "dependencies": [
+          {
+            "repository": "KhronosGroup/Vulkan-Headers",
+            "commit": "2cd90f9d20df57eac214c148f3aed885372ddcfe",
+            "bytes": 2760645,
+            "sha256": "e3865307e665f6a4ac4f7bbca7b3ba95e4191c7f8adf9f04b084ef514a2454e9",
+            "licenses": [
+              "LICENSE.md",
+              "LICENSES/Apache-2.0.txt",
+              "LICENSES/MIT.txt"
+            ]
+          },
+          {
+            "repository": "KhronosGroup/SPIRV-Headers",
+            "commit": "2a611a970fdbc41ac2e3e328802aed9985352dca",
+            "bytes": 538726,
+            "sha256": "c2225a49c3d7efa5c4f4ce4a6b42081e6ea3daca376f3353d9d7c2722d77a28a",
+            "licenses": [
+              "LICENSE",
+              "LICENSES/MIT.txt"
+            ]
+          }
+        ],
+        "patch": {
+          "file": "patches/vulkan-execution.patch",
+          "bytes": 703,
+          "sha256": "33c5d49012996dbbed6ae7f3def06564c7947698a33b4739d665ba55957f27ba",
+          "path": "ggml/src/ggml-vulkan/ggml-vulkan.cpp",
+          "baseSha256": "293865e755d40069bd55c6a3a2b0026a69eb34195ca99ffd348e6dde9d6e7cb6",
+          "resultSha256": "b4636c74afb30070955c7e4475b43ba9f8a7aa5a047819716cbbdd639d51b8ad"
+        },
+        "buildPatch": {
+          "file": "patches/shader-workers.patch",
+          "bytes": 661,
+          "sha256": "d326ad5cd65e7634b70d9b3161a14555e0454d1dc5f4a8d8356e4bb5c81a2afa",
+          "path": "ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp",
+          "baseSha256": "f146edcdb52dfdee67c628bec9c31f236230e9fd61c775cf5a158171154c5f33",
+          "resultSha256": "2fa97e1117722b05fce3c79611062faf16cd2afde7f2a410dd9a86813d1ec03c"
+        }
+      }
     }
   }
 }

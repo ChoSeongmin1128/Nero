@@ -1,0 +1,11 @@
+--- a/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
++++ b/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
+@@ -340,7 +340,7 @@
+ compile_count_guard acquire_compile_slot() {
+     // wait until fewer than N compiles are in progress.
+     // 16 is an arbitrary limit, the goal is to avoid "failed to create pipe" errors.
+-    uint32_t N = std::max(1u, std::min(16u, std::thread::hardware_concurrency()));
++    uint32_t N = 1; // Nero: outer -j2 plus one shader compiler stays bounded.
+     std::unique_lock<std::mutex> guard(compile_count_mutex);
+     compile_count_cond.wait(guard, [N] { return compile_count < N; });
+     compile_count++;

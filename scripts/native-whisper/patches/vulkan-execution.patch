@@ -1,0 +1,19 @@
+--- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -14679,6 +14679,16 @@
+         ggml_vk_synchronize(ctx);
+     }
+ 
++    // Nero evidence: report actual non-empty GPU work only after synchronization.
++    // One additional synchronization per CLI process; no graph/model/math changes.
++    static std::once_flag nero_execution_evidence;
++    if (total_flops > 0) {
++        std::call_once(nero_execution_evidence, [&]() {
++            ggml_vk_synchronize(ctx);
++            GGML_LOG_INFO("ggml_backend_vk_graph_compute: nero-vulkan-graph-completed-v1 device=%s\n", ctx->name.c_str());
++        });
++    }
++
+     return GGML_STATUS_SUCCESS;
+ 
+     UNUSED(backend);
