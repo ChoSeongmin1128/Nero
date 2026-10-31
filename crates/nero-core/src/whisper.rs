@@ -43,8 +43,21 @@ struct Window {
     native_exit_code: i32,
     actual_backend: String,
     backend_evidence: String,
+    #[serde(default)]
+    execution: Option<Execution>,
     word_start: usize,
     word_count: usize,
+}
+
+// v2 adds target/package/executable provenance without rewriting v1 artifacts.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Execution {
+    runtime_identity: String,
+    runtime_receipt_sha256: String,
+    executable_sha256: String,
+    stderr_sha256: String,
+    probe_result_sha256: String,
 }
 
 fn invalid() -> CoreError {
@@ -70,7 +83,8 @@ pub(crate) fn decode_asr(raw: &[u8], duration: f64, session: &str, id: &str) -> 
         serde_json::from_str(include_str!("../../../scripts/native-whisper/runtime.json"))
             .map_err(|_| invalid())?;
     let input_duration = output.input_audio_frames as f64 / SAMPLE_RATE as f64;
-    if output.schema_version != 1
+    if !matches!(output.schema_version, 1 | 2)
+        || output.schema_version == 2 && output.target != "windows-x64"
         || output.model != MODEL
         || Some(output.model_revision.as_str()) != model["revision"].as_str()
         || Some(output.model_sha256.as_str()) != model["files"][0]["sha256"].as_str()
@@ -103,13 +117,32 @@ pub(crate) fn decode_asr(raw: &[u8], duration: f64, session: &str, id: &str) -> 
             .checked_add(window.word_count)
             .ok_or_else(invalid)?;
         let backend_valid = match (
+            output.schema_version,
             output.target.as_str(),
             window.actual_backend.as_str(),
             window.backend_evidence.as_str(),
         ) {
-            ("windows-x64", "cpu", "explicit-no-gpu") => true,
-            ("macos-arm64", "metal", "metal-backend-initialized") => true,
-            ("macos-arm64", "cpu", "confirmed-gpu-unavailable") => true,
+            (1, "windows-x64", "cpu", "explicit-no-gpu") => true,
+            (1, "macos-arm64", "metal", "metal-backend-initialized") => true,
+            (1, "macos-arm64", "cpu", "confirmed-gpu-unavailable") => true,
+            (2, "windows-x64", "vulkan", "vulkan-backend-initialized") => true,
+            (2, "windows-x64", "cpu", "confirmed-gpu-unavailable") => true,
+            _ => false,
+        };
+        let execution_valid = match (output.schema_version, &window.execution) {
+            (1, None) => true,
+            (2, Some(execution)) => {
+                Some(execution.runtime_identity.as_str())
+                    == runtime["targets"]["windows-x64"]["identity"].as_str()
+                    && [
+                        &execution.runtime_receipt_sha256,
+                        &execution.executable_sha256,
+                        &execution.stderr_sha256,
+                        &execution.probe_result_sha256,
+                    ]
+                    .iter()
+                    .all(|value| hash(value))
+            }
             _ => false,
         };
         if window.index != index
@@ -126,6 +159,7 @@ pub(crate) fn decode_asr(raw: &[u8], duration: f64, session: &str, id: &str) -> 
             || !hash(&window.native_result_sha256)
             || window.native_exit_code != 0
             || !backend_valid
+            || !execution_valid
             || window.word_start != next_word
             || stop > output.words.len()
         {
@@ -212,6 +246,45 @@ pub(crate) mod tests {
 
     pub(crate) fn raw() -> Vec<u8> {
         serde_json::to_vec(&value()).unwrap()
+    }
+
+    #[test]
+    fn windows_vulkan_v2_requires_target_runtime_and_execution_receipts_while_v1_stays_readable() {
+        let mut v = value();
+        v["schemaVersion"] = 2.into();
+        v["windows"][0]["actualBackend"] = "vulkan".into();
+        v["windows"][0]["backendEvidence"] = "vulkan-backend-initialized".into();
+        let runtime: Value =
+            serde_json::from_str(include_str!("../../../scripts/native-whisper/runtime.json"))
+                .unwrap();
+        v["windows"][0]["execution"] = json!({"runtimeIdentity":runtime["targets"]["windows-x64"]["identity"],
+            "runtimeReceiptSha256":"a".repeat(64),"executableSha256":"b".repeat(64),
+            "stderrSha256":"c".repeat(64),"probeResultSha256":"d".repeat(64)});
+        let decode = |v: &Value| decode_asr(&serde_json::to_vec(v).unwrap(), 2.0, "session", "id");
+        assert!(decode(&v).is_ok());
+        let valid = v.clone();
+        for (pointer, forged) in [
+            ("/schemaVersion", json!(1)),
+            ("/target", json!("macos-arm64")),
+            ("/windows/0/execution", json!(null)),
+            ("/windows/0/execution/runtimeIdentity", json!("other")),
+            ("/windows/0/execution/probeResultSha256", json!("missing")),
+            ("/windows/0/execution/executableSha256", json!("missing")),
+            ("/windows/0/backendEvidence", json!("explicit-no-gpu")),
+        ] {
+            let mut forged_value = valid.clone();
+            *forged_value.pointer_mut(pointer).unwrap() = forged;
+            assert!(decode(&forged_value).is_err(), "{pointer}");
+        }
+        v["windows"][0]["actualBackend"] = "cpu".into();
+        v["windows"][0]["backendEvidence"] = "confirmed-gpu-unavailable".into();
+        assert!(decode(&v).is_ok());
+        assert!(decode(&value()).is_ok());
+        let mut metal = value();
+        metal["target"] = "macos-arm64".into();
+        metal["windows"][0]["actualBackend"] = "metal".into();
+        metal["windows"][0]["backendEvidence"] = "metal-backend-initialized".into();
+        assert!(decode(&metal).is_ok());
     }
 
     fn one_second_value() -> Value {

@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "sdk": {
+    "version": "1.4.321.0",
+    "name": "vulkansdk-windows-X64-1.4.321.0.exe",
+    "bytes": 256146880,
+    "sha256": "14ebc56ef981e03a292adadd2559fbbfcd0289ec157bfd0f0d5f9fdcb40042a9",
+    "url": "https://sdk.lunarg.com/sdk/download/1.4.321.0/windows/vulkansdk-windows-X64-1.4.321.0.exe",
+    "arguments": ["--accept-licenses", "--default-answer", "--confirm-command", "install", "com.lunarg.vulkan.core", "copy_only=1"]
+  },
+  "cmake": {
+    "version": "4.1.2",
+    "name": "cmake-4.1.2-windows-x86_64.zip",
+    "bytes": 48615221,
+    "sha256": "82730741149681597510a4bc7095da1460b472dac24eaf9c23ad7440f47753ab",
+    "url": "https://github.com/Kitware/CMake/releases/download/v4.1.2/cmake-4.1.2-windows-x86_64.zip"
+  },
+  "ninja": {
+    "version": "1.13.1",
+    "name": "ninja-win.zip",
+    "bytes": 289808,
+    "sha256": "26a40fa8595694dec2fad4911e62d29e10525d2133c9a4230b66397774ae25bf",
+    "url": "https://github.com/ninja-build/ninja/releases/download/v1.13.1/ninja-win.zip"
+  }
+}

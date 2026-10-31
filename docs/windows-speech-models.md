@@ -2,7 +2,8 @@
 
 Setup and Settings share the same selector. Nemotron 3.5 streaming ASR 0.6B Q8
 is the default. Whisper large-v3-turbo Q5 is an explicit alternative using the
-packaged whisper.cpp CLI on Windows CPU. Both use the independent Nemotron 3 Q8
+packaged whisper.cpp CLI with Vulkan preference and a separate CPU runtime on
+Windows. Both use the independent Nemotron 3 Q8
 speaker model. SenseVoice is not a product engine.
 
 Selection is stored locally for subsequent work. Selection does not download
@@ -49,6 +50,18 @@ anchors without interpolation. Unusable word spans retain the complete native
 segment as context with an unknown speaker; invalid generated UTF-8 is rejected
 with audio and raw output preserved. ASR is saved before speaker finalization;
 speaker retry reuses that artifact. See [live speech](live-speech.md).
+
+Whisper's Windows capability probe checks the system Vulkan loader and physical
+device features before selecting an isolated, hash-verified Vulkan executable.
+The job keeps its selected physical device. Actual acceleration requires model
+allocation, GPU backend and a synchronized non-empty GPU graph diagnostic plus successful native
+completion; a loader or GPU name alone is insufficient. Only confirmed unsupported
+capability selects the packaged CPU executable. Other initialization, memory,
+timeout and processing failures preserve the audio and report failure. There is no
+additional GPU setting or SDK installation for users. Target package/executable,
+probe and diagnostic hashes accompany new v2 windows; old CPU/Metal v1 results
+retain their original readable provenance. Build and runtime contracts are in
+[native Whisper preparation](../scripts/native-whisper/README.md).
 
 Only a pinned final sub-10 ms terminal tick can be retained as explicitly audited
 segment context: the exact PCM end closes its context range, the original native
