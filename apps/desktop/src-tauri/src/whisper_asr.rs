@@ -340,6 +340,9 @@ impl Buffered {
         }
         writer.finalize().map_err(|e| e.to_string())?;
         input.as_file().sync_all().map_err(|e| e.to_string())?;
+        // Close the writable handle before native CRT/miniaudio opens it on
+        // Windows. Keep TempPath ownership so every exit still removes the WAV.
+        let input = input.into_temp_path();
         let index = self.windows.len();
         let prefix = self.work.join(format!("whisper-window-{index}"));
         let native_path = prefix.with_extension("json");
@@ -349,7 +352,7 @@ impl Buffered {
         let run = run_cli(
             &self.cli,
             &self.model,
-            input.path(),
+            &input,
             &prefix,
             &self.work,
             cancel,
