@@ -161,6 +161,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     const mountTemplateSettings = () => testTemplateSettings;
     const mountAppUpdateRecovery = () => ({ update() {} });
     const mountAppUpdateView = () => ({ start: async () => {}, perform: async () => false });
+    const mountSpeechModelPicker = () => ({update(){}});
     const mountPeopleSettings = () => ({show(){},hide(){},beforeLeave:async()=>true,isConfirming:()=>false});
     const mountMeetingAttendees = () => ({open:async()=>{},beforeLeave:async()=>true,dispose(){}});
     const mountNotificationCenter = testMountNotificationCenter;

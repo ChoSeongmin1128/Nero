@@ -1,0 +1,15 @@
+.speech-model-picker { min-width: 0; border: 0; margin: 0; padding: 0; }
+.speech-model-picker legend { margin-bottom: 10px; padding: 0; }
+.speech-model-choices { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.speech-model-choice { display: flex; align-items: flex-start; gap: 10px; padding: 12px; background: var(--surface); cursor: pointer; }
+.speech-model-choice + .speech-model-choice { border-top: 1px solid var(--border); }
+.speech-model-choice:has(input:checked) { background: var(--accent-subtle); }
+.speech-model-choice:has(input:focus-visible) { outline: 2px solid var(--focus); outline-offset: -2px; }
+.speech-model-choice input { appearance: auto; flex: none; margin: 4px 0 0; accent-color: var(--accent); }
+.speech-model-copy { display: flex; flex-direction: column; min-width: 0; gap: 4px; overflow-wrap: anywhere; }
+.speech-model-copy strong { font-size: var(--text-label-size); font-weight: var(--weight-semibold); }
+.speech-model-picker p { margin: 8px 0 0; line-height: var(--leading-reading); }
+.speech-model-picker button { margin-top: 10px; }
+.speech-model-picker:disabled .speech-model-choice { cursor: default; }
+#setup-speech-picker { margin-bottom: 16px; }
+#settings-speech-picker { margin: 20px 0; }
