@@ -192,11 +192,11 @@ impl AppUpdates {
             .and_then(|bytes| serde_json::from_slice::<RecoveryRecord>(&bytes).ok());
         let pending_message = read_limited(&cache.join("pending.json"), MAX_METADATA).ok()
             .and_then(|bytes| serde_json::from_slice::<PendingInstall>(&bytes).ok())
-            .map(|pending| if current == pending.target {
-                "업데이트를 완료했습니다.".to_string()
+            .and_then(|pending| if current == pending.target {
+                None
             } else if current == pending.from {
-                "이전 업데이트가 완료되지 않았습니다. 현재 앱과 회의 데이터는 유지됩니다. 다시 시도할 수 있습니다.".into()
-            } else { "이전 업데이트 기록과 현재 앱 버전이 다릅니다. 현재 앱을 유지합니다.".into() });
+                Some("이전 업데이트가 완료되지 않았습니다. 현재 앱과 회의 데이터는 유지됩니다. 다시 시도할 수 있습니다.".into())
+            } else { Some("이전 업데이트 기록과 현재 앱 버전이 다릅니다. 현재 앱을 유지합니다.".into()) });
         // A newly launched app may have been manually repaired. Preserve the
         // historical warning/path without claiming the prior restore succeeded.
         let recovery_message = previous_recovery.as_ref().map(|_| "이전 업데이트에서 앱 복원에 실패했습니다. 이전 앱의 보관 위치와 설치 상태를 확인해 주세요.".to_string()).or(pending_message);
@@ -209,7 +209,7 @@ impl AppUpdates {
             downloaded_bytes: 0,
             total_bytes: None,
             download_ready: false,
-            message: "업데이트를 확인할 수 있습니다.".into(),
+            message: String::new(),
             recovery_message,
             recovery_required: false,
             previous_app_path: previous_recovery
@@ -877,6 +877,22 @@ mod tests {
             .recovery_message
             .unwrap()
             .contains("완료되지 않았"));
+        let completed = PendingInstall {
+            from: ReleaseIdentity::new(
+                &initial.current.version,
+                &(initial.current.build - 1).to_string(),
+            )
+            .unwrap(),
+            target: initial.current.clone(),
+        };
+        write_atomic(
+            &tmp.path().join("pending.json"),
+            &serde_json::to_vec(&completed).unwrap(),
+        )
+        .unwrap();
+        let completed_state = AppUpdates::new(tmp.path().into()).unwrap();
+        assert!(completed_state.view().recovery_message.is_none());
+        assert!(completed_state.view().message.is_empty());
         assert!(read_limited(&tmp.path().join("pending.json"), 2).is_err());
         write_atomic(&tmp.path().join("package"), b"old").unwrap();
         write_atomic(&tmp.path().join("package"), b"new").unwrap();

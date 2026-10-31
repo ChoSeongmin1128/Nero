@@ -1,7 +1,7 @@
 // Native verification and installation policy live in Rust. The consuming screen
 // owns styling and must finish every editor save before calling install().
 export function createAppUpdater({ invoke, listen, saveEdits, onChange = () => {}, setInstalling = () => {}, schedule = setTimeout, unschedule = clearTimeout }) {
-  let snapshot = { phase: 'idle', message: '업데이트를 확인할 수 있습니다.' };
+  let snapshot = { phase: 'idle', message: '' };
   let disposed = false;
   let busy = false;
   let recoveryQuitting = false;
@@ -76,7 +76,9 @@ export function createAppUpdater({ invoke, listen, saveEdits, onChange = () => {
 
 export function appUpdateAction(status) {
   if (status?.recoveryRequired || status?.phase === 'recoveryRequired') return { action: 'quitForRecovery', label: '복구 안내 확인 후 종료', disabled: false };
-  if (['checking', 'downloading', 'installing'].includes(status?.phase)) return { action: null, label: '진행 중…', disabled: true };
+  if (status?.phase === 'checking') return { action: null, label: '확인 중…', disabled: true };
+  if (status?.phase === 'downloading') return { action: null, label: '다운로드 중…', disabled: true };
+  if (status?.phase === 'installing') return { action: null, label: '설치 중…', disabled: true };
   if (['ready', 'waiting'].includes(status?.phase)) return { action: 'install', label: '다시 시작해 업데이트', disabled: false };
   if (status?.phase === 'error' && status.downloadReady) return { action: 'install', label: '업데이트 설치 재시도', disabled: false };
   if (status?.phase === 'available') return { action: 'download', label: '업데이트 다운로드', disabled: false };

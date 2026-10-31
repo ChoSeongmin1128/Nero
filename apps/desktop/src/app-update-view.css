@@ -4,3 +4,17 @@
 .settings-app-update > p { margin-top: 8px; }
 .settings-app-update progress { width: 100%; margin-top: 10px; }
 .settings-app-update button { flex: none; }
+
+#sidebar-app-update { position: relative; min-width: 0; }
+#sidebar-app-update[hidden], #sidebar-app-update [data-app-update-progress][hidden] { display: none; }
+#sidebar-app-update [data-app-update-label] { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#sidebar-app-update [data-app-update-progress] { position: absolute; inset: auto 8px 1px; width: calc(100% - 16px); height: 2px; margin: 0; }
+#sidebar-app-update[data-update-phase="downloading"] > [data-detail-icon],
+#sidebar-app-update[data-update-phase="installing"] > [data-detail-icon] { display: none; }
+#sidebar-app-update[data-update-phase="downloading"]::before,
+#sidebar-app-update[data-update-phase="installing"]::before { content: ''; flex: none; width: 14px; height: 14px; border: 1.5px solid var(--border-control); border-top-color: currentColor; border-radius: 50%; animation: app-update-spin 800ms linear infinite; }
+@keyframes app-update-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  #sidebar-app-update[data-update-phase="downloading"]::before,
+  #sidebar-app-update[data-update-phase="installing"]::before { animation: none; }
+}

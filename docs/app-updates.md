@@ -133,6 +133,12 @@ Installation is only invoked by the explicit restart action in settings or the
 notification center. Ready updates and recovery messages use the `app-update`
 service in the common notice collection, separately from integration notices.
 
+The shared settings row shows only the installed version and action when idle.
+Progress uses the action label and download bar; a current-version check result,
+blocked installation or error uses one status line. A successful pending-install
+receipt does not become a recovery warning or notification. Incomplete installs
+and historical restoration failures retain their recovery messages.
+
 Commands: `app_update_status`, `app_update_check`, `app_update_download`,
 `app_update_install`. Status events use `nero://app-update`. Public status fields:
 `phase`, `currentVersion`, `currentBuild`, `availableVersion`, `availableBuild`,
