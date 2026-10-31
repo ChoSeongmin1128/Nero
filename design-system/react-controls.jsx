@@ -28,6 +28,7 @@ function snapshot(record) {
     min: input.min || '', max: input.max || '',
     label: input.getAttribute('aria-label') || record.label,
     invalid: input.getAttribute('aria-invalid') === 'true',
+    describedBy: input.getAttribute('aria-describedby') || undefined,
     options: record.kind === 'select' ? nativeOptions(input) : null,
   };
 }
@@ -83,7 +84,7 @@ function NativeSelect({ record }) {
   return <Select items={options} value={state.value} open={record.open} disabled={state.disabled} modal={false}
     onOpenChange={open => setOpen(record, open)} onValueChange={value => { if (value !== null) commit(record, value); }}>
     <SelectTrigger aria-label={`${state.label}: ${selectedLabel}`}
-      aria-invalid={state.invalid || undefined} data-field={record.input.dataset.field}>
+      aria-invalid={state.invalid || undefined} aria-describedby={state.describedBy} data-field={record.input.dataset.field}>
       <SelectValue>{selectedLabel}</SelectValue>
     </SelectTrigger>
     <SelectContent container={portal(record)} aria-label={state.label}>

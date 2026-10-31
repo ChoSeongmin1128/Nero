@@ -32,7 +32,7 @@ impl SpeechEngine {
     }
     pub(super) fn description(self) -> &'static str {
         match self {
-            Self::Nemotron => "기본 선택. 녹음 중 이어서 처리해 종료 후 대기를 줄입니다. Windows CPU 경로의 메모리 사용을 줄였습니다.",
+            Self::Nemotron => "녹음과 함께 음성 기록을 준비합니다. 지원되는 GPU를 우선 사용하고 CPU로도 처리할 수 있습니다.",
             Self::WhisperTurbo => if cfg!(windows) {
                 "한국어를 포함한 언어별 결과가 Nemotron과 다를 수 있습니다. Windows에서는 CPU로 구간별 처리하며, 더 많은 메모리와 처리 시간이 필요할 수 있습니다. 녹음 종료 후에도 추가로 기다릴 수 있습니다."
             } else {

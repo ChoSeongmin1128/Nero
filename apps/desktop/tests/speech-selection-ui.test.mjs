@@ -22,7 +22,7 @@ const choices = [
   {id:'whisperTurbo',label:'Whisper turbo',description:'구간별 처리로 녹음 종료 후 추가 시간이 필요할 수 있습니다.',modelBytes:574_041_195,ready:false,supported:true},
 ];
 const wait = async predicate => { for(let i=0;i<100;i++){if(predicate())return;await new Promise(resolve=>setTimeout(resolve,5));} assert.fail('Speech UI did not settle'); };
-async function fixture(t,{select,ready=true,session=null,supported=true}={}) {
+async function fixture(t,{select,ready=true,session=null,supported=true,devices=[]}={}) {
   const window = new Window({url:'http://nero.test',settings:{enableJavaScriptEvaluation:true,suppressInsecureJavaScriptEnvironmentWarning:true,disableCSSFileLoading:true,disableJavaScriptFileLoading:true}});
   t.after(()=>window.happyDOM.abort()); window.document.write(html);
   for(const name of ['appearance','icons','components']) window.eval(await readFile(new URL(`../../../design-system/${name}.js`,import.meta.url),'utf8'));
@@ -30,7 +30,7 @@ async function fixture(t,{select,ready=true,session=null,supported=true}={}) {
   let progress={revision:1,status:'idle',supported:true,modelReady:ready,summarySupported:true,summaryReady:true,speechEngine:'nemotron',speechChoices:choices.map(choice=>({...choice,supported:choice.id==='whisperTurbo'?supported:choice.supported}))};
   const stubs={
     readSnapshot:()=>({revision:1,meetings:session?[{id:'one',title:'회의',notes:'',createdAt:1,status:session.state}]:[],folders:[],session}),
-    processingStatus:()=>progress,listDevices:()=>[],setAutoRecorder(){},listTemplates:()=>[],
+    processingStatus:()=>progress,listDevices:()=>devices,setAutoRecorder(){},listTemplates:()=>[],
     readTerminologySettings:()=>({available:false}),agentConnectionInfo:()=>({available:false,clients:[]}),
     readCalendarSettings:()=>({revision:1,configured:false,connected:false,calendars:[],selectedCalendars:[]}),
     readTranscript:()=>null,readSummary:()=>null,
@@ -84,7 +84,7 @@ test('native selection rejection preserves the old choice in both views and disp
 });
 
 test('unsupported choices and recording lock selection without invoking a change',async t=>{
-  const f=await fixture(t,{supported:false});
+  const f=await fixture(t,{supported:false,devices:[{id:"input",name:"마이크",isDefault:true}]});
   assert.equal(f.radio('settings','whisperTurbo').disabled,true);
   f.radio('settings','whisperTurbo').click();
   assert.equal(f.calls.some(call=>call.name==='setSpeechEngine'),false);
@@ -94,6 +94,12 @@ test('unsupported choices and recording lock selection without invoking a change
   assert.equal(f.get('settings-microphone-hint').hidden,false);
   assert.equal(f.get('settings-message').hidden,true);
   assert.equal(f.get('auto-recorder').disabled,false);
+  const trigger=()=>f.window.document.querySelector('[role=combobox][data-field="settings-microphone"]');
+  await wait(()=>trigger()?.getAttribute('aria-describedby')==='settings-microphone-hint');
+  assert.equal(trigger().disabled,true);
+  f.subscriptions.subscribeSnapshots({revision:3,meetings:[],folders:[],session:null});
+  await wait(()=>f.get('settings-microphone-hint').hidden&&!trigger()?.hasAttribute('aria-describedby'));
+  assert.equal(trigger().disabled,false);
 });
 
 

@@ -40,7 +40,7 @@
 
 ## 다운로드
 
-첫 공개 배포를 준비하고 있습니다. 설치 파일과 버전별 안내는 [GitHub Releases](https://github.com/ChoSeongmin1128/Nero/releases)에 게시됩니다.
+최신 설치 파일과 버전별 안내는 [GitHub Releases](https://github.com/ChoSeongmin1128/Nero/releases)에서 확인하세요.
 
 | 운영체제 | 설치 파일 | 지원 범위 |
 | --- | --- | --- |

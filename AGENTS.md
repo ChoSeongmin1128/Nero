@@ -60,7 +60,7 @@ This file applies to the entire repository.
 - ASR and diarization share the pinned native speech package. Its target identity,
   source recipe and hashes are owned by `scripts/native-diarization/runtime.json`;
   Core and all workers use `speech_runtime` rather than independent pin strings.
-  macOS uses only the verified PR47 mmap backport. Windows keeps Nemotron as the
+  macOS uses the PR47 mmap backport with pinned portable ARM and OS deployment settings. Windows keeps Nemotron as the
   default ASR and independent speaker models; its CPU runtime uses PR47 plus the
   pinned bounded scheduler-allocation patch, while Vulkan retains the official
   base. The Windows target identity describes this composite package, not a
@@ -70,7 +70,7 @@ This file applies to the entire repository.
   and generic runtime failures do not authorize CPU fallback. Windows packages contain
   Vulkan and CPU runtimes. Windows WAV preparation uses the portable bounded converter;
   compressed imports remain unavailable there. macOS conversion requires Apple silicon/
-  macOS 26. Windows end-to-end recognition availability remains unqualified.
+  macOS 26. Validate Windows capture, permissions, import, model execution and packaging on Windows separately; source and browser checks do not establish hardware acceptance.
 - Existing chunk speaker labels retain their `asr_chunk` scope; never equate the same
   label across independently recognized chunks. Verified whole-recording labels use
   a separate recording scope. Nemotron ASR starts without speaker labels; the independent
@@ -142,10 +142,10 @@ behavior. Separate implemented behavior, proposals and unverified platform suppo
 ## Native installation and artifacts
 
 - Nero release versions follow `docs/versioning.md`; keep version mirrors consistent
-  with `node apps/desktop/scripts/version.mjs check`. Nero has not yet been shared
-  with actual users: internal architecture and stored formats may change, and each
-  feature does not require a product-version bump from 0.0.1. Compatibility obligations
-  begin with the first build actually shared with users; record that baseline.
+  with `node apps/desktop/scripts/version.mjs check`. The first public compatibility baseline is v0.0.1. Preserve data from
+  supported releases through explicit compatible reads or migrations; a 0.x version
+  does not permit silent loss. Published changes advance the product version as
+  defined in docs/versioning.md.
   Preserve existing personal meeting data through explicit migration or separate archival
   when a development change affects it. Do not initialize or discard it implicitly.
   Preserve historical commits, tags and release metadata rather than rewriting labels.

@@ -20,6 +20,7 @@ on:
       - 'design-system/**'
       - 'scripts/native-summary/**'
       - 'scripts/native-diarization/**'
+      - 'scripts/native-whisper/**'
       - 'scripts/audio-prepare/**'
       - 'scripts/native-moss-harness/**'
 
@@ -119,6 +120,22 @@ jobs:
         run: |
           python scripts/native-diarization/prepare.py --target windows-x64
           python scripts/native-diarization/prepare.py --verify-staged apps/desktop/.generated/native/diarization --target windows-x64 --execute-runtime
+      - name: Bundle pinned Whisper runtime
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            python scripts/native-whisper/prepare.py --target windows-x64
+            python scripts/native-whisper/prepare.py --verify-staged apps/desktop/.generated/native/whisper --target windows-x64 --execute-runtime
+          else
+            python3 scripts/native-whisper/prepare.py --target macos-arm64
+            python3 scripts/native-whisper/prepare.py --verify-staged apps/desktop/.generated/native/whisper --target macos-arm64 --execute-runtime
+          fi
+      - name: Test Whisper packaging contract
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            python -B -m unittest discover -s scripts/native-whisper -p 'test_*.py'
+          else
+            python3 -B -m unittest discover -s scripts/native-whisper -p 'test_*.py'
+          fi
       - name: Verify pinned summary package
         run: |
           if [ "$RUNNER_OS" = Windows ]; then
