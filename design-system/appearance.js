@@ -30,9 +30,37 @@
   } catch {
     // Browsers that block storage can still switch for this page session.
   }
-  function apply() {
+  const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+  let ready = false, generation = 0, transition = null, motionTimer = null;
+  function apply(animate = false) {
     const root = document.documentElement;
-    root.setAttribute("data-appearance-changing", "");
+    const changed = root.dataset.mode !== preference.mode;
+    if (!changed && !transition) { commit(); return; }
+    const request = ++generation;
+    transition?.skipTransition();
+    transition = null;
+    window.clearTimeout(motionTimer);
+    root.removeAttribute("data-appearance-motion");
+    const update = smooth => { if (request === generation) commit(smooth); };
+    if (!changed || !ready || !animate || reducedMotion.matches) { update(false); return; }
+    if (typeof document.startViewTransition === 'function') {
+      try {
+        const current = document.startViewTransition(() => update(false));
+        transition = current;
+        current.ready.catch(() => {});
+        current.updateCallbackDone.catch(() => {});
+        current.finished.catch(() => {}).then(() => { if (transition === current) transition = null; });
+        return;
+      } catch {}
+    }
+    root.setAttribute("data-appearance-motion", "");
+    void root.offsetWidth;
+    update(true);
+    motionTimer = window.setTimeout(() => { if (request === generation) root.removeAttribute("data-appearance-motion"); }, 180);
+  }
+  function commit(smooth = false) {
+    const root = document.documentElement;
+    if (!smooth) root.setAttribute("data-appearance-changing", "");
     const mode = preference.mode;
     root.dataset.color = preference.color;
     root.dataset.mode = mode;
@@ -48,20 +76,28 @@
     document.querySelectorAll("[data-theme-preview]").forEach((preview) => {
       preview.dataset.mode = mode;
     });
-    // Commit the new palette without animating through mismatched text/surfaces.
-    // Restore ordinary hover transitions only after this style update is resolved.
+    // Initial and snapshot commits suppress independent control transitions.
     void root.offsetWidth;
     root.removeAttribute("data-appearance-changing");
   }
-  window.NeroAppearance = { apply };
+  window.NeroAppearance = { apply: () => apply() };
   apply();
   window.addEventListener("storage", (event) => {
     if (event.key !== key && event.key !== null) return;
     preference = decode(event.newValue);
-    apply();
+    apply(true);
+  });
+  reducedMotion.addEventListener("change", () => {
+    if (!reducedMotion.matches) return;
+    generation += 1;
+    transition?.skipTransition(); transition = null;
+    window.clearTimeout(motionTimer);
+    document.documentElement.removeAttribute("data-appearance-motion");
+    commit();
   });
   document.addEventListener("DOMContentLoaded", () => {
     apply();
+    ready = true;
     const dialog = document.getElementById("settings-dialog");
     if (!dialog) return;
     let opener = null;
@@ -78,7 +114,7 @@
       const input = event.target;
       if (input.name !== "appearance-mode" || !modes.has(input.value)) return;
       preference = { color: "mono", mode: input.value };
-      apply();
+      apply(true);
       try {
         localStorage.setItem(key, JSON.stringify(preference));
       } catch {
