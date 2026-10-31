@@ -55,6 +55,7 @@
 ; before showing that page too. Silent mode skips pages and uses the helper above.
 ; This filename is checked against Cargo/config by test_windows_installer.py.
 !define NERO_APP_EXECUTABLE "nero-desktop.exe"
+!include "${__FILEDIR__}\shortcut-icons.nsh"
 !ifdef MUI_CUSTOMFUNCTION_GUIINIT
   !error "Compose Nero's pre-maintenance check with the existing GUI initializer."
 !endif
