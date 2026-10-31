@@ -17,22 +17,7 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
   if (!preferenceStorage) { try { preferenceStorage = document.defaultView?.localStorage; } catch {} }
   const read = () => { try { return preferenceStorage?.getItem(storageKey); } catch { return null; } };
   let pinned = read() === 'true', temporary = false, timer, hoverTimer, renderedState;
-  const brand = aside.querySelector('.navigation-brand') || aside.querySelector('.brand');
   const edge = shell.querySelector('.navigation-edge');
-  if (brand && trigger.parentElement !== brand) brand.prepend(trigger);
-  const search = aside.querySelector('input[type="search"], #search');
-  const searchHost = search?.closest('.search-field') || search;
-  let searchToggle;
-  if (searchHost) {
-    searchToggle = document.createElement('button');
-    searchToggle.type = 'button';
-    searchToggle.className = 'quiet small icon navigation-search-toggle';
-    searchToggle.setAttribute('aria-label', '회의 검색');
-    searchToggle.title = '회의 검색';
-    searchToggle.innerHTML = icons?.('search') || '';
-    searchHost.before(searchToggle);
-    searchToggle.addEventListener('click', () => { reveal(); search.focus({ preventScroll: true }); });
-  }
   for (const [selector, label] of [['#create-meeting', '새 회의'], ['#new', '새 회의']]) {
     const button = aside.querySelector(selector);
     if (button) { button.setAttribute('aria-label', label); button.title = label; }
@@ -56,16 +41,16 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
     shell.classList.toggle('collapsed', !pinned);
     shell.classList.toggle('nav-peek', temporary && !pinned);
     shell.classList.toggle('nav-pinned', pinned);
-    aside.inert = unavailable();
+    aside.inert = !open;
     for (const node of aside.querySelectorAll('.recent-section, .recent')) node.inert = !open;
     width.update(open);
     aside.setAttribute('aria-label', '회의 탐색');
     trigger.setAttribute('aria-expanded', String(open));
-    if (brand && trigger.parentElement !== brand) brand.prepend(trigger);
     trigger.setAttribute('aria-label', pinned ? '사이드바 접기' : temporary ? '사이드바 펼쳐두기' : '사이드바 열기');
     trigger.title = trigger.getAttribute('aria-label');
     trigger.innerHTML = icons?.(pinned ? 'panel-left-close' : 'panel-left') || '';
     if (backdrop) backdrop.hidden = true;
+    aside.dispatchEvent(new document.defaultView.CustomEvent('nero:navigation-state', { detail: { expanded: open, pinned } }));
   }
   function reveal() { if (unavailable()) return; clearTimeout(hoverTimer); clearTimeout(timer); if (!pinned) temporary = true; render(); }
   function hide() {
@@ -111,6 +96,7 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
     if (event.key === 'Escape' && temporary) { event.preventDefault(); clearTimeout(hoverTimer); clearTimeout(timer); temporary = false; render(); trigger.focus(); }
     if ((event.metaKey || event.ctrlKey) && event.code === 'Backslash') { event.preventDefault(); pin(!pinned); }
   });
+  aside.addEventListener('nero:sidebar-reveal', reveal);
   render();
   return {
     render,

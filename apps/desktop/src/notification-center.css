@@ -1,24 +1,22 @@
-.notification-center { flex: 1; min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 24px 28px; }
-.notification-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding-bottom: 20px; border-bottom: 1px solid var(--border); }
-.notification-heading h1 { margin: 0; font-size: var(--text-title-size); font-weight: var(--weight-heading); letter-spacing: var(--tracking-heading); }
-.notification-heading p { margin: 6px 0 0; color: var(--text-secondary); font-size: var(--text-caption-size); }
-.notification-list { display: grid; }
-.notification-item { display: flex; align-items: center; gap: 20px; padding: 16px 0; border-bottom: 1px solid var(--border); }
-.notification-copy { min-width: 0; flex: 1; }
-.notification-title { max-width: 100%; min-height: 0; padding: 0; border: 0; text-align: left; font-size: var(--text-label-size); font-weight: var(--weight-medium); overflow-wrap: anywhere; }
+.notification-center { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
+.notification-center[hidden] { display: none; }
+.notification-heading { display: flex; align-items: center; flex: none; gap: 4px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+.notification-heading-title { flex: 1; min-width: 0; margin: 0; font-size: var(--text-label-size); font-weight: var(--weight-semibold); }
+.notification-heading > button { flex: none; }
+.notification-heading > [data-notification-action="ack-all"] { padding-inline: 4px; font-size: var(--text-caption-size); }
+.notification-list { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 0 12px; }
+.notification-item { display: flex; flex-direction: column; align-items: stretch; gap: 8px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+.notification-copy { min-width: 0; }
+.notification-title { display: block; max-width: 100%; min-height: 0; padding: 0; border: 0; text-align: left; font-size: var(--text-label-size); font-weight: var(--weight-medium); overflow-wrap: anywhere; }
+.notification-item[data-unread="true"] .notification-title::before { content: ''; display: inline-block; width: 4px; height: 4px; margin: 0 6px 3px 0; border-radius: 50%; background: currentColor; }
 .notification-item p { margin: 5px 0 0; font-size: var(--text-caption-size); color: var(--text-secondary); overflow-wrap: anywhere; }
 .notification-item .field-error { color: var(--warning-text); }
 .notification-status { display: flex; align-items: center; gap: 6px; }
 .notification-status-mark { display: inline-flex; flex: none; }
 .notification-status-mark svg { width: 14px; height: 14px; }
-.notification-actions { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 6px; flex: none; }
-.notification-copy progress { display: block; width: min(100%, 320px); height: 4px; margin-top: 10px; accent-color: var(--accent-fill); }
+.notification-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+.notification-actions > button { min-height: 28px; padding: 4px 6px; font-size: var(--text-caption-size); }
+.notification-copy progress { display: block; width: 100%; height: 3px; margin-top: 8px; accent-color: var(--accent-fill); }
 .notification-diagnostics { margin-top: 8px; color: var(--text-secondary); font-size: var(--text-caption-size); }
 .notification-diagnostics summary { cursor: pointer; }
-.notification-empty { padding: 24px 0; color: var(--text-secondary); font-size: var(--text-label-size); }
-@container detail (max-width: 600px) {
-  .notification-center { padding: 20px; }
-  .notification-item { align-items: flex-start; flex-wrap: wrap; gap: 10px; }
-  .notification-copy { flex-basis: 100%; }
-  .notification-actions { margin-left: auto; }
-}
+.notification-empty { padding: 20px 0; color: var(--text-secondary); font-size: var(--text-label-size); }

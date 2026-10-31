@@ -1,0 +1,31 @@
+.library { --sidebar-gap: 8px; display: flex; flex-direction: column; min-height: 0; overflow: hidden; background: var(--surface-secondary); border-right: 1px solid var(--border); }
+.library-header { display: grid; flex: none; align-content: start; gap: 12px; padding: 20px 16px 8px; }
+.library-header button { justify-content: center; width: 100%; min-height: 34px; padding: 5px 10px; font-size: var(--text-label-size); }
+.library-header .new-meeting-button { width: 100%; min-height: var(--control-height-small); background: var(--surface-tint); border: 1px solid var(--border); color: var(--text); }
+.library-header .new-meeting-button:hover:not(:disabled) { background: var(--hover); }
+.search-field { padding: 0 16px 6px; }
+.search-field input { width: 100%; min-width: 0; }
+.navigation-rail { position: absolute; inset: 0 auto 0 0; z-index: 8; width: var(--navigation-rail-width); display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 12px 9px 8px; border-right: 1px solid var(--border); background: var(--surface-secondary); }
+.navigation-rail-footer { margin-top: auto; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.navigation-rail button { flex: none; width: 32px; min-width: 32px; min-height: 32px; height: 32px; padding: 6px; justify-content: center; gap: 0; }
+.navigation-rail button > span:not([data-detail-icon]), .navigation-rail [data-app-update-progress] { display: none; }
+.navigation-rail button[aria-current="page"] { color: var(--text); background: var(--surface-tint-strong); }
+
+.sidebar-body, .sidebar-navigation-view { display: flex; flex-direction: column; min-width: 0; min-height: 0; flex: 1; overflow: hidden; }
+.sidebar-navigation-view > .search-field, .sidebar-navigation-view > .navigation-search-toggle { flex: none; }
+.sidebar-navigation-view[hidden], .notification-center[hidden] { display: none; }
+.library-navigation { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
+.library-navigation .folder-list { flex: 0 1 auto; min-height: 0; max-height: 58%; overflow-y: auto; overscroll-behavior: contain; padding: 4px 10px; }
+.library-navigation:has(.recent-section[hidden]) .folder-list, .library-navigation:has(.recent-section:not([open])) .folder-list { max-height: none; }
+.recent-section { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; margin: var(--sidebar-gap) 10px; padding-top: var(--sidebar-gap); border-top: 1px solid var(--border); }
+.recent-section:not([open]) { flex: none; }
+.recent-section[hidden] { display: none; }
+.recent-section::details-content { display: contents; }
+.recent-section > summary { flex: none; }
+.recent-meetings { display: grid; grid-auto-rows: max-content; align-content: start; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; gap: 1px; }
+.navigation-sidebar[data-sidebar-view="notifications"] .new-meeting-button { display: none; }
+.navigation-rail #notifications-open { position: relative; color: var(--text-secondary); }
+.navigation-rail #notifications-open[aria-pressed="true"] { color: var(--text); background: var(--surface-tint-strong); }
+.navigation-rail #notifications-open[data-active="true"] { color: var(--text); }
+.navigation-rail #notifications-open[data-unread="true"]::after { content: ''; position: absolute; top: 4px; right: 4px; width: 5px; height: 5px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 2px var(--surface-secondary); pointer-events: none; }
+.navigation-notification-count { display: none; }
