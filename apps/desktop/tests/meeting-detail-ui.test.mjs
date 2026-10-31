@@ -1,173 +1,66 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFile } from 'node:fs/promises';
+import { Window } from 'happy-dom';
 import { mountMeetingDetail } from '../src/meeting-detail-ui.js';
-
+const html = await readFile(new URL('../src/index.html', import.meta.url), 'utf8');
 const tick = () => new Promise(resolve => setImmediate(resolve));
-function deferred() { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
-
-function page(finish = async action => action()) {
-  const elements = new Map(), reveals = [], errors = [];
-  let focused = null;
-  function node(id) {
-    if (!elements.has(id)) {
-      let scroll = 0;
-      elements.set(id, {
-      id, querySelector() { return null; }, parentNode: null, contains() { return false; }, append(child) { child.parentNode = this; }, insertBefore(child) { child.parentNode = this; }, dataset: {}, hidden: false, scrollMax: Infinity, tabIndex: -1, listeners: {}, attributes: {},
-      get scrollTop() { return Math.min(this.scrollMax, scroll); },
-      set scrollTop(value) { scroll = Math.max(0, Math.min(this.scrollMax, value)); },
-      addEventListener(name, listener) { this.listeners[name] = listener; },
-      setAttribute(name, value) { this.attributes[name] = value; },
-      focus() { focused = this.id; },
-      });
-    }
-    return elements.get(id);
-  }
-  const tabs = ['summary', 'transcript', 'notes'].map(view => { const tab = node(`detail-${view}-tab`); tab.dataset.detailTab = view; return tab; });
-  node('detail-tabs').querySelectorAll = () => tabs;
-  for (const view of ['summary', 'transcript', 'notes']) node(`${view}-section`);
-  const controller = mountMeetingDetail({ byId: node, finishEditing: finish, onReveal(view) { reveals.push({ view, visible: !node(`${view}-section`).hidden, scroll: node(`${view}-section`).scrollTop }); }, onError: error => errors.push(error) });
-  return {
-    controller, node, reveals, errors, focused: () => focused,
-    update: values => controller.update({ id: 'a', ...values }),
-    scroll(view, value) { const panel = node(view === 'transcript' ? 'transcript-scroll' : `${view}-section`); panel.scrollTop = value; panel.listeners.scroll(); },
-    clamp(view, maximum) { const panel = node(view === 'transcript' ? 'transcript-scroll' : `${view}-section`); panel.scrollMax = maximum; panel.scrollTop = panel.scrollTop; },
-    key(view, key, rest = {}) { let prevented = false; node(`detail-${view}-tab`).listeners.keydown({ key, preventDefault() { prevented = true; }, ...rest }); return prevented; },
-  };
+function page(t, finishEditing = async action => action()) {
+  const window = new Window({ settings: { disableCSSFileLoading: true, disableJavaScriptFileLoading: true } });
+  window.document.write(html); t.after(() => window.happyDOM.abort());
+  const node = id => window.document.getElementById(id), errors = [], reveals = [];
+  node('meeting-detail').hidden = false;
+  const controller = mountMeetingDetail({ byId: node, finishEditing, onError: error => errors.push(error), onReveal: view => reveals.push(view) });
+  return { window, node, controller, errors, reveals, update: values => controller.update({ id: 'a', summaryLoaded: true, transcriptLoaded: true, hasTranscript: true, ...values }) };
 }
-
-test('summary remains visible alongside a one-click nonmodal transcript inspector', async () => {
-  const app = page(); app.update({summaryLoaded: true, transcriptLoaded: true});
-  assert.equal(app.controller.active(), 'summary');
-  assert.equal(app.node('detail-inspector').hidden, true);
-  app.node('detail-transcript-open').listeners.click(); await tick();
-  assert.equal(app.controller.active(), 'transcript');
-  assert.equal(app.node('summary-section').hidden, false);
+test('summary and transcript share a permanent body while notes are independent', async t => {
+  const app = page(t); app.update({ hasSummary: true });
+  const body = app.node('detail-body-scroll');
+  assert.ok(body.contains(app.node('summary-section'))); assert.ok(body.contains(app.node('transcript-section')));
+  for (const view of ['notes', 'transcript', 'summary']) {
+    assert.equal(await app.controller.select(view), true);
+    assert.equal(app.node('summary-section').hidden, false); assert.equal(app.node('transcript-section').hidden, false);
+    assert.ok(body.contains(app.node('transcript-section')));
+    assert.equal(app.controller.notesOpen(), true);
+  }
+  app.node('detail-inspector-close').click(); await tick();
+  assert.equal(app.controller.notesOpen(), false); assert.equal(app.node('transcript-section').hidden, false);
+  assert.equal(app.window.document.activeElement, app.node('detail-notes-open'));
+});
+test('pending saves block notes closing without losing visible text', async t => {
+  let block = false; const app = page(t, async action => { if (block) throw Error('save'); return action(); }); app.update();
+  await app.controller.select('notes'); app.node('meeting-notes').value = '보존할 메모'; block = true;
+  app.node('detail-inspector-close').click(); await tick();
+  assert.equal(app.controller.notesOpen(), true); assert.equal(app.node('meeting-notes').value, '보존할 메모'); assert.equal(app.errors.length, 1);
+});
+test('meeting changes and newer intent invalidate old pending navigation', async t => {
+  const pending = []; const app = page(t, action => new Promise(resolve => pending.push(() => resolve(action())))); app.update();
+  const a = app.controller.select('notes'), b = app.controller.select('transcript'); pending[1](); assert.equal(await b, true); pending[0](); assert.equal(await a, false);
+  const c = app.controller.select('notes'); app.update({ id: 'b' }); pending[2](); assert.equal(await c, false); assert.equal(app.controller.notesOpen(), false);
+});
+test('body and notes scroll restore only after the current meeting content is loaded', async t => {
+  const app = page(t); app.update(); await app.controller.select('notes');
+  app.node('detail-body-scroll').scrollTop = 900; app.node('meeting-notes').scrollTop = 220; app.controller.rememberScroll();
+  app.update({ id: 'b' }); app.update({ id: 'a', summaryLoaded: false, transcriptLoaded: false });
+  app.node('detail-body-scroll').scrollTop = 0; app.node('meeting-notes').scrollTop = 0; app.controller.rememberScroll();
+  app.update(); assert.equal(app.node('detail-body-scroll').scrollTop, 900); assert.equal(app.node('meeting-notes').scrollTop, 220); assert.equal(app.controller.notesOpen(), true);
+});
+test('recording reveals notes once and never displaces the shared transcript', async t => {
+  const app = page(t); app.update({ recording: true, hasPreview: true }); assert.equal(app.controller.notesOpen(), true);
+  app.node('detail-notes-open').click(); await tick(); assert.equal(app.controller.notesOpen(), false);
+  app.update({ recording: true }); app.update({ recording: false }); assert.equal(app.controller.notesOpen(), false); assert.equal(app.node('transcript-section').hidden, false);
+});
+test('empty and completed meetings keep stable navigation entries and contextual availability', t => {
+  const app = page(t); app.update({ hasTranscript: false, showSummary: false });
+  assert.equal(app.node('detail-transcript-open').hidden, false); assert.equal(app.node('detail-transcript-open').disabled, true);
+  app.update({ hasAudio: true }); assert.equal(app.node('detail-transcript-open').disabled, false);
   assert.equal(app.node('transcript-section').hidden, false);
-  assert.equal(app.node('detail-transcript-open').attributes['aria-expanded'], 'true');
-  assert.equal(app.focused(), 'detail-inspector-close');
-  assert.equal(app.node('detail-inspector').attributes['aria-modal'], undefined);
 });
-test('recording opens notes but ordinary empty meetings start with summary', () => {
-  const app = page(); app.update({recording: true}); assert.equal(app.controller.active(), 'notes');
-  app.update({id: 'b', summaryLoaded: true, transcriptLoaded: true}); assert.equal(app.controller.active(), 'summary');
-});
-test('summary and transcript positions survive notes, closing and meeting changes', async () => {
-  const app = page(), loaded = {summaryLoaded: true, transcriptLoaded: true}; app.update(loaded);
-  app.scroll('summary', 410); await app.controller.select('transcript'); app.scroll('transcript', 1200);
-  await app.controller.select('notes'); app.node('meeting-notes').scrollTop = 200; app.node('meeting-notes').listeners.scroll();
-  await app.controller.select('transcript'); assert.equal(app.node('transcript-scroll').scrollTop, 1200); assert.equal(app.node('summary-section').scrollTop, 410);
-  app.node('detail-inspector-close').listeners.click(); await tick(); assert.equal(app.controller.active(), 'summary'); assert.equal(app.focused(), 'detail-transcript-open');
-  app.update({id: 'b', ...loaded}); app.update({id: 'a', ...loaded}); await app.controller.select('notes'); assert.equal(app.node('meeting-notes').scrollTop, 200);
-});
-test('pending edits block close and failed save keeps the inspector open', async () => {
-  let block = false; const app = page(async action => {if (block) throw Error('save'); return action();}); app.update({}); await app.controller.select('transcript'); block = true;
-  assert.equal(await app.controller.select('summary'), false); assert.equal(app.controller.active(), 'transcript'); assert.equal(app.errors.length, 1);
-});
-test('meeting change and newer intent invalidate pending panel navigation', async () => {
-  const waits = []; const app = page(async action => {const d = deferred(); waits.push(d); await d.promise; return action();}); app.update({});
-  const first = app.controller.select('transcript'), second = app.controller.select('notes'); waits[1].resolve(); assert.equal(await second, true); waits[0].resolve(); assert.equal(await first, false);
-  const pending = app.controller.select('transcript'); app.update({id:'b'}); waits[2].resolve(); assert.equal(await pending, false); assert.equal(app.controller.active(), 'summary');
-});
-test('transcript position is restored only after the revisited content loads', async () => {
-  const app = page(), loaded = {summaryLoaded: true, transcriptLoaded: true}; app.update(loaded); await app.controller.select('transcript'); app.scroll('transcript', 900);
-  app.update({id:'b', ...loaded}); app.clamp('transcript', 0); app.update({id:'a'}); app.node('transcript-scroll').listeners.scroll(); app.clamp('transcript', 2000); app.update(loaded); assert.equal(app.node('transcript-scroll').scrollTop, 900);
-});
-
-test('workspace markup has full-height sibling inspector, fixed search and available-detail-width narrow return', async () => {
-  const html = await readFile(new URL('../src/index.html', import.meta.url), 'utf8');
+test('narrow notes layout keeps body present and transcript maintenance is secondary', async t => {
   const css = await readFile(new URL('../src/style.css', import.meta.url), 'utf8');
-  assert.doesNotMatch(html, /detail-summary-tab|detail-transcript-tab|detail-notes-tab|return-to-summary/);
-  assert.match(html, /<aside id="detail-inspector"[^>]*aria-labelledby="detail-inspector-title"/);
-  assert.match(html, /id="transcript-scroll"[\s\S]*id="transcript-rows"/);
-  assert.match(css, /\.main-content \{ container-type: inline-size; container-name: detail;/);
-  assert.match(html, /id="inspector-audio-toggle"/);
-  assert.match(css, /@container detail \(max-width: 759px\)/);
-  assert.match(css, /\.inspector-back \{ display: inline; \}/);
-  assert.doesNotMatch(css, /detail-inspector[^}]*backdrop-filter/);
-});
-
-test('meeting updates never read a replacement DOM back into the previous meeting memory', async () => {
-  const app=page(), loaded={summaryLoaded:true,transcriptLoaded:true}; app.update(loaded);
-  app.scroll('summary',410); await app.controller.select('transcript'); app.scroll('transcript',1200); await app.controller.select('notes'); app.node('meeting-notes').scrollTop=320; app.node('meeting-notes').listeners.scroll();
-  app.node('summary-section').scrollTop=0; app.node('transcript-scroll').scrollTop=0; app.node('meeting-notes').scrollTop=0;
-  app.update({id:'b',...loaded}); app.update({id:'a',...loaded}); assert.equal(app.node('meeting-notes').scrollTop,320); assert.equal(app.node('summary-section').scrollTop,410);
-  await app.controller.select('transcript'); assert.equal(app.node('transcript-scroll').scrollTop,1200);
-});
-
-test('starting the first recording in an already-open empty meeting reveals notes once', async () => {
-  const app=page(), loaded={summaryLoaded:true,transcriptLoaded:true}; app.update(loaded); assert.equal(app.controller.active(),'summary');
-  app.update({...loaded,recording:true}); assert.equal(app.controller.active(),'notes');
-  await app.controller.select('summary'); app.update({...loaded,recording:true}); assert.equal(app.controller.active(),'summary');
-  app.update({...loaded,recording:false}); app.update({...loaded,recording:true}); assert.equal(app.controller.active(),'summary');
-});
-test('explicit summary or transcript intent prevents recording snapshots from reopening notes', async () => {
-  for(const view of ['summary','transcript']) {
-    const app=page(), loaded={summaryLoaded:true,transcriptLoaded:true}; app.update(loaded); await app.controller.select(view);
-    app.update({...loaded,recording:true}); assert.equal(app.controller.active(),view);
-    app.update({...loaded,recording:true}); assert.equal(app.controller.active(),view);
-  }
-});
-test('recording waits for result discovery and keeps completed meetings on summary', () => {
-  const app=page(); app.update({}); app.update({recording:true}); assert.equal(app.controller.active(),'summary');
-  app.update({recording:true,summaryLoaded:true,transcriptLoaded:true}); assert.equal(app.controller.active(),'notes');
-  for(const result of [{hasTranscript:true},{hasSummary:true}]) {
-    const completed=page(), loaded={summaryLoaded:true,transcriptLoaded:true,...result}; completed.update(loaded); completed.update({...loaded,recording:true}); assert.equal(completed.controller.active(),'summary');
-  }
-});
-
-test('automatic recording notes close at completion while explicit notes stay open', async () => {
-  const loaded = { summaryLoaded: true, transcriptLoaded: true };
-  const automatic = page(); automatic.update({ ...loaded, recording: true });
-  assert.equal(automatic.controller.active(), 'notes');
-  automatic.update({ ...loaded, hasTranscript: true });
-  assert.equal(automatic.controller.active(), 'summary');
-  assert.equal(automatic.node('detail-inspector').hidden, true);
-  const explicit = page(); explicit.update({ ...loaded, recording: true });
-  await explicit.controller.select('notes');
-  explicit.update({ ...loaded, hasTranscript: true });
-  assert.equal(explicit.controller.active(), 'notes');
-});
-
-test('ready or provisional transcript is visible without a click until a summary arrives, using one panel', async () => {
-  for (const result of [{hasTranscript:true}, {hasPreview:true}]) {
-    const app=page(), loaded={summaryLoaded:true,transcriptLoaded:true};
-    app.update({...loaded,...result});
-    const panel=app.node('transcript-section');
-    assert.equal(panel.parentNode,app.node('result-transcript-home'));
-    assert.equal(panel.hidden,false);
-    assert.equal(app.node('detail-inspector').hidden,true);
-    assert.equal(app.node('detail-transcript-open').hidden,true);
-    await app.controller.select('notes');
-    assert.equal(panel.hidden,true);
-    await app.controller.select('summary');
-    assert.equal(panel.hidden,false);
-    app.update({...loaded,hasTranscript:true,hasSummary:true});
-    assert.equal(panel.parentNode,app.node('detail-inspector'));
-    assert.equal(panel.hidden,true);
-    assert.equal(app.node('detail-transcript-open').hidden,false);
-    await app.controller.select('transcript');
-    assert.equal(panel.hidden,false);
-    assert.equal(app.node('detail-inspector').hidden,false);
-  }
-});
-
-test('recording keeps its note workspace until capture finishes, then reveals the preserved draft', () => {
-  const app=page(), loaded={summaryLoaded:true,transcriptLoaded:true};
-  app.update({...loaded,recording:true,hasPreview:true});
-  assert.equal(app.node('result-transcript-home').hidden,true);
-  app.update({...loaded,recording:false,hasPreview:true});
-  assert.equal(app.node('transcript-section').hidden,false);
-  assert.equal(app.node('transcript-section').parentNode,app.node('result-transcript-home'));
-});
-
-test('empty meetings hide transcript entry while recorded meetings retain its recovery path', () => {
-  const app=page(); app.update({});
-  assert.equal(app.node('detail-transcript-open').hidden,true);
-  app.update({hasAudio:true});
-  assert.equal(app.node('detail-transcript-open').hidden,false);
-  app.update({hasTranscript:true});
-  assert.equal(app.node('detail-transcript-open').hidden,true);
-  app.update({hasTranscript:true,hasSummary:true});
-  assert.equal(app.node('detail-transcript-open').hidden,false);
+  assert.doesNotMatch(css, /data-inspector[^}]*\.detail-primary\s*\{\s*display:\s*none/);
+  assert.match(css, /grid-row: 3/); assert.match(html, /transcript-maintenance/);
+  const app = page(t); app.update(); await app.controller.select('notes');
+  assert.equal(app.node('detail-primary')?.hidden ?? false, false);
+  assert.equal(app.node('notes-section').parentElement, app.node('detail-inspector'));
 });

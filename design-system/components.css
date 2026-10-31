@@ -5,6 +5,11 @@
   --control-height-small: 28px;
   --control-padding-inline: 10px;
   --control-padding-block: 5px;
+  --row-height: 40px;
+  --section-gap: 24px;
+  --group-gap: 16px;
+  --icon-size: 16px;
+  --motion-duration: 180ms;
 }
 
 * {
@@ -391,8 +396,8 @@ input[type="checkbox"] {
   grid-template-columns: 56px minmax(0, 1fr) auto;
   align-items: start;
   gap: 12px;
-  padding: 8px 6px;
-  min-height: 44px;
+  padding: 10px 12px;
+  min-height: var(--row-height);
   border-bottom: 1px solid var(--border);
   border-radius: 4px;
 }
@@ -403,7 +408,7 @@ input[type="checkbox"] {
 
 .transcript-row:focus-visible {
   outline: 2px solid var(--focus);
-  outline-offset: 2px;
+  outline-offset: -2px;
 }
 
 .transcript-row .transcript-time {
@@ -750,8 +755,8 @@ html[data-appearance-changing] button {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  min-height: 48px;
-  padding: 10px 12px;
+  min-height: 44px;
+  padding: 8px 12px;
 }
 
 .settings-row + .settings-row {
@@ -1114,3 +1119,5 @@ button.danger:hover:not(:disabled), button.danger-text:hover:not(:disabled) { co
 .transcript-preview-row + .transcript-preview-row { border-top: 1px solid var(--border); }
 .transcript-preview-meta { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 5px; color: var(--text-secondary); font-size: var(--text-caption-size); font-variant-numeric: tabular-nums; }
 .transcript-preview-row p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; word-break: keep-all; line-height: var(--leading-reading); display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 6; overflow: hidden; }
+
+.settings-row > input[type="checkbox"] { display: block; flex: none; margin: 0; align-self: center; }

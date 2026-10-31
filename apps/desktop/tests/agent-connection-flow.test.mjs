@@ -121,8 +121,8 @@ test('manual connection owns a contextual dialog rather than a detached copy but
   const html = await readFile(new URL('../src/index.html', import.meta.url), 'utf8');
   const component = await readFile(new URL('../src/agent-connection-dialog.jsx', import.meta.url), 'utf8');
   assert.doesNotMatch(html, /id="settings-agent-copy-prompt"/);
-  assert.match(html, /다른 에이전트/);
-  assert.match(html, /id="settings-agent-manual"[^>]+aria-label="다른 에이전트 연결"/);
+  assert.match(html, /연결 프롬프트/);
+  assert.match(html, /id="settings-agent-manual"[^>]+aria-label="연결 프롬프트 열기"/);
   assert.match(component, /DialogContent container=\{container\}/);
   assert.match(component, /<DialogTitle>연결 프롬프트<\/DialogTitle>/);
   assert.match(component, /<pre aria-labelledby="agent-prompt-label"/);

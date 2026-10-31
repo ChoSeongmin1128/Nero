@@ -320,7 +320,7 @@ function renderSpeechModels() {
   const modelJob = pendingJob(state.processing, { models: true });
   const feedback = modelJob ? processingFeedback(modelJob) : null;
   const message = activeSession() ? '녹음을 마친 뒤 모델을 변경할 수 있습니다.'
-    : feedback ? feedback.detail || feedback.title
+    : feedback ? '모델을 준비하고 있습니다.'
       : pending ? '현재 처리가 끝난 뒤 모델을 변경할 수 있습니다.' : '';
   for (const picker of speechPickers) picker.update({ progress: state.processing, disabled, message, error: speechSelectionError });
 }
@@ -741,7 +741,6 @@ function renderSettings() {
   else select.removeAttribute('aria-describedby');
   byId('auto-recorder').checked = state.autoRecorder;
   byId('auto-recorder').disabled = state.recorderSettingBusy;
-  byId('settings-refresh-devices').disabled = state.busy;
   const job = state.processing;
   const featureJob = pendingJob(job, { kind: 'summary-model' });
   const failedFeature = !featureJob && !job.summaryReady && processingJobs(job).filter(item => item.kind === 'summary-model' && item.status === 'failed' && !item.acknowledged).at(-1);
@@ -940,7 +939,7 @@ for (const client of ['claude', 'codex']) byId(`settings-${client}-connect`).add
 globalThis.addEventListener?.('focus', () => { if (agentConnectionActive()) void loadAgentConnection(true); });
 byId('terminology-enabled').addEventListener('change', changeTerminologyEnabled);
 byId('settings-microphone').addEventListener('change', changeMicrophone);
-byId('settings-refresh-devices').addEventListener('click', async () => { state.settingsError = ''; try { await refreshDevices(); } catch { state.settingsError = '마이크 목록을 불러오지 못했습니다. 다시 시도해 주세요.'; renderSettings(); } });
+
 byId('models').addEventListener('click', () => run(async () => {
   const restoreFocus = document.activeElement === byId('models');
   state.summaryFeatureError = '';
@@ -1190,7 +1189,7 @@ function renderTranscript(meeting) {
   byId('transcribe').hidden = ownJob || !state.transcriptLoaded || Boolean(state.transcriptLoadError);
   byId('retry-transcript-load').hidden = !state.transcriptLoadError;
   byId('transcribe').disabled = !meeting.audio || !job.supported || !job.modelReady || ownJob || state.busy;
-  byId('transcribe').textContent = draft?.doc ? '다시 변환' : ['failed', 'cancelled'].includes(job.status) && job.kind === 'transcribe' && job.meetingId === meeting.id ? '다시 시도' : '텍스트로 변환';
+  byId('transcribe').innerHTML = `${icon('refresh-cw')}<span>${draft?.doc ? '다시 변환' : ['failed', 'cancelled'].includes(job.status) && job.kind === 'transcribe' && job.meetingId === meeting.id ? '다시 시도' : '텍스트로 변환'}</span>`;
   byId('save-transcript').disabled = !draft?.dirty || draft.saving || ownJob;
   documentActions.transcript.update({ id: meeting.id, available: Boolean(draft?.doc?.segments?.length), busy: state.busy || ownJob });
   let message = '';
@@ -1547,7 +1546,7 @@ summaryEvidence = mountSummaryEvidence({
     if (rows.some(row => !row)) return false;
     byId('transcript-rows').querySelectorAll('[data-citation-active]').forEach(node => node.removeAttribute('data-citation-active'));
     rows.forEach(row => row.setAttribute('data-citation-active', 'true'));
-    rows[0].scrollIntoView({ block: 'center', behavior: 'smooth' }); rows[0].focus({ preventScroll: true });
+    rows[0].scrollIntoView({ block: 'center', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' }); rows[0].focus({ preventScroll: true });
     return true;
   },
   onPlay(entry, response, context) {
