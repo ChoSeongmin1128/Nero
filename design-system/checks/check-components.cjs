@@ -45,7 +45,8 @@ test('transcript reading rows preserve time and edits without inventing speaker 
   assert.match(row, /data-transcript-edit="0" aria-label="1번 발언 수정"/);
   assert.doesNotMatch(row, /textarea|<details|speaker|avatar/);
   const corrected = UI.transcriptRow({ index: 1, time: '01:05', start: 65, text: '<수정된 내용>', originalText: '<이전 내용>' });
-  assert.match(corrected, /<summary>원문 보기<\/summary><p>&lt;이전 내용&gt;<\/p>/);
+  assert.match(corrected, /<p class="transcript-text">&lt;수정된 내용&gt;<\/p>/);
+  assert.doesNotMatch(corrected, /원문 보기|transcript-original|<details|이전 내용/);
   assert.ok(!corrected.includes('<수정된 내용>'));
   assert.ok(!corrected.includes('<이전 내용>'));
 });
