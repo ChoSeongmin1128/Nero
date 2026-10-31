@@ -54,6 +54,7 @@
           "Ninja",
           "-DCMAKE_BUILD_TYPE:STRING=Release",
           "-DBUILD_SHARED_LIBS:BOOL=OFF",
+          "-DCMAKE_POLICY_DEFAULT_CMP0091:STRING=NEW",
           "-DCMAKE_MSVC_RUNTIME_LIBRARY:STRING=MultiThreaded",
           "-DGGML_BACKEND_DL:BOOL=OFF",
           "-DGGML_NATIVE:BOOL=OFF",
@@ -74,7 +75,7 @@
           "-DWHISPER_CURL:BOOL=OFF",
           "-DWHISPER_COREML:BOOL=OFF",
           "-DCMAKE_C_FLAGS:STRING=/utf-8",
-          "-DCMAKE_CXX_FLAGS:STRING=/utf-8"
+          "-DCMAKE_CXX_FLAGS:STRING=/utf-8 /EHsc"
         ],
         "dependencies": [
           {
