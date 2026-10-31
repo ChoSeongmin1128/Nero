@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { nameUnnamedAttendees, attendeeInputAction, addPeople, attendeeLabel, createAttendeeFlow, createPeopleCatalogFlow } from '../src/people-flow.js';
+import { nameUnnamedAttendees, attendeeInputAction, addPeople, attendeeLabel, createAttendeeFlow, createPeopleCatalogFlow, filterPeople, personGroups, splitPeopleNames } from '../src/people-flow.js';
 
 const empty = () => ({ people: [], groups: [], editVersion: 'catalog:1' });
 const meeting = (id = 'meeting', attendees = [], editVersion = 'meeting:1') => ({ meeting: { id, attendees }, editVersion });
@@ -176,4 +176,85 @@ test('temporary names start at one and remain stable after other participants ar
  assert.equal(changed[1].name,'참석자 2');
  assert.equal(changed[2].name,'참석자 1');
  assert.equal(attendeeInputAction({people:[],groups:[]},[{name:' 방문자 '}],'방문자'),null);
+});
+
+test('bulk people addition uses one catalog revision and atomically joins the selected group', async () => {
+  let id = 0; const writes = [];
+  const catalog = { ...empty(), people: [{ id: 'p', name: '기존 이름' }], groups: [{ id: 'g', name: '제품팀', personIds: ['p'] }] };
+  const flow = createPeopleCatalogFlow({ uuid: () => `new${++id}`, bridge: {
+    readPeopleCatalog: async () => catalog,
+    replacePeopleCatalog: async (...args) => { writes.push(args); return { editVersion: `catalog:${writes.length + 1}`, people: args[1], groups: args[2] }; },
+  } });
+  flow.setActive(true); await wait(() => !flow.getSnapshot().busy);
+  flow.changeQuickInput('민서, 도윤\n지우');
+  assert.equal(flow.isDirty(), true);
+  assert.equal(await flow.addMany('person', 'g'), true);
+  assert.equal(writes.length, 1); assert.equal(writes[0][0], 'catalog:1');
+  assert.deepEqual(writes[0][1].map(person => person.name), ['기존 이름', '민서', '도윤', '지우']);
+  assert.deepEqual(writes[0][2][0].personIds, ['p', 'new1', 'new2', 'new3']);
+  assert.equal(flow.getSnapshot().quickInput, ''); assert.equal(flow.isDirty(), false);
+  flow.changeQuickInput('다음 이름'); await flow.addMany('person');
+  assert.equal(writes[1][0], 'catalog:2');
+});
+
+test('bulk conflict preserves pending names and the read revision until explicit reload', async () => {
+  let reads = 0; const writes = [];
+  const flow = createPeopleCatalogFlow({ bridge: {
+    readPeopleCatalog: async () => { reads++; return empty(); },
+    replacePeopleCatalog: async (...args) => { writes.push(args); throw Error('목록이 변경됐습니다.'); },
+  } });
+  flow.setActive(true); await wait(() => !flow.getSnapshot().busy);
+  flow.changeQuickInput('새 사람, 다른 사람');
+  assert.equal(await flow.addMany('person'), false);
+  flow.refreshIfClean();
+  assert.equal(reads, 1); assert.equal(writes.length, 1); assert.equal(writes[0][0], 'catalog:1');
+  assert.equal(flow.getSnapshot().quickInput, '새 사람, 다른 사람'); assert.equal(flow.isDirty(), true);
+  assert.equal(flow.getSnapshot().catalog.people.length, 0);
+});
+
+test('group batches and membership edits preserve catalog entities and stable row order', async () => {
+  let id = 0; const writes = [];
+  const flow = createPeopleCatalogFlow({ uuid: () => `g${++id}`, bridge: {
+    readPeopleCatalog: async () => ({ ...empty(), people: [{ id: 'p', name: '민서' }, { id: 'q', name: '도윤' }] }),
+    replacePeopleCatalog: async (...args) => { writes.push(args); return { editVersion: `catalog:${writes.length + 1}`, people: args[1], groups: args[2] }; },
+  } });
+  flow.setActive(true); await wait(() => !flow.getSnapshot().busy);
+  flow.changeQuickInput('제품팀\n운영팀'); await flow.addMany('group');
+  assert.deepEqual(writes[0][2], [{ id: 'g1', name: '제품팀', personIds: [] }, { id: 'g2', name: '운영팀', personIds: [] }]);
+  flow.edit('group', flow.getSnapshot().catalog.groups[0]); flow.change({ personIds: ['p', 'q'] }); await flow.save();
+  assert.deepEqual(writes[1][2][0].personIds, ['p', 'q']);
+  flow.edit('person', flow.getSnapshot().catalog.people[0]); flow.change({ name: '새 이름' }); await flow.save();
+  assert.deepEqual(writes[2][1].map(person => person.id), ['p', 'q']);
+});
+
+test('people search combines group membership with name filters, including ungrouped people', () => {
+  const catalog = { people: Array.from({ length: 50 }, (_, index) => ({ id: `p${index}`, name: `사람 ${index + 1}` })), groups: [{ id: 'g', name: '제품팀', personIds: ['p0', 'p1'] }] };
+  assert.equal(filterPeople(catalog).length, 50);
+  assert.equal(filterPeople(catalog, '', 'g').length, 2);
+  assert.deepEqual(filterPeople(catalog, '사람 2', 'g').map(person => person.id), ['p1']);
+  assert.equal(filterPeople(catalog, '제품팀').length, 2);
+  assert.equal(filterPeople(catalog, '', 'ungrouped').length, 48);
+  assert.deepEqual(personGroups(catalog, 'p0').map(group => group.id), ['g']);
+  assert.deepEqual(splitPeopleNames(' 민서,\n\n 도윤\r\n'), ['민서', '도윤']);
+});
+
+test('one attendee input resolves group, managed people and temporary names before a single save', async () => {
+  let id = 0; const writes = [];
+  const catalog = { ...empty(), people: [{ id: 'p', name: '민서' }, { id: 'q', name: '도윤' }], groups: [{ id: 'g', name: '제품팀', personIds: ['p', 'q'] }] };
+  const flow = createAttendeeFlow({ uuid: () => `a${++id}`, bridge: {
+    readMeetingAttendees: async () => meeting(), readPeopleCatalog: async () => catalog,
+    replaceMeetingAttendees: async (...args) => { writes.push(args); return meeting('meeting', args[2], 'meeting:2'); },
+  } });
+  await flow.open('meeting'); assert.equal(flow.addInput('제품팀, 방문자\n새 이름'), true);
+  assert.equal(writes.length, 0); assert.equal(flow.getSnapshot().attendees.length, 4);
+  flow.addTemporary(); assert.equal(flow.getSnapshot().attendees[4].name, '참석자 1');
+  await flow.save(); assert.equal(writes.length, 1); assert.equal(writes[0][1], 'meeting:1');
+  assert.deepEqual(writes[0][2].map(item => item.name), ['민서', '도윤', '방문자', '새 이름', '참석자 1']);
+  assert.equal(flow.addInput('다른 이름, 방문자'), false);
+  assert.equal(flow.getSnapshot().attendees.length, 5, 'ambiguous batch must not partially change the roster');
+});
+
+test('saved people never consume temporary participant numbers even when their display name matches', () => {
+  const attendees = nameUnnamedAttendees([{ id: 'saved', personId: 'p', name: '참석자 1' }, { id: 'temporary' }]);
+  assert.equal(attendees[1].name, '참석자 1');
 });

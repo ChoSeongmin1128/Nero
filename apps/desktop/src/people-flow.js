@@ -2,13 +2,24 @@ const clone = value => JSON.parse(JSON.stringify(value));
 export const attendeeLabel = (attendee, attendees) => attendee.name?.trim() || `참석자 ${Math.max(0, attendees.filter(item => !item.name?.trim()).findIndex(item => item.id === attendee.id)) + 1}`;
 
 export function nameUnnamedAttendees(attendees) {
-  const used = new Set(attendees.map(item => item.name?.trim()).filter(Boolean));
+  const used = new Set(attendees.filter(item => !item.personId).map(item => item.name?.trim()).filter(Boolean));
   let number = 1;
   return attendees.map(item => {
     if (item.name?.trim()) return { ...item };
     while (used.has(`참석자 ${number}`)) number++;
     const name = `참석자 ${number++}`; used.add(name);
     return { ...item, name };
+  });
+}
+
+export const splitPeopleNames = text => text.split(/[,\r\n]+/).map(name => name.trim()).filter(Boolean);
+export const personGroups = (catalog, id) => catalog.groups.filter(group => group.personIds.includes(id));
+export function filterPeople(catalog, query = '', groupId = '') {
+  const needle = query.trim().toLocaleLowerCase();
+  return catalog.people.filter(person => {
+    const groups = personGroups(catalog, person.id);
+    return (!groupId || (groupId === 'ungrouped' ? !groups.length : groups.some(group => group.id === groupId)))
+      && (!needle || [person.name, ...groups.map(group => group.name)].some(name => name.toLocaleLowerCase().includes(needle)));
   });
 }
 
@@ -59,6 +70,17 @@ export function createAttendeeFlow({ bridge, onChanged = () => {}, uuid = () => 
     close() { if (state.busy && !state.loading) return false; epoch += 1; publish({ open: false, busy: false, loading: false }); return true; },
     add(persons) { if (!state.busy) publish({ attendees: addPeople(state.attendees, persons, uuid) }); },
     addTemporary(name = '') { if (!state.busy) publish({ attendees: nameUnnamedAttendees([...state.attendees, { id: uuid(), ...(name.trim() ? { name: name.trim() } : {}) }]) }); },
+    addInput(text) {
+      if (state.busy || !state.catalog) return false;
+      let attendees = state.attendees;
+      for (const name of splitPeopleNames(text)) {
+        if (name.length > 120) { publish({ error: '이름은 120자 이내로 입력해 주세요.' }); return false; }
+        const action = attendeeInputAction(state.catalog, attendees, name);
+        if (!action) { publish({ error: '이름이 겹치거나 이미 선택한 참석자입니다. 목록에서 선택해 주세요.' }); return false; }
+        attendees = action.kind === 'people' ? addPeople(attendees, action.people, uuid) : [...attendees, { id: uuid(), name: action.name }];
+      }
+      publish({ attendees, error: '' }); return true;
+    },
     rename(id, name) { if (!state.busy) publish({ attendees: state.attendees.map(item => item.id === id ? { ...item, name: name || undefined } : item) }); },
     remove(id) { if (!state.busy) publish({ attendees: state.attendees.filter(item => item.id !== id) }); },
     save() { return operate(persist); },
@@ -77,7 +99,7 @@ export function createAttendeeFlow({ bridge, onChanged = () => {}, uuid = () => 
 }
 
 export function createPeopleCatalogFlow({ bridge, uuid = () => crypto.randomUUID() }) {
-  let state = { catalog: null, busy: false, writing: false, draft: null, error: '' }, active = false, epoch = 0;
+  let state = { catalog: null, busy: false, writing: false, draft: null, quickInput: '', error: '' }, active = false, epoch = 0;
   let originalDraft = null, refreshAfterBusy = false;
   const listeners = new Set();
   const publish = changes => { state = { ...state, ...changes }; listeners.forEach(listener => listener()); };
@@ -91,26 +113,38 @@ export function createPeopleCatalogFlow({ bridge, uuid = () => crypto.randomUUID
     } catch (error) { if (generation === epoch) publish({ error: error?.message || '인원 목록을 저장하지 못했습니다.' }); return false; }
     finally { if (generation === epoch) {
       publish({ busy: false, writing: false });
-      if (refreshAfterBusy) { refreshAfterBusy = false; if (active && !state.draft) void flow.reload(); }
+      if (refreshAfterBusy) { refreshAfterBusy = false; if (active && !state.draft && !state.quickInput.trim()) void flow.reload(); }
     } }
   };
-  const commit = (people, groups) => run(() => bridge.replacePeopleCatalog(state.catalog.editVersion, people, groups), catalog => ({ catalog, draft: null }), true);
+  const commit = (people, groups, clearQuickInput = false) => run(() => bridge.replacePeopleCatalog(state.catalog.editVersion, people, groups), catalog => ({ catalog, draft: null, ...(clearQuickInput ? { quickInput: '' } : {}) }), true);
   const flow = {
     getSnapshot: () => state,
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
-    isDirty: () => Boolean(state.draft) && JSON.stringify(state.draft) !== originalDraft,
-    setActive(value) { if (active === value) return; epoch += 1; active = value; refreshAfterBusy = false; publish({ busy: false, writing: false }); if (value && !state.draft) void flow.reload(); },
-    reload() { return run(() => bridge.readPeopleCatalog(), catalog => ({ catalog, draft: null })); },
-    refreshIfClean() { if (!active) return; if (state.busy) { refreshAfterBusy = true; return; } if (!state.draft) return flow.reload(); },
+    isDirty: () => Boolean(state.quickInput.trim()) || Boolean(state.draft) && JSON.stringify(state.draft) !== originalDraft,
+    setActive(value) { if (active === value) return; epoch += 1; active = value; refreshAfterBusy = false; publish({ busy: false, writing: false }); if (value && !state.draft && !state.quickInput.trim()) void flow.reload(); },
+    reload() { return run(() => bridge.readPeopleCatalog(), catalog => ({ catalog, draft: null, quickInput: '' })); },
+    refreshIfClean() { if (!active) return; if (state.busy) { refreshAfterBusy = true; return; } if (!state.draft && !state.quickInput.trim()) return flow.reload(); },
     edit(kind, item = { id: uuid(), name: '', personIds: [] }) { if (state.catalog && !state.busy) { const draft = { kind, ...clone(item) }; originalDraft = JSON.stringify(draft); publish({ draft, error: '' }); } },
     change(changes) { if (state.draft && !state.busy) publish({ draft: { ...state.draft, ...changes } }); },
-    discard() { publish({ draft: null }); },
+    discard() { publish({ draft: null, quickInput: '' }); },
+    changeQuickInput(quickInput) { if (!state.busy) publish({ quickInput }); },
+    addMany(kind, groupId = '') {
+      if (!state.catalog || state.busy || state.draft) return Promise.resolve(false);
+      const names = splitPeopleNames(state.quickInput);
+      if (!names.length || names.some(name => name.length > 120)) { publish({ error: '이름을 1자 이상 120자 이내로 입력해 주세요.' }); return Promise.resolve(false); }
+      if (groupId && !state.catalog.groups.some(group => group.id === groupId)) { publish({ error: '선택한 그룹을 다시 확인해 주세요.' }); return Promise.resolve(false); }
+      if (kind === 'group') return commit(state.catalog.people, [...state.catalog.groups, ...names.map(name => ({ id: uuid(), name, personIds: [] }))], true);
+      const people = names.map(name => ({ id: uuid(), name }));
+      const groups = state.catalog.groups.map(group => group.id === groupId ? { ...group, personIds: [...group.personIds, ...people.map(person => person.id)] } : group);
+      return commit([...state.catalog.people, ...people], groups, true);
+    },
     save() {
       const item = state.draft;
       if (!item || !item.name.trim() || !state.catalog) return Promise.resolve(false);
       const key = item.kind === 'person' ? 'people' : 'groups';
       const value = key === 'people' ? { id: item.id, name: item.name.trim() } : { id: item.id, name: item.name.trim(), personIds: item.personIds };
-      const next = state.catalog[key].filter(entry => entry.id !== item.id).concat(value);
+      const next = state.catalog[key].some(entry => entry.id === item.id)
+        ? state.catalog[key].map(entry => entry.id === item.id ? value : entry) : [...state.catalog[key], value];
       return commit(key === 'people' ? next : state.catalog.people, key === 'groups' ? next : state.catalog.groups);
     },
     remove(kind, id) {

@@ -2,13 +2,13 @@
 .people-dialog > .nero-dialog-header, .people-dialog > .nero-dialog-footer { flex: none; }
 .people-dialog-body { min-height: 0; overflow: auto; display: grid; align-content: start; gap: 20px; padding-top: 20px; }
 .people-settings, .people-editor, .people-section { display: grid; gap: 16px; }
-.people-settings { gap: 24px; }
+.people-settings { gap: 16px; }
 .people-settings > .settings-panel-title { margin: 0; }
 .people-section h4, .people-editor > h4 { margin: 0; font-weight: var(--weight-semibold); }
 .people-confirm .people-editor { margin-top: 20px; }
 .people-section > header, .people-row, .people-actions, .people-option { display: flex; align-items: center; gap: 8px; }
 .people-section > header { justify-content: space-between; }
-.people-row { min-height: 44px; padding: 8px 12px; }
+.people-row { min-height: 44px; padding: 4px 12px; }
 .people-row + .people-row { border-top: 1px solid var(--border); }
 .people-name { min-width: 0; flex: 1; display: flex; align-items: center; gap: 12px; overflow-wrap: anywhere; }
 .people-name input { width: 100%; min-width: 0; }
@@ -25,6 +25,30 @@
 .people-option > span { min-width: 0; overflow-wrap: anywhere; }
 .people-option:hover:not(:disabled) { background: var(--hover); }
 .people-section input[type="search"] { width: 100%; }
+.people-tabs, .people-tab-panel { min-width: 0; display: grid; gap: 16px; }
+.people-tabs > .content-tabs { display: flex; margin: 0; border-bottom: 1px solid var(--border); }
+.people-tab-panel[hidden] { display: none; }
+.people-list-tools { display: flex; gap: 8px; flex-wrap: wrap; }
+.people-search { min-width: 0; flex: 1 1 180px; display: flex; align-items: center; gap: 8px; padding-inline: 10px; border: 1px solid var(--border-control); border-radius: var(--radius); }
+.people-search svg { flex: none; color: var(--text-secondary); }
+.people-search input[type="search"] { width: 100%; min-width: 0; border: 0; background: transparent; box-shadow: none; padding-inline: 0; }
+.people-search:focus-within { outline: 2px solid var(--focus); outline-offset: 2px; }
+.people-search input:focus-visible { outline: 0; }
+.people-list-tools > .nero-select-trigger { flex: 0 1 180px; width: auto; }
+.people-quick-add { display: grid; gap: 6px; }
+.people-quick-controls { display: flex; align-items: center; gap: 8px; }
+.people-quick-controls > input { min-width: 0; flex: 1; }
+.people-quick-controls > button { flex: none; }
+.people-input-hint { margin: 0; color: var(--text-secondary); font-size: var(--text-caption-size); line-height: var(--leading-ui); }
+.people-list-count { margin-bottom: -8px; }
+.people-catalog-list { max-height: min(440px, 48vh); overflow: auto; }
+.people-row-copy { flex: 1; min-width: 0; display: grid; gap: 0; }
+.people-row-copy > .people-name { line-height: 20px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.people-memberships { display: block; color: var(--text-secondary); line-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.people-member-list { max-height: min(320px, 42vh); overflow: auto; }
+.people-member-list .people-check { min-height: 40px; padding: 6px 8px; }
+.people-editor legend { padding-bottom: 8px; }
+.people-option-copy { min-width: 0; display: grid; }
 
 .attendee-add { display: grid; gap: 8px; }
 .attendee-search { display: flex; align-items: center; gap: 8px; padding-inline: 12px; border: 1px solid var(--border-control); border-radius: var(--radius); }
@@ -34,11 +58,13 @@
 .attendee-search input:focus-visible { outline: 0; }
 .attendee-options { max-height: min(240px, 32vh); overflow: auto; border: 1px solid var(--border); border-radius: var(--radius); }
 .attendee-option-heading { margin: 0; padding: 10px 12px 4px; color: var(--text-secondary); font-size: var(--text-caption-size); font-weight: var(--weight-medium); }
-.attendee-options .people-option { min-height: 40px; }
+.attendee-options .people-option { min-height: 44px; padding-block: 4px; }
+.attendee-options .people-option-copy { line-height: 20px; }
+.attendee-options .people-memberships:empty { display: none; }
 .attendee-options .people-option > svg { flex: none; color: var(--text-secondary); }
 .attendee-options .people-option > span:first-of-type { flex: 1; }
 .attendee-create { border-top: 1px solid var(--border); color: var(--text-secondary); }
-.attendee-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.attendee-chips { display: flex; flex-wrap: wrap; gap: 6px; max-height: min(160px, 25vh); overflow: auto; }
 .attendee-selected { gap: 10px; }
 .attendee-chip { display: inline-flex; align-items: center; gap: 2px; min-width: 0; max-width: 100%; padding: 4px 5px 4px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-secondary); }
 .attendee-chip-name { min-height: 28px; min-width: 0; padding: 2px 4px; overflow-wrap: anywhere; }
