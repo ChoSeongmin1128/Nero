@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "repository": "ggml-org/whisper.cpp",
+  "version": "b5454",
+  "commit": "d1be6fde11ac6e0407606b4e42fe72d34add8037",
+  "identity": "whisper.cpp-b5454@d1be6fde11ac6e0407606b4e42fe72d34add8037",
+  "source": {
+    "repository": "ggml-org/whisper.cpp",
+    "commit": "d1be6fde11ac6e0407606b4e42fe72d34add8037",
+    "sha256": "645445da884df6dbd52b30f82d7be7c01d1767c938714e477e786b88d529e9f4",
+    "bytes": 9631456
+  },
+  "targets": {
+    "macos-arm64": {
+      "backend": "metal",
+      "cmakeFlags": [
+        "-G", "Unix Makefiles",
+        "-DCMAKE_BUILD_TYPE=Release",
+        "-DCMAKE_OSX_ARCHITECTURES=arm64",
+        "-DCMAKE_OSX_DEPLOYMENT_TARGET:STRING=13.0",
+        "-DBUILD_SHARED_LIBS:BOOL=ON",
+        "-DGGML_NATIVE:BOOL=OFF",
+        "-DGGML_CPU_ARM_ARCH:STRING=armv8.2-a+dotprod+fp16",
+        "-DGGML_METAL:BOOL=ON",
+        "-DGGML_METAL_EMBED_LIBRARY:BOOL=ON",
+        "-DWHISPER_BUILD_TESTS:BOOL=OFF",
+        "-DWHISPER_BUILD_EXAMPLES:BOOL=ON",
+        "-DWHISPER_BUILD_SERVER:BOOL=OFF",
+        "-DWHISPER_COMMON_FFMPEG:BOOL=OFF",
+        "-DWHISPER_CURL:BOOL=OFF",
+        "-DWHISPER_COREML:BOOL=OFF"
+      ]
+    },
+    "windows-x64": {
+      "backend": "cpu",
+      "archive": {
+        "name": "whisper-bin-x64.zip",
+        "bytes": 8928640,
+        "sha256": "6ba69e3482d7826214f90a6a9c84ca07782aec1e1d0c6a7c30c994fd5d816ccb"
+      },
+      "minimumMsvcCrt": [14, 44, 35211, 0]
+    }
+  }
+}

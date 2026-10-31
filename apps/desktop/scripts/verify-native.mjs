@@ -20,6 +20,11 @@ if (speechTarget) {
     '--verify-staged', resolve(root, 'apps/desktop/.generated/native/diarization'),
     '--target', speechTarget, '--optional',
   ], { cwd: root, stdio: 'inherit', env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' } });
+  execFileSync(process.env.PYTHON || 'python3', [
+    resolve(root, 'scripts/native-whisper/prepare.py'),
+    '--verify-staged', resolve(root, 'apps/desktop/.generated/native/whisper'),
+    '--target', speechTarget, '--optional',
+  ], { cwd: root, stdio: 'inherit', env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' } });
 }
 if (process.platform === 'darwin' && (!target || target.includes('apple-darwin'))) {
   execFileSync(process.env.PYTHON || 'python3', [
