@@ -41,3 +41,16 @@ Windows WAV preparation uses rubato 0.16.2 (MIT) and its FFT/numeric dependencie
 The complete pinned dependency notices are included under
 `Contents/Resources/native/licenses/portable-wav/` (equivalent resources on Windows).
 Source: https://github.com/HEnquist/rubato/tree/v0.16.2 .
+
+## Whisper transcription
+
+The optional Whisper transcription engine uses whisper.cpp b5454, commit
+`d1be6fde11ac6e0407606b4e42fe72d34add8037`, under the MIT License.
+Copyright (c) 2023-2026 The ggml authors. The complete runtime license is included
+at `native/whisper/share/licenses/whisper.cpp/LICENSE` in app resources.
+[Runtime license](https://github.com/ggml-org/whisper.cpp/blob/d1be6fde11ac6e0407606b4e42fe72d34add8037/LICENSE).
+
+The separately downloaded large-v3-turbo Q5_0 model is pinned in
+`config/models/whisper-turbo.json`. Its conversion repository identifies the model
+as MIT-licensed. Model weights are not bundled with the application.
+[Model card](https://huggingface.co/ggerganov/whisper.cpp/blob/5359861c739e955e79d9a303bcbc70fb988958b1/README.md).
