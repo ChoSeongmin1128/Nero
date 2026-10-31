@@ -27,7 +27,7 @@ const recentDate = new Intl.DateTimeFormat('ko-KR', { month: 'numeric', day: 'nu
 
 export { renderMeetingMenu } from '../../../design-system/navigation.mjs';
 
-export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnapshot, selectMeeting, render: renderApp, showError, escape, icon, duration, onViewChanged }) {
+export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnapshot, selectMeeting, render: renderApp, showError, escape, icon, duration, onViewChanged, beginNavigation = () => () => true }) {
   const dialog = byId('library-dialog');
   const dialogBody = byId('library-dialog-body');
   const owner = dialog.ownerDocument;
@@ -86,19 +86,25 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     selection().clear();
     selectionAnchor = null;
   }
-  async function show(filter = 'all') {
+  async function show(filter = 'all', { isCurrent = () => true, beforeCommit = () => {}, history = false } = {}) {
+    const latest = beginNavigation(history);
     try {
-      await finishEditing(() => {});
-      const changed = state().libraryFilter !== filter;
-      state().notificationsOpen = false;
-      state().libraryFilter = filter;
-      state().libraryOpen = true;
-      sidebar?.navigate();
-      resetSelection();
-      renderApp();
-      byId('library-title')?.focus({ preventScroll: true });
-      if (changed || query()) await onViewChanged?.(filter);
-    } catch (error) { showError(error); }
+      const changed = await finishEditing(() => {
+        if (!latest() || !isCurrent()) return null;
+        beforeCommit();
+        const changed = state().libraryFilter !== filter;
+        state().libraryFilter = filter;
+        state().libraryOpen = true;
+        sidebar?.navigate();
+        resetSelection();
+        renderApp();
+        byId('library-title')?.focus({ preventScroll: true });
+        return changed || Boolean(query());
+      });
+      if (changed === null) return false;
+      if (changed) await onViewChanged?.(filter);
+      return true;
+    } catch (error) { showError(error); return false; }
   }
   function toggleSelection(id, event = {}) {
     if (state().libraryBusy || !state().connected) return;
@@ -158,6 +164,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     returnRecentId = returnFocus?.closest?.('[data-recent-row]')?.dataset.recentRow || null;
     pending = { confirm, action, detach };
     dialogBody.innerHTML = `<form class="library-form"><header class="dialog-header"><h2 id="library-dialog-title">${escape(title)}</h2><button type="button" class="quiet icon-button" data-library-close aria-label="닫기">${icon('x')}</button></header><div class="library-dialog-content">${content}<p id="library-dialog-error" class="field-error" role="alert" hidden></p></div><footer class="dialog-actions"><button type="button" data-library-close>취소</button><button type="submit" class="${destructive ? 'danger' : 'primary'}" data-library-confirm>${escape(confirm)}</button></footer></form>`;
+    dialog.dataset.size = destructive ? 'compact' : '';
     dialog.setAttribute('aria-labelledby', 'library-dialog-title');
     dialog.setAttribute('role', destructive ? 'alertdialog' : 'dialog');
     if (!dialog.open) dialog.showModal();
@@ -216,7 +223,18 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
   function deleteFolder(id) {
     const folder = state().snapshot.folders?.find(value => value.id === id);
     if (!folder) return;
-    openDialog({ title: '폴더를 삭제할까요?', content: `<p>${escape(folder.name)}</p><p class="muted">회의는 삭제하지 않고 미분류로 옮깁니다.</p>`, confirm: '폴더 삭제', destructive: true, action: () => bridge.deleteFolder(id) });
+    const meetings = state().snapshot.meetings.filter(meeting => meeting.folderId === id).map(({ id, deletedAt }) => ({ id, deletedAt: deletedAt ?? null }));
+    const active = meetings.filter(meeting => meeting.deletedAt == null);
+    const cancels = active.some(({ id }) => pendingJob(state().processing, { meetingId: id }));
+    openDialog({ title: '폴더 삭제', content: `<p>${escape(folder.name)}</p>${active.length ? `<label class="library-folder-trash"><input id="library-folder-trash" type="checkbox"><span>회의 ${active.length}개도 휴지통으로 이동</span></label>` : ''}`, confirm: '폴더 삭제', destructive: true, detach: true, action: () => {
+      const trashMeetings = Boolean(byId('library-folder-trash')?.checked && active.length);
+      if (trashMeetings && runningRecording(meetings.map(meeting => meeting.id))) throw new Error('녹음을 종료한 뒤 삭제해 주세요.');
+      return bridge.deleteFolder(id, { folder: { id: folder.id, name: folder.name }, meetings, trashMeetings });
+    } });
+    byId('library-folder-trash')?.addEventListener('change', event => {
+      pending.confirm = event.target.checked ? cancels ? '처리 취소 후 함께 휴지통' : '폴더 삭제 및 함께 휴지통' : '폴더 삭제';
+      setDialogBusy(false);
+    });
   }
   function renameMeeting(id) {
     const meeting = current(id);
@@ -247,11 +265,11 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     if (!ids.length) return;
     if (runningRecording(ids)) { showError('녹음을 종료한 뒤 삭제해 주세요.'); return; }
     const cancels = ids.some(meetingId => pendingJob(state().processing, { meetingId }));
-    openDialog({ title: '휴지통으로 이동할까요?', content: `<p>${escape(description(ids))}</p><p class="muted">${cancels ? '진행 중인 처리를 취소한 뒤 이동합니다. ' : ''}휴지통에서 복원할 수 있습니다.</p>`, confirm: cancels ? '처리 취소 후 휴지통' : '휴지통으로 이동', destructive: true, detach: true, action: () => bridge.trashMeetings(ids) });
+    openDialog({ title: '휴지통으로 이동', content: `<p>${escape(description(ids))}</p>`, confirm: cancels ? '처리 취소 후 휴지통' : '휴지통으로 이동', destructive: true, detach: true, action: () => bridge.trashMeetings(ids) });
   }
   function purgeDialog(ids) {
     if (!ids.length) return;
-    openDialog({ title: '회의를 영구 삭제할까요?', content: `<p>${escape(description(ids))}</p><p class="muted">원음, 음성 기록, 메모와 회의록을 삭제합니다. 복원할 수 없습니다.</p>`, confirm: '영구 삭제', destructive: true, detach: true, action: () => bridge.purgeMeetings(ids) });
+    openDialog({ title: '영구 삭제', content: `<p>${escape(description(ids))}</p>`, confirm: '영구 삭제', destructive: true, detach: true, action: () => bridge.purgeMeetings(ids) });
   }
   function emptyTrashDialog() {
     if (state().libraryBusy || !state().connected || state().libraryFilter !== 'trash' || dialog.open) return;
@@ -259,7 +277,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     if (!targets.length) return;
     const ids = targets.map(meeting => meeting.id);
     if (runningRecording(ids)) { showError('녹음을 종료한 뒤 삭제해 주세요.'); return; }
-    openDialog({ title: '휴지통을 비울까요?', content: `<p>휴지통의 회의 ${targets.length}개를 영구 삭제합니다.</p><p class="muted">녹음, 음성 기록, 메모와 회의록은 복원할 수 없습니다.</p>`, confirm: '영구 삭제', destructive: true, action: async () => {
+    openDialog({ title: '휴지통 비우기', content: `<p>회의 ${targets.length}개</p>`, confirm: '영구 삭제', destructive: true, action: async () => {
       const latest = await bridge.readSnapshot();
       acceptSnapshot(latest);
       if (targets.some(target => !latest.meetings.some(meeting => meeting.id === target.id && meeting.deletedAt != null && meeting.deletedAt === target.deletedAt))) {
@@ -346,7 +364,9 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     byId('library-trash').hidden = filter === 'trash';
     byId('library-restore').hidden = filter !== 'trash';
     byId('library-purge').hidden = filter !== 'trash';
-    byId('library-empty-trash').hidden = filter !== 'trash' || count > 0;
+    byId('library-create').hidden = filter === 'trash';
+    byId('library-record').hidden = filter === 'trash';
+    byId('library-empty-trash').hidden = filter !== 'trash';
     byId('library-empty-trash').disabled = disabled || !filterLibraryMeetings(snapshot.meetings, 'trash').length;
     byId('library-select-all').disabled = disabled || !visible.length;
     byId('library-selection-clear').disabled = disabled || !count;

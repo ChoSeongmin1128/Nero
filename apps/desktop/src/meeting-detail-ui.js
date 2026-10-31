@@ -1,3 +1,5 @@
+import { mountNotesWidth } from './notes-width.js';
+
 const views = ['summary', 'transcript', 'notes'];
 
 export function mountMeetingDetail({ byId, finishEditing, onReveal = () => {}, onError = () => {} }) {
@@ -5,6 +7,7 @@ export function mountMeetingDetail({ byId, finishEditing, onReveal = () => {}, o
   const summary = byId('summary-section'), transcript = byId('transcript-section');
   const inspector = byId('detail-inspector'), notes = byId('notes-section');
   const editor = byId('meeting-notes'), close = byId('detail-inspector-close');
+  const width = mountNotesWidth({ root: byId('meeting-detail'), handle: byId('notes-resize') });
   const controls = new Map(views.map(view => [view, byId(`detail-${view}-open`)]));
   const memories = new Map();
   let meetingId = null, renderedId = null, request = 0, ready = false, pendingRestore = true;
@@ -20,6 +23,7 @@ export function mountMeetingDetail({ byId, finishEditing, onReveal = () => {}, o
     transcript.hidden = !meetingId || !transcriptVisible;
     byId('result-transcript-home').hidden = transcript.hidden;
     inspector.hidden = !meetingId || !notesOpen;
+    width.update(!inspector.hidden);
     notes.hidden = inspector.hidden;
     byId('meeting-detail').dataset.inspector = inspector.hidden ? '' : 'notes';
     for (const [view, control] of controls) {

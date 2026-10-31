@@ -241,13 +241,28 @@ impl JobRequest {
     }
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AppMetadata {
+    pub version: String,
+    pub build: String,
+    pub integration_version: Option<String>,
+}
+
 enum ControlRequest {
+    Metadata,
     Mutation(Mutation),
     Job(JobRequest),
 }
 impl ControlRequest {
     fn parse(method: &str, params: Value) -> std::result::Result<Self, ControlError> {
-        if JOB_METHODS.contains(&method) {
+        if method == "app_metadata" {
+            if params.as_object().is_some_and(|fields| fields.is_empty()) {
+                Ok(Self::Metadata)
+            } else {
+                Err(ControlError::invalid())
+            }
+        } else if JOB_METHODS.contains(&method) {
             JobRequest::parse(method, params).map(Self::Job)
         } else {
             Mutation::parse(method, params).map(Self::Mutation)
@@ -735,7 +750,11 @@ pub fn request(
     let mut stream = TcpStream::connect_timeout(&descriptor.address.into(), Duration::from_secs(2))
         .map_err(|_| ControlError::unavailable())?;
     stream
-        .set_read_timeout(Some(Duration::from_secs(45)))
+        .set_read_timeout(Some(Duration::from_secs(if method == "app_metadata" {
+            2
+        } else {
+            45
+        })))
         .map_err(|_| ControlError::unavailable())?;
     stream
         .set_write_timeout(Some(Duration::from_secs(2)))
@@ -823,6 +842,18 @@ impl Server {
         handler: impl Fn(Mutation) -> std::result::Result<Value, ControlError> + Send + 'static,
         jobs: impl Fn(JobRequest) -> std::result::Result<Value, ControlError> + Send + 'static,
     ) -> std::result::Result<Self, ControlError> {
+        Self::start_with_metadata(root, core, handler, jobs, || {
+            Err(ControlError::unavailable())
+        })
+    }
+
+    pub fn start_with_metadata(
+        root: &Path,
+        core: CoreHandle,
+        handler: impl Fn(Mutation) -> std::result::Result<Value, ControlError> + Send + 'static,
+        jobs: impl Fn(JobRequest) -> std::result::Result<Value, ControlError> + Send + 'static,
+        metadata: impl Fn() -> std::result::Result<AppMetadata, ControlError> + Send + 'static,
+    ) -> std::result::Result<Self, ControlError> {
         let path = descriptor_path(root)?;
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
             .map_err(|_| ControlError::new("app_not_ready", "Nero 수정 연결을 열지 못했습니다."))?;
@@ -891,6 +922,10 @@ impl Server {
                                     ControlRequest::parse(&value.method, value.params)
                                 })
                                 .and_then(|request| match request {
+                                    ControlRequest::Metadata => metadata().and_then(|value| {
+                                        serde_json::to_value(value)
+                                            .map_err(|_| ControlError::invalid())
+                                    }),
                                     ControlRequest::Mutation(request) => handler(request),
                                     ControlRequest::Job(request) => jobs(request),
                                 });
@@ -955,6 +990,53 @@ mod tests {
             .as_str()
             .unwrap()
             .into()
+    }
+
+    #[test]
+    fn metadata_is_authenticated_read_only_and_has_no_parameters() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let core = CoreHandle::open(&root).unwrap();
+        let _server = Server::start_with_metadata(
+            root.as_path(),
+            core,
+            |_| panic!("metadata must not mutate"),
+            |_| panic!("metadata must not query or cancel jobs"),
+            || {
+                Ok(AppMetadata {
+                    version: "0.1.0".into(),
+                    build: "47".into(),
+                    integration_version: Some("0.1.0-nero.33".into()),
+                })
+            },
+        )
+        .unwrap();
+        assert!(request(root.as_path(), "app_metadata", json!({"refresh":true})).is_err());
+        assert_eq!(
+            request(root.as_path(), "app_metadata", json!({})).unwrap()["build"],
+            "47"
+        );
+        assert!(!root.as_path().join("models").exists());
+        let mut descriptor = read_descriptor(root.as_path()).unwrap();
+        descriptor.secret = "wrong".into();
+        let mut stream = TcpStream::connect(descriptor.address).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        write_frame(
+            &mut stream,
+            &Envelope {
+                protocol: PROTOCOL,
+                generation: descriptor.generation,
+                secret: descriptor.secret,
+                method: "app_metadata".into(),
+                params: json!({}),
+            },
+        )
+        .unwrap();
+        let denied: Value = serde_json::from_slice(&read_frame(&mut stream).unwrap()).unwrap();
+        assert!(denied.get("result").is_none());
+        assert_eq!(denied["error"]["code"], "app_not_ready");
     }
 
     #[test]

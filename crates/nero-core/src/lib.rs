@@ -18,7 +18,7 @@ mod transcript;
 mod whisper;
 pub use capture::CaptureReader;
 pub use diarization::{SpeakerAnalysis, SpeakerAnalysisDraft, SpeakerPosterior};
-pub use library::Folder;
+pub use library::{Folder, FolderDeleteRequest, FolderMeetingState};
 pub use presentation::{DocumentFormat, DocumentKind, ExportedDocument};
 pub use store::{CaptureQuality, CaptureQualityEvent, CaptureQualityEventKind};
 pub use summary::{
@@ -350,6 +350,12 @@ impl CoreHandle {
     pub fn delete_folder(&self, id: &str) -> Result<()> {
         let id = id.to_owned();
         self.call(move |engine| engine.delete_folder(&id))
+    }
+    pub fn validate_folder_delete(&self, request: FolderDeleteRequest) -> Result<()> {
+        self.call(move |engine| engine.validate_folder_delete(&request))
+    }
+    pub fn delete_folder_checked(&self, request: FolderDeleteRequest) -> Result<()> {
+        self.call(move |engine| engine.delete_folder_checked(&request))
     }
     pub fn move_meetings(&self, ids: Vec<String>, folder_id: Option<String>) -> Result<()> {
         self.call(move |engine| engine.move_meetings(&ids, folder_id))

@@ -1019,6 +1019,40 @@ impl Processing {
         self.meeting_removal_with_preflight(core, ids, || Ok(()), action)
     }
 
+    pub fn meeting_trash<T>(
+        &self,
+        core: &CoreHandle,
+        ids: &[String],
+        action: impl FnOnce() -> nero_core::Result<T>,
+    ) -> nero_core::Result<T> {
+        let mut running = self.running.lock().unwrap();
+        let snapshot = self.removal_snapshot(core, ids)?;
+        // Soft trash closes Core result admission before workers are joined.
+        // A directory-sync error may still have committed the complete library.
+        let result = action();
+        let committed = result.is_ok()
+            || (matches!(&result, Err(nero_core::CoreError::Storage(_)))
+                && core.snapshot().ok().is_some_and(|current| {
+                    ids.iter().all(|id| {
+                        current
+                            .meetings
+                            .iter()
+                            .any(|meeting| &meeting.id == id && meeting.deleted_at.is_some())
+                    })
+                }));
+        if !committed {
+            return result;
+        }
+        let cleanup = self.cancel_meeting_processing(&mut running, ids, &snapshot);
+        match (result, cleanup) {
+            (Err(error), _) => Err(error),
+            (Ok(_), Err(error)) => Err(nero_core::CoreError::InvalidState(format!(
+                "회의를 휴지통으로 이동했지만 처리 정리를 완료하지 못했습니다: {error}"
+            ))),
+            (Ok(value), Ok(())) => Ok(value),
+        }
+    }
+
     pub fn meeting_removal_with_preflight<T>(
         &self,
         core: &CoreHandle,
@@ -1027,6 +1061,13 @@ impl Processing {
         action: impl FnOnce() -> nero_core::Result<T>,
     ) -> nero_core::Result<T> {
         let mut running = self.running.lock().unwrap();
+        let snapshot = self.removal_snapshot(core, ids)?;
+        preflight()?;
+        self.cancel_meeting_processing(&mut running, ids, &snapshot)?;
+        action()
+    }
+
+    fn removal_snapshot(&self, core: &CoreHandle, ids: &[String]) -> nero_core::Result<Snapshot> {
         self.worker_ready()
             .map_err(nero_core::CoreError::InvalidState)?;
         if self.shutting_down.load(Ordering::Acquire) {
@@ -1052,9 +1093,15 @@ impl Processing {
                 "녹음을 마친 뒤 삭제해 주세요.".into(),
             ));
         }
-        // Validate after GUI drafts have been flushed and while new jobs are excluded.
-        // A rejected external edit must not cancel running or queued processing.
-        preflight()?;
+        Ok(snapshot)
+    }
+
+    fn cancel_meeting_processing(
+        &self,
+        running: &mut Option<Running>,
+        ids: &[String],
+        snapshot: &Snapshot,
+    ) -> nero_core::Result<()> {
         let remove_live = self
             .live
             .lock()
@@ -1121,7 +1168,7 @@ impl Processing {
         }
         self.worker_ready()
             .map_err(nero_core::CoreError::InvalidState)?;
-        action()
+        Ok(())
     }
 
     fn bind_job(path: &Path, meeting_id: &str) -> Result<(), String> {
@@ -3660,6 +3707,208 @@ mod tests {
         assert!(process.running.lock().unwrap().is_none());
     }
     #[test]
+    fn soft_trash_commits_before_join_and_blocks_late_native_result_writes() {
+        let (_temp, process) = setup();
+        let core = CoreHandle::open(&process.root).unwrap();
+        let meeting = core.create_meeting("Meeting", "Preserved notes").unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let flag = cancel.clone();
+        let worker_core = core.clone();
+        let worker_id = meeting.id.clone();
+        let (done, finished) = std::sync::mpsc::channel();
+        let handle = thread::spawn(move || {
+            while !flag.load(Ordering::Acquire) {
+                thread::yield_now();
+            }
+            let stored = worker_core.list_meetings().unwrap();
+            assert!(stored
+                .iter()
+                .find(|value| value.id == worker_id)
+                .unwrap()
+                .deleted_at
+                .is_some());
+            assert!(matches!(
+                worker_core.commit_nemotron_transcript(&worker_id, None, b"synthetic".to_vec()),
+                Err(nero_core::CoreError::MeetingNotFound)
+            ));
+            assert!(matches!(
+                worker_core.commit_whisper_transcript(&worker_id, None, b"synthetic".to_vec()),
+                Err(nero_core::CoreError::MeetingNotFound)
+            ));
+            // Joining must not retain the Core actor or a global library write lock.
+            worker_core.create_folder("Unrelated").unwrap();
+            done.send(()).unwrap();
+        });
+        *process.running.lock().unwrap() = Some(Running {
+            id: "job".into(),
+            cancel,
+            handle,
+            import_existing: None,
+        });
+        process.update(|progress| progress.meeting_id = Some(meeting.id.clone()));
+        process
+            .meeting_trash(&core, &[meeting.id.clone()], || {
+                assert!(process.running.try_lock().is_err());
+                core.trash_meetings(vec![meeting.id.clone()])
+            })
+            .unwrap();
+        finished.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(process.running.lock().unwrap().is_none());
+        assert!(!process
+            .root
+            .join("meetings")
+            .join(&meeting.id)
+            .join("transcripts")
+            .exists());
+        let stored = core.list_meetings().unwrap().remove(0);
+        assert!(stored.notes == "Preserved notes", "notes changed");
+        assert!(stored.deleted_at.is_some());
+    }
+
+    #[test]
+    fn soft_trash_folder_cas_rejects_a_concurrent_external_write_without_cancelling() {
+        let (_temp, process) = setup();
+        let core = CoreHandle::open(&process.root).unwrap();
+        let meeting = core.create_meeting("Meeting", "Preserved notes").unwrap();
+        let folder = core.create_folder("Folder").unwrap();
+        core.move_meetings(vec![meeting.id.clone()], Some(folder.id.clone()))
+            .unwrap();
+        let request = nero_core::FolderDeleteRequest {
+            folder: folder.clone(),
+            meetings: vec![nero_core::FolderMeetingState {
+                id: meeting.id.clone(),
+                deleted_at: None,
+            }],
+            trash_meetings: true,
+        };
+        core.validate_folder_delete(request.clone()).unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (release, released) = std::sync::mpsc::channel();
+        let handle = thread::spawn(move || {
+            let _ = released.recv_timeout(Duration::from_secs(2));
+        });
+        *process.running.lock().unwrap() = Some(Running {
+            id: "job".into(),
+            cancel: cancel.clone(),
+            handle,
+            import_existing: None,
+        });
+        process.update(|progress| progress.meeting_id = Some(meeting.id.clone()));
+        let (write, writing) = std::sync::mpsc::channel();
+        let (written, after_write) = std::sync::mpsc::channel();
+        let external_core = core.clone();
+        let folder_id = folder.id.clone();
+        let writer = thread::spawn(move || {
+            writing.recv_timeout(Duration::from_secs(2)).unwrap();
+            external_core.rename_folder(&folder_id, "Renamed").unwrap();
+            written.send(()).unwrap();
+        });
+        let result = process.meeting_trash(&core, &[meeting.id.clone()], || {
+            write.send(()).unwrap();
+            after_write.recv_timeout(Duration::from_secs(2)).unwrap();
+            core.delete_folder_checked(request)
+        });
+        writer.join().unwrap();
+        assert!(result.is_err());
+        assert!(!cancel.load(Ordering::Acquire));
+        assert!(process.running.lock().unwrap().is_some());
+        assert!(core.list_meetings().unwrap()[0].deleted_at.is_none());
+        release.send(()).unwrap();
+        process
+            .running
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap()
+            .handle
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    fn soft_trash_storage_errors_cancel_only_when_the_trash_state_was_committed() {
+        for committed in [false, true] {
+            let (_temp, process) = setup();
+            let core = CoreHandle::open(&process.root).unwrap();
+            let meeting = core.create_meeting("Meeting", "Preserved notes").unwrap();
+            let cancel = Arc::new(AtomicBool::new(false));
+            let flag = cancel.clone();
+            let (release, released) = std::sync::mpsc::channel();
+            let handle = thread::spawn(move || {
+                while !flag.load(Ordering::Acquire) {
+                    if released.try_recv().is_ok() {
+                        break;
+                    }
+                    thread::yield_now();
+                }
+            });
+            *process.running.lock().unwrap() = Some(Running {
+                id: "job".into(),
+                cancel: cancel.clone(),
+                handle,
+                import_existing: None,
+            });
+            process.update(|progress| progress.meeting_id = Some(meeting.id.clone()));
+            let result: nero_core::Result<()> =
+                process.meeting_trash(&core, &[meeting.id.clone()], || {
+                    if committed {
+                        core.trash_meetings(vec![meeting.id.clone()])?;
+                    }
+                    Err(nero_core::CoreError::Storage(
+                        "synthetic storage failure".into(),
+                    ))
+                });
+            assert!(matches!(result, Err(nero_core::CoreError::Storage(_))));
+            assert_eq!(cancel.load(Ordering::Acquire), committed);
+            assert_eq!(
+                core.list_meetings().unwrap()[0].deleted_at.is_some(),
+                committed
+            );
+            if !committed {
+                release.send(()).unwrap();
+                process
+                    .running
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .unwrap()
+                    .handle
+                    .join()
+                    .unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn soft_trash_reports_cleanup_failure_without_rolling_back_the_saved_trash() {
+        let (_temp, process) = setup();
+        let core = CoreHandle::open(&process.root).unwrap();
+        let meeting = core.create_meeting("Meeting", "Preserved notes").unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let flag = cancel.clone();
+        let observer = process.clone();
+        let handle = thread::spawn(move || {
+            while !flag.load(Ordering::Acquire) {
+                thread::yield_now();
+            }
+            observer.cleanup_failed();
+        });
+        *process.running.lock().unwrap() = Some(Running {
+            id: "job".into(),
+            cancel,
+            handle,
+            import_existing: None,
+        });
+        process.update(|progress| progress.meeting_id = Some(meeting.id.clone()));
+        assert!(process
+            .meeting_trash(&core, &[meeting.id.clone()], || core
+                .trash_meetings(vec![meeting.id.clone()]))
+            .is_err());
+        assert!(core.list_meetings().unwrap()[0].deleted_at.is_some());
+        assert!(process.worker_ready().is_err());
+    }
+
+    #[test]
     fn stale_removal_after_draft_flush_keeps_running_and_queued_jobs_unchanged() {
         use nero_core::agent_control::{meeting_edit_version, Mutation};
 
@@ -3720,16 +3969,10 @@ mod tests {
         });
         let before_progress = process.progress.lock().unwrap().clone();
         let before_records = process.journal.records().unwrap();
-        let preflight = request.clone();
-        let result = process.meeting_removal_with_preflight(
-            &core,
-            &[meeting.id.clone()],
-            || {
-                assert!(process.running.try_lock().is_err());
-                core.agent_validate(preflight)
-            },
-            || core.agent_mutate(request),
-        );
+        let result = process.meeting_trash(&core, &[meeting.id.clone()], || {
+            assert!(process.running.try_lock().is_err());
+            core.agent_mutate(request)
+        });
         assert!(matches!(result, Err(nero_core::CoreError::EditConflict)));
         assert!(!cancel.load(Ordering::Acquire));
         assert_eq!(

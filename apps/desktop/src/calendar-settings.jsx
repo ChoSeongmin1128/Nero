@@ -88,7 +88,7 @@ function CalendarSettings({ flow }) {
       <div><strong>{view.label}</strong>{snapshot.connected && <p>읽기 전용</p>}</div>
       <div className="calendar-settings-actions">
         {connecting && <><span className="activity-spinner" aria-hidden="true" /><button type="button" className="small" disabled={state.phase !== 'authorizing' || state.reopening} onClick={() => { void flow.reopen(); }}>브라우저 다시 열기</button></>}
-        {connecting ? <button type="button" className="small" onClick={() => { void flow.cancel(); }}>취소</button> : <button type="button" className="small" disabled={state.busy || !snapshot.configured || snapshot.restoring} onClick={() => { void (view.retryable ? flow.retry() : flow.connect()); }}>{view.action}</button>}
+        {connecting ? <button type="button" className="small" onClick={() => { void flow.cancel(); }}>취소</button> : view.action && <button type="button" className="small" disabled={state.busy || !snapshot.configured || snapshot.restoring} onClick={() => { void (view.retryable ? flow.retry() : flow.connect()); }}>{view.action}</button>}
         {(snapshot.accountLabel || snapshot.connected) && !connecting && <button type="button" className="small" disabled={state.busy || snapshot.restoring} onClick={() => { void flow.disconnect(); }}>연결 해제</button>}
       </div>
     </div></div>

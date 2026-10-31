@@ -394,7 +394,7 @@ test('trash confirmation explains cancelling the affected processing job', () =>
   const app = harness();
   app.state.processing = { status: 'running', meetingId: 'one' };
   app.click('meeting-trash');
-  assert.match(app.byId('library-dialog-body').innerHTML, /진행 중인 처리를 취소/);
+  assert.doesNotMatch(app.byId('library-dialog-body').innerHTML, /휴지통에서 복원/);
   assert.match(app.byId('library-dialog-body').innerHTML, /처리 취소 후 휴지통/);
   assert.equal(app.calls.some(call => call.name === 'trash'), false);
 });
@@ -415,7 +415,7 @@ test('purge failure refreshes its committed deletion and keeps the recovery erro
   app.controller.render();
   app.bridge.purgeMeetings = async ids => { app.state.snapshot.meetings = app.state.snapshot.meetings.filter(meeting => !ids.includes(meeting.id)); throw new Error('파일 정리를 재시도합니다.'); };
   app.click('library-purge');
-  assert.match(app.byId('library-dialog-body').innerHTML, /복원할 수 없습니다/);
+  assert.match(app.byId('library-dialog-body').innerHTML, /영구 삭제/);
   await app.submit();
   assert.equal(app.state.snapshot.meetings.some(meeting => meeting.id === 'three'), false);
   assert.equal(app.calls.at(-1).name, 'read');
@@ -510,7 +510,7 @@ test('empty trash is scoped to trash, disables for an empty trash and ignores se
   assert.equal(app.byId('library-empty-trash').disabled, false);
   app.click('library-empty-trash');
   assert.match(app.byId('library-dialog-body').innerHTML, /회의 2개/);
-  assert.match(app.byId('library-dialog-body').innerHTML, /녹음, 음성 기록, 메모와 회의록은 복원할 수 없습니다/);
+  assert.match(app.byId('library-dialog-body').innerHTML, /회의 2개/);
   assert.match(app.byId('library-dialog-body').innerHTML, /class="danger"/);
   assert.equal(app.byId('library-dialog').role, 'alertdialog');
   assert.equal(app.calls.some(call => call.name === 'purge'), false);
@@ -725,7 +725,7 @@ test('search pruning clears an unavailable anchor and selected trash hides empty
   app.byId('search').value = ''; app.state.libraryFilter = 'trash'; app.controller.render();
   assert.equal(app.byId('library-empty-trash').hidden, false);
   app.controller.toggleSelection('early');
-  assert.equal(app.byId('library-empty-trash').hidden, true);
+  assert.equal(app.byId('library-empty-trash').hidden, false);
   app.click('library-selection-clear');
   assert.equal(app.byId('library-empty-trash').hidden, false);
 });
@@ -820,4 +820,43 @@ test('recent duration updates after finalization without navigation or title cha
   app.controller.render();
   assert.equal(app.byId('library-user-folders').innerHTML, '');
   assert.match(app.byId('library-system-views').innerHTML, /data-library-filter="all"/);
+});
+
+
+test('folder deletion defaults to unfiled and freezes the confirmed membership', async () => {
+  const app = harness();
+  const folder = app.state.snapshot.folders[0];
+  app.delegated('folder-list', { folderDelete: folder.id }, ['data-folder-delete']);
+  assert.match(app.byId('library-dialog-body').innerHTML, /회의 1개도 휴지통/);
+  await app.submit();
+  const call = app.calls.find(call => call.name === 'deleteFolder');
+  assert.equal(call.args[1].trashMeetings, false);
+  assert.deepEqual(call.args[1].folder, folder);
+  assert.deepEqual(call.args[1].meetings, app.state.snapshot.meetings.filter(meeting => meeting.folderId === folder.id).map(({ id, deletedAt }) => ({ id, deletedAt: deletedAt ?? null })));
+});
+
+test('folder deletion includes trash only after explicit selection and protects recording', async () => {
+  const app = harness();
+  const folder = app.state.snapshot.folders[0];
+  app.delegated('folder-list', { folderDelete: folder.id }, ['data-folder-delete']);
+  app.byId('library-folder-trash').checked = true;
+  await app.submit();
+  assert.equal(app.calls.find(call => call.name === 'deleteFolder').args[1].trashMeetings, true);
+  const recording = harness();
+  recording.delegated('folder-list', { folderDelete: folder.id }, ['data-folder-delete']);
+  recording.byId('library-folder-trash').checked = true;
+  recording.state.snapshot.session = { state: 'recording', meetingId: 'one' };
+  await recording.submit();
+  assert.equal(recording.calls.some(call => call.name === 'deleteFolder'), false);
+});
+
+test('trash header replaces create and record with the empty-trash action', () => {
+  const app = harness();
+  app.state.libraryFilter = 'trash'; app.controller.render();
+  assert.equal(app.byId('library-create').hidden, true);
+  assert.equal(app.byId('library-record').hidden, true);
+  assert.equal(app.byId('library-empty-trash').hidden, false);
+  app.state.libraryFilter = 'all'; app.controller.render();
+  assert.equal(app.byId('library-create').hidden, false);
+  assert.equal(app.byId('library-record').hidden, false);
 });

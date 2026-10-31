@@ -124,3 +124,10 @@ test('successful authorization clears a browser-reopen error', async () => {
   const pending=flow.connect();await flush();await flow.reopen();assert.equal(flow.getSnapshot().error,'browser failed');
   finish.resolve({...snapshot,revision:4});await pending;assert.equal(flow.getSnapshot().error,'');
 });
+
+
+test('a healthy calendar connection offers no reconnect action', () => {
+  const view=calendarConnectionView({phase:'idle',connecting:false,error:'',snapshot:{connected:true,accountLabel:'Example',restoring:false}});
+  assert.equal(view.label,'Example'); assert.equal(view.action,null);
+  assert.equal(calendarConnectionView({phase:'failed',connecting:false,error:'Failed',snapshot:{connected:false}}).action,'다시 시도');
+});

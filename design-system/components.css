@@ -466,28 +466,6 @@ input[type="checkbox"] {
   margin-top: 8px;
 }
 
-.transcript-original {
-  margin-top: 6px;
-  color: var(--text-secondary);
-  font-size: var(--text-caption-size);
-}
-
-.transcript-original summary {
-  width: fit-content;
-  cursor: pointer;
-}
-
-.transcript-original summary:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 3px;
-}
-
-.transcript-original p {
-  margin: 6px 0 0;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
 .summary-document {
   font-size: var(--text-reading-size);
   line-height: var(--leading-reading);
@@ -1126,3 +1104,10 @@ button.danger:hover:not(:disabled), button.danger-text:hover:not(:disabled) { co
 .settings-row > input[role="switch"]:checked::before { transform: translateX(12px); background: var(--on-accent); }
 @media (prefers-reduced-motion: reduce) { .settings-row > input[role="switch"]::before { transition: none; } }
 @media (forced-colors: active) { .settings-row > input[role="switch"] { appearance: auto; } .settings-row > input[role="switch"]::before { display: none; } }
+
+.library-dialog[data-size="compact"] { width: min(400px, calc(100vw - 32px)); padding: 20px; }
+.library-dialog[data-size="compact"] .dialog-header { gap: 12px; }
+.library-dialog[data-size="compact"] .dialog-header h2 { font-size: var(--text-subtitle-size); }
+.library-dialog[data-size="compact"] .library-dialog-content > p { overflow-wrap: anywhere; }
+.library-dialog .library-folder-trash { display: flex; align-items: center; gap: 8px; margin: 16px 0 0; font-size: var(--text-label-size); }
+.library-folder-trash > input { flex: none; margin: 0; }

@@ -28,14 +28,14 @@ test('product shares hover, pin and close navigation without hiding the meeting 
   const shell = document.querySelector('.workspace'), trigger = document.getElementById('navigation-toggle');
   document.querySelector('.navigation-edge').dispatchEvent(new window.PointerEvent('pointerenter', { pointerType: 'mouse' }));
   assert.equal(shell.classList.contains('nav-peek'), true);
-  assert.equal(trigger.parentElement.className, 'navigation-brand');
+  assert.equal(trigger.parentElement.className, 'navigation-toggle-slot');
   assert.equal(document.querySelector('main').inert, false);
   trigger.click();
   assert.equal(window.localStorage.getItem('nero.sidebar.pinned'), 'true');
   trigger.click();
   assert.equal(shell.classList.contains('collapsed'), true);
-  assert.equal(trigger.parentElement.className, 'navigation-brand');
-  assert.equal(document.getElementById('navigation-sidebar').inert, false);
+  assert.equal(trigger.parentElement.className, 'navigation-toggle-slot');
+  assert.equal(document.getElementById('navigation-sidebar').inert, true);
   assert.equal(document.querySelectorAll('#navigation-toggle').length, 1);
 });
 
@@ -144,7 +144,7 @@ test('recent context actions target their row while preserving the current meeti
   assert.equal(document.getElementById('library-dialog-title').textContent, '폴더로 이동');
   document.querySelector('[data-library-close]').click();
   open(); row.querySelector('[data-library-action="trash"]').click();
-  assert.equal(document.getElementById('library-dialog-title').textContent, '휴지통으로 이동할까요?');
+  assert.equal(document.getElementById('library-dialog-title').textContent, '휴지통으로 이동');
   assert.match(document.getElementById('library-dialog-body').textContent, /미분류 회의/);
   assert.equal(state.selectedId, 'filed');
 });
@@ -179,7 +179,7 @@ test('main-list actions close their menu before opening a dialog and restore the
   const meeting = state.snapshot.meetings.find(meeting => meeting.id === 'filed');
   document.getElementById('meeting-list').innerHTML = `<article data-meeting-id="filed">${renderMeetingMenu(meeting, { escape: value => String(value), icon: name => `<svg data-icon="${name}"></svg>` })}</article>`;
   const row = document.querySelector('#meeting-list [data-meeting-id="filed"]'), menu = row.querySelector('details'), summary = menu.querySelector('summary');
-  for (const [action, title] of [['rename', '회의 이름 변경'], ['move', '폴더로 이동'], ['trash', '휴지통으로 이동할까요?']]) {
+  for (const [action, title] of [['rename', '회의 이름 변경'], ['move', '폴더로 이동'], ['trash', '휴지통으로 이동']]) {
     row.dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2 }));
     const command = row.querySelector(`[data-library-action="${action}"]`);
     command.focus(); command.click();
@@ -237,9 +237,9 @@ test('product sidebar has one resize separator only while pinned or peeking and 
   const { window, document } = await setup(t);
   const shell = document.querySelector('.navigation-shell');
   const trigger = document.getElementById('navigation-toggle');
-  const handle = shell.querySelector('[role="separator"]');
+  const handle = shell.querySelector('[role="separator"][aria-controls="navigation-sidebar"]');
   assert.equal(handle.hidden, true);
-  assert.equal(shell.querySelectorAll('[role="separator"]').length, 1);
+  assert.equal(shell.querySelectorAll('[role="separator"][aria-controls="navigation-sidebar"]').length, 1);
   shell.getBoundingClientRect = () => ({ width: 1000 });
   window.dispatchEvent(new window.Event('resize'));
   document.querySelector('.navigation-edge').dispatchEvent(new window.PointerEvent('pointerenter', { pointerType: 'mouse' }));
@@ -266,21 +266,21 @@ test('product sidebar has one resize separator only while pinned or peeking and 
 
 test('sidebar keyboard sizing and viewport bounds preserve the saved preference', async t => {
   const { window, document } = await setup(t, { 'nero.sidebar.pinned': 'true', 'nero.sidebar.pinned.width': '380' });
-  const shell = document.querySelector('.navigation-shell'), handle = shell.querySelector('[role="separator"]');
+  const shell = document.querySelector('.navigation-shell'), handle = shell.querySelector('[role="separator"][aria-controls="navigation-sidebar"]');
   let viewport = 1000;
   shell.getBoundingClientRect = () => ({ width: viewport });
   const resize = value => { viewport = value; window.dispatchEvent(new window.Event('resize')); };
   resize(1000);
   assert.equal(handle.getAttribute('aria-valuenow'), '380');
   resize(700);
-  assert.equal(handle.getAttribute('aria-valuemax'), '300');
-  assert.equal(handle.getAttribute('aria-valuenow'), '300');
+  assert.equal(handle.getAttribute('aria-valuemax'), '248');
+  assert.equal(handle.getAttribute('aria-valuenow'), '248');
   assert.equal(window.localStorage.getItem('nero.sidebar.pinned.width'), '380');
   resize(640);
   assert.equal(shell.classList.contains('nav-overlay'), true);
   assert.equal(handle.getAttribute('aria-valuenow'), '380');
   resize(320);
-  assert.equal(handle.getAttribute('aria-valuemax'), '272');
+  assert.equal(handle.getAttribute('aria-valuemax'), '220');
   resize(1000);
   assert.equal(handle.getAttribute('aria-valuenow'), '380');
   const key = name => handle.dispatchEvent(new window.KeyboardEvent('keydown', { key: name, bubbles: true, cancelable: true }));
@@ -297,7 +297,7 @@ test('sidebar keyboard sizing and viewport bounds preserve the saved preference'
 for (const cancellation of ['pointercancel', 'lostpointercapture', 'blur', 'hidden', 'Escape']) {
   test(`sidebar resize cancels cleanly on ${cancellation}`, async t => {
     const { window, document } = await setup(t, { 'nero.sidebar.pinned': 'true', 'nero.sidebar.pinned.width': '280' });
-    const shell = document.querySelector('.navigation-shell'), handle = shell.querySelector('[role="separator"]');
+    const shell = document.querySelector('.navigation-shell'), handle = shell.querySelector('[role="separator"][aria-controls="navigation-sidebar"]');
     shell.getBoundingClientRect = () => ({ width: 1000 });
     window.dispatchEvent(new window.Event('resize'));
     const pointer = (type, x) => handle.dispatchEvent(new window.PointerEvent(type, { pointerId: 1, button: 0, isPrimary: true, clientX: x, bubbles: true }));
@@ -315,46 +315,32 @@ for (const cancellation of ['pointercancel', 'lostpointercapture', 'blur', 'hidd
 }
 
 
-test('collapsed sidebar keeps the same named actions and search opens the original field', async t => {
-  const { window, document } = await setup(t);
-  const shell = document.querySelector('.workspace'), aside = document.getElementById('navigation-sidebar');
-  const trigger = document.getElementById('navigation-toggle'), create = document.getElementById('create-meeting');
-  const search = document.getElementById('search'), searchToggle = document.querySelector('.navigation-search-toggle');
-  assert.equal(aside.inert, false);
-  assert.equal(aside.contains(trigger), true);
-  assert.equal(document.getElementById('recent-section').inert, true);
-  assert.equal(create.getAttribute('aria-label'), '새 회의');
-  for (const item of aside.querySelectorAll('[data-library-filter]')) {
-    assert.ok(item.getAttribute('aria-label'));
-    assert.equal(item.title, item.getAttribute('aria-label'));
+test('persistent rail owns one home, notification, settings and update control', async t => {
+  const { document } = await setup(t);
+  const rail = document.querySelector('.navigation-rail'), aside = document.getElementById('navigation-sidebar');
+  assert.equal(aside.inert, true);
+  for (const id of ['navigation-home', 'notifications-open', 'settings', 'sidebar-app-update']) {
+    assert.equal(document.querySelectorAll(`#${id}`).length, 1);
+    assert.ok(rail.contains(document.getElementById(id)));
   }
-  search.value = '유지할 검색';
-  searchToggle.click();
-  assert.equal(shell.classList.contains('nav-peek'), true);
-  assert.equal(document.activeElement, search);
-  assert.equal(search.value, '유지할 검색');
-  assert.equal(document.getElementById('recent-section').inert, false);
-  search.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
-  assert.equal(shell.classList.contains('nav-peek'), false);
-  assert.equal(document.activeElement, trigger);
   assert.equal(document.querySelectorAll('#create-meeting').length, 1);
-  assert.equal(document.getElementById('create-meeting'), create);
-  assert.equal(document.querySelectorAll('.navigation-search-toggle').length, 1);
+  assert.ok(aside.contains(document.getElementById('create-meeting')));
+  assert.equal(rail.contains(document.getElementById('create-meeting')), false);
+  assert.equal(document.querySelector('.navigation-search-toggle'), null);
 });
 
-test('hovering the rail reveals an overlay and outside interaction restores the rail', async t => {
+test('sidebar can be revealed by its view controller without moving the toolbar toggle', async t => {
   const { window, document } = await setup(t);
   const shell = document.querySelector('.workspace'), aside = document.getElementById('navigation-sidebar');
-  aside.dispatchEvent(new window.PointerEvent('pointerenter', { pointerType: 'mouse' }));
-  await new Promise(resolve => setTimeout(resolve, 170));
+  const trigger = document.getElementById('navigation-toggle');
+  aside.dispatchEvent(new window.CustomEvent('nero:sidebar-reveal'));
   assert.equal(shell.classList.contains('nav-peek'), true);
+  assert.equal(aside.inert, false);
+  assert.equal(trigger.parentElement.className, 'navigation-toggle-slot');
   document.querySelector('main').dispatchEvent(new window.PointerEvent('pointerdown', { bubbles: true }));
   assert.equal(shell.classList.contains('nav-peek'), false);
-  assert.equal(aside.inert, false);
-  assert.equal(aside.contains(document.getElementById('navigation-toggle')), true);
-  aside.dispatchEvent(new window.PointerEvent('pointerenter', { pointerType: 'touch' }));
-  await new Promise(resolve => setTimeout(resolve, 170));
-  assert.equal(shell.classList.contains('nav-peek'), false);
+  assert.equal(aside.inert, true);
+  assert.equal(document.querySelector('.navigation-rail').inert, false);
 });
 
 test('recent duration distinguishes recorded length from the calendar timestamp', () => {

@@ -244,7 +244,9 @@ test('startup integration alerts appear without visiting settings and route to t
   }]));
   window.eval(bundled.outputFiles[0].text); await window.neroBoot;
   const el = id => window.document.getElementById(id);
-  assert.equal(el('notification-count').textContent, '2');
+  assert.equal(el('notifications-open').dataset.unread, 'true');
+  assert.equal(el('notification-count').textContent, '');
+  assert.match(el('notifications-open').getAttribute('aria-label'), /2개/);
   el('notifications-open').click();
   await new Promise(resolve => setTimeout(resolve, 10));
   const notice = [...el('notification-center').querySelectorAll('article')].find(row => row.textContent.includes('Claude'));

@@ -50,7 +50,7 @@ export function mountNotificationCenter({ container, bridge = {}, onOpenMeeting,
   function rememberFocus() {
     const active = container.ownerDocument.activeElement;
     if (!container.contains(active)) return null;
-    return { node: active, id: active.dataset.notificationJob, action: active.dataset.notificationAction,
+    return { node: active, heading: active.hasAttribute('data-notification-heading'), id: active.dataset.notificationJob, action: active.dataset.notificationAction,
       ids: rows().map(job => job.id) };
   }
 
@@ -59,16 +59,17 @@ export function mountNotificationCenter({ container, bridge = {}, onOpenMeeting,
     if (actionPending(saved.id)) return;
     const active = container.ownerDocument.activeElement;
     if (active && active !== container.ownerDocument.body && active !== saved.node && active.isConnected) { focusReturn = null; return; }
+    if (saved.heading) { container.querySelector('[data-notification-heading]')?.focus({ preventScroll: true }); focusReturn = null; return; }
     const controls = [...container.querySelectorAll('button')].filter(button => !button.disabled && !button.hidden);
     const same = controls.filter(button => button.dataset.notificationJob === saved.id);
     const successorId = processingJobs(snapshot.processing).find(job => job.id === saved.id)?.retrySuccessorId;
     const index = saved.ids.indexOf(saved.id);
     const following = [...saved.ids.slice(index + 1), ...saved.ids.slice(0, index).reverse()];
     const target = same.find(button => button.dataset.notificationAction === saved.action) || same[0]
-      || controls.find(button => button.dataset.notificationJob === successorId)
+      || (successorId && controls.find(button => button.dataset.notificationJob === successorId))
       || following.map(id => controls.find(button => button.dataset.notificationJob === id)).find(Boolean)
       || controls.find(button => button.dataset.notificationAction === 'open')
-      || container.querySelector('h1');
+      || container.querySelector('[data-notification-heading]');
     target?.focus({ preventScroll: true });
     focusReturn = null;
   }
@@ -84,15 +85,17 @@ export function mountNotificationCenter({ container, bridge = {}, onOpenMeeting,
     const unread = jobs.filter(job => !job.active && job.unread).length;
     const button = (job, action, label, quiet = true, disabled = false) => `<button type="button" class="${quiet ? 'quiet ' : ''}small" data-notification-job="${escape(job.id)}" data-notification-action="${action}"${disabled || !canAct(job) ? ' disabled' : ''}>${label}</button>`;
     const expandedDiagnostics = new Set([...container.querySelectorAll('details[data-notification-diagnostics]')].filter(node => node.open).map(node => node.dataset.notificationDiagnostics));
-    container.innerHTML = `<header class="notification-heading"><div><h1 tabindex="-1">알림</h1><p aria-live="polite">${active}개 진행 중 / ${unread}개 확인 필요</p></div><button type="button" class="quiet small" data-notification-action="ack-all"${jobs.some(job => canAcknowledge(job) && canAct(job)) && !confirming ? '' : ' disabled'}>${confirming ? '확인 중' : '모두 확인'}</button></header><div class="notification-list">${jobs.map(job => {
-      if (['integration', 'notice'].includes(job.category)) return `<article class="notification-item" data-notification-id="${escape(job.id)}"><div class="notification-copy"><strong class="notification-title">${escape(job.title)}</strong><p>${escape(job.message)}</p></div><div class="notification-actions">${button(job, job.category === 'integration' ? 'settings' : 'notice', escape(job.category === 'integration' ? '연동 설정' : job.actionLabel), false, job.actionDisabled)}${job.unread ? button(job, 'ack', '확인') : ''}</div></article>`;
+    const listScroll = container.querySelector('.notification-list')?.scrollTop || 0;
+    container.innerHTML = `<header class="notification-heading"><button type="button" class="quiet small icon" data-notification-action="back" aria-label="회의 탐색으로 돌아가기" title="회의 탐색으로 돌아가기">${icon('arrow-left')}</button><h2 class="notification-heading-title" tabindex="-1" data-notification-heading>알림</h2><button type="button" class="quiet small" data-notification-action="ack-all"${jobs.some(job => canAcknowledge(job) && canAct(job)) && !confirming ? '' : ' disabled'}>${confirming ? '확인 중' : '모두 확인'}</button><span class="sr-only" role="status">${active ? '작업 진행 중' : ''}${unread ? ' 읽지 않은 알림 있음' : ''}</span></header><div class="notification-list">${jobs.map(job => {
+      if (['integration', 'notice'].includes(job.category)) return `<article class="notification-item" data-notification-id="${escape(job.id)}" data-unread="${job.unread}" aria-busy="${actionPending(job.id)}"><div class="notification-copy"><strong class="notification-title">${escape(job.title)}</strong><p>${escape(job.message)}</p>${errors.has(job.id) ? `<p class="field-error" role="alert">${escape(errors.get(job.id))}</p>` : ''}</div><div class="notification-actions">${button(job, job.category === 'integration' ? 'settings' : 'notice', escape(job.category === 'integration' ? '설정' : job.actionLabel || '열기'), false, job.actionDisabled)}${job.unread ? button(job, 'ack', '확인') : ''}</div></article>`;
       const cancelling = pending.get(job.id) === 'cancel' || snapshot.actions?.get(job.id) === 'cancel';
       const feedback = processingFeedback(job, { cancelling });
       const status = feedback.title;
       const title = job.hasMeeting ? `<button type="button" class="quiet notification-title" data-notification-job="${escape(job.id)}" data-notification-action="open"${snapshot.connected === false || actionPending(job.id) ? ' disabled' : ''}>${escape(job.title)}</button>` : `<strong class="notification-title">${escape(job.title)}</strong>`;
       const controls = `${feedback.cancelVisible ? button(job, 'cancel', feedback.cancelLabel, true, feedback.cancelDisabled) : ''}${canRetryProcessing(job) ? button(job, 'retry', '다시 시도', false) : ''}${canAcknowledge(job) ? button(job, 'ack', '확인') : ''}`;
-      return `<article class="notification-item" data-notification-id="${escape(job.id)}" data-state="${escape(feedback.state)}"${job.selected ? ' data-selected="true"' : ''}><div class="notification-copy">${title}<p class="notification-status">${job.active ? job.status === 'queued' ? `<span class="notification-status-mark" aria-hidden="true">${icon('clock')}</span>` : '<span class="activity-spinner" aria-hidden="true"></span>' : ''}${escape(status)}${feedback.progress ? ` (${feedback.progress.percent}%)` : ''}</p>${feedback.detail ? `<p>${escape(feedback.detail)}</p>` : ''}${errors.has(job.id) ? `<p class="field-error" role="alert">${escape(errors.get(job.id))}</p>` : ''}${feedback.diagnostics.length ? `<details class="notification-diagnostics" data-notification-diagnostics="${escape(`${job.id}:${job.status}`)}"><summary>오류 정보</summary>${feedback.diagnostics.map(([label, value]) => `<p>${escape(label)}: ${escape(value)}</p>`).join('')}</details>` : ''}${feedback.progress ? `<progress max="${feedback.progress.max}" value="${feedback.progress.value}" aria-label="${escape(feedback.title)}"></progress>` : ''}</div><div class="notification-actions">${controls}</div></article>`;
+      return `<article class="notification-item" data-notification-id="${escape(job.id)}" data-state="${escape(feedback.state)}" data-unread="${!job.active && job.unread}" aria-busy="${actionPending(job.id)}"${job.selected ? ' data-selected="true"' : ''}><div class="notification-copy">${title}<p class="notification-status">${job.active ? job.status === 'queued' ? `<span class="notification-status-mark" aria-hidden="true">${icon('clock')}</span>` : '<span class="activity-spinner" aria-hidden="true"></span>' : ''}${escape(status)}${feedback.progress ? ` (${feedback.progress.percent}%)` : ''}</p>${feedback.detail ? `<p>${escape(feedback.detail)}</p>` : ''}${errors.has(job.id) ? `<p class="field-error" role="alert">${escape(errors.get(job.id))}</p>` : ''}${feedback.diagnostics.length ? `<details class="notification-diagnostics" data-notification-diagnostics="${escape(`${job.id}:${job.status}`)}"><summary>오류 정보</summary>${feedback.diagnostics.map(([label, value]) => `<p>${escape(label)}: ${escape(value)}</p>`).join('')}</details>` : ''}${feedback.progress ? `<progress max="${feedback.progress.max}" value="${feedback.progress.value}" aria-label="${escape(feedback.title)}"></progress>` : ''}</div><div class="notification-actions">${controls}</div></article>`;
     }).join('') || '<p class="notification-empty">알림이 없습니다.</p>'}</div>`;
+    container.querySelector('.notification-list').scrollTop = listScroll;
     for (const node of container.querySelectorAll('details[data-notification-diagnostics]')) if (expandedDiagnostics.has(node.dataset.notificationDiagnostics)) node.open = true;
     restoreFocus(saved);
     return { active, unread, total: jobs.length };
@@ -119,13 +122,13 @@ export function mountNotificationCenter({ container, bridge = {}, onOpenMeeting,
     if (!job || !canAct(job)) return;
     if (['integration', 'notice'].includes(job.category)) {
       if (action === 'notice' && job.actionDisabled) return;
-      pending.set(job.id, action); render();
+      pending.set(job.id, action); errors.delete(job.id); render();
       try {
         if (action === 'settings') await onOpenIntegration?.(job.service);
         else if (action === 'notice') await onNoticeAction?.(job.service);
         else if (action === 'ack') confirmedNotices.add(job.id);
         else return;
-      } catch (error) { showError(error); }
+      } catch (error) { if (!disposed) { errors.set(job.id, error instanceof Error ? error.message : String(error)); showError(error); } }
       finally { pending.delete(job.id); render(); onChanged(); }
       return;
     }
@@ -154,7 +157,7 @@ export function mountNotificationCenter({ container, bridge = {}, onOpenMeeting,
       }
     } finally {
       if (action !== 'cancel' || !succeeded) pending.delete(job.id);
-      render();
+      render(); onChanged();
     }
   }
 
@@ -173,7 +176,7 @@ export function mountNotificationCenter({ container, bridge = {}, onOpenMeeting,
       render();
       const active = container.ownerDocument.activeElement;
       if (!disposed && !container.closest('[hidden], [inert]') && (!active || active === container.ownerDocument.body || container.contains(active))) {
-        container.querySelector('h1')?.focus({ preventScroll: true });
+        container.querySelector('[data-notification-heading]')?.focus({ preventScroll: true });
       }
     }
   }
@@ -181,10 +184,11 @@ export function mountNotificationCenter({ container, bridge = {}, onOpenMeeting,
   const click = event => {
     const target = event.target.closest?.('[data-notification-action]');
     if (!target || !container.contains(target) || target.disabled) return;
+    if (target.dataset.notificationAction === 'back') return;
     if (target.dataset.notificationAction === 'ack-all') void acknowledgeAll();
     else void perform(target.dataset.notificationAction, target.dataset.notificationJob);
   };
   container.addEventListener('click', click);
-  return { update, render, counts: () => ({ active: rows().filter(job => job.active).length, unread: rows().filter(job => job.unread).length, total: rows().length }),
+  return { update, render, counts: () => ({ active: rows().filter(job => job.active).length, unread: rows().filter(job => !job.active && job.unread).length, total: rows().length }),
     destroy() { disposed = true; container.removeEventListener('click', click); } };
 }

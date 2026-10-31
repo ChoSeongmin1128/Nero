@@ -1873,7 +1873,7 @@ mod tests {
     }
 
     #[test]
-    fn current_installation_with_old_session_explains_new_conversations_without_reinstalling() {
+    fn current_installation_with_old_session_keeps_connected_without_extra_guidance() {
         let temp = tempfile::tempdir().unwrap();
         let resources = resources(temp.path());
         let root = temp.path().join("missing library");
@@ -1908,7 +1908,7 @@ mod tests {
             assert_eq!(info.clients[1].installation_state, "current");
             assert_eq!(info.clients[1].session_state, "outdated");
             assert_eq!(info.clients[1].action, "none");
-            assert!(info.clients[1].detail.as_ref().unwrap().contains("새 대화"));
+            assert!(info.clients[1].detail.is_none());
         }
         drop(_old);
         for running in [false, true, false] {

@@ -948,6 +948,49 @@ fn cli_and_mcp_observe_folder_moves_and_renames_on_each_read() {
 }
 
 #[test]
+fn cli_and_mcp_status_compare_the_executing_integration_with_the_running_app() {
+    use nero_core::agent_control::{AppMetadata, Server};
+    let root = temporary_root();
+    let core = nero_core::CoreHandle::open(root.path()).unwrap();
+    let _server = Server::start_with_metadata(
+        root.path(),
+        core,
+        |_| panic!("status must not mutate"),
+        |_| panic!("status must not process jobs"),
+        || {
+            Ok(AppMetadata {
+                version: "0.1.0".into(),
+                build: "47".into(),
+                integration_version: Some("0.1.0-nero.999".into()),
+            })
+        },
+    )
+    .unwrap();
+    let output = command(root.path())
+        .args(["doctor", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let cli: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let mut process = McpProcess::start(root.path());
+    let initialized = process.initialize();
+    assert_eq!(
+        initialized["result"]["serverInfo"]["version"],
+        cli["versions"]["running"]["integrationVersion"]
+    );
+    process.send(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"status","arguments":{}}}));
+    let mcp = tool_data(&process.result(2));
+    assert_eq!(mcp["versions"], cli["versions"]);
+    assert_eq!(mcp["versions"]["matchesAppBundle"], false);
+    assert_eq!(
+        mcp["versions"]["app"]["integrationVersion"],
+        "0.1.0-nero.999"
+    );
+    assert_eq!(mcp["versions"]["publicIntegration"]["state"], "unknown");
+    assert!(!root.path().join("models").exists());
+}
+
+#[test]
 fn stdio_initialization_tools_errors_and_framing_use_the_sdk() {
     let root = fixture();
     let mut process = McpProcess::start(root.path());

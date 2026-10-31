@@ -98,7 +98,7 @@ export async function subscribeProcessingError(callback) {
 
 export const createFolder = (name) => call('create_folder', { name }).then(accept);
 export const renameFolder = (id, name) => call('rename_folder', { id, name }).then(accept);
-export const deleteFolder = (id) => call('delete_folder', { id }).then(accept);
+export const deleteFolder = (id, request = null) => call('delete_folder', { id, request }).then(accept);
 export const moveMeetings = (ids, folderId = null) => call('move_meetings', { ids, folderId }).then(accept);
 export const trashMeetings = (ids) => call('trash_meetings', { ids }).then(accept);
 export const restoreMeetings = (ids) => call('restore_meetings', { ids }).then(accept);

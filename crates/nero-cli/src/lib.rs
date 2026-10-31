@@ -4,6 +4,7 @@ mod dates;
 pub mod mcp;
 mod mutations;
 mod templates;
+mod versions;
 
 use nero_core::{
     reader::{LibraryReader, ReadError},
@@ -128,6 +129,7 @@ pub fn dispatch(root: &Path, method: &str, params: Value) -> Result<Value, Query
     let reader = LibraryReader::open(root).map_err(query_error)?;
     let mut result = reader.query(method, params).map_err(query_error)?;
     if method == "status" {
+        result["versions"] = versions::status(root);
         result["readOnly"] = json!(false);
         result["capabilities"] = json!({"queriesReadOnly":true,"templateWrites":true,"meetingWritesRequireApp":true,"summaryImportsRequireApp":true,"jobQueriesRequireApp":true,"jobCancellationRequireApp":true});
     }

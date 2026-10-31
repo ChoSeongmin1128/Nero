@@ -60,6 +60,20 @@ struct PendingInstall {
     target: ReleaseIdentity,
 }
 
+impl PendingInstall {
+    fn message(&self, current: &ReleaseIdentity) -> Option<String> {
+        // A later compatible app supersedes this installation attempt. Keep the
+        // journal for diagnosis; it must not become a permanent update warning.
+        if *current == self.target || current.newer_than(&self.target) {
+            None
+        } else if *current == self.from {
+            Some("이전 업데이트가 완료되지 않았습니다. 현재 앱과 회의 데이터는 유지됩니다. 다시 시도할 수 있습니다.".into())
+        } else {
+            Some("이전 업데이트 기록과 현재 앱 버전이 다릅니다. 현재 앱을 유지합니다.".into())
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RecoveryRecord {
@@ -190,13 +204,10 @@ impl AppUpdates {
         let previous_recovery = read_limited(&cache.join("recovery.json"), MAX_METADATA)
             .ok()
             .and_then(|bytes| serde_json::from_slice::<RecoveryRecord>(&bytes).ok());
-        let pending_message = read_limited(&cache.join("pending.json"), MAX_METADATA).ok()
+        let pending_message = read_limited(&cache.join("pending.json"), MAX_METADATA)
+            .ok()
             .and_then(|bytes| serde_json::from_slice::<PendingInstall>(&bytes).ok())
-            .and_then(|pending| if current == pending.target {
-                None
-            } else if current == pending.from {
-                Some("이전 업데이트가 완료되지 않았습니다. 현재 앱과 회의 데이터는 유지됩니다. 다시 시도할 수 있습니다.".into())
-            } else { Some("이전 업데이트 기록과 현재 앱 버전이 다릅니다. 현재 앱을 유지합니다.".into()) });
+            .and_then(|pending| pending.message(&current));
         // A newly launched app may have been manually repaired. Preserve the
         // historical warning/path without claiming the prior restore succeeded.
         let recovery_message = previous_recovery.as_ref().map(|_| "이전 업데이트에서 앱 복원에 실패했습니다. 이전 앱의 보관 위치와 설치 상태를 확인해 주세요.".to_string()).or(pending_message);
@@ -225,6 +236,22 @@ impl AppUpdates {
             operation: tokio::sync::Mutex::new(()),
         })
     }
+    pub(crate) fn agent_metadata(
+        &self,
+        resources: Option<&Path>,
+    ) -> nero_core::agent_control::AppMetadata {
+        let integration_version = resources
+            .and_then(|path| read_limited(&path.join("agent/agent-build.json"), MAX_METADATA).ok())
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .filter(|value| value["version"] == self.current.version && value["apiVersion"] == 1)
+            .and_then(|value| value["integrationVersion"].as_str().map(str::to_owned));
+        nero_core::agent_control::AppMetadata {
+            version: self.current.version.clone(),
+            build: self.current.build.to_string(),
+            integration_version,
+        }
+    }
+
     fn view(&self) -> Status {
         self.status.lock().unwrap().clone()
     }
@@ -854,6 +881,92 @@ mod tests {
             assert!(validate_url(&url.parse().unwrap()).is_err(), "{url}");
         }
     }
+    #[test]
+    fn superseded_pending_does_not_clear_a_real_restore_failure_or_rewrite_journals() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = AppUpdates::new(temp.path().into()).unwrap();
+        let pending = serde_json::to_vec(&PendingInstall {
+            from: ReleaseIdentity::new(
+                &state.current.version,
+                &(state.current.build - 2).to_string(),
+            )
+            .unwrap(),
+            target: ReleaseIdentity::new(
+                &state.current.version,
+                &(state.current.build - 1).to_string(),
+            )
+            .unwrap(),
+        })
+        .unwrap();
+        let recovery = serde_json::to_vec(&RecoveryRecord {
+            previous_app_path: "synthetic-previous.app".into(),
+        })
+        .unwrap();
+        write_atomic(&temp.path().join("pending.json"), &pending).unwrap();
+        write_atomic(&temp.path().join("recovery.json"), &recovery).unwrap();
+        let relaunched = AppUpdates::new(temp.path().into()).unwrap().view();
+        assert!(relaunched.recovery_message.unwrap().contains("복원에 실패"));
+        assert_eq!(
+            relaunched.previous_app_path.as_deref(),
+            Some("synthetic-previous.app")
+        );
+        assert_eq!(
+            read_limited(&temp.path().join("pending.json"), MAX_METADATA).unwrap(),
+            pending
+        );
+        assert_eq!(
+            read_limited(&temp.path().join("recovery.json"), MAX_METADATA).unwrap(),
+            recovery
+        );
+    }
+
+    #[test]
+    fn metadata_reports_only_this_apps_bundled_integration_without_initializing_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = AppUpdates::new(temp.path().join("cache")).unwrap();
+        let resources = temp.path().join("resources");
+        assert!(state
+            .agent_metadata(Some(&resources))
+            .integration_version
+            .is_none());
+        assert!(!resources.exists());
+        let agent = resources.join("agent");
+        std::fs::create_dir_all(&agent).unwrap();
+        for (version, api, expected) in [
+            (&state.current.version[..], 1, true),
+            ("0.0.0", 1, false),
+            (&state.current.version[..], 2, false),
+        ] {
+            std::fs::write(agent.join("agent-build.json"), serde_json::json!({"version":version,"apiVersion":api,"integrationVersion":"0.1.0-nero.33"}).to_string()).unwrap();
+            let metadata = state.agent_metadata(Some(&resources));
+            assert_eq!(metadata.version, state.current.version);
+            assert_eq!(metadata.build, state.current.build.to_string());
+            assert_eq!(metadata.integration_version.is_some(), expected);
+        }
+        assert!(!temp.path().join("cache").exists());
+    }
+
+    #[test]
+    fn completed_or_superseded_install_does_not_warn_but_incomplete_and_downgrades_do() {
+        let pending = PendingInstall {
+            from: ReleaseIdentity::new("0.0.1", "43").unwrap(),
+            target: ReleaseIdentity::new("0.0.1", "45").unwrap(),
+        };
+        assert!(pending
+            .message(&pending.from)
+            .unwrap()
+            .contains("완료되지 않았"));
+        assert!(pending.message(&pending.target).is_none());
+        assert!(pending
+            .message(&ReleaseIdentity::new("0.1.0", "46").unwrap())
+            .is_none());
+        for (version, build) in [("0.0.1", "44"), ("0.0.0", "46"), ("0.1.0", "44")] {
+            assert!(pending
+                .message(&ReleaseIdentity::new(version, build).unwrap())
+                .is_some());
+        }
+    }
+
     #[test]
     fn cache_reads_are_bounded_and_pending_install_survives_restart() {
         let tmp = tempfile::tempdir().unwrap();

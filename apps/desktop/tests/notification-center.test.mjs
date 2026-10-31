@@ -169,7 +169,7 @@ test('focus follows a retry successor and acknowledging the final notice moves f
   await app.click('old', 'retry');
   assert.equal(app.window.document.activeElement.dataset.notificationJob, 'new');
   app.update([job('new', 'a', 'cancelled', 20, { acknowledged: true })], 3);
-  assert.equal(app.window.document.activeElement.tagName, 'H1');
+  assert.equal(app.window.document.activeElement.hasAttribute('data-notification-heading'), true);
 });
 
 test('old completed work is not injected at startup and newly observed completion can be acknowledged', async t => {
@@ -268,4 +268,22 @@ test('confirming mixed job and integration notifications cannot cancel or acknow
   f.update([job('failed')], 1, { integrations: [notice] });
   f.container.querySelector('[data-notification-action="ack-all"]').click(); await settle(); await settle();
   assert.deepEqual(acknowledged, ['failed']); assert.equal(f.controller.counts().unread, 0);
+});
+
+test('compact notifications preserve their own scroll and show retry failures inline', async t => {
+  const app = harness(t, { onNoticeAction: async () => { throw Error('예시 재시도 실패'); } });
+  app.update([], 1, { notices: [{ id: 'notice', title: '업데이트', message: '다시 시도해 주세요.', actionLabel: '다시 시도', service: 'app-update' }] });
+  app.container.querySelector('.notification-list').scrollTop = 120;
+  await app.click('notice', 'notice');
+  assert.equal(app.container.querySelector('.notification-list').scrollTop, 120);
+  assert.equal(app.container.querySelector('[role="alert"]').textContent, '예시 재시도 실패');
+  assert.equal(app.button('notice', 'notice').disabled, false);
+  assert.ok(app.container.querySelector('[data-notification-action="back"]'));
+  assert.equal(app.container.querySelector('h1'), null);
+});
+
+test('running jobs do not inflate the unread result count', t => {
+  const app = harness(t);
+  app.update([job('running', 'a', 'running')]);
+  assert.deepEqual(app.controller.counts(), { active: 1, unread: 0, total: 1 });
 });

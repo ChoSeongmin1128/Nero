@@ -38,13 +38,11 @@
   function utterance({ speaker, time, tone = 0, unknown = false, current = false, editing = false, text, contentHTML, timeAction, timeAttrs = {}, actionsHTML = "", corrected = false }) {
     return `<article class="utterance${current ? " current" : ""}${editing ? " editing" : ""}"><div class="speaker-rail"><span class="speaker-avatar ${unknown ? "unknown" : "tone-" + (Math.max(0, tone) % 3)}" aria-hidden="true">${unknown ? "?" : escape(speaker?.slice(0, 1))}</span><strong>${escape(speaker)}</strong>${button({ text: time, action: timeAction, attrs: { "aria-label": time + " 발언", ...timeAttrs } })}${unknown ? badge("이름 미확인", true) : ""}</div><div>${editing ? contentHTML : `<p${current ? ' class="pending"' : ""}>${escape(text)}</p>${corrected ? '<span class="tiny muted">수정됨</span>' : ""}<div class="turn-actions">${actionsHTML}</div>`}</div></article>`;
   }
-  function transcriptRow({ index, time, start, text, originalText, editing = false, disabled = false, speaker = "", speakerVisible = false, searchQuery = "" }) {
+  function transcriptRow({ index, time, start, text, editing = false, disabled = false, speaker = "", speakerVisible = false, searchQuery = "" }) {
     const label = `${Number(index) + 1}번 발언`;
-    const original = originalText != null && String(text ?? "") !== String(originalText)
-      ? `<details class="transcript-original"><summary>원문 보기</summary><p>${escape(originalText)}</p></details>` : "";
     const content = editing
       ? `<textarea class="text-input"${attributes({ "data-segment": index, "aria-label": label + " 수정" })} rows="1" spellcheck="false"${disabled ? " readonly" : ""}>${escape(text)}</textarea><div class="transcript-edit-actions">${button({ text: "취소", className: "quiet small", disabled, attrs: { "data-transcript-cancel": index, "aria-label": label + " 수정 취소" } })}${button({ text: "완료", className: "small", disabled, attrs: { "data-transcript-done": index, "aria-label": label + " 수정 완료" } })}</div>`
-      : `<p class="transcript-text">${highlightText(text, searchQuery)}</p>${original}`;
+      : `<p class="transcript-text">${highlightText(text, searchQuery)}</p>`;
     return `<article${attributes({ class: "transcript-row" + (editing ? " is-editing" : "") + (speakerVisible ? " has-speaker" : ""), "data-transcript-row": index, tabindex: -1 })}>${button({ text: time, className: "transcript-time quiet small", attrs: { "data-seek": start, "aria-label": time + " 발언 재생" } })}${speakerVisible ? button({ html: highlightText(speaker || "화자 미지정", searchQuery), className: "transcript-speaker quiet small", disabled, attrs: { "data-speaker-edit": index, "aria-label": label + " 화자 변경: " + (speaker || "화자 미지정"), title: speaker || "화자 미지정" } }) : ""}<div class="transcript-content">${content}</div>${editing ? "" : `<div class="transcript-row-actions">${button({ html: icon("pencil"), className: "quiet small icon", disabled, attrs: { "data-transcript-edit": index, "aria-label": label + " 수정", title: "발언 수정" } })}</div>`}</article>`;
   }
   function transcriptPreview(rows) {

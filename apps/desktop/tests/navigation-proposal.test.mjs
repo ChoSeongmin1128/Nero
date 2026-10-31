@@ -25,7 +25,7 @@ test('hover reveals the sidebar without duplicate controls; the same button pins
   assert.equal(doc.getElementById('closeNav'),null);
   doc.querySelector('.navigation-edge').dispatchEvent(new window.PointerEvent('pointerenter',{pointerType:'mouse'}));
   assert.ok(shell.classList.contains('nav-peek'));
-  assert.equal(trigger.parentElement.className,'brand');
+  assert.equal(trigger.parentElement.className,'navigation-toggle-slot');
   assert.equal(trigger.getAttribute('aria-label'),'사이드바 펼쳐두기');
   assert.equal(doc.querySelector('main').inert,false);
   trigger.click();
@@ -33,8 +33,8 @@ test('hover reveals the sidebar without duplicate controls; the same button pins
   assert.equal(window.localStorage.getItem('nero-proposal-sidebar-pinned'),'true');
   trigger.click();
   assert.ok(shell.classList.contains('collapsed'));
-  assert.equal(trigger.parentElement.className,'brand');
-  assert.equal(doc.querySelector('aside').inert,false);
+  assert.equal(trigger.parentElement.className,'navigation-toggle-slot');
+  assert.equal(doc.querySelector('aside').inert,true);
   doc.querySelector('.navigation-edge').dispatchEvent(new window.PointerEvent('pointerenter',{pointerType:'touch'}));
   assert.equal(shell.classList.contains('nav-peek'),false);
 });
