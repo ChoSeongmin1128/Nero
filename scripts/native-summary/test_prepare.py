@@ -6,6 +6,7 @@ from pathlib import Path
 import struct
 import tempfile
 import unittest
+from unittest.mock import patch
 
 SPEC = importlib.util.spec_from_file_location("summary_prepare", Path(__file__).with_name("prepare.py"))
 prepare = importlib.util.module_from_spec(SPEC)
@@ -38,6 +39,75 @@ class SummaryPackageTests(unittest.TestCase):
                 versioned_dll(root / name, prepare.MIN_WINDOWS_CRT)
             (root / "ggml.dll").write_bytes(b"must not overwrite llama's runtime")
             self.assertEqual(set(prepare.windows_crt(root)), names)
+
+    def crt_family(self, root, names=("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll")):
+        crt = root / "x64/Microsoft.VC145.CRT"
+        crt.mkdir(parents=True)
+        for name in names:
+            versioned_dll(crt / name, prepare.MIN_WINDOWS_CRT)
+        return crt
+
+    def test_crt_discovery_combines_only_the_same_x64_openmp_family(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            crt = self.crt_family(root)
+            openmp = root / "x64/Microsoft.VC145.OpenMP"
+            openmp.mkdir()
+            versioned_dll(openmp / "vcomp140.dll", prepare.MIN_WINDOWS_CRT)
+            (openmp / "ggml.dll").write_bytes(b"must not enter the runtime package")
+            files = prepare.windows_crt(root)
+            self.assertEqual(files, {name: crt / name for name in
+                                    ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll")}
+                             | {"vcomp140.dll": openmp / "vcomp140.dll"})
+
+    def test_crt_discovery_uses_the_developer_environment_redist_root(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            self.crt_family(root)
+            openmp = root / "x64/Microsoft.VC145.OpenMP"
+            openmp.mkdir()
+            versioned_dll(openmp / "vcomp140.dll", prepare.MIN_WINDOWS_CRT)
+            with patch.dict(prepare.os.environ, {"VCToolsRedistDir": str(root)}):
+                self.assertEqual(prepare.windows_crt(None)["vcomp140.dll"], openmp / "vcomp140.dll")
+
+    def test_missing_openmp_is_not_filled_from_another_family_architecture_or_flat_root(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            crt = self.crt_family(root)
+            for location in (root, root / "x64/Microsoft.VC143.OpenMP", root / "x86/Microsoft.VC145.OpenMP"):
+                location.mkdir(parents=True, exist_ok=True)
+                versioned_dll(location / "vcomp140.dll", prepare.MIN_WINDOWS_CRT)
+            files = prepare.windows_crt(root)
+            self.assertNotIn("vcomp140.dll", files)
+            self.assertEqual(set(files.values()), set(crt.glob("*.dll")))
+
+    def test_openmp_cannot_supply_a_missing_required_crt(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            self.crt_family(root, ("msvcp140.dll", "vcruntime140.dll"))
+            openmp = root / "x64/Microsoft.VC145.OpenMP"
+            openmp.mkdir()
+            versioned_dll(openmp / "vcomp140.dll", prepare.MIN_WINDOWS_CRT)
+            with self.assertRaisesRegex(ValueError, "DLLs are missing"):
+                prepare.windows_crt(root)
+
+    def test_old_openmp_is_rejected_with_its_otherwise_current_crt(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            self.crt_family(root)
+            openmp = root / "x64/Microsoft.VC145.OpenMP"
+            openmp.mkdir()
+            versioned_dll(openmp / "vcomp140.dll", (14, 29, 30133, 0))
+            with self.assertRaisesRegex(ValueError, "older than the qualified"):
+                prepare.windows_crt(root)
+
+    def test_flat_redist_with_openmp_remains_a_complete_explicit_source(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            names = {"msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll", "vcomp140.dll"}
+            for name in names:
+                versioned_dll(root / name, prepare.MIN_WINDOWS_CRT)
+            self.assertEqual(prepare.windows_crt(root), {name: root / name for name in names})
 
     def test_missing_or_ambiguous_dll_metadata_is_rejected(self):
         with tempfile.TemporaryDirectory() as folder:
