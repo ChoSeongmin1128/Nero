@@ -1,5 +1,9 @@
 import { mountSidebarViews } from './sidebar-views.js';
+import { snapshotSignatures, compareSnapshotSignatures } from './snapshot-update.js';
 import { createViewHistory } from './view-history.js';
+import { mountWindowChrome } from './window-chrome.js';
+import { isTauri } from '@tauri-apps/api/core';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { mountConfirmDialog } from '../../../design-system/components/ui/confirm-dialog.jsx';
 import { requestAudioPlayback } from './audio-playback.js';
 import { mountAppUpdateRecovery } from './app-update-recovery.jsx';
@@ -35,6 +39,10 @@ import { mountSpeechModelPicker } from './speech-model-picker.js';
 import './speech-model-picker.css';
 
 applySystemAppearance();
+if (document.documentElement.dataset.windowChrome === 'macos-overlay' && isTauri()) {
+  const { dispose } = mountWindowChrome({ root: document.documentElement, nativeWindow: getCurrentWindow() });
+  window.addEventListener('pagehide', dispose, { once: true });
+}
 const byId = (id) => document.getElementById(id);
 const summaryTemplatePicker = mountSummaryTemplatePicker({ node: byId('summary-template'), bridge, onAvailabilityChange: () => queueMicrotask(() => render()) });
 void summaryTemplatePicker.reload();
@@ -69,7 +77,7 @@ function readMicrophonePreference() {
 }
 const microphonePreference = readMicrophonePreference();
 let sidebarViews = null, viewHistory = null;
-const state = { snapshot: { meetings: [], folders: [], session: null }, libraryOpen: false, libraryFilter: 'all', librarySelection: new Set(), libraryBusy: false, librarySearchIds: null, librarySearchHits: [], pendingSearchIntent: null, setupReturnId: null, librarySearchPending: false, librarySearchUnavailable: 0, selectedId: null, devices: [], devicesLoaded: false, deviceId: microphonePreference.id, deviceName: microphonePreference.name, settingsPanel: 'appearance', summaryFeatureError: '', settingsKey: '', settingsError: '', settingsReturnId: 'settings', setupFromSettings: false, autoRecorder: readAutoRecorder(), recorderSettingBusy: false, snapshotKey: '', processingKey: '', processingCancellingId: null, transcriptEditing: null, audioRequest: 0, audioLoading: null, dateSaving: null, dateKey: '', dateError: null, lastError: null, errorIsSave: false, connected: false, busy: false, composing: false, transcriptComposing: false, editLocks: 0, draft: null, saveTimer: null, saveQueue: Promise.resolve(), listKey: '', controlsKey: '', audioKey: '', processing: { status: 'idle', supported: false, modelReady: false }, transcriptDraft: null, transcriptKey: '', transcriptLoadId: 0, transcriptSaveQueue: Promise.resolve(), summary: null, summaryKey: '', summaryLoadId: 0, summaryLoaded: false, transcriptLoaded: false, summaryLoadError: false, transcriptLoadError: false, setupRequested: false };
+const state = { snapshot: { meetings: [], folders: [], session: null }, libraryOpen: false, libraryFilter: 'all', librarySelection: new Set(), libraryBusy: false, librarySearchIds: null, librarySearchHits: [], pendingSearchIntent: null, setupReturnId: null, librarySearchPending: false, librarySearchUnavailable: 0, selectedId: null, devices: [], devicesLoaded: false, deviceId: microphonePreference.id, deviceName: microphonePreference.name, settingsPanel: 'appearance', summaryFeatureError: '', settingsKey: '', settingsError: '', settingsReturnId: 'settings', setupFromSettings: false, autoRecorder: readAutoRecorder(), recorderSettingBusy: false, snapshotSignatures: null, processingKey: '', processingCancellingId: null, transcriptEditing: null, audioRequest: 0, audioLoading: null, dateSaving: null, dateKey: '', dateError: null, lastError: null, errorIsSave: false, connected: false, busy: false, composing: false, transcriptComposing: false, editLocks: 0, draft: null, saveTimer: null, saveQueue: Promise.resolve(), listKey: '', controlsKey: '', audioKey: '', processing: { status: 'idle', supported: false, modelReady: false }, transcriptDraft: null, transcriptKey: '', transcriptLoadId: 0, transcriptSaveQueue: Promise.resolve(), summary: null, summaryKey: '', summaryLoadId: 0, summaryLoaded: false, transcriptLoaded: false, summaryLoadError: false, transcriptLoadError: false, setupRequested: false };
 const speechPickers = [
   mountSpeechModelPicker({ node: byId('setup-speech-picker'), onSelect: selectSpeechEngine }),
   mountSpeechModelPicker({ node: byId('settings-speech-picker'), onSelect: selectSpeechEngine, onPrepare: prepareSpeechModels }),
@@ -152,7 +160,8 @@ function renderList() {
     const hit = state.librarySearchHits.find(hit => hit.meetingId === meeting.id);
     const matchLabel = { notes: '메모', transcript: '음성 기록', speaker: '화자', summary: '요약' }[hit?.kind];
     const snippet = query && matchLabel ? `<span class="meeting-item-match"><span>${matchLabel}</span> ${globalThis.NeroUI.highlightText(hit.text, query)}</span>` : '';
-    const content = `<span class="meeting-item-content"><strong title="${escape(meeting.title || '제목 없는 회의')}">${escape(meeting.title || '제목 없는 회의')}</strong><span class="meeting-item-meta"><span class="meeting-item-time" title="${escape(timestampDescription)}" aria-label="${escape(timestampDescription)}">${escape(timestampLabel)}</span>${length ? `<span>${escape(length)}</span>` : ''}${state.libraryFilter === 'all' ? `<span>${escape(state.snapshot.folders?.find(folder => folder.id === meeting.folderId)?.name || '미분류')}</span>` : ''}</span>${snippet}</span><span class="meeting-item-state ${['recording','paused'].includes(phase) ? 'recording' : ''}">${escape(recordingStatus(phase))}</span>`;
+    const status = phase === 'completed' ? '' : `<span class="meeting-item-state ${['recording','paused'].includes(phase) ? 'recording' : ''}">${escape(recordingStatus(phase))}</span>`;
+    const content = `<span class="meeting-item-content"><strong title="${escape(meeting.title || '제목 없는 회의')}">${escape(meeting.title || '제목 없는 회의')}</strong><span class="meeting-item-meta"><span class="meeting-item-time" title="${escape(timestampDescription)}" aria-label="${escape(timestampDescription)}">${escape(timestampLabel)}</span>${length ? `<span>${escape(length)}</span>` : ''}${state.libraryFilter === 'all' ? `<span>${escape(state.snapshot.folders?.find(folder => folder.id === meeting.folderId)?.name || '미분류')}</span>` : ''}</span>${snippet}</span>${status}`;
     return `<article class="meeting-entry${selected ? ' is-selected' : ''}" data-meeting-id="${escape(meeting.id)}"${meeting.deletedAt == null ? ' draggable="true"' : ''}>${checkbox}${globalThis.NeroUI.button({ className: 'meeting-item', attrs: { 'data-open-meeting': meeting.id, 'aria-current': String(meeting.id === state.selectedId), title: meeting.title }, html: content })}${more}</article>`;
   }).join('') || renderLibraryEmpty(query);
   byId('meeting-list').classList.toggle('has-selection', state.librarySelection.size > 0);
@@ -167,7 +176,7 @@ function renderLibraryEmpty(query) {
   const filtered = state.libraryFilter !== 'all';
   const title = query ? '검색 결과가 없습니다.' : trash ? '휴지통이 비어 있습니다.' : folders ? '미분류 회의가 없습니다.' : filtered ? '이 폴더에 회의가 없습니다.' : '첫 회의를 시작해 보세요';
   const description = query ? '다른 검색어로 다시 찾아보세요.' : trash ? '삭제한 회의가 여기에 표시됩니다.' : folders ? '폴더를 열거나 새 회의를 만들어 보세요.' : '새 회의를 만들어 메모하거나, 녹음 시작을 눌러 바로 기록하세요.';
-  return `<div class="library-empty"><span class="library-empty-icon" aria-hidden="true">${icon(query ? 'search' : trash ? 'trash-2' : 'notebook-pen')}</span><h2>${escape(title)}</h2><p>${escape(description)}</p></div>`;
+  return `<div class="library-empty"><span class="library-empty-icon" aria-hidden="true">${icon(query ? 'search' : trash ? 'trash-2' : 'list')}</span><h2>${escape(title)}</h2><p>${escape(description)}</p></div>`;
 }
 
 function refreshMeetingSearch() { if (byId('search').value.trim()) meetingSearch.update(byId('search').value, state.libraryFilter === 'trash'); }
@@ -438,12 +447,12 @@ async function changeMeetingDate() {
 function acceptSnapshot(snapshot) {
   if (snapshot.revision != null && state.snapshot.revision != null && snapshot.revision < state.snapshot.revision) return;
   const previousMeeting = currentMeeting();
-  const key = JSON.stringify([snapshot.meetings, snapshot.folders || [], snapshot.session]);
-  const changed = !state.connected || state.snapshotKey !== key;
-  const stableSession = session => session ? { ...session, elapsedMs: 0, savedFrames: 0 } : null;
-  const timerOnly = state.connected && JSON.stringify(state.snapshot.meetings) === JSON.stringify(snapshot.meetings) && JSON.stringify(state.snapshot.folders || []) === JSON.stringify(snapshot.folders || []) && JSON.stringify(stableSession(state.snapshot.session)) === JSON.stringify(stableSession(snapshot.session));
+  const signatures = snapshotSignatures(snapshot);
+  const comparison = compareSnapshotSignatures(state.snapshotSignatures, signatures);
+  const changed = !state.connected || comparison.changed;
+  const timerOnly = state.connected && comparison.timerOnly;
   state.snapshot = snapshot;
-  state.snapshotKey = key;
+  state.snapshotSignatures = signatures;
   state.connected = true;
   if (state.selectedId && !snapshot.meetings.some(meeting => meeting.id === state.selectedId && meeting.deletedAt == null)) { state.selectedId = null; state.draft = null; state.transcriptDraft = null; state.summary = null; state.libraryOpen = true; speakers.reset(); clearAudio(); }
   const saved = currentMeeting();

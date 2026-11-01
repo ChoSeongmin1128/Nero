@@ -12,6 +12,20 @@ export function filterLibraryMeetings(meetings, filter = 'all', query = '') {
   });
 }
 
+export function countLibraryMeetings(meetings) {
+  const counts = new Map([['all', 0], ['unfiled', 0], ['trash', 0]]);
+  for (const meeting of meetings) {
+    if (meeting.deletedAt != null) {
+      counts.set('trash', counts.get('trash') + 1);
+      continue;
+    }
+    counts.set('all', counts.get('all') + 1);
+    if (!meeting.folderId) counts.set('unfiled', counts.get('unfiled') + 1);
+    else if (!['all', 'unfiled', 'trash'].includes(meeting.folderId)) counts.set(meeting.folderId, (counts.get(meeting.folderId) || 0) + 1);
+  }
+  return counts;
+}
+
 export function recentLibraryMeetings(meetings) {
   return meetings.filter(meeting => meeting.deletedAt == null)
     .sort((a, b) => (b.recordedAt ?? b.createdAt ?? 0) - (a.recordedAt ?? a.createdAt ?? 0) || a.id.localeCompare(b.id))
@@ -330,6 +344,8 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     sidebar?.render();
     const snapshot = state().snapshot;
     const folders = snapshot.folders || [];
+    let counts;
+    const countInView = filter => (counts ||= countLibraryMeetings(snapshot.meetings)).get(filter) || 0;
     if (!['all', 'unfiled', 'trash'].includes(state().libraryFilter) && !folders.some(folder => folder.id === state().libraryFilter)) state().libraryFilter = 'unfiled';
     const visible = visibleMeetings();
     const visibleIds = new Set(visible.map(meeting => meeting.id));
@@ -337,13 +353,13 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     if (!selection().size || !visibleIds.has(selectionAnchor)) selectionAnchor = null;
     const filter = state().libraryFilter;
     const disabled = Boolean(state().libraryBusy || !state().connected);
-    const navigation = [{ id: 'all', name: '전체 목록', icon: 'notebook-pen' }, { id: 'unfiled', name: '미분류', icon: 'inbox' }, ...folders.map(folder => ({ ...folder, icon: 'folder' })), { id: 'trash', name: '휴지통', icon: 'trash-2' }];
+    const navigation = [{ id: 'all', name: '전체 목록', icon: 'list' }, { id: 'unfiled', name: '미분류', icon: 'inbox' }, ...folders.map(folder => ({ ...folder, icon: 'folder' })), { id: 'trash', name: '휴지통', icon: 'trash-2' }];
     const key = JSON.stringify([filter, state().libraryOpen, folders, disabled, snapshot.meetings.map(meeting => [meeting.id, meeting.folderId, meeting.deletedAt])]);
     if (key !== folderKey) {
       clearDropTarget();
       folderKey = key;
       const focused = dialog.ownerDocument?.activeElement?.dataset?.libraryFilter;
-      const renderNavigation = items => items.map(item => `<div class="library-folder-item"><button type="button" class="quiet library-folder-link" data-library-filter="${escape(item.id)}" aria-label="${escape(item.name)}" title="${escape(item.name)}"${state().libraryOpen && filter === item.id ? ' aria-current="page"' : ''}${disabled ? ' disabled' : ''}>${icon(item.icon)}<span class="library-folder-name" title="${escape(item.name)}">${escape(item.name)}</span><span class="library-folder-count">${filterLibraryMeetings(snapshot.meetings, item.id).length}</span></button>${folders.some(folder => folder.id === item.id) ? `<details class="library-folder-menu"><summary aria-label="${escape(item.name)} 폴더 메뉴">${icon('ellipsis')}</summary><div class="action-menu"><button type="button" data-folder-rename="${escape(item.id)}"${disabled ? ' disabled' : ''}>이름 변경</button><button type="button" class="danger" data-folder-delete="${escape(item.id)}"${disabled ? ' disabled' : ''}>폴더 삭제</button></div></details>` : ''}</div>`).join('');
+      const renderNavigation = items => items.map(item => `<div class="library-folder-item"><button type="button" class="quiet library-folder-link" data-library-filter="${escape(item.id)}" aria-label="${escape(item.name)}" title="${escape(item.name)}"${state().libraryOpen && filter === item.id ? ' aria-current="page"' : ''}${disabled ? ' disabled' : ''}>${icon(item.icon)}<span class="library-folder-name" title="${escape(item.name)}">${escape(item.name)}</span><span class="library-folder-count">${countInView(item.id)}</span></button>${folders.some(folder => folder.id === item.id) ? `<details class="library-folder-menu"><summary aria-label="${escape(item.name)} 폴더 메뉴">${icon('ellipsis')}</summary><div class="action-menu"><button type="button" data-folder-rename="${escape(item.id)}"${disabled ? ' disabled' : ''}>이름 변경</button><button type="button" class="danger" data-folder-delete="${escape(item.id)}"${disabled ? ' disabled' : ''}>폴더 삭제</button></div></details>` : ''}</div>`).join('');
       byId('library-system-views').innerHTML = renderNavigation(navigation.filter(item => ['all', 'unfiled'].includes(item.id)));
       byId('library-user-folders').innerHTML = renderNavigation(navigation.filter(item => folders.some(folder => folder.id === item.id)));
       byId('library-trash-view').innerHTML = renderNavigation(navigation.filter(item => item.id === 'trash'));
@@ -374,7 +390,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     const nextCardsKey = JSON.stringify([folders, disabled, snapshot.meetings.map(meeting => [meeting.id, meeting.folderId, meeting.deletedAt])]);
     if (cardsKey !== nextCardsKey) {
       cardsKey = nextCardsKey;
-      byId('library-folders').innerHTML = folders.map(folder => `<button type="button" class="library-folder-card" data-library-filter="${escape(folder.id)}"${disabled ? ' disabled' : ''}>${icon('folder')}<span><strong title="${escape(folder.name)}">${escape(folder.name)}</strong><small>${filterLibraryMeetings(snapshot.meetings, folder.id).length}개 회의</small></span>${icon('chevron-right')}</button>`).join('');
+      byId('library-folders').innerHTML = folders.map(folder => `<button type="button" class="library-folder-card" data-library-filter="${escape(folder.id)}"${disabled ? ' disabled' : ''}>${icon('folder')}<span><strong title="${escape(folder.name)}">${escape(folder.name)}</strong><small>${countInView(folder.id)}개 회의</small></span>${icon('chevron-right')}</button>`).join('');
     }
     const selectedMeeting = state().libraryOpen || state().notificationsOpen ? null : current(state().selectedId);
     const parent = selectedMeeting ? selectedMeeting.folderId || 'unfiled' : filter;
@@ -387,7 +403,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     const nextNavigationKey = `${state().notificationsOpen}:${state().libraryOpen}:${state().selectedId}:${filter}`;
     if (navigationKey !== nextNavigationKey) { navigationKey = nextNavigationKey; sidebar?.navigate(); }
     byId('library-title').textContent = navigation.find(item => item.id === filter)?.name || '회의';
-    byId('library-count').innerHTML = state().libraryBusy ? '<span class="activity-spinner" aria-hidden="true"></span><span role="status">처리 중</span>' : `${overview ? filterLibraryMeetings(snapshot.meetings, 'all').length : visible.length}개`;
+    byId('library-count').innerHTML = state().libraryBusy ? '<span class="activity-spinner" aria-hidden="true"></span><span role="status">처리 중</span>' : `${overview ? countInView('all') : visible.length}개`;
     const count = selection().size;
     byId('library-batch').hidden = !count;
     byId('library-selected-count').textContent = `${count}개 선택`;
@@ -399,7 +415,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     byId('library-create').hidden = filter === 'trash';
     byId('library-record').hidden = filter === 'trash';
     byId('library-empty-trash').hidden = filter !== 'trash';
-    const emptyTrashDisabled = disabled || !filterLibraryMeetings(snapshot.meetings, 'trash').length;
+    const emptyTrashDisabled = disabled || !countInView('trash');
     for (const id of ['library-empty-trash', 'sidebar-empty-trash']) byId(id).disabled = emptyTrashDisabled;
     byId('library-select-all').disabled = disabled || !visible.length;
     byId('library-selection-clear').disabled = disabled || !count;

@@ -16,6 +16,12 @@
         "label": "main",
         "dragDropEnabled": false,
         "title": "Nero",
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": {
+          "x": 12,
+          "y": 18
+        },
         "width": 1180,
         "height": 790,
         "minWidth": 640,
@@ -61,7 +67,7 @@
     "category": "Productivity",
     "macOS": {
       "minimumSystemVersion": "26.0",
-      "bundleVersion": "50",
+      "bundleVersion": "57",
       "infoPlist": "Info.plist"
     },
     "windows": {

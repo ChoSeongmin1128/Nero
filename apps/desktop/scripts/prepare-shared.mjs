@@ -6,7 +6,10 @@ import { buildControls } from './build-controls.mjs';
 
 const app = fileURLToPath(new URL('..', import.meta.url));
 const source = resolve(app, '../../design-system');
-const target = resolve(app, '.generated/shared');
+const publicDirectory = resolve(app, '.generated/public');
+await mkdir(publicDirectory, { recursive: true });
+if ((await lstat(publicDirectory)).isSymbolicLink()) throw new Error('Public asset output must not be a symlink.');
+const target = resolve(publicDirectory, 'shared');
 await mkdir(target, { recursive: true });
 if ((await lstat(target)).isSymbolicLink()) throw new Error('Shared asset output must not be a symlink.');
 for (const name of ['appearance.css', 'appearance.js', 'fonts.css', 'typography.css', 'components.css', 'controls.css', 'desktop-preview.css', 'components.js', 'icons.js']) {
@@ -44,10 +47,9 @@ for (const group of ['portable-wav', 'audio-decode']) {
 }
 await mkdir(resolve(app, '.generated/agent'), { recursive: true });
 
-await mkdir(resolve(app, '.generated/brand'), { recursive: true });
-await mkdir(resolve(app, '.generated/brand/logo'), { recursive: true });
+await mkdir(resolve(publicDirectory, 'brand/logo'), { recursive: true });
 for (const name of ['nero-logo-light.svg', 'nero-logo-dark.svg', 'nero-symbol-light.svg', 'nero-symbol-dark.svg']) {
-  await copyFile(resolve(app, 'brand/logo', name), resolve(app, '.generated/brand/logo', name));
+  await copyFile(resolve(app, 'brand/logo', name), resolve(publicDirectory, 'brand/logo', name));
 }
 
 const git = (...args) => execFileSync('git', args, { cwd: resolve(app, '../..'), encoding: 'utf8' }).trim();

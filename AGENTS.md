@@ -143,7 +143,7 @@ behavior. Separate implemented behavior, proposals and unverified platform suppo
 ## Native installation and artifacts
 
 - Nero release versions follow `docs/versioning.md`; keep version mirrors consistent
-  with `node apps/desktop/scripts/version.mjs check`. Product numbering restarts at `0.0.1`/build50. The first external-user
+  with `node apps/desktop/scripts/version.mjs check`. Product numbering restarts at `0.0.1`, while build numbers continue increasing. The first external-user
   compatibility baseline must be recorded when users actually receive a build,
   using that product version, build number and source commit.
   Existing private meeting data, audio, models, integrations, identifiers and keys
@@ -151,7 +151,7 @@ behavior. Separate implemented behavior, proposals and unverified platform suppo
   them implicitly; use an explicit migration or separate archival when needed.
 - A one-time pre-sharing release-record reset is authorized: reset GitHub release
   entries, their release tags and public release documentation for the new
-  `0.0.1`/build50 baseline. Preserve Git commits and unique private build/signing
+  `0.0.1` baseline. Preserve Git commits and unique private build/signing
   evidence. This exception does not authorize another reset or rewriting releases
   shared with external users. Normal version, updater and NSIS downgrade guards
   remain active; existing build49 installations need an explicit manual transition.
@@ -173,8 +173,13 @@ behavior. Separate implemented behavior, proposals and unverified platform suppo
   the user's audio, models or complete data directory for each build. A schema/data
   migration must declare its affected paths and preserve only the data it changes.
   Verify an app-only replacement with the writer lock, data hashes and model metadata.
-- Use the canonical `apps/desktop/scripts/install-macos.py` installer. On one filesystem,
-  move the verified candidate and previous app by rename, with one rollback slot.
+- Refresh an existing updater-enabled installation through the published update
+  channel and the app's check/download/install/restart flow. Verify stable/latest
+  delivery and the running target source/build after restart. Direct app replacement
+  is not updater acceptance.
+- Use `apps/desktop/scripts/install-macos.py` for initial installation or explicitly
+  authorized manual recovery/migration. On one filesystem, move the verified
+  candidate and previous app by rename, with one rollback slot.
   After GUI/data verification, retire that rollback app; keep the current and immediately
   previous notarized DMGs plus small provenance receipts. Older undistributed app/ZIP/DMG
   copies are disposable after their source/hash history is recorded. Do not accumulate

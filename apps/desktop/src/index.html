@@ -19,7 +19,7 @@
     <script src="/shared/components.js"></script>
   </head>
   <body class="application-shell">
-    <header class="application-toolbar" aria-label="앱 도구">
+    <header class="application-toolbar" aria-label="앱 도구" data-tauri-drag-region>
       <div class="application-toolbar-actions" role="group" aria-label="화면 이동 및 회의 만들기">
         <div class="navigation-history" role="group" aria-label="화면 이동"><button id="navigation-back" type="button" class="quiet small icon" data-ui-icon="arrow-left" aria-label="이전 화면" title="이전 화면" disabled></button><button id="navigation-forward" type="button" class="quiet small icon" data-ui-icon="arrow-right" aria-label="다음 화면" title="다음 화면" disabled></button></div>
         <span class="application-toolbar-divider" aria-hidden="true"></span>
@@ -29,7 +29,7 @@
     </header>
     <div class="workspace navigation-shell">
       <nav class="navigation-rail" data-navigation-compact aria-label="축소 회의 탐색">
-        <button id="navigation-home" data-navigation-preview="all" class="quiet small icon" type="button" aria-label="전체 목록" title="전체 목록"><span data-detail-icon="notebook-pen" aria-hidden="true"></span></button>
+        <button id="navigation-home" data-navigation-preview="all" class="quiet small icon" type="button" aria-label="전체 목록" title="전체 목록"><span data-detail-icon="list" aria-hidden="true"></span></button>
         <button data-navigation-preview="folders" class="quiet small icon" type="button" aria-label="폴더" title="폴더"><span data-detail-icon="folder" aria-hidden="true"></span></button>
         <button data-navigation-preview="trash" class="quiet small icon" type="button" aria-label="휴지통" title="휴지통"><span data-detail-icon="trash-2" aria-hidden="true"></span></button>
         <button data-navigation-preview="recent" class="quiet small icon" type="button" aria-label="최근 회의" title="최근 회의"><span data-detail-icon="clock" aria-hidden="true"></span></button>

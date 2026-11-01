@@ -481,3 +481,14 @@ test('trash preview keeps header actions in the backward keyboard path before re
   assert.equal(document.activeElement, anchor);
   assert.deepEqual(mutations, []);
 });
+
+
+test('all meetings use the same list icon in expanded and compact navigation, distinct from creation', async t => {
+  const { document } = await setup(t);
+  const expanded = document.querySelector('#library-system-views [data-library-filter="all"] svg').dataset.icon;
+  const compact = document.querySelector('#navigation-home [data-detail-icon]').dataset.detailIcon;
+  const create = document.querySelector('#create-meeting').dataset.uiIcon;
+  assert.equal(expanded, 'list');
+  assert.equal(compact, expanded);
+  assert.notEqual(create, expanded);
+});

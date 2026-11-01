@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { filterLibraryMeetings, recentLibraryMeetings, mountLibrary } from '../src/library-ui.js';
+import { countLibraryMeetings, filterLibraryMeetings, recentLibraryMeetings, mountLibrary } from '../src/library-ui.js';
 
 const meetings = () => [
   { id: 'one', title: '주간 회의', notes: '', folderId: 'project', deletedAt: null },
@@ -8,6 +8,19 @@ const meetings = () => [
   { id: 'three', title: '보관할 회의', notes: '', folderId: 'project', deletedAt: 100 },
 ];
 const settle = () => new Promise(resolve => setImmediate(resolve));
+
+test('single-pass counts preserve active, deleted, empty and orphan folder scopes', () => {
+  const input = [...meetings(),
+    { id: 'empty-folder', folderId: '' }, { id: 'orphan', folderId: 'missing' },
+    { id: 'zero-deleted', deletedAt: 0 }, { id: 'reserved', folderId: 'trash' },
+    { id: 'reserved-unfiled', folderId: 'unfiled' }, { id: 'reserved-all', folderId: 'all' },
+  ];
+  const before = structuredClone(input), counts = countLibraryMeetings(input);
+  for (const filter of ['all', 'unfiled', 'trash', 'project', 'missing', 'empty']) {
+    assert.equal(counts.get(filter) || 0, filterLibraryMeetings(input, filter).length, filter);
+  }
+  assert.deepEqual(input, before);
+});
 
 function harness(overrides = {}, options = {}) {
   const nodes = new Map(), calls = [], errors = [], dragImages = [], frames = new Map();
@@ -922,6 +935,27 @@ test('recent duration updates after finalization without navigation or title cha
   app.controller.render();
   assert.equal(app.byId('library-user-folders').innerHTML, '');
   assert.match(app.byId('library-system-views').innerHTML, /data-library-filter="all"/);
+});
+
+test('navigation and folder card counts refresh after moving, trashing and restoring meetings', () => {
+  const app = harness();
+  const counts = () => Object.fromEntries([...app.byId('folder-list').innerHTML.matchAll(/data-library-filter="([^"]+)"[^>]*>[\s\S]*?class="library-folder-count">(\d+)</g)].map(match => [match[1], Number(match[2])]));
+  assert.deepEqual(counts(), { all: 2, unfiled: 1, project: 1, trash: 1 });
+  app.state.snapshot.meetings[1].folderId = 'project';
+  app.byId('search').value = 'no match';
+  app.controller.render();
+  assert.deepEqual(counts(), { all: 2, unfiled: 0, project: 2, trash: 1 });
+  assert.match(app.byId('library-folders').innerHTML, /2개 회의/);
+  app.state.snapshot.meetings[0].deletedAt = 0;
+  app.controller.render();
+  assert.deepEqual(counts(), { all: 1, unfiled: 0, project: 1, trash: 2 });
+  app.state.snapshot.meetings[0].deletedAt = null;
+  app.controller.render();
+  assert.deepEqual(counts(), { all: 2, unfiled: 0, project: 2, trash: 1 });
+  app.state.snapshot.folders = [];
+  app.controller.render();
+  assert.deepEqual(counts(), { all: 2, unfiled: 0, trash: 1 });
+  assert.equal(app.byId('library-folders').innerHTML, '');
 });
 
 

@@ -152,7 +152,13 @@ rebuilding/resigning the app. The DMG receipt separately records the packaging
 commit. Archive rejected, undistributed containers before reusing an output path;
 never replace an already distributed artifact.
 
-For local replacement, use the canonical installer after normal application exit:
+For an existing updater-enabled installation, publish and verify the release, then
+use the app's update check/download/restart flow. Confirm the target source/build
+and existing data after restart; see [application updates](../../docs/app-updates.md).
+A manual replacement does not establish updater acceptance.
+
+For initial installation or an explicitly authorized manual recovery/migration,
+use the canonical installer after normal application exit:
 
 ```sh
 python3 -B apps/desktop/scripts/install-macos.py --app WORK/Nero.app \
@@ -177,6 +183,9 @@ This preserves actual live connection evidence without weakening generation chec
 `npm run tauri -- dev` starts a development app. `npm run dev` alone serves its
 frontend, whose actions require the native bridge; it does not supply fake meetings.
 `prepare:shared` copies canonical design-system files into generated build inputs.
+Only `.generated/public` is exposed to Vite, preserving the `/shared` and `/brand`
+URLs. Native workers, the local agent and release metadata stay outside that
+frontend directory and are bundled through the existing Tauri resource mappings.
 
 ## Current behavior
 

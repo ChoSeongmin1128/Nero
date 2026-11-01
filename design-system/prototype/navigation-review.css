@@ -34,7 +34,7 @@ aside{min-width:0;overflow:hidden;background:var(--surface-secondary);border-rig
 .count{margin-left:auto;color:var(--text-secondary);font-size:var(--text-aux-size);font-weight:var(--weight-regular);font-variant-numeric:tabular-nums}
 .recent summary{cursor:pointer;font-size:var(--text-caption-size);color:var(--text-secondary);padding:8px}
 .recent{margin-top:4px}
-.recent .navigation-recent-row>.recent-meeting{width:100%;display:grid;text-align:left;gap:3px;padding:6px 8px;min-height:42px;border-color:transparent;background:transparent}
+.recent .navigation-recent-row>.recent-meeting{width:100%;display:grid;text-align:left;gap:3px;min-height:42px;border-color:transparent;background:transparent}
 .recent .navigation-recent-row>.recent-meeting strong{font-size:var(--text-label-size);font-weight:var(--weight-regular)}
 .recent .recent-meeting-meta{font-size:var(--text-aux-size);opacity:.75}
 .recent .recent-meeting-duration{font-size:var(--text-aux-size)}

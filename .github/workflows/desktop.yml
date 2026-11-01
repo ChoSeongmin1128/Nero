@@ -7,6 +7,10 @@ on:
         description: Build an unsigned Windows NSIS installer without installing or publishing it
         type: boolean
         default: false
+      use_dependency_cache:
+        description: Reuse dependency downloads; disable for a cold verification run
+        type: boolean
+        default: true
   pull_request:
     paths:
       - '.github/workflows/desktop.yml'
@@ -37,6 +41,8 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: '1'
   RUSTUP_TOOLCHAIN: stable
+  CARGO_HOME: ${{ github.workspace }}/.work/ci-dependencies/cargo
+  npm_config_cache: ${{ github.workspace }}/.work/ci-dependencies/npm
 
 jobs:
   native:
@@ -98,12 +104,34 @@ jobs:
           $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = $linker
           "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$linker" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Prepare native Rust toolchain
+        id: toolchain
         run: |
           rustup toolchain install stable --profile minimal
           rustc -Vv
           cargo -V
           node --version
           npm --version
+          echo "cargo=$(cargo -V)" >> "$GITHUB_OUTPUT"
+          echo "node=$(node --version)" >> "$GITHUB_OUTPUT"
+          echo "npm=$(npm --version)" >> "$GITHUB_OUTPUT"
+      - name: Restore npm downloads
+        id: npm-downloads
+        if: github.event_name != 'workflow_dispatch' || inputs.use_dependency_cache
+        continue-on-error: true
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: .work/ci-dependencies/npm/_cacache
+          key: downloads-v1-${{ runner.os }}-${{ runner.arch }}-npm-${{ steps.toolchain.outputs.node }}-${{ steps.toolchain.outputs.npm }}-${{ hashFiles('apps/desktop/package-lock.json') }}
+      - name: Restore Cargo downloads
+        id: cargo-downloads
+        if: github.event_name != 'workflow_dispatch' || inputs.use_dependency_cache
+        continue-on-error: true
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            .work/ci-dependencies/cargo/registry/index/index.crates.io-*
+            .work/ci-dependencies/cargo/registry/cache/index.crates.io-*
+          key: downloads-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.cargo }}-${{ hashFiles('Cargo.lock', '.cargo/config.toml') }}
       - name: Install frontend dependencies
         working-directory: apps/desktop
         run: npm ci
@@ -216,3 +244,28 @@ jobs:
         env:
           NERO_REQUIRE_NSIS_TESTS: '1'
         run: python -B -m unittest discover -s apps/desktop/tests -p test_windows_installer.py -v
+      # Only reviewed default-branch dispatches populate caches; PRs restore downloads only.
+      - name: Save npm downloads
+        if: success() && github.event_name == 'workflow_dispatch' && inputs.use_dependency_cache && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && steps.npm-downloads.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: .work/ci-dependencies/npm/_cacache
+          key: ${{ steps.npm-downloads.outputs.cache-primary-key }}
+      - name: Save Cargo downloads
+        if: success() && github.event_name == 'workflow_dispatch' && inputs.use_dependency_cache && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && steps.cargo-downloads.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            .work/ci-dependencies/cargo/registry/index/index.crates.io-*
+            .work/ci-dependencies/cargo/registry/cache/index.crates.io-*
+          key: ${{ steps.cargo-downloads.outputs.cache-primary-key }}
+      - name: Report dependency cache mode
+        if: always()
+        env:
+          CACHE_ENABLED: ${{ github.event_name != 'workflow_dispatch' || inputs.use_dependency_cache }}
+          NPM_CACHE_HIT: ${{ steps.npm-downloads.outputs.cache-hit }}
+          CARGO_CACHE_HIT: ${{ steps.cargo-downloads.outputs.cache-hit }}
+        run: |
+          printf '| Dependency downloads | Exact hit |\n| --- | --- |\n| npm | %s |\n| Cargo | %s |\n\nCache enabled: %s. Full install, build and test commands remain active.\n' "${NPM_CACHE_HIT:-false}" "${CARGO_CACHE_HIT:-false}" "$CACHE_ENABLED" >> "$GITHUB_STEP_SUMMARY"
