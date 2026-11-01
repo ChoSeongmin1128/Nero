@@ -13,7 +13,7 @@
 @media (prefers-reduced-motion: reduce) { .navigation-shell, .navigation-shell > .navigation-sidebar { transition: none; } }
 .navigation-recent-row { position: relative; display: flex; align-items: center; min-width: 0; border-radius: var(--control-radius); }
 .navigation-recent-row:hover, .navigation-recent-row:focus-within { background: var(--hover); }
-.navigation-recent-row > .recent-meeting { display: grid; flex: 1; min-width: 0; gap: 3px; min-height: 44px; padding: 6px 8px; border-color: transparent; background: transparent; text-align: left; }
+.navigation-recent-row > .recent-meeting { display: grid; flex: 1; min-width: 0; gap: 3px; min-height: 44px; padding-block: 6px; padding-inline-start: 8px; border-color: transparent; background: transparent; text-align: left; }
 .navigation-recent-row .recent-meeting strong { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: var(--text-label-size); font-weight: var(--weight-medium); line-height: 1.3; }
 .recent-title-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 .recent-title-line > strong { flex: 1; min-width: 0; }
@@ -24,8 +24,7 @@
 .recent-meeting-meta > span + span { flex: none; }
 .navigation-recent-row:has([aria-current="page"]) { background: var(--hover); }
 .navigation-recent-row .recent-meeting[aria-current="page"] strong { font-weight: var(--weight-semibold); }
-.navigation-recent-row > .meeting-menu { flex: none; margin-right: 3px; }
-.navigation-recent-row > .meeting-menu > summary { width: 24px; min-width: 24px; height: 28px; padding: 4px; color: var(--text-secondary); opacity: 0; }
+.navigation-recent-row > .meeting-menu > summary { opacity: 0; }
 .navigation-recent-row:hover > .meeting-menu > summary, .navigation-recent-row:focus-within > .meeting-menu > summary, .navigation-recent-row > .meeting-menu[open] > summary { opacity: 1; }
 @media (hover: none) { .navigation-recent-row > .meeting-menu > summary { opacity: 1; } }
 .navigation-shell.nav-overlay.nav-pinned { grid-template-columns: 0 minmax(0, 1fr); }
