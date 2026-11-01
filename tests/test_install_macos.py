@@ -74,12 +74,12 @@ class MacOSInstallTests(unittest.TestCase):
         mock.start()
         self.addCleanup(mock.stop)
 
-    def make_app(self, folder, build):
-        (folder / 'Contents/Resources/agent').mkdir(parents=True)
-        info = {'CFBundleName': 'Nero', 'CFBundleVersion': build, 'CFBundleShortVersionString': '0.0.1',
+    def make_app(self, folder, build, version='0.0.1'):
+        (folder / 'Contents/Resources/agent').mkdir(parents=True, exist_ok=True)
+        info = {'CFBundleName': 'Nero', 'CFBundleVersion': build, 'CFBundleShortVersionString': version,
                 'CFBundleIdentifier': installer.IDENTIFIER}
         (folder / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
-        metadata = {'version': '0.0.1', 'build': build, 'bundleIdentifier': installer.IDENTIFIER,
+        metadata = {'version': version, 'build': build, 'bundleIdentifier': installer.IDENTIFIER,
                     'sourceCommit': self.source, 'sourceTree': self.source_tree, 'sourceDirty': False}
         (folder / 'Contents/Resources/build-info.json').write_text(json.dumps(metadata))
         (folder / 'Contents/Resources/agent/nero').write_bytes(b'synthetic agent ' + build.encode())
@@ -107,9 +107,151 @@ class MacOSInstallTests(unittest.TestCase):
         self.moves.append((source, destination))
         self.real_rename(source, destination)
 
-    def install(self, with_zip=False):
+    def install(self, with_zip=False, reset_from=None):
         return installer.install(self.app, self.dmg, self.work,
-                                 archive=self.archive if with_zip else None)
+                                 archive=self.archive if with_zip else None,
+                                 prepublication_reset_from=reset_from)
+
+    def prepare_prepublication_reset(self, current_version='0.3.0', current_build='49',
+                                    version='0.0.1', build='50'):
+        self.make_app(self.target, current_build, current_version)
+        self.make_app(self.app, build, version)
+        self.receipt.update(version=version, build=build,
+                            app_tree_sha256=installer.tree_hash(installer.app_tree(self.app)))
+        self.write_receipts()
+
+    def test_prepublication_reset_requires_the_explicit_source_and_records_the_transition(self):
+        self.prepare_prepublication_reset()
+        journal = self.data / 'pending.json'
+        journal.write_bytes(b'{"from":"0.2.0+47","target":"0.3.0+49"}\n')
+        data_before = installer.inventory(self.data)
+        models_before = installer.model_metadata()
+        connections_before = installer.connection_states()
+        with self.assertRaisesRegex(RuntimeError, 'downgrade refused'):
+            self.install()
+        self.assertEqual(self.moves, [])
+        self.assertFalse((self.work / 'installation.json').exists())
+        result = self.install(reset_from='0.3.0+49')
+        expected = {'schemaVersion': 1, 'flag': '--prepublication-reset-from', 'value': '0.3.0+49',
+                    'from': {'version': '0.3.0', 'build': '49'},
+                    'to': {'version': '0.0.1', 'build': '50'}}
+        self.assertEqual(result['prepublicationReset'], expected)
+        recorded = installer.load(self.work / 'installation.json')
+        self.assertEqual(recorded['prepublicationReset'], expected)
+        self.assertTrue(recorded['writerLockHeld'])
+        events = [json.loads(line) for line in (self.work / 'installation-events.jsonl').read_text().splitlines()]
+        self.assertEqual(events[0]['prepublicationReset'], expected)
+        self.assertEqual(installer.inventory(self.data), data_before)
+        self.assertEqual(installer.model_metadata(), models_before)
+        self.assertEqual(installer.connection_states(), connections_before)
+        self.moves.clear()
+        for reset_from in ('0.3.0+49', None):
+            repeated = self.install(reset_from=reset_from)
+            self.assertTrue(repeated['alreadyInstalled'])
+            self.assertFalse(repeated['changesMade'])
+            self.assertEqual(repeated['prepublicationReset'], expected)
+        self.assertEqual(self.moves, [])
+
+    def test_prepublication_reset_refuses_other_source_target_and_flag_values(self):
+        cases = [
+            {'current_version': '0.2.0'}, {'current_build': '48'}, {'current_build': '50'},
+            {'current_build': '049'}, {'version': '0.0.2'}, {'version': '0.0.01'},
+            {'build': '49'}, {'build': '48'}, {'reset_from': '0.2.0+49'},
+            {'reset_from': '0.3.0+48'},
+        ]
+        for case in cases:
+            with self.subTest(case=case):
+                values = dict(case)
+                reset_from = values.pop('reset_from', '0.3.0+49')
+                self.prepare_prepublication_reset(**values)
+                with self.assertRaisesRegex(RuntimeError, '[Pp]republication reset'):
+                    self.install(reset_from=reset_from)
+                self.assertEqual(self.moves, [])
+                self.assertFalse((self.work / 'data-before-manifest.json').exists())
+
+    def test_prepublication_reset_refuses_later_builds_and_cannot_reuse_the_source_exception(self):
+        self.prepare_prepublication_reset(build='51')
+        with self.assertRaisesRegex(RuntimeError, 'target 0.0.1/build50'):
+            self.install(reset_from='0.3.0+49')
+        self.assertEqual(self.moves, [])
+        self.prepare_prepublication_reset()
+        self.install(reset_from='0.3.0+49')
+        self.moves.clear()
+        self.make_app(self.app, '51')
+        self.receipt.update(build='51', app_tree_sha256=installer.tree_hash(installer.app_tree(self.app)))
+        self.write_receipts()
+        with self.assertRaisesRegex(RuntimeError, 'target 0.0.1/build50'):
+            self.install(reset_from='0.3.0+49')
+        self.assertEqual(self.moves, [])
+
+    def test_prepublication_reset_retry_requires_its_original_installation_receipt(self):
+        self.prepare_prepublication_reset()
+        self.install(reset_from='0.3.0+49')
+        self.moves.clear()
+        receipt = installer.load(self.work / 'installation.json')
+        receipt['prepublicationReset']['from']['build'] = '48'
+        (self.work / 'installation.json').write_text(json.dumps(receipt))
+        with self.assertRaisesRegex(RuntimeError, 'does not record this prepublication reset'):
+            self.install(reset_from='0.3.0+49')
+        self.assertEqual(self.moves, [])
+
+    def test_prepublication_reset_does_not_add_authorization_to_an_ordinary_installation(self):
+        self.prepare_prepublication_reset(current_version='0.0.1')
+        self.install()
+        self.moves.clear()
+        with self.assertRaisesRegex(RuntimeError, 'does not record this prepublication reset'):
+            self.install(reset_from='0.3.0+49')
+        self.assertEqual(self.moves, [])
+
+    def test_prepublication_reset_preserves_release_lock_and_idle_guards(self):
+        self.prepare_prepublication_reset()
+        self.receipt['notary'] = {'status': 'Rejected'}
+        self.write_receipts()
+        with self.assertRaisesRegex(RuntimeError, 'notarization'):
+            self.install(reset_from='0.3.0+49')
+        self.receipt['notary'] = {'status': 'Accepted'}
+        self.write_receipts()
+        with patch.object(installer.fcntl, 'flock', side_effect=BlockingIOError()):
+            with self.assertRaisesRegex(RuntimeError, 'writer lock'):
+                self.install(reset_from='0.3.0+49')
+        with patch.object(installer, 'idle_snapshot', side_effect=RuntimeError('A recording is active')):
+            with self.assertRaisesRegex(RuntimeError, 'recording is active'):
+                self.install(reset_from='0.3.0+49')
+        self.assertEqual(self.moves, [])
+        self.assertFalse((self.work / 'data-before-manifest.json').exists())
+
+    def test_prepublication_reset_verification_failure_restores_both_app_bundles(self):
+        self.prepare_prepublication_reset()
+        original = installer.app_tree(self.target)
+        candidate = installer.app_tree(self.app)
+        data_before = installer.inventory(self.data)
+        run = self.run_command
+
+        def fail_installed(*args):
+            if args == ('codesign', '--verify', '--deep', '--strict', str(self.target)):
+                raise RuntimeError('synthetic installed verification failure')
+            return run(*args)
+
+        with patch.object(installer, 'run', side_effect=fail_installed):
+            with self.assertRaisesRegex(RuntimeError, 'installed verification failure'):
+                self.install(reset_from='0.3.0+49')
+        self.assertEqual(installer.app_tree(self.target), original)
+        self.assertEqual(installer.app_tree(self.app), candidate)
+        self.assertEqual(installer.inventory(self.data), data_before)
+        self.assertFalse((self.work / 'installation.json').exists())
+
+    def test_prepublication_reset_cannot_be_combined_with_identity_migration(self):
+        self.prepare_prepublication_reset()
+        self.use_old_identity()
+        with self.assertRaisesRegex(RuntimeError, 'current Nero identity'):
+            self.install(reset_from='0.3.0+49')
+        self.assertEqual(self.moves, [])
+
+    def test_prepublication_reset_cli_passes_the_explicit_source(self):
+        with patch.object(installer, 'install', return_value={}) as install, patch('builtins.print'):
+            installer.main(['--app', str(self.app), '--dmg', str(self.dmg), '--work', str(self.work),
+                            '--prepublication-reset-from', '0.3.0+49'])
+        self.assertEqual(install.call_args.kwargs['prepublication_reset_from'], '0.3.0+49')
 
     def test_success_moves_bundles_and_records_hashes_without_copying_data(self):
         candidate_inode = self.app.stat().st_ino

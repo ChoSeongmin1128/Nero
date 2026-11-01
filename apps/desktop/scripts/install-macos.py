@@ -348,7 +348,7 @@ def connection_migration_module():
     return module
 
 
-def install(app, dmg, work, archive=None):
+def install(app, dmg, work, archive=None, prepublication_reset_from=None):
     require_directory(work)
     require_directory(TARGET)
     for path in (app, dmg, work) + ((archive,) if archive is not None else ()):
@@ -375,7 +375,20 @@ def install(app, dmg, work, archive=None):
     candidate = app if app.exists() or app.is_symlink() else TARGET
     info, receipt, expected_tree = verify_release(candidate, dmg, archive)
     release_version = installed_version(info)
-    require(current_version <= release_version, 'A newer Nero is already installed; downgrade refused')
+    reset = None
+    if prepublication_reset_from is not None:
+        require(prepublication_reset_from == '0.3.0+49', 'Unsupported prepublication reset source')
+        require(not migrating and info['CFBundleShortVersionString'] == '0.0.1' and info['CFBundleVersion'] == '50',
+                'Prepublication reset requires the current Nero identity and target 0.0.1/build50')
+        reset = {'schemaVersion': 1, 'flag': '--prepublication-reset-from',
+                 'value': prepublication_reset_from,
+                 'from': {'version': '0.3.0', 'build': '49'},
+                 'to': {'version': info['CFBundleShortVersionString'], 'build': info['CFBundleVersion']}}
+    if reset is not None and current_version != release_version:
+        require((current_info['CFBundleShortVersionString'], current_info['CFBundleVersion']) == ('0.3.0', '49'),
+                'Installed version differs from the prepublication reset source')
+    else:
+        require(current_version <= release_version, 'A newer Nero is already installed; downgrade refused')
     source = receipt['source_commit']
     if current_version == release_version and not migrating:
         require(installation_path.exists(), 'This build is already present without this installation receipt')
@@ -383,9 +396,12 @@ def install(app, dmg, work, archive=None):
         require(installed.get('build') == info['CFBundleVersion'] and installed.get('sourceCommit') == source
                 and installed.get('appTreeSha256') == receipt['app_tree_sha256'],
                 'Existing installation receipt differs; preserve it for review')
+        require(reset is None or installed.get('prepublicationReset') == reset,
+                'Existing installation receipt does not record this prepublication reset')
         require(app_tree(TARGET) == expected_tree, 'Installed app differs from the recorded release')
         verify_signature(TARGET, receipt)
-        return {'alreadyInstalled': True, 'build': info['CFBundleVersion'], 'sourceCommit': source, 'changesMade': False}
+        return {'alreadyInstalled': True, 'build': info['CFBundleVersion'], 'sourceCommit': source,
+                'prepublicationReset': installed.get('prepublicationReset'), 'changesMade': False}
     require(candidate == app, 'The release candidate is missing')
     require_directory(app)
     device = TARGET.parent.stat().st_dev
@@ -446,7 +462,7 @@ def install(app, dmg, work, archive=None):
             require(inventory(data) == before and connection_states() == connections_before
                     and model_metadata(data) == models_before, 'Data, connection state or models changed before app replacement')
             ledger(work, 'prepared', sourceCommit=source, oldVersion=current_info['CFBundleShortVersionString'],
-                   oldBuild=current_info['CFBundleVersion'], dataFiles=len(before))
+                   oldBuild=current_info['CFBundleVersion'], dataFiles=len(before), prepublicationReset=reset)
             require(not previous.exists() and not previous.is_symlink(), 'A rollback app already exists')
             os.rename(TARGET, previous)
             moved_previous = True
@@ -474,6 +490,7 @@ def install(app, dmg, work, archive=None):
             require(model_metadata(data) == models_before, 'Model files changed during installation')
             result = {
                 'build': info['CFBundleVersion'], 'version': info['CFBundleShortVersionString'], 'sourceCommit': source,
+                'prepublicationReset': reset,
                 'installedApp': str(TARGET), 'previousApp': str(previous),
                 'appTreeSha256': receipt['app_tree_sha256'],
                 'dataFilesPreserved': len(before), 'dataUnchanged': True,
@@ -534,7 +551,7 @@ def install(app, dmg, work, archive=None):
         finally:
             if connection_plan is not None:
                 connection_migration.release(connection_plan)
-    return {key: result[key] for key in ('build', 'sourceCommit', 'dataFilesPreserved',
+    return {key: result[key] for key in ('build', 'sourceCommit', 'prepublicationReset', 'dataFilesPreserved',
                                         'dataUnchanged', 'connectionStatesUnchanged', 'guiVerified')}
 
 
@@ -543,10 +560,11 @@ def main(argv=None):
     for name in ('app', 'dmg', 'work'):
         parser.add_argument('--' + name, required=True, type=Path)
     parser.add_argument('--zip', type=Path)
+    parser.add_argument('--prepublication-reset-from', choices=('0.3.0+49',))
     args = parser.parse_args(argv)
     paths = [Path(os.path.abspath(value.expanduser())) for value in (args.app, args.dmg, args.work)]
     archive = Path(os.path.abspath(args.zip.expanduser())) if args.zip is not None else None
-    print(json.dumps(install(*paths, archive=archive)))
+    print(json.dumps(install(*paths, archive=archive, prepublication_reset_from=args.prepublication_reset_from)))
 
 
 if __name__ == '__main__':
