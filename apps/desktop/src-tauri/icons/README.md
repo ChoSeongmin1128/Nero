@@ -11,5 +11,9 @@ Windows clips the ICO's outer corners to transparency. The icon generator also
 regenerates ../windows/shortcut-icon-resource.nsh with its SHA-256 filename.
 NSIS packages that exact ICO, preserves existing owned shortcuts and points them
 to this file, so a replaced EXE cannot reuse Explorer's cached older artwork.
-The versioned icon manifest retires the previous owned resource on update;
-uninstallation removes the packaged icon and its matching manifest.
+NSIS verifies the installed ICO's size and SHA-256, then reloads saved shortcuts
+to verify their icon reference. The versioned manifest retires the previous
+owned resource only after all candidate links are refreshed or classified as
+absent/foreign. A failed extraction or link update retains the prior resource
+and manifest for a later retry. Uninstallation removes its packaged icon and
+matching manifest, conservatively retaining any unmatched prior resource.

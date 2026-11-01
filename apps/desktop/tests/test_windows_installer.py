@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 import re
 import subprocess
+import stat
 import sys
 import tempfile
 import time
@@ -40,6 +41,8 @@ class InstallerConfigurationTests(unittest.TestCase):
         declared = re.search(r'!define NERO_SHORTCUT_ICON_SHA256 "([^"]+)"',
                              metadata).group(1)
         self.assertEqual(declared, digest)
+        size = re.search(r'!define NERO_SHORTCUT_ICON_SIZE (\d+)', metadata).group(1)
+        self.assertEqual(int(size), ICON.stat().st_size)
 
     def test_early_guard_uses_the_configured_main_executable(self):
         tauri = HOOK.parents[1]
@@ -90,9 +93,20 @@ class ShortcutIconTests(unittest.TestCase):
             "appId=$item.ExtendedProperty('System.AppUserModel.ID')} | ConvertTo-Json -Compress\n")
         return json.loads(output)
 
-    def run_installer(self, directory, body, *, resource=True, uninstall=False):
+    def run_installer(self, directory, body, *, resource=True, uninstall=False,
+                      icon_override=None):
         script = directory / "shortcut.nsi"
         output = directory / "shortcut.exe"
+        resource_override = ""
+        if icon_override is not None:
+            digest = hashlib.sha256(icon_override.read_bytes()).hexdigest()
+            resource_override = (
+                '!undef NERO_SHORTCUT_ICON_FILE\n!undef NERO_SHORTCUT_ICON_SHA256\n'
+                '!undef NERO_SHORTCUT_ICON_SIZE\n!undef NERO_SHORTCUT_ICON_SOURCE\n'
+                f'!define NERO_SHORTCUT_ICON_FILE "nero-icon-{digest}.ico"\n'
+                f'!define NERO_SHORTCUT_ICON_SHA256 "{digest}"\n'
+                f'!define NERO_SHORTCUT_ICON_SIZE {icon_override.stat().st_size}\n'
+                f'!define NERO_SHORTCUT_ICON_SOURCE "{icon_override}"\n')
         # Match Tauri's include order: the upstream macro exists before our hooks.
         script.write_text(
             'Unicode true\nRequestExecutionLevel user\nSilentInstall silent\n'
@@ -102,14 +116,14 @@ class ShortcutIconTests(unittest.TestCase):
             '!include "Win\\RestartManager.nsh"\n'
             '!macro CheckIfAppIsRunning executablePath productName\n!macroend\n'
             '!macro SetLnkAppUserModelId shortcut\n!error "Upstream shortcut helper survived"\n!macroend\n'
-            f'!include "{HOOK}"\n'
+            f'!include "{HOOK}"\n' + resource_override +
             '!define BUNDLEID "io.github.nero.shortcut-test"\n'
             '!define PRODUCTNAME "Nero"\n!define STARTMENUFOLDER ""\n'
             f'OutFile "{output}"\nSection\n'
             f'StrCpy $INSTDIR "{directory}"\n' +
             ('!insertmacro NeroInstallShortcutIcon\n' if resource else '') +
             body + '\n' +
-            ('!insertmacro NeroRecordShortcutIcon\n' if resource else '') +
+            '!insertmacro NeroRecordShortcutIcon\n' +
             (f'WriteUninstaller "{directory / "remove.exe"}"\n' if uninstall else '') +
             'SectionEnd\n' +
             (f'Section "Uninstall"\nStrCpy $INSTDIR "{directory}"\n'
@@ -214,19 +228,134 @@ class ShortcutIconTests(unittest.TestCase):
     def test_update_retires_only_the_recorded_hash_named_icon(self):
         with tempfile.TemporaryDirectory(prefix="nero-shortcut-") as folder:
             directory = Path(folder)
-            previous = b"previous synthetic icon resource"
-            digest = hashlib.sha256(previous).hexdigest()
-            old = directory / f"nero-icon-{digest}.ico"
-            old.write_bytes(previous)
+            old, manifest, link = self.previous_icon_shortcut(directory)
             foreign = directory / "foreign.ico"
             foreign.write_bytes(b"unrelated")
-            (directory / "nero-shortcut-icon.ini").write_text(
-                f"[ShortcutIcon]\nformatVersion=1\nfile={old.name}\nsha256={digest}\n",
-                encoding="utf-8")
-            self.run_installer(directory, "")
+            self.run_installer(directory, f'!insertmacro NeroRefreshShortcutIcon "{link}"')
             self.assertFalse(old.exists())
             self.assertEqual(foreign.read_bytes(), b"unrelated")
             self.assertEqual((directory / shortcut_icon_name()).read_bytes(), ICON.read_bytes())
+            self.assertEqual(self.inspect(directory, link)["icon"],
+                             str(directory / shortcut_icon_name()) + ",0")
+            self.assertIn(shortcut_icon_name(), manifest.read_text())
+
+    def previous_icon_shortcut(self, directory):
+        previous = ICON.read_bytes() + b"previous fixture revision"
+        digest = hashlib.sha256(previous).hexdigest()
+        old = directory / f"nero-icon-{digest}.ico"
+        old.write_bytes(previous)
+        manifest = directory / "nero-shortcut-icon.ini"
+        manifest.write_text(
+            f"[ShortcutIcon]\nformatVersion=1\nfile={old.name}\nsha256={digest}\n",
+            encoding="utf-8")
+        link = directory / "Nero.lnk"
+        self.powershell(directory,
+            "$w=New-Object -ComObject WScript.Shell\n"
+            f"$s=$w.CreateShortcut({self.ps(link)})\n"
+            f"$s.TargetPath={self.ps(directory / 'nero-desktop.exe')}\n"
+            f"$s.IconLocation={self.ps(str(old) + ',0')}\n$s.Save()\n")
+        return old, manifest, link
+
+    def test_failed_shortcut_save_keeps_previous_icon_and_manifest(self):
+        with tempfile.TemporaryDirectory(prefix="nero-shortcut-") as folder:
+            directory = Path(folder)
+            old, manifest, link = self.previous_icon_shortcut(directory)
+            before = manifest.read_bytes(), link.read_bytes()
+            link.chmod(stat.S_IREAD)
+            try:
+                self.run_installer(directory,
+                    f'!insertmacro NeroRefreshShortcutIcon "{link}"\n'
+                    f'!insertmacro NeroRefreshShortcutIcon "{directory / "deleted.lnk"}"')
+                self.assertEqual(link.read_bytes(), before[1])
+                self.assertTrue(old.is_file(), "A failed link still references the previous icon")
+                self.assertEqual(manifest.read_bytes(), before[0])
+            finally:
+                link.chmod(stat.S_IWRITE)
+
+    def test_missing_new_resource_keeps_previous_icon_and_manifest(self):
+        with tempfile.TemporaryDirectory(prefix="nero-shortcut-") as folder:
+            directory = Path(folder)
+            old, manifest, link = self.previous_icon_shortcut(directory)
+            before = manifest.read_bytes(), link.read_bytes()
+            self.run_installer(directory,
+                f'!insertmacro NeroRefreshShortcutIcon "{link}"', resource=False)
+            self.assertTrue(old.is_file())
+            self.assertEqual((manifest.read_bytes(), link.read_bytes()), before)
+
+    def test_missing_resource_without_links_does_not_replace_the_manifest(self):
+        with tempfile.TemporaryDirectory(prefix="nero-shortcut-") as folder:
+            directory = Path(folder)
+            old, manifest, link = self.previous_icon_shortcut(directory)
+            link.unlink()
+            before = manifest.read_bytes()
+            self.run_installer(directory, "", resource=False)
+            self.assertTrue(old.is_file())
+            self.assertEqual(manifest.read_bytes(), before)
+            self.assertFalse(link.exists())
+
+    def test_corrupt_new_resource_keeps_previous_links_icon_and_manifest(self):
+        for same_size in [False, True]:
+            with self.subTest(same_size=same_size), tempfile.TemporaryDirectory(
+                    prefix="nero-shortcut-") as folder:
+                directory = Path(folder)
+                old, manifest, link = self.previous_icon_shortcut(directory)
+                before = manifest.read_bytes(), link.read_bytes()
+                damaged = bytearray(ICON.read_bytes() if same_size else b"truncated")
+                damaged[-1] ^= 1
+                (directory / shortcut_icon_name()).write_bytes(damaged)
+                self.run_installer(directory,
+                    f'!insertmacro NeroRefreshShortcutIcon "{link}"', resource=False)
+                self.assertTrue(old.is_file())
+                self.assertEqual((manifest.read_bytes(), link.read_bytes()), before)
+
+    def test_one_failed_link_is_not_hidden_by_a_later_success_and_can_retry(self):
+        with tempfile.TemporaryDirectory(prefix="nero-shortcut-") as folder:
+            directory = Path(folder)
+            desktop, programs = directory / "desktop", directory / "programs"
+            desktop.mkdir()
+            programs.mkdir()
+            old, manifest, link = self.previous_icon_shortcut(directory)
+            desktop_link = desktop / "Nero.lnk"
+            link.rename(desktop_link)
+            programs_link = programs / "Nero.lnk"
+            shutil.copyfile(desktop_link, programs_link)
+            before = manifest.read_bytes(), desktop_link.read_bytes()
+            desktop_link.chmod(stat.S_IREAD)
+            refresh = f'!insertmacro NeroRefreshInstalledShortcutIcons "{desktop}" "{programs}"'
+            try:
+                self.run_installer(directory, refresh)
+                self.assertEqual(desktop_link.read_bytes(), before[1])
+                self.assertTrue(old.is_file())
+                self.assertEqual(manifest.read_bytes(), before[0])
+                self.assertEqual(self.inspect(directory, programs_link)["icon"],
+                                 str(directory / shortcut_icon_name()) + ",0")
+            finally:
+                desktop_link.chmod(stat.S_IWRITE)
+            # A subsequent successful update can safely retire the previous file.
+            self.run_installer(directory, refresh)
+            self.assertFalse(old.exists())
+            self.assertEqual(self.inspect(directory, desktop_link)["icon"],
+                             str(directory / shortcut_icon_name()) + ",0")
+
+    def test_icon_revision_upgrade_and_rollback_follow_content_not_app_version(self):
+        with tempfile.TemporaryDirectory(prefix="nero-shortcut-") as folder:
+            directory = Path(folder)
+            link = directory / "Nero.lnk"
+            self.run_installer(directory,
+                f'CreateShortcut "{link}" "$INSTDIR\\nero-desktop.exe"\n'
+                f'!insertmacro SetLnkAppUserModelId "{link}"')
+            alternate = directory / "alternate-source.ico"
+            alternate.write_bytes(ICON.read_bytes() + b"alternate fixture revision")
+            alternate_name = f"nero-icon-{hashlib.sha256(alternate.read_bytes()).hexdigest()}.ico"
+            refresh = f'!insertmacro NeroRefreshShortcutIcon "{link}"'
+            self.run_installer(directory, refresh, icon_override=alternate)
+            self.assertFalse((directory / shortcut_icon_name()).exists())
+            self.assertEqual(self.inspect(directory, link)["icon"],
+                             str(directory / alternate_name) + ",0")
+            self.run_installer(directory, refresh)
+            self.assertFalse((directory / alternate_name).exists())
+            self.assertEqual(self.inspect(directory, link)["icon"],
+                             str(directory / shortcut_icon_name()) + ",0")
 
     def test_untrusted_manifest_cannot_remove_other_paths_or_arbitrary_icons(self):
         cases = [("../outside.ico", "a" * 64),
