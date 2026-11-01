@@ -143,7 +143,7 @@ behavior. Separate implemented behavior, proposals and unverified platform suppo
 ## Native installation and artifacts
 
 - Nero release versions follow `docs/versioning.md`; keep version mirrors consistent
-  with `node apps/desktop/scripts/version.mjs check`. Product numbering restarts at `0.0.1`/build50. The first external-user
+  with `node apps/desktop/scripts/version.mjs check`. Product numbering restarts at `0.0.1`, while build numbers continue increasing. The first external-user
   compatibility baseline must be recorded when users actually receive a build,
   using that product version, build number and source commit.
   Existing private meeting data, audio, models, integrations, identifiers and keys
@@ -151,7 +151,7 @@ behavior. Separate implemented behavior, proposals and unverified platform suppo
   them implicitly; use an explicit migration or separate archival when needed.
 - A one-time pre-sharing release-record reset is authorized: reset GitHub release
   entries, their release tags and public release documentation for the new
-  `0.0.1`/build50 baseline. Preserve Git commits and unique private build/signing
+  `0.0.1` baseline. Preserve Git commits and unique private build/signing
   evidence. This exception does not authorize another reset or rewriting releases
   shared with external users. Normal version, updater and NSIS downgrade guards
   remain active; existing build49 installations need an explicit manual transition.
