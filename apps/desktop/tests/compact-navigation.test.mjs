@@ -255,7 +255,13 @@ test('keyboard enters and returns from each product preview without advancing th
     const target = document.querySelector(targets[view]);
     assert.equal(document.activeElement, target);
     assert.equal(views.activeView(), view);
-    assert.equal(key(target, 'Tab', { shiftKey: true }).defaultPrevented, true);
+    const hasHeaderActions = ['all', 'trash'].includes(view);
+    assert.equal(key(target, 'Tab', { shiftKey: true }).defaultPrevented, !hasHeaderActions);
+    if (hasHeaderActions) {
+      const action = el(view === 'trash' ? 'sidebar-empty-trash' : 'sidebar-preview-open');
+      action.focus();
+      assert.equal(key(action, 'Tab', { shiftKey: true }).defaultPrevented, true);
+    }
     assert.equal(document.activeElement, button);
     assert.equal(key(button, 'Enter').defaultPrevented, true);
     assert.equal(document.activeElement, target);

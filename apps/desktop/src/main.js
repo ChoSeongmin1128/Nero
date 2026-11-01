@@ -115,7 +115,6 @@ function paintIconButton(node, name = node.dataset.uiIcon, label = node.getAttri
 document.querySelectorAll('[data-ui-icon]').forEach(node => paintIconButton(node));
 document.querySelectorAll('[data-detail-icon]').forEach(node => { node.innerHTML = icon(node.dataset.detailIcon); });
 
-byId('create-meeting').innerHTML = `${icon('plus')}<span>새 회의</span>`;
 byId('welcome-create').innerHTML = `${icon('plus')}<span>새 회의</span>`;
 byId('library-create').innerHTML = `${icon('plus')}<span>새 회의 만들기</span>`;
 document.querySelector('.welcome-icon').innerHTML = icon('notebook-pen');
@@ -346,7 +345,7 @@ function prepareSpeechModels() {
 }
 function render() {
   renderSpeechModels();
-  byId('create-meeting').disabled = !state.connected || state.busy;
+  byId('create-meeting').disabled = !state.connected || state.busy || !modelsReady();
   byId('create-calendar-meeting').disabled = !state.connected || state.busy;
   byId('welcome-create').disabled = !state.connected || state.busy;
   for (const id of ['library-create', 'library-record']) byId(id).disabled = !state.connected || state.busy || state.libraryBusy;

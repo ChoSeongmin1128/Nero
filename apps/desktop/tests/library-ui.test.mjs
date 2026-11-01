@@ -497,6 +497,107 @@ test('renaming a meeting invalidates content search without changing its scope',
   assert.equal(app.calls.find(call => call.name === 'renameMeeting').args[1], '제품 검토');
 });
 
+function showTrashPreview(app) {
+  const sidebar = app.byId('navigation-sidebar');
+  sidebar.dataset.sidebarView = 'trash';
+  sidebar.inert = false;
+  app.byId('sidebar-empty-trash').hidden = false;
+}
+
+test('sidebar empty trash confirms the whole trash without navigating the current meeting', async () => {
+  const app = harness();
+  app.state.libraryFilter = 'project';
+  app.state.libraryOpen = false;
+  app.state.snapshot.meetings.push({ id: 'four', title: '또 다른 회의', deletedAt: 200 });
+  app.byId('search').value = '검색에 없는 제목';
+  app.state.librarySearchIds = [];
+  showTrashPreview(app);
+  app.controller.render();
+  app.state.librarySelection.add('one');
+  app.click('library-empty-trash');
+  assert.equal(app.byId('library-dialog').open, false);
+  app.click('sidebar-empty-trash');
+  assert.match(app.byId('library-dialog-body').innerHTML, /회의 2개/);
+  assert.equal(app.byId('library-dialog').role, 'alertdialog');
+  assert.equal(app.calls.length, 0);
+  app.bridge.purgeMeetings = async ids => {
+    app.calls.push({ name: 'purge', args: [ids] });
+    app.state.snapshot.meetings = app.state.snapshot.meetings.filter(meeting => !ids.includes(meeting.id));
+    return app.snapshot();
+  };
+  await app.submit();
+  assert.deepEqual(app.calls.find(call => call.name === 'purge').args, [['three', 'four']]);
+  assert.deepEqual(app.calls.map(call => call.name), ['flush', 'read', 'purge']);
+  assert.equal(app.state.libraryFilter, 'project');
+  assert.equal(app.state.libraryOpen, false);
+  assert.equal(app.state.selectedId, 'one');
+  assert.equal(app.byId('sidebar-empty-trash').disabled, true);
+});
+
+for (const [name, change] of [
+  ['another preview', app => { app.byId('navigation-sidebar').dataset.sidebarView = 'all'; }],
+  ['hidden action', app => { app.byId('sidebar-empty-trash').hidden = true; }],
+  ['hidden ancestor', app => { app.byId('sidebar-empty-trash').closest = () => ({}); }],
+  ['hidden sidebar', app => { app.byId('navigation-sidebar').hidden = true; }],
+  ['collapsed sidebar', app => { app.byId('navigation-sidebar').inert = true; }],
+  ['busy library', app => { app.state.libraryBusy = true; }],
+  ['disconnected library', app => { app.state.connected = false; }],
+]) {
+  test(`sidebar empty trash rejects an unavailable entry: ${name}`, () => {
+    const app = harness();
+    app.state.libraryFilter = 'trash';
+    showTrashPreview(app);
+    change(app);
+    app.click('sidebar-empty-trash');
+    assert.equal(app.byId('library-dialog').open, false);
+    assert.equal(app.calls.length, 0);
+  });
+}
+
+test('both empty-trash actions share availability across connection, busy and trash changes', () => {
+  const app = harness();
+  const check = expected => {
+    app.controller.render();
+    for (const id of ['library-empty-trash', 'sidebar-empty-trash']) assert.equal(app.byId(id).disabled, expected);
+  };
+  check(false);
+  app.state.connected = false; check(true);
+  app.state.connected = true; app.state.libraryBusy = true; check(true);
+  app.state.libraryBusy = false; check(false);
+  app.state.snapshot.meetings.pop(); check(true);
+});
+
+test('sidebar empty-trash cancellation preserves meetings and returns focus to its action', () => {
+  const app = harness();
+  showTrashPreview(app);
+  app.owner.activeElement = app.byId('sidebar-empty-trash');
+  app.click('sidebar-empty-trash');
+  app.byId('library-dialog').listeners.cancel({ preventDefault() {} });
+  assert.equal(app.calls.length, 0);
+  assert.equal(app.state.snapshot.meetings.length, 3);
+  assert.equal(app.byId('sidebar-empty-trash').focused, true);
+});
+
+for (const [name, change, message] of [
+  ['restored target', app => { app.state.snapshot.meetings[2].deletedAt = null; }, /다시 확인/],
+  ['trashed-again target', app => { app.state.snapshot.meetings[2].deletedAt = 300; }, /다시 확인/],
+  ['recording target', app => { app.state.snapshot.session = { state: 'recording', meetingId: 'three' }; }, /녹음을 종료/],
+  ['unreadable snapshot', app => { app.bridge.readSnapshot = async () => { throw new Error('목록을 읽지 못했습니다.'); }; }, /목록을 읽지 못했습니다/],
+]) {
+  test(`sidebar empty trash preserves data after a confirmation failure: ${name}`, async () => {
+    const app = harness();
+    showTrashPreview(app);
+    app.click('sidebar-empty-trash');
+    change(app);
+    await app.submit();
+    assert.equal(app.calls.some(call => call.name === 'purge'), false);
+    assert.equal(app.state.snapshot.meetings.length, 3);
+    assert.equal(app.byId('library-dialog').open, true);
+    assert.match(app.byId('library-dialog-error').textContent, message);
+    assert.equal(app.state.libraryBusy, false);
+  });
+}
+
 test('empty trash is scoped to trash, disables for an empty trash and ignores search and selection', async () => {
   const app = harness();
   assert.equal(app.byId('library-empty-trash').hidden, true);

@@ -273,8 +273,12 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     if (!ids.length) return;
     openDialog({ title: '영구 삭제', content: `<p>${escape(description(ids))}</p>`, confirm: '영구 삭제', destructive: true, detach: true, action: () => bridge.purgeMeetings(ids) });
   }
-  function emptyTrashDialog() {
-    if (state().libraryBusy || !state().connected || state().libraryFilter !== 'trash' || dialog.open) return;
+  function emptyTrashDialog(trigger) {
+    const sidebar = byId('navigation-sidebar');
+    const inTrash = trigger === byId('sidebar-empty-trash')
+      ? sidebar.dataset.sidebarView === 'trash' && !sidebar.hidden && !sidebar.inert && !trigger.hidden && !trigger.closest?.('[hidden],[inert]')
+      : trigger === byId('library-empty-trash') && state().libraryFilter === 'trash';
+    if (state().libraryBusy || !state().connected || !inTrash || dialog.open) return;
     const targets = filterLibraryMeetings(state().snapshot.meetings, 'trash').map(({ id, deletedAt }) => ({ id, deletedAt }));
     if (!targets.length) return;
     const ids = targets.map(meeting => meeting.id);
@@ -395,7 +399,8 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     byId('library-create').hidden = filter === 'trash';
     byId('library-record').hidden = filter === 'trash';
     byId('library-empty-trash').hidden = filter !== 'trash';
-    byId('library-empty-trash').disabled = disabled || !filterLibraryMeetings(snapshot.meetings, 'trash').length;
+    const emptyTrashDisabled = disabled || !filterLibraryMeetings(snapshot.meetings, 'trash').length;
+    for (const id of ['library-empty-trash', 'sidebar-empty-trash']) byId(id).disabled = emptyTrashDisabled;
     byId('library-select-all').disabled = disabled || !visible.length;
     byId('library-selection-clear').disabled = disabled || !count;
     byId('new-folder').disabled = disabled;
@@ -442,7 +447,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
   dialog.addEventListener('click', event => { if (event.target.closest('[data-library-close]')) closeDialog(); });
   bindDialogDismiss(dialog, { dismiss: closeDialog, blocked: () => state().libraryBusy });
   byId('new-folder').addEventListener('click', () => folderDialog());
-  byId('library-empty-trash').addEventListener('click', emptyTrashDialog);
+  for (const id of ['library-empty-trash', 'sidebar-empty-trash']) byId(id).addEventListener('click', () => emptyTrashDialog(byId(id)));
   byId('folder-list').addEventListener('click', event => {
     const filter = event.target.closest('[data-library-filter]');
     const rename = event.target.closest('[data-folder-rename]');
