@@ -1,4 +1,5 @@
 import { mountSidebarViews } from './sidebar-views.js';
+import { snapshotSignatures, compareSnapshotSignatures } from './snapshot-update.js';
 import { createViewHistory } from './view-history.js';
 import { mountConfirmDialog } from '../../../design-system/components/ui/confirm-dialog.jsx';
 import { requestAudioPlayback } from './audio-playback.js';
@@ -69,7 +70,7 @@ function readMicrophonePreference() {
 }
 const microphonePreference = readMicrophonePreference();
 let sidebarViews = null, viewHistory = null;
-const state = { snapshot: { meetings: [], folders: [], session: null }, libraryOpen: false, libraryFilter: 'all', librarySelection: new Set(), libraryBusy: false, librarySearchIds: null, librarySearchHits: [], pendingSearchIntent: null, setupReturnId: null, librarySearchPending: false, librarySearchUnavailable: 0, selectedId: null, devices: [], devicesLoaded: false, deviceId: microphonePreference.id, deviceName: microphonePreference.name, settingsPanel: 'appearance', summaryFeatureError: '', settingsKey: '', settingsError: '', settingsReturnId: 'settings', setupFromSettings: false, autoRecorder: readAutoRecorder(), recorderSettingBusy: false, snapshotKey: '', processingKey: '', processingCancellingId: null, transcriptEditing: null, audioRequest: 0, audioLoading: null, dateSaving: null, dateKey: '', dateError: null, lastError: null, errorIsSave: false, connected: false, busy: false, composing: false, transcriptComposing: false, editLocks: 0, draft: null, saveTimer: null, saveQueue: Promise.resolve(), listKey: '', controlsKey: '', audioKey: '', processing: { status: 'idle', supported: false, modelReady: false }, transcriptDraft: null, transcriptKey: '', transcriptLoadId: 0, transcriptSaveQueue: Promise.resolve(), summary: null, summaryKey: '', summaryLoadId: 0, summaryLoaded: false, transcriptLoaded: false, summaryLoadError: false, transcriptLoadError: false, setupRequested: false };
+const state = { snapshot: { meetings: [], folders: [], session: null }, libraryOpen: false, libraryFilter: 'all', librarySelection: new Set(), libraryBusy: false, librarySearchIds: null, librarySearchHits: [], pendingSearchIntent: null, setupReturnId: null, librarySearchPending: false, librarySearchUnavailable: 0, selectedId: null, devices: [], devicesLoaded: false, deviceId: microphonePreference.id, deviceName: microphonePreference.name, settingsPanel: 'appearance', summaryFeatureError: '', settingsKey: '', settingsError: '', settingsReturnId: 'settings', setupFromSettings: false, autoRecorder: readAutoRecorder(), recorderSettingBusy: false, snapshotSignatures: null, processingKey: '', processingCancellingId: null, transcriptEditing: null, audioRequest: 0, audioLoading: null, dateSaving: null, dateKey: '', dateError: null, lastError: null, errorIsSave: false, connected: false, busy: false, composing: false, transcriptComposing: false, editLocks: 0, draft: null, saveTimer: null, saveQueue: Promise.resolve(), listKey: '', controlsKey: '', audioKey: '', processing: { status: 'idle', supported: false, modelReady: false }, transcriptDraft: null, transcriptKey: '', transcriptLoadId: 0, transcriptSaveQueue: Promise.resolve(), summary: null, summaryKey: '', summaryLoadId: 0, summaryLoaded: false, transcriptLoaded: false, summaryLoadError: false, transcriptLoadError: false, setupRequested: false };
 const speechPickers = [
   mountSpeechModelPicker({ node: byId('setup-speech-picker'), onSelect: selectSpeechEngine }),
   mountSpeechModelPicker({ node: byId('settings-speech-picker'), onSelect: selectSpeechEngine, onPrepare: prepareSpeechModels }),
@@ -438,12 +439,12 @@ async function changeMeetingDate() {
 function acceptSnapshot(snapshot) {
   if (snapshot.revision != null && state.snapshot.revision != null && snapshot.revision < state.snapshot.revision) return;
   const previousMeeting = currentMeeting();
-  const key = JSON.stringify([snapshot.meetings, snapshot.folders || [], snapshot.session]);
-  const changed = !state.connected || state.snapshotKey !== key;
-  const stableSession = session => session ? { ...session, elapsedMs: 0, savedFrames: 0 } : null;
-  const timerOnly = state.connected && JSON.stringify(state.snapshot.meetings) === JSON.stringify(snapshot.meetings) && JSON.stringify(state.snapshot.folders || []) === JSON.stringify(snapshot.folders || []) && JSON.stringify(stableSession(state.snapshot.session)) === JSON.stringify(stableSession(snapshot.session));
+  const signatures = snapshotSignatures(snapshot);
+  const comparison = compareSnapshotSignatures(state.snapshotSignatures, signatures);
+  const changed = !state.connected || comparison.changed;
+  const timerOnly = state.connected && comparison.timerOnly;
   state.snapshot = snapshot;
-  state.snapshotKey = key;
+  state.snapshotSignatures = signatures;
   state.connected = true;
   if (state.selectedId && !snapshot.meetings.some(meeting => meeting.id === state.selectedId && meeting.deletedAt == null)) { state.selectedId = null; state.draft = null; state.transcriptDraft = null; state.summary = null; state.libraryOpen = true; speakers.reset(); clearAudio(); }
   const saved = currentMeeting();

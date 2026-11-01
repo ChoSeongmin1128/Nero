@@ -1,4 +1,5 @@
 import { requestAudioPlayback } from '../src/audio-playback.js';
+import { snapshotSignatures, compareSnapshotSignatures } from '../src/snapshot-update.js';
 import { createIntegrationMonitor } from '../src/integration-notifications.js';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
@@ -134,7 +135,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
   };
   const copied = [], agentDialogCalls = [];
   const templateSettings = { setActive() {}, beforeLeave: async () => true, isConfirming: () => false, hide() {} };
-  const context = vm.createContext({ requestAudioPlayback, createIntegrationMonitor, liveTranscriptRows, meetingResultPreview, renderMeetingMenu, testMountNotificationCenter: mountNotificationCenter,
+  const context = vm.createContext({ snapshotSignatures, compareSnapshotSignatures, requestAudioPlayback, createIntegrationMonitor, liveTranscriptRows, meetingResultPreview, renderMeetingMenu, testMountNotificationCenter: mountNotificationCenter,
     navigator: { clipboard: { writeText: async text => { copied.push(text); } } },
     document, testBridge: bridge, testAgentDialogCalls: agentDialogCalls, testTemplateSettings: templateSettings, localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
     NeroControls: { enhanceAll() {} },
@@ -1020,6 +1021,20 @@ test('capture quality warning stays visible during recording and after completio
   assert.equal(page.element('recording-message').textContent, warning);
   page.app.acceptSnapshot({ revision: 4, meetings: meetings.map(meeting => meeting.id === 'a' ? { ...meeting, status: 'interrupted', warning, error: '장치 연결이 끊어졌습니다.' } : meeting), session: { id: 's', meetingId: 'a', state: 'interrupted', elapsedMs: 1000, warning, error: '장치 연결이 끊어졌습니다.' } });
   assert.equal(page.element('recording-message').textContent, '장치 연결이 끊어졌습니다.');
+});
+
+test('discarded older snapshots cannot replace the content comparison or recording timer', async () => {
+  const page = await openApp();
+  const initial = structuredClone(page.app.state.snapshot);
+  const active = { ...initial, revision: 10, session: { id: 'capture', meetingId: 'a', state: 'recording', elapsedMs: 1000 } };
+  page.app.acceptSnapshot(active);
+  const statusWrites = page.element('meeting-status').htmlWrites;
+  page.app.acceptSnapshot({ ...active, revision: 9, meetings: [], session: null });
+  assert.equal(page.app.state.snapshot.revision, 10);
+  assert.equal(page.app.state.selectedId, 'a');
+  page.app.acceptSnapshot({ ...active, revision: 11, session: { ...active.session, elapsedMs: 2000 } });
+  assert.equal(page.element('recording-time').textContent, '00:02');
+  assert.equal(page.element('meeting-status').htmlWrites, statusWrites);
 });
 
 test('saving notes cannot dismiss an unrelated processing error', async () => {
