@@ -61,6 +61,42 @@ jobs:
         with:
           node-version: '24'
           package-manager-cache: false
+      - name: Prepare Windows MSVC x64 environment
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $locator = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $installation = & $locator -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ($LASTEXITCODE -ne 0 -or -not $installation) { throw 'MSVC build tools are missing.' }
+          $developerCommand = Join-Path $installation 'Common7/Tools/VsDevCmd.bat'
+          if (-not (Test-Path -LiteralPath $developerCommand -PathType Leaf)) { throw 'MSVC developer environment is missing.' }
+          $developerEnvironment = & $env:ComSpec /d /s /c "call `"$developerCommand`" -no_logo -arch=x64 -host_arch=x64 >nul && set"
+          if ($LASTEXITCODE -ne 0) { throw 'Could not prepare the MSVC x64 environment.' }
+          $buildVariables = @('INCLUDE', 'LIB', 'LIBPATH', 'VCINSTALLDIR', 'VSINSTALLDIR', 'VisualStudioVersion',
+            'VCToolsInstallDir', 'VCToolsRedistDir', 'VCToolsVersion', 'WindowsSdkDir', 'WindowsSDKVersion',
+            'WindowsSDKLibVersion', 'UniversalCRTSdkDir', 'UCRTVersion', 'VSCMD_ARG_HOST_ARCH', 'VSCMD_ARG_TGT_ARCH', 'VSCMD_VER')
+          foreach ($entry in $developerEnvironment) {
+            if ($entry -match '^([^=]+)=(.*)$' -and ($Matches[1] -eq 'Path' -or $Matches[1] -in $buildVariables)) {
+              $variableName = $Matches[1]
+              $variableValue = $Matches[2]
+              [Environment]::SetEnvironmentVariable($variableName, $variableValue, 'Process')
+              if ($variableName -ne 'Path') {
+                "$variableName=$variableValue" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+              }
+            }
+          }
+          $buildPaths = @($env:Path -split ';' | Where-Object { $_ })
+          # The runner prepends GITHUB_PATH entries in reverse order.
+          [array]::Reverse($buildPaths)
+          $buildPaths | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $compiler = Get-Command cl.exe -CommandType Application -ErrorAction Stop
+          $expectedCompiler = Join-Path $env:VCToolsInstallDir 'bin\Hostx64\x64\cl.exe'
+          if ($compiler.Source -ne $expectedCompiler) { throw 'The compiler is outside the selected MSVC x64 toolchain.' }
+          $linker = Join-Path (Split-Path -Path $compiler.Source -Parent) 'link.exe'
+          if (-not (Test-Path -LiteralPath $linker -PathType Leaf)) { throw 'The selected MSVC x64 linker is missing.' }
+          # Git Bash prepended its own link.exe despite GITHUB_PATH; bind Cargo to MSVC explicitly.
+          $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = $linker
+          "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$linker" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Prepare native Rust toolchain
         run: |
           rustup toolchain install stable --profile minimal
@@ -125,19 +161,6 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $locator = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
-          $installation = & $locator -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          if ($LASTEXITCODE -ne 0 -or -not $installation) { throw 'MSVC build tools are missing.' }
-          $developerCommand = Join-Path $installation 'Common7/Tools/VsDevCmd.bat'
-          if (-not (Test-Path -LiteralPath $developerCommand -PathType Leaf)) { throw 'MSVC developer environment is missing.' }
-          $developerEnvironment = & $env:ComSpec /d /s /c "call `"$developerCommand`" -no_logo -arch=x64 -host_arch=x64 >nul && set"
-          if ($LASTEXITCODE -ne 0) { throw 'Could not prepare the MSVC x64 environment.' }
-          foreach ($entry in $developerEnvironment) {
-            if ($entry -match '^([^=]+)=(.*)$') {
-              [Environment]::SetEnvironmentVariable($Matches[1], $Matches[2], 'Process')
-            }
-          }
-          Get-Command cl.exe -ErrorAction Stop | Out-Null
           python scripts/native-whisper/prepare.py --prepare-tools
           if ($LASTEXITCODE -ne 0) { throw 'Could not prepare pinned Whisper build tools.' }
           python scripts/native-whisper/prepare.py --target windows-x64

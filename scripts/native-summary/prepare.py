@@ -56,7 +56,9 @@ def windows_crt(explicit):
     for root in roots:
         candidates=[root]+list(root.glob('x64/Microsoft.VC*.CRT'))
         for folder in candidates:
-            files={p.name.lower():p for p in folder.glob('*.dll') if p.name.lower() in CRT_NAMES}
+            folders=[folder] if folder==root else [folder,folder.with_suffix('.OpenMP')]
+            files={p.name.lower():p for directory in folders for p in directory.glob('*.dll')
+                   if p.name.lower() in CRT_NAMES}
             checked=checked_crt(files)
             if checked:return checked
     raise ValueError('App-local Microsoft C++ runtime DLLs are missing; do not ship this bundle')
