@@ -1,12 +1,13 @@
-import { defineConfig } from 'vite';
+import { defineConfig, normalizePath } from 'vite';
 import { fileURLToPath } from 'node:url';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
+const mainDocument = normalizePath(fileURLToPath(new URL('./src/index.html', import.meta.url)));
 export default defineConfig({
   plugins: [{
     name: 'nero-native-window-chrome',
     transformIndexHtml(html, context) {
-      if (context.filename === `${here}src/index.html` && process.env.TAURI_ENV_TARGET_TRIPLE?.endsWith('-apple-darwin')) {
+      if (normalizePath(context.filename) === mainDocument && process.env.TAURI_ENV_TARGET_TRIPLE?.endsWith('-apple-darwin')) {
         return html.replace('<html ', '<html data-window-chrome="macos-overlay" ');
       }
       return html;

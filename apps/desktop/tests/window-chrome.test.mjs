@@ -12,8 +12,11 @@ test('only the native macOS main document reserves the system window controls', 
     for (const target of ['aarch64-apple-darwin', 'x86_64-pc-windows-msvc', '']) {
       process.env.TAURI_ENV_TARGET_TRIPLE = target;
       for (const entry of ['index', 'recorder', 'calendar']) {
-        const result = transform('<html lang="ko"><body></body></html>', { filename: fileURLToPath(new URL(`../src/${entry}.html`, import.meta.url)) });
-        assert.equal(result.includes('data-window-chrome="macos-overlay"'), target.endsWith('-apple-darwin') && entry === 'index');
+        const native = fileURLToPath(new URL(`../src/${entry}.html`, import.meta.url));
+        for (const filename of new Set([native, native.replaceAll('\\', '/')])) {
+          const result = transform('<html lang="ko"><body></body></html>', { filename });
+          assert.equal(result.includes('data-window-chrome="macos-overlay"'), target.endsWith('-apple-darwin') && entry === 'index');
+        }
       }
     }
   } finally {
