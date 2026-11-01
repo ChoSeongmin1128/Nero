@@ -177,6 +177,9 @@ This preserves actual live connection evidence without weakening generation chec
 `npm run tauri -- dev` starts a development app. `npm run dev` alone serves its
 frontend, whose actions require the native bridge; it does not supply fake meetings.
 `prepare:shared` copies canonical design-system files into generated build inputs.
+Only `.generated/public` is exposed to Vite, preserving the `/shared` and `/brand`
+URLs. Native workers, the local agent and release metadata stay outside that
+frontend directory and are bundled through the existing Tauri resource mappings.
 
 ## Current behavior
 

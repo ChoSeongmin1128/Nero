@@ -8,7 +8,7 @@ export default defineConfig({
     dedupe: ['react', 'react-dom'],
   },
   root: `${here}src`,
-  publicDir: `${here}.generated`,
+  publicDir: `${here}.generated/public`,
   clearScreen: false,
   build: {
     outDir: `${here}dist`,
