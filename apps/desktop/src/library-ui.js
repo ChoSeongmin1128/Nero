@@ -353,7 +353,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     if (!selection().size || !visibleIds.has(selectionAnchor)) selectionAnchor = null;
     const filter = state().libraryFilter;
     const disabled = Boolean(state().libraryBusy || !state().connected);
-    const navigation = [{ id: 'all', name: '전체 목록', icon: 'notebook-pen' }, { id: 'unfiled', name: '미분류', icon: 'inbox' }, ...folders.map(folder => ({ ...folder, icon: 'folder' })), { id: 'trash', name: '휴지통', icon: 'trash-2' }];
+    const navigation = [{ id: 'all', name: '전체 목록', icon: 'list' }, { id: 'unfiled', name: '미분류', icon: 'inbox' }, ...folders.map(folder => ({ ...folder, icon: 'folder' })), { id: 'trash', name: '휴지통', icon: 'trash-2' }];
     const key = JSON.stringify([filter, state().libraryOpen, folders, disabled, snapshot.meetings.map(meeting => [meeting.id, meeting.folderId, meeting.deletedAt])]);
     if (key !== folderKey) {
       clearDropTarget();

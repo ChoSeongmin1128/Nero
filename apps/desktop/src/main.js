@@ -169,7 +169,7 @@ function renderLibraryEmpty(query) {
   const filtered = state.libraryFilter !== 'all';
   const title = query ? '검색 결과가 없습니다.' : trash ? '휴지통이 비어 있습니다.' : folders ? '미분류 회의가 없습니다.' : filtered ? '이 폴더에 회의가 없습니다.' : '첫 회의를 시작해 보세요';
   const description = query ? '다른 검색어로 다시 찾아보세요.' : trash ? '삭제한 회의가 여기에 표시됩니다.' : folders ? '폴더를 열거나 새 회의를 만들어 보세요.' : '새 회의를 만들어 메모하거나, 녹음 시작을 눌러 바로 기록하세요.';
-  return `<div class="library-empty"><span class="library-empty-icon" aria-hidden="true">${icon(query ? 'search' : trash ? 'trash-2' : 'notebook-pen')}</span><h2>${escape(title)}</h2><p>${escape(description)}</p></div>`;
+  return `<div class="library-empty"><span class="library-empty-icon" aria-hidden="true">${icon(query ? 'search' : trash ? 'trash-2' : 'list')}</span><h2>${escape(title)}</h2><p>${escape(description)}</p></div>`;
 }
 
 function refreshMeetingSearch() { if (byId('search').value.trim()) meetingSearch.update(byId('search').value, state.libraryFilter === 'trash'); }

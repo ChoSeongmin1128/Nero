@@ -26,6 +26,22 @@ body {
   background: var(--canvas);
 }
 
+
+.application-shell {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.application-shell :where(input, textarea, [contenteditable]:not([contenteditable="false"]), .summary-document, .transcript-content, .transcript-preview, .summary-evidence-entry, .notes-search-preview, .speaker-utterance-text, .notice, .field-error, [role="alert"], pre, code) {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.application-shell :where(button, summary, label, [role="button"], [role="tab"], [role="menuitem"], [role="option"], [role="checkbox"], [role="switch"]) {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
 .nero-logo {
   display: inline-flex;
   flex: none;
