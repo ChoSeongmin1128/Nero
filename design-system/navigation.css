@@ -9,7 +9,7 @@
 .navigation-shell.nav-pinned { grid-template-columns: var(--navigation-width) minmax(0, 1fr); }
 .navigation-shell.nav-pinned > .navigation-sidebar, .navigation-shell.nav-peek > .navigation-sidebar { visibility: visible; pointer-events: auto; transition-delay: 0s; }
 .navigation-shell.nav-pinned > .navigation-sidebar { left: 0; }
-.navigation-shell.nav-peek > .navigation-sidebar { left: var(--navigation-rail-width); box-shadow: 8px 0 24px var(--overlay); }
+.navigation-shell.nav-peek > .navigation-sidebar { left: var(--navigation-rail-width); }
 @media (prefers-reduced-motion: reduce) { .navigation-shell, .navigation-shell > .navigation-sidebar { transition: none; } }
 .navigation-recent-row { position: relative; display: flex; align-items: center; min-width: 0; border-radius: var(--control-radius); }
 .navigation-recent-row:hover, .navigation-recent-row:focus-within { background: var(--hover); }
@@ -29,7 +29,7 @@
 .navigation-recent-row:hover > .meeting-menu > summary, .navigation-recent-row:focus-within > .meeting-menu > summary, .navigation-recent-row > .meeting-menu[open] > summary { opacity: 1; }
 @media (hover: none) { .navigation-recent-row > .meeting-menu > summary { opacity: 1; } }
 .navigation-shell.nav-overlay.nav-pinned { grid-template-columns: 0 minmax(0, 1fr); }
-.navigation-shell.nav-overlay.nav-pinned > .navigation-sidebar { box-shadow: 8px 0 24px var(--overlay); }
+.navigation-shell.nav-peek > .navigation-sidebar, .navigation-shell.nav-overlay.nav-pinned > .navigation-sidebar { box-shadow: 4px 0 12px var(--shadow-soft); }
 .navigation-shell[data-onboarding="true"] { grid-template-columns: minmax(0, 1fr); }
 .navigation-shell[data-onboarding="true"] > .navigation-content { grid-column: 1 / -1; }
 .navigation-shell[data-onboarding="true"] > .navigation-rail,
@@ -55,3 +55,4 @@
 .application-toolbar-actions > .navigation-history { display: flex; align-items: center; gap: 4px; }
 .application-toolbar-actions button { width: 32px; min-width: 32px; height: 32px; min-height: 32px; padding: 7px; }
 .application-toolbar-divider { width: 1px; height: 18px; margin-inline: 4px; background: var(--border); }
+[data-window-chrome="macos-overlay"] .application-toolbar { padding-left: 88px; }
