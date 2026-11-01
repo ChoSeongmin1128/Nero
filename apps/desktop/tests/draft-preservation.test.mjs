@@ -85,7 +85,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     return node;
   };
   const document = {
-    body: element('body'), activeElement: null, getElementById: element,
+    documentElement: element('html'), body: element('body'), activeElement: null, getElementById: element,
     querySelector: element, querySelectorAll: () => [], addEventListener() {},
   };
   document.activeElement = document.body;

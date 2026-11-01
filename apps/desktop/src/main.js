@@ -1,6 +1,9 @@
 import { mountSidebarViews } from './sidebar-views.js';
 import { snapshotSignatures, compareSnapshotSignatures } from './snapshot-update.js';
 import { createViewHistory } from './view-history.js';
+import { mountWindowChrome } from './window-chrome.js';
+import { isTauri } from '@tauri-apps/api/core';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { mountConfirmDialog } from '../../../design-system/components/ui/confirm-dialog.jsx';
 import { requestAudioPlayback } from './audio-playback.js';
 import { mountAppUpdateRecovery } from './app-update-recovery.jsx';
@@ -36,6 +39,10 @@ import { mountSpeechModelPicker } from './speech-model-picker.js';
 import './speech-model-picker.css';
 
 applySystemAppearance();
+if (document.documentElement.dataset.windowChrome === 'macos-overlay' && isTauri()) {
+  const { dispose } = mountWindowChrome({ root: document.documentElement, nativeWindow: getCurrentWindow() });
+  window.addEventListener('pagehide', dispose, { once: true });
+}
 const byId = (id) => document.getElementById(id);
 const summaryTemplatePicker = mountSummaryTemplatePicker({ node: byId('summary-template'), bridge, onAvailabilityChange: () => queueMicrotask(() => render()) });
 void summaryTemplatePicker.reload();

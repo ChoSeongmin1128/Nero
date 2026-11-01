@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "macos-main-window",
-  "description": "Native title bar double click for the main macOS window.",
+  "description": "Native title bar state and double click for the main macOS window.",
   "platforms": ["macOS"],
   "windows": ["main"],
-  "permissions": ["core:window:allow-internal-toggle-maximize"]
+  "permissions": ["core:window:allow-internal-toggle-maximize", "core:window:allow-is-fullscreen"]
 }
