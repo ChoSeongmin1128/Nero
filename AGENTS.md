@@ -143,13 +143,20 @@ behavior. Separate implemented behavior, proposals and unverified platform suppo
 ## Native installation and artifacts
 
 - Nero release versions follow `docs/versioning.md`; keep version mirrors consistent
-  with `node apps/desktop/scripts/version.mjs check`. The first public compatibility baseline is v0.0.1. Preserve data from
-  supported releases through explicit compatible reads or migrations; a 0.x version
-  does not permit silent loss. Published changes advance the product version as
-  defined in docs/versioning.md.
-  Preserve existing personal meeting data through explicit migration or separate archival
-  when a development change affects it. Do not initialize or discard it implicitly.
-  Preserve historical commits, tags and release metadata rather than rewriting labels.
+  with `node apps/desktop/scripts/version.mjs check`. Product numbering restarts at `0.0.1`/build50. The first external-user
+  compatibility baseline must be recorded when users actually receive a build,
+  using that product version, build number and source commit.
+  Existing private meeting data, audio, models, integrations, identifiers and keys
+  remain preserved before and after that baseline. Do not initialize or discard
+  them implicitly; use an explicit migration or separate archival when needed.
+- A one-time pre-sharing release-record reset is authorized: reset GitHub release
+  entries, their release tags and public release documentation for the new
+  `0.0.1`/build50 baseline. Preserve Git commits and unique private build/signing
+  evidence. This exception does not authorize another reset or rewriting releases
+  shared with external users. Normal version, updater and NSIS downgrade guards
+  remain active; existing build49 installations need an explicit manual transition.
+- Product and integration versions are independent. The next integration generation
+  is `0.3.0-nero.35`; do not lower a host package to match product `0.0.1`.
   Undistributed development binaries follow the bounded retention rules below.
 - Published release tags, assets and public release notes identify distributed source.
   A dirty build must not be attributed to its HEAD alone. Distribution bundles require

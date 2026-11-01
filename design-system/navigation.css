@@ -49,3 +49,9 @@
 .navigation-resize:focus-visible { outline: none; }
 .navigation-shell.nav-resizing, .navigation-shell.nav-resizing > .navigation-sidebar { transition: none; }
 .navigation-shell.nav-resizing, .navigation-shell.nav-resizing * { cursor: col-resize; user-select: none; }
+.application-shell { display: grid; grid-template-rows: 44px minmax(0, 1fr); }
+.application-toolbar { display: flex; align-items: center; min-width: 0; padding: 6px 12px; background: var(--surface-secondary); border-bottom: 1px solid var(--border); }
+.application-toolbar-actions { display: flex; align-items: center; gap: 4px; }
+.application-toolbar-actions > .navigation-history { display: flex; align-items: center; gap: 4px; }
+.application-toolbar-actions button { width: 32px; min-width: 32px; height: 32px; min-height: 32px; padding: 7px; }
+.application-toolbar-divider { width: 1px; height: 18px; margin-inline: 4px; background: var(--border); }

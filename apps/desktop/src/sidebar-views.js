@@ -3,6 +3,7 @@ export function mountSidebarViews({ aside, navigation, notifications, trigger, b
   const find = id => aside.querySelector(`#${id}`);
   const heading = find('sidebar-preview-heading'), title = find('sidebar-preview-title'), openView = find('sidebar-preview-open');
   const library = find('sidebar-library-navigation'), meetings = find('sidebar-meeting-list');
+  const emptyTrash = find('sidebar-empty-trash');
   const recentPreview = find('sidebar-recent-preview'), recentSection = find('recent-section'), recentList = find('recent-meetings');
   const compact = aside.parentElement.querySelector('[data-navigation-compact]');
   const labels = { all: '전체 목록', folders: '폴더', trash: '휴지통', recent: '최근 회의' };
@@ -23,6 +24,7 @@ export function mountSidebarViews({ aside, navigation, notifications, trigger, b
     }
     if (heading) heading.hidden = !['all', 'trash', 'recent'].includes(view);
     if (title) title.textContent = labels[view] || '';
+    if (emptyTrash) emptyTrash.hidden = view !== 'trash';
     if (openView) {
       openView.hidden = view === 'recent';
       openView.dataset.sidebarFilter = view === 'trash' ? 'trash' : 'all';

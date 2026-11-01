@@ -1,6 +1,153 @@
 !ifndef NERO_SHORTCUT_ICONS_NSH
 !define NERO_SHORTCUT_ICONS_NSH
 !include "Win\COM.nsh"
+!include "${__FILEDIR__}\shortcut-icon-resource.nsh"
+
+; Validate the actual installed bytes before changing any link or retiring a file.
+; CryptHashCertificate2 hashes arbitrary data; SHA-256 is available on Windows 11.
+; Returns the NSIS error flag, preserving registers and never executing a helper.
+!macro NeroValidateShortcutIcon
+  Push $0
+  Push $1
+  Push $2
+  Push $3
+  Push $4
+  Push $5
+  Push $6
+  StrCpy $6 1
+  System::Call 'kernel32::CreateFileW(w "$INSTDIR\${NERO_SHORTCUT_ICON_FILE}", i0x80000000, i1, p0, i3, i0, p0) p.r0'
+  ${If} $0 P<> -1
+    System::Call 'kernel32::GetFileSize(p r0, p0) i.r1'
+    ${If} $1 == ${NERO_SHORTCUT_ICON_SIZE}
+      System::Alloc $1
+      Pop $2
+      ${If} $2 P<> 0
+        System::Call 'kernel32::ReadFile(p r0, p r2, i r1, *i.r3, p0) i.r4'
+        ${If} $4 <> 0
+        ${AndIf} $3 == ${NERO_SHORTCUT_ICON_SIZE}
+          System::Alloc 32
+          Pop $3
+          ${If} $3 P<> 0
+            System::Call 'crypt32::CryptHashCertificate2(w "SHA256", i0, p0, p r2, i r1, p r3, *i 32) i.r4'
+            ${If} $4 <> 0
+              StrCpy $4 ""
+              StrCpy $5 0
+              ${Do}
+                IntOp $1 $3 + $5
+                System::Call '*$1(&i1 .r1)'
+                IntFmt $1 "%02x" $1
+                StrCpy $4 "$4$1"
+                IntOp $5 $5 + 1
+              ${LoopUntil} $5 == 32
+              ${If} $4 == "${NERO_SHORTCUT_ICON_SHA256}"
+                StrCpy $6 0
+              ${EndIf}
+            ${EndIf}
+            System::Free $3
+          ${EndIf}
+        ${EndIf}
+        System::Free $2
+      ${EndIf}
+    ${EndIf}
+    System::Call 'kernel32::CloseHandle(p r0)'
+  ${EndIf}
+  ClearErrors
+  ${If} $6 <> 0
+    SetErrors
+  ${EndIf}
+  Pop $6
+  Pop $5
+  Pop $4
+  Pop $3
+  Pop $2
+  Pop $1
+  Pop $0
+!macroend
+
+; Package a stable, content-addressed icon independently of Explorer's EXE cache.
+!macro NeroInstallShortcutIcon
+  Push $0
+  Push $1
+  StrCpy $0 $OUTDIR
+  StrCpy $1 0
+  SetOutPath "$INSTDIR"
+  ClearErrors
+  File "/oname=${NERO_SHORTCUT_ICON_FILE}" "${NERO_SHORTCUT_ICON_SOURCE}"
+  ${If} ${Errors}
+    StrCpy $1 1
+  ${EndIf}
+  SetOutPath "$0"
+  !insertmacro NeroValidateShortcutIcon
+  ${If} $1 <> 0
+    SetErrors
+  ${EndIf}
+  Pop $1
+  Pop $0
+!macroend
+
+; Only retire the previous resource named by our versioned manifest.
+; Never accept paths, arbitrary filenames, wildcards or non-hex components.
+; A failed extraction/refresh keeps both the old manifest and its resource so an
+; unchanged link can still resolve it. A later successful update can retry.
+!macro NeroRecordShortcutIcon
+  ${IfNot} ${Errors}
+    !insertmacro NeroValidateShortcutIcon
+    ${IfNot} ${Errors}
+      Push $0
+      Push $1
+      Push $2
+      Push $3
+      ReadINIStr $0 "$INSTDIR\nero-shortcut-icon.ini" "ShortcutIcon" "formatVersion"
+      ${If} $0 == "1"
+        ReadINIStr $0 "$INSTDIR\nero-shortcut-icon.ini" "ShortcutIcon" "file"
+        ${If} $0 != "${NERO_SHORTCUT_ICON_FILE}"
+          StrLen $1 $0
+          StrCpy $2 $0 10
+          StrCpy $3 $0 4 -4
+          ${If} $1 == 78
+          ${AndIf} $2 == "nero-icon-"
+          ${AndIf} $3 == ".ico"
+            ReadINIStr $2 "$INSTDIR\nero-shortcut-icon.ini" "ShortcutIcon" "sha256"
+            StrCpy $3 $0 64 10
+            ${If} $2 == $3
+              System::Call 'shlwapi::StrSpnW(w r2, w "0123456789abcdef") i.r1'
+              ${If} $1 == 64
+                Delete "$INSTDIR\$0"
+              ${EndIf}
+            ${EndIf}
+          ${EndIf}
+        ${EndIf}
+      ${EndIf}
+      WriteINIStr "$INSTDIR\nero-shortcut-icon.ini" "ShortcutIcon" "formatVersion" "1"
+      WriteINIStr "$INSTDIR\nero-shortcut-icon.ini" "ShortcutIcon" "file" "${NERO_SHORTCUT_ICON_FILE}"
+      WriteINIStr "$INSTDIR\nero-shortcut-icon.ini" "ShortcutIcon" "sha256" "${NERO_SHORTCUT_ICON_SHA256}"
+      Pop $3
+      Pop $2
+      Pop $1
+      Pop $0
+    ${EndIf}
+  ${EndIf}
+!macroend
+
+!macro NeroRemoveShortcutIcon
+  Push $0
+  Push $1
+  Push $2
+  Delete "$INSTDIR\${NERO_SHORTCUT_ICON_FILE}"
+  ReadINIStr $0 "$INSTDIR\nero-shortcut-icon.ini" "ShortcutIcon" "formatVersion"
+  ReadINIStr $1 "$INSTDIR\nero-shortcut-icon.ini" "ShortcutIcon" "file"
+  ReadINIStr $2 "$INSTDIR\nero-shortcut-icon.ini" "ShortcutIcon" "sha256"
+  ${If} $0 == "1"
+  ${AndIf} $1 == "${NERO_SHORTCUT_ICON_FILE}"
+  ${AndIf} $2 == "${NERO_SHORTCUT_ICON_SHA256}"
+    Delete "$INSTDIR\nero-shortcut-icon.ini"
+  ${EndIf}
+  ; Upstream attempts this before POSTUNINSTALL. Only remove an empty directory.
+  RMDir "$INSTDIR"
+  Pop $2
+  Pop $1
+  Pop $0
+!macroend
 
 ; Edit the existing link in place: keep arguments, working directory, AppUserModelId
 ; and other shell properties. Never create a missing link or modify a foreign target.
@@ -10,39 +157,74 @@
   Push $2
   Push $3
   Push $4
+  Push $5
+  Push $6
+  ; Accumulate failures across all candidates, including missing later links.
+  StrCpy $5 0
+  ${If} ${Errors}
+    StrCpy $5 1
+  ${EndIf}
+  StrCpy $6 0
   ${If} ${FileExists} "${shortcut}"
-    !insertmacro ComHlpr_CreateInProcInstance ${CLSID_ShellLink} ${IID_IShellLink} r0 ""
-    ${If} $0 P<> 0
-      ${IUnknown::QueryInterface} $0 '("${IID_IPersistFile}",.r1)'
-      ${If} $1 P<> 0
-        ${IPersistFile::Load} $1 '("${shortcut}", ${STGM_READWRITE}).r3'
-        ${If} $3 >= 0
-          ; GetPath counts characters; System::Alloc counts bytes (Unicode NSIS).
-          IntOp $4 ${NSIS_MAX_STRLEN} * ${NSIS_CHAR_SIZE}
-          System::Alloc $4
-          Pop $2
-          ${If} $2 P<> 0
-            ${IShellLink::GetPath} $0 '(p r2, i${NSIS_MAX_STRLEN}, p0, i4).r3'
-            System::Call '*$2(&t${NSIS_MAX_STRLEN} .r4)'
-            System::Free $2
-            ${If} $3 >= 0
-            ${AndIf} $4 == "$INSTDIR\${NERO_APP_EXECUTABLE}"
-              ${IShellLink::SetIconLocation} $0 '("$INSTDIR\${NERO_APP_EXECUTABLE}", 0).r3'
+    StrCpy $6 1
+    !insertmacro NeroValidateShortcutIcon
+    ${IfNot} ${Errors}
+      !insertmacro ComHlpr_CreateInProcInstance ${CLSID_ShellLink} ${IID_IShellLink} r0 ""
+      ${If} $0 P<> 0
+        ${IUnknown::QueryInterface} $0 '("${IID_IPersistFile}",.r1)'
+        ${If} $1 P<> 0
+          ${IPersistFile::Load} $1 '("${shortcut}", ${STGM_READWRITE}).r3'
+          ${If} $3 >= 0
+            ; GetPath counts characters; System::Alloc counts bytes (Unicode NSIS).
+            IntOp $4 ${NSIS_MAX_STRLEN} * ${NSIS_CHAR_SIZE}
+            System::Alloc $4
+            Pop $2
+            ${If} $2 P<> 0
+              ${IShellLink::GetPath} $0 '(p r2, i${NSIS_MAX_STRLEN}, p0, i4).r3'
+              System::Call '*$2(&t${NSIS_MAX_STRLEN} .r4)'
               ${If} $3 >= 0
-                ${IPersistFile::Save} $1 '("${shortcut}", 1).r3'
-                ${If} $3 >= 0
-                  ; Refresh this item only; do not purge the system icon cache.
-                  System::Call 'shell32::SHChangeNotify(i0x2000, i0x1005, w "${shortcut}", p0)'
+                ${If} $4 != "$INSTDIR\${NERO_APP_EXECUTABLE}"
+                  ; Successfully classified a foreign link; leave it unchanged.
+                  StrCpy $6 0
+                ${Else}
+                  ${IShellLink::SetIconLocation} $0 '("$INSTDIR\${NERO_SHORTCUT_ICON_FILE}", 0).r3'
+                  ${If} $3 >= 0
+                    ${IPersistFile::Save} $1 '("${shortcut}", 1).r3'
+                    ${If} $3 >= 0
+                      ; Reload the saved file and verify its actual icon reference.
+                      ${IPersistFile::Load} $1 '("${shortcut}", ${STGM_READ}).r3'
+                      ${If} $3 >= 0
+                        ${IShellLink::GetIconLocation} $0 '(p r2, i${NSIS_MAX_STRLEN}, *i.r4).r3'
+                        ${If} $3 >= 0
+                        ${AndIf} $4 == 0
+                          System::Call '*$2(&t${NSIS_MAX_STRLEN} .r4)'
+                          ${If} $4 == "$INSTDIR\${NERO_SHORTCUT_ICON_FILE}"
+                            StrCpy $6 0
+                            ; Refresh this item only; do not purge the system cache.
+                            System::Call 'shell32::SHChangeNotify(i0x2000, i0x1005, w "${shortcut}", p0)'
+                          ${EndIf}
+                        ${EndIf}
+                      ${EndIf}
+                    ${EndIf}
+                  ${EndIf}
                 ${EndIf}
               ${EndIf}
+              System::Free $2
             ${EndIf}
           ${EndIf}
+          ${IUnknown::Release} $1 ""
         ${EndIf}
-        ${IUnknown::Release} $1 ""
+        ${IUnknown::Release} $0 ""
       ${EndIf}
-      ${IUnknown::Release} $0 ""
     ${EndIf}
   ${EndIf}
+  ClearErrors
+  ${If} $5 <> 0
+  ${OrIf} $6 <> 0
+    SetErrors
+  ${EndIf}
+  Pop $6
+  Pop $5
   Pop $4
   Pop $3
   Pop $2
@@ -94,6 +276,14 @@
   !error "Compose Nero's shortcut refresh with the existing post-install hook."
 !endif
 !macro NSIS_HOOK_POSTINSTALL
+  !insertmacro NeroInstallShortcutIcon
   !insertmacro NeroRefreshInstalledShortcutIcons "$DESKTOP" "$SMPROGRAMS"
+  !insertmacro NeroRecordShortcutIcon
+!macroend
+!ifmacrodef NSIS_HOOK_POSTUNINSTALL
+  !error "Compose Nero's icon cleanup with the existing post-uninstall hook."
+!endif
+!macro NSIS_HOOK_POSTUNINSTALL
+  !insertmacro NeroRemoveShortcutIcon
 !macroend
 !endif

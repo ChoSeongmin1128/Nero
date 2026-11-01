@@ -66,6 +66,7 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
     width.update(open);
     width.refresh();
     aside.setAttribute('aria-label', '회의 탐색');
+    trigger.disabled = unavailable();
     trigger.setAttribute('aria-expanded', String(open));
     trigger.setAttribute('aria-label', pinned ? '사이드바 접기' : temporary ? '사이드바 펼쳐두기' : '사이드바 열기');
     trigger.title = trigger.getAttribute('aria-label');
@@ -93,17 +94,20 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
     const focused = document.activeElement;
     return aside.contains(focused) && focused.matches('input,textarea,select,[contenteditable]:not([contenteditable="false"])');
   }
+  function availablePreviewTarget(node) {
+    if (!node || node.disabled || node.closest('[hidden],[inert],[aria-hidden="true"],details:not([open])')) return false;
+    for (let parent = node; parent && aside.contains(parent); parent = parent.parentElement) {
+      const style = document.defaultView.getComputedStyle(parent);
+      if (style.display === 'none' || style.visibility === 'hidden') return false;
+    }
+    return true;
+  }
   function firstPreviewTarget() {
-    const available = node => {
-      if (!node || node.disabled || node.closest('[hidden],[inert],[aria-hidden="true"],details:not([open])')) return false;
-      for (let parent = node; parent && aside.contains(parent); parent = parent.parentElement) {
-        const style = document.defaultView.getComputedStyle(parent);
-        if (style.display === 'none' || style.visibility === 'hidden') return false;
-      }
-      return true;
-    };
-    return [...aside.querySelectorAll('[data-recent-meeting],[data-library-filter]')].find(available)
-      || [...aside.querySelectorAll('input[type="search"],#search')].find(available);
+    return [...aside.querySelectorAll('[data-recent-meeting],[data-library-filter]')].find(availablePreviewTarget)
+      || [...aside.querySelectorAll('input[type="search"],#search')].find(availablePreviewTarget);
+  }
+  function firstPreviewBoundary() {
+    return [...aside.querySelectorAll('[data-navigation-preview-action]')].find(availablePreviewTarget) || firstPreviewTarget();
   }
   function hide() {
     clearTimeout(hoverTimer); clearTimeout(timer);
@@ -148,7 +152,7 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
   aside.addEventListener('focusout', hide);
   aside.addEventListener('keydown', event => {
     if (pinned || !temporary || !previewAnchor || unavailable() || event.defaultPrevented || event.isComposing || event.keyCode === 229 || event.altKey || event.metaKey || event.ctrlKey || openPopups().length) return;
-    const previous = event.key === 'Tab' && event.shiftKey && document.activeElement === firstPreviewTarget();
+    const previous = event.key === 'Tab' && event.shiftKey && document.activeElement === firstPreviewBoundary();
     const back = event.key === 'ArrowLeft' && !event.shiftKey && !editingNavigation();
     if (!previous && !back) return;
     event.preventDefault();
