@@ -309,6 +309,7 @@ test('folder navigation flushes edits and clears the previous selection', async 
 
 test('detail selection moves from the preserved navigation scope to the open recent meeting', () => {
   const app = harness();
+  app.state.snapshot.meetings[0].createdAt = new Date(2026, 0, 1, 9, 0).getTime();
   app.state.libraryFilter = 'all';
   app.controller.render();
   const navigation = app.byId('folder-list').innerHTML;
