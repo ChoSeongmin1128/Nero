@@ -115,13 +115,7 @@ jobs:
           else
             python3 scripts/native-summary/prepare.py --target macos-arm64
           fi
-      - name: Bundle pinned Windows speech runtime
-        # Version startup checks do not load model weights or qualify inference.
-        if: runner.os == 'Windows'
-        run: |
-          python scripts/native-diarization/prepare.py --target windows-x64
-          python scripts/native-diarization/prepare.py --verify-staged apps/desktop/.generated/native/diarization --target windows-x64 --execute-runtime
-      - name: Bundle pinned Windows Whisper runtime
+      - name: Prepare Windows MSVC x64 environment
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -132,12 +126,34 @@ jobs:
           if (-not (Test-Path -LiteralPath $developerCommand -PathType Leaf)) { throw 'MSVC developer environment is missing.' }
           $developerEnvironment = & $env:ComSpec /d /s /c "call `"$developerCommand`" -no_logo -arch=x64 -host_arch=x64 >nul && set"
           if ($LASTEXITCODE -ne 0) { throw 'Could not prepare the MSVC x64 environment.' }
+          $buildVariables = @('INCLUDE', 'LIB', 'LIBPATH', 'VCINSTALLDIR', 'VSINSTALLDIR', 'VisualStudioVersion',
+            'VCToolsInstallDir', 'VCToolsRedistDir', 'VCToolsVersion', 'WindowsSdkDir', 'WindowsSDKVersion',
+            'WindowsSDKLibVersion', 'UniversalCRTSdkDir', 'UCRTVersion', 'VSCMD_ARG_HOST_ARCH', 'VSCMD_ARG_TGT_ARCH', 'VSCMD_VER')
           foreach ($entry in $developerEnvironment) {
-            if ($entry -match '^([^=]+)=(.*)$') {
-              [Environment]::SetEnvironmentVariable($Matches[1], $Matches[2], 'Process')
+            if ($entry -match '^([^=]+)=(.*)$' -and ($Matches[1] -eq 'Path' -or $Matches[1] -in $buildVariables)) {
+              $variableName = $Matches[1]
+              $variableValue = $Matches[2]
+              [Environment]::SetEnvironmentVariable($variableName, $variableValue, 'Process')
+              if ($variableName -ne 'Path') {
+                "$variableName=$variableValue" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+              }
             }
           }
+          $buildPaths = @($env:Path -split ';' | Where-Object { $_ })
+          # The runner prepends GITHUB_PATH entries in reverse order.
+          [array]::Reverse($buildPaths)
+          $buildPaths | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           Get-Command cl.exe -ErrorAction Stop | Out-Null
+      - name: Bundle pinned Windows speech runtime
+        # Version startup checks do not load model weights or qualify inference.
+        if: runner.os == 'Windows'
+        run: |
+          python scripts/native-diarization/prepare.py --target windows-x64
+          python scripts/native-diarization/prepare.py --verify-staged apps/desktop/.generated/native/diarization --target windows-x64 --execute-runtime
+      - name: Bundle pinned Windows Whisper runtime
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
           python scripts/native-whisper/prepare.py --prepare-tools
           if ($LASTEXITCODE -ne 0) { throw 'Could not prepare pinned Whisper build tools.' }
           python scripts/native-whisper/prepare.py --target windows-x64
