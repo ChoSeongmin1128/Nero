@@ -185,7 +185,7 @@ test('the real application HTML boots and opens all settings tabs without stale 
   assert.equal(typeof subscriptions.subscribeAppUpdate, 'function');
   subscriptions.subscribeAppUpdate({ phase: 'ready', currentVersion: '0.0.1', currentBuild: '40', availableBuild: '41', message: '업데이트 설치 준비 완료', downloadReady: true });
   await wait(() => !window.document.getElementById('sidebar-app-update').hidden);
-  assert.equal(window.document.getElementById('sidebar-app-update').querySelector('[data-app-update-label]').textContent, '업데이트');
+  assert.equal(window.document.getElementById('sidebar-app-update').querySelector('[data-app-update-label]').textContent, '다시 시작해 업데이트');
   assert.doesNotMatch(window.document.getElementById('notification-center').textContent, /업데이트 설치 준비 완료/);
   const recording = { revision: 2, folders: [], meetings: [{ id: 'one', title: '회의', createdAt: 1, notes: '', status: 'recording' }], session: { id: 'capture', meetingId: 'one', state: 'paused', elapsedMs: 1000 } };
   subscriptions.subscribeSnapshots(recording);

@@ -140,6 +140,10 @@ remain available through the sidebar without creating a completion notification.
 
 The shared settings row shows the installed version and manual-check action.
 The sidebar action appears for download, ready, waiting or recovery states.
+A user-started check keeps the action visible and disabled through checking and
+download preparation. Background checks stay quiet until there is an actionable
+update. Once downloaded, the action explicitly says to restart and update;
+download completion never installs automatically.
 Progress uses the action label and download bar; a blocked installation or error
 uses one status line. A successful pending-install
 receipt does not become a recovery warning or notification. Incomplete installs
