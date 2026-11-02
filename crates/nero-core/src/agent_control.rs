@@ -189,6 +189,47 @@ pub const METHODS: [&str; 12] = [
 
 pub const JOB_METHODS: [&str; 2] = ["jobs_list", "job_cancel"];
 
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum AppUpdateAction {
+    Status,
+    Check,
+    Download,
+    Install,
+}
+
+impl AppUpdateAction {
+    pub fn parse(params: Value) -> std::result::Result<Self, ControlError> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Params {
+            action: AppUpdateAction,
+        }
+        serde_json::from_value::<Params>(params)
+            .map(|params| params.action)
+            .map_err(|_| ControlError::invalid())
+    }
+}
+
+pub struct ControlReply {
+    result: Value,
+    after_response: Option<Box<dyn FnOnce() + Send>>,
+}
+impl ControlReply {
+    pub fn new(result: Value) -> Self {
+        Self {
+            result,
+            after_response: None,
+        }
+    }
+    pub fn after_response(result: Value, action: impl FnOnce() + Send + 'static) -> Self {
+        Self {
+            result,
+            after_response: Some(Box::new(action)),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "method", content = "params", deny_unknown_fields)]
 pub enum JobRequest {
@@ -251,6 +292,7 @@ pub struct AppMetadata {
 
 enum ControlRequest {
     Metadata,
+    AppUpdate(AppUpdateAction),
     Mutation(Mutation),
     Job(JobRequest),
 }
@@ -262,6 +304,8 @@ impl ControlRequest {
             } else {
                 Err(ControlError::invalid())
             }
+        } else if method == "app_update" {
+            AppUpdateAction::parse(params).map(Self::AppUpdate)
         } else if JOB_METHODS.contains(&method) {
             JobRequest::parse(method, params).map(Self::Job)
         } else {
@@ -769,6 +813,22 @@ pub fn request(
                 "edit_conflict",
                 "다른 변경이 저장되었습니다. 최신 정보를 읽고 다시 시도해 주세요.",
             ),
+            "invalid_input" if method == "app_update" => (
+                "app_update_unsupported",
+                "실행 중인 Nero는 에이전트 업데이트를 지원하지 않습니다. 앱의 업데이트 화면을 사용해 주세요.",
+            ),
+            "app_update_unsupported" => (
+                "app_update_unsupported",
+                "실행 중인 Nero는 에이전트 업데이트를 지원하지 않습니다. 앱의 업데이트 화면을 사용해 주세요.",
+            ),
+            "app_update_check_failed" => (
+                "app_update_check_failed",
+                "공개 업데이트를 확인하지 못했습니다. 네트워크 연결과 Nero의 업데이트 화면을 확인해 주세요.",
+            ),
+            "app_update_failed" => (
+                "app_update_failed",
+                "업데이트 요청을 완료하지 못했습니다. Nero의 업데이트 상태를 확인해 주세요.",
+            ),
             "invalid_input" => (
                 "invalid_input",
                 "수정 요청의 값이나 대상이 올바르지 않습니다.",
@@ -854,6 +914,24 @@ impl Server {
         jobs: impl Fn(JobRequest) -> std::result::Result<Value, ControlError> + Send + 'static,
         metadata: impl Fn() -> std::result::Result<AppMetadata, ControlError> + Send + 'static,
     ) -> std::result::Result<Self, ControlError> {
+        Self::start_with_updates(root, core, handler, jobs, metadata, |_| {
+            Err(ControlError::new(
+                "app_update_unsupported",
+                "이 앱은 에이전트 업데이트를 지원하지 않습니다.",
+            ))
+        })
+    }
+
+    pub fn start_with_updates(
+        root: &Path,
+        core: CoreHandle,
+        handler: impl Fn(Mutation) -> std::result::Result<Value, ControlError> + Send + 'static,
+        jobs: impl Fn(JobRequest) -> std::result::Result<Value, ControlError> + Send + 'static,
+        metadata: impl Fn() -> std::result::Result<AppMetadata, ControlError> + Send + 'static,
+        updates: impl Fn(AppUpdateAction) -> std::result::Result<ControlReply, ControlError>
+            + Send
+            + 'static,
+    ) -> std::result::Result<Self, ControlError> {
         let path = descriptor_path(root)?;
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
             .map_err(|_| ControlError::new("app_not_ready", "Nero 수정 연결을 열지 못했습니다."))?;
@@ -922,18 +1000,29 @@ impl Server {
                                     ControlRequest::parse(&value.method, value.params)
                                 })
                                 .and_then(|request| match request {
-                                    ControlRequest::Metadata => metadata().and_then(|value| {
-                                        serde_json::to_value(value)
-                                            .map_err(|_| ControlError::invalid())
-                                    }),
-                                    ControlRequest::Mutation(request) => handler(request),
-                                    ControlRequest::Job(request) => jobs(request),
+                                    ControlRequest::Metadata => metadata()
+                                        .and_then(|value| {
+                                            serde_json::to_value(value)
+                                                .map_err(|_| ControlError::invalid())
+                                        })
+                                        .map(ControlReply::new),
+                                    ControlRequest::AppUpdate(action) => updates(action),
+                                    ControlRequest::Mutation(request) => {
+                                        handler(request).map(ControlReply::new)
+                                    }
+                                    ControlRequest::Job(request) => {
+                                        jobs(request).map(ControlReply::new)
+                                    }
                                 });
-                            let response = match result {
-                                Ok(value) => json!({"result":value}),
-                                Err(error) => json!({"error":error}),
+                            let (response, after_response) = match result {
+                                Ok(reply) => (json!({"result":reply.result}), reply.after_response),
+                                Err(error) => (json!({"error":error}), None),
                             };
                             let _ = write_frame(&mut stream, &response);
+                            // The app owns an accepted update even if its client disconnects.
+                            if let Some(action) = after_response {
+                                action();
+                            }
                         }
                         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                             thread::sleep(Duration::from_millis(20))
@@ -990,6 +1079,104 @@ mod tests {
             .as_str()
             .unwrap()
             .into()
+    }
+
+    #[test]
+    fn app_updates_reject_untrusted_inputs_and_report_unsupported_apps() {
+        for params in [
+            json!({}),
+            json!({"action":"purge"}),
+            json!({"action":"install","url":"https://untrusted.test"}),
+        ] {
+            assert!(AppUpdateAction::parse(params).is_err());
+        }
+        let (directory, core, _) = fixture();
+        let _server = Server::start_with_updates(
+            directory.path(),
+            core,
+            |_| Ok(json!({})),
+            |_| Ok(json!({})),
+            || Err(ControlError::unavailable()),
+            |_| Err(ControlError::invalid()),
+        )
+        .unwrap();
+        assert_eq!(
+            request(directory.path(), "app_update", json!({"action":"status"}))
+                .unwrap_err()
+                .code,
+            "app_update_unsupported"
+        );
+    }
+
+    #[test]
+    fn accepted_update_response_is_flushed_before_its_owned_work_runs() {
+        let (directory, core, _) = fixture();
+        let (acknowledged, acknowledgement) = std::sync::mpsc::channel();
+        let acknowledgement = std::sync::Mutex::new(Some(acknowledgement));
+        let (completed, completion) = std::sync::mpsc::channel();
+        let _server = Server::start_with_updates(
+            directory.path(),
+            core,
+            |_| Ok(json!({})),
+            |_| Ok(json!({})),
+            || Err(ControlError::unavailable()),
+            move |action| {
+                assert_eq!(action, AppUpdateAction::Install);
+                let acknowledgement = acknowledgement.lock().unwrap().take().unwrap();
+                let completed = completed.clone();
+                Ok(ControlReply::after_response(
+                    json!({"accepted":true,"restarting":true}),
+                    move || {
+                        completed
+                            .send(acknowledgement.recv_timeout(Duration::from_secs(2)).is_ok())
+                            .unwrap();
+                    },
+                ))
+            },
+        )
+        .unwrap();
+        let result = request(directory.path(), "app_update", json!({"action":"install"})).unwrap();
+        assert_eq!(result, json!({"accepted":true,"restarting":true}));
+        acknowledged.send(()).unwrap();
+        assert!(completion.recv_timeout(Duration::from_secs(3)).unwrap());
+    }
+
+    #[test]
+    fn accepted_update_work_survives_a_disconnected_client() {
+        let (directory, core, _) = fixture();
+        let (completed, completion) = std::sync::mpsc::channel();
+        let _server = Server::start_with_updates(
+            directory.path(),
+            core,
+            |_| Ok(json!({})),
+            |_| Ok(json!({})),
+            || Err(ControlError::unavailable()),
+            move |_| {
+                let completed = completed.clone();
+                Ok(ControlReply::after_response(
+                    json!({"accepted":true}),
+                    move || {
+                        completed.send(()).unwrap();
+                    },
+                ))
+            },
+        )
+        .unwrap();
+        let descriptor = read_descriptor(directory.path()).unwrap();
+        let mut stream = TcpStream::connect(descriptor.address).unwrap();
+        write_frame(
+            &mut stream,
+            &Envelope {
+                protocol: PROTOCOL,
+                generation: descriptor.generation,
+                secret: descriptor.secret,
+                method: "app_update".into(),
+                params: json!({"action":"install"}),
+            },
+        )
+        .unwrap();
+        drop(stream);
+        completion.recv_timeout(Duration::from_secs(3)).unwrap();
     }
 
     #[test]

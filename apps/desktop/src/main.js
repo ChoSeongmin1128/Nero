@@ -1047,11 +1047,12 @@ async function prepareAppLeave(action) {
   return finishEditing(action);
 }
 
-async function onAgentWriteRequest({ requestId } = {}) {
+async function onAgentWriteRequest({ requestId, kind } = {}) {
   if (typeof requestId !== 'string' || !/^[a-f0-9-]{36}$/.test(requestId)) return;
   let ready = false;
   try {
-    await finishEditing(async () => {
+    const prepare = kind === 'appUpdate' ? prepareAppLeave : finishEditing;
+    const completed = await prepare(async () => {
       ready = true;
       await bridge.agentWriteReady(requestId);
       acceptSnapshot(await bridge.readSnapshot());
@@ -1059,6 +1060,9 @@ async function onAgentWriteRequest({ requestId } = {}) {
       if (currentMeeting()) await loadSummary(state.selectedId);
       refreshMeetingSearch();
     });
+    if (completed === false && !ready) {
+      await bridge.agentWriteReady(requestId, '현재 편집 내용을 저장하지 않았습니다.').catch(() => {});
+    }
   } catch (error) {
     if (!ready) {
       await bridge.agentWriteReady(requestId, '현재 편집 내용을 저장하지 못했습니다.').catch(() => {});

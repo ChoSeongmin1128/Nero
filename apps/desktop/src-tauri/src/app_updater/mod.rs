@@ -4,7 +4,7 @@ use policy::ReleaseIdentity;
 use serde::{Deserialize, Serialize};
 use std::{
     path::{Path, PathBuf},
-    sync::{atomic::Ordering, Mutex},
+    sync::{atomic::Ordering, Arc, Mutex},
     time::Duration,
 };
 use tauri::{Emitter, Manager, WebviewWindow};
@@ -50,7 +50,7 @@ pub struct AppUpdates {
     cache: PathBuf,
     status: Mutex<Status>,
     candidate: Mutex<Option<Update>>,
-    operation: tokio::sync::Mutex<()>,
+    operation: Arc<tokio::sync::Mutex<()>>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -233,7 +233,7 @@ impl AppUpdates {
             cache,
             status: Mutex::new(status),
             candidate: Mutex::new(None),
-            operation: tokio::sync::Mutex::new(()),
+            operation: Arc::new(tokio::sync::Mutex::new(())),
         })
     }
     pub(crate) fn agent_metadata(
@@ -421,26 +421,34 @@ fn require_window(window: &WebviewWindow) -> Result<(), String> {
     }
 }
 
+pub(crate) fn status(app: &tauri::AppHandle) -> Status {
+    let state = app.state::<AppUpdates>();
+    if let Ok(_operation) = state.operation.try_lock() {
+        state.restore_cached(app);
+    }
+    state.view()
+}
+
 #[tauri::command]
 pub async fn app_update_status(
     window: WebviewWindow,
     app: tauri::AppHandle,
-    state: tauri::State<'_, AppUpdates>,
 ) -> Result<Status, String> {
     require_window(&window)?;
-    if let Ok(_operation) = state.operation.try_lock() {
-        state.restore_cached(&app);
-    }
-    Ok(state.view())
+    Ok(status(&app))
 }
 
 #[tauri::command]
 pub async fn app_update_check(
     window: WebviewWindow,
     app: tauri::AppHandle,
-    state: tauri::State<'_, AppUpdates>,
 ) -> Result<Status, String> {
     require_window(&window)?;
+    check(&app).await
+}
+
+pub(crate) async fn check(app: &tauri::AppHandle) -> Result<Status, String> {
+    let state = app.state::<AppUpdates>();
     let _operation = state
         .operation
         .try_lock()
@@ -494,13 +502,24 @@ pub async fn app_update_check(
 pub async fn app_update_download(
     window: WebviewWindow,
     app: tauri::AppHandle,
-    state: tauri::State<'_, AppUpdates>,
 ) -> Result<Status, String> {
     require_window(&window)?;
-    let _operation = state
+    let (update, operation) = prepare_download(&app)?;
+    download(app, update, operation).await
+}
+
+fn prepare_download(
+    app: &tauri::AppHandle,
+) -> Result<(Update, tokio::sync::OwnedMutexGuard<()>), String> {
+    let state = app.state::<AppUpdates>();
+    let operation = state
         .operation
-        .try_lock()
+        .clone()
+        .try_lock_owned()
         .map_err(|_| "업데이트 작업이 진행 중입니다.")?;
+    if app.state::<crate::DesktopState>().lifecycle.is_closing() {
+        return Err("앱을 종료하거나 업데이트하고 있습니다.".into());
+    }
     let update = state
         .candidate
         .lock()
@@ -508,10 +527,28 @@ pub async fn app_update_download(
         .clone()
         .ok_or("먼저 업데이트를 확인해 주세요.")?;
     state.publish(
-        &app,
+        app,
         "downloading",
         "업데이트를 다운로드하고 있습니다. 녹음과 회의 작업은 계속할 수 있습니다.",
     );
+    Ok((update, operation))
+}
+
+pub(crate) fn start_download(app: tauri::AppHandle) -> Result<Status, String> {
+    let (update, operation) = prepare_download(&app)?;
+    let status = app.state::<AppUpdates>().view();
+    tauri::async_runtime::spawn(async move {
+        let _ = download(app, update, operation).await;
+    });
+    Ok(status)
+}
+
+async fn download(
+    app: tauri::AppHandle,
+    update: Update,
+    _operation: tokio::sync::OwnedMutexGuard<()>,
+) -> Result<Status, String> {
+    let state = app.state::<AppUpdates>();
     let result = async {
         validate_url(&update.download_url)?;
         // The official plugin verifies downloads, but its buffer is unbounded.
@@ -579,20 +616,46 @@ pub async fn app_update_download(
     result
 }
 
+pub(crate) struct InstallPlan {
+    pub status: Status,
+    task: Option<Box<dyn FnOnce() + Send>>,
+}
+impl InstallPlan {
+    pub fn start(self) {
+        if let Some(task) = self.task {
+            tauri::async_runtime::spawn_blocking(task);
+        }
+    }
+    pub fn accepted(&self) -> bool {
+        self.task.is_some()
+    }
+}
+
 #[tauri::command]
 pub async fn app_update_install(
     window: WebviewWindow,
     app: tauri::AppHandle,
-    state: tauri::State<'_, AppUpdates>,
-    desktop: tauri::State<'_, crate::DesktopState>,
 ) -> Result<Status, String> {
     require_window(&window)?;
+    let plan = prepare_install(app).await?;
+    let status = plan.status.clone();
+    plan.start();
+    Ok(status)
+}
+
+pub(crate) async fn prepare_install(app: tauri::AppHandle) -> Result<InstallPlan, String> {
+    let state = app.state::<AppUpdates>();
+    let desktop = app.state::<crate::DesktopState>();
     if state.view().recovery_required {
-        return Ok(state.view());
+        return Ok(InstallPlan {
+            status: state.view(),
+            task: None,
+        });
     }
-    let _operation = state
+    let operation = state
         .operation
-        .try_lock()
+        .clone()
+        .try_lock_owned()
         .map_err(|_| "업데이트 작업이 진행 중입니다.")?;
     // Restore using the running app's trusted config. Cached metadata cannot
     // select its own public key, executable path or comparator.
@@ -614,18 +677,22 @@ pub async fn app_update_install(
         .begin_exit(crate::lifecycle::ExitKind::Update)?;
     let processing = desktop.processing.clone();
     let core = desktop.core.clone();
-    let prepared =
-        tauri::async_runtime::spawn_blocking(move || IdleFence::prepare(core, processing, lease))
-            .await
-            .map_err(|_| "앱의 작업 상태를 확인하지 못했습니다.".to_string())
-            .and_then(|result| result);
-    let fence = match prepared {
-        Ok(fence) => fence,
+    let prepared = tauri::async_runtime::spawn_blocking(move || {
+        IdleFence::prepare(core, processing, lease).map(|fence| (fence, operation))
+    })
+    .await
+    .map_err(|_| "앱의 작업 상태를 확인하지 못했습니다.".to_string())
+    .and_then(|result| result);
+    let (fence, operation) = match prepared {
+        Ok(prepared) => prepared,
         Err(error) => {
-            return Ok(state.publish(&app, "waiting", &error));
+            return Ok(InstallPlan {
+                status: state.publish(&app, "waiting", &error),
+                task: None,
+            });
         }
     };
-    state.publish(
+    let status = state.publish(
         &app,
         "installing",
         "업데이트를 설치하고 Nero를 다시 시작합니다.",
@@ -640,7 +707,8 @@ pub async fn app_update_install(
     let quitting = desktop.quitting.clone();
     let polling = desktop.polling.clone();
     let install_app = app.clone();
-    let installed = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+    let task = Box::new(move || {
+        let _operation = operation;
         let result = (|| -> Result<(), InstallFailure> {
             write_atomic(
                 &cache.join("pending.json"),
@@ -650,40 +718,33 @@ pub async fn app_update_install(
             update.install(&bytes).map_err(InstallFailure::from)
         })();
         if let Err(error) = result {
-            return match finish_failed_install(fence, error, &cache) {
-                FailedInstall::Retryable(message) => Err(message),
+            match finish_failed_install(fence, error, &cache) {
+                FailedInstall::Retryable(message) => {
+                    install_app
+                        .state::<AppUpdates>()
+                        .publish(&install_app, "error", &message);
+                }
                 FailedInstall::RecoveryRequired {
                     record,
                     receipt_saved,
                 } => {
-                    // Publish from the owning task, not its IPC waiter: even a
-                    // cancelled caller cannot lose the preserved backup path.
                     let status = install_app
                         .state::<AppUpdates>()
                         .latch_recovery(record, receipt_saved);
                     let _ = install_app.emit_to("main", "nero://app-update", &status);
-                    Err(status.message)
                 }
-            };
+            }
+            return;
         }
-        // Keep successful ownership through restart in this task as well. A
-        // dropped IPC future cannot reopen admission after the Mac app swap.
         quitting.store(true, Ordering::Release);
         polling.store(false, Ordering::Release);
         fence.commit();
         install_app.restart();
+    });
+    Ok(InstallPlan {
+        status,
+        task: Some(task),
     })
-    .await
-    .map_err(|_| "업데이트 설치를 완료하지 못했습니다.".to_string())
-    .and_then(|result| result);
-    if let Err(error) = installed {
-        if state.view().recovery_required {
-            return Ok(state.view());
-        }
-        // Keep the verified download for retry; never touch meetings or models.
-        return Ok(state.publish(&app, "error", &error));
-    }
-    Ok(state.view())
 }
 
 #[tauri::command]
@@ -724,6 +785,36 @@ mod tests {
             .unwrap();
         let fence = IdleFence::prepare(core.clone(), processing.clone(), lease).unwrap();
         (core, processing, lifecycle, fence)
+    }
+
+    #[test]
+    fn deferred_install_owns_its_operation_and_idle_fence_until_work_finishes() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let (core, processing, lifecycle, fence) = prepared_fixture(&root.join("library"));
+        let state = AppUpdates::new(root.join("cache")).unwrap();
+        let operation = state.operation.clone().try_lock_owned().unwrap();
+        let (release, released) = std::sync::mpsc::channel();
+        let plan = InstallPlan {
+            status: state.view(),
+            task: Some(Box::new(move || {
+                let _operation = operation;
+                released.recv().unwrap();
+                drop(fence);
+            })),
+        };
+        assert!(plan.accepted());
+        let task = plan.task.unwrap();
+        let owner = std::thread::spawn(task);
+        assert!(state.operation.try_lock().is_err());
+        assert!(lifecycle.is_closing());
+        assert!(core.create_folder("설치 준비 중 변경").is_err());
+        assert!(processing.recording_start(|| Ok(())).is_err());
+        release.send(()).unwrap();
+        owner.join().unwrap();
+        assert!(state.operation.try_lock().is_ok());
+        assert!(!lifecycle.is_closing());
+        assert_eq!(core.list_meetings().unwrap()[0].notes, "기존 메모");
     }
 
     #[test]

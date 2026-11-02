@@ -1,5 +1,7 @@
 use crate::{processing::Processing, publish};
-use nero_core::agent_control::{ControlError, JobRequest, Mutation, Server};
+use nero_core::agent_control::{
+    AppUpdateAction, ControlError, ControlReply, JobRequest, Mutation, Server,
+};
 use nero_core::CoreHandle;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -116,19 +118,19 @@ impl Gate {
     }
 }
 
-struct Lease<'a> {
-    gate: &'a Gate,
+struct Lease {
+    gate: Arc<Gate>,
     id: String,
     pending: Arc<Pending>,
 }
-impl Drop for Lease<'_> {
+impl Drop for Lease {
     fn drop(&mut self) {
         self.gate.finish(&self.id, &self.pending);
     }
 }
 
 pub struct AgentMutations {
-    gate: Gate,
+    gate: Arc<Gate>,
     server: Mutex<Option<Server>>,
 }
 impl AgentMutations {
@@ -139,7 +141,7 @@ impl AgentMutations {
         processing: Arc<Processing>,
     ) -> Arc<Self> {
         let state = Arc::new(Self {
-            gate: Gate::default(),
+            gate: Arc::new(Gate::default()),
             server: Mutex::new(None),
         });
         let weak = Arc::downgrade(&state);
@@ -147,7 +149,9 @@ impl AgentMutations {
         let job_state = weak.clone();
         let job_processing = processing.clone();
         let metadata_app = app.clone();
-        let server = Server::start_with_metadata(
+        let update_app = app.clone();
+        let update_state = weak.clone();
+        let server = Server::start_with_updates(
             root,
             core,
             move |request| {
@@ -176,6 +180,12 @@ impl AgentMutations {
                     .state::<crate::app_updater::AppUpdates>()
                     .agent_metadata(metadata_app.path().resource_dir().ok().as_deref()))
             },
+            move |action| {
+                update_state
+                    .upgrade()
+                    .ok_or_else(ControlError::unavailable)?
+                    .execute_update(&update_app, action)
+            },
         );
         match server {
             Ok(server) => *state.server.lock().unwrap() = Some(server),
@@ -192,27 +202,7 @@ impl AgentMutations {
     ) -> Result<Value, ControlError> {
         core.agent_validate(request.clone())
             .map_err(ControlError::core)?;
-        let (id, pending) = self.gate.begin()?;
-        let lease = Lease {
-            gate: &self.gate,
-            id: id.clone(),
-            pending: pending.clone(),
-        };
-        if app
-            .emit_to(
-                "main",
-                "nero://agent-write-requested",
-                serde_json::json!({"requestId":id}),
-            )
-            .is_err()
-        {
-            return Err(ControlError::new(
-                "app_not_ready",
-                "Nero 편집 화면에 연결하지 못했습니다.",
-            ));
-        }
-        self.gate
-            .wait_ready(&lease.id, &pending, Duration::from_secs(10))?;
+        let _lease = self.save_edits(app, "meetingMutation")?;
         let result = if let Some(ids) = request.trash_ids() {
             processing.meeting_trash(core, &ids, || {
                 if self.gate.closing.load(Ordering::Acquire) {
@@ -232,6 +222,74 @@ impl AgentMutations {
             publish(app, &snapshot);
         }
         result.map_err(ControlError::core)
+    }
+    fn save_edits(&self, app: &tauri::AppHandle, kind: &str) -> Result<Lease, ControlError> {
+        let (id, pending) = self.gate.begin()?;
+        let lease = Lease {
+            gate: self.gate.clone(),
+            id: id.clone(),
+            pending: pending.clone(),
+        };
+        if app
+            .emit_to(
+                "main",
+                "nero://agent-write-requested",
+                serde_json::json!({"requestId":id,"kind":kind}),
+            )
+            .is_err()
+        {
+            return Err(ControlError::new(
+                "app_not_ready",
+                "Nero 편집 화면에 연결하지 못했습니다.",
+            ));
+        }
+        self.gate
+            .wait_ready(&lease.id, &pending, Duration::from_secs(10))?;
+        Ok(lease)
+    }
+    fn execute_update(
+        &self,
+        app: &tauri::AppHandle,
+        action: AppUpdateAction,
+    ) -> Result<ControlReply, ControlError> {
+        if action == AppUpdateAction::Status {
+            return Ok(ControlReply::new(
+                serde_json::json!({"apiVersion":1,"action":action,"status":crate::app_updater::status(app)}),
+            ));
+        }
+        if self.gate.closing.load(Ordering::Acquire) {
+            return Err(ControlError::new("app_not_ready", "Nero가 종료 중입니다."));
+        }
+        match action {
+            AppUpdateAction::Status => unreachable!(),
+            AppUpdateAction::Check => {
+                let status = tauri::async_runtime::block_on(crate::app_updater::check(app))
+                    .map_err(|error| ControlError::new("app_update_check_failed", error))?;
+                Ok(ControlReply::new(
+                    serde_json::json!({"apiVersion":1,"action":action,"status":status}),
+                ))
+            }
+            AppUpdateAction::Download => {
+                let status = crate::app_updater::start_download(app.clone())
+                    .map_err(|error| ControlError::new("app_update_failed", error))?;
+                Ok(ControlReply::new(
+                    serde_json::json!({"apiVersion":1,"action":action,"accepted":true,"status":status}),
+                ))
+            }
+            AppUpdateAction::Install => {
+                let lease = self.save_edits(app, "appUpdate")?;
+                let plan = tauri::async_runtime::block_on(crate::app_updater::prepare_install(
+                    app.clone(),
+                ))
+                .map_err(|error| ControlError::new("app_update_failed", error))?;
+                let accepted = plan.accepted();
+                let result = serde_json::json!({"apiVersion":1,"action":action,"accepted":accepted,"restarting":accepted,"status":plan.status.clone()});
+                Ok(ControlReply::after_response(result, move || {
+                    plan.start();
+                    drop(lease);
+                }))
+            }
+        }
     }
     pub fn ready(&self, id: &str, error: Option<String>) -> Result<(), String> {
         self.gate.ready(id, error)
