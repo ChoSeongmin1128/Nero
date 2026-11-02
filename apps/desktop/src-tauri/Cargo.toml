@@ -18,12 +18,13 @@ tauri-plugin-dialog = "2"
 tauri-plugin-updater = { version = "=2.14.1", default-features = false, features = ["rustls-tls", "system-proxy"] }
 minisign-verify = "0.3"
 semver = "1"
-reqwest = { version = "0.13", features = ["json"] }
+reqwest = { version = "0.13", features = ["json", "stream"] }
 tokio = { version = "1", features = ["rt", "time", "macros", "sync"] }
 base64 = "=0.22.1"
 jiff = "=0.2.38"
 keyring = { version = "=3.6.3", default-features = false, features = ["apple-native", "windows-native"] }
 sha2 = "0.10"
+ring = "=0.17.14"
 fs2 = "0.4.3"
 serde_json.workspace = true
 uuid = { version = "1", features = ["v4"] }

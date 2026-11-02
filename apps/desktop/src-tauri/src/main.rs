@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod ai_accounts;
 mod ai_chat;
 mod ai_chat_desktop;
 mod notion_context;
