@@ -1,7 +1,9 @@
 //! Claude Code subprocess transport. Credentials remain owned by Claude Code.
+mod installation;
 mod prepare;
 #[cfg(windows)]
 mod windows_signature;
+pub use installation::installation_state;
 pub use prepare::{discover_prepared, prepare};
 use serde_json::Value;
 use std::{

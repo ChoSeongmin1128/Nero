@@ -12,6 +12,7 @@ export function mountAiChatFixture({ document, scenario = 'ready', delay = 20 })
   const later = action => { const timer = setTimeout(() => { timers.delete(timer); action(); }, delay); timers.add(timer); };
   const accounts = { accounts: [{ id: 'example-chatgpt', provider: 'chatgpt', state: scenario === 'unavailable' ? 'unavailable' : scenario === 'oauth' ? 'signed_out' : 'ready', configured: scenario !== 'unavailable', label: '예시 계정' }, { id: 'example-claude', provider: 'claude', state: 'unavailable', configured: false }] };
   if (scenario === 'unknown') accounts.accounts[0].state = 'unknown';
+  if (scenario.startsWith('claude-runtime-')) Object.assign(accounts.accounts[1], { id: 'claude-code', configured: true, state: 'unknown', runtimeState: scenario.slice('claude-runtime-'.length), disconnectable: false });
   if (scenario === 'plan-disabled-multi') { accounts.accounts[0].state = 'signed_out'; accounts.accounts.push({ id: 'active-plan-account', provider: 'chatgpt', state: 'plan_disabled', configured: true, label: '활성 계정', detail: '활성 계정의 구독 권한을 확인해 주세요.' }); accounts.activeAccountId = 'active-plan-account'; }
   const accountSnapshot = () => ({ checked: scenario !== 'unknown', activeAccountId: accounts.activeAccountId || null, accounts: accounts.accounts.map(account => ({ ...account })) });
   let meetingSources = scenario === 'meeting-sources' ? [{ sourceId: 'notion:example:revision', pageId: 'example', title: '제품 기획 문서', url: 'https://www.notion.so/12345678123412341234123456789012' }] : [];
