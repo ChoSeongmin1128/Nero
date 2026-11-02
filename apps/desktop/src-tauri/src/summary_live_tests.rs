@@ -61,8 +61,8 @@ fn hash(bytes: &[u8]) -> String {
 fn local_summary_fixture() {
     let source_path = required_path("NERO_SUMMARY_SOURCE");
     let notes_path = env::var_os("NERO_SUMMARY_NOTES").map(PathBuf::from);
-    let template_path = env::var_os("NERO_SUMMARY_TEMPLATE")
-        .map(|_| required_path("NERO_SUMMARY_TEMPLATE"));
+    let template_path =
+        env::var_os("NERO_SUMMARY_TEMPLATE").map(|_| required_path("NERO_SUMMARY_TEMPLATE"));
     let weights = required_path("NERO_SUMMARY_WEIGHTS");
     let resources = required_path("NERO_SUMMARY_RESOURCES");
     let output = write_path("NERO_SUMMARY_OUTPUT");
@@ -79,9 +79,10 @@ fn local_summary_fixture() {
     let source_bytes = read_fixture(&source_path);
     let notes_bytes = notes_path.as_deref().map(read_fixture).unwrap_or_default();
     let template_bytes = template_path.as_deref().map(read_fixture);
-    let template: Option<nero_core::templates::PromptTemplate> = template_bytes
-        .as_deref()
-        .map(|bytes| serde_json::from_slice(bytes).expect("template must be a PromptTemplate JSON document"));
+    let template: Option<nero_core::templates::PromptTemplate> =
+        template_bytes.as_deref().map(|bytes| {
+            serde_json::from_slice(bytes).expect("template must be a PromptTemplate JSON document")
+        });
     let source: Transcript =
         serde_json::from_slice(&source_bytes).expect("source must be a Transcript JSON document");
     let notes = String::from_utf8(notes_bytes.clone()).expect("notes must be UTF-8");
@@ -94,7 +95,10 @@ fn local_summary_fixture() {
         Ok("1") => true,
         _ => panic!("NERO_SUMMARY_BASELINE must be 0 or 1"),
     };
-    assert!(!baseline || template.is_none(), "legacy evaluation cannot apply a selected template");
+    assert!(
+        !baseline || template.is_none(),
+        "legacy evaluation cannot apply a selected template"
+    );
     let weights_before = fs::symlink_metadata(&weights).expect("existing weights are required");
     assert!(
         weights_before.is_file() && !weights_before.file_type().is_symlink(),
@@ -238,7 +242,10 @@ fn local_summary_fixture() {
     .expect("cannot save evaluation");
     assert!(source_unchanged, "source fixture changed during evaluation");
     assert!(notes_unchanged, "notes fixture changed during evaluation");
-    assert!(template_unchanged, "selected template changed during evaluation");
+    assert!(
+        template_unchanged,
+        "selected template changed during evaluation"
+    );
     assert!(
         model_metadata_unchanged,
         "model metadata changed during read-only evaluation"
