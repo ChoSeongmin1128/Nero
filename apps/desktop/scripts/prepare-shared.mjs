@@ -40,6 +40,7 @@ for (const folder of runtimePackages) {
   licenseManifest.push({ name: metadata.name, version: metadata.version, license: metadata.license, files });
 }
 await writeFile(resolve(licenses, 'manifest.json'), JSON.stringify(licenseManifest, null, 2) + '\n');
+await cp(resolve(source, 'assets/brands'), resolve(target, 'assets/brands'), { recursive: true });
 await cp(resolve(source, 'vendor/lucide'), resolve(target, 'vendor/lucide'), { recursive: true });
 await cp(resolve(source, 'vendor/pretendard'), resolve(target, 'vendor/pretendard'), { recursive: true });
 

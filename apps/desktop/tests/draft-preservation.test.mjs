@@ -1,3 +1,4 @@
+import { mountBrandIcons } from '../src/brand-icons.js';
 import { requestAudioPlayback } from '../src/audio-playback.js';
 import { snapshotSignatures, compareSnapshotSignatures } from '../src/snapshot-update.js';
 import { createIntegrationMonitor } from '../src/integration-notifications.js';
@@ -136,7 +137,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
   const copied = [], agentDialogCalls = [], aiLifecycle = [];
   const aiBridge = { appendNote: async () => {}, saveSummary: async () => {}, openSource: async () => {} };
   const templateSettings = { setActive() {}, beforeLeave: async () => true, isConfirming: () => false, hide() {} };
-  const context = vm.createContext({ snapshotSignatures, compareSnapshotSignatures, requestAudioPlayback, createIntegrationMonitor, liveTranscriptRows, meetingResultPreview, renderMeetingMenu, testMountNotificationCenter: mountNotificationCenter,
+  const context = vm.createContext({ mountBrandIcons, snapshotSignatures, compareSnapshotSignatures, requestAudioPlayback, createIntegrationMonitor, liveTranscriptRows, meetingResultPreview, renderMeetingMenu, testMountNotificationCenter: mountNotificationCenter,
     navigator: { clipboard: { writeText: async text => { copied.push(text); } } },
     document, testBridge: bridge, testAiBridge: aiBridge, testAiLifecycle: aiLifecycle, testAgentDialogCalls: agentDialogCalls, testTemplateSettings: templateSettings, localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
     NeroControls: { enhanceAll() {} },

@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { BrandIcon } from './brand-icon.jsx';
 import { createRoot } from 'react-dom/client';
 import { createCalendarSettingsFlow, calendarConnectionView } from './calendar-settings-flow.js';
 import './calendar-settings.css';
@@ -85,7 +86,7 @@ function CalendarSettings({ flow }) {
     <h4 className="settings-subtitle">Google Calendar</h4>
     <p className="calendar-settings-description">시작 5분 전에 알림</p>
     <div className="settings-group"><div className="calendar-settings-account">
-      <div><strong>{view.label}</strong>{snapshot.connected && <p>읽기 전용</p>}</div>
+      <div className="calendar-settings-identity"><BrandIcon name="calendar" /><div><strong>{view.label}</strong>{snapshot.connected && <p>읽기 전용</p>}</div></div>
       <div className="calendar-settings-actions">
         {connecting && <><span className="activity-spinner" aria-hidden="true" /><button type="button" className="small" disabled={state.phase !== 'authorizing' || state.reopening} onClick={() => { void flow.reopen(); }}>브라우저 다시 열기</button></>}
         {connecting ? <button type="button" className="small" onClick={() => { void flow.cancel(); }}>취소</button> : view.action && <button type="button" className="small" disabled={state.busy || !snapshot.configured || snapshot.restoring} onClick={() => { void (view.retryable ? flow.retry() : flow.connect()); }}>{view.action}</button>}

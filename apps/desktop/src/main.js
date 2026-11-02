@@ -1,3 +1,4 @@
+import { mountBrandIcons } from './brand-icons.js';
 import { mountSidebarViews } from './sidebar-views.js';
 import { snapshotSignatures, compareSnapshotSignatures } from './snapshot-update.js';
 import { createViewHistory } from './view-history.js';
@@ -41,6 +42,7 @@ import { mountTemplateSettings } from './template-settings.jsx';
 import { mountSpeechModelPicker } from './speech-model-picker.js';
 import './speech-model-picker.css';
 
+mountBrandIcons(document);
 applySystemAppearance();
 if (document.documentElement.dataset.windowChrome === 'macos-overlay' && isTauri()) {
   const { dispose } = mountWindowChrome({ root: document.documentElement, nativeWindow: getCurrentWindow() });

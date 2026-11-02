@@ -738,6 +738,18 @@ html[data-appearance-changing] button {
   font-weight: var(--weight-semibold);
 }
 
+.brand-icon {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  object-fit: contain;
+}
+
+.settings-sections {
+  display: grid;
+  gap: 24px;
+}
+
 .settings-group {
   min-width: 0;
   border: 1px solid var(--border);
