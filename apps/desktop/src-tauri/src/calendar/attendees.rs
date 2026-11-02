@@ -271,7 +271,7 @@ async fn calendar_event(
     let (from, to) = (timestamp(reference.start_at)?, timestamp(reference.end_at)?);
     let mut found: Option<(u64, Value, Vec<String>)> = None;
     for calendar in calendars {
-        let mut next = None;
+        let mut next: Option<String> = None;
         let mut seen = BTreeSet::new();
         for page_index in 0..MAX_PAGES {
             let mut url = google::events_url(calendar, &from, &to, next.as_deref())?;
@@ -328,7 +328,7 @@ async fn meet_sources(
     start_at: u64,
     end_at: u64,
 ) -> Result<(MeetAttendeeStatus, Vec<GoogleAttendeeSource>), Failure> {
-    let mut next = None;
+    let mut next: Option<String> = None;
     let mut seen = BTreeSet::new();
     let mut records = BTreeMap::new();
     for page_index in 0..MAX_PAGES {
