@@ -1,0 +1,8 @@
+.google-attendee-picker { gap: 12px; }
+.google-attendee-picker p { margin: 0; }
+.google-attendee-results { display: grid; gap: 16px; }
+.google-attendee-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(180px, 1fr); gap: 8px; align-items: center; padding: 8px 12px; }
+.google-attendee-row + .google-attendee-row { border-top: 1px solid var(--border); }
+.google-attendee-choice { min-width: 0; display: flex; align-items: center; gap: 8px; }
+.google-attendee-choice > button:last-child { flex: none; }
+@media (max-width: 460px) { .google-attendee-row { grid-template-columns: minmax(0, 1fr); } }

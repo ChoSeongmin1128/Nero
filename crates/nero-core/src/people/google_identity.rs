@@ -1,4 +1,4 @@
-use super::{validate_name, MeetingAttendee};
+use super::{validate_name, MeetingAttendee, PeopleCatalog, Person};
 use crate::{agent_control, engine::Engine, store, CoreError, CoreHandle, Meeting, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -56,6 +56,30 @@ pub struct GoogleAttendeeRoster {
     pub meeting: Meeting,
     pub sources: Vec<ImportedGoogleAttendee>,
     pub identity_links: Vec<GoogleIdentityLink>,
+    pub catalog: PeopleCatalog,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GoogleAttendeePersonLink {
+    pub attendee_id: String,
+    pub person_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GoogleAttendeePromotion {
+    pub attendee_id: String,
+    pub person: Person,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GoogleAttendeeDraft {
+    pub attendees: Vec<MeetingAttendee>,
+    pub sources: Vec<ImportedGoogleAttendee>,
+    pub person_links: Vec<GoogleAttendeePersonLink>,
+    pub promotions: Vec<GoogleAttendeePromotion>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -257,7 +281,161 @@ impl Engine {
             meeting,
             sources,
             identity_links: self.library.google_identity.links.clone(),
+            catalog: self.people_catalog()?,
         })
+    }
+
+    pub fn apply_meeting_attendee_draft(
+        &mut self,
+        id: &str,
+        expected_version: &str,
+        draft: GoogleAttendeeDraft,
+    ) -> Result<GoogleAttendeeRoster> {
+        let current = self.google_attendee_roster(id)?;
+        if current.edit_version != expected_version {
+            return Err(CoreError::EditConflict);
+        }
+        super::validate_attendees(&draft.attendees)?;
+        let mut library = self.library.clone();
+        let mut promoted = BTreeSet::new();
+        for promotion in &draft.promotions {
+            store::validate_id(&promotion.person.id)?;
+            validate_name(&promotion.person.name)?;
+            if !promoted.insert(&promotion.person.id)
+                || library
+                    .people
+                    .people
+                    .iter()
+                    .any(|person| person.id == promotion.person.id)
+                || !draft.attendees.iter().any(|attendee| {
+                    attendee.id == promotion.attendee_id
+                        && attendee.person_id.as_ref() == Some(&promotion.person.id)
+                })
+            {
+                return Err(invalid());
+            }
+            library.people.people.push(promotion.person.clone());
+        }
+        for attendee in &draft.attendees {
+            if let Some(person_id) = &attendee.person_id {
+                let retained =
+                    current.meeting.attendees.iter().any(|old| {
+                        old.id == attendee.id && old.person_id.as_ref() == Some(person_id)
+                    });
+                if !retained
+                    && !library
+                        .people
+                        .people
+                        .iter()
+                        .any(|person| &person.id == person_id)
+                {
+                    return Err(CoreError::InvalidInput(
+                        "선택한 관리 인원을 찾을 수 없습니다.".into(),
+                    ));
+                }
+            }
+        }
+        let mut records = current.sources;
+        let mut keys = BTreeSet::new();
+        for entry in draft.sources {
+            store::validate_id(&entry.attendee_id)?;
+            entry.source.validate()?;
+            let retained = records.iter().any(|old| {
+                old.source.source_key == entry.source.source_key
+                    && old.attendee_id == entry.attendee_id
+            });
+            if !keys.insert(entry.source.source_key.clone())
+                || (!retained
+                    && !draft
+                        .attendees
+                        .iter()
+                        .any(|attendee| attendee.id == entry.attendee_id))
+            {
+                return Err(invalid());
+            }
+            if let Some(old) = records
+                .iter_mut()
+                .find(|old| old.source.source_key == entry.source.source_key)
+            {
+                *old = entry;
+            } else {
+                records.push(entry);
+            }
+        }
+        let mut linked = BTreeSet::new();
+        for requested in draft.person_links {
+            if !linked.insert(requested.attendee_id.clone())
+                || !library
+                    .people
+                    .people
+                    .iter()
+                    .any(|person| person.id == requested.person_id)
+                || !draft.attendees.iter().any(|attendee| {
+                    attendee.id == requested.attendee_id
+                        && attendee.person_id.as_ref() == Some(&requested.person_id)
+                })
+            {
+                return Err(invalid());
+            }
+            let sources = records
+                .iter()
+                .filter(|entry| entry.attendee_id == requested.attendee_id)
+                .map(|entry| &entry.source)
+                .collect::<Vec<_>>();
+            if sources.is_empty() {
+                return Err(invalid());
+            }
+            if library.google_identity.links.iter().any(|link| {
+                link.person_id != requested.person_id
+                    && sources.iter().any(|source| source.matches(link))
+            }) {
+                return Err(CoreError::InvalidInput(
+                    "이미 다른 관리 인원에 연결된 Google 신원입니다.".into(),
+                ));
+            }
+            let mut link = library
+                .google_identity
+                .links
+                .iter()
+                .find(|link| link.person_id == requested.person_id)
+                .cloned()
+                .unwrap_or(GoogleIdentityLink {
+                    person_id: requested.person_id.clone(),
+                    emails: vec![],
+                    google_user_ids: vec![],
+                });
+            for source in sources {
+                if let Some(email) = &source.email {
+                    if !link.emails.contains(email) {
+                        link.emails.push(email.clone());
+                    }
+                }
+                if let Some(user_id) = &source.google_user_id {
+                    if !link.google_user_ids.contains(user_id) {
+                        link.google_user_ids.push(user_id.clone());
+                    }
+                }
+            }
+            if !link.emails.is_empty() || !link.google_user_ids.is_empty() {
+                link.emails.sort();
+                link.google_user_ids.sort();
+                library
+                    .google_identity
+                    .links
+                    .retain(|old| old.person_id != requested.person_id);
+                library.google_identity.links.push(link);
+            }
+        }
+        if draft.attendees.is_empty() {
+            library.meeting_attendees.remove(id);
+        } else {
+            library.meeting_attendees.insert(id.into(), draft.attendees);
+        }
+        if !records.is_empty() {
+            library.google_identity.meetings.insert(id.into(), records);
+        }
+        self.commit_library(library)?;
+        self.google_attendee_roster(id)
     }
 
     pub fn import_google_attendees(
@@ -554,6 +732,15 @@ impl Engine {
 }
 
 impl CoreHandle {
+    pub fn apply_meeting_attendee_draft(
+        &self,
+        id: &str,
+        expected_version: &str,
+        draft: GoogleAttendeeDraft,
+    ) -> Result<GoogleAttendeeRoster> {
+        let (id, version) = (id.to_owned(), expected_version.to_owned());
+        self.call(move |engine| engine.apply_meeting_attendee_draft(&id, &version, draft))
+    }
     pub fn google_attendee_roster(&self, id: &str) -> Result<GoogleAttendeeRoster> {
         let id = id.to_owned();
         self.call(move |engine| engine.google_attendee_roster(&id))
@@ -931,5 +1118,189 @@ mod tests {
             .iter()
             .all(|entry| entry.attendee_id == target.id));
         assert_eq!(linked.identity_links[0].google_user_ids, ["users/100"]);
+    }
+
+    #[test]
+    fn one_draft_commit_applies_manual_names_google_links_and_person_promotion() {
+        let (_temp, mut engine) = engine();
+        let meeting = engine
+            .create_meeting("Synthetic".into(), "Preserved notes".into())
+            .unwrap();
+        let current = engine.google_attendee_roster(&meeting.id).unwrap();
+        let attendee_id = uuid::Uuid::new_v4().to_string();
+        let person = Person {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "New saved person".into(),
+        };
+        let draft = GoogleAttendeeDraft {
+            attendees: vec![MeetingAttendee {
+                id: attendee_id.clone(),
+                person_id: Some(person.id.clone()),
+                name: Some("Manual meeting name".into()),
+            }],
+            sources: vec![
+                ImportedGoogleAttendee {
+                    attendee_id: attendee_id.clone(),
+                    source: participant("meet:a", Some("users/100")),
+                },
+                ImportedGoogleAttendee {
+                    attendee_id: attendee_id.clone(),
+                    source: invitation("invite:a", "first@example.test"),
+                },
+            ],
+            person_links: vec![GoogleAttendeePersonLink {
+                attendee_id: attendee_id.clone(),
+                person_id: person.id.clone(),
+            }],
+            promotions: vec![GoogleAttendeePromotion {
+                attendee_id,
+                person: person.clone(),
+            }],
+        };
+        let result = engine
+            .apply_meeting_attendee_draft(&meeting.id, &current.edit_version, draft.clone())
+            .unwrap();
+        assert_eq!(result.meeting.attendees, draft.attendees);
+        assert_eq!(result.sources, draft.sources);
+        assert_eq!(result.catalog.people, [person]);
+        assert_eq!(result.identity_links[0].emails, ["first@example.test"]);
+        assert_eq!(result.identity_links[0].google_user_ids, ["users/100"]);
+        assert_eq!(result.meeting.notes, "Preserved notes");
+        assert!(matches!(
+            engine.apply_meeting_attendee_draft(&meeting.id, &current.edit_version, draft),
+            Err(CoreError::EditConflict)
+        ));
+    }
+
+    #[test]
+    fn a_failed_draft_identity_link_does_not_save_prior_manual_edits_or_person_promotion() {
+        let (_temp, mut engine) = engine();
+        let existing = Person {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "Existing saved person".into(),
+        };
+        let catalog = engine.people_catalog().unwrap();
+        engine
+            .replace_people_catalog(&catalog.edit_version, vec![existing.clone()], vec![])
+            .unwrap();
+        let meeting = engine
+            .create_meeting("Synthetic".into(), "Preserved notes".into())
+            .unwrap();
+        let imported = import(
+            &mut engine,
+            &meeting.id,
+            vec![participant("meet:a", Some("users/100"))],
+        );
+        let current = engine
+            .link_google_attendee_person(
+                &meeting.id,
+                &imported.edit_version,
+                &imported.sources[0].attendee_id,
+                &existing.id,
+            )
+            .unwrap();
+        let before = std::fs::read(engine.store.root.join("library.json")).unwrap();
+        let attendee_id = uuid::Uuid::new_v4().to_string();
+        let person = Person {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "Uncommitted person".into(),
+        };
+        let draft = GoogleAttendeeDraft {
+            attendees: vec![MeetingAttendee {
+                id: attendee_id.clone(),
+                person_id: Some(person.id.clone()),
+                name: Some("Uncommitted manual name".into()),
+            }],
+            sources: vec![ImportedGoogleAttendee {
+                attendee_id: attendee_id.clone(),
+                source: participant("meet:a", Some("users/100")),
+            }],
+            person_links: vec![GoogleAttendeePersonLink {
+                attendee_id: attendee_id.clone(),
+                person_id: person.id.clone(),
+            }],
+            promotions: vec![GoogleAttendeePromotion {
+                attendee_id,
+                person,
+            }],
+        };
+        assert!(engine
+            .apply_meeting_attendee_draft(&meeting.id, &current.edit_version, draft)
+            .is_err());
+        assert_eq!(engine.google_attendee_roster(&meeting.id).unwrap(), current);
+        assert_eq!(
+            std::fs::read(engine.store.root.join("library.json")).unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn deleting_a_person_releases_global_identity_without_rewriting_old_meetings() {
+        let (_temp, mut engine) = engine();
+        let person = Person {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "First saved person".into(),
+        };
+        let replacement = Person {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "Replacement person".into(),
+        };
+        let catalog = engine.people_catalog().unwrap();
+        engine
+            .replace_people_catalog(
+                &catalog.edit_version,
+                vec![person.clone(), replacement.clone()],
+                vec![],
+            )
+            .unwrap();
+        let first = engine
+            .create_meeting("First synthetic".into(), "".into())
+            .unwrap();
+        let roster = import(
+            &mut engine,
+            &first.id,
+            vec![participant("meet:first", Some("users/100"))],
+        );
+        let linked = engine
+            .link_google_attendee_person(
+                &first.id,
+                &roster.edit_version,
+                &roster.sources[0].attendee_id,
+                &person.id,
+            )
+            .unwrap();
+        let catalog = engine.people_catalog().unwrap();
+        engine
+            .replace_people_catalog(&catalog.edit_version, vec![replacement.clone()], vec![])
+            .unwrap();
+        let preserved = engine.google_attendee_roster(&first.id).unwrap();
+        assert_eq!(preserved.meeting.attendees, linked.meeting.attendees);
+        assert_eq!(preserved.sources, linked.sources);
+        assert!(preserved.identity_links.is_empty());
+        let second = engine
+            .create_meeting("Second synthetic".into(), "".into())
+            .unwrap();
+        let roster = import(
+            &mut engine,
+            &second.id,
+            vec![participant("meet:second", Some("users/100"))],
+        );
+        let linked = engine
+            .link_google_attendee_person(
+                &second.id,
+                &roster.edit_version,
+                &roster.sources[0].attendee_id,
+                &replacement.id,
+            )
+            .unwrap();
+        assert_eq!(linked.identity_links[0].person_id, replacement.id);
+        assert_eq!(
+            engine
+                .google_attendee_roster(&first.id)
+                .unwrap()
+                .meeting
+                .attendees,
+            preserved.meeting.attendees
+        );
     }
 }

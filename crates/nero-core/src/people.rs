@@ -5,8 +5,9 @@ use std::collections::BTreeSet;
 
 pub(crate) mod google_identity;
 pub use google_identity::{
-    GoogleAttendeeKind, GoogleAttendeeOrigin, GoogleAttendeeRoster, GoogleAttendeeSource,
-    GoogleIdentityLink, ImportedGoogleAttendee,
+    GoogleAttendeeDraft, GoogleAttendeeKind, GoogleAttendeeOrigin, GoogleAttendeePersonLink,
+    GoogleAttendeePromotion, GoogleAttendeeRoster, GoogleAttendeeSource, GoogleIdentityLink,
+    ImportedGoogleAttendee,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -158,6 +159,13 @@ impl Engine {
         people.validate()?;
         let mut library = self.library.clone();
         library.people = people;
+        library.google_identity.links.retain(|link| {
+            library
+                .people
+                .people
+                .iter()
+                .any(|person| person.id == link.person_id)
+        });
         self.commit_library(library)?;
         self.people_catalog()
     }
