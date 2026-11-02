@@ -1,6 +1,6 @@
 use std::{
     fs,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 
 pub(crate) fn safe_ancestors(path: &Path) -> std::io::Result<()> {
@@ -10,7 +10,7 @@ pub(crate) fn safe_ancestors(path: &Path) -> std::io::Result<()> {
     let mut current = PathBuf::new();
     for part in path.components() {
         current.push(part);
-        if !current.is_absolute() {
+        if matches!(part, Component::Prefix(_)) {
             continue;
         }
         match fs::symlink_metadata(&current) {
