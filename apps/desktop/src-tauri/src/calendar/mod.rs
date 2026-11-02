@@ -325,11 +325,7 @@ impl CalendarService {
         let calendars = google::calendars(&self.client, &response.access_token)
             .await
             .map_err(|error| error.message())?;
-        let account = calendars
-            .iter()
-            .find(|calendar| calendar.primary)
-            .map(|calendar| calendar.id.clone())
-            .ok_or("Google 계정의 기본 캘린더를 확인하지 못했습니다.")?;
+        let account = primary_calendar(&calendars)?.id.clone();
         require_requested_scope(response.scope.as_deref(), pending.include_meet)?;
         let refresh_token = response
             .refresh_token
@@ -565,12 +561,7 @@ impl CalendarService {
             Ok(calendars) => calendars,
             Err(error) => return Err(self.query_error(context, error).await),
         };
-        if calendars
-            .iter()
-            .find(|calendar| calendar.primary)
-            .map(|calendar| calendar.id.as_str())
-            != Some(account.as_str())
-        {
+        if primary_calendar(&calendars)?.id.as_str() != account.as_str() {
             return Err("Google 계정 연결이 변경되었습니다. 다시 연결해 주세요.".into());
         }
         let choices = selected
@@ -598,6 +589,16 @@ impl CalendarService {
             Ok(events) => events,
             Err(error) => return Err(self.query_error(&context, error).await),
         };
+        self.commit_synchronization(generation, calendars, events, now_ms())
+    }
+
+    fn commit_synchronization(
+        &self,
+        generation: u64,
+        calendars: Vec<CalendarChoice>,
+        events: Vec<Occurrence>,
+        synced_at: u64,
+    ) -> Result<(), String> {
         let mut inner = self.inner.lock().unwrap();
         if generation != self.generation.load(Ordering::Acquire) {
             return Err("캘린더 선택이나 연결이 변경되었습니다.".into());
@@ -605,7 +606,7 @@ impl CalendarService {
         let mut next = inner.state.clone();
         next.calendars = calendars;
         next.events = events;
-        next.last_synced_at = Some(now_ms());
+        next.last_synced_at = Some(synced_at);
         next.revision += 1;
         persist(&self.directory, &next)?;
         inner.state = next;
@@ -855,12 +856,16 @@ fn connected_state(
     calendars: Vec<CalendarChoice>,
     include_meet: bool,
 ) -> Result<State, String> {
+    let primary = primary_calendar(&calendars)?;
+    if primary.id != account {
+        return Err("Google 계정의 기본 캘린더를 확인하지 못했습니다.".into());
+    }
     if include_meet && previous.account.as_deref() != Some(account) {
         return Err("캘린더에 연결한 것과 같은 Google 계정으로 Meet을 연결해 주세요.".into());
     }
     let mut next = previous.clone();
     if next.account.as_deref() != Some(account) {
-        next.selected.clear();
+        next.selected = vec![primary.id.clone()];
         next.notices.clear();
     }
     next.account = Some(account.into());
@@ -872,6 +877,14 @@ fn connected_state(
     }
     next.revision += 1;
     Ok(next)
+}
+
+fn primary_calendar(calendars: &[CalendarChoice]) -> Result<&CalendarChoice, String> {
+    let mut primary = calendars.iter().filter(|calendar| calendar.primary);
+    match (primary.next(), primary.next()) {
+        (Some(calendar), None) if !calendar.id.is_empty() => Ok(calendar),
+        _ => Err("Google 계정의 기본 캘린더를 확인하지 못했습니다.".into()),
+    }
 }
 
 pub fn now_ms() -> u64 {
@@ -944,6 +957,152 @@ fn persist(directory: &Path, state: &State) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn calendar_choice(id: &str, primary: bool) -> CalendarChoice {
+        CalendarChoice {
+            id: id.into(),
+            name: "Synthetic calendar".into(),
+            primary,
+        }
+    }
+    #[test]
+    fn first_connection_selects_only_the_provider_identified_primary_calendar() {
+        let calendars = vec![
+            calendar_choice("looks-like-an-account@example.invalid", false),
+            calendar_choice("opaque-primary-id", true),
+            calendar_choice("team-calendar", false),
+        ];
+        let connected =
+            connected_state(&State::default(), "opaque-primary-id", calendars, false).unwrap();
+        assert_eq!(connected.account.as_deref(), Some("opaque-primary-id"));
+        assert_eq!(connected.selected, vec!["opaque-primary-id"]);
+    }
+    #[test]
+    fn same_account_reconnection_preserves_explicit_selection_including_none() {
+        for selected in [
+            vec![],
+            vec!["team-calendar".into()],
+            vec!["primary-id".into(), "team-calendar".into()],
+        ] {
+            for include_meet in [false, true] {
+                let previous = State {
+                    account: Some("primary-id".into()),
+                    selected: selected.clone(),
+                    ..State::default()
+                };
+                let next = connected_state(
+                    &previous,
+                    "primary-id",
+                    vec![
+                        calendar_choice("team-calendar", false),
+                        calendar_choice("primary-id", true),
+                        calendar_choice("newly-visible-calendar", false),
+                    ],
+                    include_meet,
+                )
+                .unwrap();
+                assert_eq!(next.selected, selected);
+            }
+        }
+    }
+    #[test]
+    fn another_account_gets_its_primary_without_inheriting_shared_selection_or_reminders() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = reminder_service(temp.path());
+        let inner = service.inner.lock().unwrap();
+        let mut previous = inner.state.clone();
+        previous.notices.insert(
+            "old-account-notice".into(),
+            Notice {
+                retain_until: 2_000_000,
+                dismissed: true,
+            },
+        );
+        assert!(!previous.selected.is_empty());
+        assert!(!previous.events.is_empty());
+        assert!(!previous.notices.is_empty());
+        let next = connected_state(
+            &previous,
+            "new-primary-id",
+            vec![
+                calendar_choice("one", false),
+                calendar_choice("new-primary-id", true),
+            ],
+            false,
+        )
+        .unwrap();
+        assert_eq!(next.selected, vec!["new-primary-id"]);
+        assert!(next.events.is_empty());
+        assert!(next.notices.is_empty());
+        assert!(next.last_synced_at.is_none());
+        assert!(!next.meet_authorized);
+    }
+    #[test]
+    fn missing_ambiguous_or_mismatched_primary_never_creates_a_default_selection() {
+        for calendars in [
+            vec![calendar_choice("primary-id", false)],
+            vec![
+                calendar_choice("primary-id", true),
+                calendar_choice("another-primary", true),
+            ],
+            vec![calendar_choice("another-primary", true)],
+        ] {
+            let previous = State::default();
+            assert!(connected_state(&previous, "primary-id", calendars, false).is_err());
+            assert!(previous.account.is_none());
+            assert!(previous.selected.is_empty());
+        }
+    }
+    #[test]
+    fn explicitly_cleared_selection_stays_empty_after_restart_and_reconnect() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = CalendarService::new(temp.path().into()).unwrap();
+        {
+            let mut inner = service.inner.lock().unwrap();
+            inner.state = connected_state(
+                &State {
+                    schema_version: 1,
+                    ..State::default()
+                },
+                "primary-id",
+                vec![
+                    calendar_choice("primary-id", true),
+                    calendar_choice("team-calendar", false),
+                ],
+                false,
+            )
+            .unwrap();
+            inner.auth_ready = true;
+        }
+        assert_eq!(service.snapshot().selected_calendars, vec!["primary-id"]);
+        assert!(service
+            .set_calendars(vec![])
+            .unwrap()
+            .selected_calendars
+            .is_empty());
+        service
+            .commit_synchronization(
+                service.generation.load(Ordering::Acquire),
+                vec![
+                    calendar_choice("newly-visible-calendar", false),
+                    calendar_choice("primary-id", true),
+                ],
+                vec![],
+                1_000_000,
+            )
+            .unwrap();
+        assert!(service.snapshot().selected_calendars.is_empty());
+        let restored = CalendarService::new(temp.path().into()).unwrap();
+        assert!(restored.snapshot().selected_calendars.is_empty());
+        let inner = restored.inner.lock().unwrap();
+        let next = connected_state(
+            &inner.state,
+            "primary-id",
+            inner.state.calendars.clone(),
+            false,
+        )
+        .unwrap();
+        assert!(next.selected.is_empty());
+    }
     #[test]
     fn optional_meet_authorization_requires_explicit_grant_and_preserves_calendar_data() {
         let temp = tempfile::tempdir().unwrap();
@@ -1179,7 +1338,7 @@ mod tests {
             let mut inner = service.inner.lock().unwrap();
             inner.auth_ready = true;
             inner.needs_sync = false;
-            inner.state.account = Some("synthetic account".into());
+            inner.state.account = Some("one".into());
             inner.state.calendars = vec![CalendarChoice {
                 id: "one".into(),
                 name: "Synthetic".into(),
