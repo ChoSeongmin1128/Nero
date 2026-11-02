@@ -3,6 +3,12 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
+pub(crate) mod google_identity;
+pub use google_identity::{
+    GoogleAttendeeKind, GoogleAttendeeOrigin, GoogleAttendeeRoster, GoogleAttendeeSource,
+    GoogleIdentityLink, ImportedGoogleAttendee,
+};
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Person {

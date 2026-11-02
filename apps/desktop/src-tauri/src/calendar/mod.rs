@@ -1,9 +1,11 @@
+mod attendees;
 mod callback_page;
 mod google;
 mod oauth;
 mod schedule;
 mod tokens;
 
+pub use attendees::{GoogleAttendeeFetch, MeetAttendeeStatus};
 pub use google::CalendarChoice;
 pub use oauth::ConnectRequest;
 use oauth::{Config, Pending};
@@ -30,6 +32,7 @@ pub struct CalendarSnapshot {
     pub revision: u64,
     pub configured: bool,
     pub connected: bool,
+    pub meet_connected: bool,
     pub connecting: bool,
     pub restoring: bool,
     pub account_label: Option<String>,
@@ -47,6 +50,8 @@ struct State {
     account: Option<String>,
     #[serde(default)]
     token_slot: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    meet_authorized: bool,
     calendars: Vec<CalendarChoice>,
     selected: Vec<String>,
     events: Vec<Occurrence>,
@@ -56,6 +61,9 @@ struct State {
 struct Access {
     token: String,
     expires_at: u64,
+}
+fn is_false(value: &bool) -> bool {
+    !value
 }
 struct Inner {
     state: State,
@@ -184,6 +192,9 @@ impl CalendarService {
             configured: self.config.is_some()
                 && cfg!(any(target_os = "macos", target_os = "windows")),
             connected: inner.state.account.is_some() && inner.auth_ready,
+            meet_connected: inner.state.meet_authorized
+                && inner.state.account.is_some()
+                && inner.auth_ready,
             connecting: inner.connecting_id.is_some(),
             restoring: self.config.is_some()
                 && inner.state.account.is_some()
@@ -198,6 +209,15 @@ impl CalendarService {
         }
     }
     pub fn begin_connect(&self) -> Result<ConnectRequest, String> {
+        self.begin_connection(false)
+    }
+    pub fn begin_meet_connect(&self) -> Result<ConnectRequest, String> {
+        if self.inner.lock().unwrap().state.account.is_none() {
+            return Err("먼저 Google 캘린더를 연결해 주세요.".into());
+        }
+        self.begin_connection(true)
+    }
+    fn begin_connection(&self, include_meet: bool) -> Result<ConnectRequest, String> {
         if !cfg!(any(target_os = "macos", target_os = "windows")) {
             return Err("Google 캘린더 연결은 macOS와 Windows에서 지원합니다.".into());
         }
@@ -205,7 +225,11 @@ impl CalendarService {
             .config
             .as_ref()
             .ok_or("이 버전에는 Google 캘린더 연결 정보가 설정되지 않았습니다.")?;
-        let (pending, request) = Pending::begin(config)?;
+        let (pending, request) = if include_meet {
+            Pending::begin_with_meet(config, true)?
+        } else {
+            Pending::begin(config)?
+        };
         self.cancel_connect();
         let mut inner = self.inner.lock().unwrap();
         inner.cancel = Some(pending.cancelled.clone());
@@ -306,6 +330,7 @@ impl CalendarService {
             .find(|calendar| calendar.primary)
             .map(|calendar| calendar.id.clone())
             .ok_or("Google 계정의 기본 캘린더를 확인하지 못했습니다.")?;
+        require_requested_scope(response.scope.as_deref(), pending.include_meet)?;
         let refresh_token = response
             .refresh_token
             .filter(|token| !token.is_empty())
@@ -315,16 +340,7 @@ impl CalendarService {
         if generation != self.generation.load(Ordering::Acquire) {
             return Err("현재 연결 요청이 아닙니다.".into());
         }
-        let mut next = inner.state.clone();
-        if next.account.as_deref() != Some(&account) {
-            next.selected.clear();
-            next.notices.clear();
-        }
-        next.account = Some(account.clone());
-        next.calendars = calendars;
-        next.events.clear();
-        next.last_synced_at = None;
-        next.revision += 1;
+        let next = connected_state(&inner.state, &account, calendars, pending.include_meet)?;
         let next = commit_connection(
             inner.state.token_slot,
             next,
@@ -817,6 +833,47 @@ fn commit_connection(
     Ok(next)
 }
 
+fn require_requested_scope(scope: Option<&str>, include_meet: bool) -> Result<(), String> {
+    if include_meet
+        && !scope.is_some_and(|scope| {
+            scope
+                .split_whitespace()
+                .any(|scope| scope == oauth::MEET_SCOPE)
+        })
+    {
+        return Err(
+            "Google Meet 참석자 읽기 권한이 승인되지 않았습니다. 기존 캘린더 연결은 유지됩니다."
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+fn connected_state(
+    previous: &State,
+    account: &str,
+    calendars: Vec<CalendarChoice>,
+    include_meet: bool,
+) -> Result<State, String> {
+    if include_meet && previous.account.as_deref() != Some(account) {
+        return Err("캘린더에 연결한 것과 같은 Google 계정으로 Meet을 연결해 주세요.".into());
+    }
+    let mut next = previous.clone();
+    if next.account.as_deref() != Some(account) {
+        next.selected.clear();
+        next.notices.clear();
+    }
+    next.account = Some(account.into());
+    next.meet_authorized = include_meet;
+    next.calendars = calendars;
+    if !include_meet {
+        next.events.clear();
+        next.last_synced_at = None;
+    }
+    next.revision += 1;
+    Ok(next)
+}
+
 pub fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -887,6 +944,49 @@ fn persist(directory: &Path, state: &State) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn optional_meet_authorization_requires_explicit_grant_and_preserves_calendar_data() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = reminder_service(temp.path());
+        let inner = service.inner.lock().unwrap();
+        let previous = &inner.state;
+        let encoded = serde_json::to_vec(previous).unwrap();
+        assert!(require_requested_scope(None, true).is_err());
+        assert!(require_requested_scope(Some(oauth::SCOPES), true).is_err());
+        assert!(
+            require_requested_scope(Some(&format!("{}suffix", oauth::MEET_SCOPE)), true).is_err()
+        );
+        assert!(require_requested_scope(
+            Some(&format!("{} {}", oauth::SCOPES, oauth::MEET_SCOPE)),
+            true
+        )
+        .is_ok());
+        assert!(require_requested_scope(None, false).is_ok());
+        assert!(connected_state(
+            previous,
+            "another synthetic account",
+            previous.calendars.clone(),
+            true
+        )
+        .is_err());
+        assert_eq!(serde_json::to_vec(previous).unwrap(), encoded);
+        let next = connected_state(
+            previous,
+            previous.account.as_deref().unwrap(),
+            previous.calendars.clone(),
+            true,
+        )
+        .unwrap();
+        assert!(next.meet_authorized);
+        assert_eq!(next.selected, previous.selected);
+        assert_eq!(next.events, previous.events);
+        assert_eq!(next.last_synced_at, previous.last_synced_at);
+        assert_eq!(
+            serde_json::to_vec(&next.notices).unwrap(),
+            serde_json::to_vec(&previous.notices).unwrap()
+        );
+        assert_eq!(next.token_slot, previous.token_slot);
+    }
     #[test]
     fn empty_read_does_not_create_files_and_snapshot_does_not_fake_connection() {
         let temp = tempfile::tempdir().unwrap();
