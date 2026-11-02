@@ -18,3 +18,7 @@ apps/desktop/licenses/audio-decode/MPL-2.0.txt -whitespace
 # Keep the small patched upstream AAC dependency reproducible across hosts.
 vendor/symphonia-codec-aac/** text eol=lf
 vendor/symphonia-codec-aac/LICENSE -whitespace
+
+# Preserve hash-pinned upstream notice bytes across checkout settings.
+apps/desktop/licenses/models/** -text
+apps/desktop/licenses/rust-supplements/** -text
