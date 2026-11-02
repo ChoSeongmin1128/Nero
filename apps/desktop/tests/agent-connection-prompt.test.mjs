@@ -18,7 +18,10 @@ for (const [platform, executablePath, dataDir] of [
     assert.doesNotMatch(prompt, /do-not-copy|curl|sudo|powershell -enc/);
     assert.match(prompt, /doctor --json/);
     assert.match(prompt, /기존 설정을 보존/);
-    assert.match(prompt, /읽기 전용/);
+    assert.match(prompt, /연결 확인은 폴더와 회의 목록의 소량 조회만/);
+    assert.match(prompt, /이후 데이터 변경과 작업 취소는 사용자의 명시적 요청이 있을 때만/);
+    assert.match(prompt, /클라이언트의 도구 승인 설정/);
+    assert.doesNotMatch(prompt, /읽기 전용으로 연결/);
   });
 }
 
