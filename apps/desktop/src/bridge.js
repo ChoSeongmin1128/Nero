@@ -18,6 +18,7 @@ function accept(snapshot) {
   return latestSnapshot;
 }
 
+export const openPrivacyPolicy = () => call('open_privacy_policy');
 export const readSnapshot = () => call('read_snapshot').then(accept);
 export const agentConnectionInfo = (forceHostRefresh = false) => call('agent_connection_info', { forceHostRefresh });
 export const connectAgentClient = (client) => call('agent_connect_client', { client });

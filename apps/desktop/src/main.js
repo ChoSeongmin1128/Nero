@@ -915,6 +915,7 @@ byId('create-meeting').addEventListener('click', () => run(createMeeting));
 byId('welcome-create').addEventListener('click', () => run(createMeeting));
 byId('setup-start').addEventListener('click', () => run(createMeeting));
 byId('settings').addEventListener('click', () => openSettings().catch(showError));
+byId('privacy-policy').addEventListener('click', () => bridge.openPrivacyPolicy().catch(showError));
 async function leaveSettings(action) {
   if (templateSettings.isConfirming() || peopleSettings.isConfirming() || !await templateSettings.beforeLeave() || !await peopleSettings.beforeLeave()) return false;
   globalThis.NeroControls.close?.();

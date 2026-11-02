@@ -159,7 +159,7 @@ behavior. Separate implemented behavior, proposals and unverified platform suppo
   shared with external users. Normal version, updater and NSIS downgrade guards
   remain active; existing build49 installations need an explicit manual transition.
 - Product and integration versions are independent. The next integration generation
-  is `0.3.0-nero.35`; do not lower a host package to match product `0.0.1`.
+  is `0.3.0-nero.36`; do not lower a host package to match product `0.0.1`.
   Undistributed development binaries follow the bounded retention rules below.
 - Published release tags, assets and public release notes identify distributed source.
   A dirty build must not be attributed to its HEAD alone. Distribution bundles require

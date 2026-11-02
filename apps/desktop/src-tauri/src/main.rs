@@ -11,6 +11,7 @@ mod calendar_desktop;
 mod diarization;
 mod downloads;
 mod export;
+mod external_open;
 mod identity_migration;
 mod job_journal;
 mod lifecycle;
@@ -79,6 +80,18 @@ fn require_main(window: &WebviewWindow) -> Result<(), String> {
     } else {
         Err("본창에서 실행해 주세요.".into())
     }
+}
+
+#[tauri::command]
+async fn open_privacy_policy(window: WebviewWindow) -> Result<(), String> {
+    require_main(&window)?;
+    tauri::async_runtime::spawn_blocking(|| {
+        let url = reqwest::Url::parse(external_open::PRIVACY_POLICY)
+            .map_err(|_| "개인정보 안내 주소를 확인하지 못했습니다.".to_string())?;
+        external_open::open_url(&url).map_err(|_| "개인정보처리방침을 열지 못했습니다.".to_string())
+    })
+    .await
+    .map_err(|_| "개인정보처리방침을 열지 못했습니다.".to_string())?
 }
 
 #[tauri::command]
@@ -1689,6 +1702,7 @@ fn main() {
             app_updater::app_update_install,
             app_updater::app_update_recovery_quit,
             agent_write_ready,
+            open_privacy_policy,
             calendar_desktop::read_calendar_settings,
             calendar_desktop::read_calendar_meeting_occurrences,
             calendar_desktop::open_calendar_join_url,
