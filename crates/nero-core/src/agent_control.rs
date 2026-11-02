@@ -980,8 +980,16 @@ impl Server {
                             if !peer.ip().is_loopback() {
                                 continue;
                             }
-                            let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-                            let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+                            if stream.set_nonblocking(false).is_err()
+                                || stream
+                                    .set_read_timeout(Some(Duration::from_secs(2)))
+                                    .is_err()
+                                || stream
+                                    .set_write_timeout(Some(Duration::from_secs(2)))
+                                    .is_err()
+                            {
+                                continue;
+                            }
                             let result = read_frame(&mut stream)
                                 .ok()
                                 .and_then(|bytes| serde_json::from_slice::<Envelope>(&bytes).ok())
@@ -1106,6 +1114,42 @@ mod tests {
                 .code,
             "app_update_unsupported"
         );
+    }
+
+    #[test]
+    fn fragmented_delayed_frame_is_read_before_dispatch() {
+        let (directory, core, _) = fixture();
+        let _server = Server::start_with_updates(
+            directory.path(),
+            core,
+            |_| Ok(json!({})),
+            |_| Ok(json!({})),
+            || Err(ControlError::unavailable()),
+            |_| Err(ControlError::invalid()),
+        )
+        .unwrap();
+        let descriptor = read_descriptor(directory.path()).unwrap();
+        let mut stream = TcpStream::connect(descriptor.address).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let bytes = serde_json::to_vec(&Envelope {
+            protocol: PROTOCOL,
+            generation: descriptor.generation,
+            secret: descriptor.secret,
+            method: "app_update".into(),
+            params: json!({"action":"status"}),
+        })
+        .unwrap();
+        let header = (bytes.len() as u32).to_be_bytes();
+        stream.write_all(&header[..2]).unwrap();
+        thread::sleep(Duration::from_millis(100));
+        stream.write_all(&header[2..]).unwrap();
+        stream.write_all(&bytes[..bytes.len() / 2]).unwrap();
+        thread::sleep(Duration::from_millis(100));
+        stream.write_all(&bytes[bytes.len() / 2..]).unwrap();
+        let response: Value = serde_json::from_slice(&read_frame(&mut stream).unwrap()).unwrap();
+        assert_eq!(response["error"]["code"], "invalid_input");
     }
 
     #[test]

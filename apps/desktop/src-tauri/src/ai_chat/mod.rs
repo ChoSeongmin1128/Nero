@@ -370,6 +370,9 @@ impl AiChat {
             });
         }
         let session = self.accounts.subscription_session(id).await?;
+        if session.provider != Provider::ChatGpt {
+            return Err("Claude 계정 연결을 확인해 주세요.".into());
+        }
         provider::models(&provider::ProviderAccess {
             provider: provider_id(session.provider).into(),
             access_token: session.access_token().into(),
@@ -413,7 +416,11 @@ impl AiChat {
                 .snapshot()?
                 .accounts
                 .into_iter()
-                .find(|account| account.id == request.account_id && account.can_invoke)
+                .find(|account| {
+                    account.id == request.account_id
+                        && account.provider == Provider::ChatGpt
+                        && (account.can_invoke || account.state == "unknown")
+                })
                 .ok_or("먼저 AI 계정에 로그인해 주세요.")?
                 .provider
         };
@@ -653,6 +660,9 @@ impl AiChat {
                         .accounts
                         .subscription_session_with_cancel(&request.account_id, cancel.clone())
                         .await?;
+                    if session.provider != selected_provider {
+                        return Err("선택한 AI 계정이 변경되었습니다.".into());
+                    }
                     let access = provider::ProviderAccess {
                         provider: provider_id(session.provider).into(),
                         access_token: session.access_token().into(),

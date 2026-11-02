@@ -2,13 +2,15 @@ const DRAFT = 'draft';
 const emptyConversation = id => ({ id: id || null, key: id || DRAFT, title: '새 대화', messages: [], activeRequestId: null, draft: '', meetings: [], sources: [], excludedSourceKeys: [], contextBusy: false, compositionInitialized: false, error: '', feedback: '', action: null, loading: false, loaded: !id });
 const errorMessage = (error, fallback) => error?.message || fallback;
 const terminal = new Set(['completed', 'failed', 'cancelled']);
-const reconnectable = new Set(['signed_out', 'plan_disabled']);
+const reconnectable = new Set(['signed_out', 'plan_disabled', 'unknown']);
+const usableAccount = account => ['ready', 'unknown'].includes(account?.state);
 
 export function selectAiAccount(accounts, provider, { selectedId = null, activeAccountId = null } = {}) {
   const candidates = accounts.filter(account => account.provider === provider);
-  return candidates.find(account => account.id === selectedId && account.state === 'ready')
-    || candidates.find(account => account.id === activeAccountId && account.state === 'ready')
+  return candidates.find(account => account.id === selectedId && usableAccount(account))
+    || candidates.find(account => account.id === activeAccountId && usableAccount(account))
     || candidates.find(account => account.state === 'ready')
+    || candidates.find(account => account.state === 'unknown')
     || candidates.find(account => account.id === activeAccountId)
     || candidates.find(account => account.id === selectedId)
     || candidates[0];
@@ -18,7 +20,7 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
   let state = { meeting: null, conversation: emptyConversation(), conversationList: [], listBusy: false, listLoaded: false, listError: '', provider: 'chatgpt', accountId: null, activeAccountId: null, modelId: null, models: [], accounts: [], accountsLoaded: false, accountsBusy: false, accountsError: '', modelsBusy: false, modelError: '', attempts: {}, connectionPhases: {}, notion: null, notionBusy: false, notionAttempt: null, notionError: '', fetching: false, sourceError: '', active: false, settingsActive: false };
   let subscriptionReady = false, selectionInitialized = false, contextEpoch = 0, openEpoch = 0;
   let disposed = false, accountsPromise = null, listPromise = null, modelEpoch = 0, listEpoch = 0, sourceRequest = null, unsubscribe = null;
-  const conversations = new Map([[DRAFT, state.conversation]]), loads = new Map(), listeners = new Set(), connections = new Map(), eventBuffers = new Map(), pendingStarts = new Map(), contextLoads = new Map();
+  const conversations = new Map([[DRAFT, state.conversation]]), loads = new Map(), listeners = new Set(), connections = new Map(), eventBuffers = new Map(), pendingStarts = new Map(), contextLoads = new Map(), modelCache = new Map();
   const publish = patch => { if (disposed) return; state = { ...state, ...patch }; listeners.forEach(listener => listener()); };
   const updateConversation = (id, patch) => {
     const value = { ...(conversations.get(id) || emptyConversation(id)), ...patch, id: id === DRAFT ? null : id, key: id };
@@ -83,13 +85,18 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
     ...context.sources.map(source => ({ kind: 'notion', sourceId: source.sourceId, pageId: source.pageId, title: source.title, url: source.url })),
   ];
   const account = () => state.accounts.find(item => item.id === state.accountId && item.provider === state.provider);
-  const ready = () => account()?.state === 'ready';
+  const ready = () => usableAccount(account());
   const acceptAccounts = result => {
     const accounts = result.accounts || [];
     const activeAccountId = result.activeAccountId || null;
     const selected = selectAiAccount(accounts, state.provider, { selectedId: state.accountId, activeAccountId });
-    publish({ accounts, accountsLoaded: true, accountId: selected?.id || null, activeAccountId });
-    void flow.loadModels();
+    const accountId = selected?.id || null;
+    const changed = accountId !== state.accountId || !usableAccount(selected);
+    if (changed) modelEpoch += 1;
+    const cached = usableAccount(selected) && modelCache.get(accountId);
+    const models = cached?.models || [];
+    const modelId = models.some(item => item.id === state.modelId) ? state.modelId : cached?.defaultModelId || models[0]?.id || null;
+    publish({ accounts, accountsLoaded: true, accountId, activeAccountId, ...(changed ? { models, modelId, modelsBusy: false, modelError: '' } : {}) });
   };
   const connectionError = (key, error, fallback) => publish({ [key === 'notion' ? 'notionError' : 'accountsError']: errorMessage(error, fallback) });
   const connectionPhase = (key, phase) => publish({ connectionPhases: { ...state.connectionPhases, [key]: phase } });
@@ -123,6 +130,13 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
     run.begin = Promise.resolve().then(() => key === 'notion' ? bridge.notionConnect() : bridge.connect(key, selectAiAccount(state.accounts, key, { selectedId: state.accountId, activeAccountId: state.activeAccountId })?.id || null));
     try {
       const result = await run.begin;
+      if (result.restored) {
+        if (disposed || connections.get(key) !== run || state.connectionPhases[key] === 'cancelling') return;
+        connections.delete(key);
+        connectionPhase(key, null);
+        await flow.loadAccounts(true);
+        return;
+      }
       run.attemptId = result.attemptId;
       if (disposed || connections.get(key) !== run || state.connectionPhases[key] === 'cancelling') return;
       connectionAttempt(key, result.attemptId);
@@ -451,24 +465,43 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
       })();
       return accountsPromise;
     },
-    selectProvider(provider) {
+    selectProvider(provider, { explicit = false } = {}) {
       if (!['chatgpt', 'claude'].includes(provider) || state.conversation.activeRequestId) return;
       const selected = selectAiAccount(state.accounts, provider, { selectedId: state.accountId, activeAccountId: state.activeAccountId });
       publish({ provider, accountId: selected?.id || null, models: [], modelId: null, modelError: '' });
-      void flow.loadModels();
+      void flow.loadModels({ explicit });
     },
-    async loadModels() {
+    async loadModels({ explicit = false } = {}) {
       if (disposed) return;
       const epoch = ++modelEpoch;
       if (!ready()) { publish({ models: [], modelId: null, modelsBusy: false, modelError: '' }); return; }
       const accountId = state.accountId;
+      const cached = modelCache.get(accountId);
+      if (!explicit || (account()?.state === 'unknown' && cached?.models?.length)) {
+        const models = cached?.models || [];
+        const modelId = models.some(item => item.id === state.modelId) ? state.modelId : cached?.defaultModelId || models[0]?.id || null;
+        publish({ models, modelId, modelsBusy: false, modelError: '' });
+        return;
+      }
       publish({ modelsBusy: true, modelError: '' });
       try {
         const result = await bridge.models(accountId);
         if (epoch !== modelEpoch || disposed) return;
         const models = result.models || [];
+        modelCache.set(accountId, { models, defaultModelId: result.defaultModelId });
         const modelId = models.some(item => item.id === state.modelId) ? state.modelId : models.some(item => item.id === result.defaultModelId) ? result.defaultModelId : models[0]?.id || null;
         publish({ models, modelId, modelError: models.length ? '' : '사용할 수 있는 모델이 없습니다.' });
+        if (explicit && account()?.state === 'unknown') {
+          try {
+            const snapshot = await bridge.accounts();
+            if (epoch === modelEpoch && !disposed) {
+              acceptAccounts(snapshot);
+              if (state.accountId !== accountId) publish({ models: [], modelId: null });
+            }
+          } catch (error) {
+            if (epoch === modelEpoch && !disposed) publish({ accountsError: errorMessage(error, 'AI 계정을 확인하지 못했습니다.') });
+          }
+        }
       } catch (error) { if (epoch === modelEpoch) publish({ models: [], modelId: null, modelError: errorMessage(error, '모델을 불러오지 못했습니다.') }); }
       finally { if (epoch === modelEpoch) publish({ modelsBusy: false }); }
     },
@@ -484,7 +517,7 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
       if (state.accountsBusy) return;
       if ([...conversations.values()].some(item => item.activeRequestId)) { publish({ accountsError: '답변이 끝난 뒤 연결을 해제할 수 있습니다.' }); return; }
       publish({ accountsBusy: true, accountsError: '' });
-      try { acceptAccounts(await bridge.disconnect(accountId)); }
+      try { const result = await bridge.disconnect(accountId); modelCache.delete(accountId); acceptAccounts(result); }
       catch (error) { publish({ accountsError: errorMessage(error, '연결을 해제하지 못했습니다.') }); }
       finally { publish({ accountsBusy: false }); }
     },

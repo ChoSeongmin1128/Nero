@@ -7,10 +7,12 @@ use fs2::FileExt;
 pub use oauth::SignInAttempt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc, Mutex,
 };
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -53,6 +55,21 @@ pub struct AccountsSnapshot {
     pub active_account_id: Option<String>,
     pub accounts: Vec<AccountSnapshot>,
     pub providers: Vec<ProviderInfo>,
+    pub checked: bool,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PublicProjection {
+    version: u8,
+    active_account_id: Option<String>,
+    accounts: Vec<PublicAccount>,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PublicAccount {
+    id: String,
+    provider: Provider,
+    label: String,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -61,6 +78,7 @@ pub struct SignOutOutcome {
     pub revocation_confirmed: bool,
 }
 
+#[derive(Clone)]
 pub struct SubscriptionSession {
     pub provider: Provider,
     pub account_id: String,
@@ -127,15 +145,42 @@ struct HttpFailure {
     code: Option<String>,
 }
 
+struct PendingSignIn {
+    oauth: oauth::Pending,
+    recovery: bool,
+}
+impl std::ops::Deref for PendingSignIn {
+    type Target = oauth::Pending;
+    fn deref(&self) -> &Self::Target {
+        &self.oauth
+    }
+}
+struct SessionFlight {
+    subscribers: AtomicUsize,
+    cancel: Arc<AtomicBool>,
+    result: Mutex<Option<Result<SubscriptionSession, String>>>,
+    done: tokio::sync::Notify,
+}
+struct SessionSubscriber(Arc<SessionFlight>);
+impl Drop for SessionSubscriber {
+    fn drop(&mut self) {
+        if self.0.subscribers.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.0.cancel.store(true, Ordering::Release);
+        }
+    }
+}
 #[derive(Clone)]
 pub struct AiAccounts {
     directory: PathBuf,
     client: reqwest::Client,
     store: Arc<dyn credentials::Credentials>,
     operation: Arc<tokio::sync::Mutex<()>>,
-    pending: Arc<Mutex<Option<Arc<oauth::Pending>>>>,
+    pending: Arc<Mutex<Option<Arc<PendingSignIn>>>>,
     closing: Arc<AtomicBool>,
     public_snapshot: Arc<Mutex<Option<AccountsSnapshot>>>,
+    credential_failure: Arc<Mutex<Option<credentials::Error>>>,
+    resolve_gate: Arc<Mutex<()>>,
+    sessions: Arc<Mutex<BTreeMap<String, Arc<SessionFlight>>>>,
 }
 
 impl AiAccounts {
@@ -160,9 +205,47 @@ impl AiAccounts {
             pending: Arc::new(Mutex::new(None)),
             closing: Arc::new(AtomicBool::new(false)),
             public_snapshot: Arc::new(Mutex::new(None)),
+            credential_failure: Arc::new(Mutex::new(None)),
+            resolve_gate: Arc::new(Mutex::new(())),
+            sessions: Arc::new(Mutex::new(BTreeMap::new())),
         })
     }
     pub fn snapshot(&self) -> Result<AccountsSnapshot, String> {
+        let cached = self
+            .public_snapshot
+            .lock()
+            .map_err(|_| "AI 연결 상태를 확인하지 못했습니다.")?;
+        if let Some(snapshot) = cached.as_ref() {
+            return Ok(snapshot.clone());
+        }
+        Ok(self.read_projection().unwrap_or_else(Self::unchecked_view))
+    }
+    pub fn resolve_accounts(&self) -> Result<AccountsSnapshot, String> {
+        self.resolve_accounts_inner(false)
+    }
+    pub fn resolve_accounts_interactive(&self) -> Result<AccountsSnapshot, String> {
+        self.resolve_accounts_inner(true)
+    }
+    fn resolve_accounts_inner(&self, interactive: bool) -> Result<AccountsSnapshot, String> {
+        self.ensure_open()?;
+        let _gate = self
+            .resolve_gate
+            .lock()
+            .map_err(|_| "AI 연결 상태를 확인하지 못했습니다.")?;
+        if let Some(snapshot) = self
+            .public_snapshot
+            .lock()
+            .map_err(|_| "AI 연결 상태를 확인하지 못했습니다.")?
+            .as_ref()
+        {
+            return Ok(snapshot.clone());
+        }
+        self.ensure_open()?;
+        let _operation = self
+            .operation
+            .try_lock()
+            .map_err(|_| "다른 AI 계정 작업이 진행 중입니다.")?;
+        let _file = self.file_guard()?;
         let mut cached = self
             .public_snapshot
             .lock()
@@ -170,13 +253,179 @@ impl AiAccounts {
         if let Some(snapshot) = cached.as_ref() {
             return Ok(snapshot.clone());
         }
-        let state = credentials::read::<SavedState>(self.store.as_ref())?;
+        if interactive {
+            self.retry_credentials();
+        }
+        let state = if interactive {
+            self.read_credentials_interactive()
+                .map_err(credentials::Error::message)?
+        } else {
+            self.read_credentials()
+                .map_err(credentials::Error::message)?
+        };
         let snapshot = Self::public_view(&state);
+        let _ = self.save_projection(&snapshot);
         *cached = Some(snapshot.clone());
         Ok(snapshot)
     }
+    fn unchecked_view() -> AccountsSnapshot {
+        let mut snapshot = Self::public_view(&SavedState::default());
+        snapshot.checked = false;
+        snapshot
+    }
+    fn read_projection(&self) -> Option<AccountsSnapshot> {
+        let path = self.directory.join("accounts-public-v1.json");
+        crate::path_safety::safe_ancestors(&path).ok()?;
+        let metadata = fs::symlink_metadata(&path).ok()?;
+        if !metadata.is_file() || metadata.len() > 512 * 1024 {
+            return None;
+        }
+        let mut bytes = Vec::new();
+        File::open(path)
+            .ok()?
+            .take(512 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .ok()?;
+        if bytes.len() > 512 * 1024 {
+            return None;
+        }
+        let projection: PublicProjection = serde_json::from_slice(&bytes).ok()?;
+        if projection.version != 1 {
+            return None;
+        }
+        let mut snapshot = Self::unchecked_view();
+        snapshot.active_account_id = projection.active_account_id;
+        snapshot.accounts = projection
+            .accounts
+            .into_iter()
+            .map(|account| AccountSnapshot {
+                id: account.id,
+                provider: account.provider,
+                label: account.label,
+                email: None,
+                state: "unknown".into(),
+                can_invoke: false,
+                configured: true,
+                reason: None,
+            })
+            .collect();
+        Some(snapshot)
+    }
+    fn save_projection(&self, snapshot: &AccountsSnapshot) -> Result<(), String> {
+        let projection = PublicProjection {
+            version: 1,
+            active_account_id: snapshot.active_account_id.clone(),
+            accounts: snapshot
+                .accounts
+                .iter()
+                .map(|account| PublicAccount {
+                    id: account.id.clone(),
+                    provider: account.provider,
+                    label: account.label.clone(),
+                })
+                .collect(),
+        };
+        let path = self.directory.join("accounts-public-v1.json");
+        crate::path_safety::safe_ancestors(&path)
+            .map_err(|_| "AI 계정 상태를 저장하지 못했습니다.")?;
+        fs::create_dir_all(&self.directory).map_err(|_| "AI 계정 상태를 저장하지 못했습니다.")?;
+        crate::path_safety::safe_ancestors(&path)
+            .map_err(|_| "AI 계정 상태를 저장하지 못했습니다.")?;
+        let mut file = tempfile::NamedTempFile::new_in(&self.directory)
+            .map_err(|_| "AI 계정 상태를 저장하지 못했습니다.")?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.as_file()
+                .set_permissions(fs::Permissions::from_mode(0o600))
+                .map_err(|_| "AI 계정 상태를 저장하지 못했습니다.")?;
+        }
+        serde_json::to_writer(&mut file, &projection)
+            .map_err(|_| "AI 계정 상태를 저장하지 못했습니다.")?;
+        file.flush()
+            .map_err(|_| "AI 계정 상태를 저장하지 못했습니다.")?;
+        file.persist(path)
+            .map_err(|_| "AI 계정 상태를 저장하지 못했습니다.")?;
+        Ok(())
+    }
+    fn stage_legacy_projection(&self) -> Result<Option<tempfile::NamedTempFile>, String> {
+        let original = self.directory.join("accounts-public-v1.json");
+        let backup = self.directory.join("legacy-accounts-public-v1.json");
+        crate::path_safety::safe_ancestors(&original)
+            .map_err(|_| "AI 계정 상태를 보존하지 못했습니다.")?;
+        crate::path_safety::safe_ancestors(&backup)
+            .map_err(|_| "AI 계정 상태를 보존하지 못했습니다.")?;
+        match fs::symlink_metadata(&backup) {
+            Ok(metadata) if metadata.is_file() => return Ok(None),
+            Ok(_) => return Err("AI 계정 상태를 보존하지 못했습니다.".into()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err("AI 계정 상태를 보존하지 못했습니다.".into()),
+        }
+        let metadata = match fs::symlink_metadata(&original) {
+            Ok(metadata) if metadata.is_file() && metadata.len() <= 512 * 1024 => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            _ => return Err("AI 계정 상태를 보존하지 못했습니다.".into()),
+        };
+        let mut bytes = Vec::with_capacity(metadata.len() as usize);
+        File::open(original)
+            .map_err(|_| "AI 계정 상태를 보존하지 못했습니다.")?
+            .take(512 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| "AI 계정 상태를 보존하지 못했습니다.")?;
+        if bytes.len() > 512 * 1024 {
+            return Err("AI 계정 상태를 보존하지 못했습니다.".into());
+        }
+        let mut file = tempfile::NamedTempFile::new_in(&self.directory)
+            .map_err(|_| "AI 계정 상태를 보존하지 못했습니다.")?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.as_file()
+                .set_permissions(fs::Permissions::from_mode(0o600))
+                .map_err(|_| "AI 계정 상태를 보존하지 못했습니다.")?;
+        }
+        file.write_all(&bytes)
+            .map_err(|_| "AI 계정 상태를 보존하지 못했습니다.")?;
+        file.flush()
+            .map_err(|_| "AI 계정 상태를 보존하지 못했습니다.")?;
+        Ok(Some(file))
+    }
+    fn ensure_recovery_slot_empty(&self) -> Result<(), String> {
+        if self
+            .store
+            .read("credential-state-v2")
+            .map_err(credentials::Error::message)?
+            .is_some()
+        {
+            return Err("로그인 중 계정이 변경되었습니다. 다시 연결해 주세요.".into());
+        }
+        Ok(())
+    }
+    fn commit_recovery(&self, state: &SavedState) -> Result<(), String> {
+        self.ensure_recovery_slot_empty()?;
+        let staged = self.stage_legacy_projection()?;
+        if let Err(error) = credentials::write(self.store.as_ref(), state) {
+            if let Ok(mut failure) = self.credential_failure.lock() {
+                *failure = Some(error);
+            }
+            return Err(error.message());
+        }
+        if let Some(file) = staged {
+            file.persist_noclobber(self.directory.join("legacy-accounts-public-v1.json"))
+                .map_err(|_| "AI 계정 상태를 보존하지 못했습니다.")?;
+        }
+        let snapshot = Self::public_view(state);
+        let _ = self.save_projection(&snapshot);
+        *self
+            .public_snapshot
+            .lock()
+            .map_err(|_| "AI 연결 상태를 확인하지 못했습니다.")? = Some(snapshot);
+        self.retry_credentials();
+        Ok(())
+    }
     fn public_view(state: &SavedState) -> AccountsSnapshot {
         AccountsSnapshot {
+            checked: true,
             active_account_id: state.active_account_id.clone(),
             accounts: state.accounts.iter().map(AccountRecord::snapshot).collect(),
             providers: vec![
@@ -211,7 +460,35 @@ impl AiAccounts {
             .map_err(|_| "다른 AI 계정 작업이 진행 중입니다.")?;
         self.ensure_open()?;
         let _file = self.file_guard()?;
-        let mut state = self.read()?;
+        let mut account_id = account_id;
+        let mut recovery = false;
+        let latched = self
+            .credential_failure
+            .lock()
+            .map_err(|_| "AI 연결 상태를 확인하지 못했습니다.")?
+            .clone();
+        let result = match latched {
+            Some(error) => Err(error),
+            None => self.read_credentials_interactive(),
+        };
+        let mut state = match result {
+            Ok(state) => state,
+            Err(credentials::Error::LegacyInteractionRequired) => {
+                if self.store.format() != credentials::Format::Single
+                    || self
+                        .store
+                        .read("credential-state-v2")
+                        .map_err(credentials::Error::message)?
+                        .is_some()
+                {
+                    return Err(credentials::Error::LegacyInteractionRequired.message());
+                }
+                recovery = true;
+                account_id = None;
+                SavedState::default()
+            }
+            Err(error) => return Err(error.message()),
+        };
         let selected = account_id
             .as_ref()
             .map(|id| {
@@ -225,7 +502,10 @@ impl AiAccounts {
             .transpose()?;
         if state.host_id.is_none() {
             state.host_id = Some(format!("urn:uuid:{}", uuid::Uuid::new_v4()));
-            self.save(&state)?;
+            if !recovery {
+                self.save(&state)?;
+                self.retry_credentials();
+            }
         }
         let (pending, request) = if provider == Provider::Claude {
             oauth::Pending::begin_claude(
@@ -253,7 +533,10 @@ impl AiAccounts {
             .lock()
             .map_err(|_| "AI 연결 상태를 확인하지 못했습니다.")?;
         self.ensure_open()?;
-        *current = Some(Arc::new(pending));
+        *current = Some(Arc::new(PendingSignIn {
+            oauth: pending,
+            recovery,
+        }));
         Ok(request)
     }
     pub async fn complete_sign_in(
@@ -286,7 +569,7 @@ impl AiAccounts {
     }
     async fn finish_sign_in(
         &self,
-        pending: &oauth::Pending,
+        pending: &PendingSignIn,
         cancel: &Arc<AtomicBool>,
     ) -> Result<AccountSnapshot, String> {
         if pending.provider == Provider::Claude {
@@ -297,7 +580,15 @@ impl AiAccounts {
         self.ensure_open()?;
         let _file = self.file_guard()?;
         stopped(&pending.cancelled, cancel)?;
-        let mut state = self.read()?;
+        let mut state = if pending.recovery {
+            self.ensure_recovery_slot_empty()?;
+            SavedState {
+                host_id: Some(pending.host_id.clone()),
+                ..SavedState::default()
+            }
+        } else {
+            self.read()?
+        };
         if state.host_id.as_deref() != Some(pending.host_id.as_str()) {
             return Err("로그인 중 기기 연결 정보가 변경되었습니다. 다시 연결해 주세요.".into());
         }
@@ -334,7 +625,9 @@ impl AiAccounts {
                     tokens: None,
                 };
                 state.accounts.push(account.clone());
-                self.save(&state)?;
+                if !pending.recovery {
+                    self.save(&state)?;
+                }
                 account
             }
         };
@@ -391,7 +684,7 @@ impl AiAccounts {
         }
         stopped(&pending.cancelled, cancel)?;
         self.ensure_open()?;
-        let mut current = self.read()?;
+        let mut current = state;
         let record = current
             .accounts
             .iter_mut()
@@ -407,7 +700,11 @@ impl AiAccounts {
         record.revision += 1;
         let snapshot = record.snapshot();
         current.active_account_id = Some(record.id.clone());
-        self.save(&current)?;
+        if pending.recovery {
+            self.commit_recovery(&current)?;
+        } else {
+            self.save(&current)?;
+        }
         Ok(snapshot)
     }
     async fn finish_claude_sign_in(
@@ -465,7 +762,7 @@ impl AiAccounts {
         }
         stopped(&pending.cancelled, cancel)?;
         self.ensure_open()?;
-        let mut current = self.read()?;
+        let mut current = state;
         let record = if let Some(selected) = selected {
             let record = current
                 .accounts
@@ -720,18 +1017,65 @@ impl AiAccounts {
     ) -> Result<SubscriptionSession, String> {
         self.ensure_open()?;
         stopped(&cancel, &cancel)?;
-        let accounts = self.clone();
-        let account_id = account_id.to_string();
-        let transaction_cancel = cancel.clone();
-        let task = tokio::spawn(async move {
-            accounts
-                .session_transaction(&account_id, transaction_cancel)
-                .await
-        });
-        with_cancel(task, &cancel, &cancel)
-            .await?
-            .map_err(|_| "ChatGPT 인증을 갱신하지 못했습니다.".to_string())?
+        let flight = {
+            let mut flights = self
+                .sessions
+                .lock()
+                .map_err(|_| "AI 연결 상태를 확인하지 못했습니다.")?;
+            if let Some(flight) = flights
+                .get(account_id)
+                .filter(|flight| !flight.cancel.load(Ordering::Acquire))
+            {
+                flight.subscribers.fetch_add(1, Ordering::AcqRel);
+                flight.clone()
+            } else {
+                let flight = Arc::new(SessionFlight {
+                    subscribers: AtomicUsize::new(0),
+                    cancel: Arc::new(AtomicBool::new(false)),
+                    result: Mutex::new(None),
+                    done: tokio::sync::Notify::new(),
+                });
+                flight.subscribers.fetch_add(1, Ordering::AcqRel);
+                flights.insert(account_id.to_string(), flight.clone());
+                let accounts = self.clone();
+                let account_id = account_id.to_string();
+                let active = flight.clone();
+                tokio::spawn(async move {
+                    let result = accounts
+                        .session_transaction(&account_id, active.cancel.clone())
+                        .await;
+                    *active.result.lock().unwrap() = Some(result);
+                    active.done.notify_waiters();
+                    let mut flights = accounts.sessions.lock().unwrap();
+                    if flights
+                        .get(&account_id)
+                        .is_some_and(|current| Arc::ptr_eq(current, &active))
+                    {
+                        flights.remove(&account_id);
+                    }
+                });
+                flight
+            }
+        };
+        let _subscriber = SessionSubscriber(flight.clone());
+        with_cancel(
+            async {
+                loop {
+                    let notified = flight.done.notified();
+                    tokio::pin!(notified);
+                    notified.as_mut().enable();
+                    if let Some(result) = flight.result.lock().unwrap().clone() {
+                        return result;
+                    }
+                    notified.await;
+                }
+            },
+            &cancel,
+            &cancel,
+        )
+        .await?
     }
+
     async fn session_transaction(
         &self,
         account_id: &str,
@@ -742,10 +1086,15 @@ impl AiAccounts {
         self.ensure_open()?;
         let _file = self.file_guard()?;
         let mut state = self.read()?;
+        let selected_id = if account_id.is_empty() {
+            state.active_account_id.as_deref().ok_or(SIGN_IN_REQUIRED)?
+        } else {
+            account_id
+        };
         let position = state
             .accounts
             .iter()
-            .position(|account| account.id == account_id)
+            .position(|account| account.id == selected_id)
             .ok_or(SIGN_IN_REQUIRED)?;
         let account = state.accounts[position].clone();
         let old = account.tokens.as_ref().ok_or(SIGN_IN_REQUIRED)?;
@@ -840,7 +1189,7 @@ impl AiAccounts {
         stopped(&cancel, &cancel)?;
         Ok(SubscriptionSession {
             provider: account.provider,
-            account_id: account_id.into(),
+            account_id: account.id.clone(),
             base_url: if account.provider == Provider::Claude {
                 claude::BASE_URL
             } else {
@@ -923,14 +1272,56 @@ impl AiAccounts {
         }
         Ok(value)
     }
+    pub fn legacy_recovery_required(&self) -> bool {
+        self.credential_failure
+            .lock()
+            .ok()
+            .is_some_and(|failure| *failure == Some(credentials::Error::LegacyInteractionRequired))
+    }
+    pub fn retry_credentials(&self) {
+        if let Ok(mut failure) = self.credential_failure.lock() {
+            *failure = None;
+        }
+    }
+    fn read_credentials(&self) -> Result<SavedState, credentials::Error> {
+        let mut failure = self
+            .credential_failure
+            .lock()
+            .map_err(|_| credentials::Error::Unavailable)?;
+        if let Some(error) = *failure {
+            return Err(error);
+        }
+        let result = credentials::read::<SavedState>(self.store.as_ref());
+        if let Err(error) = result {
+            *failure = Some(error);
+        }
+        result
+    }
+    fn read_credentials_interactive(&self) -> Result<SavedState, credentials::Error> {
+        match self.read_credentials() {
+            Err(credentials::Error::InteractionRequired)
+                if self.store.format() == credentials::Format::Single =>
+            {
+                let result = credentials::read_interactive::<SavedState>(self.store.as_ref());
+                if let Ok(mut failure) = self.credential_failure.lock() {
+                    *failure = result.as_ref().err().copied();
+                }
+                result
+            }
+            result => result,
+        }
+    }
     fn read(&self) -> Result<SavedState, String> {
         let mut cached = self
             .public_snapshot
             .lock()
             .map_err(|_| "AI 연결 상태를 확인하지 못했습니다.")?;
-        let result = credentials::read::<SavedState>(self.store.as_ref());
+        let result = self.read_credentials();
         *cached = result.as_ref().ok().map(Self::public_view);
-        result
+        if let Some(snapshot) = cached.as_ref() {
+            let _ = self.save_projection(snapshot);
+        }
+        result.map_err(credentials::Error::message)
     }
     fn save(&self, state: &SavedState) -> Result<(), String> {
         let mut cached = self
@@ -938,8 +1329,15 @@ impl AiAccounts {
             .lock()
             .map_err(|_| "AI 연결 상태를 확인하지 못했습니다.")?;
         *cached = None;
-        credentials::write(self.store.as_ref(), state)?;
-        *cached = Some(Self::public_view(state));
+        if let Err(error) = credentials::write(self.store.as_ref(), state) {
+            if let Ok(mut failure) = self.credential_failure.lock() {
+                *failure = Some(error);
+            }
+            return Err(error.message());
+        }
+        let snapshot = Self::public_view(state);
+        let _ = self.save_projection(&snapshot);
+        *cached = Some(snapshot);
         Ok(())
     }
     fn file_guard(&self) -> Result<File, String> {
@@ -1138,15 +1536,19 @@ mod tests {
         values: Mutex<BTreeMap<String, Vec<u8>>>,
         reads: AtomicUsize,
         fail_write: AtomicBool,
+        fail_read: AtomicBool,
     }
     impl credentials::Credentials for Memory {
-        fn read(&self, name: &str) -> Result<Option<Vec<u8>>, String> {
+        fn read(&self, name: &str) -> Result<Option<Vec<u8>>, credentials::Error> {
             self.reads.fetch_add(1, Ordering::Relaxed);
+            if self.fail_read.load(Ordering::Relaxed) {
+                return Err(credentials::Error::InteractionRequired);
+            }
             Ok(self.values.lock().unwrap().get(name).cloned())
         }
-        fn write(&self, name: &str, value: &[u8]) -> Result<(), String> {
+        fn write(&self, name: &str, value: &[u8]) -> Result<(), credentials::Error> {
             if self.fail_write.load(Ordering::Relaxed) {
-                return Err("synthetic credential write failure".into());
+                return Err(credentials::Error::Unavailable);
             }
             self.values
                 .lock()
@@ -1154,7 +1556,7 @@ mod tests {
                 .insert(name.into(), value.to_vec());
             Ok(())
         }
-        fn delete(&self, name: &str) -> Result<(), String> {
+        fn delete(&self, name: &str) -> Result<(), credentials::Error> {
             self.values.lock().unwrap().remove(name);
             Ok(())
         }
@@ -1187,8 +1589,11 @@ mod tests {
     #[test]
     fn snapshots_never_expose_tokens_and_keep_same_email_registrations_separate() {
         let temp = tempfile::tempdir().unwrap();
-        let manager =
-            AiAccounts::with_store(temp.path().join("ai"), Arc::new(Memory::default())).unwrap();
+        let manager = AiAccounts::with_store(
+            temp.path().canonicalize().unwrap().join("ai"),
+            Arc::new(Memory::default()),
+        )
+        .unwrap();
         manager
             .save(&SavedState {
                 host_id: Some("urn:uuid:fixture".into()),
@@ -1207,7 +1612,12 @@ mod tests {
         assert!(!encoded.contains("oaiapp_"));
         assert!(snapshot.providers[1].configured);
         assert!(snapshot.providers[1].reason.is_none());
-        assert!(!temp.path().join("ai").exists());
+        assert!(temp
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("ai/accounts-public-v1.json")
+            .exists());
     }
     #[test]
     fn declining_plan_scope_keeps_identity_but_never_enables_inference() {
@@ -1246,23 +1656,32 @@ mod tests {
     #[tokio::test]
     async fn cancelled_session_access_does_not_start_network_or_credential_reads() {
         let temp = tempfile::tempdir().unwrap();
-        let manager =
-            AiAccounts::with_store(temp.path().join("ai"), Arc::new(Memory::default())).unwrap();
+        let manager = AiAccounts::with_store(
+            temp.path().canonicalize().unwrap().join("ai"),
+            Arc::new(Memory::default()),
+        )
+        .unwrap();
         let cancel = Arc::new(AtomicBool::new(true));
         assert!(manager
             .subscription_session_with_cancel("none", cancel)
             .await
             .is_err());
-        assert!(!temp.path().join("ai").exists());
+        assert!(!temp.path().canonicalize().unwrap().join("ai").exists());
     }
     #[tokio::test]
     async fn shutdown_cancels_browser_wait_and_blocks_operations_until_guard_is_dropped() {
         let temp = tempfile::tempdir().unwrap();
-        let manager =
-            AiAccounts::with_store(temp.path().join("ai"), Arc::new(Memory::default())).unwrap();
+        let manager = AiAccounts::with_store(
+            temp.path().canonicalize().unwrap().join("ai"),
+            Arc::new(Memory::default()),
+        )
+        .unwrap();
         let (pending, _) =
             oauth::Pending::begin("urn:uuid:fixture", None, None, None, None, None).unwrap();
-        let pending = Arc::new(pending);
+        let pending = Arc::new(PendingSignIn {
+            oauth: pending,
+            recovery: false,
+        });
         *manager.pending.lock().unwrap() = Some(pending.clone());
 
         let guard = manager.prepare_shutdown().await.unwrap();
@@ -1274,7 +1693,7 @@ mod tests {
         assert!(manager.subscription_session("none").await.is_err());
         assert!(manager.prepare_shutdown().await.is_err());
         assert!(manager.ensure_open().is_err());
-        assert!(!temp.path().join("ai").exists());
+        assert!(!temp.path().canonicalize().unwrap().join("ai").exists());
         drop(guard);
         assert!(manager.ensure_open().is_ok());
     }
@@ -1282,11 +1701,17 @@ mod tests {
     async fn cancelling_an_accepted_sign_in_finishes_the_browser_with_failure() {
         use std::io::{Read, Write};
         let temp = tempfile::tempdir().unwrap();
-        let manager =
-            AiAccounts::with_store(temp.path().join("ai"), Arc::new(Memory::default())).unwrap();
+        let manager = AiAccounts::with_store(
+            temp.path().canonicalize().unwrap().join("ai"),
+            Arc::new(Memory::default()),
+        )
+        .unwrap();
         let (pending, attempt) =
             oauth::Pending::begin("urn:uuid:fixture", None, None, None, None, None).unwrap();
-        let pending = Arc::new(pending);
+        let pending = Arc::new(PendingSignIn {
+            oauth: pending,
+            recovery: false,
+        });
         *manager.pending.lock().unwrap() = Some(pending.clone());
         let url = reqwest::Url::parse(&pending.redirect_uri).unwrap();
         let mut browser = std::net::TcpStream::connect(("127.0.0.1", url.port().unwrap())).unwrap();
@@ -1308,13 +1733,16 @@ mod tests {
         assert!(output.contains("\"ok\":false"));
         assert!(!output.contains("\"ok\":true"));
         assert!(!output.contains("CODE_PRIVATE"));
-        assert!(!temp.path().join("ai").exists());
+        assert!(!temp.path().canonicalize().unwrap().join("ai").exists());
     }
     #[tokio::test]
     async fn shutdown_waits_until_in_flight_credential_commit_has_finished() {
         let temp = tempfile::tempdir().unwrap();
-        let manager =
-            AiAccounts::with_store(temp.path().join("ai"), Arc::new(Memory::default())).unwrap();
+        let manager = AiAccounts::with_store(
+            temp.path().canonicalize().unwrap().join("ai"),
+            Arc::new(Memory::default()),
+        )
+        .unwrap();
         let operation = manager.operation.clone().lock_owned().await;
         let draining = manager.clone();
         let task = tokio::spawn(async move { draining.prepare_shutdown().await });
@@ -1354,8 +1782,11 @@ mod tests {
     #[tokio::test]
     async fn shutdown_timeout_preserves_in_flight_operation_and_restores_admission() {
         let temp = tempfile::tempdir().unwrap();
-        let manager =
-            AiAccounts::with_store(temp.path().join("ai"), Arc::new(Memory::default())).unwrap();
+        let manager = AiAccounts::with_store(
+            temp.path().canonicalize().unwrap().join("ai"),
+            Arc::new(Memory::default()),
+        )
+        .unwrap();
         let operation = manager.operation.clone().lock_owned().await;
         assert!(manager
             .drain_operations(Duration::from_millis(1))
@@ -1376,8 +1807,11 @@ mod tests {
     #[tokio::test]
     async fn queued_session_access_cannot_start_after_shutdown_admission_closes() {
         let temp = tempfile::tempdir().unwrap();
-        let manager =
-            AiAccounts::with_store(temp.path().join("ai"), Arc::new(Memory::default())).unwrap();
+        let manager = AiAccounts::with_store(
+            temp.path().canonicalize().unwrap().join("ai"),
+            Arc::new(Memory::default()),
+        )
+        .unwrap();
         let operation = manager.operation.clone().lock_owned().await;
         let queued = manager.clone();
         let session = tokio::spawn(async move { queued.subscription_session("none").await });
@@ -1394,14 +1828,17 @@ mod tests {
         drop(operation);
         let guard = shutdown.await.unwrap().unwrap();
         assert!(session.await.unwrap().is_err());
-        assert!(!temp.path().join("ai").exists());
+        assert!(!temp.path().canonicalize().unwrap().join("ai").exists());
         drop(guard);
     }
     #[test]
     fn ordinary_account_selection_does_not_replace_another_accounts_credentials() {
         let temp = tempfile::tempdir().unwrap();
-        let manager =
-            AiAccounts::with_store(temp.path().join("ai"), Arc::new(Memory::default())).unwrap();
+        let manager = AiAccounts::with_store(
+            temp.path().canonicalize().unwrap().join("ai"),
+            Arc::new(Memory::default()),
+        )
+        .unwrap();
         let first = record("first", "oaiapp_first");
         let second = record("second", "oaiapp_second");
         manager
@@ -1447,8 +1884,13 @@ mod tests {
     fn cross_process_operation_lock_prevents_racing_rotating_credential_writes() {
         let temp = tempfile::tempdir().unwrap();
         let store = Arc::new(Memory::default());
-        let first = AiAccounts::with_store(temp.path().join("ai"), store.clone()).unwrap();
-        let second = AiAccounts::with_store(temp.path().join("ai"), store).unwrap();
+        let first = AiAccounts::with_store(
+            temp.path().canonicalize().unwrap().join("ai"),
+            store.clone(),
+        )
+        .unwrap();
+        let second =
+            AiAccounts::with_store(temp.path().canonicalize().unwrap().join("ai"), store).unwrap();
         let _held = first.file_guard().unwrap();
         assert!(second.file_guard().is_err());
     }
@@ -1466,9 +1908,16 @@ mod tests {
             },
         )
         .unwrap();
-        let manager = AiAccounts::with_store(temp.path().join("ai"), store.clone()).unwrap();
+        let manager = AiAccounts::with_store(
+            temp.path().canonicalize().unwrap().join("ai"),
+            store.clone(),
+        )
+        .unwrap();
         let before = store.reads.load(Ordering::Relaxed);
-        let first = manager.snapshot().unwrap();
+        let unchecked = manager.snapshot().unwrap();
+        assert!(!unchecked.checked);
+        assert_eq!(store.reads.load(Ordering::Relaxed), before);
+        let first = manager.resolve_accounts().unwrap();
         let after_first = store.reads.load(Ordering::Relaxed);
         assert!(after_first > before);
         let barrier = Arc::new(std::sync::Barrier::new(8));
@@ -1490,13 +1939,459 @@ mod tests {
         let encoded = serde_json::to_string(&first).unwrap();
         assert!(!encoded.contains("PRIVATE"));
         assert!(!encoded.contains("fixture-client"));
-        assert!(!temp.path().join("ai").exists());
+        assert!(temp
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("ai/accounts-public-v1.json")
+            .exists());
+    }
+    #[tokio::test]
+    async fn empty_account_id_resolves_active_account_in_the_session_read() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Arc::new(Memory::default());
+        credentials::write(
+            store.as_ref(),
+            &SavedState {
+                host_id: None,
+                active_account_id: Some("first".into()),
+                accounts: vec![record("first", "fixture-client")],
+            },
+        )
+        .unwrap();
+        let before = store.reads.load(Ordering::Relaxed);
+        credentials::read::<SavedState>(store.as_ref()).unwrap();
+        let per_load = store.reads.load(Ordering::Relaxed) - before;
+        let manager = AiAccounts::with_store(
+            temp.path().canonicalize().unwrap().join("ai"),
+            store.clone(),
+        )
+        .unwrap();
+        let before = store.reads.load(Ordering::Relaxed);
+        let session = manager.subscription_session("").await.unwrap();
+        assert_eq!(session.account_id, "first");
+        assert_eq!(store.reads.load(Ordering::Relaxed) - before, per_load);
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_denied_sessions_share_one_read_and_do_not_retry() {
+        struct Denied {
+            entered: std::sync::mpsc::Sender<()>,
+            release: (Mutex<bool>, std::sync::Condvar),
+            reads: AtomicUsize,
+        }
+        impl credentials::Credentials for Denied {
+            fn read(&self, _: &str) -> Result<Option<Vec<u8>>, credentials::Error> {
+                self.reads.fetch_add(1, Ordering::Relaxed);
+                let _ = self.entered.send(());
+                let (lock, changed) = &self.release;
+                let mut released = lock.lock().unwrap();
+                while !*released {
+                    released = changed.wait(released).unwrap();
+                }
+                Err(credentials::Error::InteractionRequired)
+            }
+            fn write(&self, _: &str, _: &[u8]) -> Result<(), credentials::Error> {
+                unreachable!()
+            }
+            fn delete(&self, _: &str) -> Result<(), credentials::Error> {
+                unreachable!()
+            }
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let (entered, waiting) = std::sync::mpsc::channel();
+        let store = Arc::new(Denied {
+            entered,
+            release: (Mutex::new(false), std::sync::Condvar::new()),
+            reads: AtomicUsize::new(0),
+        });
+        let manager = AiAccounts::with_store(
+            temp.path().canonicalize().unwrap().join("ai"),
+            store.clone(),
+        )
+        .unwrap();
+        let first_manager = manager.clone();
+        let first = tokio::spawn(async move { first_manager.subscription_session("first").await });
+        tokio::task::spawn_blocking(move || waiting.recv_timeout(Duration::from_secs(5)).unwrap())
+            .await
+            .unwrap();
+        let second_manager = manager.clone();
+        let second =
+            tokio::spawn(async move { second_manager.subscription_session("first").await });
+        let shared = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let count = manager
+                    .sessions
+                    .lock()
+                    .unwrap()
+                    .get("first")
+                    .map(|flight| flight.subscribers.load(Ordering::Acquire))
+                    .unwrap_or(0);
+                if count == 2 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        *store.release.0.lock().unwrap() = true;
+        store.release.1.notify_all();
+        assert!(shared.is_ok());
+        assert!(first.await.unwrap().is_err());
+        assert!(second.await.unwrap().is_err());
+        assert!(manager.subscription_session("first").await.is_err());
+        assert_eq!(store.reads.load(Ordering::Relaxed), 1);
+    }
+    #[test]
+    fn denied_legacy_allows_explicit_new_login_and_preserves_old_entries() {
+        struct LegacyStore {
+            values: Mutex<BTreeMap<String, Vec<u8>>>,
+            reads: AtomicUsize,
+        }
+        impl credentials::Credentials for LegacyStore {
+            fn format(&self) -> credentials::Format {
+                credentials::Format::Single
+            }
+            fn read(&self, name: &str) -> Result<Option<Vec<u8>>, credentials::Error> {
+                self.reads.fetch_add(1, Ordering::Relaxed);
+                if name == "credential-state-v1" {
+                    return Err(credentials::Error::InteractionRequired);
+                }
+                Ok(self.values.lock().unwrap().get(name).cloned())
+            }
+            fn read_interactive(&self, _: &str) -> Result<Option<Vec<u8>>, credentials::Error> {
+                panic!("legacy must stay silent")
+            }
+            fn write(&self, name: &str, value: &[u8]) -> Result<(), credentials::Error> {
+                self.values
+                    .lock()
+                    .unwrap()
+                    .insert(name.into(), value.into());
+                Ok(())
+            }
+            fn delete(&self, _: &str) -> Result<(), credentials::Error> {
+                panic!("legacy must be preserved")
+            }
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().canonicalize().unwrap().join("ai");
+        let store = Arc::new(LegacyStore {
+            values: Mutex::new(BTreeMap::from([
+                ("credential-state-v1".into(), b"legacy-index".to_vec()),
+                ("legacy-chunk".into(), b"legacy-secret".to_vec()),
+            ])),
+            reads: AtomicUsize::new(0),
+        });
+        let manager = AiAccounts::with_store(directory.clone(), store.clone()).unwrap();
+        let public = AiAccounts::public_view(&SavedState {
+            host_id: None,
+            active_account_id: Some("old".into()),
+            accounts: vec![record("old", "old-client")],
+        });
+        manager.save_projection(&public).unwrap();
+        let projection = fs::read(directory.join("accounts-public-v1.json")).unwrap();
+        assert_eq!(
+            manager.resolve_accounts_interactive().err().as_deref(),
+            Some(
+                credentials::Error::LegacyInteractionRequired
+                    .message()
+                    .as_str()
+            )
+        );
+        let after_denial = store.reads.load(Ordering::Relaxed);
+        assert!(manager.resolve_accounts().is_err());
+        assert!(!manager.snapshot().unwrap().checked);
+        assert_eq!(store.reads.load(Ordering::Relaxed), after_denial);
+        let attempt = manager
+            .begin_sign_in(Provider::ChatGpt, Some("old".into()))
+            .unwrap();
+        assert!(attempt.authorization_url.contains("dynamic_agent_client"));
+        {
+            let pending = manager.pending.lock().unwrap();
+            assert!(pending.as_ref().unwrap().recovery);
+            assert_ne!(pending.as_ref().unwrap().account_id, "old");
+            assert!(pending.as_ref().unwrap().selected_id.is_none());
+        }
+        assert!(!directory.join("legacy-accounts-public-v1.json").exists());
+        assert_eq!(
+            fs::read(directory.join("accounts-public-v1.json")).unwrap(),
+            projection
+        );
+        assert!(!store
+            .values
+            .lock()
+            .unwrap()
+            .contains_key("credential-state-v2"));
+        manager.cancel_sign_in(&attempt.id).unwrap();
+        assert!(manager.pending.lock().unwrap().is_none());
+        assert_eq!(
+            fs::read(directory.join("accounts-public-v1.json")).unwrap(),
+            projection
+        );
+        assert!(!directory.join("legacy-accounts-public-v1.json").exists());
+        let previous = manager.begin_sign_in(Provider::ChatGpt, None).unwrap();
+        let replacement = manager.begin_sign_in(Provider::ChatGpt, None).unwrap();
+        assert_ne!(previous.id, replacement.id);
+        manager.cancel_sign_in(&replacement.id).unwrap();
+        assert_eq!(
+            fs::read(directory.join("accounts-public-v1.json")).unwrap(),
+            projection
+        );
+        assert!(!directory.join("legacy-accounts-public-v1.json").exists());
+        let values = store.values.lock().unwrap();
+        assert_eq!(values["credential-state-v1"], b"legacy-index");
+        assert_eq!(values["legacy-chunk"], b"legacy-secret");
+        assert!(!values.contains_key("credential-state-v2"));
+    }
+    #[test]
+    fn recovery_commit_publishes_only_after_success_and_rejects_conflicts() {
+        struct RecoveryStore {
+            values: Mutex<BTreeMap<String, Vec<u8>>>,
+            fail: AtomicBool,
+        }
+        impl credentials::Credentials for RecoveryStore {
+            fn format(&self) -> credentials::Format {
+                credentials::Format::Single
+            }
+            fn read(&self, name: &str) -> Result<Option<Vec<u8>>, credentials::Error> {
+                Ok(self.values.lock().unwrap().get(name).cloned())
+            }
+            fn write(&self, name: &str, value: &[u8]) -> Result<(), credentials::Error> {
+                if self.fail.load(Ordering::Relaxed) {
+                    return Err(credentials::Error::Unavailable);
+                }
+                self.values
+                    .lock()
+                    .unwrap()
+                    .insert(name.into(), value.into());
+                Ok(())
+            }
+            fn delete(&self, _: &str) -> Result<(), credentials::Error> {
+                panic!("legacy must remain")
+            }
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().canonicalize().unwrap().join("ai");
+        let store = Arc::new(RecoveryStore {
+            values: Mutex::new(BTreeMap::from([("legacy".into(), b"original".to_vec())])),
+            fail: AtomicBool::new(true),
+        });
+        let manager = AiAccounts::with_store(directory.clone(), store.clone()).unwrap();
+        let old = AiAccounts::public_view(&SavedState {
+            host_id: None,
+            active_account_id: Some("old".into()),
+            accounts: vec![record("old", "old-client")],
+        });
+        manager.save_projection(&old).unwrap();
+        let original = fs::read(directory.join("accounts-public-v1.json")).unwrap();
+        let accepted = SavedState {
+            host_id: Some("new-host".into()),
+            active_account_id: Some("new".into()),
+            accounts: vec![record("new", "new-client")],
+        };
+        assert!(manager.commit_recovery(&accepted).is_err());
+        assert!(!directory.join("legacy-accounts-public-v1.json").exists());
+        assert_eq!(
+            fs::read(directory.join("accounts-public-v1.json")).unwrap(),
+            original
+        );
+        assert!(!store
+            .values
+            .lock()
+            .unwrap()
+            .contains_key("credential-state-v2"));
+        store.fail.store(false, Ordering::Relaxed);
+        manager.commit_recovery(&accepted).unwrap();
+        assert_eq!(
+            fs::read(directory.join("legacy-accounts-public-v1.json")).unwrap(),
+            original
+        );
+        let saved = store
+            .values
+            .lock()
+            .unwrap()
+            .get("credential-state-v2")
+            .unwrap()
+            .clone();
+        assert_eq!(
+            serde_json::from_slice::<SavedState>(&saved)
+                .unwrap()
+                .active_account_id
+                .as_deref(),
+            Some("new")
+        );
+        assert!(manager.commit_recovery(&SavedState::default()).is_err());
+        let values = store.values.lock().unwrap();
+        assert_eq!(values["credential-state-v2"], saved);
+        assert_eq!(values["legacy"], b"original");
+    }
+    #[test]
+    fn corrupt_v2_does_not_trigger_interactive_or_new_login() {
+        struct CorruptV2;
+        impl credentials::Credentials for CorruptV2 {
+            fn format(&self) -> credentials::Format {
+                credentials::Format::Single
+            }
+            fn read(&self, name: &str) -> Result<Option<Vec<u8>>, credentials::Error> {
+                assert_eq!(name, "credential-state-v2");
+                Ok(Some(b"invalid".to_vec()))
+            }
+            fn read_interactive(&self, _: &str) -> Result<Option<Vec<u8>>, credentials::Error> {
+                panic!("corruption is not an authorization request")
+            }
+            fn write(&self, _: &str, _: &[u8]) -> Result<(), credentials::Error> {
+                panic!("corrupt data must be preserved")
+            }
+            fn delete(&self, _: &str) -> Result<(), credentials::Error> {
+                panic!("corrupt data must be preserved")
+            }
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let manager = AiAccounts::with_store(
+            temp.path().canonicalize().unwrap().join("ai"),
+            Arc::new(CorruptV2),
+        )
+        .unwrap();
+        assert!(manager.resolve_accounts_interactive().is_err());
+        assert!(manager.begin_sign_in(Provider::ChatGpt, None).is_err());
+    }
+    #[test]
+    fn cancelled_interactive_v2_is_latched_without_reprompting() {
+        struct DeniedV2 {
+            silent: AtomicUsize,
+            interactive: AtomicUsize,
+        }
+        impl credentials::Credentials for DeniedV2 {
+            fn format(&self) -> credentials::Format {
+                credentials::Format::Single
+            }
+            fn read(&self, _: &str) -> Result<Option<Vec<u8>>, credentials::Error> {
+                self.silent.fetch_add(1, Ordering::Relaxed);
+                Err(credentials::Error::InteractionRequired)
+            }
+            fn read_interactive(&self, name: &str) -> Result<Option<Vec<u8>>, credentials::Error> {
+                assert_eq!(name, "credential-state-v2");
+                self.interactive.fetch_add(1, Ordering::Relaxed);
+                Err(credentials::Error::InteractionRequired)
+            }
+            fn write(&self, _: &str, _: &[u8]) -> Result<(), credentials::Error> {
+                unreachable!()
+            }
+            fn delete(&self, _: &str) -> Result<(), credentials::Error> {
+                unreachable!()
+            }
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let store = Arc::new(DeniedV2 {
+            silent: AtomicUsize::new(0),
+            interactive: AtomicUsize::new(0),
+        });
+        let manager = AiAccounts::with_store(
+            temp.path().canonicalize().unwrap().join("ai"),
+            store.clone(),
+        )
+        .unwrap();
+        assert!(manager.resolve_accounts_interactive().is_err());
+        assert!(manager.resolve_accounts().is_err());
+        assert!(manager.begin_sign_in(Provider::ChatGpt, None).is_err());
+        manager.snapshot().unwrap();
+        assert_eq!(store.silent.load(Ordering::Relaxed), 1);
+        assert_eq!(store.interactive.load(Ordering::Relaxed), 1);
+    }
+    #[test]
+    fn projection_survives_restart_without_secrets_or_claiming_authentication() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Arc::new(Memory::default());
+        let directory = temp.path().canonicalize().unwrap().join("ai");
+        let manager = AiAccounts::with_store(directory.clone(), store.clone()).unwrap();
+        manager
+            .save(&SavedState {
+                host_id: Some("SECRET_HOST_PRIVATE".into()),
+                active_account_id: Some("first".into()),
+                accounts: vec![record("first", "SECRET_CLIENT_PRIVATE")],
+            })
+            .unwrap();
+        let bytes = std::fs::read(directory.join("accounts-public-v1.json")).unwrap();
+        let encoded = String::from_utf8(bytes).unwrap();
+        assert!(!encoded.contains("PRIVATE"));
+        assert!(!encoded.contains("accessToken"));
+        let restarted = AiAccounts::with_store(directory, store.clone()).unwrap();
+        let before = store.reads.load(Ordering::Relaxed);
+        let projection = restarted.snapshot().unwrap();
+        assert!(!projection.checked);
+        assert_eq!(projection.active_account_id.as_deref(), Some("first"));
+        assert_eq!(projection.accounts[0].state, "unknown");
+        assert!(!projection.accounts[0].can_invoke);
+        assert_eq!(store.reads.load(Ordering::Relaxed), before);
+    }
+    #[test]
+    fn credential_denial_is_latched_until_explicit_retry() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Arc::new(Memory::default());
+        let manager = AiAccounts::with_store(
+            temp.path().canonicalize().unwrap().join("ai"),
+            store.clone(),
+        )
+        .unwrap();
+        store.fail_read.store(true, Ordering::Relaxed);
+        assert!(manager.resolve_accounts().is_err());
+        let reads = store.reads.load(Ordering::Relaxed);
+        for _ in 0..5 {
+            assert!(manager.resolve_accounts().is_err());
+            assert!(!manager.snapshot().unwrap().checked);
+        }
+        assert_eq!(store.reads.load(Ordering::Relaxed), reads);
+        store.fail_read.store(false, Ordering::Relaxed);
+        manager.retry_credentials();
+        assert!(manager.resolve_accounts().unwrap().checked);
+        assert!(store.reads.load(Ordering::Relaxed) > reads);
+    }
+    #[test]
+    fn concurrent_explicit_loads_share_one_read() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Arc::new(Memory::default());
+        credentials::write(
+            store.as_ref(),
+            &SavedState {
+                host_id: None,
+                active_account_id: Some("first".into()),
+                accounts: vec![record("first", "fixture-client")],
+            },
+        )
+        .unwrap();
+        let baseline = store.reads.load(Ordering::Relaxed);
+        credentials::read::<SavedState>(store.as_ref()).unwrap();
+        let per_load = store.reads.load(Ordering::Relaxed) - baseline;
+        let manager = AiAccounts::with_store(
+            temp.path().canonicalize().unwrap().join("ai"),
+            store.clone(),
+        )
+        .unwrap();
+        let before = store.reads.load(Ordering::Relaxed);
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let manager = manager.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    assert!(manager.resolve_accounts().unwrap().checked);
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        assert_eq!(store.reads.load(Ordering::Relaxed) - before, per_load);
     }
     #[test]
     fn successful_save_refreshes_public_metadata_without_an_extra_snapshot_secret_read() {
         let temp = tempfile::tempdir().unwrap();
         let store = Arc::new(Memory::default());
-        let manager = AiAccounts::with_store(temp.path().join("ai"), store.clone()).unwrap();
+        let manager = AiAccounts::with_store(
+            temp.path().canonicalize().unwrap().join("ai"),
+            store.clone(),
+        )
+        .unwrap();
         assert!(manager.snapshot().unwrap().accounts.is_empty());
         let mut account = record("first", "fixture-client");
         account.tokens = None;
@@ -1517,7 +2412,11 @@ mod tests {
     fn failed_credential_save_invalidates_public_metadata_instead_of_claiming_the_change() {
         let temp = tempfile::tempdir().unwrap();
         let store = Arc::new(Memory::default());
-        let manager = AiAccounts::with_store(temp.path().join("ai"), store.clone()).unwrap();
+        let manager = AiAccounts::with_store(
+            temp.path().canonicalize().unwrap().join("ai"),
+            store.clone(),
+        )
+        .unwrap();
         let initial = SavedState {
             host_id: None,
             active_account_id: Some("first".into()),
@@ -1529,7 +2428,11 @@ mod tests {
         assert!(manager.save(&SavedState::default()).is_err());
         store.fail_write.store(false, Ordering::Relaxed);
         let after_failure = store.reads.load(Ordering::Relaxed);
-        let recovered = manager.snapshot().unwrap();
+        let unchecked = manager.snapshot().unwrap();
+        assert!(!unchecked.checked);
+        assert_eq!(store.reads.load(Ordering::Relaxed), after_failure);
+        manager.retry_credentials();
+        let recovered = manager.resolve_accounts().unwrap();
         assert!(recovered.accounts[0].can_invoke);
         assert!(store.reads.load(Ordering::Relaxed) > after_failure);
         let after_recovery = store.reads.load(Ordering::Relaxed);
@@ -1540,7 +2443,11 @@ mod tests {
     async fn invocation_freshly_reads_external_changes_instead_of_trusting_public_metadata() {
         let temp = tempfile::tempdir().unwrap();
         let store = Arc::new(Memory::default());
-        let manager = AiAccounts::with_store(temp.path().join("ai"), store.clone()).unwrap();
+        let manager = AiAccounts::with_store(
+            temp.path().canonicalize().unwrap().join("ai"),
+            store.clone(),
+        )
+        .unwrap();
         let mut saved = SavedState {
             host_id: None,
             active_account_id: Some("first".into()),

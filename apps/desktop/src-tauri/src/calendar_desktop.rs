@@ -344,7 +344,7 @@ pub async fn sync_calendar(
     state: tauri::State<'_, CalendarDesktop>,
 ) -> Result<CalendarSnapshot, String> {
     crate::require_main(&window)?;
-    let result = state.service()?.sync_now().await;
+    let result = state.service()?.sync_explicit().await;
     publish(&app);
     result
 }

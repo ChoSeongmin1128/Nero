@@ -135,6 +135,8 @@ fn account_view(
             "connecting"
         } else if account.state == "plan_disabled" {
             "plan_disabled"
+        } else if account.state == "unknown" {
+            "unknown"
         } else {
             "signed_out"
         };
@@ -148,12 +150,12 @@ fn account_view(
             .iter()
             .any(|account| account["provider"] == serde_json::to_value(provider.id).unwrap())
         {
-            values.push(json!({"id":"","provider":provider.id,"state":if provider.configured{"signed_out"}else{"unavailable"},"label":provider.name,"configured":provider.configured,"detail":provider.reason}));
+            values.push(json!({"id":"","provider":provider.id,"state":if !provider.configured{"unavailable"}else if snapshot.checked{"signed_out"}else{"unknown"},"label":provider.name,"configured":provider.configured,"detail":provider.reason}));
         }
     }
     values.push(claude.snapshot());
     Ok(
-        json!({"accounts":values,"providers":snapshot.providers,"activeAccountId":snapshot.active_account_id}),
+        json!({"accounts":values,"providers":snapshot.providers,"activeAccountId":snapshot.active_account_id,"checked":snapshot.checked}),
     )
 }
 async fn account_snapshot(state: &AiDesktop) -> Result<Value, String> {
@@ -200,6 +202,7 @@ pub async fn ai_chat_accounts(
 #[serde(rename_all = "camelCase")]
 pub struct Attempt {
     attempt_id: String,
+    restored: bool,
 }
 #[tauri::command]
 pub async fn ai_chat_connect(
@@ -214,16 +217,43 @@ pub async fn ai_chat_connect(
     if provider == Provider::Claude {
         return Ok(Attempt {
             attempt_id: state.chat()?.claude.begin()?,
+            restored: false,
         });
     }
     let accounts = state.accounts()?;
-    let attempt = accounts.begin_sign_in(provider, account_id)?;
+    let restore = accounts.clone();
+    let restored =
+        tauri::async_runtime::spawn_blocking(move || restore.resolve_accounts_interactive())
+            .await
+            .map_err(|_| "AI 연결을 확인하지 못했습니다.".to_string())?;
+    match restored {
+        Ok(snapshot)
+            if snapshot.accounts.iter().any(|account| {
+                account.provider == provider
+                    && account.can_invoke
+                    && account_id.as_ref().is_none_or(|id| &account.id == id)
+            }) =>
+        {
+            return Ok(Attempt {
+                attempt_id: String::new(),
+                restored: true,
+            });
+        }
+        Err(error) if !accounts.legacy_recovery_required() => return Err(error),
+        _ => {}
+    }
+    let signing = accounts.clone();
+    let attempt =
+        tauri::async_runtime::spawn_blocking(move || signing.begin_sign_in(provider, account_id))
+            .await
+            .map_err(|_| "AI 로그인을 시작하지 못했습니다.".to_string())??;
     if let Err(error) = open(attempt.authorization_url).await {
         let _ = accounts.cancel_sign_in(&attempt.id);
         return Err(error);
     }
     Ok(Attempt {
         attempt_id: attempt.id,
+        restored: false,
     })
 }
 #[tauri::command]

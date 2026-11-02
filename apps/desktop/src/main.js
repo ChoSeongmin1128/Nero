@@ -645,7 +645,7 @@ function renderAgentConnection() {
     const pending = Boolean(agentConnection.pending[client]);
     const pendingLabel = { updating: '업데이트 중', checking: '확인 중', connecting: '연결 중' }[agentConnection.pending[client]];
     byId(`settings-${client}-spinner`).hidden = !pending && !(agentConnection.loading && !info);
-    const labels = { not_connected: '연결 안 됨', update_required: '업데이트 필요', installation_unknown: '설치 확인 필요', disabled: '사용 안 함', connected: '연결됨', error: '확인 불가', unavailable: '사용 불가' };
+    const labels = { not_connected: '연결 안 됨', update_required: '업데이트 필요', installation_unknown: '설치 확인 필요', installed: '설치됨', disabled: '사용 안 함', connected: '연결됨', error: '확인 불가', unavailable: '사용 불가' };
     const status = byId(`settings-${client}-status`);
     status.textContent = pending ? pendingLabel : !info ? (error ? '확인 불가' : '확인 중') : labels[entry?.state] || '사용 불가';
     status.dataset.state = pending ? agentConnection.pending[client] : !info ? (error ? 'error' : 'loading') : entry?.state || 'unavailable';
@@ -656,7 +656,8 @@ function renderAgentConnection() {
     button.setAttribute?.('aria-label', `${client === 'claude' ? 'Claude' : 'ChatGPT'} ${button.textContent}`);
     const errorNode = byId(`settings-${client}-error`);
     const failed = Boolean(agentConnection.errors[client]) || entry?.state === 'error';
-    errorNode.textContent = agentConnection.errors[client] || entry?.detail || '';
+    const needsAction = entry?.state === 'disabled' || (entry?.state === 'installation_unknown' && entry?.action === 'recheck');
+    errorNode.textContent = failed || needsAction ? agentConnection.errors[client] || entry?.detail || '' : '';
     errorNode.className = failed ? 'notice' : 'settings-client-note';
     errorNode.setAttribute?.('role', failed ? 'alert' : 'status');
     errorNode.hidden = !errorNode.textContent;

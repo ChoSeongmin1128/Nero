@@ -17,8 +17,17 @@ async function fixture(t, options = {}) {
   t.after(() => { app.dispose(); window.happyDOM.abort(); });
   const node = id => window.document.getElementById(id);
   await wait(() => app.ui.flow.getSnapshot().accountsLoaded && app.ui.flow.getSnapshot().conversation.loaded);
-  await wait(() => { const state = app.ui.flow.getSnapshot(); return !state.accountsBusy && !state.modelsBusy && (!state.accounts.some(account => account.id === state.accountId && account.state === 'ready') || Boolean(state.modelId)); });
+  await wait(() => !app.ui.flow.getSnapshot().accountsBusy);
   await wait(() => node('ai-chat-inspector').querySelector('textarea'));
+  const state = app.ui.flow.getSnapshot();
+  if (options.prepareModels !== false && state.accounts.some(account => account.id === state.accountId && account.state === 'ready')) {
+    node('ai-chat-inspector').querySelector('[aria-label="AI 모델 선택"]').click();
+    await wait(() => window.document.querySelector('.ai-model-popover'));
+    [...window.document.querySelectorAll('.ai-model-popover button')].find(button => button.textContent.trim() === 'ChatGPT').click();
+    await wait(() => [...window.document.querySelectorAll('.ai-model-popover button')].some(button => button.textContent.trim() === '예시 모델'));
+    [...window.document.querySelectorAll('.ai-model-popover button')].find(button => button.textContent.trim() === '예시 모델').click();
+    await wait(() => !window.document.querySelector('.ai-model-popover'));
+  }
   if (app.ui.flow.getSnapshot().modelId) await wait(() => node('ai-chat-inspector').querySelector('[aria-label="AI 모델 선택"]')?.textContent.includes('예시 모델'));
   await window.happyDOM.whenAsyncComplete();
   return { ...app, window, node, button: text => { const buttons = [...node('ai-chat-inspector').querySelectorAll('button')]; return buttons.find(button => button.getAttribute('aria-label') === text) || buttons.find(button => button.textContent.trim() === text); } };
@@ -41,9 +50,11 @@ test('model picker navigates providers and models, handles unavailable accounts 
   await wait(() => option('예시 모델'));
   option('예시 모델').click();
   await wait(() => !menu());
+  await wait(() => app.window.document.activeElement === trigger);
   assert.equal(app.ui.flow.getSnapshot().modelId, 'example-model');
   assert.match(trigger.textContent, /예시 모델/);
   trigger.click(); await wait(() => menu());
+  await wait(() => app.window.document.activeElement.closest('.ai-model-popover'));
   app.window.document.activeElement.dispatchEvent(new app.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
   await wait(() => !menu());
   await wait(() => app.window.document.activeElement === trigger);
@@ -188,8 +199,8 @@ test('settings distinguish subscription sign-in from external app and reference 
   const panel = app.node('ai-account-settings');
   await wait(() => app.ui.flow.getSnapshot().notion?.connected && !app.ui.flow.getSnapshot().accountsBusy);
   await wait(() => panel.textContent.includes('로그인됨'));
-  assert.equal([...panel.querySelectorAll('h4')].some(node => node.textContent === 'Nero에서 AI 사용'), true);
-  assert.equal([...app.node('settings-agent-panel').querySelectorAll('h4')].some(node => node.textContent === '다른 AI 앱에서 Nero 사용'), true);
+  assert.deepEqual([...panel.querySelectorAll('h4')].map(node => node.textContent), ['AI 계정', 'Notion 연결']);
+  assert.equal([...app.node('settings-agent-panel').querySelectorAll('h4')].some(node => node.textContent === 'MCP 연결'), true);
   const rows = [...panel.querySelectorAll('.settings-client-row')];
   const chatgpt = rows.find(node => node.querySelector('.settings-client-name')?.textContent === 'ChatGPT');
   const notion = rows.find(node => node.querySelector('.settings-client-name')?.textContent === 'Notion');
@@ -199,6 +210,31 @@ test('settings distinguish subscription sign-in from external app and reference 
   assert.match(notion.textContent, /연결됨/);
   assert.equal([...notion.querySelectorAll('button')].some(node => node.textContent === '해제'), true);
   assert.equal([...notion.querySelectorAll('button')].some(node => node.textContent === '로그아웃'), false);
+});
+
+test('saved account loads models only after choosing its provider', async t => {
+  const app = await fixture(t, { scenario: 'unknown' });
+  app.ui.setSettingsActive(true); await wait(() => !app.ui.flow.getSnapshot().accountsBusy);
+  assert.equal(app.calls.filter(call => call[0] === 'models').length, 0);
+  const trigger = app.button('AI 모델 선택');
+  assert.match(trigger.textContent, /모델 선택/);
+  trigger.click();
+  await wait(() => app.window.document.querySelector('.ai-model-popover'));
+  assert.equal(app.calls.filter(call => call[0] === 'models').length, 0);
+  [...app.window.document.querySelectorAll('.ai-model-popover button')].find(node => node.textContent.trim() === 'ChatGPT').click();
+  await wait(() => app.window.document.querySelector('.ai-model-popover')?.textContent.includes('예시 모델'));
+  assert.equal(app.calls.filter(call => call[0] === 'models').length, 1);
+  assert.equal(app.node('ai-chat-inspector').textContent.includes('AI 계정에 로그인해 주세요.'), false);
+  app.ui.flow.edit('Question');
+  await wait(() => !app.node('ai-chat-inspector').querySelector('[aria-label="질문 보내기"]').disabled);
+});
+
+test('opening settings for a ready account does not load models', async t => {
+  const app = await fixture(t, { prepareModels: false });
+  app.ui.setSettingsActive(true);
+  await wait(() => !app.ui.flow.getSnapshot().accountsBusy);
+  assert.equal(app.calls.filter(call => call[0] === 'models').length, 0);
+  assert.equal(app.ui.flow.getSnapshot().modelId, null);
 });
 
 test('explicit source addition selects a Notion link and creates a removable attachment', async t => {

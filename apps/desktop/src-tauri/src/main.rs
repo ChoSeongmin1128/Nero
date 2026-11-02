@@ -39,6 +39,7 @@ mod processing;
 mod recorder_geometry;
 mod recorder_policy;
 mod release_capabilities;
+mod secret_store;
 mod speaker_worker;
 mod speech_audio;
 mod speech_choice;
@@ -223,7 +224,7 @@ async fn agent_connect_client(
             &connections,
             &home,
             &config,
-            false,
+            matches!(&installed, Ok(true)),
         )
         .with_observation_errors(observations);
         Ok(match installed {

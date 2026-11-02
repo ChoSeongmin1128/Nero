@@ -6,6 +6,9 @@ const SERVICE: &str = "io.github.choseongmin1128.nero.desktop.notion-context";
 const CHUNK_BYTES: usize = 1024;
 const MAX_BYTES: usize = 512 * 1024;
 pub(super) trait Vault {
+    fn single_record(&self) -> bool {
+        false
+    }
     fn read(&self, name: &str) -> Result<Option<Vec<u8>>>;
     fn write(&self, name: &str, value: &[u8]) -> Result<()>;
     fn delete(&self, name: &str) -> Result<()>;
@@ -15,72 +18,20 @@ pub(super) trait Vault {
 }
 pub(super) struct SystemVault;
 impl Vault for SystemVault {
+    fn single_record(&self) -> bool {
+        cfg!(target_os = "macos")
+    }
     fn read(&self, name: &str) -> Result<Option<Vec<u8>>> {
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
-        {
-            match keyring::Entry::new(SERVICE, name)
-                .map_err(|_| Error::Credentials)?
-                .get_secret()
-            {
-                Ok(value) => Ok(Some(value)),
-                Err(keyring::Error::NoEntry) => Ok(None),
-                Err(_) => Err(Error::Credentials),
-            }
-        }
-        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-        {
-            let _ = name;
-            Err(Error::Credentials)
-        }
+        crate::secret_store::read(SERVICE, name, crate::secret_store::Access::Silent)
+            .map_err(|_| Error::Credentials)
     }
     fn write(&self, name: &str, value: &[u8]) -> Result<()> {
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
-        {
-            keyring::Entry::new(SERVICE, name)
-                .map_err(|_| Error::Credentials)?
-                .set_secret(value)
-                .map_err(|_| Error::Credentials)
-        }
-        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-        {
-            let _ = (name, value);
-            Err(Error::Credentials)
-        }
+        crate::secret_store::write(SERVICE, name, value, crate::secret_store::Access::Silent)
+            .map_err(|_| Error::Credentials)
     }
     fn delete(&self, name: &str) -> Result<()> {
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
-        {
-            match keyring::Entry::new(SERVICE, name)
-                .map_err(|_| Error::Credentials)?
-                .delete_credential()
-            {
-                Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-                Err(_) => Err(Error::Credentials),
-            }
-        }
-        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-        {
-            let _ = name;
-            Err(Error::Credentials)
-        }
-    }
-    fn legacy(&self, name: &str) -> Result<Option<Vec<u8>>> {
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
-        {
-            match keyring::Entry::new(SERVICE, name)
-                .map_err(|_| Error::Credentials)?
-                .get_password()
-            {
-                Ok(value) => Ok(Some(value.into_bytes())),
-                Err(keyring::Error::NoEntry) => Ok(None),
-                Err(_) => Err(Error::Credentials),
-            }
-        }
-        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-        {
-            let _ = name;
-            Err(Error::Credentials)
-        }
+        crate::secret_store::delete(SERVICE, name, crate::secret_store::Access::Silent)
+            .map_err(|_| Error::Credentials)
     }
 }
 
@@ -91,6 +42,9 @@ struct Index {
     chunks: usize,
     bytes: usize,
     sha256: String,
+}
+fn single_name(account: &str) -> String {
+    format!("{account}-single-v2")
 }
 fn index_name(account: &str) -> String {
     format!("{account}-chunks-v1")
@@ -116,6 +70,20 @@ fn read_index(store: &dyn Vault, account: &str) -> Result<Option<Index>> {
     Ok(Some(index))
 }
 pub(super) fn read(store: &dyn Vault, account: &str) -> Result<Vec<u8>> {
+    if store.single_record() {
+        if let Some(bytes) = store.read(&single_name(account))? {
+            if bytes.is_empty() || bytes.len() > MAX_BYTES {
+                return Err(Error::Credentials);
+            }
+            return Ok(bytes);
+        }
+        let bytes = read_chunked(store, account)?;
+        store.write(&single_name(account), &bytes)?;
+        return Ok(bytes);
+    }
+    read_chunked(store, account)
+}
+fn read_chunked(store: &dyn Vault, account: &str) -> Result<Vec<u8>> {
     for _ in 0..3 {
         let Some(index) = read_index(store, account)? else {
             let value = store.legacy(account)?.ok_or(Error::Credentials)?;
@@ -125,25 +93,29 @@ pub(super) fn read(store: &dyn Vault, account: &str) -> Result<Vec<u8>> {
                 Err(Error::Credentials)
             };
         };
-        let result = (|| {
-            let mut bytes = Vec::with_capacity(index.bytes);
-            for number in 0..index.chunks {
-                let chunk = store
-                    .read(&chunk_name(account, &index, number))?
-                    .ok_or(Error::Credentials)?;
-                if chunk.len() > CHUNK_BYTES
-                    || (number + 1 < index.chunks && chunk.len() != CHUNK_BYTES)
-                {
-                    return Err(Error::Credentials);
-                }
-                bytes.extend(chunk);
-            }
-            if bytes.len() != index.bytes || format!("{:x}", Sha256::digest(&bytes)) != index.sha256
+        let mut bytes = Vec::with_capacity(index.bytes);
+        let mut valid = true;
+        for number in 0..index.chunks {
+            let Some(chunk) = store.read(&chunk_name(account, &index, number))? else {
+                valid = false;
+                break;
+            };
+            if chunk.len() > CHUNK_BYTES
+                || (number + 1 < index.chunks && chunk.len() != CHUNK_BYTES)
             {
-                return Err(Error::Credentials);
+                valid = false;
+                break;
             }
+            bytes.extend(chunk);
+        }
+        let result = if valid
+            && bytes.len() == index.bytes
+            && format!("{:x}", Sha256::digest(&bytes)) == index.sha256
+        {
             Ok(bytes)
-        })();
+        } else {
+            Err(Error::Credentials)
+        };
         if result.is_ok() {
             return result;
         }
@@ -160,6 +132,9 @@ pub(super) fn read(store: &dyn Vault, account: &str) -> Result<Vec<u8>> {
 pub(super) fn write(store: &dyn Vault, account: &str, bytes: &[u8]) -> Result<()> {
     if bytes.is_empty() || bytes.len() > MAX_BYTES {
         return Err(Error::Credentials);
+    }
+    if store.single_record() {
+        return store.write(&single_name(account), bytes);
     }
     let old = read_index(store, account)?;
     let next = Index {
@@ -208,7 +183,11 @@ pub(super) fn delete(store: &dyn Vault, account: &str) -> Result<()> {
         }
         store.delete(&index_name(account))?;
     }
-    store.delete(account)
+    store.delete(account)?;
+    if store.single_record() {
+        store.delete(&single_name(account))?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -242,6 +221,39 @@ mod tests {
             self.values.lock().unwrap().remove(name);
             Ok(())
         }
+    }
+    #[test]
+    fn denied_chunk_read_does_not_reopen_the_index() {
+        struct Denied<'a> {
+            inner: &'a Memory,
+            reads: Mutex<Vec<String>>,
+        }
+        impl Vault for Denied<'_> {
+            fn read(&self, name: &str) -> Result<Option<Vec<u8>>> {
+                self.reads.lock().unwrap().push(name.to_owned());
+                if !name.ends_with("-chunks-v1") {
+                    return Err(Error::Credentials);
+                }
+                self.inner.read(name)
+            }
+            fn write(&self, _: &str, _: &[u8]) -> Result<()> {
+                unreachable!()
+            }
+            fn delete(&self, _: &str) -> Result<()> {
+                unreachable!()
+            }
+        }
+        let inner = Memory::default();
+        write(&inner, "notion-context", b"saved").unwrap();
+        let store = Denied {
+            inner: &inner,
+            reads: Mutex::new(Vec::new()),
+        };
+        assert!(read(&store, "notion-context").is_err());
+        let reads = store.reads.lock().unwrap();
+        assert_eq!(reads.len(), 2);
+        assert!(reads[0].ends_with("-chunks-v1"));
+        assert_eq!(read(&inner, "notion-context").unwrap(), b"saved");
     }
     #[test]
     fn credential_chunks_fit_windows_and_publish_the_whole_rotated_object() {
@@ -281,5 +293,194 @@ mod tests {
         );
         write(&legacy, "notion-context", b"replacement").unwrap();
         assert!(legacy.read("notion-context").unwrap().is_none());
+    }
+    #[derive(Default)]
+    struct SingleMemory {
+        values: Mutex<BTreeMap<String, Vec<u8>>>,
+        reads: Mutex<Vec<String>>,
+        writes: Mutex<Vec<String>>,
+        deny_read: Mutex<Option<String>>,
+        deny_write: Mutex<bool>,
+        deny_delete: Mutex<Option<String>>,
+    }
+    impl Vault for SingleMemory {
+        fn single_record(&self) -> bool {
+            true
+        }
+        fn read(&self, name: &str) -> Result<Option<Vec<u8>>> {
+            self.reads.lock().unwrap().push(name.to_owned());
+            if self.deny_read.lock().unwrap().as_deref() == Some(name) {
+                return Err(Error::Credentials);
+            }
+            Ok(self.values.lock().unwrap().get(name).cloned())
+        }
+        fn write(&self, name: &str, value: &[u8]) -> Result<()> {
+            self.writes.lock().unwrap().push(name.to_owned());
+            if *self.deny_write.lock().unwrap() {
+                return Err(Error::Credentials);
+            }
+            self.values
+                .lock()
+                .unwrap()
+                .insert(name.to_owned(), value.to_vec());
+            Ok(())
+        }
+        fn delete(&self, name: &str) -> Result<()> {
+            if self.deny_delete.lock().unwrap().as_deref() == Some(name) {
+                return Err(Error::Credentials);
+            }
+            self.values.lock().unwrap().remove(name);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn single_large_record_requires_one_write_and_one_read() {
+        let store = SingleMemory::default();
+        let value = vec![b'x'; CHUNK_BYTES * 8];
+        write(&store, "notion", &value).unwrap();
+        assert_eq!(*store.writes.lock().unwrap(), vec![single_name("notion")]);
+        assert_eq!(read(&store, "notion").unwrap(), value);
+        assert_eq!(*store.reads.lock().unwrap(), vec![single_name("notion")]);
+        assert_eq!(store.values.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn single_migration_preserves_chunked_and_legacy_entries() {
+        let old = Memory::default();
+        let value = vec![b'x'; CHUNK_BYTES * 3];
+        write(&old, "notion", &value).unwrap();
+        let chunked = old.values.lock().unwrap().clone();
+        let store = SingleMemory::default();
+        *store.values.lock().unwrap() = chunked.clone();
+        assert_eq!(read(&store, "notion").unwrap(), value);
+        let values = store.values.lock().unwrap();
+        for (name, bytes) in chunked {
+            assert_eq!(values.get(&name), Some(&bytes));
+        }
+        assert_eq!(values.get(&single_name("notion")), Some(&value));
+        drop(values);
+
+        let legacy = SingleMemory::default();
+        legacy
+            .values
+            .lock()
+            .unwrap()
+            .insert("notion".into(), b"legacy".to_vec());
+        assert_eq!(read(&legacy, "notion").unwrap(), b"legacy");
+        let values = legacy.values.lock().unwrap();
+        assert_eq!(values.get("notion").unwrap(), b"legacy");
+        assert_eq!(values.get(&single_name("notion")).unwrap(), b"legacy");
+    }
+
+    #[test]
+    fn denied_single_read_never_queries_index_or_legacy() {
+        let store = SingleMemory::default();
+        *store.deny_read.lock().unwrap() = Some(single_name("notion"));
+        assert!(read(&store, "notion").is_err());
+        assert_eq!(*store.reads.lock().unwrap(), vec![single_name("notion")]);
+        assert!(store.writes.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn failed_single_write_preserves_legacy_and_existing_value() {
+        let store = SingleMemory::default();
+        store
+            .values
+            .lock()
+            .unwrap()
+            .insert("notion".into(), b"legacy".to_vec());
+        *store.deny_write.lock().unwrap() = true;
+        assert!(read(&store, "notion").is_err());
+        assert_eq!(
+            store.values.lock().unwrap().get("notion").unwrap(),
+            b"legacy"
+        );
+        assert!(!store
+            .values
+            .lock()
+            .unwrap()
+            .contains_key(&single_name("notion")));
+        store
+            .values
+            .lock()
+            .unwrap()
+            .insert(single_name("notion"), b"existing".to_vec());
+        assert!(write(&store, "notion", b"replacement").is_err());
+        assert_eq!(
+            store
+                .values
+                .lock()
+                .unwrap()
+                .get(&single_name("notion"))
+                .unwrap(),
+            b"existing"
+        );
+    }
+
+    #[test]
+    fn explicit_delete_removes_single_and_legacy_and_cannot_restore_them() {
+        let old = Memory::default();
+        write(&old, "notion", &vec![b'x'; CHUNK_BYTES * 2]).unwrap();
+        let store = SingleMemory::default();
+        *store.values.lock().unwrap() = old.values.lock().unwrap().clone();
+        store
+            .values
+            .lock()
+            .unwrap()
+            .insert("notion".into(), b"legacy".to_vec());
+        read(&store, "notion").unwrap();
+        delete(&store, "notion").unwrap();
+        assert!(store.values.lock().unwrap().is_empty());
+        assert!(read(&store, "notion").is_err());
+        assert!(store.values.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn failed_delete_preserves_single_across_partial_legacy_cleanup() {
+        let old = Memory::default();
+        write(&old, "notion", &vec![b'x'; CHUNK_BYTES * 2]).unwrap();
+        let index = read_index(&old, "notion").unwrap().unwrap();
+        let targets = [
+            chunk_name("notion", &index, 0),
+            chunk_name("notion", &index, 1),
+            index_name("notion"),
+            "notion".to_owned(),
+            single_name("notion"),
+        ];
+        for target in targets {
+            let store = SingleMemory::default();
+            *store.values.lock().unwrap() = old.values.lock().unwrap().clone();
+            store
+                .values
+                .lock()
+                .unwrap()
+                .insert("notion".into(), b"legacy".to_vec());
+            store
+                .values
+                .lock()
+                .unwrap()
+                .insert(single_name("notion"), b"current".to_vec());
+            *store.deny_delete.lock().unwrap() = Some(target);
+            assert!(delete(&store, "notion").is_err());
+            assert_eq!(read(&store, "notion").unwrap(), b"current");
+            *store.deny_delete.lock().unwrap() = None;
+            delete(&store, "notion").unwrap();
+            assert!(store.values.lock().unwrap().is_empty());
+            assert!(read(&store, "notion").is_err());
+        }
+    }
+
+    #[test]
+    fn failed_legacy_index_read_preserves_single() {
+        let store = SingleMemory::default();
+        store
+            .values
+            .lock()
+            .unwrap()
+            .insert(single_name("notion"), b"current".to_vec());
+        *store.deny_read.lock().unwrap() = Some(index_name("notion"));
+        assert!(delete(&store, "notion").is_err());
+        assert_eq!(read(&store, "notion").unwrap(), b"current");
     }
 }

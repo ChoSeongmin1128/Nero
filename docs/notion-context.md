@@ -1,4 +1,4 @@
-# Notion 참고 자료
+# Notion 연결
 
 이 문서는 현재 소스의 동작을 설명한다. 배포된 버전의 기능은 릴리스 안내를 확인한다.
 
@@ -19,9 +19,9 @@ Nero의 Notion 연결은 사용자가 지정한 페이지를 회의 자료 또�
   취소나 완료 전 오류는 이전 연결과 저장한 문서를 보존한다.
 - macOS Keychain/Windows Credential Manager의 Nero 전용 `notion-context` 항목에 client/token 정보를 저장한다.
   refresh token이 바뀌면 access/refresh token을 같은 보안 저장소 객체에 저장한다.
-  보안 저장소 항목은 1024-byte chunk와 검증된 generation index로 나누어 Windows의 항목 크기 제한을 지킨다.
+  macOS는 제한된 단일 항목을 사용하고, Windows는 1024-byte chunk와 검증된 generation index로 항목 크기 제한을 지킨다. 이전 macOS 청크 항목은 전체 내용을 확인한 뒤에만 단일 항목으로 이전하며 원래 항목을 보존한다.
   `invalid_grant`는 자동 반복하지 않고 재연결이 필요하다고 알린다.
-- 연결 해제는 Nero 전용 자격 증명만 제거한다. 이미 읽은 문서와 이전 대화의 출처는 보존한다.
+- 연결 해제는 Nero 전용 자격 증명만 제거한다. 이전 항목 정리가 실패하면 현재 항목을 보존해 재시도할 수 있게 한다. 이미 읽은 문서와 이전 대화의 출처는 보존한다.
 
 ## MCP
 
