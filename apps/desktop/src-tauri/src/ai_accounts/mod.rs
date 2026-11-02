@@ -17,6 +17,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const SIGN_IN_REQUIRED: &str = "ChatGPT에 다시 로그인해 주세요.";
 const PLAN_DISABLED: &str = "ChatGPT 구독 사용이 허용되지 않았습니다. 다시 연결해 주세요.";
+const HTTP_TIMEOUT: Duration = Duration::from_secs(20);
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(HTTP_TIMEOUT.as_secs() * 3);
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Provider {
@@ -64,6 +66,15 @@ pub struct SubscriptionSession {
     pub account_id: String,
     pub base_url: &'static str,
     access_token: String,
+}
+#[must_use]
+pub struct ShutdownGuard {
+    closing: Arc<AtomicBool>,
+}
+impl Drop for ShutdownGuard {
+    fn drop(&mut self) {
+        self.closing.store(false, Ordering::Release);
+    }
 }
 impl SubscriptionSession {
     pub fn access_token(&self) -> &str {
@@ -123,6 +134,7 @@ pub struct AiAccounts {
     store: Arc<dyn credentials::Credentials>,
     operation: Arc<tokio::sync::Mutex<()>>,
     pending: Arc<Mutex<Option<Arc<oauth::Pending>>>>,
+    closing: Arc<AtomicBool>,
 }
 
 impl AiAccounts {
@@ -136,7 +148,7 @@ impl AiAccounts {
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(20))
+            .timeout(HTTP_TIMEOUT)
             .build()
             .map_err(|_| "AI 연결을 준비하지 못했습니다.")?;
         Ok(Self {
@@ -145,6 +157,7 @@ impl AiAccounts {
             store,
             operation: Arc::new(tokio::sync::Mutex::new(())),
             pending: Arc::new(Mutex::new(None)),
+            closing: Arc::new(AtomicBool::new(false)),
         })
     }
     pub fn snapshot(&self) -> Result<AccountsSnapshot, String> {
@@ -173,11 +186,13 @@ impl AiAccounts {
         provider: Provider,
         account_id: Option<String>,
     ) -> Result<SignInAttempt, String> {
+        self.ensure_open()?;
         self.cancel_pending()?;
         let _operation = self
             .operation
             .try_lock()
             .map_err(|_| "다른 AI 계정 작업이 진행 중입니다.")?;
+        self.ensure_open()?;
         let _file = self.file_guard()?;
         let mut state = self.read()?;
         let selected = account_id
@@ -216,10 +231,12 @@ impl AiAccounts {
                     .and_then(|account| account.email.as_deref()),
             )
         }?;
-        *self
+        let mut current = self
             .pending
             .lock()
-            .map_err(|_| "AI 연결 상태를 확인하지 못했습니다.")? = Some(Arc::new(pending));
+            .map_err(|_| "AI 연결 상태를 확인하지 못했습니다.")?;
+        self.ensure_open()?;
+        *current = Some(Arc::new(pending));
         Ok(request)
     }
     pub async fn complete_sign_in(
@@ -227,6 +244,7 @@ impl AiAccounts {
         id: &str,
         cancel: Arc<AtomicBool>,
     ) -> Result<AccountSnapshot, String> {
+        self.ensure_open()?;
         let pending = self
             .pending
             .lock()
@@ -239,6 +257,7 @@ impl AiAccounts {
             return Err("로그인을 확인 중입니다.".into());
         }
         let result = self.finish_sign_in(&pending, &cancel).await;
+        pending.finish_page(result.as_ref().map(|_| ()).map_err(String::as_str));
         let mut current = self
             .pending
             .lock()
@@ -258,6 +277,7 @@ impl AiAccounts {
         }
         let callback = pending.receive(cancel.clone()).await?;
         let _operation = with_cancel(self.operation.lock(), &pending.cancelled, cancel).await?;
+        self.ensure_open()?;
         let _file = self.file_guard()?;
         stopped(&pending.cancelled, cancel)?;
         let mut state = self.read()?;
@@ -353,6 +373,7 @@ impl AiAccounts {
             return Err("AI 로그인을 취소했습니다.".into());
         }
         stopped(&pending.cancelled, cancel)?;
+        self.ensure_open()?;
         let mut current = self.read()?;
         let record = current
             .accounts
@@ -379,6 +400,7 @@ impl AiAccounts {
     ) -> Result<AccountSnapshot, String> {
         let callback = pending.receive(cancel.clone()).await?;
         let _operation = with_cancel(self.operation.lock(), &pending.cancelled, cancel).await?;
+        self.ensure_open()?;
         let _file = self.file_guard()?;
         stopped(&pending.cancelled, cancel)?;
         let state = self.read()?;
@@ -425,6 +447,7 @@ impl AiAccounts {
             return Err("AI 로그인을 취소했습니다.".into());
         }
         stopped(&pending.cancelled, cancel)?;
+        self.ensure_open()?;
         let mut current = self.read()?;
         let record = if let Some(selected) = selected {
             let record = current
@@ -475,6 +498,7 @@ impl AiAccounts {
             .as_deref()
             .ok_or("Claude에 다시 로그인해 주세요.")?;
         stopped(cancel, cancel)?;
+        self.ensure_open()?;
         let transaction = Arc::new(AtomicBool::new(false));
         let response=self.json_request(self.client.post(claude::TOKEN).json(&serde_json::json!({"grant_type":"refresh_token","client_id":claude::CLIENT_ID,"refresh_token":refresh})),&transaction,&transaction).await;
         let value = match response {
@@ -533,6 +557,7 @@ impl AiAccounts {
         if current.as_ref().is_some_and(|pending| pending.id == id) {
             if let Some(pending) = current.take() {
                 pending.cancelled.store(true, Ordering::Release);
+                pending.finish_page(Err("AI 로그인을 취소했습니다."));
             }
         }
         Ok(())
@@ -545,15 +570,42 @@ impl AiAccounts {
             .take()
         {
             pending.cancelled.store(true, Ordering::Release);
+            pending.finish_page(Err("AI 로그인을 취소했습니다."));
         }
         Ok(())
     }
+    pub async fn prepare_shutdown(&self) -> Result<ShutdownGuard, String> {
+        self.drain_operations(SHUTDOWN_TIMEOUT).await
+    }
+    async fn drain_operations(&self, timeout: Duration) -> Result<ShutdownGuard, String> {
+        self.closing
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| "AI 계정 정보를 저장하는 중입니다. 잠시 후 다시 시도해 주세요.")?;
+        let guard = ShutdownGuard {
+            closing: self.closing.clone(),
+        };
+        self.cancel_pending()?;
+        // The desktop lifecycle blocks new operations before draining this lock.
+        let _operation = tokio::time::timeout(timeout, self.operation.lock())
+            .await
+            .map_err(|_| "AI 계정 정보를 저장하는 중입니다. 잠시 후 다시 시도해 주세요.")?;
+        Ok(guard)
+    }
+    fn ensure_open(&self) -> Result<(), String> {
+        if self.closing.load(Ordering::Acquire) {
+            Err("앱을 종료하거나 업데이트하고 있습니다. 잠시 기다려 주세요.".into())
+        } else {
+            Ok(())
+        }
+    }
     pub fn select_account(&self, id: &str) -> Result<AccountSnapshot, String> {
+        self.ensure_open()?;
         self.cancel_pending()?;
         let _operation = self
             .operation
             .try_lock()
             .map_err(|_| "다른 AI 계정 작업이 진행 중입니다.")?;
+        self.ensure_open()?;
         let _file = self.file_guard()?;
         let mut state = self.read()?;
         let selected = state
@@ -570,8 +622,10 @@ impl AiAccounts {
         Ok(result)
     }
     pub async fn sign_out(&self, id: &str) -> Result<SignOutOutcome, String> {
+        self.ensure_open()?;
         self.cancel_pending()?;
         let _operation = self.operation.lock().await;
+        self.ensure_open()?;
         let _file = self.file_guard()?;
         let mut state = self.read()?;
         let selected = state
@@ -641,6 +695,7 @@ impl AiAccounts {
         account_id: &str,
         cancel: Arc<AtomicBool>,
     ) -> Result<SubscriptionSession, String> {
+        self.ensure_open()?;
         stopped(&cancel, &cancel)?;
         let accounts = self.clone();
         let account_id = account_id.to_string();
@@ -659,7 +714,9 @@ impl AiAccounts {
         account_id: &str,
         cancel: Arc<AtomicBool>,
     ) -> Result<SubscriptionSession, String> {
+        self.ensure_open()?;
         let _operation = with_cancel(self.operation.lock(), &cancel, &cancel).await?;
+        self.ensure_open()?;
         let _file = self.file_guard()?;
         let mut state = self.read()?;
         let position = state
@@ -696,6 +753,7 @@ impl AiAccounts {
                 .await
                 .map_err(|_| "ChatGPT 인증 키를 확인하지 못했습니다.")?;
             stopped(&cancel, &cancel)?;
+            self.ensure_open()?;
             let transaction = Arc::new(AtomicBool::new(false));
             let response = match self
                 .token_request(&discovery.token_endpoint, &form, &transaction, &transaction)
@@ -1141,6 +1199,148 @@ mod tests {
             .await
             .is_err());
         assert!(!temp.path().join("ai").exists());
+    }
+    #[tokio::test]
+    async fn shutdown_cancels_browser_wait_and_blocks_operations_until_guard_is_dropped() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager =
+            AiAccounts::with_store(temp.path().join("ai"), Arc::new(Memory::default())).unwrap();
+        let (pending, _) =
+            oauth::Pending::begin("urn:uuid:fixture", None, None, None, None, None).unwrap();
+        let pending = Arc::new(pending);
+        *manager.pending.lock().unwrap() = Some(pending.clone());
+
+        let guard = manager.prepare_shutdown().await.unwrap();
+        assert!(pending.cancelled.load(Ordering::Acquire));
+        assert!(manager.pending.lock().unwrap().is_none());
+        assert!(manager.begin_sign_in(Provider::ChatGpt, None).is_err());
+        assert!(manager.select_account("none").is_err());
+        assert!(manager.sign_out("none").await.is_err());
+        assert!(manager.subscription_session("none").await.is_err());
+        assert!(manager.prepare_shutdown().await.is_err());
+        assert!(manager.ensure_open().is_err());
+        assert!(!temp.path().join("ai").exists());
+        drop(guard);
+        assert!(manager.ensure_open().is_ok());
+    }
+    #[tokio::test]
+    async fn cancelling_an_accepted_sign_in_finishes_the_browser_with_failure() {
+        use std::io::{Read, Write};
+        let temp = tempfile::tempdir().unwrap();
+        let manager =
+            AiAccounts::with_store(temp.path().join("ai"), Arc::new(Memory::default())).unwrap();
+        let (pending, attempt) =
+            oauth::Pending::begin("urn:uuid:fixture", None, None, None, None, None).unwrap();
+        let pending = Arc::new(pending);
+        *manager.pending.lock().unwrap() = Some(pending.clone());
+        let url = reqwest::Url::parse(&pending.redirect_uri).unwrap();
+        let mut browser = std::net::TcpStream::connect(("127.0.0.1", url.port().unwrap())).unwrap();
+        browser
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        write!(browser, "GET {}?state={}&code=CODE_PRIVATE&client_id=oaiapp_fixture HTTP/1.1\r\nHost: {}\r\n\r\n", url.path(), pending.state, url.authority()).unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            pending.receive(Arc::new(AtomicBool::new(false))),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        manager.cancel_sign_in(&attempt.id).unwrap();
+        let mut output = String::new();
+        browser.read_to_string(&mut output).unwrap();
+        assert!(output.contains("AI 로그인을 취소했습니다"));
+        assert!(output.contains("\"ok\":false"));
+        assert!(!output.contains("\"ok\":true"));
+        assert!(!output.contains("CODE_PRIVATE"));
+        assert!(!temp.path().join("ai").exists());
+    }
+    #[tokio::test]
+    async fn shutdown_waits_until_in_flight_credential_commit_has_finished() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager =
+            AiAccounts::with_store(temp.path().join("ai"), Arc::new(Memory::default())).unwrap();
+        let operation = manager.operation.clone().lock_owned().await;
+        let draining = manager.clone();
+        let task = tokio::spawn(async move { draining.prepare_shutdown().await });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !manager.closing.load(Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(!task.is_finished());
+        let mut replacement = record("first", "oaiapp_fixture");
+        replacement.tokens.as_mut().unwrap().refresh_token = Some("ROTATED_FIXTURE".into());
+        manager
+            .save(&SavedState {
+                host_id: Some("urn:uuid:fixture".into()),
+                active_account_id: Some("first".into()),
+                accounts: vec![replacement],
+            })
+            .unwrap();
+        drop(operation);
+        let guard = task.await.unwrap().unwrap();
+        let state = manager.read().unwrap();
+        assert_eq!(
+            state.accounts[0]
+                .tokens
+                .as_ref()
+                .unwrap()
+                .refresh_token
+                .as_deref(),
+            Some("ROTATED_FIXTURE")
+        );
+        assert!(manager.ensure_open().is_err());
+        drop(guard);
+        assert!(manager.ensure_open().is_ok());
+    }
+    #[tokio::test]
+    async fn shutdown_timeout_preserves_in_flight_operation_and_restores_admission() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager =
+            AiAccounts::with_store(temp.path().join("ai"), Arc::new(Memory::default())).unwrap();
+        let operation = manager.operation.clone().lock_owned().await;
+        assert!(manager
+            .drain_operations(Duration::from_millis(1))
+            .await
+            .is_err());
+        assert!(manager.ensure_open().is_ok());
+        assert!(manager.operation.try_lock().is_err());
+        manager
+            .save(&SavedState {
+                host_id: Some("urn:uuid:fixture".into()),
+                active_account_id: Some("first".into()),
+                accounts: vec![record("first", "oaiapp_fixture")],
+            })
+            .unwrap();
+        drop(operation);
+        assert_eq!(manager.read().unwrap().accounts.len(), 1);
+    }
+    #[tokio::test]
+    async fn queued_session_access_cannot_start_after_shutdown_admission_closes() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager =
+            AiAccounts::with_store(temp.path().join("ai"), Arc::new(Memory::default())).unwrap();
+        let operation = manager.operation.clone().lock_owned().await;
+        let queued = manager.clone();
+        let session = tokio::spawn(async move { queued.subscription_session("none").await });
+        tokio::task::yield_now().await;
+        let draining = manager.clone();
+        let shutdown = tokio::spawn(async move { draining.prepare_shutdown().await });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !manager.closing.load(Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        drop(operation);
+        let guard = shutdown.await.unwrap().unwrap();
+        assert!(session.await.unwrap().is_err());
+        assert!(!temp.path().join("ai").exists());
+        drop(guard);
     }
     #[test]
     fn ordinary_account_selection_does_not_replace_another_accounts_credentials() {

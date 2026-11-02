@@ -2,6 +2,7 @@ use super::{
     http::{Cancellation, Http, Request},
     now_ms, Error, Result, MCP_ENDPOINT,
 };
+use crate::oauth_callback::CallbackPage;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
@@ -9,9 +10,9 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
-    io::{Read, Write},
+    io::Read,
     net::{TcpListener, TcpStream},
-    sync::Mutex,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -48,6 +49,7 @@ pub(super) struct Pending {
     pub redirect_uri: String,
     pub authorization_url: String,
     callback: Mutex<Option<tokio::sync::oneshot::Receiver<Result<String>>>>,
+    page: Arc<Mutex<Option<CallbackPage>>>,
 }
 
 fn safe_text(value: &str, maximum: usize) -> bool {
@@ -246,8 +248,18 @@ impl Pending {
         let cancellation = cancelled.clone();
         let metadata = discovery.metadata.clone();
         let (sender, receiver) = tokio::sync::oneshot::channel();
+        let page = Arc::new(Mutex::new(None));
+        let callback_page = page.clone();
         tokio::task::spawn_blocking(move || {
-            let result = receive_callback(listener, &host, &path, &state, &metadata, &cancellation);
+            let result = receive_callback(
+                listener,
+                &host,
+                &path,
+                &state,
+                &metadata,
+                &cancellation,
+                &callback_page,
+            );
             let _ = sender.send(result);
         });
         Ok(Self {
@@ -259,6 +271,7 @@ impl Pending {
             redirect_uri,
             authorization_url,
             callback: Mutex::new(Some(receiver)),
+            page,
         })
     }
     pub async fn receive(&self) -> Result<String> {
@@ -270,10 +283,18 @@ impl Pending {
             .ok_or(Error::InvalidRequest)?;
         receiver.await.map_err(|_| Error::Callback)?
     }
+    pub fn finish_page(&self, result: std::result::Result<(), &str>) {
+        if let Some(mut page) = self.page.lock().unwrap().take() {
+            page.finish(result);
+        }
+    }
 }
 impl Drop for Pending {
     fn drop(&mut self) {
         self.cancelled.cancel();
+        self.finish_page(Err(
+            "Notion 연결이 완료되지 않았습니다. Nero에서 다시 연결해 주세요.",
+        ));
     }
 }
 
@@ -284,6 +305,7 @@ fn receive_callback(
     state: &str,
     metadata: &Metadata,
     cancellation: &Cancellation,
+    page: &Arc<Mutex<Option<CallbackPage>>>,
 ) -> Result<String> {
     loop {
         cancellation.check()?;
@@ -295,17 +317,26 @@ fn receive_callback(
                     Err(Error::Callback) => continue,
                     Err(error) => return Err(error),
                 };
-                let result = parse_callback(&request, host, path, state, metadata);
-                let message = if result.is_ok() {
-                    "Notion 인증 응답을 받았습니다. Nero로 돌아가 연결 확인을 완료해 주세요."
-                } else {
-                    "Notion 연결 요청을 확인하지 못했습니다. Nero에서 다시 연결해 주세요."
-                };
-                let _ = stream.write_all(format!("HTTP/1.1 {}\r\nContent-Type: text/plain; charset=utf-8\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: default-src 'none'; frame-ancestors 'none'\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}", if result.is_ok() { "200 OK" } else { "400 Bad Request" }, message.len(), message).as_bytes());
-                match result {
-                    Ok(code) => return Ok(code),
-                    Err(Error::Cancelled) => return Err(Error::Cancelled),
-                    Err(_) => (),
+                match parse_callback(&request, host, path, state, metadata) {
+                    Ok(code) => {
+                        let mut page = page.lock().unwrap();
+                        if let Err(error) = cancellation.check() {
+                            CallbackPage::reject(stream, &error.to_string());
+                            return Err(error);
+                        }
+                        *page = Some(CallbackPage::begin_for(
+                            stream,
+                            "Notion",
+                            "Notion 연결을 완료했습니다. Nero로 돌아가 주세요.",
+                        ));
+                        return Ok(code);
+                    }
+                    Err(error) => {
+                        CallbackPage::reject(stream, &error.to_string());
+                        if error == Error::Cancelled {
+                            return Err(error);
+                        }
+                    }
                 }
             }
             Ok(_) => (),

@@ -1,13 +1,13 @@
 import * as React from 'react';
 import { createRoot } from 'react-dom/client';
 import { Tabs } from '@base-ui/react/tabs';
-import { ArrowUp, Square, Plus, X, FileText, RotateCcw, NotebookPen } from 'lucide-react';
+import { ArrowUp, Square, Plus, X, FileText, RotateCcw, NotebookPen, Copy, Check } from 'lucide-react';
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '../../../design-system/components/ui/select.jsx';
 import { Popover, PopoverTrigger, PopoverContent, PopoverTitle } from '../../../design-system/components/ui/popover.jsx';
-import { createAiChatFlow } from './ai-chat-flow.js';
+import { createAiChatFlow, selectAiAccount } from './ai-chat-flow.js';
 
 const providers = [{ value: 'chatgpt', label: 'ChatGPT' }, { value: 'claude', label: 'Claude' }];
-const accountLabel = { ready: '연결됨', signed_out: '연결 필요', unavailable: '사용할 수 없음', connecting: '연결 중' };
+const accountLabel = { ready: '연결됨', signed_out: '연결 필요', unavailable: '사용할 수 없음', plan_disabled: '구독 확인 필요', connecting: '연결 중' };
 
 function SourcePicker({ flow, state, onSettings }) {
   const [open, setOpen] = React.useState(false), [link, setLink] = React.useState('');
@@ -25,6 +25,26 @@ function SourcePicker({ flow, state, onSettings }) {
         {state.sourceError && <p role="alert" className="ai-chat-error">{state.sourceError}</p>}
         <div className="ai-source-actions">{state.fetching ? <button type="button" className="small" onClick={() => { void flow.cancelSource(); }}>취소</button> : null}<button type="submit" className="small primary" disabled={state.fetching || !link.trim() || !state.notion?.connected}>{state.fetching ? '불러오는 중' : '추가'}</button></div>
       </form>
+    </PopoverContent>
+  </Popover>;
+}
+
+function AnswerCopy({ flow, state, message }) {
+  const [open, setOpen] = React.useState(false), [openedFor, setOpenedFor] = React.useState(null);
+  const owner = state.meeting?.id;
+  React.useEffect(() => { setOpen(false); }, [state.active, owner]);
+  const pending = Boolean(state.conversation.action);
+  const copy = async format => { if (await flow.copy(message.id, format)) setOpen(false); };
+  return <Popover open={open && state.active && openedFor === owner} onOpenChange={next => { if (next) setOpenedFor(owner); setOpen(next); }}>
+    <PopoverTrigger type="button" className="quiet small icon" disabled={pending || Boolean(state.conversation.activeRequestId)} aria-label="AI 답변 복사" title="AI 답변 복사">
+      {state.conversation.copiedMessageId === message.id ? <Check size={17} aria-hidden="true" /> : <Copy size={17} aria-hidden="true" />}
+    </PopoverTrigger>
+    <PopoverContent align="end" className="nero-action-popover" data-nero-ui-owned="" finalFocus={state.active && openedFor === owner ? undefined : false}>
+      <PopoverTitle className="sr-only">AI 답변 복사</PopoverTitle>
+      <button type="button" className="quiet small" disabled={pending} onClick={() => { void copy('txt'); }}>텍스트로 복사</button>
+      <button type="button" className="quiet small" disabled={pending} onClick={() => { void copy('md'); }}>마크다운으로 복사</button>
+      {pending && <span className="processing-inline type-caption" role="status"><span className="activity-spinner" aria-hidden="true" />준비 중</span>}
+      {state.conversation.error && <p className="notice type-caption" role="alert">{state.conversation.error}</p>}
     </PopoverContent>
   </Popover>;
 }
@@ -63,7 +83,7 @@ export function AiChat({ flow, onSettings = () => {}, onCitation = async () => {
         {['cancelled', 'interrupted'].includes(message.status) && <p className="ai-chat-message-status">{message.status === 'cancelled' ? '중지됨' : '답변이 중단되었습니다.'}</p>}
         {message.status === 'failed' && <p className="ai-chat-error">{message.error || '답변을 받지 못했습니다.'}</p>}
         {message.citations?.length > 0 && <ul className="ai-chat-citations" aria-label="참고 자료">{message.citations.map((citation, index) => <li key={`${citation.reference}:${index}`}><button type="button" className="quiet small" onClick={() => { void revealCitation(citation); }}>[{citation.reference}] {citation.label || `자료 ${index + 1}`}</button></li>)}</ul>}
-        {message.role === 'assistant' && message.status === 'completed' && message.text.trim() && <div className="ai-chat-message-actions">
+        {message.role === 'assistant' && message.status === 'completed' && message.text.trim() && <div className="ai-chat-message-actions"><AnswerCopy flow={flow} state={state} message={message} />
           <button type="button" className="quiet small with-icon" disabled={busy} onClick={() => { void flow.save('summary', message.id); }}><FileText size={14} aria-hidden="true" />요약 저장</button>
           <button type="button" className="quiet small with-icon" disabled={busy} onClick={() => { void flow.save('note', message.id); }}><NotebookPen size={14} aria-hidden="true" />메모 추가</button>
         </div>}
@@ -94,27 +114,28 @@ export function AiAccounts({ flow }) {
   return <div className="ai-accounts" data-nero-ui-owned="">
     <h4 className="settings-subtitle">AI 계정</h4>
     <div className="settings-group">{providers.map(provider => {
-      const account = state.accounts.find(item => item.provider === provider.value && item.state === 'ready') || state.accounts.find(item => item.provider === provider.value);
+      const account = selectAiAccount(state.accounts, provider.value, { selectedId: state.accountId, activeAccountId: state.activeAccountId });
       const phase = state.connectionPhases[provider.value];
       return <div className="settings-client-row" key={provider.value}>
         <span className="settings-client-name">{provider.label}</span>
         <div className="settings-client-controls"><span className="settings-client-status" role="status">{phase === 'cancelling' ? '취소 중' : phase === 'starting' ? '연결 중' : phase === 'waiting' ? '로그인 대기' : state.accountsBusy ? '확인 중' : accountLabel[account?.state] || '사용할 수 없음'}</span>
-          {phase ? <>{phase === 'failed' && <button type="button" className="small" onClick={() => { void flow.finishConnect(provider.value); }}>다시 시도</button>}<button type="button" className="quiet small" disabled={phase === 'cancelling'} onClick={() => { void flow.cancelConnect(provider.value); }}>취소</button></> : account?.state === 'ready' ? <button type="button" className="small" disabled={state.accountsBusy || Boolean(state.conversation.activeRequestId)} onClick={() => { void flow.disconnect(account.id); }}>해제</button> : <button type="button" className="small" disabled={state.accountsBusy || !account?.configured || account.state !== 'signed_out'} onClick={() => { void flow.connect(provider.value); }}>연결</button>}
+          {phase ? <>{phase === 'failed' && <button type="button" className="small" onClick={() => { void flow.retryConnect(provider.value); }}>다시 시도</button>}<button type="button" className="quiet small" disabled={phase === 'cancelling'} onClick={() => { void flow.cancelConnect(provider.value); }}>취소</button></> : account?.state === 'ready' ? <button type="button" className="small" disabled={state.accountsBusy || Boolean(state.conversation.activeRequestId)} onClick={() => { void flow.disconnect(account.id); }}>해제</button> : <button type="button" className="small" disabled={state.accountsBusy || !account?.configured || !['signed_out', 'plan_disabled'].includes(account.state)} onClick={() => { void flow.connect(provider.value); }}>연결</button>}
         </div>
         {account?.label && account.state === 'ready' && <p className="ai-account-label">{account.label}</p>}
+        {account?.state === 'plan_disabled' && account.detail && <p className="ai-account-label" role="status">{account.detail}</p>}
       </div>;
     })}</div>
     {state.accountsError && <p className="ai-chat-error" role="alert">{state.accountsError}<button type="button" className="quiet small" disabled={state.accountsBusy} onClick={() => { void flow.loadAccounts(true); }}>다시 확인</button></p>}
     <h4 className="settings-subtitle">참고 자료</h4>
     <div className="settings-group"><div className="settings-client-row"><span className="settings-client-name">Notion</span><div className="settings-client-controls"><span className="settings-client-status" role="status">{state.connectionPhases.notion === 'cancelling' ? '취소 중' : state.connectionPhases.notion === 'starting' ? '연결 중' : state.connectionPhases.notion === 'waiting' ? '로그인 대기' : state.notionBusy ? '확인 중' : state.notion?.connected ? '연결됨' : '연결 필요'}</span>
-      {state.connectionPhases.notion ? <>{state.connectionPhases.notion === 'failed' && <button type="button" className="small" onClick={() => { void flow.finishNotion(); }}>다시 시도</button>}<button type="button" className="quiet small" disabled={state.connectionPhases.notion === 'cancelling'} onClick={() => { void flow.cancelNotion(); }}>취소</button></> : state.notion?.connected ? <button type="button" className="small" disabled={state.notionBusy || state.fetching} onClick={() => { void flow.disconnectNotion(); }}>해제</button> : <button type="button" className="small" disabled={state.notionBusy} onClick={() => { void flow.connectNotion(); }}>연결</button>}
+      {state.connectionPhases.notion ? <>{state.connectionPhases.notion === 'failed' && <button type="button" className="small" onClick={() => { void flow.retryNotion(); }}>다시 시도</button>}<button type="button" className="quiet small" disabled={state.connectionPhases.notion === 'cancelling'} onClick={() => { void flow.cancelNotion(); }}>취소</button></> : state.notion?.connected ? <button type="button" className="small" disabled={state.notionBusy || state.fetching} onClick={() => { void flow.disconnectNotion(); }}>해제</button> : <button type="button" className="small" disabled={state.notionBusy} onClick={() => { void flow.connectNotion(); }}>연결</button>}
     </div>{state.notion?.workspaceName && <p className="ai-account-label">{state.notion.workspaceName}</p>}</div></div>
     {state.notionError && <p className="ai-chat-error" role="alert">{state.notionError}</p>}
   </div>;
 }
 
-export function mountAiChat({ node, settingsNode, tabsNode, bridge, onSelect, onSettings, onCitation, beforeWrite, onSaved, getTemplate }) {
-  const flow = createAiChatFlow({ bridge, beforeWrite, onSaved, getTemplate });
+export function mountAiChat({ node, settingsNode, tabsNode, bridge, onSelect, onSettings, onCitation, beforeWrite, onSaved, getTemplate, writeClipboard }) {
+  const flow = createAiChatFlow({ bridge, beforeWrite, onSaved, getTemplate, writeClipboard });
   const root = createRoot(node), settingsRoot = createRoot(settingsNode), tabsRoot = createRoot(tabsNode);
   root.render(<AiChat flow={flow} onSettings={onSettings} onCitation={onCitation} />);
   settingsRoot.render(<AiAccounts flow={flow} />);

@@ -17,6 +17,7 @@ Nero의 Notion 연결은 사용자가 지정한 페이지를 대화의 외부 �
   취소나 완료 전 오류는 이전 연결과 저장한 문서를 보존한다.
 - macOS Keychain/Windows Credential Manager의 Nero 전용 `notion-context` 항목에 client/token 정보를 저장한다.
   refresh token이 바뀌면 access/refresh token을 같은 보안 저장소 객체에 저장한다.
+  보안 저장소 항목은 1024-byte chunk와 검증된 generation index로 나누어 Windows의 항목 크기 제한을 지킨다.
   `invalid_grant`는 자동 반복하지 않고 재연결이 필요하다고 알린다.
 - 연결 해제는 Nero 전용 자격 증명만 제거한다. 이미 읽은 문서와 이전 대화의 출처는 보존한다.
 
@@ -46,6 +47,12 @@ UUID를 `notion-fetch`의 `id`로 전달한다. 본문에 등장하는 하위 �
 | HTTP 요청 | 최대 30초 |
 | 문서 읽기 묶음 | 최대 60초 |
 | 인증 대기 | 최대 10분 |
+
+시작한 refresh 거래는 사용자 취소와 분리된 30초 요청 한계를 사용한다. 받아들인 회전 token을
+원자적으로 저장한 뒤 원래 호출에 취소를 반환한다. 호출 future가 사라져도 이미 시작한 거래의
+저장은 계속된다. 종료/업데이트 준비는 새 OAuth/fetch/쓰기 진입을 닫고 대기 중 인증과 자료 읽기를
+취소한 뒤 진행 중 refresh/save만 최대 30초 기다린다. 대기 callback이나 사용자 로그인을 기다리지 않는다.
+준비 guard가 유지되는 동안 새 쓰기는 거부하며, 실패하거나 guard가 해제되면 새 작업을 다시 허용한다.
 
 진행 알림이 와도 전체 시간 한계를 늘리지 않는다. 취소/시간 초과는 해당 요청을 중단하고,
 가능하면 MCP cancellation 알림을 짧은 제한 안에서 보낸다. 부분 성공 목록을 성공 응답으로

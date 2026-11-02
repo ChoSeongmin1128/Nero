@@ -139,3 +139,39 @@ test('account cancel remains usable during automatic finish and ignores its late
   app.completeLogin(); await wait(() => chatgpt.textContent.includes('연결 필요'));
   assert.equal(app.ui.flow.getSnapshot().accounts[0].state, 'signed_out');
 });
+
+test('answer copy menu offers native text and Markdown formats without citation settings', async t => {
+  const app = await fixture(t); app.ui.flow.edit('Question'); await app.ui.flow.send();
+  await wait(() => app.node('ai-chat-inspector').querySelector('[aria-label="AI 답변 복사"]'));
+  app.node('ai-chat-inspector').querySelector('[aria-label="AI 답변 복사"]').click();
+  await wait(() => app.window.document.querySelector('.nero-action-popover'));
+  const menu = app.window.document.querySelector('.nero-action-popover');
+  assert.match(menu.textContent, /텍스트로 복사/); assert.match(menu.textContent, /마크다운으로 복사/); assert.equal(menu.querySelector('input'), null);
+  [...menu.querySelectorAll('button')].find(node => node.textContent === '마크다운으로 복사').click();
+  await wait(() => app.calls.some(call => call[0] === 'clipboard'));
+  assert.equal(app.calls.find(call => call[0] === 'exportAnswer')[1].format, 'md'); assert.match(app.calls.find(call => call[0] === 'clipboard')[1], /^##/);
+  await wait(() => !app.window.document.querySelector('.nero-action-popover'));
+});
+
+test('copy menu closes with the inspector and clipboard errors remain actionable', async t => {
+  const app = await fixture(t, { scenario: 'clipboard-failed' }); app.ui.flow.edit('Question'); await app.ui.flow.send();
+  await wait(() => app.node('ai-chat-inspector').querySelector('[aria-label="AI 답변 복사"]'));
+  app.node('ai-chat-inspector').querySelector('[aria-label="AI 답변 복사"]').click();
+  await wait(() => app.window.document.querySelector('.nero-action-popover'));
+  [...app.window.document.querySelectorAll('.nero-action-popover button')].find(node => node.textContent === '텍스트로 복사').click();
+  await wait(() => app.window.document.querySelector('.nero-action-popover [role="alert"]'));
+  assert.equal(app.ui.flow.getSnapshot().conversation.feedback, '');
+  app.node('detail-inspector-close').click(); await wait(() => !app.window.document.querySelector('.nero-action-popover'));
+});
+
+test('the account settings display and reconnect the active plan-disabled account consistently', async t => {
+  const app = await fixture(t, { scenario: 'plan-disabled-multi' }); app.ui.setSettingsActive(true);
+  const panel = app.node('ai-account-settings');
+  await wait(() => panel.textContent.includes('활성 계정의 구독 권한을 확인해 주세요.'));
+  const row = [...panel.querySelectorAll('.settings-client-row')].find(node => node.textContent.includes('ChatGPT'));
+  await wait(() => ![...row.querySelectorAll('button')].find(node => node.textContent === '연결').disabled);
+  assert.match(row.textContent, /구독 확인 필요/);
+  [...row.querySelectorAll('button')].find(node => node.textContent === '연결').click();
+  await wait(() => app.calls.some(call => call[0] === 'connect'));
+  assert.equal(app.calls.find(call => call[0] === 'connect')[2], 'active-plan-account');
+});

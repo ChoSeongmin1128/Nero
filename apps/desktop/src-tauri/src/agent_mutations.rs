@@ -204,11 +204,13 @@ impl AgentMutations {
             .map_err(ControlError::core)?;
         let _lease = self.save_edits(app, "meetingMutation")?;
         let result = if let Some(ids) = request.trash_ids() {
-            processing.meeting_trash(core, &ids, || {
-                if self.gate.closing.load(Ordering::Acquire) {
-                    return Err(nero_core::CoreError::Unavailable);
-                }
-                core.agent_mutate(request)
+            crate::ai_chat_desktop::meeting_removal(app, &ids, false, || {
+                processing.meeting_trash(core, &ids, || {
+                    if self.gate.closing.load(Ordering::Acquire) {
+                        return Err(nero_core::CoreError::Unavailable);
+                    }
+                    core.agent_mutate(request)
+                })
             })
         } else if self.gate.closing.load(Ordering::Acquire) {
             Err(nero_core::CoreError::Unavailable)

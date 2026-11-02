@@ -1,11 +1,15 @@
 mod http;
+mod lifecycle;
 mod mcp;
 mod oauth;
 mod storage;
 #[cfg(test)]
 mod tests;
+mod vault;
 
 use http::{Cancellation, Http, ReqwestHttp};
+use lifecycle::Lifecycle;
+pub use lifecycle::NotionShutdownGuard;
 use oauth::{Credential, Pending};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
@@ -26,6 +30,7 @@ const MCP_ENDPOINT: &str = "https://mcp.notion.com/mcp";
 const MAX_PAGES: usize = 8;
 const MAX_PAGE_BYTES: usize = 256 * 1024;
 const MAX_CONTEXT_BYTES: usize = 512 * 1024;
+const REFRESH_TIMEOUT: Duration = Duration::from_secs(30);
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,6 +51,7 @@ pub enum Error {
     DocumentUnavailable,
     ServerRequest,
     Busy,
+    Shutdown,
 }
 impl fmt::Display for Error {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -65,6 +71,7 @@ impl fmt::Display for Error {
             Self::DocumentUnavailable => "선택한 Notion 페이지에 접근할 수 없습니다. 공유 권한과 링크를 확인해 주세요.",
             Self::ServerRequest => "Notion에서 이 자료 읽기에 지원하지 않는 추가 요청을 보냈습니다.",
             Self::Busy => "Notion 자료를 불러오고 있습니다. 완료하거나 취소한 뒤 다시 시도해 주세요.",
+            Self::Shutdown => "앱이 종료를 준비하고 있습니다. 준비가 끝난 뒤 다시 시도해 주세요.",
         })
     }
 }
@@ -201,15 +208,27 @@ struct Inner {
     error: Option<String>,
     reconnect: bool,
 }
+struct FetchRegistration<'a> {
+    id: &'a str,
+    requests: &'a Mutex<BTreeMap<String, Cancellation>>,
+    cancellation: Cancellation,
+}
+impl Drop for FetchRegistration<'_> {
+    fn drop(&mut self) {
+        self.cancellation.cancel();
+        self.requests.lock().unwrap().remove(self.id);
+    }
+}
 pub struct NotionContextService {
-    storage: Storage,
+    storage: Arc<Storage>,
     credentials: Arc<dyn CredentialStore>,
     http: Arc<dyn Http>,
-    inner: Mutex<Inner>,
-    generation: AtomicU64,
-    credential_gate: tokio::sync::Mutex<()>,
+    inner: Arc<Mutex<Inner>>,
+    generation: Arc<AtomicU64>,
+    credential_gate: Arc<tokio::sync::Mutex<()>>,
     fetch_gate: tokio::sync::Mutex<()>,
     requests: Mutex<BTreeMap<String, Cancellation>>,
+    lifecycle: Arc<Lifecycle>,
 }
 impl NotionContextService {
     pub fn new(root: PathBuf) -> Result<Self> {
@@ -227,21 +246,22 @@ impl NotionContextService {
         let storage = Storage::new(root)?;
         let connection = storage.connection()?;
         Ok(Self {
-            storage,
+            storage: Arc::new(storage),
             credentials,
             http,
-            inner: Mutex::new(Inner {
+            inner: Arc::new(Mutex::new(Inner {
                 connection,
                 pending: None,
                 connecting_id: None,
                 cancellation: None,
                 error: None,
                 reconnect: false,
-            }),
-            generation: AtomicU64::new(0),
-            credential_gate: tokio::sync::Mutex::new(()),
+            })),
+            generation: Arc::new(AtomicU64::new(0)),
+            credential_gate: Arc::new(tokio::sync::Mutex::new(())),
             fetch_gate: tokio::sync::Mutex::new(()),
             requests: Mutex::new(BTreeMap::new()),
+            lifecycle: Arc::new(Lifecycle::default()),
         })
     }
     pub fn snapshot(&self) -> NotionConnectionSnapshot {
@@ -254,6 +274,7 @@ impl NotionContextService {
         }
     }
     pub async fn begin_connect(&self) -> Result<NotionConnectRequest> {
+        self.lifecycle.check_open()?;
         self.cancel_connect(None);
         let generation = self.generation.load(Ordering::Acquire);
         let id = uuid::Uuid::new_v4().to_string();
@@ -264,9 +285,14 @@ impl NotionContextService {
             inner.cancellation = Some(cancellation.clone());
             inner.error = None;
         }
+        if let Err(error) = self.lifecycle.check_open() {
+            self.cancel_connect(Some(&id));
+            return Err(error);
+        }
         let pending = Pending::begin(self.http.as_ref(), id.clone(), cancellation).await;
         let mut inner = self.inner.lock().unwrap();
-        if generation != self.generation.load(Ordering::Acquire)
+        if self.lifecycle.check_open().is_err()
+            || generation != self.generation.load(Ordering::Acquire)
             || inner.connecting_id.as_deref() != Some(&id)
         {
             return Err(Error::Cancelled);
@@ -311,6 +337,7 @@ impl NotionContextService {
         inner.connecting_id = None;
     }
     pub async fn finish_connect(&self, attempt_id: &str) -> Result<NotionConnectionSnapshot> {
+        self.lifecycle.check_open()?;
         let generation = self.generation.load(Ordering::Acquire);
         let pending = {
             let mut inner = self.inner.lock().unwrap();
@@ -320,6 +347,8 @@ impl NotionContextService {
             inner.pending.take().ok_or(Error::InvalidRequest)?
         };
         let result = self.complete_connect(&pending, generation).await;
+        let error = result.as_ref().err().map(ToString::to_string);
+        pending.finish_page(error.as_deref().map_or(Ok(()), Err));
         let mut inner = self.inner.lock().unwrap();
         if generation == self.generation.load(Ordering::Acquire)
             && inner.connecting_id.as_deref() == Some(attempt_id)
@@ -336,43 +365,78 @@ impl NotionContextService {
     }
     async fn complete_connect(&self, pending: &Pending, generation: u64) -> Result<()> {
         let code = pending.receive().await?;
-        let _gate = self.credential_gate.lock().await;
+        let gate = pending
+            .cancelled
+            .run(async { Ok(self.credential_gate.clone().lock_owned().await) })
+            .await?;
+        pending.cancelled.check()?;
+        self.lifecycle.check_open()?;
         let credential = oauth::exchange(self.http.as_ref(), pending, &code).await?;
         mcp::Session::initialize(self.http.as_ref(), &credential, &pending.cancelled).await?;
         pending.cancelled.check()?;
-        let mut inner = self.inner.lock().unwrap();
-        if generation != self.generation.load(Ordering::Acquire) {
-            return Err(Error::Cancelled);
-        }
-        let next = Connection {
-            schema_version: 1,
-            active: true,
-            credential_slot: !inner.connection.credential_slot,
-            workspace_id: credential.workspace_id.clone(),
-            workspace_name: credential.workspace_name.clone(),
-        };
-        self.credentials.save(next.credential_slot, &credential)?;
-        self.storage.save_connection(&next)?;
-        inner.connection = next;
-        inner.error = None;
-        inner.reconnect = false;
-        Ok(())
+        let operation = self.lifecycle.enter()?;
+        let inner = self.inner.clone();
+        let storage = self.storage.clone();
+        let credentials = self.credentials.clone();
+        let current_generation = self.generation.clone();
+        let cancellation = pending.cancelled.clone();
+        tokio::task::spawn_blocking(move || {
+            let _gate = gate;
+            let _operation = operation;
+            let next = {
+                let inner = inner.lock().unwrap();
+                if generation != current_generation.load(Ordering::Acquire) {
+                    return Err(Error::Cancelled);
+                }
+                Connection {
+                    schema_version: 1,
+                    active: true,
+                    credential_slot: !inner.connection.credential_slot,
+                    workspace_id: credential.workspace_id.clone(),
+                    workspace_name: credential.workspace_name.clone(),
+                }
+            };
+            credentials.save(next.credential_slot, &credential)?;
+            cancellation.check()?;
+            let mut inner = inner.lock().unwrap();
+            if generation != current_generation.load(Ordering::Acquire) {
+                return Err(Error::Cancelled);
+            }
+            storage.save_connection(&next)?;
+            inner.connection = next;
+            inner.error = None;
+            inner.reconnect = false;
+            Ok(())
+        })
+        .await
+        .map_err(|_| Error::Storage)?
     }
     pub async fn disconnect(&self) -> Result<NotionConnectionSnapshot> {
+        self.lifecycle.check_open()?;
         self.cancel_connect(None);
         for request in self.requests.lock().unwrap().values() {
             request.cancel();
         }
-        let _gate = self.credential_gate.lock().await;
-        let next = Connection::default();
-        self.storage.save_connection(&next)?;
-        {
-            let mut inner = self.inner.lock().unwrap();
-            inner.connection = next;
-            inner.error = None;
-            inner.reconnect = false;
-        }
-        self.credentials.delete()?;
+        let gate = self.credential_gate.clone().lock_owned().await;
+        let operation = self.lifecycle.enter()?;
+        let inner = self.inner.clone();
+        let storage = self.storage.clone();
+        let credentials = self.credentials.clone();
+        tokio::task::spawn_blocking(move || {
+            let _gate = gate;
+            let _operation = operation;
+            let next = Connection::default();
+            storage.save_connection(&next)?;
+            {
+                let mut inner = inner.lock().unwrap();
+                inner.connection = next;
+                inner.error = None;
+                inner.reconnect = false;
+            }
+            credentials.delete()
+        })
+        .await
+        .map_err(|_| Error::Storage)??;
         Ok(self.snapshot())
     }
     async fn credential(
@@ -381,10 +445,11 @@ impl NotionContextService {
         force_refresh: bool,
         generation: u64,
     ) -> Result<Credential> {
-        let _gate = cancellation
-            .run(async { Ok(self.credential_gate.lock().await) })
+        let gate = cancellation
+            .run(async { Ok(self.credential_gate.clone().lock_owned().await) })
             .await?;
         cancellation.check()?;
+        self.lifecycle.check_open()?;
         let slot = {
             let inner = self.inner.lock().unwrap();
             if generation != self.generation.load(Ordering::Acquire) {
@@ -401,9 +466,42 @@ impl NotionContextService {
                 .expires_at
                 .is_some_and(|expiry| expiry <= now_ms().saturating_add(30_000))
         {
-            credential = oauth::refresh(self.http.as_ref(), credential, cancellation).await?;
-            self.credentials.save(slot, &credential)?;
+            cancellation.check()?;
+            let operation = self.lifecycle.enter()?;
+            let http = self.http.clone();
+            let credentials = self.credentials.clone();
+            let inner = self.inner.clone();
+            let task = tokio::spawn(async move {
+                let _gate = gate;
+                let _operation = operation;
+                let transaction = Cancellation::new(REFRESH_TIMEOUT);
+                let refreshed = oauth::refresh(http.as_ref(), credential, &transaction).await;
+                let credential = match refreshed {
+                    Ok(credential) => credential,
+                    Err(error) => {
+                        if error == Error::Reconnect {
+                            let mut inner = inner.lock().unwrap();
+                            if inner.connection.credential_slot == slot {
+                                inner.reconnect = true;
+                                inner.error = Some(error.to_string());
+                            }
+                        }
+                        return Err(error);
+                    }
+                };
+                let saved = credential.clone();
+                tokio::task::spawn_blocking(move || credentials.save(slot, &saved))
+                    .await
+                    .map_err(|_| Error::Credentials)??;
+                Ok(credential)
+            });
+            let refreshed = task.await.map_err(|_| Error::Credentials)?;
+            cancellation.check()?;
+            self.lifecycle.check_open()?;
+            credential = refreshed?;
         }
+        cancellation.check()?;
+        self.lifecycle.check_open()?;
         Ok(credential)
     }
     pub async fn fetch_sources(
@@ -411,6 +509,7 @@ impl NotionContextService {
         request_id: String,
         links: Vec<String>,
     ) -> Result<NotionContextBundle> {
+        self.lifecycle.check_open()?;
         if request_id.is_empty()
             || request_id.len() > 120
             || !request_id.bytes().all(|value| value.is_ascii_graphic())
@@ -437,9 +536,13 @@ impl NotionContextService {
             }
             requests.insert(request_id.clone(), cancellation.clone());
         }
+        let _registration = FetchRegistration {
+            id: &request_id,
+            requests: &self.requests,
+            cancellation: cancellation.clone(),
+        };
         let generation = self.generation.load(Ordering::Acquire);
         let result = self.fetch_pages(&pages, &cancellation, generation).await;
-        self.requests.lock().unwrap().remove(&request_id);
         if let Err(error) = &result {
             let mut inner = self.inner.lock().unwrap();
             if generation == self.generation.load(Ordering::Acquire) {
@@ -488,6 +591,7 @@ impl NotionContextService {
                 continue;
             }
             cancellation.check()?;
+            let _operation = self.lifecycle.enter()?;
             let inner = self.inner.lock().unwrap();
             if generation != self.generation.load(Ordering::Acquire) || !inner.connection.active {
                 return Err(Error::Cancelled);
@@ -508,6 +612,21 @@ impl NotionContextService {
         if let Some(cancellation) = self.requests.lock().unwrap().get(request_id) {
             cancellation.cancel();
         }
+    }
+    pub async fn prepare_shutdown(&self) -> Result<NotionShutdownGuard> {
+        self.prepare_shutdown_with_timeout(REFRESH_TIMEOUT).await
+    }
+    async fn prepare_shutdown_with_timeout(
+        &self,
+        timeout: Duration,
+    ) -> Result<NotionShutdownGuard> {
+        let guard = self.lifecycle.close()?;
+        self.cancel_connect(None);
+        for cancellation in self.requests.lock().unwrap().values() {
+            cancellation.cancel();
+        }
+        self.lifecycle.drain(timeout).await?;
+        Ok(guard)
     }
     pub fn read_sources(&self, source_ids: Vec<String>) -> Result<NotionContextBundle> {
         self.context_bundle(&source_ids)
@@ -551,7 +670,11 @@ pub fn normalize_page_id(input: &str) -> Result<String> {
         if url.scheme() != "https"
             || !(matches!(
                 host,
-                "notion.so" | "www.notion.so" | "notion.site" | "www.notion.site"
+                "notion.so"
+                    | "www.notion.so"
+                    | "app.notion.com"
+                    | "notion.site"
+                    | "www.notion.site"
             ) || host.ends_with(".notion.site")
                 || host.ends_with(".notion.so"))
             || url.port().is_some()

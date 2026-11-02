@@ -1,12 +1,23 @@
 const emptyConversation = () => ({ id: null, messages: [], activeRequestId: null, draft: '', includeMeeting: true, sources: [], error: '', feedback: '', action: null, loading: false, loaded: false });
 const errorMessage = (error, fallback) => error?.message || fallback;
 const terminal = new Set(['completed', 'failed', 'cancelled']);
+const reconnectable = new Set(['signed_out', 'plan_disabled']);
 
-export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved = async () => {}, getTemplate = async () => null, createId = () => crypto.randomUUID() }) {
-  let state = { meeting: null, conversation: emptyConversation(), provider: 'chatgpt', accountId: null, modelId: null, models: [], accounts: [], accountsLoaded: false, accountsBusy: false, accountsError: '', modelsBusy: false, modelError: '', attempts: {}, connectionPhases: {}, notion: null, notionBusy: false, notionAttempt: null, notionError: '', fetching: false, sourceError: '', active: false, settingsActive: false };
-  let subscriptionReady = false;
+export function selectAiAccount(accounts, provider, { selectedId = null, activeAccountId = null } = {}) {
+  const candidates = accounts.filter(account => account.provider === provider);
+  return candidates.find(account => account.id === selectedId && account.state === 'ready')
+    || candidates.find(account => account.id === activeAccountId && account.state === 'ready')
+    || candidates.find(account => account.state === 'ready')
+    || candidates.find(account => account.id === activeAccountId)
+    || candidates.find(account => account.id === selectedId)
+    || candidates[0];
+}
+
+export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved = async () => {}, getTemplate = async () => null, writeClipboard = text => navigator.clipboard.writeText(text), createId = () => crypto.randomUUID() }) {
+  let state = { meeting: null, conversation: emptyConversation(), provider: 'chatgpt', accountId: null, activeAccountId: null, modelId: null, models: [], accounts: [], accountsLoaded: false, accountsBusy: false, accountsError: '', modelsBusy: false, modelError: '', attempts: {}, connectionPhases: {}, notion: null, notionBusy: false, notionAttempt: null, notionError: '', fetching: false, sourceError: '', active: false, settingsActive: false };
+  let subscriptionReady = false, contextEpoch = 0;
   let disposed = false, accountsPromise = null, modelEpoch = 0, sourceRequest = null, unsubscribe = null;
-  const conversations = new Map(), loads = new Map(), listeners = new Set(), connections = new Map();
+  const conversations = new Map(), loads = new Map(), listeners = new Set(), connections = new Map(), eventBuffers = new Map(), pendingStarts = new Map();
   const publish = patch => { if (disposed) return; state = { ...state, ...patch }; listeners.forEach(listener => listener()); };
   const updateConversation = (id, patch) => {
     const value = { ...(conversations.get(id) || emptyConversation()), ...patch };
@@ -18,10 +29,9 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
   const ready = () => account()?.state === 'ready';
   const acceptAccounts = result => {
     const accounts = result.accounts || [];
-    const selected = accounts.find(item => item.id === state.accountId && item.provider === state.provider)
-      || accounts.find(item => item.provider === state.provider && item.state === 'ready')
-      || accounts.find(item => item.provider === state.provider);
-    publish({ accounts, accountsLoaded: true, accountId: selected?.id || null });
+    const activeAccountId = result.activeAccountId || null;
+    const selected = selectAiAccount(accounts, state.provider, { selectedId: state.accountId, activeAccountId });
+    publish({ accounts, accountsLoaded: true, accountId: selected?.id || null, activeAccountId });
     void flow.loadModels();
   };
   const connectionError = (key, error, fallback) => publish({ [key === 'notion' ? 'notionError' : 'accountsError']: errorMessage(error, fallback) });
@@ -53,7 +63,7 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
     connections.set(key, run);
     connectionPhase(key, 'starting');
     connectionError(key, null, '');
-    run.begin = Promise.resolve().then(() => key === 'notion' ? bridge.notionConnect() : bridge.connect(key));
+    run.begin = Promise.resolve().then(() => key === 'notion' ? bridge.notionConnect() : bridge.connect(key, selectAiAccount(state.accounts, key, { selectedId: state.accountId, activeAccountId: state.activeAccountId })?.id || null));
     try {
       const result = await run.begin;
       run.attemptId = result.attemptId;
@@ -89,8 +99,21 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
       connectionError(key, error, '연결 취소를 확인하지 못했습니다. 다시 시도해 주세요.');
     }
   }
+  const bufferEvent = event => {
+    let buffer = eventBuffers.get(event.meetingId);
+    if (!buffer) { buffer = new Map(); eventBuffers.set(event.meetingId, buffer); }
+    buffer.set(`${event.requestId}:${event.sequence ?? buffer.size}`, event);
+  };
+  function replayEvents(meetingId) {
+    const buffer = eventBuffers.get(meetingId);
+    if (!buffer || loads.has(meetingId)) return;
+    eventBuffers.delete(meetingId);
+    for (const event of [...buffer.values()].sort((a, b) => (a.sequence || 0) - (b.sequence || 0))) receive(event);
+  }
   const receive = event => {
-    if (!event?.meetingId || !event.requestId) return;
+    if (disposed || !event?.meetingId || !event.requestId) return;
+    if (event.sequence != null && (!Number.isSafeInteger(event.sequence) || event.sequence < 1)) return;
+    if (loads.has(event.meetingId)) { bufferEvent(event); return; }
     const conversation = conversations.get(event.meetingId);
     if (!conversation || conversation.activeRequestId !== event.requestId || (conversation.id && event.conversationId !== conversation.id)) return;
     const messages = [...conversation.messages];
@@ -98,11 +121,13 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
     if (index < 0) index = messages.findIndex(item => item.role === 'assistant' && item.status === 'streaming');
     if (index < 0) return;
     const previous = messages[index];
-    if (terminal.has(previous.status)) return;
+    if (terminal.has(previous.status) || (event.sequence != null && event.sequence <= (previous.sequence || 0))) return;
     const status = event.type === 'delta' ? 'streaming' : event.type;
     if (!['streaming', ...terminal].includes(status)) return;
-    messages[index] = { ...previous, id: event.messageId || previous.id, text: event.type === 'delta' ? previous.text + (event.text || '') : event.text ?? previous.text, status, citations: event.citations || previous.citations || [], error: event.error || '' };
+    if (event.type === 'delta' && event.sequence != null && event.sequence > (previous.sequence || 0) + 1) { bufferEvent(event); return; }
+    messages[index] = { ...previous, id: event.messageId || previous.id, requestId: event.requestId, sequence: event.sequence ?? previous.sequence ?? 0, text: event.type === 'delta' ? previous.text + (event.text || '') : event.text ?? previous.text, status, citations: event.citations || previous.citations || [], error: event.error || '' };
     updateConversation(event.meetingId, { id: event.conversationId || conversation.id, messages, activeRequestId: terminal.has(status) ? null : event.requestId, stopping: false, error: event.type === 'failed' ? event.error || '답변을 받지 못했습니다. 다시 시도해 주세요.' : '' });
+    replayEvents(event.meetingId);
   };
   const flow = {
     getSnapshot: () => state,
@@ -112,15 +137,17 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
     setMeeting(meeting) {
       const next = meeting ? { id: meeting.id, title: meeting.title } : null;
       if (next?.id === state.meeting?.id) { if (next?.title !== state.meeting?.title) publish({ meeting: next }); return; }
+      contextEpoch += 1;
       if (sourceRequest) void flow.cancelSource();
       publish({ meeting: next, conversation: next ? conversations.get(next.id) || emptyConversation() : emptyConversation(), sourceError: '' });
       if (next && !conversations.has(next.id)) conversations.set(next.id, state.conversation);
-      if (state.active && next) void flow.loadConversation();
+      if (state.active && next) void flow.loadConversation(true);
     },
     setActive(active) {
       if (active === state.active) return;
+      if (!active) contextEpoch += 1;
       publish({ active });
-      if (active) { void flow.loadAccounts(); void flow.loadConversation(); }
+      if (active) { void flow.loadAccounts(); void flow.loadConversation(true); }
     },
     setSettingsActive(settingsActive) {
       if (settingsActive === state.settingsActive) return;
@@ -141,7 +168,7 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
     },
     selectProvider(provider) {
       if (!['chatgpt', 'claude'].includes(provider) || state.conversation.activeRequestId) return;
-      const selected = state.accounts.find(item => item.provider === provider && item.state === 'ready') || state.accounts.find(item => item.provider === provider);
+      const selected = selectAiAccount(state.accounts, provider, { selectedId: state.accountId, activeAccountId: state.activeAccountId });
       publish({ provider, accountId: selected?.id || null, models: [], modelId: null, modelError: '' });
       void flow.loadModels();
     },
@@ -162,11 +189,11 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
     },
     selectModel(modelId) { if (!state.conversation.activeRequestId && state.models.some(item => item.id === modelId)) publish({ modelId }); },
     connect(provider) {
-      const target = state.accounts.find(item => item.provider === provider);
-      if (state.accountsBusy || !target?.configured || target.state !== 'signed_out') return;
+      const target = selectAiAccount(state.accounts, provider, { selectedId: state.accountId, activeAccountId: state.activeAccountId });
+      if (state.accountsBusy || !target?.configured || !reconnectable.has(target.state)) return;
       return startConnection(provider);
     },
-    finishConnect: provider => finishConnection(provider),
+    retryConnect: async provider => { await cancelConnection(provider); if (!connections.has(provider)) await startConnection(provider); },
     cancelConnect: provider => cancelConnection(provider),
     async disconnect(accountId) {
       if (state.accountsBusy) return;
@@ -178,17 +205,20 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
     },
     async loadConversation(force = false) {
       const id = state.meeting?.id;
-      if (!id || loads.has(id) || conversations.get(id)?.activeRequestId || (conversations.get(id)?.loaded && !force)) return;
+      if (!id || (!force && (loads.has(id) || conversations.get(id)?.activeRequestId || conversations.get(id)?.loaded))) return;
       const epoch = {};
       loads.set(id, epoch);
-      updateConversation(id, { loading: true, error: '' });
+      updateConversation(id, { loading: true, loaded: false, error: '' });
       try {
+        const starting = pendingStarts.get(id);
+        if (starting) await starting.done;
+        if (disposed || loads.get(id) !== epoch) return;
         const result = await bridge.read(id);
         if (disposed || loads.get(id) !== epoch) return;
         const current = conversations.get(id);
         updateConversation(id, { id: result.id, messages: result.messages || [], activeRequestId: result.activeRequestId || null, loaded: true, loading: false, error: '', draft: current.draft });
-      } catch (error) { if (!disposed) updateConversation(id, { loading: false, error: errorMessage(error, '대화를 불러오지 못했습니다.') }); }
-      finally { loads.delete(id); }
+      } catch (error) { if (!disposed && loads.get(id) === epoch) updateConversation(id, { loading: false, error: errorMessage(error, '대화를 불러오지 못했습니다.') }); }
+      finally { if (loads.get(id) === epoch) { loads.delete(id); replayEvents(id); } }
     },
     edit(draft) { if (state.meeting) updateConversation(state.meeting.id, { draft, useTemplate: false }); },
     summaryPrompt() { if (state.meeting) updateConversation(state.meeting.id, { draft: '이 회의의 결정 사항과 할 일을 정리해 주세요.', useTemplate: true }); },
@@ -199,6 +229,9 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
       if (!subscriptionReady || !id || !state.conversation.loaded || !ready() || !state.modelId || state.modelsBusy || state.modelError || state.fetching || state.conversation.loading || state.conversation.activeRequestId || state.conversation.action || !text.trim()) return false;
       const requestId = createId(), accountId = state.accountId, modelId = state.modelId;
       const context = state.conversation;
+      let finishStart;
+      const starting = { requestId, done: new Promise(resolve => { finishStart = resolve; }) };
+      pendingStarts.set(id, starting);
       updateConversation(id, { action: 'sending', error: '', feedback: '' });
       try {
         await beforeWrite();
@@ -215,6 +248,9 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
         const message = errorMessage(error, '전송하지 못했습니다. 다시 시도해 주세요.');
         updateConversation(id, { activeRequestId: null, action: null, error: message, messages: current.messages.map(item => item.requestId === requestId && item.role === 'assistant' ? { ...item, status: 'failed', error: message } : item) });
         return false;
+      } finally {
+        if (pendingStarts.get(id) === starting) pendingStarts.delete(id);
+        finishStart();
       }
     },
     retry(messageId) {
@@ -229,6 +265,26 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
       updateConversation(id, { stopping: true, error: '' });
       try { await bridge.cancel(requestId); }
       catch (error) { updateConversation(id, { stopping: false, error: errorMessage(error, '중지를 확인하지 못했습니다. 다시 시도해 주세요.') }); }
+    },
+    async copy(messageId, format) {
+      const id = state.meeting?.id, conversation = state.conversation, epoch = contextEpoch;
+      const message = conversation.messages.find(item => item.id === messageId);
+      if (!state.active || !id || !conversation.id || conversation.action || conversation.activeRequestId || !['txt', 'md'].includes(format) || message?.role !== 'assistant' || message.status !== 'completed' || !message.text.trim()) return false;
+      const action = `copy:${messageId}:${format}`;
+      const owns = () => !disposed && state.active && contextEpoch === epoch && state.meeting?.id === id && state.conversation.id === conversation.id;
+      updateConversation(id, { action, error: '', feedback: '', copiedMessageId: null });
+      try {
+        const document = await bridge.exportAnswer({ conversationId: conversation.id, messageId, meetingId: id, format });
+        if (!owns()) return false;
+        if (document.format !== format || typeof document.text !== 'string') throw new Error('복사할 답변을 확인하지 못했습니다.');
+        await writeClipboard(document.text);
+        if (!owns()) return false;
+        updateConversation(id, { feedback: '복사했습니다.', copiedMessageId: messageId });
+        return true;
+      } catch (error) {
+        if (owns()) updateConversation(id, { error: errorMessage(error, '복사하지 못했습니다. 다시 시도해 주세요.') });
+        return false;
+      } finally { if (conversations.get(id)?.action === action) updateConversation(id, { action: null }); }
     },
     async save(kind, messageId) {
       const id = state.meeting?.id, conversation = state.conversation;
@@ -258,7 +314,7 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
       if (state.notionBusy) return;
       return startConnection('notion');
     },
-    finishNotion: () => finishConnection('notion'),
+    retryNotion: async () => { await cancelConnection('notion'); if (!connections.has('notion')) await startConnection('notion'); },
     cancelNotion: () => cancelConnection('notion'),
     async disconnectNotion() {
       if (state.notionBusy || state.fetching) return;
@@ -292,7 +348,7 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
       try { await bridge.cancelFetch(requestId); }
       catch (error) { publish({ sourceError: errorMessage(error, '자료 불러오기 취소를 확인하지 못했습니다.') }); }
     },
-    dispose() { disposed = true; modelEpoch++; listeners.clear(); unsubscribe?.(); if (sourceRequest) void bridge.cancelFetch(sourceRequest).catch(() => {}); },
+    dispose() { disposed = true; modelEpoch++; listeners.clear(); eventBuffers.clear(); unsubscribe?.(); if (sourceRequest) void bridge.cancelFetch(sourceRequest).catch(() => {}); },
   };
   Promise.resolve().then(() => bridge.subscribe(receive)).then(stop => { if (disposed) stop?.(); else { unsubscribe = stop; subscriptionReady = true; publish({}); } }).catch(error => publish({ accountsError: errorMessage(error, '답변 수신을 준비하지 못했습니다.') }));
   return flow;

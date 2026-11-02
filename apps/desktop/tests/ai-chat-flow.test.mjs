@@ -121,11 +121,11 @@ test('stale model loads cannot enable a different provider', async () => {
 test('failed automatic account completion can be explicitly retried', async () => {
   const pendingAccount = { ...readyAccount, state: 'signed_out' };
   let attempts = 0, complete = false;
-  const app = await harness({ accounts: async () => ({ accounts: [pendingAccount] }), connect: async () => { attempts++; return { attemptId: 'attempt' }; }, finishConnect: async () => { if (!complete) throw Error('Login not finished'); return { accounts: [readyAccount] }; } });
+  const app = await harness({ accounts: async () => ({ accounts: [pendingAccount] }), connect: async () => { attempts++; return { attemptId: `attempt-${attempts}` }; }, cancelConnect: async () => ({ accounts: [pendingAccount] }), finishConnect: async () => { if (!complete) throw Error('Login failed'); return { accounts: [readyAccount], activeAccountId: readyAccount.id }; } });
   await app.flow.connect('chatgpt'); await app.flow.connect('chatgpt'); assert.equal(attempts, 1);
-  assert.equal(app.state().accounts[0].state, 'signed_out'); assert.equal(app.state().attempts.chatgpt, 'attempt');
-  await app.flow.finishConnect('chatgpt'); assert.equal(app.state().attempts.chatgpt, 'attempt'); assert.equal(app.state().accounts[0].state, 'signed_out');
-  complete = true; await app.flow.finishConnect('chatgpt'); assert.equal(app.state().accounts[0].state, 'ready'); assert.equal(app.state().attempts.chatgpt, null); app.flow.dispose();
+  assert.equal(app.state().accounts[0].state, 'signed_out'); assert.equal(app.state().attempts.chatgpt, 'attempt-1');
+  await app.flow.retryConnect('chatgpt'); assert.equal(attempts, 2); assert.equal(app.state().attempts.chatgpt, 'attempt-2'); assert.equal(app.state().accounts[0].state, 'signed_out');
+  complete = true; await app.flow.retryConnect('chatgpt'); assert.equal(app.state().accounts[0].state, 'ready'); assert.equal(app.state().attempts.chatgpt, null); app.flow.dispose();
 });
 
 test('save failures keep the answer and do not report successful persistence', async () => {
@@ -177,4 +177,167 @@ test('Notion automatically completes and cancellation ignores a late callback', 
   completion = deferred(); const next = app.flow.connectNotion(); await tick();
   completion.resolve({ connected: true, workspaceName: 'New workspace' }); await next;
   assert.equal(app.state().notion.workspaceName, 'New workspace'); assert.equal(app.state().notionAttempt, null); app.flow.dispose();
+});
+
+test('a terminal event arriving before read resolves overrides the streaming snapshot', async () => {
+  const pending = deferred(); const app = await harness({ read: () => pending.promise });
+  app.emit({ type: 'completed', sequence: 3, messageId: 'answer', text: 'Complete answer' });
+  pending.resolve({ id: 'conversation', activeRequestId: 'request-1', messages: [{ id: 'answer', requestId: 'request-1', role: 'assistant', status: 'streaming', text: 'Complete', sequence: 1 }] });
+  await tick();
+  assert.equal(app.state().conversation.messages[0].text, 'Complete answer');
+  assert.equal(app.state().conversation.messages[0].status, 'completed');
+  assert.equal(app.state().conversation.activeRequestId, null); app.flow.dispose();
+});
+
+test('read snapshots consume matching deltas once and replay only later sequence numbers', async () => {
+  const pending = deferred(); const app = await harness({ read: () => pending.promise });
+  app.emit({ type: 'delta', sequence: 1, text: 'First' }); app.emit({ type: 'delta', sequence: 2, text: ' second' });
+  pending.resolve({ id: 'conversation', activeRequestId: 'request-1', messages: [{ id: 'answer', requestId: 'request-1', role: 'assistant', status: 'streaming', text: 'First', sequence: 1 }] });
+  await tick();
+  assert.equal(app.state().conversation.messages[0].text, 'First second');
+  assert.equal(app.state().conversation.messages[0].sequence, 2); app.flow.dispose();
+});
+
+test('duplicate and reordered deltas do not corrupt the answer and terminal text closes sequence gaps', async () => {
+  const app = await harness(); app.flow.edit('Question'); await app.flow.send();
+  app.emit({ type: 'delta', sequence: 2, text: ' second' });
+  assert.equal(app.state().conversation.messages.at(-1).text, '');
+  app.emit({ type: 'delta', sequence: 1, text: 'First' });
+  app.emit({ type: 'delta', sequence: 1, text: 'First' }); app.emit({ type: 'delta', sequence: 2, text: ' second' });
+  assert.equal(app.state().conversation.messages.at(-1).text, 'First second');
+  app.emit({ type: 'delta', sequence: 4, text: ' fourth' });
+  app.emit({ type: 'cancelled', sequence: 5, text: 'First second third fourth' });
+  assert.equal(app.state().conversation.messages.at(-1).text, 'First second third fourth');
+  assert.equal(app.state().conversation.activeRequestId, null); app.flow.dispose();
+});
+
+test('completed answers copy only native formatted text without citation options', async () => {
+  const copied = [], exports = [];
+  const app = await harness({ exportAnswer: async request => { exports.push(request); return { text: request.format === 'md' ? '**Native answer**' : 'Native answer', format: request.format }; } }, { writeClipboard: async text => copied.push(text) });
+  app.flow.edit('Question'); await app.flow.send();
+  assert.equal(await app.flow.copy(app.state().conversation.messages.at(-1).id, 'txt'), false);
+  app.emit({ type: 'completed', text: 'Raw answer [1]', messageId: 'answer' });
+  assert.equal(await app.flow.copy('answer', 'txt'), true); assert.equal(await app.flow.copy('answer', 'md'), true);
+  assert.deepEqual(copied, ['Native answer', '**Native answer**']);
+  assert.deepEqual(exports[0], { conversationId: 'conversation', messageId: 'answer', meetingId: 'meeting-a', format: 'txt' });
+  assert.equal(app.state().conversation.feedback, '복사했습니다.'); app.flow.dispose();
+});
+
+test('copy failures show no success feedback and meeting changes invalidate pending exports', async () => {
+  const pending = deferred(), copied = [];
+  const app = await harness({ exportAnswer: () => pending.promise }, { writeClipboard: async text => copied.push(text) });
+  app.flow.edit('Question'); await app.flow.send(); app.emit({ type: 'completed', text: 'Answer', messageId: 'answer' });
+  const copy = app.flow.copy('answer', 'txt'); app.flow.setMeeting({ id: 'meeting-b', title: 'B' }); app.flow.setMeeting({ id: 'meeting-a', title: 'A' });
+  pending.resolve({ text: 'Old answer', format: 'txt' }); assert.equal(await copy, false); assert.deepEqual(copied, []); app.flow.dispose();
+  const failed = await harness({ exportAnswer: async () => ({ text: 'Answer', format: 'txt' }) }, { writeClipboard: async () => { throw Error('Clipboard denied'); } });
+  failed.flow.edit('Question'); await failed.flow.send(); failed.emit({ type: 'completed', text: 'Answer', messageId: 'answer' });
+  assert.equal(await failed.flow.copy('answer', 'txt'), false); assert.equal(failed.state().conversation.feedback, ''); assert.equal(failed.state().conversation.error, 'Clipboard denied'); failed.flow.dispose();
+});
+
+test('reconnect passes the old account ID and selects the newly ready active account', async () => {
+  const old = { ...readyAccount, id: 'old', state: 'signed_out' }, fresh = { ...readyAccount, id: 'new' };
+  const reconnects = [], modelLoads = [];
+  const app = await harness({ accounts: async () => ({ accounts: [old], activeAccountId: 'old' }),
+    connect: async (provider, accountId) => { reconnects.push([provider, accountId]); return { attemptId: 'reconnect' }; },
+    finishConnect: async () => ({ accounts: [old, fresh], activeAccountId: 'new' }),
+    models: async accountId => { modelLoads.push(accountId); return { models: [{ id: 'new-model', label: 'New model' }], defaultModelId: 'new-model' }; },
+  });
+  await app.flow.connect('chatgpt'); await tick(); app.flow.edit('Question');
+  assert.deepEqual(reconnects, [['chatgpt', 'old']]); assert.equal(app.state().accountId, 'new'); assert.deepEqual(modelLoads, ['new']); assert.equal(app.flow.canSend(), true);
+  await app.flow.send(); assert.equal(app.calls.find(call => call[0] === 'send')[1].accountId, 'new'); app.flow.dispose();
+});
+
+test('declined plan permission reconnects through the same account registration', async () => {
+  const requested=[];
+  const app=await harness({ accounts:async()=>({accounts:[{...readyAccount,state:'plan_disabled'}]}),
+    connect:async(provider,accountId)=>{requested.push({provider,accountId});return {attemptId:'new-consent'};},
+    finishConnect:async()=>({accounts:[readyAccount],activeAccountId:readyAccount.id}) });
+  await app.flow.connect('chatgpt'); await tick();
+  assert.deepEqual(requested,[{provider:'chatgpt',accountId:readyAccount.id}]);
+  assert.equal(app.state().accountId,readyAccount.id);app.flow.edit('Question');assert.equal(app.flow.canSend(),true);
+  app.flow.dispose();
+});
+
+test('re-entering a restored meeting refreshes a cached stream even when its terminal event was missed', async () => {
+  let reads = 0, cancelled = false;
+  const persisted = () => ({ id: 'conversation', activeRequestId: cancelled ? null : 'request-1', messages: [
+    { id: 'question', role: 'user', text: 'Question', status: 'completed' },
+    { id: 'answer', requestId: 'request-1', role: 'assistant', text: 'Partial answer', status: cancelled ? 'cancelled' : 'streaming', sequence: cancelled ? 2 : 1 },
+  ] });
+  const app = await harness({ read: async () => { reads++; return persisted(); } });
+  assert.equal(app.state().conversation.activeRequestId, 'request-1');
+  app.flow.setMeeting(null); app.flow.setActive(false); cancelled = true;
+  app.flow.setMeeting({ id: 'meeting-a', title: 'Restored meeting' }); app.flow.setActive(true); await tick();
+  assert.equal(reads, 2); assert.equal(app.state().conversation.messages.at(-1).status, 'cancelled');
+  assert.equal(app.state().conversation.activeRequestId, null); app.flow.edit('Next question'); assert.equal(app.flow.canSend(), true); app.flow.dispose();
+});
+
+test('explicit forced read can replace an active cached snapshot and merge a racing terminal event', async () => {
+  const refresh = deferred(); let reads = 0;
+  const app = await harness({ read: async () => { reads++; return reads === 1 ? { id: null, messages: [] } : refresh.promise; } });
+  app.flow.edit('Question'); await app.flow.send(); app.emit({ type: 'delta', sequence: 1, text: 'First' });
+  const loading = app.flow.loadConversation(true); assert.equal(reads, 2);
+  app.emit({ type: 'completed', sequence: 3, text: 'First second', messageId: 'answer' });
+  refresh.resolve({ id: 'conversation', activeRequestId: 'request-1', messages: [{ id: 'answer', requestId: 'request-1', role: 'assistant', status: 'streaming', text: 'First', sequence: 1 }] }); await loading;
+  assert.equal(app.state().conversation.messages.at(-1).text, 'First second'); assert.equal(app.state().conversation.activeRequestId, null); app.flow.dispose();
+});
+
+test('a deletion cancellation event releases the hidden conversation account-disconnect guard', async () => {
+  let disconnects = 0;
+  const app = await harness({ disconnect: async () => { disconnects++; return { accounts: [{ ...readyAccount, state: 'signed_out' }] }; } });
+  app.flow.edit('Question'); await app.flow.send(); app.flow.setMeeting(null); app.flow.setActive(false);
+  app.emit({ type: 'cancelled', sequence: 1, text: '', messageId: 'answer' });
+  await app.flow.disconnect(readyAccount.id);
+  assert.equal(disconnects, 1); assert.equal(app.state().accountsError, ''); app.flow.dispose();
+});
+
+test('forced refresh waits for a locally starting request before reading its persisted snapshot', async () => {
+  const receipt = deferred(); let reads = 0;
+  const app = await harness({ send: () => receipt.promise, read: async () => {
+    reads++; return reads === 1 ? { id: null, messages: [] } : { id: 'conversation', activeRequestId: 'request-1', messages: [{ id: 'answer', requestId: 'request-1', role: 'assistant', status: 'streaming', text: '', sequence: 0 }] };
+  } });
+  app.flow.edit('Question'); const send = app.flow.send(); await tick();
+  const refresh = app.flow.loadConversation(true); await tick(); assert.equal(reads, 1);
+  app.emit({ type: 'completed', sequence: 1, text: 'Actual answer', messageId: 'answer' });
+  receipt.resolve({ conversationId: 'conversation', requestId: 'request-1' }); await send; await refresh;
+  assert.equal(reads, 2); assert.equal(app.state().conversation.messages.at(-1).text, 'Actual answer'); assert.equal(app.state().conversation.activeRequestId, null); app.flow.dispose();
+});
+
+test('a forced re-entry supersedes an older pending read and ignores its stale streaming response', async () => {
+  const old = deferred(), restored = deferred(); let reads = 0;
+  const app = await harness({ read: () => ++reads === 1 ? old.promise : restored.promise });
+  app.flow.setMeeting(null); app.flow.setActive(false); app.flow.setMeeting({ id: 'meeting-a', title: 'Restored' }); app.flow.setActive(true);
+  assert.equal(reads, 2);
+  restored.resolve({ id: 'conversation', activeRequestId: null, messages: [{ id: 'answer', requestId: 'request-1', role: 'assistant', status: 'cancelled', text: 'Preserved', sequence: 2 }] }); await tick();
+  old.resolve({ id: 'conversation', activeRequestId: 'request-1', messages: [{ id: 'answer', requestId: 'request-1', role: 'assistant', status: 'streaming', text: 'Old', sequence: 1 }] }); await tick();
+  assert.equal(app.state().conversation.activeRequestId, null); assert.equal(app.state().conversation.messages[0].status, 'cancelled');
+  app.flow.edit('Next'); assert.equal(app.flow.canSend(), true); app.flow.dispose();
+});
+
+test('superseded read failures cannot overwrite the latest snapshot or release its event buffer', async () => {
+  const old = deferred(), latest = deferred(); let reads = 0;
+  const app = await harness({ read: () => ++reads === 1 ? old.promise : latest.promise });
+  const load = app.flow.loadConversation(true); old.reject(Error('Stale error')); await tick();
+  app.emit({ type: 'completed', sequence: 2, messageId: 'answer', text: 'Latest answer' });
+  latest.resolve({ id: 'conversation', activeRequestId: 'request-1', messages: [{ id: 'answer', requestId: 'request-1', role: 'assistant', status: 'streaming', text: 'Latest', sequence: 1 }] }); await load;
+  assert.equal(app.state().conversation.error, ''); assert.equal(app.state().conversation.messages[0].text, 'Latest answer'); assert.equal(app.state().conversation.activeRequestId, null); app.flow.dispose();
+});
+
+test('multiple forced reads during a pending send wait for acceptance and only the newest reads', async () => {
+  const receipt = deferred(); let reads = 0;
+  const app = await harness({ send: () => receipt.promise, read: async () => { reads++; return { id: reads === 1 ? null : 'conversation', messages: [] }; } });
+  app.flow.edit('Question'); const send = app.flow.send(); await tick(); const first = app.flow.loadConversation(true), second = app.flow.loadConversation(true);
+  receipt.resolve({ conversationId: 'conversation', requestId: 'request-1' }); await Promise.all([send, first, second]);
+  assert.equal(reads, 2); assert.equal(app.state().conversation.loading, false); app.flow.dispose();
+});
+
+test('the active plan-disabled account is chosen over an older signed-out account for reconnection', async () => {
+  const old = { ...readyAccount, id: 'old', state: 'signed_out' }, active = { ...readyAccount, id: 'active-plan', state: 'plan_disabled' };
+  const reconnects = [];
+  const app = await harness({ accounts: async () => ({ accounts: [old, active], activeAccountId: active.id }),
+    connect: async (provider, accountId) => { reconnects.push(accountId); return { attemptId: 'consent' }; },
+    finishConnect: async () => ({ accounts: [old, { ...active, state: 'ready' }], activeAccountId: active.id }),
+  });
+  assert.equal(app.state().accountId, active.id); await app.flow.connect('chatgpt'); await tick();
+  assert.deepEqual(reconnects, [active.id]); app.flow.edit('Question'); assert.equal(app.flow.canSend(), true); app.flow.dispose();
 });

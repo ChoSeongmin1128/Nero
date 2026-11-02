@@ -1,13 +1,14 @@
 use super::{claude, oidc, Provider};
+use crate::oauth_callback::CallbackPage;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use ring::rand::{SecureRandom, SystemRandom};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::net::{TcpListener, TcpStream};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc,
+    Arc, Mutex,
 };
 use std::time::{Duration, Instant};
 
@@ -27,6 +28,7 @@ pub(super) struct Pending {
     listener: TcpListener,
     pub state: String,
     started: Instant,
+    page: Arc<Mutex<Option<CallbackPage>>>,
 }
 pub struct SignInAttempt {
     pub id: String,
@@ -119,6 +121,7 @@ impl Pending {
                 listener,
                 state,
                 started: Instant::now(),
+                page: Arc::new(Mutex::new(None)),
             },
             SignInAttempt {
                 id,
@@ -178,6 +181,7 @@ impl Pending {
                 listener,
                 state,
                 started: Instant::now(),
+                page: Arc::new(Mutex::new(None)),
             },
             SignInAttempt {
                 id,
@@ -202,6 +206,11 @@ impl Pending {
             .authority()
             .to_string();
         let deadline = self.started + Duration::from_secs(180);
+        let page = self.page.clone();
+        let provider = match self.provider {
+            Provider::ChatGpt => "ChatGPT",
+            Provider::Claude => "Claude",
+        };
         tokio::task::spawn_blocking(move || {
             receive(
                 listener,
@@ -212,10 +221,25 @@ impl Pending {
                 &own,
                 &external,
                 deadline,
+                page,
+                provider,
             )
         })
         .await
         .map_err(|_| "브라우저 연결을 확인하지 못했습니다.".to_string())?
+    }
+    pub fn finish_page(&self, result: Result<(), &str>) {
+        if let Ok(mut page) = self.page.lock() {
+            if let Some(mut page) = page.take() {
+                page.finish(result);
+            }
+        }
+    }
+}
+impl Drop for Pending {
+    fn drop(&mut self) {
+        self.cancelled.store(true, Ordering::Release);
+        self.finish_page(Err("연결이 중단되었습니다. Nero에서 다시 연결해 주세요."));
     }
 }
 
@@ -231,6 +255,8 @@ fn receive(
     own: &AtomicBool,
     external: &AtomicBool,
     deadline: Instant,
+    page: Arc<Mutex<Option<CallbackPage>>>,
+    provider: &str,
 ) -> Result<Authorization, String> {
     while Instant::now() < deadline {
         if cancelled(own, external) {
@@ -244,21 +270,42 @@ fn receive(
                 let _ = stream.set_write_timeout(Some(Duration::from_millis(100)));
                 let local_deadline = deadline.min(Instant::now() + Duration::from_secs(5));
                 let Some(request) = read_headers(&mut stream, own, external, local_deadline) else {
+                    CallbackPage::reject(
+                        stream,
+                        "연결 요청을 확인하지 못했습니다. Nero에서 다시 연결해 주세요.",
+                    );
                     continue;
                 };
                 let result = callback_for_path(&request, host, path, state, client);
-                let message = if result.is_some() {
-                    "연결 요청을 받았습니다. Nero로 돌아가 주세요."
-                } else {
-                    "연결 요청을 확인하지 못했습니다. Nero에서 다시 연결해 주세요."
-                };
-                let response=format!("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: no-store\r\nContent-Security-Policy: default-src 'none'; frame-ancestors 'none'\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",message.len(),message);
-                let _ = stream.write_all(response.as_bytes());
                 if cancelled(own, external) {
+                    CallbackPage::reject(stream, "AI 로그인을 취소했습니다.");
                     return Err("AI 로그인을 취소했습니다.".into());
                 }
-                if let Some(result) = result {
-                    return result;
+                match result {
+                    None => CallbackPage::reject(
+                        stream,
+                        "연결 요청을 확인하지 못했습니다. Nero에서 다시 연결해 주세요.",
+                    ),
+                    Some(Err(message)) => {
+                        CallbackPage::reject(stream, &message);
+                        return Err(message);
+                    }
+                    Some(Ok(authorization)) => {
+                        let mut callback =
+                            CallbackPage::begin_for(stream, provider, "Nero로 돌아가 주세요.");
+                        let mut target = page
+                            .lock()
+                            .map_err(|_| "브라우저 연결 상태를 확인하지 못했습니다.")?;
+                        if cancelled(own, external) {
+                            callback.finish(Err("AI 로그인을 취소했습니다."));
+                            return Err("AI 로그인을 취소했습니다.".into());
+                        }
+                        if target.is_some() {
+                            return Err("AI 로그인을 확인 중입니다.".into());
+                        }
+                        *target = Some(callback);
+                        return Ok(authorization);
+                    }
                 }
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -384,6 +431,99 @@ fn callback(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+
+    fn send_callback(pending: &Pending, state: &str) -> TcpStream {
+        let url = reqwest::Url::parse(&pending.redirect_uri).unwrap();
+        let mut browser = TcpStream::connect(("127.0.0.1", url.port().unwrap())).unwrap();
+        browser
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        write!(browser, "GET {}?state={state}&code=CODE_PRIVATE&client_id=oaiapp_fixture HTTP/1.1\r\nHost: {}\r\n\r\n", url.path(), url.authority()).unwrap();
+        browser
+    }
+
+    #[tokio::test]
+    async fn accepted_callback_remains_pending_until_credential_commit_result() {
+        let (pending, _) =
+            Pending::begin("urn:uuid:fixture", None, None, None, None, None).unwrap();
+        let mut browser = send_callback(&pending, &pending.state);
+        let authorization = tokio::time::timeout(
+            Duration::from_secs(2),
+            pending.receive(Arc::new(AtomicBool::new(false))),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(authorization.code, "CODE_PRIVATE");
+        browser
+            .set_read_timeout(Some(Duration::from_millis(50)))
+            .unwrap();
+        let mut initial = String::new();
+        let _ = browser.read_to_string(&mut initial);
+        assert!(initial.contains("ChatGPT 연결 중"));
+        assert!(!initial.contains("finishConnection({"));
+        assert!(!initial.contains("CODE_PRIVATE"));
+        assert!(!initial.contains("oaiapp_fixture"));
+        pending.finish_page(Err("계정 정보를 저장하지 못했습니다."));
+        browser
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let mut completed = String::new();
+        browser.read_to_string(&mut completed).unwrap();
+        assert!(completed.contains("\"ok\":false"));
+        assert!(completed.contains("계정 정보를 저장하지 못했습니다"));
+        assert!(!completed.contains("\"ok\":true"));
+    }
+
+    #[tokio::test]
+    async fn dropping_an_accepted_callback_reports_failure_without_success() {
+        let (pending, _) =
+            Pending::begin("urn:uuid:fixture", None, None, None, None, None).unwrap();
+        let mut browser = send_callback(&pending, &pending.state);
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            pending.receive(Arc::new(AtomicBool::new(false))),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        drop(pending);
+        let mut output = String::new();
+        browser.read_to_string(&mut output).unwrap();
+        assert!(output.contains("연결이 중단되었습니다"));
+        assert!(output.contains("\"ok\":false"));
+        assert!(!output.contains("\"ok\":true"));
+    }
+
+    #[tokio::test]
+    async fn invalid_callback_is_rejected_without_consuming_the_valid_attempt() {
+        let (pending, _) =
+            Pending::begin("urn:uuid:fixture", None, None, None, None, None).unwrap();
+        let pending = Arc::new(pending);
+        let client = pending.clone();
+        let browser = std::thread::spawn(move || {
+            let mut rejected = send_callback(&client, "wrong-state");
+            let mut output = String::new();
+            rejected.read_to_string(&mut output).unwrap();
+            (output, send_callback(&client, &client.state))
+        });
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            pending.receive(Arc::new(AtomicBool::new(false))),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let (rejected, mut accepted) = browser.join().unwrap();
+        assert!(rejected.starts_with("HTTP/1.1 400 Bad Request"));
+        assert!(rejected.contains("\"ok\":false"));
+        assert!(!rejected.contains("CODE_PRIVATE"));
+        pending.finish_page(Ok(()));
+        let mut output = String::new();
+        accepted.read_to_string(&mut output).unwrap();
+        assert!(output.contains("\"ok\":true"));
+    }
     #[test]
     fn dynamic_registration_uses_nero_and_fresh_pkce_without_any_other_clients_identity() {
         let (first, request) =

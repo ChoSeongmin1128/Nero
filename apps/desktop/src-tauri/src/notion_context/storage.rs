@@ -6,7 +6,6 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-const SERVICE: &str = "io.github.choseongmin1128.nero.desktop.notion-context";
 pub(super) trait CredentialStore: Send + Sync {
     fn load(&self, slot: bool) -> Result<Credential>;
     fn save(&self, slot: bool, credential: &Credential) -> Result<()>;
@@ -23,48 +22,16 @@ fn account(slot: bool) -> &'static str {
 
 impl CredentialStore for SecureCredentials {
     fn load(&self, slot: bool) -> Result<Credential> {
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
-        {
-            let value = keyring::Entry::new(SERVICE, account(slot))
-                .map_err(|_| Error::Credentials)?
-                .get_password()
-                .map_err(|_| Error::Credentials)?;
-            serde_json::from_str(&value).map_err(|_| Error::Credentials)
-        }
-        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-        {
-            let _ = slot;
-            Err(Error::Credentials)
-        }
+        let value = super::vault::read(&super::vault::SystemVault, account(slot))?;
+        serde_json::from_slice(&value).map_err(|_| Error::Credentials)
     }
     fn save(&self, slot: bool, credential: &Credential) -> Result<()> {
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
-        {
-            let value = serde_json::to_string(credential).map_err(|_| Error::Credentials)?;
-            let entry =
-                keyring::Entry::new(SERVICE, account(slot)).map_err(|_| Error::Credentials)?;
-            entry.set_password(&value).map_err(|_| Error::Credentials)?;
-            if entry.get_password().map_err(|_| Error::Credentials)? != value {
-                return Err(Error::Credentials);
-            }
-            Ok(())
-        }
-        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-        {
-            let _ = (slot, credential);
-            Err(Error::Credentials)
-        }
+        let value = serde_json::to_vec(credential).map_err(|_| Error::Credentials)?;
+        super::vault::write(&super::vault::SystemVault, account(slot), &value)
     }
     fn delete(&self) -> Result<()> {
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
         for slot in [false, true] {
-            match keyring::Entry::new(SERVICE, account(slot))
-                .map_err(|_| Error::Credentials)?
-                .delete_credential()
-            {
-                Ok(()) | Err(keyring::Error::NoEntry) => (),
-                _ => return Err(Error::Credentials),
-            }
+            super::vault::delete(&super::vault::SystemVault, account(slot))?;
         }
         Ok(())
     }

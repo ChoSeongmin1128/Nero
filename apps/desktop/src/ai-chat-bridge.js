@@ -6,7 +6,7 @@ function call(command, args = {}) {
   return invoke(command, args).catch(error => { throw new Error(typeof error === 'string' ? error : '요청을 처리하지 못했습니다. 다시 시도해 주세요.'); });
 }
 export const accounts = () => call('ai_chat_accounts');
-export const connect = provider => call('ai_chat_connect', { provider });
+export const connect = (provider, accountId = null) => call('ai_chat_connect', { provider, accountId });
 export const finishConnect = attemptId => call('ai_chat_finish_connect', { attemptId });
 export const cancelConnect = attemptId => call('ai_chat_cancel_connect', { attemptId });
 export const disconnect = accountId => call('ai_chat_disconnect', { accountId });
@@ -25,3 +25,4 @@ export const notionDisconnect = () => call('disconnect_notion_context');
 export const fetchSources = request => call('fetch_notion_sources', request);
 export const cancelFetch = requestId => call('cancel_notion_fetch', { requestId });
 export const openSource = url => call('ai_chat_open_source', { url });
+export const exportAnswer = request => call('ai_chat_answer_document', request);

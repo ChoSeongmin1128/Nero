@@ -7,10 +7,11 @@ export function mountAiChatFixture({ document, scenario = 'ready', delay = 20 })
   let receiver = null, ui = null, request = null, finishLogin = null, finishNotion = null;
   const later = action => { const timer = setTimeout(() => { timers.delete(timer); action(); }, delay); timers.add(timer); };
   const accounts = { accounts: [{ id: 'example-chatgpt', provider: 'chatgpt', state: scenario === 'unavailable' ? 'unavailable' : scenario === 'oauth' ? 'signed_out' : 'ready', configured: scenario !== 'unavailable', label: '예시 계정' }, { id: 'example-claude', provider: 'claude', state: 'unavailable', configured: false }] };
-  const accountSnapshot = () => ({ accounts: accounts.accounts.map(account => ({ ...account })) });
+  if (scenario === 'plan-disabled-multi') { accounts.accounts[0].state = 'signed_out'; accounts.accounts.push({ id: 'active-plan-account', provider: 'chatgpt', state: 'plan_disabled', configured: true, label: '활성 계정', detail: '활성 계정의 구독 권한을 확인해 주세요.' }); accounts.activeAccountId = 'active-plan-account'; }
+  const accountSnapshot = () => ({ activeAccountId: accounts.activeAccountId || null, accounts: accounts.accounts.map(account => ({ ...account })) });
   const bridge = {
     accounts: async () => accountSnapshot(),
-    connect: async provider => { calls.push(['connect', provider]); return { attemptId: 'example-attempt' }; },
+    connect: async (provider, accountId) => { calls.push(['connect', provider, accountId]); return { attemptId: 'example-attempt' }; },
     finishConnect: async attemptId => { calls.push(['finishConnect', attemptId]); return new Promise(resolve => { finishLogin = resolve; }); },
     cancelConnect: async attemptId => { calls.push(['cancelConnect', attemptId]); return accountSnapshot(); },
     notionConnect: async () => ({ attemptId: 'notion-attempt' }),
@@ -27,6 +28,7 @@ export function mountAiChatFixture({ document, scenario = 'ready', delay = 20 })
       return { conversationId: 'example-conversation', requestId: value.requestId };
     },
     cancel: async requestId => { calls.push(['cancel', requestId]); const previous = request; request = null; later(() => receiver?.({ requestId, conversationId: 'example-conversation', meetingId: previous.meetingId, type: 'cancelled' })); },
+    exportAnswer: async value => { calls.push(['exportAnswer', value]); return { text: value.format === 'md' ? '## 결정 사항\n- 예시 답변' : '결정 사항\n예시 답변', format: value.format }; },
     saveSummary: async value => { calls.push(['summary', value]); },
     appendNote: async value => { calls.push(['note', value]); },
     notionSnapshot: async () => ({ connected: scenario !== 'oauth', workspaceName: '예시 공간' }),
@@ -37,8 +39,10 @@ export function mountAiChatFixture({ document, scenario = 'ready', delay = 20 })
   const detail = mountMeetingDetail({ byId, finishEditing: async action => action(), onInspectorChange: (view, open) => ui?.setInspector(view, open) });
   ui = mountAiChat({ node: byId('ai-chat-inspector'), tabsNode: byId('inspector-tabs'), settingsNode: byId('ai-account-settings'), bridge,
     onSelect: view => detail.select(view), onSettings: () => { for (const panel of byId('settings-dialog').querySelectorAll('[role=tabpanel]')) panel.hidden = panel.id !== 'settings-agent-panel'; byId('settings-dialog').showModal(); ui.setSettingsActive(true); }, getTemplate: async () => 'example-template',
+    writeClipboard: async text => { calls.push(['clipboard', text]); if (scenario === 'clipboard-failed') throw Error('클립보드에 복사하지 못했습니다.'); },
     onCitation: async citation => { calls.push(['citation', citation]); },
   });
+  document.querySelector('.navigation-shell')?.classList.add('collapsed');
   byId('meeting-detail').hidden = false;
   for (const id of ['welcome', 'library-screen', 'setup-screen']) { const node = byId(id); if (node) node.hidden = true; }
   byId('settings-close').addEventListener('click', () => byId('settings-dialog').close());

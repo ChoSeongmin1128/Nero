@@ -1,16 +1,15 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod agent_connection;
+mod agent_mutations;
 mod ai_accounts;
 mod ai_chat;
 mod ai_chat_desktop;
-mod notion_context;
-mod agent_connection;
-mod agent_mutations;
 #[cfg(target_os = "macos")]
 mod app_menu;
 mod app_updater;
-mod asr;
 mod apple_speech;
+mod asr;
 mod calendar;
 mod calendar_desktop;
 mod diarization;
@@ -27,17 +26,18 @@ mod live_speech_worker;
 mod macos_recorder;
 mod memory;
 mod microphone_permission;
+mod notion_context;
+mod oauth_callback;
 mod people_desktop;
-mod processing;
 mod process_tree;
+mod processing;
 mod recorder_geometry;
 mod recorder_policy;
 mod release_capabilities;
 mod speaker_worker;
 mod speech_audio;
-mod speech_library;
 mod speech_choice;
-mod whisper_asr;
+mod speech_library;
 mod storage_space;
 mod summary;
 mod summary_checkpoint;
@@ -46,6 +46,7 @@ mod summary_failure;
 mod summary_template;
 mod template_settings;
 mod terminology;
+mod whisper_asr;
 use nero_core::{
     CoreHandle, Device, DocumentFormat, DocumentKind, ExportedDocument, Meeting, Snapshot,
     SummaryCitations, SummaryView, Transcript, TranscriptHistory, TranscriptSpeaker,
@@ -870,14 +871,31 @@ async fn delete_folder(
 ) -> Result<Snapshot, String> {
     require_main(&window)?;
     let processing = state.processing.clone();
+    let removal_app = app.clone();
     let result = on_core(state.core.clone(), move |core| {
-        let Some(request) = request else { return core.delete_folder(&id); };
-        if request.folder.id != id { return Err(nero_core::CoreError::InvalidState("폴더 정보가 변경되었습니다. 다시 확인해 주세요.".into())); }
+        let Some(request) = request else {
+            return core.delete_folder(&id);
+        };
+        if request.folder.id != id {
+            return Err(nero_core::CoreError::InvalidState(
+                "폴더 정보가 변경되었습니다. 다시 확인해 주세요.".into(),
+            ));
+        }
         if request.trash_meetings && !request.meetings.is_empty() {
-            let ids = request.meetings.iter().map(|meeting| meeting.id.clone()).collect::<Vec<_>>();
-            processing.meeting_trash(&core, &ids, || core.delete_folder_checked(request.clone()))
-        } else { core.delete_folder_checked(request) }
-    }).await;
+            let ids = request
+                .meetings
+                .iter()
+                .map(|meeting| meeting.id.clone())
+                .collect::<Vec<_>>();
+            ai_chat_desktop::meeting_removal(&removal_app, &ids, false, || {
+                processing
+                    .meeting_trash(&core, &ids, || core.delete_folder_checked(request.clone()))
+            })
+        } else {
+            core.delete_folder_checked(request)
+        }
+    })
+    .await;
     finish_library_change(&app, state.core.clone(), result).await
 }
 
@@ -906,8 +924,11 @@ async fn trash_meetings(
 ) -> Result<Snapshot, String> {
     require_main(&window)?;
     let processing = state.processing.clone();
+    let removal_app = app.clone();
     let result = on_core(state.core.clone(), move |core| {
-        processing.meeting_trash(&core, &ids, || core.trash_meetings(ids.clone()))
+        ai_chat_desktop::meeting_removal(&removal_app, &ids, false, || {
+            processing.meeting_trash(&core, &ids, || core.trash_meetings(ids.clone()))
+        })
     })
     .await;
     finish_library_change(&app, state.core.clone(), result).await
@@ -934,18 +955,21 @@ async fn purge_meetings(
 ) -> Result<Snapshot, String> {
     require_main(&window)?;
     let processing = state.processing.clone();
+    let removal_app = app.clone();
     let result = on_core(state.core.clone(), move |core| {
-        processing.meeting_removal(&core, &ids, || {
-            processing.bind_legacy_jobs(&core)?;
-            let result = core.purge_meetings(ids.clone());
-            let remaining = core.list_meetings()?;
-            let purged = ids
-                .iter()
-                .filter(|id| !remaining.iter().any(|meeting| &meeting.id == *id))
-                .cloned()
-                .collect::<Vec<_>>();
-            let cleanup = processing.purge_meeting_jobs(&purged);
-            result.and(cleanup)
+        ai_chat_desktop::meeting_removal(&removal_app, &ids, true, || {
+            processing.meeting_removal(&core, &ids, || {
+                processing.bind_legacy_jobs(&core)?;
+                let result = core.purge_meetings(ids.clone());
+                let remaining = core.list_meetings()?;
+                let purged = ids
+                    .iter()
+                    .filter(|id| !remaining.iter().any(|meeting| &meeting.id == *id))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let cleanup = processing.purge_meeting_jobs(&purged);
+                result.and(cleanup)
+            })
         })
     })
     .await;
@@ -1280,10 +1304,7 @@ async fn request_quit(
 ) -> Result<(), String> {
     require_main(&window)?;
     let exit_lease = state.lifecycle.begin_exit(lifecycle::ExitKind::Quit)?;
-    if let Some(ai)=app.try_state::<ai_chat_desktop::AiDesktop>() {
-        if let Some(chat)=&ai.chat { chat.cancel_all(); }
-        if let Some(notion)=&ai.notion { notion.cancel_connect(None); }
-    }
+    let ai_shutdown = ai_chat_desktop::prepare_shutdown(&app).await?;
     let processing = state.processing.clone();
     let core = state.core.clone();
     let quitting = state.quitting.clone();
@@ -1291,6 +1312,7 @@ async fn request_quit(
     // Own the lease inside the side-effecting task, so dropping the IPC future
     // cannot release it while shutdown is still running in the background.
     tauri::async_runtime::spawn_blocking(move || {
+        let _ai_shutdown = ai_shutdown;
         if let Err(error) = processing.shutdown() {
             processing.resume();
             return Err(error);
@@ -1342,7 +1364,7 @@ fn set_speech_engine(
     window: WebviewWindow,
     state: tauri::State<'_, DesktopState>,
     engine: speech_choice::SpeechEngine,
-) -> Result<Progress,String> {
+) -> Result<Progress, String> {
     require_main(&window)?;
     state.processing.set_speech_engine(engine)
 }
@@ -1415,10 +1437,7 @@ async fn import_audio(
     let source = tauri::async_runtime::spawn_blocking(move || {
         app.dialog()
             .file()
-            .add_filter(
-                "음성",
-                speech_audio::import_extensions(),
-            )
+            .add_filter("음성", speech_audio::import_extensions())
             .blocking_pick_file()
     })
     .await
@@ -1720,6 +1739,7 @@ fn main() {
             ai_chat_desktop::ai_chat_send,
             ai_chat_desktop::ai_chat_cancel,
             ai_chat_desktop::ai_chat_save_summary,
+            ai_chat_desktop::ai_chat_answer_document,
             ai_chat_desktop::ai_chat_append_note,
             ai_chat_desktop::ai_chat_open_source,
             ai_chat_desktop::notion_connection_snapshot,
@@ -1850,7 +1870,12 @@ fn main() {
                 lifecycle: lifecycle::Lifecycle::default(),
             });
             calendar_desktop::install(app.handle(), root.clone());
-            ai_chat_desktop::install(app.handle(), root.clone(), app.path().resource_dir()?, core.clone());
+            ai_chat_desktop::install(
+                app.handle(),
+                root.clone(),
+                app.path().resource_dir()?,
+                core.clone(),
+            );
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 let mut previous: Option<Snapshot> = None;

@@ -637,9 +637,6 @@ pub async fn app_update_install(
     app: tauri::AppHandle,
 ) -> Result<Status, String> {
     require_window(&window)?;
-    if app.try_state::<crate::ai_chat_desktop::AiDesktop>().is_some_and(|state|state.chat.as_ref().is_some_and(|chat|chat.is_busy())) {
-        return Err("AI 답변이 끝난 뒤 업데이트해 주세요.".into());
-    }
     let plan = prepare_install(app).await?;
     let status = plan.status.clone();
     plan.start();
@@ -678,6 +675,13 @@ pub(crate) async fn prepare_install(app: tauri::AppHandle) -> Result<InstallPlan
     let lease = desktop
         .lifecycle
         .begin_exit(crate::lifecycle::ExitKind::Update)?;
+    if app
+        .try_state::<crate::ai_chat_desktop::AiDesktop>()
+        .is_some_and(|state| state.chat.as_ref().is_some_and(|chat| chat.is_busy()))
+    {
+        return Err("AI 답변이 끝난 뒤 업데이트해 주세요.".into());
+    }
+    let ai_shutdown = crate::ai_chat_desktop::prepare_shutdown(&app).await?;
     let processing = desktop.processing.clone();
     let core = desktop.core.clone();
     let prepared = tauri::async_runtime::spawn_blocking(move || {
@@ -711,6 +715,7 @@ pub(crate) async fn prepare_install(app: tauri::AppHandle) -> Result<InstallPlan
     let polling = desktop.polling.clone();
     let install_app = app.clone();
     let task = Box::new(move || {
+        let _ai_shutdown = ai_shutdown;
         let _operation = operation;
         let result = (|| -> Result<(), InstallFailure> {
             write_atomic(

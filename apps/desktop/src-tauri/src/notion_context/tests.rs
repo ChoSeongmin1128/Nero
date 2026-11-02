@@ -153,6 +153,10 @@ fn page_links_normalize_only_explicit_notion_page_ids() {
             PAGE.replace('-', "")
         ),
         format!("https://workspace.notion.so/{PAGE}"),
+        format!(
+            "https://app.notion.com/p/synthetic-workspace/Title-{}?source=copy_link",
+            PAGE.replace('-', "")
+        ),
     ] {
         assert_eq!(normalize_page_id(&value).unwrap(), PAGE);
     }
@@ -550,4 +554,174 @@ fn public_service_futures_are_send_for_the_native_tauri_handlers() {
     send(service.finish_connect("synthetic-attempt"));
     send(service.disconnect());
     send(service.fetch_sources("synthetic-fetch".into(), vec![PAGE.into()]));
+    send(service.prepare_shutdown());
+}
+
+struct DelayedRefresh {
+    started: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+impl Http for DelayedRefresh {
+    fn send<'a>(&'a self, request: Request, cancellation: &'a Cancellation) -> ResponseFuture<'a> {
+        Box::pin(async move {
+            assert_eq!(request.url, "https://mcp.notion.com/token");
+            self.started.notify_one();
+            self.release.notified().await;
+            cancellation.check()?;
+            response(
+                200,
+                json!({"access_token":"accepted-access","refresh_token":"accepted-refresh","expires_in":3600,"token_type":"Bearer"}),
+            )
+        })
+    }
+}
+fn refresh_fixture() -> (
+    tempfile::TempDir,
+    Arc<NotionContextService>,
+    Arc<DelayedRefresh>,
+    Arc<MemoryCredentials>,
+) {
+    let (temp, mut service, _, credentials) = fixture(vec![]);
+    let mut expired = credential();
+    expired.expires_at = Some(1);
+    credentials.save(false, &expired).unwrap();
+    let http = Arc::new(DelayedRefresh {
+        started: tokio::sync::Notify::new(),
+        release: tokio::sync::Notify::new(),
+    });
+    service.http = http.clone();
+    (temp, Arc::new(service), http, credentials)
+}
+
+#[tokio::test]
+async fn cancelling_a_refresh_caller_stores_the_rotated_grant_before_returning_cancelled() {
+    let (_temp, service, http, credentials) = refresh_fixture();
+    let caller_service = service.clone();
+    let caller = tokio::spawn(async move {
+        caller_service
+            .fetch_sources("cancel-refresh".into(), vec![PAGE.into()])
+            .await
+    });
+    http.started.notified().await;
+    service.cancel_fetch("cancel-refresh");
+    http.release.notify_one();
+    assert!(matches!(caller.await.unwrap(), Err(Error::Cancelled)));
+    assert_eq!(
+        credentials.load(false).unwrap().refresh_token.as_deref(),
+        Some("accepted-refresh")
+    );
+    assert_eq!(
+        credentials.load(false).unwrap().access_token,
+        "accepted-access"
+    );
+    assert!(service.requests.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn shutdown_drains_a_detached_refresh_and_reopens_on_guard_drop() {
+    let (_temp, service, http, credentials) = refresh_fixture();
+    let caller_service = service.clone();
+    let caller = tokio::spawn(async move {
+        caller_service
+            .fetch_sources("detached-refresh".into(), vec![PAGE.into()])
+            .await
+    });
+    http.started.notified().await;
+    caller.abort();
+    assert!(matches!(caller.await, Err(error) if error.is_cancelled()));
+    assert!(service.requests.lock().unwrap().is_empty());
+    let pending = Cancellation::new(Duration::from_secs(600));
+    {
+        let mut inner = service.inner.lock().unwrap();
+        inner.connecting_id = Some("pending-callback".into());
+        inner.cancellation = Some(pending.clone());
+    }
+    let shutdown_service = service.clone();
+    let shutdown = tokio::spawn(async move {
+        shutdown_service
+            .prepare_shutdown_with_timeout(Duration::from_secs(1))
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while service.lifecycle.check_open().is_ok() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(!shutdown.is_finished());
+    assert!(!service.snapshot().connecting);
+    assert!(pending.check().is_err());
+    http.release.notify_one();
+    let guard = shutdown.await.unwrap().unwrap();
+    assert_eq!(
+        credentials.load(false).unwrap().refresh_token.as_deref(),
+        Some("accepted-refresh")
+    );
+    assert!(matches!(
+        service
+            .fetch_sources("closed".into(), vec![PAGE.into()])
+            .await,
+        Err(Error::Shutdown)
+    ));
+    assert!(matches!(
+        service.begin_connect().await,
+        Err(Error::Shutdown)
+    ));
+    assert!(matches!(
+        service.finish_connect("old").await,
+        Err(Error::Shutdown)
+    ));
+    assert!(matches!(service.disconnect().await, Err(Error::Shutdown)));
+    drop(guard);
+    service.lifecycle.check_open().unwrap();
+}
+
+#[tokio::test]
+async fn shutdown_does_not_wait_for_an_unstarted_callback_and_releases_a_failed_drain() {
+    let (_temp, service, _, _) = fixture(vec![]);
+    let pending = Cancellation::new(Duration::from_secs(600));
+    {
+        let mut inner = service.inner.lock().unwrap();
+        inner.connecting_id = Some("pending-callback".into());
+        inner.cancellation = Some(pending.clone());
+    }
+    let guard = service
+        .prepare_shutdown_with_timeout(Duration::from_millis(20))
+        .await
+        .unwrap();
+    assert!(pending.check().is_err());
+    assert!(!service.snapshot().connecting);
+    drop(guard);
+    let writing = service.lifecycle.enter().unwrap();
+    assert!(matches!(
+        service
+            .prepare_shutdown_with_timeout(Duration::from_millis(1))
+            .await,
+        Err(Error::Timeout)
+    ));
+    service.lifecycle.check_open().unwrap();
+    drop(writing);
+}
+
+#[tokio::test]
+async fn a_queued_refresh_checks_closed_after_acquiring_the_credential_gate() {
+    let (_temp, service, http, _) = fixture(vec![]);
+    let service = Arc::new(service);
+    let gate = service.credential_gate.clone().lock_owned().await;
+    let queued_service = service.clone();
+    let queued = tokio::spawn(async move {
+        queued_service
+            .credential(&Cancellation::new(Duration::from_secs(1)), true, 0)
+            .await
+    });
+    tokio::task::yield_now().await;
+    let guard = service
+        .prepare_shutdown_with_timeout(Duration::from_millis(20))
+        .await
+        .unwrap();
+    drop(gate);
+    assert!(matches!(queued.await.unwrap(), Err(Error::Shutdown)));
+    assert!(http.recorded().is_empty());
+    drop(guard);
 }
