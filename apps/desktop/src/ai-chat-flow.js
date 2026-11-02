@@ -3,10 +3,10 @@ const errorMessage = (error, fallback) => error?.message || fallback;
 const terminal = new Set(['completed', 'failed', 'cancelled']);
 
 export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved = async () => {}, getTemplate = async () => null, createId = () => crypto.randomUUID() }) {
-  let state = { meeting: null, conversation: emptyConversation(), provider: 'chatgpt', accountId: null, modelId: null, models: [], accounts: [], accountsLoaded: false, accountsBusy: false, accountsError: '', modelsBusy: false, modelError: '', attempts: {}, notion: null, notionBusy: false, notionAttempt: null, notionError: '', fetching: false, sourceError: '', active: false, settingsActive: false };
+  let state = { meeting: null, conversation: emptyConversation(), provider: 'chatgpt', accountId: null, modelId: null, models: [], accounts: [], accountsLoaded: false, accountsBusy: false, accountsError: '', modelsBusy: false, modelError: '', attempts: {}, connectionPhases: {}, notion: null, notionBusy: false, notionAttempt: null, notionError: '', fetching: false, sourceError: '', active: false, settingsActive: false };
   let subscriptionReady = false;
   let disposed = false, accountsPromise = null, modelEpoch = 0, sourceRequest = null, unsubscribe = null;
-  const conversations = new Map(), loads = new Map(), listeners = new Set();
+  const conversations = new Map(), loads = new Map(), listeners = new Set(), connections = new Map();
   const publish = patch => { if (disposed) return; state = { ...state, ...patch }; listeners.forEach(listener => listener()); };
   const updateConversation = (id, patch) => {
     const value = { ...(conversations.get(id) || emptyConversation()), ...patch };
@@ -24,6 +24,71 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
     publish({ accounts, accountsLoaded: true, accountId: selected?.id || null });
     void flow.loadModels();
   };
+  const connectionError = (key, error, fallback) => publish({ [key === 'notion' ? 'notionError' : 'accountsError']: errorMessage(error, fallback) });
+  const connectionPhase = (key, phase) => publish({ connectionPhases: { ...state.connectionPhases, [key]: phase } });
+  const connectionAttempt = (key, attemptId) => publish(key === 'notion' ? { notionAttempt: attemptId } : { attempts: { ...state.attempts, [key]: attemptId } });
+  const acceptConnection = (key, result) => { if (key === 'notion') { if (result) publish({ notion: result }); } else if (result) acceptAccounts(result); };
+  async function finishConnection(key) {
+    const run = connections.get(key);
+    if (!run?.attemptId || ['waiting', 'cancelling'].includes(state.connectionPhases[key])) return;
+    const generation = ++run.generation;
+    connectionPhase(key, 'waiting');
+    connectionError(key, null, '');
+    try {
+      const result = await (key === 'notion' ? bridge.notionFinish(run.attemptId) : bridge.finishConnect(run.attemptId));
+      if (disposed || connections.get(key) !== run || run.generation !== generation) return;
+      acceptConnection(key, result);
+      connections.delete(key);
+      connectionAttempt(key, null);
+      connectionPhase(key, null);
+    } catch (error) {
+      if (disposed || connections.get(key) !== run || run.generation !== generation) return;
+      connectionPhase(key, 'failed');
+      connectionError(key, error, '연결을 완료하지 못했습니다. 다시 시도해 주세요.');
+    }
+  }
+  async function startConnection(key) {
+    if (connections.has(key)) return;
+    const run = { generation: 0, attemptId: null, begin: null };
+    connections.set(key, run);
+    connectionPhase(key, 'starting');
+    connectionError(key, null, '');
+    run.begin = Promise.resolve().then(() => key === 'notion' ? bridge.notionConnect() : bridge.connect(key));
+    try {
+      const result = await run.begin;
+      run.attemptId = result.attemptId;
+      if (disposed || connections.get(key) !== run || state.connectionPhases[key] === 'cancelling') return;
+      connectionAttempt(key, result.attemptId);
+      await finishConnection(key);
+    } catch (error) {
+      if (disposed || connections.get(key) !== run || state.connectionPhases[key] === 'cancelling') return;
+      connections.delete(key);
+      connectionPhase(key, null);
+      connectionError(key, error, '연결을 시작하지 못했습니다. 다시 시도해 주세요.');
+    }
+  }
+  async function cancelConnection(key) {
+    const run = connections.get(key);
+    if (!run || state.connectionPhases[key] === 'cancelling') return;
+    run.generation += 1;
+    connectionPhase(key, 'cancelling');
+    connectionError(key, null, '');
+    try {
+      const started = await run.begin.catch(() => null);
+      const attemptId = run.attemptId || started?.attemptId;
+      const result = attemptId ? await (key === 'notion' ? bridge.notionCancel(attemptId) : bridge.cancelConnect(attemptId)) : null;
+      if (disposed || connections.get(key) !== run) return;
+      acceptConnection(key, result);
+      connections.delete(key);
+      connectionAttempt(key, null);
+      connectionPhase(key, null);
+    } catch (error) {
+      if (disposed || connections.get(key) !== run) return;
+      connectionAttempt(key, run.attemptId);
+      connectionPhase(key, 'failed');
+      connectionError(key, error, '연결 취소를 확인하지 못했습니다. 다시 시도해 주세요.');
+    }
+  }
   const receive = event => {
     if (!event?.meetingId || !event.requestId) return;
     const conversation = conversations.get(event.meetingId);
@@ -63,6 +128,7 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
       if (settingsActive) { void flow.loadAccounts(true); void flow.loadNotion(); }
     },
     async loadAccounts(force = false) {
+      if ([...connections.keys()].some(key => key !== 'notion')) return;
       if (accountsPromise) return accountsPromise;
       if (state.accountsLoaded && !force) return;
       publish({ accountsBusy: true, accountsError: '' });
@@ -95,30 +161,13 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
       finally { if (epoch === modelEpoch) publish({ modelsBusy: false }); }
     },
     selectModel(modelId) { if (!state.conversation.activeRequestId && state.models.some(item => item.id === modelId)) publish({ modelId }); },
-    async connect(provider) {
+    connect(provider) {
       const target = state.accounts.find(item => item.provider === provider);
-      if (state.accountsBusy || state.attempts[provider] || !target?.configured || target.state !== 'signed_out') return;
-      publish({ accountsBusy: true, accountsError: '' });
-      try { const result = await bridge.connect(provider); publish({ attempts: { ...state.attempts, [provider]: result.attemptId } }); }
-      catch (error) { publish({ accountsError: errorMessage(error, '연결을 시작하지 못했습니다.') }); }
-      finally { publish({ accountsBusy: false }); }
+      if (state.accountsBusy || !target?.configured || target.state !== 'signed_out') return;
+      return startConnection(provider);
     },
-    async finishConnect(provider) {
-      const attemptId = state.attempts[provider];
-      if (!attemptId || state.accountsBusy) return;
-      publish({ accountsBusy: true, accountsError: '' });
-      try { const result = await bridge.finishConnect(attemptId); acceptAccounts(result); publish({ attempts: { ...state.attempts, [provider]: null } }); }
-      catch (error) { publish({ accountsError: errorMessage(error, '연결을 확인하지 못했습니다.') }); }
-      finally { publish({ accountsBusy: false }); }
-    },
-    async cancelConnect(provider) {
-      const attemptId = state.attempts[provider];
-      if (!attemptId || state.accountsBusy) return;
-      publish({ accountsBusy: true, accountsError: '' });
-      try { acceptAccounts(await bridge.cancelConnect(attemptId)); publish({ attempts: { ...state.attempts, [provider]: null } }); }
-      catch (error) { publish({ accountsError: errorMessage(error, '연결 취소를 확인하지 못했습니다.') }); }
-      finally { publish({ accountsBusy: false }); }
-    },
+    finishConnect: provider => finishConnection(provider),
+    cancelConnect: provider => cancelConnection(provider),
     async disconnect(accountId) {
       if (state.accountsBusy) return;
       if ([...conversations.values()].some(item => item.activeRequestId)) { publish({ accountsError: '답변이 끝난 뒤 연결을 해제할 수 있습니다.' }); return; }
@@ -198,33 +247,19 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
       finally { updateConversation(id, { action: null }); }
     },
     async loadNotion() {
+      if (connections.has('notion')) return;
       if (state.notionBusy) return;
       publish({ notionBusy: true, notionError: '' });
       try { publish({ notion: await bridge.notionSnapshot() }); }
       catch (error) { publish({ notionError: errorMessage(error, 'Notion 연결을 확인하지 못했습니다.') }); }
       finally { publish({ notionBusy: false }); }
     },
-    async connectNotion() {
-      if (state.notionBusy || state.notionAttempt) return;
-      publish({ notionBusy: true, notionError: '' });
-      try { const result = await bridge.notionConnect(); publish({ notionAttempt: result.attemptId }); }
-      catch (error) { publish({ notionError: errorMessage(error, 'Notion 연결을 시작하지 못했습니다.') }); }
-      finally { publish({ notionBusy: false }); }
+    connectNotion() {
+      if (state.notionBusy) return;
+      return startConnection('notion');
     },
-    async finishNotion() {
-      if (!state.notionAttempt || state.notionBusy) return;
-      publish({ notionBusy: true, notionError: '' });
-      try { publish({ notion: await bridge.notionFinish(state.notionAttempt), notionAttempt: null }); }
-      catch (error) { publish({ notionError: errorMessage(error, 'Notion 연결을 확인하지 못했습니다.') }); }
-      finally { publish({ notionBusy: false }); }
-    },
-    async cancelNotion() {
-      if (!state.notionAttempt || state.notionBusy) return;
-      publish({ notionBusy: true, notionError: '' });
-      try { const result = await bridge.notionCancel(state.notionAttempt); publish({ notion: result || state.notion, notionAttempt: null }); }
-      catch (error) { publish({ notionError: errorMessage(error, 'Notion 연결 취소를 확인하지 못했습니다.') }); }
-      finally { publish({ notionBusy: false }); }
-    },
+    finishNotion: () => finishConnection('notion'),
+    cancelNotion: () => cancelConnection('notion'),
     async disconnectNotion() {
       if (state.notionBusy || state.fetching) return;
       publish({ notionBusy: true, notionError: '' });

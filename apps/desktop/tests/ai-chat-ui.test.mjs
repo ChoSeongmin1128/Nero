@@ -98,3 +98,44 @@ test('IME Enter does not submit a question', async t => {
   input.dispatchEvent(new app.window.KeyboardEvent('keydown', { key: 'Enter', isComposing: true, bubbles: true }));
   await new Promise(resolve => setTimeout(resolve, 20)); assert.equal(app.calls.some(call => call[0] === 'send'), false);
 });
+
+test('account login completes automatically and cancellation stays enabled while waiting', async t => {
+  const app = await fixture(t, { scenario: 'oauth' }); app.ui.setSettingsActive(true);
+  const panel = app.node('ai-account-settings');
+  await wait(() => panel.querySelector('.settings-client-row'));
+  const chatgpt = panel.querySelector('.settings-client-row');
+  await wait(() => ![...chatgpt.querySelectorAll('button')].find(node => node.textContent === '연결').disabled);
+  [...chatgpt.querySelectorAll('button')].find(node => node.textContent === '연결').click();
+  await wait(() => app.calls.some(call => call[0] === 'finishConnect'));
+  assert.match(chatgpt.textContent, /로그인 대기/); assert.doesNotMatch(chatgpt.textContent, /연결 확인/);
+  assert.equal([...chatgpt.querySelectorAll('button')].find(node => node.textContent === '취소').disabled, false);
+  app.completeLogin(); await wait(() => chatgpt.textContent.includes('연결됨'));
+  assert.equal([...chatgpt.querySelectorAll('button')].some(node => node.textContent === '취소'), false);
+});
+
+test('Notion login completes automatically without a confirmation button', async t => {
+  const app = await fixture(t, { scenario: 'oauth' }); app.ui.setSettingsActive(true);
+  const panel = app.node('ai-account-settings');
+  await wait(() => app.ui.flow.getSnapshot().notion !== null);
+  const notion = [...panel.querySelectorAll('.settings-client-row')].find(node => node.textContent.includes('Notion'));
+  [...notion.querySelectorAll('button')].find(node => node.textContent === '연결').click();
+  await wait(() => app.ui.flow.getSnapshot().connectionPhases.notion === 'waiting');
+  await wait(() => notion.textContent.includes('로그인 대기'));
+  assert.doesNotMatch(notion.textContent, /연결 확인/);
+  assert.equal([...notion.querySelectorAll('button')].find(node => node.textContent === '취소').disabled, false);
+  app.completeNotion(); await wait(() => notion.textContent.includes('연결됨'));
+});
+
+test('account cancel remains usable during automatic finish and ignores its late callback', async t => {
+  const app = await fixture(t, { scenario: 'oauth' }); app.ui.setSettingsActive(true);
+  const panel = app.node('ai-account-settings'); await wait(() => panel.querySelector('.settings-client-row'));
+  const chatgpt = panel.querySelector('.settings-client-row');
+  await wait(() => ![...chatgpt.querySelectorAll('button')].find(node => node.textContent === '연결').disabled);
+  [...chatgpt.querySelectorAll('button')].find(node => node.textContent === '연결').click();
+  await wait(() => app.calls.some(call => call[0] === 'finishConnect'));
+  await wait(() => [...chatgpt.querySelectorAll('button')].some(node => node.textContent === '취소'));
+  [...chatgpt.querySelectorAll('button')].find(node => node.textContent === '취소').click();
+  await wait(() => app.calls.some(call => call[0] === 'cancelConnect'));
+  app.completeLogin(); await wait(() => chatgpt.textContent.includes('연결 필요'));
+  assert.equal(app.ui.flow.getSnapshot().accounts[0].state, 'signed_out');
+});

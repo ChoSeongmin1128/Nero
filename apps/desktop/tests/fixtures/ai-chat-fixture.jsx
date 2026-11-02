@@ -4,11 +4,18 @@ import { mountMeetingDetail } from '../../src/meeting-detail-ui.js';
 export function mountAiChatFixture({ document, scenario = 'ready', delay = 20 }) {
   const byId = id => document.getElementById(id);
   const calls = [], timers = new Set();
-  let receiver = null, ui = null, request = null;
+  let receiver = null, ui = null, request = null, finishLogin = null, finishNotion = null;
   const later = action => { const timer = setTimeout(() => { timers.delete(timer); action(); }, delay); timers.add(timer); };
-  const accounts = { accounts: [{ id: 'example-chatgpt', provider: 'chatgpt', state: scenario === 'unavailable' ? 'unavailable' : 'ready', configured: scenario !== 'unavailable', label: '예시 계정' }, { id: 'example-claude', provider: 'claude', state: 'unavailable', configured: false }] };
+  const accounts = { accounts: [{ id: 'example-chatgpt', provider: 'chatgpt', state: scenario === 'unavailable' ? 'unavailable' : scenario === 'oauth' ? 'signed_out' : 'ready', configured: scenario !== 'unavailable', label: '예시 계정' }, { id: 'example-claude', provider: 'claude', state: 'unavailable', configured: false }] };
+  const accountSnapshot = () => ({ accounts: accounts.accounts.map(account => ({ ...account })) });
   const bridge = {
-    accounts: async () => accounts,
+    accounts: async () => accountSnapshot(),
+    connect: async provider => { calls.push(['connect', provider]); return { attemptId: 'example-attempt' }; },
+    finishConnect: async attemptId => { calls.push(['finishConnect', attemptId]); return new Promise(resolve => { finishLogin = resolve; }); },
+    cancelConnect: async attemptId => { calls.push(['cancelConnect', attemptId]); return accountSnapshot(); },
+    notionConnect: async () => ({ attemptId: 'notion-attempt' }),
+    notionFinish: async () => new Promise(resolve => { finishNotion = resolve; }),
+    notionCancel: async () => ({ connected: false }),
     models: async () => ({ models: [{ id: 'example-model', label: '예시 모델' }], defaultModelId: 'example-model' }),
     read: async meetingId => ({ id: null, meetingId, messages: [] }),
     subscribe: async callback => { receiver = callback; return () => { receiver = null; }; },
@@ -22,10 +29,10 @@ export function mountAiChatFixture({ document, scenario = 'ready', delay = 20 })
     cancel: async requestId => { calls.push(['cancel', requestId]); const previous = request; request = null; later(() => receiver?.({ requestId, conversationId: 'example-conversation', meetingId: previous.meetingId, type: 'cancelled' })); },
     saveSummary: async value => { calls.push(['summary', value]); },
     appendNote: async value => { calls.push(['note', value]); },
-    notionSnapshot: async () => ({ connected: true, workspaceName: '예시 공간' }),
+    notionSnapshot: async () => ({ connected: scenario !== 'oauth', workspaceName: '예시 공간' }),
     fetchSources: async value => { calls.push(['source', value]); return { sources: [{ sourceId: 'notion:example:revision', pageId: 'example', title: '예시 자료', url: value.links[0], body: '합성 자료입니다.' }] }; },
     cancelFetch: async value => { calls.push(['cancelSource', value]); },
-    disconnect: async () => accounts,
+    disconnect: async () => accountSnapshot(),
   };
   const detail = mountMeetingDetail({ byId, finishEditing: async action => action(), onInspectorChange: (view, open) => ui?.setInspector(view, open) });
   ui = mountAiChat({ node: byId('ai-chat-inspector'), tabsNode: byId('inspector-tabs'), settingsNode: byId('ai-account-settings'), bridge,
@@ -43,5 +50,5 @@ export function mountAiChatFixture({ document, scenario = 'ready', delay = 20 })
   ui.setMeeting(meeting);
   detail.update({ id: meeting.id, showSummary: true, hasTranscript: true, summaryLoaded: true, transcriptLoaded: true });
   void detail.select('ai');
-  return { ui, detail, calls, dispose() { timers.forEach(clearTimeout); ui.dispose(); } };
+  return { ui, detail, calls, completeLogin() { accounts.accounts[0] = { ...accounts.accounts[0], state: 'ready' }; finishLogin?.(accountSnapshot()); }, completeNotion() { finishNotion?.({ connected: true, workspaceName: '예시 공간' }); }, dispose() { timers.forEach(clearTimeout); ui.dispose(); } };
 }

@@ -118,7 +118,7 @@ test('stale model loads cannot enable a different provider', async () => {
   assert.equal(app.state().modelId, null); assert.deepEqual(app.state().models, []); app.flow.dispose();
 });
 
-test('account connection remains pending until explicit completion succeeds', async () => {
+test('failed automatic account completion can be explicitly retried', async () => {
   const pendingAccount = { ...readyAccount, state: 'signed_out' };
   let attempts = 0, complete = false;
   const app = await harness({ accounts: async () => ({ accounts: [pendingAccount] }), connect: async () => { attempts++; return { attemptId: 'attempt' }; }, finishConnect: async () => { if (!complete) throw Error('Login not finished'); return { accounts: [readyAccount] }; } });
@@ -132,4 +132,49 @@ test('save failures keep the answer and do not report successful persistence', a
   const app = await harness({ appendNote: async () => { throw Error('Save rejected'); } }); app.flow.edit('Question'); await app.flow.send();
   app.emit({ type: 'completed', text: 'Answer', messageId: 'answer' }); assert.equal(await app.flow.save('note', 'answer'), false);
   assert.equal(app.state().conversation.feedback, ''); assert.equal(app.state().conversation.messages.at(-1).text, 'Answer'); assert.equal(app.state().conversation.error, 'Save rejected'); app.flow.dispose();
+});
+
+test('Claude OAuth automatically waits for completion without a confirm action', async () => {
+  const completion = deferred(); let finishes = 0;
+  const claude = { id: 'claude', provider: 'claude', state: 'signed_out', configured: true };
+  const app = await harness({ accounts: async () => ({ accounts: [readyAccount, claude] }), connect: async () => ({ attemptId: 'claude-attempt' }), finishConnect: async () => { finishes++; return completion.promise; } });
+  const connection = app.flow.connect('claude'); await tick();
+  assert.equal(finishes, 1); assert.equal(app.state().connectionPhases.claude, 'waiting');
+  assert.equal(app.state().accounts[0].state, 'ready');
+  completion.resolve({ accounts: [readyAccount, { ...claude, state: 'ready' }] }); await connection;
+  assert.equal(app.state().accounts[1].state, 'ready'); assert.equal(app.state().connectionPhases.claude, null); app.flow.dispose();
+});
+
+test('cancellation while awaiting OAuth completion preserves old accounts and ignores late completion', async () => {
+  const completion = deferred(), cancellation = deferred(); let cancellations = 0;
+  const old = { ...readyAccount, state: 'signed_out' };
+  const app = await harness({ accounts: async () => ({ accounts: [old] }), connect: async () => ({ attemptId: 'attempt' }), finishConnect: () => completion.promise, cancelConnect: () => { cancellations++; return cancellation.promise; } });
+  const connection = app.flow.connect('chatgpt'); await tick();
+  const cancel = app.flow.cancelConnect('chatgpt'); await tick();
+  assert.equal(cancellations, 1); assert.equal(app.state().connectionPhases.chatgpt, 'cancelling');
+  completion.resolve({ accounts: [readyAccount] }); await connection;
+  assert.equal(app.state().accounts[0].state, 'signed_out');
+  cancellation.resolve({ accounts: [old] }); await cancel;
+  assert.equal(app.state().accounts[0].state, 'signed_out'); assert.equal(app.state().attempts.chatgpt, null); app.flow.dispose();
+});
+
+test('cancellation during OAuth startup cancels its returned attempt without starting finish', async () => {
+  const begin = deferred(); let finished = false, cancelled = null;
+  const app = await harness({ accounts: async () => ({ accounts: [{ ...readyAccount, state: 'signed_out' }] }), connect: () => begin.promise, finishConnect: async () => { finished = true; }, cancelConnect: async id => { cancelled = id; return { accounts: [readyAccount] }; } });
+  const connection = app.flow.connect('chatgpt'), cancel = app.flow.cancelConnect('chatgpt');
+  begin.resolve({ attemptId: 'late-attempt' }); await Promise.all([connection, cancel]);
+  assert.equal(cancelled, 'late-attempt'); assert.equal(finished, false); assert.equal(app.state().accounts[0].id, readyAccount.id); app.flow.dispose();
+});
+
+test('Notion automatically completes and cancellation ignores a late callback', async () => {
+  let completion = deferred(), cancelled = 0;
+  const previous = { connected: true, workspaceName: 'Existing workspace' };
+  const app = await harness({ notionSnapshot: async () => previous, notionConnect: async () => ({ attemptId: 'notion-attempt' }), notionFinish: () => completion.promise, notionCancel: async () => { cancelled++; return previous; } });
+  await app.flow.loadNotion(); const connection = app.flow.connectNotion(); await tick();
+  assert.equal(app.state().connectionPhases.notion, 'waiting');
+  await app.flow.cancelNotion(); completion.resolve({ connected: true, workspaceName: 'Late workspace' }); await connection;
+  assert.equal(cancelled, 1); assert.equal(app.state().notion.workspaceName, 'Existing workspace');
+  completion = deferred(); const next = app.flow.connectNotion(); await tick();
+  completion.resolve({ connected: true, workspaceName: 'New workspace' }); await next;
+  assert.equal(app.state().notion.workspaceName, 'New workspace'); assert.equal(app.state().notionAttempt, null); app.flow.dispose();
 });
