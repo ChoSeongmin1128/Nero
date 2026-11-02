@@ -27,7 +27,7 @@ use std::{
 use storage::{CredentialStore, SecureCredentials, Storage};
 
 const MCP_ENDPOINT: &str = "https://mcp.notion.com/mcp";
-const MAX_PAGES: usize = 8;
+pub(crate) const MAX_PAGES: usize = 8;
 const MAX_PAGE_BYTES: usize = 256 * 1024;
 const MAX_CONTEXT_BYTES: usize = 512 * 1024;
 const REFRESH_TIMEOUT: Duration = Duration::from_secs(30);
@@ -627,6 +627,22 @@ impl NotionContextService {
         }
         self.lifecycle.drain(timeout).await?;
         Ok(guard)
+    }
+    #[cfg(test)]
+    pub(crate) fn save_test_source(&self, page_id: &str, body: &str) -> NotionSource {
+        let source = NotionSource::new(
+            page_id.into(),
+            format!("https://www.notion.so/{}", page_id.replace('-', "")),
+            Some("Fixture".into()),
+            None,
+            1,
+            body.into(),
+            false,
+            None,
+        )
+        .unwrap();
+        self.storage.save_source(&source).unwrap();
+        source
     }
     pub fn read_sources(&self, source_ids: Vec<String>) -> Result<NotionContextBundle> {
         self.context_bundle(&source_ids)

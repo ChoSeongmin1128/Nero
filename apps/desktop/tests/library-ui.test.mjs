@@ -867,7 +867,7 @@ test('Escape consumes the open menu first and a second Escape clears the selecti
   const app = harness(); app.controller.toggleSelection('one');
   const trigger = { focus() {}, getBoundingClientRect: () => ({ right: 200, top: 30, bottom: 50 }) };
   const content = { style: {}, getBoundingClientRect: () => ({ width: 180, height: 80 }) };
-  const menu = { open: true, isConnected: true, matches: () => true, classList: { add() {}, remove() {} },
+  const menu = { open: true, isConnected: true, matches: () => true, contains: node => node === trigger, classList: { add() {}, remove() {} },
     querySelector: selector => selector === ':scope > div' ? content : trigger };
   app.documentEvent('toggle', { target: menu });
   assert.equal(listKey(app, 'Escape').defaultPrevented, true);

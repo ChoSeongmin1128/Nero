@@ -307,6 +307,10 @@ Nero retains that observation independently of a live connection. Codex catalog 
 stay stable while older generation executables remain readable. Client metadata
 observation failures have a query-only retry and do not block another integration.
 
+## In-app AI and meeting references
+
+The current source includes a global AI sidebar with conversation-specific meeting and Notion attachments. ChatGPT uses Sign in with ChatGPT; Claude uses a signature-verified official Claude Code executable and its own login. The separate local agent connections described above remain independent. See [in-app AI](../../docs/in-app-ai.md) and [Notion references](../../docs/notion-context.md) for source contracts. These features are not established as available in a released or installed build by this source documentation.
+
 ## Recording and dates
 
 macOS permission is resolved before opening the stream. The meeting and capture are

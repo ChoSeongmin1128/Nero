@@ -1,0 +1,11 @@
+.meeting-context-popover { width: min(340px, calc(100vw - 24px)); padding: 12px; }
+.meeting-context-title { margin: 0 0 10px; font-size: var(--text-label-size); font-weight: var(--weight-medium); }
+.meeting-context-empty { margin: 8px 0 12px; color: var(--text-secondary); font-size: var(--text-caption-size); }
+.meeting-context-list { display: grid; gap: 2px; max-height: 220px; overflow: auto; padding: 0; margin: 0 0 10px; list-style: none; }
+.meeting-context-list li { display: flex; align-items: center; min-width: 0; }
+.meeting-context-link { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; text-align: left; }
+.meeting-context-link span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.meeting-context-add { display: flex; gap: 6px; }
+.meeting-context-add input { flex: 1; min-width: 0; }
+.meeting-context-error { margin-top: 8px; color: var(--danger-text); font-size: var(--text-caption-size); }
+.meeting-context-error button { display: block; margin-top: 4px; }

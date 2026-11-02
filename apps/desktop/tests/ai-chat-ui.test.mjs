@@ -19,10 +19,50 @@ async function fixture(t, options = {}) {
   await wait(() => app.ui.flow.getSnapshot().accountsLoaded && app.ui.flow.getSnapshot().conversation.loaded);
   await wait(() => { const state = app.ui.flow.getSnapshot(); return !state.accountsBusy && !state.modelsBusy && (!state.accounts.some(account => account.id === state.accountId && account.state === 'ready') || Boolean(state.modelId)); });
   await wait(() => node('ai-chat-inspector').querySelector('textarea'));
-  if (app.ui.flow.getSnapshot().modelId) await wait(() => node('ai-chat-inspector').querySelector('[aria-label="모델 선택"]')?.textContent.includes('예시 모델'));
+  if (app.ui.flow.getSnapshot().modelId) await wait(() => node('ai-chat-inspector').querySelector('[aria-label="AI 모델 선택"]')?.textContent.includes('예시 모델'));
   await window.happyDOM.whenAsyncComplete();
   return { ...app, window, node, button: text => { const buttons = [...node('ai-chat-inspector').querySelectorAll('button')]; return buttons.find(button => button.getAttribute('aria-label') === text) || buttons.find(button => button.textContent.trim() === text); } };
 }
+
+test('model picker navigates providers and models, handles unavailable accounts and closes on Escape', async t => {
+  const app = await fixture(t);
+  const trigger = app.button('AI 모델 선택');
+  trigger.click();
+  await wait(() => app.window.document.querySelector('.ai-model-popover'));
+  const menu = () => app.window.document.querySelector('.ai-model-popover');
+  const option = text => [...menu().querySelectorAll('button')].find(node => node.textContent.trim() === text);
+  option('Claude').click();
+  await wait(() => menu()?.textContent.includes('사용할 수 없는 AI입니다.'));
+  assert.equal(app.ui.flow.getSnapshot().provider, 'claude');
+  assert.ok(option('계정 설정'));
+  menu().querySelector('[aria-label="AI 목록으로 돌아가기"]').click();
+  await wait(() => option('ChatGPT'));
+  option('ChatGPT').click();
+  await wait(() => option('예시 모델'));
+  option('예시 모델').click();
+  await wait(() => !menu());
+  assert.equal(app.ui.flow.getSnapshot().modelId, 'example-model');
+  assert.match(trigger.textContent, /예시 모델/);
+  trigger.click(); await wait(() => menu());
+  app.window.document.activeElement.dispatchEvent(new app.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await wait(() => !menu());
+  await wait(() => app.window.document.activeElement === trigger);
+});
+
+test('Escape closes the focused AI popover without restoring focus to an unrelated action menu', async t => {
+  const app = await fixture(t);
+  const details = app.node('meeting-detail').querySelector('.transcript-maintenance');
+  const summary = details.querySelector('summary');
+  summary.dispatchEvent(new app.window.KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+  assert.equal(details.open, true);
+  const trigger = app.button('AI 모델 선택'); trigger.click();
+  await wait(() => app.window.document.querySelector('.ai-model-popover'));
+  await wait(() => app.window.document.activeElement.closest('.ai-model-popover'));
+  app.window.document.activeElement.dispatchEvent(new app.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  await wait(() => !app.window.document.querySelector('.ai-model-popover'));
+  await wait(() => app.window.document.activeElement === trigger);
+  assert.equal(details.open, false);
+});
 
 test('real chat component streams, renders safe Markdown, navigates citations and saves only completed answers', async t => {
   const app = await fixture(t);

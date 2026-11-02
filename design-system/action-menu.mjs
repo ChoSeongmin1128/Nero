@@ -3,6 +3,8 @@ export function mountActionMenus({ owner, onEscape }) {
   function menuContent(menu) { return menu?.querySelector(':scope > div'); }
   function closeMenu(menu = activeMenu, restore = false) {
     if (!menu) return;
+    const content = menuContent(menu);
+    if (typeof content?.hidePopover === 'function' && content.matches(':popover-open')) content.hidePopover();
     menu.open = false;
     menu.classList?.remove('is-open');
     if (activeMenu === menu) activeMenu = null;
@@ -12,6 +14,10 @@ export function mountActionMenus({ owner, onEscape }) {
     const content = menuContent(menu), trigger = menu.querySelector('summary');
     if (!content || !trigger) return;
     if (activeMenu && activeMenu !== menu) closeMenu(activeMenu);
+    if (typeof content.showPopover === 'function') {
+      content.setAttribute('popover', 'manual');
+      if (!content.matches(':popover-open')) content.showPopover();
+    }
     activeMenu = menu;
     menu.classList.add('is-open');
     const view = owner.defaultView;
@@ -28,7 +34,7 @@ export function mountActionMenus({ owner, onEscape }) {
   }
   owner?.addEventListener?.('toggle', event => {
     const menu = event.target;
-    if (!menu.matches?.('[data-meeting-menu],.library-folder-menu')) return;
+    if (!menu.matches?.('[data-meeting-menu],.library-folder-menu,.transcript-maintenance')) return;
     if (menu.open) positionMenu(menu); else closeMenu(menu);
   }, true);
   owner?.addEventListener?.('pointerdown', event => { if (activeMenu && !activeMenu.contains(event.target)) closeMenu(); }, true);
@@ -36,10 +42,11 @@ export function mountActionMenus({ owner, onEscape }) {
     if (event.key === 'Escape') {
       onEscape?.();
       if (!activeMenu) return;
+      if (!activeMenu.contains(event.target) && event.target.closest?.('[role="dialog"],[role="listbox"]')) { closeMenu(); return; }
       event.preventDefault(); event.stopPropagation(); closeMenu(activeMenu, true);
       return;
     }
-    const menu = event.target.closest?.('[data-meeting-menu],.library-folder-menu');
+    const menu = event.target.closest?.('[data-meeting-menu],.library-folder-menu,.transcript-maintenance');
     if (!menu || !['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
     if (menu.querySelector('summary')?.getAttribute?.('aria-disabled') === 'true') return;
     const buttons = [...menu.querySelectorAll('button:not(:disabled)')];

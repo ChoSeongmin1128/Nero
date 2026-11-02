@@ -200,6 +200,9 @@ impl AiAccounts {
         provider: Provider,
         account_id: Option<String>,
     ) -> Result<SignInAttempt, String> {
+        if provider == Provider::Claude {
+            return Err("Claude Code에서 구독 계정으로 로그인해 주세요.".into());
+        }
         self.ensure_open()?;
         self.cancel_pending()?;
         let _operation = self
@@ -503,6 +506,9 @@ impl AiAccounts {
         cancel: &Arc<AtomicBool>,
     ) -> Result<SubscriptionSession, String> {
         let account = state.accounts[position].clone();
+        if account.provider == Provider::Claude {
+            return Err("Claude Code에서 구독 계정을 사용해 주세요.".into());
+        }
         let old = account
             .tokens
             .as_ref()
@@ -648,6 +654,9 @@ impl AiAccounts {
             .find(|account| account.id == id)
             .cloned()
             .ok_or("선택한 AI 계정을 찾지 못했습니다.")?;
+        if selected.provider == Provider::Claude {
+            return Err("기존 Claude 계정 정보는 유지됩니다.".into());
+        }
         let cancelled = Arc::new(AtomicBool::new(false));
         let revocation_confirmed = if selected.provider == Provider::Claude {
             selected.tokens.is_none()
@@ -980,6 +989,18 @@ impl Tokens {
 }
 impl AccountRecord {
     fn snapshot(&self) -> AccountSnapshot {
+        if self.provider == Provider::Claude {
+            return AccountSnapshot {
+                id: self.id.clone(),
+                provider: self.provider,
+                label: "Claude 구독".into(),
+                email: None,
+                state: "signed_out".into(),
+                can_invoke: false,
+                configured: true,
+                reason: Some("Claude Code에서 구독 계정으로 로그인해 주세요.".into()),
+            };
+        }
         let (state, can_invoke, reason) = match self.tokens.as_ref() {
             Some(tokens) if !tokens.plan_enabled(self.provider) => (
                 "plan_disabled",
@@ -1405,7 +1426,7 @@ mod tests {
         assert_eq!(stored.active_account_id.as_deref(), Some("second"));
     }
     #[test]
-    fn claude_connection_has_no_invented_person_identity_and_cannot_use_api_key_tokens() {
+    fn legacy_claude_credentials_are_not_offered_for_invocation() {
         let mut account = record("claude-local", "fixture");
         account.provider = Provider::Claude;
         account.subject = None;
@@ -1415,7 +1436,8 @@ mod tests {
         token.access_token = "sk-ant-oat01-fixture".into();
         token.scopes = vec!["user:inference".into()];
         let snapshot = account.snapshot();
-        assert!(snapshot.can_invoke);
+        assert!(!snapshot.can_invoke);
+        assert_eq!(snapshot.state, "signed_out");
         assert!(snapshot.label.starts_with("Claude 구독"));
         assert!(snapshot.email.is_none());
         account.tokens.as_mut().unwrap().access_token = "sk-ant-api03-fixture".into();

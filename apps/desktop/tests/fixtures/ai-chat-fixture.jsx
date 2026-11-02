@@ -1,4 +1,7 @@
 import { mountAiChat } from '../../src/ai-chat-ui.jsx';
+import { mountMeetingContext } from '../../src/meeting-context-ui.jsx';
+import { mountActionMenus } from '../../../../design-system/action-menu.mjs';
+import { NeroControls } from '../../../../design-system/react-controls.jsx';
 import { mountMeetingDetail } from '../../src/meeting-detail-ui.js';
 
 export function mountAiChatFixture({ document, scenario = 'ready', delay = 20 }) {
@@ -10,7 +13,13 @@ export function mountAiChatFixture({ document, scenario = 'ready', delay = 20 })
   const accounts = { accounts: [{ id: 'example-chatgpt', provider: 'chatgpt', state: scenario === 'unavailable' ? 'unavailable' : scenario === 'oauth' ? 'signed_out' : 'ready', configured: scenario !== 'unavailable', label: '예시 계정' }, { id: 'example-claude', provider: 'claude', state: 'unavailable', configured: false }] };
   if (scenario === 'plan-disabled-multi') { accounts.accounts[0].state = 'signed_out'; accounts.accounts.push({ id: 'active-plan-account', provider: 'chatgpt', state: 'plan_disabled', configured: true, label: '활성 계정', detail: '활성 계정의 구독 권한을 확인해 주세요.' }); accounts.activeAccountId = 'active-plan-account'; }
   const accountSnapshot = () => ({ activeAccountId: accounts.activeAccountId || null, accounts: accounts.accounts.map(account => ({ ...account })) });
+  let meetingSources = scenario === 'meeting-sources' ? [{ sourceId: 'notion:example:revision', pageId: 'example', title: '제품 기획 문서', url: 'https://www.notion.so/12345678123412341234123456789012' }] : [];
+  let contextRevision = 0;
   const bridge = {
+    meetingSources: async () => ({ revision: contextRevision, sources: structuredClone(meetingSources) }),
+    meetingAddSource: async request => { meetingSources.push({ sourceId: request.sourceId, pageId: 'example', title: '예시 자료', url: 'https://www.notion.so/12345678123412341234123456789012' }); return { revision: ++contextRevision, sources: structuredClone(meetingSources) }; },
+    meetingRefreshSource: async request => { meetingSources = meetingSources.map(source => ({ ...source, sourceId: request.sourceId })); return { revision: ++contextRevision, sources: structuredClone(meetingSources) }; },
+    meetingRemoveSource: async request => { meetingSources = meetingSources.filter(source => source.pageId !== request.pageId); return { revision: ++contextRevision, sources: structuredClone(meetingSources) }; },
     accounts: async () => accountSnapshot(),
     connect: async (provider, accountId) => { calls.push(['connect', provider, accountId]); return { attemptId: 'example-attempt' }; },
     finishConnect: async attemptId => { calls.push(['finishConnect', attemptId]); return new Promise(resolve => { finishLogin = resolve; }); },
@@ -71,9 +80,18 @@ export function mountAiChatFixture({ document, scenario = 'ready', delay = 20 })
   byId('meeting-day').value = '2026-11-02';
   byId('meeting-notes').value = '보존할 메모 초안';
   const meeting = meetings[0];
+  const sourcesUi = mountMeetingContext({ node: byId('meeting-context-control'), bridge, getMeeting: () => meeting, onSettings: () => ui.setSettingsActive(true) });
+  sourcesUi.setMeeting(meeting);
+  const menus = mountActionMenus({ owner: document });
+  byId('audio-region').hidden = false;
+  byId('audio-duration').textContent = '58:30';
+  byId('audio-toggle-icon').innerHTML = globalThis.NeroIcons?.('play') || '';
+  byId('audio-mute').innerHTML = globalThis.NeroIcons?.('volume-2') || '';
+  byId('audio-speed').disabled = false;
+  NeroControls.enhanceAll(document);
   ui.setMeeting(meeting);
   detail.update({ id: meeting.id, showSummary: true, hasTranscript: true, summaryLoaded: true, transcriptLoaded: true });
   void detail.select('notes');
   ui.open(meeting);
-  return { ui, detail, calls, completeLogin() { accounts.accounts[0] = { ...accounts.accounts[0], state: 'ready' }; finishLogin?.(accountSnapshot()); }, completeNotion() { finishNotion?.({ connected: true, workspaceName: '예시 공간' }); }, dispose() { timers.forEach(clearTimeout); ui.dispose(); } };
+  return { ui, detail, calls, completeLogin() { accounts.accounts[0] = { ...accounts.accounts[0], state: 'ready' }; finishLogin?.(accountSnapshot()); }, completeNotion() { finishNotion?.({ connected: true, workspaceName: '예시 공간' }); }, dispose() { timers.forEach(clearTimeout); sourcesUi.dispose(); menus.close(); ui.dispose(); } };
 }

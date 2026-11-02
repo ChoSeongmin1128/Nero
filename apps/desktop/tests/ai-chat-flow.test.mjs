@@ -47,6 +47,84 @@ async function harness(overrides = {}, options = {}) {
   return { flow, calls, events, store, state: () => flow.getSnapshot(), emit };
 }
 
+test('meeting sources preserve selected revisions and track shared and direct origins', async () => {
+  const pending = deferred();
+  const app = await harness({ meetingSources: id => id === 'meeting-a' ? pending.promise : Promise.resolve({ sources: [
+    { pageId: 'shared', sourceId: 'shared-new', title: 'New version' }, { pageId: 'other', sourceId: 'other-1', title: 'Other' },
+  ] }) });
+  app.flow.edit('Question'); assert.equal(app.flow.canSend(), false);
+  pending.resolve({ sources: [{ pageId: 'shared', sourceId: 'shared-old', title: 'Old version' }] }); await tick();
+  assert.equal(app.flow.canSend(), true);
+  app.flow.attachMeeting(exampleMeetings[1]); await tick();
+  assert.deepEqual(app.state().conversation.sources.map(item => item.sourceId), ['shared-old', 'other-1']);
+  app.flow.removeMeeting('meeting-a');
+  assert.deepEqual(app.state().conversation.sources.map(item => item.sourceId), ['shared-new', 'other-1']);
+  app.flow.removeSource('shared-new'); app.flow.setMeeting(exampleMeetings[0]);
+  app.flow.attachMeeting(exampleMeetings[0]); await tick();
+  assert.deepEqual(app.state().conversation.sources.map(item => item.sourceId), ['other-1']);
+  await app.flow.addSource('https://notion.so/example');
+  app.flow.removeMeeting('meeting-b');
+  assert.deepEqual(app.state().conversation.sources.map(item => item.sourceId), ['notion:page:revision']);
+  await app.flow.send();
+  const request = app.calls.find(call => call[0] === 'send')[1];
+  assert.deepEqual(request.sourceIds, ['notion:page:revision']);
+  assert.equal(JSON.stringify(app.state().conversation.messages.at(-1).attachments).includes('originMeetingIds'), false);
+  app.flow.dispose();
+});
+
+
+test('shared page selection follows meeting order even when loads complete in reverse', async () => {
+  const first = deferred(), second = deferred();
+  const app = await harness({ meetingSources: id => id === 'meeting-a' ? first.promise : second.promise });
+  app.flow.attachMeeting(exampleMeetings[1]);
+  second.resolve({ sources: [{ pageId: 'shared', sourceId: 'version-b' }] }); await tick();
+  first.resolve({ sources: [{ pageId: 'shared', sourceId: 'version-a' }] }); await tick();
+  assert.equal(app.state().conversation.sources[0].sourceId, 'version-a');
+  app.flow.removeMeeting('meeting-a');
+  assert.equal(app.state().conversation.sources[0].sourceId, 'version-b');
+  app.flow.dispose();
+});
+
+test('reopened composition restores per-meeting versions and leaves historical attachments intact', async () => {
+  const attachments = [
+    { kind: 'meeting', meetingId: 'meeting-a' }, { kind: 'meeting', meetingId: 'meeting-b' },
+    { kind: 'notion', pageId: 'shared', sourceId: 'version-a', title: 'Shared', origin: { directSourceId: null, meetingSources: { 'meeting-a': 'version-a', 'meeting-b': 'version-b' } } },
+  ];
+  const app = await harness({ read: async id => ({ id, title: 'History', messages: [{ id: 'old', role: 'user', attachments }], activeRequestId: null }) });
+  assert.equal(app.state().conversation.sources[0].sourceId, 'version-a');
+  app.flow.removeMeeting('meeting-a');
+  assert.equal(app.state().conversation.sources[0].sourceId, 'version-b');
+  assert.equal(app.state().conversation.messages[0].attachments[2].sourceId, 'version-a');
+  app.flow.edit('Next'); await app.flow.send();
+  const request = app.calls.find(call => call[0] === 'send')[1];
+  assert.deepEqual(request.sourceOrigins['version-b'], { directSourceId: null, meetingSources: { 'meeting-b': 'version-b' } });
+  app.flow.dispose();
+});
+
+test('legacy attachment keeps its frozen source when a meeting is removed', async () => {
+  const attachments = [{ kind: 'meeting', meetingId: 'meeting-a' }, { kind: 'notion', pageId: 'p', sourceId: 'old', title: 'Page' }];
+  const app = await harness({ read: async id => ({ id, title: 'History', messages: [{ id: 'old', role: 'user', attachments }], activeRequestId: null }), meetingSources: async () => ({ sources: [{ pageId: 'p', sourceId: 'new' }] }) });
+  app.flow.removeMeeting('meeting-a');
+  assert.equal(app.state().conversation.sources[0].sourceId, 'old');
+  app.flow.edit('Next'); await app.flow.send();
+  const request = app.calls.find(call => call[0] === 'send')[1];
+  assert.deepEqual(request.sourceOrigins, {});
+  app.flow.dispose();
+});
+
+test('removed meetings and conversation changes isolate pending meeting sources', async () => {
+  const pending = deferred();
+  const app = await harness({ meetingSources: () => pending.promise });
+  app.flow.removeMeeting('meeting-a');
+  assert.equal(app.state().conversation.contextBusy, false);
+  await app.flow.newConversation({ attachCurrent: false });
+  pending.resolve({ sources: [{ pageId: 'late', sourceId: 'late-1', title: 'Late' }] }); await tick();
+  assert.deepEqual(app.state().conversation.sources, []);
+  await app.flow.selectConversation('conversation');
+  assert.deepEqual(app.state().conversation.sources, []);
+  app.flow.dispose();
+});
+
 test('opening from a meeting attaches it while the conversation has independent ownership', async () => {
   const app = await harness();
   assert.equal(app.state().conversation.id, 'conversation');

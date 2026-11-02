@@ -1,10 +1,29 @@
 import * as React from 'react';
-import { ArrowUp, Square, Plus, X, FileText, RotateCcw, NotebookPen, Copy, Check, ChevronDown, SquarePen, Trash2, MessageCircle, Link2 } from 'lucide-react';
-import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '../../../design-system/components/ui/select.jsx';
+import { ArrowUp, ArrowLeft, Bot, Square, Plus, X, FileText, RotateCcw, NotebookPen, Copy, Check, ChevronDown, ChevronRight, SquarePen, Trash2, MessageCircle, Link2 } from 'lucide-react';
 import { Popover, PopoverTrigger, PopoverContent, PopoverTitle } from '../../../design-system/components/ui/popover.jsx';
 import { Dialog, DialogContent, DialogTitle, DialogFooter, DialogClose } from '../../../design-system/components/ui/dialog.jsx';
 
 const providers = [{ value: 'chatgpt', label: 'ChatGPT' }, { value: 'claude', label: 'Claude' }];
+function ModelPicker({ flow, state, busy, onSettings }) {
+  const [open, setOpen] = React.useState(false), [page, setPage] = React.useState('providers');
+  const trigger = React.useRef(null), firstProvider = React.useRef(null), back = React.useRef(null);
+  const provider = providers.find(item => item.value === state.provider);
+  const model = state.models.find(item => item.id === state.modelId);
+  const account = state.accounts.find(item => item.id === state.accountId && item.provider === state.provider);
+  React.useEffect(() => { if (!state.active || busy) setOpen(false); }, [state.active, busy]);
+  React.useEffect(() => { if (open) (page === 'models' ? back : firstProvider).current?.focus(); }, [open, page]);
+  const changeOpen = next => { setOpen(next); if (next) setPage('providers'); };
+  return <Popover open={state.active && open} onOpenChange={changeOpen}>
+    <PopoverTrigger ref={trigger} type="button" className="quiet ai-model-trigger" disabled={busy} aria-label="AI 모델 선택"><Bot size={15} aria-hidden="true" /><span>{model?.label || provider?.label || 'AI 선택'}</span>{model && <span className="ai-model-provider">{provider?.label}</span>}<ChevronDown size={13} aria-hidden="true" /></PopoverTrigger>
+    <PopoverContent className="ai-model-popover" align="start" side="top" initialFocus={firstProvider} finalFocus={state.active && !busy ? trigger : false}>
+      <PopoverTitle className="sr-only">AI 모델 선택</PopoverTitle>
+      {page === 'providers' ? <><p className="ai-model-heading">AI 선택</p>{providers.map((item, index) => <button ref={index === 0 ? firstProvider : undefined} type="button" className="quiet ai-model-option" key={item.value} onClick={() => { if (state.provider !== item.value) flow.selectProvider(item.value); setPage('models'); }}><span>{item.label}</span>{item.value === state.provider && <Check size={14} aria-label="선택됨" />}<ChevronRight size={14} aria-hidden="true" /></button>)}</> : <>
+        <div className="ai-model-heading-row"><button ref={back} type="button" className="quiet small icon" aria-label="AI 목록으로 돌아가기" onClick={() => setPage('providers')}><ArrowLeft size={15} aria-hidden="true" /></button><span>{provider?.label}</span></div>
+        {state.modelsBusy ? <p className="ai-chat-muted" role="status">모델을 불러오는 중</p> : state.modelError ? <p className="ai-chat-error" role="alert">{state.modelError}</p> : account?.state !== 'ready' ? <><p className="ai-chat-muted">{account?.state === 'unavailable' || state.accountsLoaded && !account ? '사용할 수 없는 AI입니다.' : 'AI 계정에 로그인해 주세요.'}</p><button type="button" className="quiet ai-model-option" onClick={() => { setOpen(false); onSettings(); }}>계정 설정</button></> : state.models.map(item => <button type="button" className="quiet ai-model-option" key={item.id} onClick={() => { flow.selectModel(item.id); setOpen(false); }}><span>{item.label}</span>{item.id === state.modelId && <Check size={14} aria-label="선택됨" />}</button>)}
+      </>}
+    </PopoverContent>
+  </Popover>;
+}
 function ConversationHistory({ flow, state }) {
   const [open, setOpen] = React.useState(false), [deleting, setDeleting] = React.useState(null);
   React.useEffect(() => { if (!state.active) { setOpen(false); setDeleting(null); } }, [state.active]);
@@ -70,8 +89,7 @@ export function GlobalAiChat({ flow, onSettings = () => {}, onCitation = async (
   const account = state.accounts.find(item => item.id === state.accountId && item.provider === state.provider);
   const busy = Boolean(conversation.activeRequestId || conversation.action);
   const transcript = React.useRef(null), pinned = React.useRef(true), composer = React.useRef(null);
-  const [providerOpen, setProviderOpen] = React.useState(false), [modelOpen, setModelOpen] = React.useState(false), [citationError, setCitationError] = React.useState('');
-  React.useEffect(() => { if (!state.active) { setProviderOpen(false); setModelOpen(false); } }, [state.active]);
+  const [citationError, setCitationError] = React.useState('');
   React.useLayoutEffect(() => { pinned.current = true; if (transcript.current) transcript.current.scrollTop = transcript.current.scrollHeight; }, [conversation.id]);
   React.useLayoutEffect(() => { if (pinned.current && transcript.current) transcript.current.scrollTop = transcript.current.scrollHeight; }, [conversation.messages]);
   React.useLayoutEffect(() => { const node = composer.current; if (node) { node.style.height = 'auto'; node.style.height = `${Math.min(180, Math.max(64, node.scrollHeight))}px`; } }, [conversation.draft]);
@@ -101,10 +119,9 @@ export function GlobalAiChat({ flow, onSettings = () => {}, onCitation = async (
           {conversation.sources.map(source => <span className="ai-source-chip" key={source.sourceId}><Link2 size={14} aria-hidden="true" /><span title={source.title || source.url}>{source.title || 'Notion 자료'}</span><button type="button" className="quiet small icon" aria-label={`${source.title || 'Notion 자료'} 제외`} disabled={busy} onClick={() => flow.removeSource(source.sourceId)}><X size={12} aria-hidden="true" /></button></span>)}
         </div>}
         <textarea ref={composer} className="text-input" aria-label="AI에게 질문" placeholder="무엇이든 물어보세요" value={conversation.draft} rows={2} onChange={event => flow.edit(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && !event.isComposing) { event.preventDefault(); if (flow.canSend()) void flow.send(); } }} />
-        <div className="ai-chat-compose-actions"><SourcePicker flow={flow} state={state} onSettings={onSettings} getMeetings={getMeetings} /><span className="ai-chat-compose-spacer" />{conversation.activeRequestId ? <button type="button" className="small primary icon" aria-label="답변 중지" title="답변 중지" disabled={conversation.stopping} onClick={() => { void flow.stop(); }}><Square size={14} aria-hidden="true" /></button> : <button type="submit" className="primary small icon" aria-label="질문 보내기" title="질문 보내기" disabled={!flow.canSend()}><ArrowUp size={17} aria-hidden="true" /></button>}</div>
+        <div className="ai-chat-compose-actions"><SourcePicker flow={flow} state={state} onSettings={onSettings} getMeetings={getMeetings} /><span className="ai-chat-compose-spacer" />{conversation.contextBusy && <span className="activity-spinner" role="status" aria-label="자료 불러오는 중" />}{conversation.activeRequestId ? <button type="button" className="small primary icon" aria-label="답변 중지" title="답변 중지" disabled={conversation.stopping} onClick={() => { void flow.stop(); }}><Square size={14} aria-hidden="true" /></button> : <button type="submit" className="primary small icon" aria-label="질문 보내기" title="질문 보내기" disabled={!flow.canSend()}><ArrowUp size={17} aria-hidden="true" /></button>}</div>
       </form>
-      <div className="ai-chat-models"><Select open={state.active && providerOpen} onOpenChange={setProviderOpen} value={state.provider} onValueChange={value => flow.selectProvider(value)} items={providers} disabled={busy}><SelectTrigger className="ai-provider-select" aria-label="AI 선택"><SelectValue /></SelectTrigger><SelectContent>{providers.map(provider => <SelectItem key={provider.value} value={provider.value}>{provider.label}</SelectItem>)}</SelectContent></Select>
-      {state.models.length > 0 && <Select open={state.active && modelOpen} onOpenChange={setModelOpen} value={state.modelId} onValueChange={value => flow.selectModel(value)} items={state.models.map(model => ({ value: model.id, label: model.label }))} disabled={busy || state.modelsBusy}><SelectTrigger className="ai-model-select" aria-label="모델 선택"><SelectValue /></SelectTrigger><SelectContent>{state.models.map(model => <SelectItem key={model.id} value={model.id}>{model.label}</SelectItem>)}</SelectContent></Select>}</div>
+      <div className="ai-chat-models"><ModelPicker flow={flow} state={state} busy={busy} onSettings={onSettings} /></div>
     </div>
   </div>;
 }

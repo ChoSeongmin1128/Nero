@@ -21,6 +21,12 @@ pub struct Citation {
     pub source_id: Option<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SourceOrigin {
+    pub direct_source_id: Option<String>,
+    pub meeting_sources: std::collections::BTreeMap<String, String>,
+}
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Attachment {
     pub kind: String,
@@ -33,6 +39,56 @@ pub struct Attachment {
     pub url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub page_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<SourceOrigin>,
+}
+pub fn apply_source_origins(
+    attachments: &mut [Attachment],
+    meeting_ids: &[String],
+    source_ids: &[String],
+    origins: &std::collections::BTreeMap<String, SourceOrigin>,
+    mut page_for_source: impl FnMut(&str) -> Result<String, String>,
+) -> Result<(), String> {
+    let invalid = || "자료 출처를 확인해 주세요.".to_string();
+    if origins.len() > source_ids.len() || origins.keys().any(|id| !source_ids.contains(id)) {
+        return Err(invalid());
+    }
+    for attachment in attachments {
+        let Some(selected_id) = attachment.source_id.as_ref() else {
+            continue;
+        };
+        let Some(origin) = origins.get(selected_id) else {
+            continue;
+        };
+        if origin.meeting_sources.len() > meeting_ids.len()
+            || (origin.direct_source_id.is_none() && origin.meeting_sources.is_empty())
+            || origin
+                .meeting_sources
+                .keys()
+                .any(|id| !meeting_ids.contains(id))
+        {
+            return Err(invalid());
+        }
+        let expected = origin.direct_source_id.as_ref().or_else(|| {
+            meeting_ids
+                .iter()
+                .find_map(|id| origin.meeting_sources.get(id))
+        });
+        if expected != Some(selected_id) {
+            return Err(invalid());
+        }
+        for id in origin
+            .direct_source_id
+            .iter()
+            .chain(origin.meeting_sources.values())
+        {
+            if Some(&page_for_source(id)?) != attachment.page_id.as_ref() {
+                return Err(invalid());
+            }
+        }
+        attachment.origin = Some(origin.clone());
+    }
+    Ok(())
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -98,6 +154,7 @@ impl Binding {
                     source_id: None,
                     url: None,
                     page_id: None,
+                    origin: None,
                 })
                 .collect::<Vec<_>>();
             for citation in self
@@ -117,6 +174,7 @@ impl Binding {
                         source_id: citation.source_id.clone(),
                         url: citation.url.clone(),
                         page_id: None,
+                        origin: None,
                     });
                 }
             }
@@ -208,6 +266,7 @@ pub fn prepare(
             source_id: None,
             url: None,
             page_id: None,
+            origin: None,
         });
         meetings.push(MeetingBinding {
             meeting_id: meeting_id.clone(),
@@ -233,6 +292,7 @@ pub fn prepare(
                 source_id: source_id.clone(),
                 url: url.clone(),
                 page_id: document["pageId"].as_str().map(str::to_owned),
+                origin: None,
             });
             citations.push(Citation {
                 reference: number,
@@ -618,6 +678,85 @@ mod independent_context_tests {
 #[cfg(test)]
 mod attachment_restore_tests {
     use super::*;
+    #[test]
+    fn origins_validate_cached_snapshots_and_round_trip() {
+        use std::collections::BTreeMap;
+        let root = tempfile::tempdir().unwrap();
+        let root_path = root.path().canonicalize().unwrap();
+        let notion = crate::notion_context::NotionContextService::new(root_path.clone()).unwrap();
+        let page = uuid::Uuid::new_v4().to_string();
+        let other_page = uuid::Uuid::new_v4().to_string();
+        let first = notion.save_test_source(&page, "first");
+        let second = notion.save_test_source(&page, "second");
+        let other = notion.save_test_source(&other_page, "other");
+        let core = CoreHandle::open(root_path.clone()).unwrap();
+        let document = serde_json::to_value(&first).unwrap();
+        let mut binding = prepare(&core, &root_path, &[], vec![document], None)
+            .unwrap()
+            .binding;
+        let meetings = vec!["meeting-a".to_string(), "meeting-b".to_string()];
+        let selected = vec![first.source_id.clone()];
+        let origin = SourceOrigin {
+            direct_source_id: None,
+            meeting_sources: BTreeMap::from([
+                (meetings[0].clone(), first.source_id.clone()),
+                (meetings[1].clone(), second.source_id.clone()),
+            ]),
+        };
+        let validate = |binding: &mut Binding, origins: &BTreeMap<String, SourceOrigin>| {
+            apply_source_origins(
+                &mut binding.source_attachments,
+                &meetings,
+                &selected,
+                origins,
+                |id| {
+                    notion
+                        .read_sources(vec![id.to_owned()])
+                        .map_err(|e| e.to_string())?
+                        .sources
+                        .into_iter()
+                        .next()
+                        .map(|s| s.page_id)
+                        .ok_or_else(|| "missing".into())
+                },
+            )
+        };
+        let origins = BTreeMap::from([(first.source_id.clone(), origin.clone())]);
+        validate(&mut binding, &origins).unwrap();
+        let restored: Binding =
+            serde_json::from_value(serde_json::to_value(&binding).unwrap()).unwrap();
+        let saved = restored.attachments()[0].origin.clone().unwrap();
+        assert_eq!(saved.meeting_sources, origin.meeting_sources);
+        assert!(saved.direct_source_id.is_none());
+
+        let mut wrong_page = origin.clone();
+        wrong_page
+            .meeting_sources
+            .insert(meetings[1].clone(), other.source_id);
+        assert!(validate(
+            &mut binding,
+            &BTreeMap::from([(first.source_id.clone(), wrong_page)])
+        )
+        .is_err());
+        let mut unattached = origin.clone();
+        unattached
+            .meeting_sources
+            .insert("meeting-c".into(), second.source_id.clone());
+        assert!(validate(
+            &mut binding,
+            &BTreeMap::from([(first.source_id.clone(), unattached)])
+        )
+        .is_err());
+        let mut wrong_order = origin;
+        wrong_order
+            .meeting_sources
+            .insert(meetings[0].clone(), second.source_id);
+        assert!(validate(
+            &mut binding,
+            &BTreeMap::from([(first.source_id.clone(), wrong_order)])
+        )
+        .is_err());
+    }
     #[test]
     fn notion_page_identity_survives_serialization_and_restore_without_parsing_source_ids() {
         let root = tempfile::tempdir().unwrap();

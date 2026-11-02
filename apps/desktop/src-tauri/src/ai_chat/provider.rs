@@ -20,7 +20,7 @@ pub struct ChatModel {
     pub id: String,
     pub label: String,
     #[serde(skip)]
-    max_output_tokens: Option<u64>,
+    pub(super) max_output_tokens: Option<u64>,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]

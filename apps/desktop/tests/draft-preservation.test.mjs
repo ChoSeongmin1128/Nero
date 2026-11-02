@@ -182,6 +182,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     const mountSpeechModelPicker = () => ({update(){}});
     const mountPeopleSettings = () => ({show(){},hide(){},beforeLeave:async()=>true,isConfirming:()=>false});
     const mountMeetingAttendees = () => ({open:async()=>{},beforeLeave:async()=>true,dispose(){}});
+    const mountMeetingContext = () => ({setMeeting(){},close(){},dispose(){}});
     const mountNotificationCenter = testMountNotificationCenter;
     const mountCalendarSettings = () => ({ setActive() {} });
     const mountCalendarMeetingPicker = () => ({open(){}, close(){}, isOpen(){return false;}});

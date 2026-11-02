@@ -29,3 +29,8 @@ export const fetchSources = request => call('fetch_notion_sources', request);
 export const cancelFetch = requestId => call('cancel_notion_fetch', { requestId });
 export const openSource = url => call('ai_chat_open_source', { url });
 export const exportAnswer = request => call('ai_chat_answer_document', request);
+
+export const meetingSources = meetingId => call('meeting_context_sources', { meetingId });
+export const meetingAddSource = request => call('meeting_context_add', request);
+export const meetingRemoveSource = request => call('meeting_context_remove', request);
+export const meetingRefreshSource = request => call('meeting_context_refresh', request);

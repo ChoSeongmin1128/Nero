@@ -22,7 +22,7 @@ for (const name of ['appearance.css', 'typography.css', 'components.css', 'contr
   await mkdir(path.join(output, 'shared'), { recursive: true });
   await cp(path.join(repository, 'design-system', name), path.join(output, 'shared', name));
 }
-for (const name of ['style.css', 'sidebar-views.css', 'agent-connections.css', 'ai-chat-ui.css', 'speakers.css', 'transcript-actions.css', 'document-tools.css']) {
+for (const name of ['style.css', 'sidebar-views.css', 'agent-connections.css', 'ai-chat-ui.css', 'meeting-context.css', 'speakers.css', 'transcript-actions.css', 'document-tools.css']) {
   let content = await readFile(path.join(desktop, 'src', name), 'utf8');
   content = content.replaceAll('../../../design-system/', './shared/');
   await writeFile(path.join(output, name), content);

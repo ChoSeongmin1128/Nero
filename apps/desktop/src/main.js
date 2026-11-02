@@ -33,6 +33,7 @@ import { liveTranscriptRows } from './live-transcript.js';
 import { meetingResultPreview } from './meeting-result-preview.js';
 import { mountMeetingDetail } from './meeting-detail-ui.js';
 import { mountAiChat } from './ai-chat-ui.jsx';
+import { mountMeetingContext } from './meeting-context-ui.jsx';
 import * as aiChatBridge from './ai-chat-bridge.js';
 import { mountSummaryEvidence } from './summary-evidence.js';
 import { mountAgentConnectionDialog } from './agent-connection-dialog.jsx';
@@ -107,7 +108,7 @@ let selectionRequest = 0;
 function beginNavigation(history = false) { if (!history) viewHistory?.cancel(); const request = ++selectionRequest; return () => request === selectionRequest; }
 let speakerReplay = null;
 let summaryEvidence = null;
-let aiChat = null;
+let aiChat = null, meetingContext = null;
 let lastLiveTranscript = null;
 const processingActions = new Map();
 const processingErrors = new Map();
@@ -393,6 +394,7 @@ function render() {
   const meeting = currentMeeting();
   calendarReference.render(meeting);
   aiChat?.setMeeting(state.libraryOpen || setupVisible ? null : meeting);
+  meetingContext?.setMeeting(state.libraryOpen || setupVisible ? null : meeting);
   byId('ai-chat-open').disabled = !state.connected;
   byId('meeting-attendees').hidden = !meeting;
   byId('meeting-attendees').disabled = !state.connected || state.busy;
@@ -1567,6 +1569,7 @@ const detail = mountMeetingDetail({ byId, finishEditing, onError: showError, onR
   for (const actions of Object.values(documentActions)) actions.close();
   globalThis.NeroControls.close?.();
 } });
+meetingContext = mountMeetingContext({ node: byId('meeting-context-control'), bridge: aiChatBridge, getMeeting: () => state.libraryOpen ? null : currentMeeting(), onSettings: () => { void openSettings('agent', 'meeting-context-control').catch(showError); } });
 aiChat = mountAiChat({
   node: byId('ai-chat-inspector'), settingsNode: byId('ai-account-settings'), trigger: byId('ai-chat-open'), layoutRoot: byId('app-body'), resizeHandle: byId('ai-chat-resize'),
   bridge: { ...aiChatBridge,

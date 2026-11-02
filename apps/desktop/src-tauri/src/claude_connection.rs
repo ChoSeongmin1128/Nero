@@ -1,0 +1,236 @@
+use crate::claude_runner::{self, Runner};
+use serde_json::{json, Value};
+use std::{
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
+    time::{Duration, Instant},
+};
+use tokio::sync::Notify;
+pub const ACCOUNT_ID: &str = "claude-code";
+struct Login {
+    id: String,
+    cancel: Arc<AtomicBool>,
+    result: Mutex<Option<Result<(), String>>>,
+    done: Notify,
+}
+pub struct ClaudeConnection {
+    root: PathBuf,
+    cached: Mutex<Option<(Instant, Value)>>,
+    login: Mutex<Option<Arc<Login>>>,
+}
+impl ClaudeConnection {
+    pub fn new(root: PathBuf) -> Self {
+        Self {
+            root: root.join("ai-runtime/claude-code"),
+            cached: Mutex::new(None),
+            login: Mutex::new(None),
+        }
+    }
+    fn resolve(&self) -> Result<Runner, String> {
+        claude_runner::discover_prepared(&self.root).or_else(|_| claude_runner::discover())
+    }
+    fn row(ready: bool) -> Value {
+        json!({"id":ACCOUNT_ID,"provider":"claude","state":if ready {"ready"} else {"signed_out"},"configured":true,"disconnectable":false})
+    }
+    pub fn snapshot(&self) -> Value {
+        if self
+            .login
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|run| run.result.lock().unwrap().is_none())
+        {
+            return json!({"id":ACCOUNT_ID,"provider":"claude","state":"connecting","configured":true,"disconnectable":false});
+        }
+        if let Some((time, value)) = self.cached.lock().unwrap().as_ref() {
+            if time.elapsed() < Duration::from_secs(60) {
+                return value.clone();
+            }
+        }
+        let ready = self
+            .resolve()
+            .and_then(|runner| runner.auth_status(&AtomicBool::new(false)))
+            .unwrap_or(false);
+        let row = Self::row(ready);
+        *self.cached.lock().unwrap() = Some((Instant::now(), row.clone()));
+        row
+    }
+    pub fn begin(self: &Arc<Self>) -> Result<String, String> {
+        let mut pending = self.login.lock().unwrap();
+        if pending
+            .as_ref()
+            .is_some_and(|run| run.result.lock().unwrap().is_none())
+        {
+            return Err("Claude 로그인을 진행 중입니다.".into());
+        }
+        let run = Arc::new(Login {
+            id: uuid::Uuid::new_v4().to_string(),
+            cancel: Arc::new(AtomicBool::new(false)),
+            result: Mutex::new(None),
+            done: Notify::new(),
+        });
+        *pending = Some(run.clone());
+        let this = self.clone();
+        let id = run.id.clone();
+        tauri::async_runtime::spawn(async move {
+            let result = async {
+                let runner = match this.resolve() {
+                    Ok(runner) => runner,
+                    Err(_) => claude_runner::prepare(&this.root, run.cancel.clone()).await?,
+                };
+                let cancel = run.cancel.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    if runner.auth_status(&cancel)? {
+                        return Ok(());
+                    }
+                    runner.login(&cancel)
+                })
+                .await
+                .map_err(|_| "Claude 로그인을 완료하지 못했습니다.".to_string())?
+            }
+            .await;
+            let accepted = if run.cancel.load(Ordering::Acquire) {
+                Err("취소했습니다.".into())
+            } else {
+                result
+            };
+            *this.cached.lock().unwrap() = Some((Instant::now(), Self::row(accepted.is_ok())));
+            *run.result.lock().unwrap() = Some(accepted);
+            run.done.notify_waiters();
+        });
+        Ok(id)
+    }
+    pub fn owns(&self, id: &str) -> bool {
+        self.login
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|run| run.id == id)
+    }
+    pub async fn finish(&self, id: &str) -> Result<(), String> {
+        let run = self
+            .login
+            .lock()
+            .unwrap()
+            .clone()
+            .filter(|run| run.id == id)
+            .ok_or("로그인 요청을 찾을 수 없습니다.")?;
+        Self::wait_for(&run).await
+    }
+    async fn wait_for(run: &Login) -> Result<(), String> {
+        loop {
+            let notified = run.done.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if let Some(result) = run.result.lock().unwrap().clone() {
+                return result;
+            }
+            notified.await;
+        }
+    }
+    pub async fn cancel(&self, id: &str) -> Result<(), String> {
+        let run = self
+            .login
+            .lock()
+            .unwrap()
+            .clone()
+            .filter(|run| run.id == id)
+            .ok_or("로그인 요청을 찾을 수 없습니다.")?;
+        run.cancel.store(true, Ordering::Release);
+        tokio::time::timeout(Duration::from_secs(5), Self::wait_for(&run))
+            .await
+            .map_err(|_| "로그인 취소를 정리 중입니다. 잠시 후 다시 시도해 주세요.".to_string())?
+            .ok();
+        Ok(())
+    }
+    pub async fn drain(&self) -> Result<(), String> {
+        let pending = self.login.lock().unwrap().clone();
+        if let Some(run) = pending {
+            run.cancel.store(true, Ordering::Release);
+            tokio::time::timeout(Duration::from_secs(5), Self::wait_for(&run))
+                .await
+                .map_err(|_| {
+                    "Claude 로그인을 정리 중입니다. 잠시 후 다시 시도해 주세요.".to_string()
+                })?
+                .ok();
+        }
+        Ok(())
+    }
+    pub fn reply(
+        &self,
+        model: &str,
+        prompt: &str,
+        cancel: Arc<AtomicBool>,
+        delta: impl FnMut(&str),
+    ) -> Result<String, String> {
+        let result = self.resolve()?.reply(model, prompt, cancel, delta);
+        if result.is_err() {
+            *self.cached.lock().unwrap() = None;
+        }
+        result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn attempt(connection: &ClaudeConnection) -> Arc<Login> {
+        let run = Arc::new(Login {
+            id: "fixture".into(),
+            cancel: Arc::new(AtomicBool::new(false)),
+            result: Mutex::new(None),
+            done: Notify::new(),
+        });
+        *connection.login.lock().unwrap() = Some(run.clone());
+        run
+    }
+
+    #[tokio::test]
+    async fn cancel_waits_for_login_to_stop_before_acknowledging() {
+        let connection = Arc::new(ClaudeConnection::new(PathBuf::from("unused")));
+        let run = attempt(&connection);
+        let waiting = connection.clone();
+        let task = tokio::spawn(async move { waiting.cancel("fixture").await });
+        tokio::task::yield_now().await;
+        assert!(run.cancel.load(Ordering::Acquire));
+        assert!(!task.is_finished());
+        *connection.cached.lock().unwrap() = Some((Instant::now(), ClaudeConnection::row(false)));
+        *run.result.lock().unwrap() = Some(Err("취소했습니다.".into()));
+        run.done.notify_waiters();
+        assert!(task.await.unwrap().is_ok());
+        assert_eq!(connection.snapshot()["state"], "signed_out");
+    }
+
+    #[tokio::test]
+    async fn finish_observes_completion_before_and_during_wait() {
+        let connection = Arc::new(ClaudeConnection::new(PathBuf::from("unused")));
+        let first = attempt(&connection);
+        *first.result.lock().unwrap() = Some(Ok(()));
+        first.done.notify_waiters();
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), connection.finish("fixture"))
+                .await
+                .unwrap()
+                .is_ok()
+        );
+
+        let second = attempt(&connection);
+        let waiting = connection.clone();
+        let task = tokio::spawn(async move { waiting.finish("fixture").await });
+        tokio::task::yield_now().await;
+        *second.result.lock().unwrap() = Some(Err("fixture failure".into()));
+        second.done.notify_waiters();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), task)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap_err(),
+            "fixture failure"
+        );
+    }
+}

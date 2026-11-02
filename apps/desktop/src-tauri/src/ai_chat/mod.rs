@@ -4,6 +4,7 @@ mod store;
 use crate::ai_accounts::{AiAccounts, Provider};
 use crate::notion_context::NotionContextService;
 use context::Binding;
+pub use context::SourceOrigin;
 use nero_core::CoreHandle;
 pub use provider::Models;
 use serde::{Deserialize, Serialize};
@@ -31,6 +32,8 @@ pub struct SendRequest {
     pub message: String,
     #[serde(default)]
     pub source_ids: Vec<String>,
+    #[serde(default)]
+    pub source_origins: Option<std::collections::BTreeMap<String, context::SourceOrigin>>,
     pub template_id: Option<String>,
 }
 #[derive(Clone, Serialize)]
@@ -77,6 +80,7 @@ pub struct AiChat {
     root: PathBuf,
     core: CoreHandle,
     pub accounts: Arc<AiAccounts>,
+    pub claude: Arc<crate::claude_connection::ClaudeConnection>,
     pub notion: Option<Arc<NotionContextService>>,
     store: Mutex<store::Store>,
     running: Mutex<HashMap<String, Active>>,
@@ -133,6 +137,9 @@ impl AiChat {
     ) -> Self {
         Self {
             store: Mutex::new(store::Store::new(root.clone())),
+            claude: Arc::new(crate::claude_connection::ClaudeConnection::new(
+                root.clone(),
+            )),
             root,
             core,
             accounts,
@@ -344,6 +351,24 @@ impl AiChat {
         }
     }
     pub async fn models(&self, id: &str) -> Result<Models, String> {
+        if id == crate::claude_connection::ACCOUNT_ID {
+            return Ok(Models {
+                models: ["sonnet", "opus", "haiku"]
+                    .into_iter()
+                    .map(|id| provider::ChatModel {
+                        id: id.into(),
+                        label: match id {
+                            "sonnet" => "Sonnet",
+                            "opus" => "Opus",
+                            _ => "Haiku",
+                        }
+                        .into(),
+                        max_output_tokens: None,
+                    })
+                    .collect(),
+                default_model_id: Some("sonnet".into()),
+            });
+        }
         let session = self.accounts.subscription_session(id).await?;
         provider::models(&provider::ProviderAccess {
             provider: provider_id(session.provider).into(),
@@ -381,13 +406,17 @@ impl AiChat {
         for id in &request.meeting_ids {
             self.require_meeting(id)?;
         }
-        let account = self
-            .accounts
-            .snapshot()?
-            .accounts
-            .into_iter()
-            .find(|account| account.id == request.account_id && account.can_invoke)
-            .ok_or("먼저 AI 계정을 연결해 주세요.")?;
+        let selected_provider = if request.account_id == crate::claude_connection::ACCOUNT_ID {
+            Provider::Claude
+        } else {
+            self.accounts
+                .snapshot()?
+                .accounts
+                .into_iter()
+                .find(|account| account.id == request.account_id && account.can_invoke)
+                .ok_or("먼저 AI 계정에 로그인해 주세요.")?
+                .provider
+        };
         let documents = if request.source_ids.is_empty() {
             vec![]
         } else {
@@ -407,13 +436,35 @@ impl AiChat {
         if documents.iter().any(|source| source["truncated"] == true) {
             return Err("전체 내용을 읽지 못한 자료가 있습니다. 자료를 다시 확인해 주세요.".into());
         }
-        let prepared = context::prepare(
+        let mut prepared = context::prepare(
             &self.core,
             &self.root,
             &request.meeting_ids,
             documents,
             request.template_id.as_deref(),
         )?;
+        if let Some(origins) = &request.source_origins {
+            let notion = self
+                .notion
+                .as_ref()
+                .ok_or("Notion 연결을 준비하지 못했습니다.")?;
+            context::apply_source_origins(
+                &mut prepared.binding.source_attachments,
+                &request.meeting_ids,
+                &request.source_ids,
+                origins,
+                |id| {
+                    notion
+                        .read_sources(vec![id.to_owned()])
+                        .map_err(|e| e.to_string())?
+                        .sources
+                        .into_iter()
+                        .next()
+                        .map(|source| source.page_id)
+                        .ok_or_else(|| "자료를 찾을 수 없습니다.".into())
+                },
+            )?;
+        }
         let store = self.store.lock().unwrap();
         store::id(&request.conversation_id)?;
         for id in &request.meeting_ids {
@@ -479,7 +530,7 @@ impl AiChat {
             conversation.title = request.message.trim().chars().take(60).collect();
         }
         conversation.updated_at = store::now();
-        conversation.provider = Some(provider_id(account.provider).into());
+        conversation.provider = Some(provider_id(selected_provider).into());
         conversation.model_id = Some(request.model_id.clone());
         conversation.active_request_id = Some(request.request_id.clone());
         conversation.messages.push(Message {
@@ -512,7 +563,7 @@ impl AiChat {
             status: "streaming".into(),
             citations: vec![],
             error: None,
-            provider: Some(provider_id(account.provider).into()),
+            provider: Some(provider_id(selected_provider).into()),
             model_id: Some(request.model_id.clone()),
             binding: Some(prepared.binding.clone()),
             saved_summary_id: None,
@@ -548,31 +599,12 @@ impl AiChat {
             request_id: request.request_id.clone(),
         };
         let this = self.clone();
-        tauri::async_runtime::spawn(async move {
-            let mut sequence = 0;
-            let mut persistence_error = false;
-            let result = async {
-                let session = this
-                    .accounts
-                    .subscription_session_with_cancel(&request.account_id, cancel.clone())
-                    .await?;
-                let access = provider::ProviderAccess {
-                    provider: provider_id(session.provider).into(),
-                    access_token: session.access_token().into(),
-                };
-                let models = provider::models_with_cancel(&access, &cancel).await?;
-                let selected = models
-                    .models
-                    .iter()
-                    .find(|model| model.id == request.model_id)
-                    .ok_or("이 AI 계정에서 선택한 모델을 사용할 수 없습니다.")?;
-                provider::reply(
-                    &access,
-                    selected,
-                    &prepared.instructions,
-                    history,
-                    cancel.clone(),
-                    |delta| {
+        tauri::async_runtime::spawn_blocking(move || {
+            tauri::async_runtime::block_on(async move {
+                let mut sequence = 0;
+                let mut persistence_error = false;
+                let result = async {
+                    let mut deliver = |delta: &str| {
                         if cancel.load(Ordering::Acquire) {
                             return;
                         }
@@ -602,38 +634,76 @@ impl AiChat {
                             attachments: None,
                             save_targets: None,
                         });
+                    };
+                    if selected_provider == Provider::Claude {
+                        let prompt = format!(
+                            "{}\n\n대화(JSON 데이터):\n{}",
+                            prepared.instructions,
+                            serde_json::to_string(&history)
+                                .map_err(|_| "대화를 준비하지 못했습니다.")?
+                        );
+                        return this.claude.reply(
+                            &request.model_id,
+                            &prompt,
+                            cancel.clone(),
+                            &mut deliver,
+                        );
+                    }
+                    let session = this
+                        .accounts
+                        .subscription_session_with_cancel(&request.account_id, cancel.clone())
+                        .await?;
+                    let access = provider::ProviderAccess {
+                        provider: provider_id(session.provider).into(),
+                        access_token: session.access_token().into(),
+                    };
+                    let models = provider::models_with_cancel(&access, &cancel).await?;
+                    let selected = models
+                        .models
+                        .iter()
+                        .find(|model| model.id == request.model_id)
+                        .ok_or("이 AI 계정에서 선택한 모델을 사용할 수 없습니다.")?;
+                    provider::reply(
+                        &access,
+                        selected,
+                        &prepared.instructions,
+                        history,
+                        cancel.clone(),
+                        &mut deliver,
+                    )
+                    .await
+                }
+                .await;
+                let event = this.finish(
+                    &request.request_id,
+                    if persistence_error {
+                        Err("부분 답변을 저장하지 못했습니다. 다시 열어 확인해 주세요.".into())
+                    } else {
+                        result
                     },
-                )
-                .await
-            }
-            .await;
-            let event = this.finish(
-                &request.request_id,
-                if persistence_error {
-                    Err("부분 답변을 저장하지 못했습니다. 다시 열어 확인해 주세요.".into())
-                } else {
-                    result
-                },
-                persistence_error,
-                sequence + 1,
-            );
-            if let Ok(Some(event)) = event {
-                emit(event);
-            } else if event.is_err() {
-                emit(ChatEvent {
-                    request_id: request.request_id.clone(),
-                    conversation_id,
-                    meeting_id: None,
-                    message_id,
-                    kind: "failed".into(),
-                    text: Some(partial.lock().unwrap().text.clone()),
-                    error: Some("AI 대화를 저장하지 못했습니다. 다시 열어 확인해 주세요.".into()),
-                    citations: vec![],
-                    sequence: sequence + 1,
-                    attachments: Some(prepared.binding.attachments()),
-                    save_targets: Some(prepared.binding.save_targets()),
-                });
-            }
+                    persistence_error,
+                    sequence + 1,
+                );
+                if let Ok(Some(event)) = event {
+                    emit(event);
+                } else if event.is_err() {
+                    emit(ChatEvent {
+                        request_id: request.request_id.clone(),
+                        conversation_id,
+                        meeting_id: None,
+                        message_id,
+                        kind: "failed".into(),
+                        text: Some(partial.lock().unwrap().text.clone()),
+                        error: Some(
+                            "AI 대화를 저장하지 못했습니다. 다시 열어 확인해 주세요.".into(),
+                        ),
+                        citations: vec![],
+                        sequence: sequence + 1,
+                        attachments: Some(prepared.binding.attachments()),
+                        save_targets: Some(prepared.binding.save_targets()),
+                    });
+                }
+            })
         });
         Ok(started)
     }
@@ -1122,6 +1192,7 @@ mod tests {
             model_id: "m".into(),
             message: "질문".into(),
             source_ids: vec![],
+            source_origins: None,
             template_id: None,
         };
         let store = chat.store.lock().unwrap();

@@ -5,6 +5,10 @@ mod agent_mutations;
 mod ai_accounts;
 mod ai_chat;
 mod ai_chat_desktop;
+mod claude_runner;
+mod claude_connection;
+mod meeting_context;
+mod meeting_context_desktop;
 #[cfg(target_os = "macos")]
 mod app_menu;
 mod app_updater;
@@ -1753,6 +1757,10 @@ fn main() {
             ai_chat_desktop::fetch_notion_sources,
             ai_chat_desktop::cancel_notion_fetch,
             ai_chat_desktop::read_notion_sources,
+            meeting_context_desktop::meeting_context_sources,
+            meeting_context_desktop::meeting_context_add,
+            meeting_context_desktop::meeting_context_refresh,
+            meeting_context_desktop::meeting_context_remove,
             people_desktop::people_catalog,
             people_desktop::google_attendee_roster,
             people_desktop::apply_meeting_attendee_draft,

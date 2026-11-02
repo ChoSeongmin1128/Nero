@@ -32,7 +32,7 @@ impl AiDesktop {
                 .unwrap_or("AI 연결을 준비하지 못했습니다.".into())
         })
     }
-    fn notion(&self) -> Result<Arc<NotionContextService>, String> {
+    pub(crate) fn notion(&self) -> Result<Arc<NotionContextService>, String> {
         self.notion.clone().ok_or_else(|| {
             self.notion_error
                 .clone()
@@ -41,6 +41,11 @@ impl AiDesktop {
     }
 }
 pub fn install(app: &AppHandle, root: PathBuf, resources: PathBuf, core: nero_core::CoreHandle) {
+    if let Ok(contexts) =
+        crate::meeting_context_desktop::MeetingContexts::new(root.clone(), core.clone())
+    {
+        app.manage(Arc::new(contexts));
+    }
     let accounts = AiAccounts::new(root.join("ai-accounts"), resources);
     let notion = NotionContextService::new(root.clone());
     let account_error = accounts.as_ref().err().cloned();
@@ -74,6 +79,7 @@ pub async fn prepare_shutdown(app: &AppHandle) -> Result<AiShutdown, String> {
         })
         .unwrap_or_default();
     if let Some(chat) = chat {
+        chat.claude.drain().await?;
         tauri::async_runtime::spawn_blocking(move || chat.drain(std::time::Duration::from_secs(5)))
             .await
             .map_err(|_| "AI 대화를 저장하지 못했습니다.".to_string())??;
@@ -100,12 +106,12 @@ pub fn meeting_removal<T>(
     let chat = app
         .try_state::<AiDesktop>()
         .and_then(|state| state.chat.clone());
-    match chat {
+    crate::meeting_context_desktop::removal(app, ids, permanent, || match chat {
         Some(chat) => chat
             .with_meeting_removal(ids, permanent, || action().map_err(|e| e.to_string()))
             .map_err(nero_core::CoreError::InvalidState),
         None => action(),
-    }
+    })
 }
 fn require_open(app: &AppHandle) -> Result<(), String> {
     if app.state::<DesktopState>().lifecycle.is_closing() {
@@ -113,10 +119,16 @@ fn require_open(app: &AppHandle) -> Result<(), String> {
     }
     Ok(())
 }
-fn account_view(accounts: &AiAccounts) -> Result<Value, String> {
+fn account_view(
+    accounts: &AiAccounts,
+    claude: &crate::claude_connection::ClaudeConnection,
+) -> Result<Value, String> {
     let snapshot = accounts.snapshot()?;
     let mut values = vec![];
     for account in snapshot.accounts {
+        if account.provider == Provider::Claude {
+            continue;
+        }
         let state = if account.can_invoke {
             "ready"
         } else if account.state == "connecting" {
@@ -129,6 +141,9 @@ fn account_view(accounts: &AiAccounts) -> Result<Value, String> {
         values.push(json!({"id":account.id,"provider":account.provider,"state":state,"label":account.label,"configured":account.configured,"detail":account.reason}));
     }
     for provider in &snapshot.providers {
+        if provider.id == Provider::Claude {
+            continue;
+        }
         if !values
             .iter()
             .any(|account| account["provider"] == serde_json::to_value(provider.id).unwrap())
@@ -136,9 +151,17 @@ fn account_view(accounts: &AiAccounts) -> Result<Value, String> {
             values.push(json!({"id":"","provider":provider.id,"state":if provider.configured{"signed_out"}else{"unavailable"},"label":provider.name,"configured":provider.configured,"detail":provider.reason}));
         }
     }
+    values.push(claude.snapshot());
     Ok(
         json!({"accounts":values,"providers":snapshot.providers,"activeAccountId":snapshot.active_account_id}),
     )
+}
+async fn account_snapshot(state: &AiDesktop) -> Result<Value, String> {
+    let accounts = state.accounts()?;
+    let claude = state.chat()?.claude.clone();
+    tauri::async_runtime::spawn_blocking(move || account_view(&accounts, &claude))
+        .await
+        .map_err(|_| "AI 상태를 확인하지 못했습니다.".to_string())?
 }
 async fn open(url: String) -> Result<(), String> {
     let url = reqwest::Url::parse(&url).map_err(|_| "로그인 주소를 확인하지 못했습니다.")?;
@@ -166,12 +189,12 @@ async fn open(url: String) -> Result<(), String> {
     .map_err(|_| "기본 브라우저를 열지 못했습니다.".to_string())?
 }
 #[tauri::command]
-pub fn ai_chat_accounts(
+pub async fn ai_chat_accounts(
     window: WebviewWindow,
     state: State<'_, AiDesktop>,
 ) -> Result<Value, String> {
     require_main(&window)?;
-    account_view(state.accounts()?.as_ref())
+    account_snapshot(&state).await
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -188,6 +211,11 @@ pub async fn ai_chat_connect(
 ) -> Result<Attempt, String> {
     require_main(&window)?;
     require_open(&app)?;
+    if provider == Provider::Claude {
+        return Ok(Attempt {
+            attempt_id: state.chat()?.claude.begin()?,
+        });
+    }
     let accounts = state.accounts()?;
     let attempt = accounts.begin_sign_in(provider, account_id)?;
     if let Err(error) = open(attempt.authorization_url).await {
@@ -207,22 +235,32 @@ pub async fn ai_chat_finish_connect(
 ) -> Result<Value, String> {
     require_main(&window)?;
     require_open(&app)?;
+    let claude = state.chat()?.claude.clone();
+    if claude.owns(&attempt_id) {
+        claude.finish(&attempt_id).await?;
+        return account_snapshot(&state).await;
+    }
     let accounts = state.accounts()?;
     accounts
         .complete_sign_in(&attempt_id, Arc::new(AtomicBool::new(false)))
         .await?;
-    account_view(&accounts)
+    account_snapshot(&state).await
 }
 #[tauri::command]
-pub fn ai_chat_cancel_connect(
+pub async fn ai_chat_cancel_connect(
     window: WebviewWindow,
     state: State<'_, AiDesktop>,
     attempt_id: String,
 ) -> Result<Value, String> {
     require_main(&window)?;
+    let claude = state.chat()?.claude.clone();
+    if claude.owns(&attempt_id) {
+        claude.cancel(&attempt_id).await?;
+        return account_snapshot(&state).await;
+    }
     let accounts = state.accounts()?;
     accounts.cancel_sign_in(&attempt_id)?;
-    account_view(&accounts)
+    account_snapshot(&state).await
 }
 #[tauri::command]
 pub async fn ai_chat_disconnect(
@@ -236,7 +274,7 @@ pub async fn ai_chat_disconnect(
     }
     let accounts = state.accounts()?;
     accounts.sign_out(&account_id).await?;
-    account_view(&accounts)
+    account_snapshot(&state).await
 }
 #[tauri::command]
 pub async fn ai_chat_models(
@@ -327,6 +365,7 @@ pub async fn ai_chat_send(
     model_id: String,
     message: String,
     source_ids: Vec<String>,
+    source_origins: Option<std::collections::BTreeMap<String, ai_chat::SourceOrigin>>,
     template_id: Option<String>,
 ) -> Result<ai_chat::Started, String> {
     require_main(&window)?;
@@ -340,6 +379,7 @@ pub async fn ai_chat_send(
         model_id,
         message,
         source_ids,
+        source_origins,
         template_id,
     };
     tauri::async_runtime::spawn_blocking(move || {
@@ -417,16 +457,8 @@ pub async fn ai_chat_append_note(
 pub async fn ai_chat_open_source(window: WebviewWindow, url: String) -> Result<(), String> {
     require_main(&window)?;
     let url = reqwest::Url::parse(&url).map_err(|_| "자료 주소를 확인해 주세요.")?;
-    if url.scheme() != "https"
-        || !matches!(
-            url.host_str(),
-            Some("notion.so" | "www.notion.so" | "app.notion.com")
-        ) && !url
-            .host_str()
-            .is_some_and(|host| host.ends_with(".notion.site"))
-    {
-        return Err("자료 주소를 확인해 주세요.".into());
-    }
+    crate::notion_context::normalize_page_id(url.as_str())
+        .map_err(|_| "자료 주소를 확인해 주세요.")?;
     tauri::async_runtime::spawn_blocking(move || {
         crate::external_open::open_url(&url).map_err(|_| "자료를 열지 못했습니다.".to_string())
     })

@@ -106,6 +106,17 @@ This file applies to the entire repository.
   and revision checks. Host clients own tool approval policy. Meeting deletion means
   recoverable trash; no permanent purge tool is exposed. See `docs/local-agent.md`;
   do not edit another AI client's settings implicitly.
+- In-app AI chat owns global conversations, independent of meetings and notes. Send
+  only explicitly selected meeting and Notion snapshots; retain immutable per-request
+  citations and source origins. Claude subscription chat uses an unmodified,
+  platform-signature-validated official Claude Code runtime with its own user login,
+  bounded child-process execution and restricted tools/MCP. Nero must not copy its
+  credentials. ChatGPT uses the separate SIWC account service. Never silently change
+  to API-key billing. Keep in-app login distinct from external Nero CLI/MCP connections.
+- Meeting Notion references store immutable source IDs, not duplicate document bodies.
+  Explicit refresh replaces only that meeting's reference after fetching outside the
+  mutation gate; revision conflicts, cancellation and failures preserve the previous
+  reference. Past conversation inputs remain unchanged. See `docs/notion-context.md`.
 - Model selection will prefer qualified GPU paths and retain CPU compatibility.
   Initial diarization support targets up to eight actual speakers; more attendees
   must not block recording or transcription. Preserve transcription on speaker-stage failure.

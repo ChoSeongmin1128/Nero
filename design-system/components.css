@@ -150,14 +150,24 @@ button.icon.small {
 }
 
 svg {
-  width: 18px;
-  height: 18px;
   stroke: currentColor;
   stroke-width: 1.6;
   fill: none;
   stroke-linecap: round;
   stroke-linejoin: round;
   flex-shrink: 0;
+}
+
+svg:not(.lucide) {
+  width: 18px;
+  height: 18px;
+}
+
+:is(button, summary) svg { display: block; }
+:is(button, summary) > span:not([hidden]):has(> svg) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 a {
@@ -1131,3 +1141,5 @@ button.danger:hover:not(:disabled), button.danger-text:hover:not(:disabled) { co
 .library-dialog[data-size="compact"] .library-dialog-content > p { overflow-wrap: anywhere; }
 .library-dialog .library-folder-trash { display: flex; align-items: center; gap: 8px; margin: 16px 0 0; font-size: var(--text-label-size); }
 .library-folder-trash > input { flex: none; margin: 0; }
+
+.action-menu[popover] { position: fixed; margin: 0; inset: auto; }
