@@ -675,7 +675,7 @@ pub(crate) fn validate_meeting_date(date: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_artifact(meeting_id: &str, artifact: &AudioArtifact) -> Result<()> {
+pub(crate) fn validate_artifact(meeting_id: &str, artifact: &AudioArtifact) -> Result<()> {
     validate_id(meeting_id)?;
     validate_id(&artifact.session_id)?;
     let expected = format!(
