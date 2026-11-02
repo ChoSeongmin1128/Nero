@@ -530,6 +530,28 @@ impl CoreHandle {
         let id = id.to_owned();
         self.call(move |engine| engine.summary_input(&id))
     }
+    pub fn summary_context_input(&self, id: &str) -> Result<(SummaryInput, SummaryContext)> {
+        let id = id.to_owned();
+        self.call(move |engine| {
+            let input = engine.summary_input(&id)?;
+            let context = SummaryContext::new(&input.source, &input.notes, &input.attendees, input.expected_id.clone())?;
+            Ok((input, context))
+        })
+    }
+    pub fn import_summary(&self, id: &str, context: SummaryContext, text: String, producer: ExternalSummaryProducer) -> Result<Summary> {
+        let id = id.to_owned();
+        self.call(move |engine| engine.import_summary(&id, context, text, producer))
+    }
+    pub fn append_meeting_note(&self, id: &str, expected_version: &str, context: Option<SummaryContext>, addition: &str) -> Result<Meeting> {
+        let (id, expected, addition) = (id.to_owned(), expected_version.to_owned(), addition.to_owned());
+        self.call(move |engine| {
+            let current = engine.meetings().into_iter().find(|meeting| meeting.id == id && meeting.deleted_at.is_none()).ok_or(CoreError::MeetingNotFound)?;
+            if agent_control::meeting_edit_version(&current)? != expected { return Err(CoreError::EditConflict); }
+            if let Some(context) = context { engine.validate_summary_context(&id, &context)?; }
+            let notes = if current.notes.is_empty() { addition } else { format!("{}\n\n{}", current.notes, addition) };
+            engine.update_meeting(&id, current.title, notes)
+        })
+    }
     pub fn commit_summary(&self, id: &str, draft: SummaryDraft) -> Result<Summary> {
         let id = id.to_owned();
         self.call(move |engine| engine.commit_summary(&id, draft))

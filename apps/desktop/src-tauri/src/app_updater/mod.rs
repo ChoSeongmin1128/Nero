@@ -637,6 +637,9 @@ pub async fn app_update_install(
     app: tauri::AppHandle,
 ) -> Result<Status, String> {
     require_window(&window)?;
+    if app.try_state::<crate::ai_chat_desktop::AiDesktop>().is_some_and(|state|state.chat.as_ref().is_some_and(|chat|chat.is_busy())) {
+        return Err("AI 답변이 끝난 뒤 업데이트해 주세요.".into());
+    }
     let plan = prepare_install(app).await?;
     let status = plan.status.clone();
     plan.start();

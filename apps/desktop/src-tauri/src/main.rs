@@ -1,5 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod ai_chat;
+mod ai_chat_desktop;
+mod notion_context;
 mod agent_connection;
 mod agent_mutations;
 #[cfg(target_os = "macos")]
@@ -1276,6 +1279,10 @@ async fn request_quit(
 ) -> Result<(), String> {
     require_main(&window)?;
     let exit_lease = state.lifecycle.begin_exit(lifecycle::ExitKind::Quit)?;
+    if let Some(ai)=app.try_state::<ai_chat_desktop::AiDesktop>() {
+        if let Some(chat)=&ai.chat { chat.cancel_all(); }
+        if let Some(notion)=&ai.notion { notion.cancel_connect(None); }
+    }
     let processing = state.processing.clone();
     let core = state.core.clone();
     let quitting = state.quitting.clone();
@@ -1702,6 +1709,26 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
+            ai_chat_desktop::ai_chat_accounts,
+            ai_chat_desktop::ai_chat_connect,
+            ai_chat_desktop::ai_chat_finish_connect,
+            ai_chat_desktop::ai_chat_cancel_connect,
+            ai_chat_desktop::ai_chat_disconnect,
+            ai_chat_desktop::ai_chat_models,
+            ai_chat_desktop::ai_chat_read,
+            ai_chat_desktop::ai_chat_send,
+            ai_chat_desktop::ai_chat_cancel,
+            ai_chat_desktop::ai_chat_save_summary,
+            ai_chat_desktop::ai_chat_append_note,
+            ai_chat_desktop::ai_chat_open_source,
+            ai_chat_desktop::notion_connection_snapshot,
+            ai_chat_desktop::begin_notion_connect,
+            ai_chat_desktop::finish_notion_connect,
+            ai_chat_desktop::cancel_notion_connect,
+            ai_chat_desktop::disconnect_notion_context,
+            ai_chat_desktop::fetch_notion_sources,
+            ai_chat_desktop::cancel_notion_fetch,
+            ai_chat_desktop::read_notion_sources,
             people_desktop::people_catalog,
             people_desktop::google_attendee_roster,
             people_desktop::apply_meeting_attendee_draft,
@@ -1822,6 +1849,7 @@ fn main() {
                 lifecycle: lifecycle::Lifecycle::default(),
             });
             calendar_desktop::install(app.handle(), root.clone());
+            ai_chat_desktop::install(app.handle(), root.clone(), app.path().resource_dir()?, core.clone());
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 let mut previous: Option<Snapshot> = None;
