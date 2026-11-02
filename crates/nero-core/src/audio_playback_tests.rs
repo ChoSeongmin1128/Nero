@@ -187,6 +187,221 @@ fn interrupted_playback_repair_reuses_saved_policy_without_changing_raw_pcm() {
     );
 }
 
+#[test]
+fn synthetic_playback_asr_speaker_generation_and_reader_preserve_coordinates_and_edits() {
+    let (_temporary, store, mut stored, mut manifest, original) = fixture(96_000, 2);
+    let artifact = finalize_speech(&store, &mut stored, &mut manifest);
+    let playback = store.audio_path(&stored.meeting).unwrap();
+    let playback_bytes = fs::read(&playback).unwrap();
+    let playback_sha = format!("{:x}", Sha256::digest(&playback_bytes));
+    let original_sha = format!("{:x}", Sha256::digest(&original));
+    let mut pcm_sha = Sha256::new();
+    let mut input = hound::WavReader::open(&playback).unwrap();
+    assert_eq!(input.duration(), 683);
+    for sample in input.samples::<i16>() {
+        pcm_sha.update(sample.unwrap().to_le_bytes());
+    }
+    let pcm_sha = format!("{:x}", pcm_sha.finalize());
+    let prepared_duration = 683.0 / f64::from(SAMPLE_RATE);
+    let mut recognition: serde_json::Value =
+        serde_json::from_slice(&crate::nemotron::tests::raw()).unwrap();
+    recognition["processingPolicy"] = serde_json::json!("whole-recording-stateful-live-v1");
+    recognition["completionEvidence"] = serde_json::json!("native-stream-finish-cabi-v1");
+    recognition["inputAudioFrames"] = serde_json::json!(683);
+    recognition["audioDurationSeconds"] = serde_json::json!(prepared_duration);
+    recognition["nativeDurationSeconds"] = serde_json::json!(prepared_duration);
+    recognition["streamFramesFed"] = serde_json::json!(683);
+    recognition["nativeStreamFinished"] = serde_json::json!(true);
+    recognition["inputPcmSha256"] = serde_json::json!(pcm_sha);
+    recognition["words"] = serde_json::json!([
+        {"word":"합성","start":0.0,"end":0.01},
+        {"word":"문장.","start":0.01,"end":0.02},
+        {"word":"끝.","start":0.02,"end":0.04}
+    ]);
+    let raw = serde_json::to_vec(&recognition).unwrap();
+    let asr_sha = format!("{:x}", Sha256::digest(&raw));
+    let root = store.root.clone();
+    let id = stored.meeting.id.clone();
+    drop(store);
+    let mut engine = Engine::open(root.clone()).unwrap();
+    let baseline = engine
+        .commit_nemotron_transcript(&id, None, raw.clone())
+        .unwrap();
+    assert_eq!(baseline.segments.len(), 2);
+    assert_eq!(baseline.source_session_id, manifest.session_id);
+    assert_eq!(baseline.source.as_ref().unwrap().raw_sha256, asr_sha);
+    assert_eq!(baseline.version.revision, 0);
+    let baseline_id = baseline.version.id.clone();
+    let edited = engine
+        .edit_transcript(
+            &id,
+            baseline.version,
+            vec!["사용자 수정.".into(), "끝.".into()],
+        )
+        .unwrap();
+    assert_eq!(edited.version.revision, 1);
+    let parent_version = edited.version.clone();
+    let parent_sha = crate::summary::transcript_digest(&edited).unwrap();
+    let mut draft = crate::nemotron::tests::posterior_draft(edited.clone());
+    let mut probabilities = Vec::new();
+    for _ in 0..5 {
+        for slot in 0..8 {
+            probabilities
+                .extend_from_slice(&(if slot == 0 { 0.9_f32 } else { 0.0_f32 }).to_le_bytes());
+        }
+    }
+    draft.posterior.as_mut().unwrap().frames = 5;
+    draft.posterior.as_mut().unwrap().probabilities = probabilities.clone();
+    draft.raw = serde_json::to_vec(&serde_json::json!({"file":"synthetic.wav","segments":[
+        {"start":0.0,"end":prepared_duration,"speaker":1}
+    ]}))
+    .unwrap();
+    let activity_sha = format!("{:x}", Sha256::digest(&draft.raw));
+    let posterior_sha = format!("{:x}", Sha256::digest(&probabilities));
+    let assigned = engine.apply_diarization(&id, draft).unwrap();
+    assert_ne!(assigned.version.id, baseline_id);
+    assert_eq!(assigned.version.revision, 1);
+    assert_eq!(assigned.segments[0].text, "사용자 수정.");
+    assert_eq!(assigned.segments[0].original_text, "합성 문장.");
+    assert!(assigned
+        .segments
+        .iter()
+        .any(|segment| segment.speaker_id.is_some()));
+    let derived_version = assigned.version.clone();
+    let derived_source = assigned.source.clone();
+    let generation = root
+        .join("meetings")
+        .join(&id)
+        .join("transcripts")
+        .join(&assigned.version.id);
+    let derived_raw: serde_json::Value = read_json(&generation.join("raw.json")).unwrap();
+    let raw_sha = format!(
+        "{:x}",
+        Sha256::digest(fs::read(generation.join("raw.json")).unwrap())
+    );
+    assert_eq!(assigned.source.as_ref().unwrap().raw_sha256, raw_sha);
+    assert_ne!(raw_sha, asr_sha);
+    assert_eq!(derived_raw["canonicalAsrSha256"], asr_sha);
+    assert_eq!(
+        derived_raw["canonicalAsrRaw"],
+        String::from_utf8(raw.clone()).unwrap()
+    );
+    assert_eq!(derived_raw["posterior"]["inputFrames"], 4099);
+    assert_eq!(derived_raw["posterior"]["inputSampleRate"], 96_000);
+    assert_eq!(derived_raw["posterior"]["preparedFrames"], 683);
+    assert_eq!(derived_raw["posterior"]["sha256"], posterior_sha);
+    let analysis = assigned.speaker_analysis.as_ref().unwrap();
+    assert_eq!(analysis.raw_sha256, activity_sha);
+    let evidence = generation.join("speaker-analysis").join(&analysis.run_id);
+    assert_eq!(
+        fs::read(evidence.join("posterior.f32le")).unwrap(),
+        probabilities
+    );
+    let receipt: serde_json::Value = read_json(&evidence.join("run.json")).unwrap();
+    assert_eq!(
+        receipt["beforeVersion"],
+        serde_json::to_value(&parent_version).unwrap()
+    );
+    assert_eq!(
+        receipt["afterVersion"],
+        serde_json::to_value(&derived_version).unwrap()
+    );
+    assert_eq!(receipt["provenance"]["sourceSha256"], parent_sha);
+    assert_eq!(
+        receipt["provenance"]["activityNormalization"]["inputFrames"],
+        4099
+    );
+    assert_eq!(
+        receipt["provenance"]["activityNormalization"]["inputSampleRate"],
+        96_000
+    );
+    assert_eq!(
+        receipt["provenance"]["activityNormalization"]["preparedFrames"],
+        683
+    );
+    let mut names = assigned.speakers.clone();
+    names[0].name = "합성 참석자".into();
+    let assignments = assigned
+        .segments
+        .iter()
+        .map(|segment| segment.speaker_id.clone())
+        .collect();
+    let named = engine
+        .edit_speakers(&id, assigned.version, names, assignments)
+        .unwrap();
+    assert_eq!(named.version.revision, 2);
+    assert_eq!(named.source, derived_source);
+    assert_eq!(named.source_session_id, manifest.session_id);
+    assert_eq!(named.segments[0].start, 0.0);
+    assert_eq!(named.segments[0].end, 0.02);
+    assert_eq!(named.segments.last().unwrap().end, 0.04);
+    drop(engine);
+    let reopened = Engine::open(root.clone()).unwrap();
+    assert_eq!(
+        reopened.meetings[&id].meeting.audio.as_ref(),
+        Some(&artifact)
+    );
+    let current = reopened.transcript(&id).unwrap().unwrap();
+    assert_eq!(current.version, named.version);
+    assert_eq!(current.source, derived_source);
+    assert_eq!(current.speakers[0].name, "합성 참석자");
+    assert_eq!(current.segments[0].text, "사용자 수정.");
+    let history = reopened.transcript_history(&id).unwrap();
+    assert_eq!(history.unavailable, 0);
+    assert_eq!(history.entries.len(), 2);
+    assert!(history
+        .entries
+        .iter()
+        .any(|entry| entry.version == parent_version));
+    assert!(history
+        .entries
+        .iter()
+        .any(|entry| entry.version == named.version && entry.current));
+    let reader = crate::reader::LibraryReader::open(&root).unwrap();
+    let query = reader
+        .query("transcript_get", serde_json::json!({"meetingId":id}))
+        .unwrap();
+    assert_eq!(
+        query["version"],
+        serde_json::to_value(&named.version).unwrap()
+    );
+    assert_eq!(query["segments"][0]["text"], "사용자 수정.");
+    assert_eq!(query["segments"][0]["start"], 0.0);
+    assert_eq!(query["segments"][0]["end"], 0.02);
+    assert_eq!(query["speakers"][0]["name"], "합성 참석자");
+    let meeting = reader
+        .query("meeting_get", serde_json::json!({"meetingId":id}))
+        .unwrap();
+    assert_eq!(meeting["meeting"]["transcriptVersion"], query["version"]);
+    assert_eq!(
+        fs::read(
+            root.join("meetings")
+                .join(&id)
+                .join("transcripts")
+                .join(baseline_id)
+                .join("raw.json")
+        )
+        .unwrap(),
+        raw
+    );
+    assert_eq!(
+        format!("{:x}", Sha256::digest(fs::read(&playback).unwrap())),
+        playback_sha
+    );
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(fs::read(root.join(manifest.relative_dir()).join("audio.pcm")).unwrap())
+        ),
+        original_sha
+    );
+    let persisted: Manifest =
+        read_json(&root.join(manifest.relative_dir()).join("manifest.json")).unwrap();
+    assert_eq!(persisted.saved_frames, 4099);
+    assert_eq!(persisted.sample_rate, 96_000);
+    assert_eq!(persisted.channels, 2);
+}
+
 #[cfg(unix)]
 #[test]
 fn sparse_three_hour_capture_accepts_complete_standard_playback_without_reading_pcm_body() {
