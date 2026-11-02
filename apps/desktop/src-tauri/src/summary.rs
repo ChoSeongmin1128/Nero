@@ -1389,6 +1389,7 @@ fn report_summary_failure(process: &Processing, error: Failure) -> String {
 
 impl Processing {
     pub fn prepare_summary(self: &Arc<Self>) -> Result<Progress, String> {
+        crate::release_capabilities::require_local_summary()?;
         self.prepare_named_model(MANIFEST, "summary-model", "Gemma4-E4B")
     }
     pub fn summarize(
@@ -1404,6 +1405,7 @@ impl Processing {
         meeting_id: String,
         selection: Option<crate::summary_template::TemplateRef>,
     ) -> Result<Progress, String> {
+        crate::release_capabilities::require_local_summary()?;
         let (selection, _) = crate::summary_template::select(&self.root, selection)?;
         self.summarize_bound_with_template(core, meeting_id, None, Some(selection), None)
     }
@@ -1415,6 +1417,7 @@ impl Processing {
         selection: Option<crate::summary_template::TemplateRef>,
         requested_id: Option<String>,
     ) -> Result<Progress, String> {
+        crate::release_capabilities::require_local_summary()?;
         let template = selection
             .as_ref()
             .map(|value| value.resolve(&self.root))

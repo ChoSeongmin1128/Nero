@@ -638,6 +638,63 @@ test('summary starts only after pending transcript edits are saved', async () =>
   assert.equal(page.app.state.transcriptDraft.dirty, false);
 });
 
+for (const summaryReady of [false, true]) {
+  test(`disabled local summary hides creation and preparation with model ready ${summaryReady}`, async () => {
+    const message = '앱 내 요약은 준비 중입니다.';
+    const readiness = { status: 'idle', supported: true, modelReady: true, summarySupported: true, summaryReady, localSummaryEnabled: false, localSummaryMessage: message };
+    const page = await openApp(transcriptDocument(), readiness);
+    const calls = [];
+    page.bridge.summarizeMeeting = async () => { calls.push('summarize'); };
+    page.bridge.prepareSummaryModel = async () => { calls.push('prepare'); };
+    assert.equal(page.element('summarize').hidden, true);
+    assert.equal(page.element('prepare-summary').hidden, true);
+    assert.equal(page.element('summary-template-choice').hidden, true);
+    assert.equal(page.element('summary-message').textContent, message);
+    await page.app.openSettings();
+    assert.equal(page.element('models').hidden, true);
+    assert.equal(page.element('settings-summary-progress').hidden, true);
+    assert.equal(page.element('settings-summary-state').textContent, message);
+    assert.equal(page.element('setup-summary-choice').hidden, true);
+    assert.equal(page.element('setup-download-summary').hidden, true);
+    for (const id of ['summarize', 'prepare-summary', 'models', 'setup-download-summary']) {
+      await page.element(id).listeners.get('click')();
+    }
+    assert.deepEqual(calls, []);
+    page.bridge.readSummary = async () => ({ document: { id: 'saved-summary', text: '저장된 요약', sourceVersion: structuredClone(page.app.state.transcriptDraft.doc.version) }, stale: false });
+    await page.app.loadSummary('a');
+    assert.equal(page.element('summary-content').hidden, false);
+    assert.match(page.element('summary-content').innerHTML, /저장된 요약/);
+    assert.equal(page.element('summarize').hidden, true);
+    assert.equal(page.element('summary-message').textContent, '');
+  });
+}
+
+test('disabled local summary excludes the model from initial downloads and hides retries in every notice', async () => {
+  const page = await openApp(transcriptDocument(), { status: 'idle', supported: true, modelReady: false, summarySupported: true, summaryReady: false, localSummaryEnabled: false });
+  const prepared = [], retried = [];
+  page.element('setup-summary-option').checked = true;
+  page.bridge.prepareMeetingModels = async includeSummary => { prepared.push(includeSummary); return { ...page.app.state.processing, revision: 2 }; };
+  await page.element('setup-download').listeners.get('click')();
+  assert.deepEqual(prepared, [false]);
+  const jobs = [
+    { id: 'summary-failed', kind: 'summary', meetingId: 'a', status: 'failed', createdAt: 10, retryable: true },
+    { id: 'summary-model-failed', kind: 'summary-model', status: 'failed', createdAt: 20, retryable: true },
+    { id: 'transcribe-failed', kind: 'transcribe', meetingId: 'b', status: 'failed', createdAt: 30, retryable: true },
+  ];
+  await page.app.acceptProcessing({ ...page.app.state.processing, revision: 3, modelReady: true, jobs });
+  assert.equal(page.element('retry-processing').hidden, true);
+  const notices = page.element('notification-center').innerHTML;
+  assert.doesNotMatch(notices, /data-notification-job="summary-failed" data-notification-action="retry"/);
+  assert.doesNotMatch(notices, /data-notification-job="summary-model-failed" data-notification-action="retry"/);
+  assert.match(notices, /data-notification-job="transcribe-failed" data-notification-action="retry"/);
+  assert.equal(page.app.state.processing.jobs[0].retryable, true);
+  page.bridge.retryProcessing = async id => { retried.push(id); return { ...page.app.state.processing, revision: 4 }; };
+  await page.app.retryProcessing('summary-failed');
+  await page.app.retryProcessing('summary-model-failed');
+  await page.app.retryProcessing('transcribe-failed');
+  assert.deepEqual(retried, ['transcribe-failed']);
+});
+
 
 test('missing model readiness opens setup, blocks creation and import, and preserves existing meetings', async () => {
   const page = await openApp(null, { status: 'idle', supported: true, modelReady: false, summarySupported: true, summaryReady: false, summaryBytes: 1000 });

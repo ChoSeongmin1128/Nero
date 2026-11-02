@@ -93,6 +93,8 @@ pub struct Progress {
     pub model_ready: bool,
     pub supported: bool,
     pub summary_supported: bool,
+    pub local_summary_enabled: bool,
+    pub local_summary_message: String,
     pub summary_ready: bool,
     pub summary_bytes: u64,
     pub speaker_supported: bool,
@@ -521,7 +523,10 @@ impl Processing {
                         record.status,
                         JobStatus::Interrupted | JobStatus::Failed | JobStatus::Cancelled
                     ) && record.kind != "import"
-                        && !record.acknowledged,
+                        && !record.acknowledged
+                        && (crate::release_capabilities::LOCAL_SUMMARY_ENABLED
+                            || !(matches!(record.kind.as_str(), "summary" | "summary-model")
+                                || (record.kind == "setup" && record.include_summary))),
                 })
                 .collect();
             if records
@@ -534,6 +539,8 @@ impl Processing {
             progress
         };
         progress.supported = self.supported();
+        progress.local_summary_enabled = crate::release_capabilities::LOCAL_SUMMARY_ENABLED;
+        progress.local_summary_message = crate::release_capabilities::LOCAL_SUMMARY_MESSAGE.into();
         progress.speech_engine = self
             .speech_preference_error
             .lock()
@@ -1822,6 +1829,9 @@ impl Processing {
         requested_id: Option<String>,
         required_engine: Option<SpeechEngine>,
     ) -> Result<Progress, String> {
+        if include_summary {
+            crate::release_capabilities::require_local_summary()?;
+        }
         if self.shutting_down.load(Ordering::Acquire) {
             return Err("앱을 종료하고 있습니다.".into());
         }
@@ -1908,6 +1918,9 @@ impl Processing {
         label: &'static str,
         requested_id: Option<String>,
     ) -> Result<Progress, String> {
+        if kind == "summary-model" {
+            crate::release_capabilities::require_local_summary()?;
+        }
         crate::storage_space::check(&self.root, self.remaining_model_bytes(manifest, label)?)?;
         self.start_scoped(
             kind,
@@ -2199,6 +2212,13 @@ impl Processing {
     }
 
     pub fn retry(self: &Arc<Self>, core: CoreHandle, id: &str) -> Result<Progress, String> {
+        if self.records.lock().unwrap().iter().any(|record| {
+            record.id == id
+                && (matches!(record.kind.as_str(), "summary" | "summary-model")
+                    || (record.kind == "setup" && record.include_summary))
+        }) {
+            crate::release_capabilities::require_local_summary()?;
+        }
         self.retry_with(&core, id, |record, successor_id| {
             self.schedule_retry(core.clone(), record, successor_id)
         })

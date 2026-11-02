@@ -27,6 +27,7 @@ mod processing;
 mod process_tree;
 mod recorder_geometry;
 mod recorder_policy;
+mod release_capabilities;
 mod speaker_worker;
 mod speech_audio;
 mod speech_library;
