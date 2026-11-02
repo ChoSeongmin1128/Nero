@@ -38,6 +38,7 @@ fn main() {
     }
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
         build_recorder(root);
+        build_apple_speech(root);
         for path in [
             "scripts/native-moss-harness/verify_worker_package.py",
             "scripts/native-moss-harness/apply-runtime-patch.py",
@@ -94,4 +95,28 @@ fn build_recorder(root: &std::path::Path) {
     println!("cargo:rustc-link-lib=dylib=swiftCore");
     println!("cargo:rustc-link-lib=framework=AppKit");
     println!("cargo:rustc-link-lib=framework=Foundation");
+}
+
+fn build_apple_speech(root: &std::path::Path) {
+    for path in [
+        "scripts/apple-speech/build.py",
+        "scripts/apple-speech/AppleSpeech.swift",
+    ] {
+        println!("cargo:rerun-if-changed={}", root.join(path).display());
+    }
+    let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("apple-speech");
+    let status = std::process::Command::new("python3")
+        .arg(root.join("scripts/apple-speech/build.py"))
+        .arg("--out")
+        .arg(&out)
+        .arg("--target")
+        .arg(std::env::var("TARGET").unwrap())
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .status()
+        .expect("Swift is required for macOS speech transcription");
+    assert!(status.success(), "macOS speech helper compilation failed");
+    println!(
+        "cargo:rustc-env=NERO_APPLE_SPEECH_HELPER={}",
+        out.join("nero-apple-speech").display()
+    );
 }

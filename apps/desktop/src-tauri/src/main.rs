@@ -6,6 +6,7 @@ mod agent_mutations;
 mod app_menu;
 mod app_updater;
 mod asr;
+mod apple_speech;
 mod calendar;
 mod calendar_desktop;
 mod diarization;

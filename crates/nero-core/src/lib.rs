@@ -1,4 +1,5 @@
 pub mod agent_control;
+mod apple_speech;
 pub mod audio_normalize;
 mod audio_playback;
 mod capture;
@@ -459,6 +460,16 @@ impl CoreHandle {
     ) -> Result<Transcript> {
         let id = id.to_string();
         self.call(move |engine| engine.commit_whisper_transcript(&id, expected, raw))
+    }
+
+    pub fn commit_apple_transcript(
+        &self,
+        id: &str,
+        expected: Option<TranscriptVersion>,
+        raw: Vec<u8>,
+    ) -> Result<Transcript> {
+        let id = id.to_owned();
+        self.call(move |engine| engine.commit_apple_transcript(&id, expected, raw))
     }
 
     pub fn edit_transcript(

@@ -12,6 +12,8 @@ fn setup() -> (tempfile::TempDir, Arc<Processing>) {
 fn record(kind: &str) -> JobRecord {
     JobRecord {
         speech_engine: crate::speech_choice::SpeechEngine::default(),
+        speaker_enabled: true,
+        apple_speech_variant: None,
         schema_version: 1,
         id: Uuid::new_v4().to_string(),
         kind: kind.into(),

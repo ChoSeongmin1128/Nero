@@ -37,6 +37,10 @@ pub(super) enum JobStatus {
 pub(super) struct JobRecord {
     #[serde(default)]
     pub speech_engine: crate::speech_choice::SpeechEngine,
+    #[serde(default = "crate::speech_choice::enabled")]
+    pub speaker_enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub apple_speech_variant: Option<crate::speech_choice::AppleVariant>,
     pub schema_version: u32,
     pub id: String,
     pub kind: String,
@@ -61,6 +65,8 @@ pub(super) struct JobRecord {
 impl JobRecord {
     fn validate(&self, expected_id: &str) -> Result<(), String> {
         if self.schema_version != SCHEMA_VERSION
+            || (self.speech_engine == crate::speech_choice::SpeechEngine::AppleSpeech
+                && self.apple_speech_variant.is_none())
             || self.id != expected_id
             || !valid_id(&self.id)
             || self.meeting_id.as_ref().is_some_and(|id| !valid_id(id))
@@ -474,9 +480,33 @@ fn now() -> u64 {
 mod tests {
     use super::*;
 
+    #[test]
+    fn previous_jobs_keep_speakers_and_new_jobs_preserve_the_disabled_choice() {
+        let original = record(JobStatus::Queued);
+        let mut raw = serde_json::to_value(&original).unwrap();
+        raw.as_object_mut().unwrap().remove("speakerEnabled");
+        let recovered: JobRecord = serde_json::from_value(raw.clone()).unwrap();
+        assert!(recovered.speaker_enabled);
+        raw["speakerEnabled"] = serde_json::json!(false);
+        raw["speechEngine"] = serde_json::json!("appleSpeech");
+        raw["appleSpeechVariant"] = serde_json::json!("dictationTranscriber");
+        let disabled: JobRecord = serde_json::from_value(raw).unwrap();
+        let temporary = tempfile::tempdir().unwrap();
+        let journal = Journal::new(temporary.path().into());
+        journal.write(&disabled).unwrap();
+        let saved = journal.records().unwrap().pop().unwrap();
+        assert!(!saved.speaker_enabled);
+        assert_eq!(
+            saved.speech_engine,
+            crate::speech_choice::SpeechEngine::AppleSpeech
+        );
+    }
+
     fn record(status: JobStatus) -> JobRecord {
         JobRecord {
             speech_engine: crate::speech_choice::SpeechEngine::default(),
+            speaker_enabled: true,
+            apple_speech_variant: None,
             schema_version: 1,
             id: Uuid::new_v4().to_string(),
             kind: "transcribe".into(),
@@ -689,6 +719,8 @@ mod tests {
         for malformed in [
             JobRecord {
                 speech_engine: crate::speech_choice::SpeechEngine::default(),
+                speaker_enabled: true,
+                apple_speech_variant: None,
                 schema_version: 2,
                 ..original.clone()
             },
