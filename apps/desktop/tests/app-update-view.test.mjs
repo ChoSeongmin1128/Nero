@@ -27,7 +27,7 @@ function setup(t, overrides = {}) {
     appUpdateStatus: async () => status('idle'),
     checkAppUpdate: async () => { calls.push('check'); return status('available'); },
     downloadAppUpdate: async () => { calls.push('download'); return status('ready', { downloadReady: true }); },
-    installAppUpdate: async () => { calls.push('install'); return status('waiting'); },
+    installAppUpdate: async () => { calls.push('install'); return status('waiting', { downloadReady: true }); },
     subscribeAppUpdate: async callback => { emit = callback; return () => {}; }, ...overrides.bridge,
   };
   const view = mountAppUpdateView({ container: window.document.getElementById('app-update'), bridge,
@@ -180,7 +180,10 @@ test('manual update keeps its action visible through check and download, then of
   app.emit(status('checking'));
   assert.equal(app.sidebar.hidden, true, 'routine background checks stay quiet');
   app.emit(status('error', { message: '다시 확인해 주세요.' }));
+  assert.equal(app.sidebar.hidden, true, 'a missing download must not offer a restart button');
   app.sidebar.click(); await tick();
+  assert.deepEqual(calls, []);
+  app.get('action').click(); await tick();
   app.emit(status('checking'));
   assert.equal(app.sidebar.hidden, false);
   assert.equal(app.sidebar.disabled, true);
@@ -225,12 +228,12 @@ test('sidebar waits for saves and native waiting keeps the update available', as
   assert.equal(app.window.document.querySelector('.workspace').inert, false);
 });
 
-test('sidebar failure remains actionable and destroyed view removes its listener', async t => {
+test('a failed download exposes retry through settings and notices, never through the restart button', async t => {
   const app = setup(t, { sidebar: true });
   await app.view.start();
   app.emit(status('error', { message: '네트워크를 확인해 주세요.' }));
-  assert.equal(app.sidebar.hidden, false);
-  assert.equal(app.sidebar.disabled, false);
+  assert.equal(app.sidebar.hidden, true);
+  assert.equal(app.sidebar.disabled, true);
   assert.equal(app.get('action').disabled, false);
   assert.equal(app.notices.at(-1)[0].message, '네트워크를 확인해 주세요.');
   app.view.destroy();

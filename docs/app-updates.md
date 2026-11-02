@@ -9,7 +9,9 @@ is independent of this signature and is not configured by this change.
 ## Runtime policy
 
 - The shared UI controller checks 45 seconds after initialization, then every six
-  hours. An available update downloads automatically. Installation requires the
+  hours. A failed check or download retries automatically after five minutes;
+  an active download or a ready package is not replaced by a scheduled check.
+  An available update downloads automatically. Installation requires the
   user's restart action, after the consuming screen has saved all open editors.
   The sidebar footer offers the restart action when ready and shows an icon when
   navigation is collapsed. Settings can also invoke a manual check; recovery
@@ -140,10 +142,12 @@ remain available through the sidebar without creating a completion notification.
 
 The shared settings row shows the installed version and manual-check action.
 The sidebar action appears for download, ready, waiting or recovery states.
-A user-started check keeps the action visible and disabled through checking and
-download preparation. Background checks stay quiet until there is an actionable
-update. Once downloaded, the action explicitly says to restart and update;
-download completion never installs automatically.
+A user-started check keeps a disabled status visible through checking and
+download preparation. Background checks stay quiet until a download starts.
+The sidebar button only becomes actionable once a verified download is ready,
+and explicitly says to restart and update. Check/download failures offer retry
+through settings and notifications, not through the restart button. Download
+completion never installs automatically.
 Progress uses the action label and download bar; a blocked installation or error
 uses one status line. A successful pending-install
 receipt does not become a recovery warning or notification. Incomplete installs

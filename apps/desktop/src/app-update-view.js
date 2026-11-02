@@ -49,8 +49,9 @@ export function mountAppUpdateView({ container, sidebarAction, bridge, saveEdits
       const recovery = status.recoveryRequired || status.phase === 'recoveryRequired';
       const label = recovery ? '업데이트 복구' : downloading ? `다운로드${percent === null ? '' : ` ${percent}%`}` : action.label;
       const keepVisible = ['checking', 'available'].includes(status.phase) && (busy || !sidebar.hidden);
-      sidebar.hidden = !keepVisible && !['downloading', 'ready', 'waiting', 'installing', 'error', 'recoveryRequired'].includes(status.phase) && !status.recoveryMessage;
-      sidebar.disabled = busy || action.disabled;
+      const canAct = recovery || (action.action === 'install' && Boolean(status.downloadReady));
+      sidebar.hidden = !keepVisible && !canAct && !['downloading', 'installing'].includes(status.phase);
+      sidebar.disabled = busy || action.disabled || !canAct;
       sidebar.dataset.updatePhase = status.phase;
       sidebar.setAttribute('aria-label', downloading ? `업데이트 ${label}` : label);
       sidebar.title = downloading ? `업데이트 ${label}` : label;
@@ -78,7 +79,11 @@ export function mountAppUpdateView({ container, sidebarAction, bridge, saveEdits
     try { return await updater[action.action](); }
     finally { busy = false; render(updater.getSnapshot()); }
   }
-  const click = () => { void perform(); };
+  const click = () => {
+    const status = updater.getSnapshot();
+    const action = appUpdateAction(status);
+    if (action.action === 'quitForRecovery' || (action.action === 'install' && status.downloadReady)) void perform();
+  };
   const checkClick = async () => {
     if (!sidebar) { await perform(); return; }
     if (busy || get('action').disabled) return;

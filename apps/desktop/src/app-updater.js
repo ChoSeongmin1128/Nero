@@ -55,8 +55,13 @@ export function createAppUpdater({ invoke, listen, saveEdits, onChange = () => {
   };
   const autoCheck = async () => {
     if (disposed || snapshot.recoveryRequired) return;
-    await check();
-    if (!disposed && !snapshot.recoveryRequired) timer = schedule(autoCheck, 6 * 60 * 60 * 1000);
+    if (busy || ['checking', 'downloading', 'installing'].includes(snapshot.phase)) {
+      timer = schedule(autoCheck, 5 * 60 * 1000);
+      return;
+    }
+    if (!snapshot.downloadReady) await check();
+    if (!disposed && !snapshot.recoveryRequired) timer = schedule(autoCheck,
+      snapshot.phase === 'error' && !snapshot.downloadReady ? 5 * 60 * 1000 : 6 * 60 * 60 * 1000);
   };
   return {
     async start() {
