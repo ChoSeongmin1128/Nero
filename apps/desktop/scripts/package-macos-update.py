@@ -18,6 +18,11 @@ spec.loader.exec_module(installer)
 IDENTIFIER = 'io.github.choseongmin1128.nero.desktop'
 
 
+def verify_distribution_notices(app):
+    installer.run(sys.executable, '-B', str(Path(__file__).with_name('distribution-notices.py')),
+                  '--resources', str(app / 'Contents/Resources'), '--target', 'aarch64-apple-darwin')
+
+
 def validate_macos_trust(app):
     installer.run('codesign', '--verify', '--deep', '--strict', str(app))
     installer.run('xcrun', 'stapler', 'validate', str(app))
@@ -79,7 +84,7 @@ def extract_archive(archive, destination):
     return app
 
 
-def package(app, output, receipt_path, trust=validate_macos_trust):
+def package(app, output, receipt_path, trust=validate_macos_trust, notices=verify_distribution_notices):
     app, output = Path(app).absolute(), Path(output).absolute()
     installer.require(not app.is_symlink(), 'App path must not be a symlink')
     installer.require(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]+\.app\.tar\.gz', output.name)
@@ -90,6 +95,7 @@ def package(app, output, receipt_path, trust=validate_macos_trust):
     receipt = installer.load(Path(receipt_path))
     build, before = bundle_metadata(app, receipt)
     original_modes = modes(app)
+    notices(app)
     trust(app)
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='.nero-update-', dir=output.parent) as temporary:
@@ -104,6 +110,7 @@ def package(app, output, receipt_path, trust=validate_macos_trust):
                           'Archived app content or executable permissions changed')
         installer.require(installer.app_tree(app) == before and modes(app) == original_modes,
                           'Source app changed during packaging')
+        notices(extracted)
         trust(extracted)
         identity = {key: build[key] for key in ('version', 'build', 'sourceCommit', 'sourceTree', 'sourceDirty')}
         result = dict(schemaVersion=1, platform='darwin-aarch64', **identity,

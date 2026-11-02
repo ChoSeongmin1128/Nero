@@ -132,6 +132,7 @@ packaging_commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,tex
 if not a.dmg_only and build_info['sourceCommit']!=packaging_commit:raise SystemExit('Built source commit differs from HEAD')
 if subprocess.check_output(['git','status','--porcelain','--untracked-files=normal'],cwd=ROOT,text=True).strip():raise SystemExit('Source changed after the release build')
 if (build_info['version'],build_info['build'],build_info['bundleIdentifier'])!=(info['CFBundleShortVersionString'],info['CFBundleVersion'],info['CFBundleIdentifier']):raise SystemExit('Bundle and release metadata differ')
+run(sys.executable,'-B',str(ROOT/'apps/desktop/scripts/distribution-notices.py'),'--resources',str(app/'Contents/Resources'),'--target','aarch64-apple-darwin')
 files=[p for p in (app/'Contents').rglob('*') if p.is_file()]
 if any(p.suffix.lower() in {'.gguf','.safetensors','.p8','.p12','.wav','.m4a','.mp3'} for p in files):raise SystemExit('Private/model/credential artifact found in bundle')
 require_owned_bundle(app)

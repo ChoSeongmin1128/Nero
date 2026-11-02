@@ -11,6 +11,11 @@ const speechTarget = target
     : process.platform === 'darwin' && process.arch === 'arm64' ? 'macos-arm64' : null);
 if (speechTarget) {
   execFileSync(process.env.PYTHON || 'python3', [
+    resolve(root, 'apps/desktop/scripts/distribution-notices.py'),
+    '--verify', resolve(root, 'apps/desktop/.generated/native/licenses/distribution'),
+    '--target', speechTarget === 'macos-arm64' ? 'aarch64-apple-darwin' : 'x86_64-pc-windows-msvc',
+  ], { cwd: root, stdio: 'inherit', env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' } });
+  execFileSync(process.env.PYTHON || 'python3', [
     resolve(root, 'scripts/native-summary/prepare.py'),
     '--verify-staged', resolve(root, 'apps/desktop/.generated/native/summary'),
     '--target', speechTarget, '--optional',
