@@ -79,8 +79,8 @@ const microphonePreference = readMicrophonePreference();
 let sidebarViews = null, viewHistory = null;
 const state = { snapshot: { meetings: [], folders: [], session: null }, libraryOpen: false, libraryFilter: 'all', librarySelection: new Set(), libraryBusy: false, librarySearchIds: null, librarySearchHits: [], pendingSearchIntent: null, setupReturnId: null, librarySearchPending: false, librarySearchUnavailable: 0, selectedId: null, devices: [], devicesLoaded: false, deviceId: microphonePreference.id, deviceName: microphonePreference.name, settingsPanel: 'appearance', summaryFeatureError: '', settingsKey: '', settingsError: '', settingsReturnId: 'settings', setupFromSettings: false, autoRecorder: readAutoRecorder(), recorderSettingBusy: false, snapshotSignatures: null, processingKey: '', processingCancellingId: null, transcriptEditing: null, audioRequest: 0, audioLoading: null, dateSaving: null, dateKey: '', dateError: null, lastError: null, errorIsSave: false, connected: false, busy: false, composing: false, transcriptComposing: false, editLocks: 0, draft: null, saveTimer: null, saveQueue: Promise.resolve(), listKey: '', controlsKey: '', audioKey: '', processing: { status: 'idle', supported: false, modelReady: false, localSummaryEnabled: false }, transcriptDraft: null, transcriptKey: '', transcriptLoadId: 0, transcriptSaveQueue: Promise.resolve(), summary: null, summaryKey: '', summaryLoadId: 0, summaryLoaded: false, transcriptLoaded: false, summaryLoadError: false, transcriptLoadError: false, setupRequested: false };
 const speechPickers = [
-  mountSpeechModelPicker({ node: byId('setup-speech-picker'), onSelect: selectSpeechEngine }),
-  mountSpeechModelPicker({ node: byId('settings-speech-picker'), onSelect: selectSpeechEngine, onPrepare: prepareSpeechModels }),
+  mountSpeechModelPicker({ node: byId('setup-speech-picker'), onSelect: selectSpeechEngine, onSpeakerChange: selectSpeakerEnabled }),
+  mountSpeechModelPicker({ node: byId('settings-speech-picker'), onSelect: selectSpeechEngine, onPrepare: prepareSpeechModels, onSpeakerChange: selectSpeakerEnabled }),
 ];
 let speechSelectionError = '';
 const appUpdateRecovery = mountAppUpdateRecovery({ document, quit: () => appUpdateView.quitForRecovery() });
@@ -317,9 +317,10 @@ function renderSetup() {
   byId('setup-message').textContent = !state.connected ? '준비 상태 확인 중' : unsupported ? '현재 음성 인식은 지원되는 음성 인식 실행 환경에서 사용할 수 있습니다.' : running ? '' : failed ? job.message : '';
   byId('setup-message').hidden = !byId('setup-message').textContent;
   byId('setup-message').dataset.state = failed ? job.status : '';
-  byId('setup-download').hidden = ready || unsupported || running;
+  const speakerNeedsPreparation = job.speakerEnabled !== false && job.speakerSupported === true && job.speakerReady === false;
+  byId('setup-download').hidden = (ready && !speakerNeedsPreparation) || unsupported || running;
   byId('setup-download').disabled = !state.connected || state.busy || Boolean(pendingJob(state.processing, { models: true }));
-  byId('setup-download').textContent = failed ? '다시 다운로드' : '다운로드';
+  byId('setup-download').textContent = failed ? '다시 시도' : job.speechEngine === 'appleSpeech' ? '준비' : '다운로드';
   byId('setup-cancel').hidden = !running;
   byId('setup-cancel').disabled = feedback.cancelDisabled || state.busy;
   byId('setup-cancel').textContent = feedback.cancelLabel;
@@ -350,6 +351,14 @@ function selectSpeechEngine(engine) {
     renderSpeechModels();
     try { await acceptProcessing(await bridge.setSpeechEngine(engine)); }
     catch (error) { speechSelectionError = error.message || '음성 인식 모델을 변경하지 못했습니다.'; }
+  });
+}
+function selectSpeakerEnabled(enabled) {
+  return run(async () => {
+    speechSelectionError = '';
+    renderSpeechModels();
+    try { await acceptProcessing(await bridge.setSpeakerEnabled(enabled)); }
+    catch (error) { speechSelectionError = error.message || '화자 구분 설정을 변경하지 못했습니다.'; }
   });
 }
 function prepareSpeechModels() {

@@ -70,6 +70,7 @@ export async function subscribeCloseRequest(callback) {
 export const processingStatus = () => call('processing_status');
 export const prepareModel = () => call('prepare_model');
 export const setSpeechEngine = engine => call('set_speech_engine', { engine });
+export const setSpeakerEnabled = enabled => call('set_speaker_enabled', { enabled });
 export const prepareMeetingModels = (includeSummary = false) => call('prepare_meeting_models', { includeSummary });
 export const draftAttachmentTarget = (meetingId) => call('draft_attachment_target', { meetingId });
 export const importAudio = (target = null) => call('import_audio', { target });

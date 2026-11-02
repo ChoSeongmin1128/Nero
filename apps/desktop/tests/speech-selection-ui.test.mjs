@@ -22,12 +22,12 @@ const choices = [
   {id:'whisperTurbo',label:'Whisper turbo',description:'구간별 처리로 녹음 종료 후 추가 시간이 필요할 수 있습니다.',modelBytes:574_041_195,ready:false,supported:true},
 ];
 const wait = async predicate => { for(let i=0;i<100;i++){if(predicate())return;await new Promise(resolve=>setTimeout(resolve,5));} assert.fail('Speech UI did not settle'); };
-async function fixture(t,{select,ready=true,session=null,supported=true,devices=[]}={}) {
+async function fixture(t,{select,toggle,ready=true,session=null,supported=true,devices=[],speech={}}={}) {
   const window = new Window({url:'http://nero.test',settings:{enableJavaScriptEvaluation:true,suppressInsecureJavaScriptEnvironmentWarning:true,disableCSSFileLoading:true,disableJavaScriptFileLoading:true}});
   t.after(()=>window.happyDOM.abort()); window.document.write(html);
   for(const name of ['appearance','icons','components']) window.eval(await readFile(new URL(`../../../design-system/${name}.js`,import.meta.url),'utf8'));
   const subscriptions={}, calls=[];
-  let progress={revision:1,status:'idle',supported:true,modelReady:ready,summarySupported:true,summaryReady:true,speechEngine:'nemotron',speechChoices:choices.map(choice=>({...choice,supported:choice.id==='whisperTurbo'?supported:choice.supported}))};
+  let progress={revision:1,status:'idle',supported:true,modelReady:ready,summarySupported:true,summaryReady:true,speechEngine:'nemotron',speechChoices:choices.map(choice=>({...choice,supported:choice.id==='whisperTurbo'?supported:choice.supported})),...speech};
   const stubs={
     readSnapshot:()=>({revision:1,meetings:session?[{id:'one',title:'회의',notes:'',createdAt:1,status:session.state}]:[],folders:[],session}),
     processingStatus:()=>progress,listDevices:()=>devices,setAutoRecorder(){},listTemplates:()=>[],
@@ -35,6 +35,7 @@ async function fixture(t,{select,ready=true,session=null,supported=true,devices=
     readCalendarSettings:()=>({revision:1,configured:false,connected:false,calendars:[],selectedCalendars:[]}),
     readTranscript:()=>null,readSummary:()=>null,
     setSpeechEngine:async engine=>select?select(engine):({...progress,revision:++progress.revision,speechEngine:engine,modelReady:false}),
+    setSpeakerEnabled:async enabled=>toggle?toggle(enabled):({...progress,revision:++progress.revision,speakerEnabled:enabled}),
     prepareMeetingModels:()=>({...progress,revision:++progress.revision,status:'running',kind:'setup',id:'download',bytes:10,totalBytes:100}),
   };
   window.testBridge=Object.fromEntries(names.map(name=>[name,async(...args)=>{
@@ -115,4 +116,47 @@ test('model choices keep visible native radio indicators while appearance uses i
   const appearance=f.window.getComputedStyle(f.window.document.querySelector('.brightness-choice input'));
   assert.equal(appearance.position,'absolute');
   assert.equal(appearance.clipPath,'inset(50%)');
+});
+
+
+test('speaker switch keeps confirmed state in setup and settings until native success', async t => {
+  let finish;
+  const pending = new Promise(resolve => finish = resolve);
+  const f = await fixture(t, { ready: false, toggle: () => pending, speech: { speakerEnabled: true, speakerReady: false, speakerSupported: true } });
+  const toggle = place => f.get(`${place}-speech-picker-speaker-enabled`);
+  toggle('setup').click();
+  assert.equal(toggle('setup').checked, true);
+  assert.equal(toggle('settings').checked, true);
+  assert.equal(f.get('settings-speech-picker').querySelector('fieldset').disabled, true);
+  finish({ ...f.progress, revision: 2, speakerEnabled: false, modelReady: true });
+  await wait(() => !toggle('settings').checked && !toggle('settings').disabled);
+  assert.equal(toggle('setup').checked, false);
+  assert.equal(f.get('setup-download').hidden, true);
+  assert.equal(f.get('settings-speech-picker-prepare').hidden, true);
+  assert.equal(f.calls.filter(call => call.name === 'setSpeakerEnabled').length, 1);
+  assert.equal(f.calls.some(call => ['prepareMeetingModels', 'transcribeAudio'].includes(call.name)), false);
+});
+
+test('rejected speaker preference preserves the selection without preparing models', async t => {
+  const f = await fixture(t, { toggle: () => { throw Error('설정을 저장하지 못했습니다.'); }, speech: { speakerEnabled: false } });
+  f.get('settings-speech-picker-speaker-enabled').click();
+  await wait(() => f.get('settings-speech-picker').textContent.includes('설정을 저장하지 못했습니다.'));
+  assert.equal(f.get('settings-speech-picker-speaker-enabled').checked, false);
+  assert.equal(f.get('setup-speech-picker-speaker-enabled').checked, false);
+  assert.equal(f.calls.some(call => call.name === 'prepareMeetingModels'), false);
+});
+
+test('Apple speech prepares system assets only after an explicit prepare action', async t => {
+  const f = await fixture(t, { ready: false, speech: {
+    speechEngine: 'appleSpeech', speakerEnabled: false,
+    speechChoices: [...choices, { id: 'appleSpeech', label: 'macOS 기본 전사', supported: true, ready: false, modelBytes: 0 }],
+  } });
+  assert.equal(f.radio('setup', 'appleSpeech').checked, true);
+  assert.match(f.get('setup-speech-picker').textContent, /언어 데이터 준비 필요/);
+  assert.equal(f.get('setup-download').textContent, '준비');
+  assert.doesNotMatch(f.get('setup-speech-picker').textContent, /MB|GB|GPU|CPU/);
+  assert.equal(f.calls.some(call => call.name === 'prepareMeetingModels'), false);
+  f.get('setup-download').click();
+  await wait(() => f.calls.some(call => call.name === 'prepareMeetingModels'));
+  assert.deepEqual(f.calls.find(call => call.name === 'prepareMeetingModels').args, [false]);
 });

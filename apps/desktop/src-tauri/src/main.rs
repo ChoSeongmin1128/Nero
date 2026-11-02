@@ -1338,6 +1338,15 @@ fn set_speech_engine(
     state.processing.set_speech_engine(engine)
 }
 #[tauri::command]
+fn set_speaker_enabled(
+    window: WebviewWindow,
+    state: tauri::State<'_, DesktopState>,
+    enabled: bool,
+) -> Result<Progress, String> {
+    require_main(&window)?;
+    state.processing.set_speaker_enabled(enabled)
+}
+#[tauri::command]
 fn prepare_model(
     window: WebviewWindow,
     state: tauri::State<'_, DesktopState>,
@@ -1693,6 +1702,8 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             people_desktop::people_catalog,
+            people_desktop::google_attendee_roster,
+            people_desktop::apply_meeting_attendee_draft,
             people_desktop::replace_people_catalog,
             people_desktop::meeting_attendees,
             people_desktop::replace_meeting_attendees,
@@ -1709,6 +1720,8 @@ fn main() {
             calendar_desktop::open_calendar_join_url,
             calendar_desktop::create_meeting_from_calendar,
             calendar_desktop::begin_calendar_connect,
+            calendar_desktop::begin_meet_connect,
+            calendar_desktop::fetch_google_attendees,
             calendar_desktop::finish_calendar_connect,
             calendar_desktop::reopen_calendar_connect,
             calendar_desktop::cancel_calendar_connect,
@@ -1758,6 +1771,7 @@ fn main() {
             request_quit,
             processing_status,
             set_speech_engine,
+            set_speaker_enabled,
             prepare_model,
             prepare_meeting_models,
             draft_attachment_target,
