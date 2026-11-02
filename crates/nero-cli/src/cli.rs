@@ -38,6 +38,7 @@ pub const HELP: &str = "Nero 로컬 CLI
   templates reset ID --expected-revision HASH
   jobs list [--meeting-id ID] [--offset N] [--limit N]
   jobs cancel ID --expected-version HASH
+  update status|check|download|install
   doctor
   mcp
 
@@ -67,6 +68,11 @@ mcp는 stdin/stdout으로 MCP를 제공하며 stdout에 진단 문구를 쓰지 
 회의 수정은 실행 중인 Nero에 요청합니다. 파일은 update의 title/notes 또는
 일괄 작업의 expectedVersions와 move의 folderId(null=미분류)를 포함합니다.
 회의/폴더 수정본은 조회 응답의 editVersion이며 sourceVersion과 다릅니다.
+앱 업데이트는 실행 중인 Nero의 공식 업데이트 흐름을 사용합니다. check는 공개 채널을 조회하고
+download는 다운로드를 시작합니다. status로 진행 상태를 확인하세요. install은 모든 편집 저장과
+녹음/처리 작업 유휴 상태를 확인한 뒤 설치/재시작 요청 수락을 반환합니다.
+accepted:true는 설치 완료가 아니며 다시 실행한 Nero의 버전/상태를 확인해야 합니다.
+구버전 앱이 이 명령을 지원하지 않으면 앱의 업데이트 화면을 사용합니다.
 작업 조회/취소는 실행 중인 Nero에 요청하며 모델을 실행하지 않습니다.
 작업 취소는 jobs list의 editVersion을 사용하며 취소 요청 수락 후 상태를 다시 조회합니다.
 인원 update 파일은 people/groups 전체 배열, attendees 파일은 attendees 배열입니다.
@@ -152,13 +158,18 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Options, QueryError
             method: "status",
             params: json!({}),
         },
-        ["meetings" | "transcript" | "summary" | "folders" | "people" | "templates" | "jobs", ..]
+        ["meetings" | "transcript" | "summary" | "folders" | "people" | "templates" | "jobs"
+        | "update", ..]
             if strings
                 .iter()
                 .any(|value| matches!(*value, "--help" | "-h")) =>
         {
             Action::Help
         }
+        ["update", action @ ("status" | "check" | "download" | "install")] => Action::Request {
+            method: "app_update",
+            params: json!({"action":action}),
+        },
         ["jobs", command, remaining @ ..] => parse_jobs(command, remaining)?,
         ["templates", command, remaining @ ..] => parse_templates(command, remaining)?,
         ["summary", "import", remaining @ ..] => parse_summary_import(remaining)?,
@@ -1026,6 +1037,29 @@ mod tests {
 
     fn args(values: &[&str]) -> Result<Options, QueryError> {
         parse(values.iter().map(OsString::from))
+    }
+
+    #[test]
+    fn app_update_commands_only_accept_the_official_service_actions() {
+        for action in ["status", "check", "download", "install"] {
+            let parsed = args(&["update", action, "--json"]).unwrap();
+            assert!(parsed.json);
+            assert_eq!(
+                parsed.action,
+                Action::Request {
+                    method: "app_update",
+                    params: json!({"action":action})
+                }
+            );
+        }
+        for input in [
+            vec!["update"],
+            vec!["update", "purge"],
+            vec!["update", "install", "--file", "app"],
+            vec!["update", "download", "--url", "https://untrusted.test"],
+        ] {
+            assert!(args(&input).is_err());
+        }
     }
 
     #[test]

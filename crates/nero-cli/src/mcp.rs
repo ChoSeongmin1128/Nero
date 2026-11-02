@@ -28,6 +28,7 @@ pub async fn serve(root: PathBuf) -> Result<(), ()> {
 fn tools() -> Vec<Tool> {
     METHODS.into_iter().map(|method| {
         let description = match method {
+            "app_update" => "Manage the running Nero app's official signed update service. action=status reads local update state; check contacts the public release channel; download starts an app-owned download and returns accepted; install saves all open editors, refuses unsaved/busy work, then accepts installation and restart. Requires explicit current user intent for check/download/install. No arbitrary URLs, files, keys or installers. accepted/restarting is not completion: re-query status and the running app version after restart. Older apps require their update screen. Never automatically retry an uncertain install.",
             "jobs_list" => "Read minimal processing job IDs, kinds, meeting IDs, states and editVersion from running Nero, newest first. Does not start processing or load models. Pages reflect current state.",
             "job_cancel" => "Cancel one queued or running job only on explicit current user intent, using its jobs_list editVersion. Requires running Nero. Saving results cannot be interrupted. Applied means cancellation accepted; query jobs_list for completion. Do not automatically retry conflicts or uncertain results.",
             "meetings_list" => "List meetings by folder/date. Resolve names with folders_list; unfiled selects no folder. trashed returns only recoverable metadata and editVersion.",
@@ -60,7 +61,7 @@ fn tools() -> Vec<Tool> {
             _ => unreachable!(),
         };
         Tool::new(method, description, input_schema(method)).with_annotations(
-            ToolAnnotations::new().read_only(is_read_only(method)).destructive(is_destructive(method)).idempotent(is_read_only(method)).open_world(false)
+            ToolAnnotations::new().read_only(is_read_only(method)).destructive(is_destructive(method)).idempotent(is_read_only(method)).open_world(method == "app_update")
         )
     }).collect()
 }
@@ -210,7 +211,7 @@ mod tests {
                 Some(is_destructive(&tool.name))
             );
             assert_eq!(annotations.idempotent_hint, Some(is_read_only(&tool.name)));
-            assert_eq!(annotations.open_world_hint, Some(false));
+            assert_eq!(annotations.open_world_hint, Some(tool.name == "app_update"));
             assert_eq!(tool.input_schema["additionalProperties"], false);
         }
     }

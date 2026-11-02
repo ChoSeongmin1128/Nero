@@ -79,7 +79,7 @@ impl Session<'_> {
             ));
         }
         let mut body = json!({
-            "messages":[{"role":"system","content":system},{"role":"user","content":user}],
+            "messages":chat_messages(&system,&user),
             "temperature":1.0,"top_k":64,"top_p":0.95,"min_p":0.0,
             "repeat_penalty":1.0,"presence_penalty":0.0,"frequency_penalty":0.0,
             "max_tokens":limit,"seed":0,"stream":false,"cache_prompt":false,

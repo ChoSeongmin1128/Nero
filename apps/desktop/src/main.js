@@ -77,7 +77,7 @@ function readMicrophonePreference() {
 }
 const microphonePreference = readMicrophonePreference();
 let sidebarViews = null, viewHistory = null;
-const state = { snapshot: { meetings: [], folders: [], session: null }, libraryOpen: false, libraryFilter: 'all', librarySelection: new Set(), libraryBusy: false, librarySearchIds: null, librarySearchHits: [], pendingSearchIntent: null, setupReturnId: null, librarySearchPending: false, librarySearchUnavailable: 0, selectedId: null, devices: [], devicesLoaded: false, deviceId: microphonePreference.id, deviceName: microphonePreference.name, settingsPanel: 'appearance', summaryFeatureError: '', settingsKey: '', settingsError: '', settingsReturnId: 'settings', setupFromSettings: false, autoRecorder: readAutoRecorder(), recorderSettingBusy: false, snapshotSignatures: null, processingKey: '', processingCancellingId: null, transcriptEditing: null, audioRequest: 0, audioLoading: null, dateSaving: null, dateKey: '', dateError: null, lastError: null, errorIsSave: false, connected: false, busy: false, composing: false, transcriptComposing: false, editLocks: 0, draft: null, saveTimer: null, saveQueue: Promise.resolve(), listKey: '', controlsKey: '', audioKey: '', processing: { status: 'idle', supported: false, modelReady: false }, transcriptDraft: null, transcriptKey: '', transcriptLoadId: 0, transcriptSaveQueue: Promise.resolve(), summary: null, summaryKey: '', summaryLoadId: 0, summaryLoaded: false, transcriptLoaded: false, summaryLoadError: false, transcriptLoadError: false, setupRequested: false };
+const state = { snapshot: { meetings: [], folders: [], session: null }, libraryOpen: false, libraryFilter: 'all', librarySelection: new Set(), libraryBusy: false, librarySearchIds: null, librarySearchHits: [], pendingSearchIntent: null, setupReturnId: null, librarySearchPending: false, librarySearchUnavailable: 0, selectedId: null, devices: [], devicesLoaded: false, deviceId: microphonePreference.id, deviceName: microphonePreference.name, settingsPanel: 'appearance', summaryFeatureError: '', settingsKey: '', settingsError: '', settingsReturnId: 'settings', setupFromSettings: false, autoRecorder: readAutoRecorder(), recorderSettingBusy: false, snapshotSignatures: null, processingKey: '', processingCancellingId: null, transcriptEditing: null, audioRequest: 0, audioLoading: null, dateSaving: null, dateKey: '', dateError: null, lastError: null, errorIsSave: false, connected: false, busy: false, composing: false, transcriptComposing: false, editLocks: 0, draft: null, saveTimer: null, saveQueue: Promise.resolve(), listKey: '', controlsKey: '', audioKey: '', processing: { status: 'idle', supported: false, modelReady: false, localSummaryEnabled: false }, transcriptDraft: null, transcriptKey: '', transcriptLoadId: 0, transcriptSaveQueue: Promise.resolve(), summary: null, summaryKey: '', summaryLoadId: 0, summaryLoaded: false, transcriptLoaded: false, summaryLoadError: false, transcriptLoadError: false, setupRequested: false };
 const speechPickers = [
   mountSpeechModelPicker({ node: byId('setup-speech-picker'), onSelect: selectSpeechEngine }),
   mountSpeechModelPicker({ node: byId('settings-speech-picker'), onSelect: selectSpeechEngine, onPrepare: prepareSpeechModels }),
@@ -282,6 +282,14 @@ async function prepareAudio(meeting, recording, force = false) {
 }
 
 const modelsReady = () => state.processing.supported && state.processing.modelReady;
+const localSummaryEnabled = () => state.processing.localSummaryEnabled !== false;
+const localSummaryMessage = () => state.processing.localSummaryMessage || '앱 내 요약은 준비 중입니다.';
+const localSummaryJob = job => ['summary', 'summary-model'].includes(job?.kind);
+function displayProcessing() {
+  if (localSummaryEnabled()) return state.processing;
+  const withoutRetry = job => localSummaryJob(job) ? { ...job, retryable: false } : job;
+  return { ...withoutRetry(state.processing), jobs: state.processing.jobs?.map(withoutRetry) };
+}
 function renderSetup() {
   const ready = modelsReady();
   const preparation = pendingJob(state.processing, { models: true });
@@ -292,10 +300,10 @@ function renderSetup() {
   byId('setup-title').textContent = state.setupFromSettings ? '추가 기능' : ready && state.selectedId ? '회의 요약' : '초기 설정';
   document.querySelector('.workspace').dataset.onboarding = String(visible && state.snapshot.meetings.length === 0);
   byId('setup-speech-state').textContent = !state.connected ? '확인 중' : job.modelReady ? '준비됨' : !job.supported ? '지원되지 않음' : running && job.modelStage === 'speech' ? '준비 중' : '';
-  byId('setup-summary-state').textContent = job.summaryReady ? '준비됨' : !job.summarySupported && state.connected ? '지원되지 않음' : running && job.modelStage === 'summary' ? '준비 중' : '';
-  byId('setup-summary-choice').hidden = ready || job.summaryReady || !job.summarySupported || !job.supported;
-  byId('setup-summary-option').disabled = !state.connected || state.busy || Boolean(pendingJob(state.processing, { models: true }));
-  byId('setup-download-summary').hidden = !ready || job.summaryReady || !job.summarySupported || running;
+  byId('setup-summary-state').textContent = !localSummaryEnabled() ? localSummaryMessage() : job.summaryReady ? '준비됨' : !job.summarySupported && state.connected ? '지원되지 않음' : running && job.modelStage === 'summary' ? '준비 중' : '';
+  byId('setup-summary-choice').hidden = !localSummaryEnabled() || ready || job.summaryReady || !job.summarySupported || !job.supported;
+  byId('setup-summary-option').disabled = !localSummaryEnabled() || !state.connected || state.busy || Boolean(pendingJob(state.processing, { models: true }));
+  byId('setup-download-summary').hidden = !localSummaryEnabled() || !ready || job.summaryReady || !job.summarySupported || running;
   byId('setup-download-summary').disabled = state.busy || Boolean(pendingJob(state.processing, { models: true }));
   byId('setup-progress-region').hidden = !running;
   const feedback = processingFeedback(job, { cancelling: state.processingCancellingId === job.id || processingActions.get(job.id) === 'cancel' });
@@ -360,7 +368,7 @@ function render() {
   for (const id of ['library-create', 'library-record']) byId(id).disabled = !state.connected || state.busy || state.libraryBusy;
   setHTML('library-record', `${icon(activeSession() ? 'audio-lines' : 'mic')}<span>${activeSession() ? '녹음으로 돌아가기' : '녹음 시작'}</span>`);
   const setupVisible = renderSetup();
-  notificationCenter.update({ processing: state.processing, meetings: state.snapshot.meetings, selectedMeetingId: state.selectedId, connected: state.connected, actions: processingActions, integrations: integrationNotices, notices: appUpdateNotices });
+  notificationCenter.update({ processing: displayProcessing(), meetings: state.snapshot.meetings, selectedMeetingId: state.selectedId, connected: state.connected, actions: processingActions, integrations: integrationNotices, notices: appUpdateNotices });
   sidebarViews?.updateCounts(notificationCenter.counts());
   if (setupVisible) sidebarViews?.close({ focus: false });
   for (const button of document.querySelectorAll('[data-navigation-preview]')) { const category = state.libraryFilter === 'trash' ? 'trash' : !['all', 'unfiled'].includes(state.libraryFilter) ? 'folders' : 'all'; button.setAttribute('aria-current', state.libraryOpen && category === button.dataset.navigationPreview ? 'page' : 'false'); }
@@ -754,13 +762,13 @@ function renderSettings() {
   const job = state.processing;
   const featureJob = pendingJob(job, { kind: 'summary-model' });
   const failedFeature = !featureJob && !job.summaryReady && processingJobs(job).filter(item => item.kind === 'summary-model' && item.status === 'failed' && !item.acknowledged).at(-1);
-  const featureError = state.summaryFeatureError || (failedFeature && processingFeedback(failedFeature).detail) || '';
+  const featureError = localSummaryEnabled() ? state.summaryFeatureError || (failedFeature && processingFeedback(failedFeature).detail) || '' : '';
   byId('settings-summary-error').textContent = featureError;
   byId('settings-summary-error').hidden = !featureError;
-  byId('settings-summary-state').textContent = !state.connected ? '확인 중' : !job.summarySupported ? '지원되지 않음' : job.summaryReady ? '추가됨' : featureJob ? '다운로드 중' : '';
-  byId('models').hidden = job.summaryReady || !job.summarySupported || Boolean(featureJob);
+  byId('settings-summary-state').textContent = !localSummaryEnabled() ? localSummaryMessage() : !state.connected ? '확인 중' : !job.summarySupported ? '지원되지 않음' : job.summaryReady ? '추가됨' : featureJob ? '다운로드 중' : '';
+  byId('models').hidden = !localSummaryEnabled() || job.summaryReady || !job.summarySupported || Boolean(featureJob);
   byId('models').disabled = !state.connected || state.busy || Boolean(pendingJob(job, { models: true }));
-  byId('settings-summary-progress').hidden = !featureJob;
+  byId('settings-summary-progress').hidden = !localSummaryEnabled() || !featureJob;
   if (featureJob) {
     const total = featureJob.totalBytes, completed = featureJob.bytes;
     const meter = byId('settings-feature-progress');
@@ -954,6 +962,7 @@ byId('terminology-enabled').addEventListener('change', changeTerminologyEnabled)
 byId('settings-microphone').addEventListener('change', changeMicrophone);
 
 byId('models').addEventListener('click', () => run(async () => {
+  if (!localSummaryEnabled()) return;
   const restoreFocus = document.activeElement === byId('models');
   state.summaryFeatureError = '';
   try { await acceptProcessing(await bridge.prepareSummaryModel()); }
@@ -965,8 +974,8 @@ byId('models').addEventListener('click', () => run(async () => {
 }));
 byId('settings-feature-cancel').addEventListener('click', () => { const job = pendingJob(state.processing, { kind: 'summary-model' }); if (job?.id) void cancelProcessing(job.id); });
 byId('setup-back').addEventListener('click', () => { const settings = state.setupFromSettings, returnId = state.setupReturnId; state.setupRequested = false; state.setupFromSettings = false; render(); if (settings) void openSettings('appearance'); else { const origin = byId(returnId || 'settings'); const fallback = !byId('summarize').hidden && !byId('summarize').disabled ? byId('summarize') : byId('detail-transcript-open'); (origin && !origin.hidden && !origin.disabled ? origin : fallback)?.focus({ preventScroll: true }); } });
-byId('setup-download').addEventListener('click', () => run(async () => { state.setupRequested = true; await acceptProcessing(await bridge.prepareMeetingModels(Boolean(byId('setup-summary-option').checked) && !state.processing.summaryReady)); }));
-byId('setup-download-summary').addEventListener('click', () => run(async () => { state.setupRequested = true; await acceptProcessing(await bridge.prepareSummaryModel()); }));
+byId('setup-download').addEventListener('click', () => run(async () => { state.setupRequested = true; await acceptProcessing(await bridge.prepareMeetingModels(localSummaryEnabled() && Boolean(byId('setup-summary-option').checked) && !state.processing.summaryReady)); }));
+byId('setup-download-summary').addEventListener('click', () => run(async () => { if (!localSummaryEnabled()) return; state.setupRequested = true; await acceptProcessing(await bridge.prepareSummaryModel()); }));
 byId('setup-cancel').addEventListener('click', () => { void cancelProcessing(pendingJob(state.processing, { models: true })?.id); });
 byId('retry-save').addEventListener('click', () => saveDraft().catch(() => {}));
 byId('dismiss-error').addEventListener('click', () => clearError());
@@ -1047,11 +1056,12 @@ async function prepareAppLeave(action) {
   return finishEditing(action);
 }
 
-async function onAgentWriteRequest({ requestId } = {}) {
+async function onAgentWriteRequest({ requestId, kind } = {}) {
   if (typeof requestId !== 'string' || !/^[a-f0-9-]{36}$/.test(requestId)) return;
   let ready = false;
   try {
-    await finishEditing(async () => {
+    const prepare = kind === 'appUpdate' ? prepareAppLeave : finishEditing;
+    const completed = await prepare(async () => {
       ready = true;
       await bridge.agentWriteReady(requestId);
       acceptSnapshot(await bridge.readSnapshot());
@@ -1059,6 +1069,9 @@ async function onAgentWriteRequest({ requestId } = {}) {
       if (currentMeeting()) await loadSummary(state.selectedId);
       refreshMeetingSearch();
     });
+    if (completed === false && !ready) {
+      await bridge.agentWriteReady(requestId, '현재 편집 내용을 저장하지 않았습니다.').catch(() => {});
+    }
   } catch (error) {
     if (!ready) {
       await bridge.agentWriteReady(requestId, '현재 편집 내용을 저장하지 못했습니다.').catch(() => {});
@@ -1100,7 +1113,7 @@ function renderProcessing() {
   setText('processing-percent', feedback.progress ? `${feedback.progress.percent}%` : '');
   byId('processing-percent').hidden = !feedback.progress;
   if (feedback.progress) { byId('processing-progress').max = feedback.progress.max; byId('processing-progress').value = feedback.progress.value; }
-  byId('retry-processing').hidden = !canRetryProcessing(progress);
+  byId('retry-processing').hidden = (!localSummaryEnabled() && localSummaryJob(progress)) || !canRetryProcessing(progress);
   byId('retry-processing').disabled = processingActions.has(progress.id);
   byId('open-processing-meeting').hidden = progress.status !== 'needsReview' || !owner;
   byId('dismiss-processing').hidden = !canDismissProcessing(progress);
@@ -1162,6 +1175,7 @@ async function cancelProcessing(jobId = state.processing.id) {
 
 async function retryProcessing(jobId = state.processing.id) {
   const job = processingJobs(state.processing).find(item => item.id === jobId);
+  if (!localSummaryEnabled() && localSummaryJob(job)) return;
   if (!job || !canRetryProcessing(job) || processingActions.has(job.id)) return;
   rememberProcessingFocus();
   processingActions.set(job.id, 'retry');
@@ -1325,9 +1339,9 @@ function renderSummary(meeting) {
   byId('summary-section').setAttribute('aria-busy', String(ownJob || result.busy || !state.summaryLoaded || !state.transcriptLoaded));
   byId('summary-section').setAttribute('aria-label', '요약');
   byId('summary-content').hidden = !doc;
-  byId('prepare-summary').hidden = progress.summaryReady || !progress.summarySupported || !hasTranscript;
+  byId('prepare-summary').hidden = !localSummaryEnabled() || progress.summaryReady || !progress.summarySupported || !hasTranscript;
   byId('prepare-summary').disabled = Boolean(pendingJob(progress, { models: true })) || state.busy;
-  byId('summarize').hidden = !hasTranscript || Boolean(state.summaryLoadError) || !state.summaryLoaded || !progress.summaryReady || !progress.summarySupported;
+  byId('summarize').hidden = !localSummaryEnabled() || !hasTranscript || Boolean(state.summaryLoadError) || !state.summaryLoaded || !progress.summaryReady || !progress.summarySupported;
   byId('summary-template-choice').hidden = byId('summarize').hidden;
   byId('summarize').disabled = !hasTranscript || !summaryTemplatePicker.isAvailable() || !progress.summaryReady || !progress.summarySupported || ownJob || result.busy || state.busy;
   const latest = latestMeetingProcessing(state.processing, meeting.id);
@@ -1339,6 +1353,7 @@ function renderSummary(meeting) {
   if (!state.summaryLoaded) message = '불러오는 중';
   else if (state.summaryLoadError) message = '요약을 불러오지 못했습니다.';
   else if (doc && stale) message = '이전 내용으로 만든 요약';
+  else if (!doc && !localSummaryEnabled()) message = localSummaryMessage();
   else if (ownJob || failed) message = '';
   else if (!doc && result.busy) message = '음성 기록을 처리하고 있습니다.';
   else if (!doc && !state.transcriptLoaded) message = '불러오는 중';
@@ -1349,7 +1364,7 @@ function renderSummary(meeting) {
   else if (!doc) message = '음성 기록이 준비되었습니다. 템플릿을 선택해 요약해 보세요.';
   byId('retry-summary-load').hidden = !state.summaryLoadError;
   byId('summary-message').hidden = !message;
-  const loading = !state.summaryLoaded || (!doc && (result.busy || !state.transcriptLoaded));
+  const loading = !state.summaryLoaded || (localSummaryEnabled() && !doc && (result.busy || !state.transcriptLoaded));
   if (loading && message) setHTML('summary-message', '<span class="activity-spinner" aria-hidden="true"></span> ' + escape(message));
   else setText('summary-message', message);
   const key = JSON.stringify([meeting.id, doc?.id, state.transcriptDraft?.doc?.version, Boolean(stale), documentSearch.query()]);
@@ -1378,8 +1393,8 @@ async function loadSummary(id) {
 }
 byId('retry-transcript-load').addEventListener('click', () => { if (state.selectedId) void loadTranscript(state.selectedId); });
 byId('retry-summary-load').addEventListener('click', () => { if (state.selectedId) void loadSummary(state.selectedId); });
-byId('prepare-summary').addEventListener('click', () => run(() => openSetup(false, 'prepare-summary')));
-byId('summarize').addEventListener('click', () => run(() => finishEditing(async () => acceptProcessing(await bridge.summarizeMeeting(state.selectedId, await summaryTemplatePicker.selected())))));
+byId('prepare-summary').addEventListener('click', () => run(() => { if (localSummaryEnabled()) return openSetup(false, 'prepare-summary'); }));
+byId('summarize').addEventListener('click', () => run(() => { if (localSummaryEnabled()) return finishEditing(async () => acceptProcessing(await bridge.summarizeMeeting(state.selectedId, await summaryTemplatePicker.selected()))); }));
 async function exportDocument(kind, format, copy = false, includeCitations = false, expectedId = state.selectedId) {
   return finishEditing(async () => {
     const meeting = currentMeeting();

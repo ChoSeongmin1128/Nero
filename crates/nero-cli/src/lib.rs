@@ -4,6 +4,7 @@ mod dates;
 pub mod mcp;
 mod mutations;
 mod templates;
+mod updates;
 mod versions;
 
 use nero_core::{
@@ -14,7 +15,8 @@ use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 
 pub use nero_core::identity::APP_IDENTIFIER;
-pub const METHODS: [&str; 29] = [
+pub const METHODS: [&str; 30] = [
+    "app_update",
     "jobs_list",
     "job_cancel",
     "meetings_list",
@@ -67,7 +69,8 @@ pub fn is_read_only(method: &str) -> bool {
 pub fn is_destructive(method: &str) -> bool {
     matches!(
         method,
-        "job_cancel"
+        "app_update"
+            | "job_cancel"
             | "template_update"
             | "summary_import"
             | "template_delete"
@@ -111,6 +114,9 @@ pub fn dispatch(root: &Path, method: &str, params: Value) -> Result<Value, Query
     }
     let root = canonical_data_dir(root)?;
     let root = root.as_path();
+    if method == "app_update" {
+        return updates::dispatch(root, params);
+    }
     if method.starts_with("template") {
         return templates::dispatch(root, method, params);
     }
@@ -131,7 +137,7 @@ pub fn dispatch(root: &Path, method: &str, params: Value) -> Result<Value, Query
     if method == "status" {
         result["versions"] = versions::status(root);
         result["readOnly"] = json!(false);
-        result["capabilities"] = json!({"queriesReadOnly":true,"templateWrites":true,"meetingWritesRequireApp":true,"summaryImportsRequireApp":true,"jobQueriesRequireApp":true,"jobCancellationRequireApp":true});
+        result["capabilities"] = json!({"queriesReadOnly":true,"templateWrites":true,"meetingWritesRequireApp":true,"summaryImportsRequireApp":true,"jobQueriesRequireApp":true,"jobCancellationRequireApp":true,"appUpdatesRequireApp":true});
     }
     Ok(result)
 }
@@ -232,6 +238,9 @@ fn data_dir_for(
 }
 
 pub fn input_schema(method: &str) -> Map<String, Value> {
+    if method == "app_update" {
+        return updates::schema();
+    }
     if method.starts_with("template") {
         return templates::schema(method);
     }
@@ -417,6 +426,15 @@ mod tests {
 
     #[test]
     fn schemas_expose_bounded_reads_and_explicit_calendar_dates() {
+        let update = Value::Object(input_schema("app_update"));
+        assert_eq!(update["required"], json!(["action"]));
+        assert_eq!(
+            update["properties"]["action"]["enum"],
+            json!(["status", "check", "download", "install"])
+        );
+        assert_eq!(update["additionalProperties"], false);
+        assert!(!is_read_only("app_update"));
+        assert!(is_destructive("app_update"));
         for method in METHODS.into_iter().filter(|method| {
             is_read_only(method)
                 && !matches!(*method, "status" | "jobs_list")

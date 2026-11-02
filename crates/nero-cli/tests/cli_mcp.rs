@@ -878,6 +878,49 @@ fn tool_data(response: &Value) -> Value {
 }
 
 #[test]
+fn cli_and_mcp_forward_only_supported_app_update_actions_to_the_running_app() {
+    use nero_core::agent_control::{AppUpdateAction, ControlError, ControlReply, Server};
+    let root = temporary_root();
+    let core = nero_core::CoreHandle::open(root.path()).unwrap();
+    let meeting = core
+        .create_meeting("Synthetic update meeting", "Preserved notes")
+        .unwrap();
+    let meeting_path = root
+        .path()
+        .join("meetings")
+        .join(&meeting.id)
+        .join("meeting.json");
+    let before = fs::read(&meeting_path).unwrap();
+    let _server = Server::start_with_updates(root.path(), core, |_| panic!("updates must not mutate meetings"), |_| panic!("updates must not run models"), || Err(ControlError::unavailable()), |action| {
+        Ok(ControlReply::new(json!({"apiVersion":1,"action":action,"accepted":matches!(action, AppUpdateAction::Download | AppUpdateAction::Install),"restarting":action == AppUpdateAction::Install,"status":{"phase":"synthetic"}})))
+    }).unwrap();
+    let mut process = McpProcess::start(root.path());
+    process.initialize();
+    for (id, action) in (2..).zip(["status", "check", "download", "install"]) {
+        let output = command(root.path())
+            .args(["update", action, "--json"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let cli: Value = serde_json::from_slice(&output.stdout).unwrap();
+        process.send(json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"app_update","arguments":{"action":action}}}));
+        assert_eq!(tool_data(&process.result(id)), cli);
+        assert_eq!(cli["action"], action);
+    }
+    process.send(json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"app_update","arguments":{"action":"install","path":"untrusted"}}}));
+    assert_eq!(
+        tool_data(&process.result(6))["error"]["code"],
+        "invalid_input"
+    );
+    assert_eq!(fs::read(meeting_path).unwrap(), before);
+    assert!(!root.path().join("models").exists());
+}
+
+#[test]
 fn cli_and_mcp_observe_folder_moves_and_renames_on_each_read() {
     let root = fixture();
     let library_path = root.path().join("library.json");
@@ -1028,7 +1071,8 @@ fn stdio_initialization_tools_errors_and_framing_use_the_sdk() {
         );
         if matches!(
             name,
-            "job_cancel"
+            "app_update"
+                | "job_cancel"
                 | "summary_import"
                 | "template_delete"
                 | "meetings_trash"
@@ -1036,7 +1080,7 @@ fn stdio_initialization_tools_errors_and_framing_use_the_sdk() {
         ) {
             assert_eq!(tool["annotations"]["destructiveHint"], true);
         }
-        assert_eq!(tool["annotations"]["openWorldHint"], false);
+        assert_eq!(tool["annotations"]["openWorldHint"], name == "app_update");
     }
 
     process.send(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"meeting_get","arguments":{"meetingId":MEETING_ID,"offset":1,"limit":1}}}));

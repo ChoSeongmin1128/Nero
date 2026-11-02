@@ -1,6 +1,9 @@
 #![cfg(unix)]
 
-use super::tests::{numbered_source, scripted_server, ScriptedServer};
+use super::tests::{
+    gemma_trim_render, numbered_source, scripted_server, scripted_server_with_renderer,
+    ScriptedServer,
+};
 use super::*;
 
 fn runtime() -> tokio::runtime::Runtime {
@@ -462,6 +465,113 @@ fn three_hour_template_pipeline_preserves_all_facts_and_invalidates_changed_prom
         .unwrap()
         .iter()
         .all(|event| event["request"]["cached"] == false));
+}
+
+#[test]
+fn selected_templates_survive_gemma_boundaries_in_whole_and_agenda_summaries() {
+    for custom in [false, true] {
+        for count in [2, 48] {
+            let temporary = tempfile::tempdir().unwrap();
+            let measured = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let measured_messages = measured.clone();
+            let fixture = scripted_server_with_renderer(
+                temporary.path(),
+                tokenize,
+                |request| {
+                    if request["messages"][1]["content"]
+                        .as_str()
+                        .unwrap()
+                        .contains("<transcript>")
+                    {
+                        json!({"choices":[{"finish_reason":"stop","message":{"content":"합성 사실 1 [1]"}}],"usage":{"prompt_tokens":1000,"completion_tokens":100}})
+                    } else {
+                        respond(request)
+                    }
+                },
+                move |system, user| {
+                    measured_messages
+                        .lock()
+                        .unwrap()
+                        .push([system.to_owned(), user.to_owned()]);
+                    gemma_trim_render(system, user)
+                },
+            );
+            let (process, cache) = prepare(temporary.path());
+            let store =
+                nero_core::templates::TemplateStore::new(process.root.canonicalize().unwrap());
+            let template = if custom {
+                store
+                    .create(nero_core::templates::TemplateContent {
+                        name: "사용자 요약".into(),
+                        description: "후속 논의".into(),
+                        prompt: "\n## 다음 논의\n\n  - 조건 5000원과 들여쓰기를 유지\n\n".into(),
+                    })
+                    .unwrap()
+            } else {
+                store.get("meeting").unwrap()
+            };
+            let source = if count == 48 {
+                source()
+            } else {
+                numbered_source(count)
+            };
+            let before_source = serde_json::to_vec(&source).unwrap();
+            let before_template = serde_json::to_vec(&template).unwrap();
+            let notes = "Original notes \n\n";
+            let attendees = if custom { roster() } else { Vec::new() };
+            let (text, receipt) = runtime()
+                .block_on(pipeline::run_with_template(
+                    &fixture.server,
+                    &source,
+                    notes,
+                    &attendees,
+                    &cache,
+                    &process,
+                    &AtomicBool::new(false),
+                    Some(&template),
+                ))
+                .unwrap();
+            assert_eq!(
+                receipt["strategy"],
+                if count == 48 {
+                    "evidence-agenda-sections"
+                } else {
+                    "whole"
+                }
+            );
+            assert!(validate_references(&text, count).is_ok());
+            let measured = measured.lock().unwrap();
+            assert!(measured.iter().any(|messages| {
+                messages[1].ends_with("</summary-template>")
+                    && messages[1].contains(&template.prompt)
+            }));
+            for request in requests(&fixture) {
+                let messages = [
+                    request["messages"][0]["content"]
+                        .as_str()
+                        .unwrap()
+                        .to_owned(),
+                    request["messages"][1]["content"]
+                        .as_str()
+                        .unwrap()
+                        .to_owned(),
+                ];
+                assert!(measured.contains(&messages));
+                assert!(messages.iter().all(|message| message.trim() == message));
+                assert!(messages[1].contains(&json!({"meetingNotes":notes}).to_string()));
+            }
+            if count == 48 {
+                for number in 1..=48 {
+                    assert!(text.contains(&format!("합성 사실 {number} [{number}]")));
+                }
+            }
+            assert_eq!(serde_json::to_vec(&source).unwrap(), before_source);
+            assert_eq!(
+                serde_json::to_vec(&store.get(&template.id).unwrap()).unwrap(),
+                before_template
+            );
+        }
+    }
 }
 
 fn roster() -> Vec<nero_core::MeetingAttendee> {

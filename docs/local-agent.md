@@ -65,8 +65,8 @@ MCP 초기화 응답의 `serverInfo.version`은 실행 중인 연동의 버전�
 
 버전이 다르면 Nero의 `설정 > 연동`에서 설치 상태를 확인한다. 조회 결과나 초기화 지침은
 설치를 허가하지 않는다. 공개 업데이트 서명에는 제품/빌드만 있고 연동 세대가 없으므로
-`publicIntegration.state`는 `unknown`이다. 공개 제품 업데이트는 Nero의 업데이트 화면에서
-별도로 확인하며, 이 로컬 상태 조회는 네트워크 요청을 하지 않는다.
+`publicIntegration.state`는 `unknown`이다. 공개 제품 업데이트는 Nero의 업데이트 화면이나
+`update check`로 별도로 확인한다. 이 로컬 연동 상태 조회는 네트워크 요청을 하지 않는다.
 
 ## CLI
 
@@ -76,6 +76,10 @@ MCP 초기화 응답의 `serverInfo.version`은 실행 중인 연동의 버전�
 nero --help
 nero --version
 nero doctor --json
+nero update status --json
+nero update check --json
+nero update download --json
+nero update install --json
 nero meetings list --limit 20 --json
 nero meetings list --on 2026-10-28 --timezone Asia/Seoul --json
 nero meetings list --unfiled --json
@@ -105,6 +109,20 @@ nero meetings restore --file targets.json --json
 nero folders create "제품팀" --expected-version HASH --json
 nero mcp
 ```
+
+앱 업데이트는 실행 중인 Nero의 인증된 연결과 앱 화면에서 쓰는 동일한 업데이트 서비스를
+사용한다. `update status`는 로컬 상태만 읽으며, `check`는 공식 공개 채널을 조회한다.
+`download`는 앱이 소유하는 다운로드를 시작하고 `accepted:true`를 반환한다. 진행 상태와
+네트워크/서명 오류는 `status`의 `status.phase`와 `status.message`로 확인한다.
+`install`은 모든 편집기의 저장 확인과 녹음/처리 작업의 유휴 조건을 통과한 뒤 설치와
+정상 재시작을 시작한다. `accepted:true,restarting:true`는 설치 완료가 아니다.
+앱이 다시 실행된 뒤 `doctor`의 앱 버전/빌드와 `update status`를 확인한다.
+유휴 조건을 통과하지 못하면 `accepted:false`와 `waiting` 상태를 반환한다.
+설치 응답이 끊겼다면 즉시 반복하지 않고 실행 중인 앱과 상태부터 확인한다.
+공식 키, 다운로드 주소, 서명, 새 빌드 조건, 실패 시 복원과 복구 상태는 앱 화면과 동일하다.
+CLI/MCP는 URL, 설치 파일 경로, 서명 키를 입력받지 않는다. 앱 미실행은
+`app_not_running`, 이 연결을 지원하지 않는 구버전 앱은 `app_update_unsupported`로 반환한다.
+구버전 앱은 앱의 업데이트 화면을 사용하며 CLI가 별도 설치 프로그램을 실행하지 않는다.
 
 - `--data-dir PATH`는 명시적인 다른 데이터 루트를 조회한다. 누락된 경로는 생성하지 않는다.
 - 기본 루트는 앱과 같은 `io.github.choseongmin1128.nero.desktop` 식별자의 OS 데이터 경로다.
@@ -186,6 +204,7 @@ SHA-256이다. 원문, 메모, 참석 명단 또는 기존 요약이 바뀌면 `
 | `meeting_attendees_set` | 현재 회의 editVersion으로 참석 명단 교체 |
 | `meeting_attendee_promote` | 회의 전용 참석자를 관리 인원으로 저장하고 같은 원자 저장에서 연결 |
 | `status` | 조회/편집 기능과 저장소 존재 여부 |
+| `app_update` | `action:status/check/download/install`로 실행 중인 Nero의 공식 앱 업데이트 관리 |
 | `jobs_list` | 실행 중인 Nero의 처리 작업 상태. 선택적 meetingId, offset/limit |
 | `job_cancel` | 명시적으로 요청한 작업을 editVersion 검사 후 취소 |
 | `templates_list`, `template_get` | 템플릿 목록/선택한 프롬프트 조회 |

@@ -189,7 +189,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     const bridge = testBridge;
     const { ui, icon, escape, button, duration, recordingStatus, statusMarkup, sessionControls, applySystemAppearance } = testUI;
     ${executable}
-    return { state, detail, documentSearch, summaryEvidenceOptions, restoreTranscript: restoreForTest, selectMeeting, saveDraft, finishEditing, onEdit, onQuitRequest, onAgentWriteRequest, refreshDevices, acceptSnapshot, saveTranscript, loadTranscript, acceptProcessing, loadSummary, renderSummary, createMeeting, openSetup, openSettings, changeMicrophone, changeMeetingDate, render, prepareAudio, exportDocument, editTranscriptRow, completeTranscriptRow, cancelTranscriptRow, cancelProcessing, retryProcessing, acknowledgeProcessing };
+    return { state, detail, documentSearch, summaryEvidenceOptions, appLeaveEditors: [templateSettings, peopleSettings, meetingAttendees, speakers], restoreTranscript: restoreForTest, selectMeeting, saveDraft, finishEditing, onEdit, onQuitRequest, onAgentWriteRequest, refreshDevices, acceptSnapshot, saveTranscript, loadTranscript, acceptProcessing, loadSummary, renderSummary, createMeeting, openSetup, openSettings, changeMicrophone, changeMeetingDate, render, prepareAudio, exportDocument, editTranscriptRow, completeTranscriptRow, cancelTranscriptRow, cancelProcessing, retryProcessing, acknowledgeProcessing };
   })()`, context);
   await tick();
   return {
@@ -636,6 +636,63 @@ test('summary starts only after pending transcript edits are saved', async () =>
   await click;
   assert.deepEqual(calls, ['a']);
   assert.equal(page.app.state.transcriptDraft.dirty, false);
+});
+
+for (const summaryReady of [false, true]) {
+  test(`disabled local summary hides creation and preparation with model ready ${summaryReady}`, async () => {
+    const message = '앱 내 요약은 준비 중입니다.';
+    const readiness = { status: 'idle', supported: true, modelReady: true, summarySupported: true, summaryReady, localSummaryEnabled: false, localSummaryMessage: message };
+    const page = await openApp(transcriptDocument(), readiness);
+    const calls = [];
+    page.bridge.summarizeMeeting = async () => { calls.push('summarize'); };
+    page.bridge.prepareSummaryModel = async () => { calls.push('prepare'); };
+    assert.equal(page.element('summarize').hidden, true);
+    assert.equal(page.element('prepare-summary').hidden, true);
+    assert.equal(page.element('summary-template-choice').hidden, true);
+    assert.equal(page.element('summary-message').textContent, message);
+    await page.app.openSettings();
+    assert.equal(page.element('models').hidden, true);
+    assert.equal(page.element('settings-summary-progress').hidden, true);
+    assert.equal(page.element('settings-summary-state').textContent, message);
+    assert.equal(page.element('setup-summary-choice').hidden, true);
+    assert.equal(page.element('setup-download-summary').hidden, true);
+    for (const id of ['summarize', 'prepare-summary', 'models', 'setup-download-summary']) {
+      await page.element(id).listeners.get('click')();
+    }
+    assert.deepEqual(calls, []);
+    page.bridge.readSummary = async () => ({ document: { id: 'saved-summary', text: '저장된 요약', sourceVersion: structuredClone(page.app.state.transcriptDraft.doc.version) }, stale: false });
+    await page.app.loadSummary('a');
+    assert.equal(page.element('summary-content').hidden, false);
+    assert.match(page.element('summary-content').innerHTML, /저장된 요약/);
+    assert.equal(page.element('summarize').hidden, true);
+    assert.equal(page.element('summary-message').textContent, '');
+  });
+}
+
+test('disabled local summary excludes the model from initial downloads and hides retries in every notice', async () => {
+  const page = await openApp(transcriptDocument(), { status: 'idle', supported: true, modelReady: false, summarySupported: true, summaryReady: false, localSummaryEnabled: false });
+  const prepared = [], retried = [];
+  page.element('setup-summary-option').checked = true;
+  page.bridge.prepareMeetingModels = async includeSummary => { prepared.push(includeSummary); return { ...page.app.state.processing, revision: 2 }; };
+  await page.element('setup-download').listeners.get('click')();
+  assert.deepEqual(prepared, [false]);
+  const jobs = [
+    { id: 'summary-failed', kind: 'summary', meetingId: 'a', status: 'failed', createdAt: 10, retryable: true },
+    { id: 'summary-model-failed', kind: 'summary-model', status: 'failed', createdAt: 20, retryable: true },
+    { id: 'transcribe-failed', kind: 'transcribe', meetingId: 'b', status: 'failed', createdAt: 30, retryable: true },
+  ];
+  await page.app.acceptProcessing({ ...page.app.state.processing, revision: 3, modelReady: true, jobs });
+  assert.equal(page.element('retry-processing').hidden, true);
+  const notices = page.element('notification-center').innerHTML;
+  assert.doesNotMatch(notices, /data-notification-job="summary-failed" data-notification-action="retry"/);
+  assert.doesNotMatch(notices, /data-notification-job="summary-model-failed" data-notification-action="retry"/);
+  assert.match(notices, /data-notification-job="transcribe-failed" data-notification-action="retry"/);
+  assert.equal(page.app.state.processing.jobs[0].retryable, true);
+  page.bridge.retryProcessing = async id => { retried.push(id); return { ...page.app.state.processing, revision: 4 }; };
+  await page.app.retryProcessing('summary-failed');
+  await page.app.retryProcessing('summary-model-failed');
+  await page.app.retryProcessing('transcribe-failed');
+  assert.deepEqual(retried, ['transcribe-failed']);
 });
 
 
@@ -1584,6 +1641,7 @@ test('transcript copy and TXT/Markdown export include the whole saved document d
 
 test('agent writes flush pending edits and reconcile focused metadata before unlocking', async () => {
   const page = await openApp();
+  for (const editor of page.app.appLeaveEditors) editor.beforeLeave = () => { throw new Error('meeting mutations do not leave every editor'); };
   page.element('meeting-title').focus();
   page.edit('저장 전 메모');
   const ack = deferred();
@@ -1606,6 +1664,50 @@ test('agent writes flush pending edits and reconcile focused metadata before unl
   assert.equal(page.element('meeting-notes').readOnly, false);
   page.edit('후속 수정');
   assert.equal(page.app.state.draft.title, '에이전트 제목');
+});
+
+for (let rejected = 0; rejected < 4; rejected++) {
+  test(`agent app updates reject installation when editor ${rejected} declines leaving`, async () => {
+    const page = await openApp();
+    page.edit('보존할 메모');
+    const checked = [], calls = [];
+    page.app.appLeaveEditors.forEach((editor, index) => {
+      editor.beforeLeave = async () => { checked.push(index); return index !== rejected; };
+    });
+    page.bridge.agentWriteReady = async (requestId, error) => { calls.push({ requestId, error }); };
+    await page.app.onAgentWriteRequest({ requestId: '11111111-1111-4111-8111-111111111111', kind: 'appUpdate' });
+    assert.deepEqual(checked, Array.from({ length: rejected + 1 }, (_, index) => index));
+    assert.equal(calls.length, 1);
+    assert.equal(typeof calls[0].error, 'string');
+    assert.equal(page.updates.length, 0);
+    assert.equal(page.app.state.draft.dirty, true);
+    assert.equal(page.app.state.draft.notes, '보존할 메모');
+    assert.equal(page.element('meeting-notes').readOnly, false);
+  });
+}
+
+test('agent app updates finish every editor and save drafts before acknowledging under edit ownership', async () => {
+  const page = await openApp();
+  page.edit('설치 전 저장할 메모');
+  const checked = [], calls = [], ack = deferred();
+  page.app.appLeaveEditors.forEach((editor, index) => {
+    editor.beforeLeave = async () => { checked.push(index); return true; };
+  });
+  page.bridge.agentWriteReady = async (requestId, error) => { calls.push({ requestId, error }); await ack.promise; };
+  const request = page.app.onAgentWriteRequest({ requestId: '11111111-1111-4111-8111-111111111111', kind: 'appUpdate' });
+  await tick();
+  assert.deepEqual(checked, [0, 1, 2, 3]);
+  assert.equal(calls.length, 0);
+  assert.equal(page.element('meeting-notes').readOnly, true);
+  page.updates[0].pending.resolve();
+  await tick();
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].error, undefined);
+  assert.equal(page.saved().notes, '설치 전 저장할 메모');
+  assert.equal(page.element('meeting-notes').readOnly, true);
+  ack.resolve();
+  await request;
+  assert.equal(page.element('meeting-notes').readOnly, false);
 });
 
 test('agent request rejects failed draft saves without approving mutation', async () => {

@@ -116,6 +116,25 @@ pub fn availability(process: &Processing) -> (bool, bool, u64) {
     (supported, ready, spec.files.iter().map(|f| f.bytes).sum())
 }
 type SummaryResult<T> = Result<T, Failure>;
+
+#[derive(serde::Serialize)]
+struct ChatMessage<'a> {
+    role: &'static str,
+    content: &'a str,
+}
+
+fn chat_messages<'a>(system: &'a str, user: &'a str) -> [ChatMessage<'a>; 2] {
+    [
+        ChatMessage {
+            role: "system",
+            content: system.trim(),
+        },
+        ChatMessage {
+            role: "user",
+            content: user.trim(),
+        },
+    ]
+}
 fn check_cancel(cancel: &AtomicBool) -> SummaryResult<()> {
     cancelled(cancel).map_err(|_| Failure::new(FailureKind::Cancelled, "처리를 취소했습니다."))
 }
@@ -241,12 +260,25 @@ impl Server {
         user: &str,
         cancel: &AtomicBool,
     ) -> SummaryResult<usize> {
-        let rendered=self.request("/apply-template",Some(json!({"messages":[{"role":"system","content":system},{"role":"user","content":user}],"add_generation_prompt":true,"chat_template_kwargs":{"enable_thinking":false}})),cancel).await?;
-        let prompt = rendered["prompt"]
-            .as_str()
-            .ok_or("입력 형식을 확인하지 못했습니다.")?;
-        if !prompt.contains(system) || !prompt.contains(user) {
-            return Err("입력이 온전하게 전달되지 않았습니다.".into());
+        let messages = chat_messages(system, user);
+        let rendered = self
+            .request(
+                "/apply-template",
+                Some(json!({"messages":&messages,"add_generation_prompt":true,"chat_template_kwargs":{"enable_thinking":false}})),
+                cancel,
+            )
+            .await?;
+        let prompt = rendered["prompt"].as_str().ok_or_else(|| {
+            Failure::new(FailureKind::Protocol, "입력 형식을 확인하지 못했습니다.")
+        })?;
+        if messages
+            .iter()
+            .any(|message| !prompt.contains(message.content))
+        {
+            return Err(Failure::new(
+                FailureKind::Protocol,
+                "입력이 온전하게 전달되지 않았습니다.",
+            ));
         }
         let tokens = self
             .request(
@@ -294,7 +326,7 @@ impl Server {
             serde_json::to_vec(&metadata).map_err(storage)?,
         )
         .map_err(storage)?;
-        let response=self.request("/v1/chat/completions",Some(json!({"messages":[{"role":"system","content":SYSTEM},{"role":"user","content":user}],"temperature":1.0,"top_k":64,"top_p":0.95,"min_p":0.0,"repeat_penalty":1.0,"presence_penalty":0.0,"frequency_penalty":0.0,"max_tokens":output_limit,"seed":0,"stream":false,"cache_prompt":false,"chat_template_kwargs":{"enable_thinking":false}})),cancel).await.map_err(|mut error| {
+        let response=self.request("/v1/chat/completions",Some(json!({"messages":chat_messages(SYSTEM,user),"temperature":1.0,"top_k":64,"top_p":0.95,"min_p":0.0,"repeat_penalty":1.0,"presence_penalty":0.0,"frequency_penalty":0.0,"max_tokens":output_limit,"seed":0,"stream":false,"cache_prompt":false,"chat_template_kwargs":{"enable_thinking":false}})),cancel).await.map_err(|mut error| {
             error.detail = Some(generation_detail(None, stage, input_tokens, output_limit));
             error
         })?;
@@ -403,10 +435,7 @@ pub(super) struct StructuredOutcome {
 
 fn structured_body(request: &StructuredRequest) -> Value {
     json!({
-        "messages": [
-            {"role": "system", "content": request.system},
-            {"role": "user", "content": request.user}
-        ],
+        "messages": chat_messages(&request.system, &request.user),
         "temperature": 0,
         "top_k": 1,
         "top_p": 1,
@@ -1360,6 +1389,7 @@ fn report_summary_failure(process: &Processing, error: Failure) -> String {
 
 impl Processing {
     pub fn prepare_summary(self: &Arc<Self>) -> Result<Progress, String> {
+        crate::release_capabilities::require_local_summary()?;
         self.prepare_named_model(MANIFEST, "summary-model", "Gemma4-E4B")
     }
     pub fn summarize(
@@ -1375,6 +1405,7 @@ impl Processing {
         meeting_id: String,
         selection: Option<crate::summary_template::TemplateRef>,
     ) -> Result<Progress, String> {
+        crate::release_capabilities::require_local_summary()?;
         let (selection, _) = crate::summary_template::select(&self.root, selection)?;
         self.summarize_bound_with_template(core, meeting_id, None, Some(selection), None)
     }
@@ -1386,6 +1417,7 @@ impl Processing {
         selection: Option<crate::summary_template::TemplateRef>,
         requested_id: Option<String>,
     ) -> Result<Progress, String> {
+        crate::release_capabilities::require_local_summary()?;
         let template = selection
             .as_ref()
             .map(|value| value.resolve(&self.root))
@@ -2199,7 +2231,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn gemma_trim_render(system: &str, user: &str) -> String {
+    pub(super) fn gemma_trim_render(system: &str, user: &str) -> String {
         // The pinned template trims each string message before its turn delimiter.
         format!(
             "<bos><|turn>system\n{}<turn|>\n<|turn>user\n{}<turn|>\n<|turn>model\n",
@@ -2269,6 +2301,59 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn structured_requests_measure_and_send_identical_message_boundaries() {
+        let temporary = tempfile::tempdir().unwrap();
+        let measured = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let measured_messages = measured.clone();
+        let fixture = scripted_server_with_renderer(
+            temporary.path(),
+            |_| 100,
+            |_| json!({"choices":[{"finish_reason":"stop","message":{"content":"{}"}}]}),
+            move |system, user| {
+                measured_messages
+                    .lock()
+                    .unwrap()
+                    .push([system.to_owned(), user.to_owned()]);
+                gemma_trim_render(system, user)
+            },
+        );
+        let request = StructuredRequest {
+            system: "  용어 확인\n  내부 정책 유지\n".into(),
+            user: "\n<source>\n  조건 5000원\n\n  담당 미정\n</source>\n  ".into(),
+            schema: json!({"type":"object"}),
+        };
+        let original = (request.system.clone(), request.user.clone());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime
+            .block_on(
+                fixture
+                    .server
+                    .generate_structured(&request, &AtomicBool::new(false)),
+            )
+            .unwrap();
+        let requests = fixture.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        let sent = [
+            requests[0]["messages"][0]["content"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+            requests[0]["messages"][1]["content"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+        ];
+        assert_eq!(*measured.lock().unwrap(), vec![sent.clone()]);
+        assert_eq!(sent[0], "용어 확인\n  내부 정책 유지");
+        assert_eq!(sent[1], "<source>\n  조건 5000원\n\n  담당 미정\n</source>");
+        assert_eq!((request.system, request.user), original);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn rendered_input_validation_still_rejects_lost_system_body_or_internal_whitespace() {
         for changed in ["system", "body", "internal-whitespace"] {
             let temporary = tempfile::tempdir().unwrap();
@@ -2299,6 +2384,7 @@ mod tests {
                 error.message, "입력이 온전하게 전달되지 않았습니다.",
                 "{changed}"
             );
+            assert_eq!(error.kind, FailureKind::Protocol, "{changed}");
         }
     }
 

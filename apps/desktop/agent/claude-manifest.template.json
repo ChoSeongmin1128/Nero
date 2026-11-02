@@ -26,6 +26,10 @@
   },
   "tools": [
     {
+      "name": "app_update",
+      "description": "공식 Nero 업데이트 상태 조회와 사용자 요청에 따른 확인, 다운로드, 설치 및 정상 재시작"
+    },
+    {
       "name": "jobs_list",
       "description": "실행 중인 Nero의 처리 작업 상태 조회"
     },

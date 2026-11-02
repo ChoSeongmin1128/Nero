@@ -61,6 +61,8 @@ fn hash(bytes: &[u8]) -> String {
 fn local_summary_fixture() {
     let source_path = required_path("NERO_SUMMARY_SOURCE");
     let notes_path = env::var_os("NERO_SUMMARY_NOTES").map(PathBuf::from);
+    let template_path =
+        env::var_os("NERO_SUMMARY_TEMPLATE").map(|_| required_path("NERO_SUMMARY_TEMPLATE"));
     let weights = required_path("NERO_SUMMARY_WEIGHTS");
     let resources = required_path("NERO_SUMMARY_RESOURCES");
     let output = write_path("NERO_SUMMARY_OUTPUT");
@@ -76,6 +78,11 @@ fn local_summary_fixture() {
     let job = directory(&output, "job").expect("cannot create isolated job directory");
     let source_bytes = read_fixture(&source_path);
     let notes_bytes = notes_path.as_deref().map(read_fixture).unwrap_or_default();
+    let template_bytes = template_path.as_deref().map(read_fixture);
+    let template: Option<nero_core::templates::PromptTemplate> =
+        template_bytes.as_deref().map(|bytes| {
+            serde_json::from_slice(bytes).expect("template must be a PromptTemplate JSON document")
+        });
     let source: Transcript =
         serde_json::from_slice(&source_bytes).expect("source must be a Transcript JSON document");
     let notes = String::from_utf8(notes_bytes.clone()).expect("notes must be UTF-8");
@@ -88,6 +95,10 @@ fn local_summary_fixture() {
         Ok("1") => true,
         _ => panic!("NERO_SUMMARY_BASELINE must be 0 or 1"),
     };
+    assert!(
+        !baseline || template.is_none(),
+        "legacy evaluation cannot apply a selected template"
+    );
     let weights_before = fs::symlink_metadata(&weights).expect("existing weights are required");
     assert!(
         weights_before.is_file() && !weights_before.file_type().is_symlink(),
@@ -140,14 +151,16 @@ fn local_summary_fixture() {
             })
             .await
         } else {
-            run_summary_with_notes(
+            run_summary_with_template(
                 &process,
                 &source,
                 &notes,
+                &[],
                 &weights,
                 &job,
                 &cache_base,
                 &cancel,
+                template.as_ref(),
             )
             .await
         };
@@ -169,10 +182,12 @@ fn local_summary_fixture() {
     let pipeline_elapsed_ms = pipeline_started.elapsed().as_millis();
     let source_after = read_fixture(&source_path);
     let notes_after = notes_path.as_deref().map(read_fixture).unwrap_or_default();
+    let template_after = template_path.as_deref().map(read_fixture);
     let weights_after =
         fs::symlink_metadata(&weights).expect("weights disappeared during evaluation");
     let source_unchanged = source_bytes == source_after;
     let notes_unchanged = notes_bytes == notes_after;
+    let template_unchanged = template_bytes == template_after;
     let model_metadata_unchanged = weights_before.len() == weights_after.len()
         && weights_before.modified().ok() == weights_after.modified().ok()
         && weights_after.is_file()
@@ -193,6 +208,10 @@ fn local_summary_fixture() {
         "sourceSha256After": hash(&source_after),
         "notesSha256Before": hash(&notes_bytes),
         "notesSha256After": hash(&notes_after),
+        "templateSha256Before": template_bytes.as_deref().map(hash),
+        "templateSha256After": template_after.as_deref().map(hash),
+        "selectedTemplateId": template.as_ref().map(|value| &value.id),
+        "templateUnchanged": template_unchanged,
         "sourceUnchanged": source_unchanged,
         "notesUnchanged": notes_unchanged,
         "modelMetadataUnchanged": model_metadata_unchanged,
@@ -223,6 +242,10 @@ fn local_summary_fixture() {
     .expect("cannot save evaluation");
     assert!(source_unchanged, "source fixture changed during evaluation");
     assert!(notes_unchanged, "notes fixture changed during evaluation");
+    assert!(
+        template_unchanged,
+        "selected template changed during evaluation"
+    );
     assert!(
         model_metadata_unchanged,
         "model metadata changed during read-only evaluation"
