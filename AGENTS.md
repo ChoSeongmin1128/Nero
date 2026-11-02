@@ -188,7 +188,11 @@ behavior. Separate implemented behavior, proposals and unverified platform suppo
   copies are disposable after their source/hash history is recorded. Do not accumulate
   per-release `.app` copies, `data-before` folders or standalone installer clones.
 - Use `.work/rust-target` as the single Cargo target cache. Retire temporary alternate
-  targets when their experiment is finished. Temporary notary upload archives belong
+  targets when their experiment is finished. Dev/test profiles use line-table debug
+  information without incremental caches; enable full debugger information only for
+  a specific debugging session. Retire completed validation's debug artifacts after
+  recording results, and check free space before another heavy build. Preserve
+  release inputs still needed by active packaging. Temporary notary upload archives belong
   to an auto-cleaned temporary directory and are not retained beside final artifacts.
 - During macOS GUI/release verification, keep a bounded temporary display/idle/user-active
   assertion while working and release it when finished. Do not change persistent
