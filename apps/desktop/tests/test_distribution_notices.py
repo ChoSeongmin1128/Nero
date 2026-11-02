@@ -1,6 +1,7 @@
 import importlib.util
 import json
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -12,6 +13,38 @@ spec.loader.exec_module(notices)
 
 
 class DistributionNoticeTests(unittest.TestCase):
+    def test_autocrlf_checkout_preserves_pinned_notice_bytes_and_original_line_endings(self):
+        source_root = Path(__file__).resolve().parents[3]
+        originals = {}
+        for group in ('models', 'rust-supplements'):
+            for source in (source_root / 'apps/desktop/licenses' / group).rglob('*'):
+                if source.is_file():
+                    originals[source.relative_to(source_root)] = source.read_bytes()
+        self.assertTrue(originals)
+        for name, data in [('original-LF.txt', b'first line\nsecond line\n'),
+                           ('original-CRLF.txt', b'first line\r\nsecond line\r\n')]:
+            originals[Path('apps/desktop/licenses/models') / name] = data
+        with tempfile.TemporaryDirectory(prefix='nero-notice-checkout-') as temporary:
+            repository = Path(temporary) / 'repository'
+            repository.mkdir()
+            (repository / '.gitattributes').write_bytes((source_root / '.gitattributes').read_bytes())
+            for relative, data in originals.items():
+                destination = repository / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(data)
+            def git(*args):
+                subprocess.run(['git', '-C', str(repository), *args], check=True,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            git('init', '--quiet')
+            git('-c', 'core.autocrlf=false', 'add', '--force', '.gitattributes', 'apps/desktop/licenses')
+            checkout = Path(temporary) / 'checkout'
+            checkout.mkdir()
+            git('-c', 'core.autocrlf=true', 'checkout-index', '--all', '--force',
+                '--prefix', checkout.as_posix() + '/')
+            changed = [relative.as_posix() for relative, data in originals.items()
+                       if (checkout / relative).read_bytes() != data]
+            self.assertEqual(changed, [], 'Checkout must preserve the exact pinned upstream bytes')
+
     def fixture(self, root):
         (root / 'Cargo.lock').write_text('synthetic locked graph\n')
         (root / 'THIRD_PARTY_NOTICES.md').write_text('Synthetic distribution notices\n')
