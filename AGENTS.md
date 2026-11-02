@@ -18,10 +18,17 @@ This file applies to the entire repository.
 - The native app provides meetings, notes, microphone recording and playback. With
   packaged workers, Apple silicon/macOS 26 supports native file import and local
   Nemotron 3.5 Q8 speech recognition. Explicit setup prepares the pinned ASR model
-  and the smaller Nemotron 3 speaker model; speech readiness gates new meetings,
+  and, when speaker analysis is enabled, the smaller Nemotron 3 speaker model; speech readiness gates new meetings,
   recording and import. Packaged llama.cpp enables on-demand Gemma 4 E4B Q4 summaries
   with separately stored source revisions; summary preparation remains optional.
   Do not fabricate transcripts or summary results.
+- Initial setup and Settings can explicitly select macOS system transcription on supported
+  Apple silicon/macOS 26 devices. Resolve the supported SpeechTranscriber or
+  DictationTranscriber variant before preparation, freeze it per session/job and never
+  silently switch after execution failure. System language assets are prepared only
+  on explicit request. Preserve native phrase ranges, exact input/finalize evidence
+  and OS/provider identity; do not invent word times. This path runs after recording
+  ends and does not provide live previews. See `scripts/apple-speech/README.md`.
 - Default recognition sends the complete recording through one stateful
   NeMo-Speech.cpp stream with endpointing disabled, then finishes the stream at EOF.
   `commit_nemotron_transcript` requires pinned model/runtime identity, full input-frame
@@ -46,7 +53,10 @@ This file applies to the entire repository.
   Save native ASR before speaker finalization and reuse it through the normal
   checkpoint/continuation path. See `docs/live-speech.md`; source checks do not
   establish microphone, low-memory laptop or macOS acceptance.
-- Save recognition before optional terminology correction and the separate
+- Speaker analysis is separately selectable in initial setup and Settings, frozen per
+  session/job and defaults to enabled for existing preferences/jobs. Disabling it skips
+  speaker preparation, readiness reads, live speaker streams and final analysis.
+  Save recognition before optional terminology correction and the optional separate
   whole-recording Nemotron 3 speaker stage. Persist the source-bound diarization
   continuation under the same job ID so a speaker-stage retry does not rerun ASR.
   Failure or cancellation retains the saved text and audio. Existing meetings are

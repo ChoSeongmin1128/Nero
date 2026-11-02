@@ -230,7 +230,7 @@ async fn open_connect_request(
     service: Arc<CalendarService>,
     request: calendar::ConnectRequest,
 ) -> Result<ConnectAttempt, String> {
-    publish(&app);
+    publish(app);
     let url = request.authorization_url;
     let opened = tauri::async_runtime::spawn_blocking(move || open_authorization(&url))
         .await
@@ -238,7 +238,7 @@ async fn open_connect_request(
         .and_then(|result| result);
     if let Err(error) = opened {
         service.cancel_connect();
-        publish(&app);
+        publish(app);
         return Err(error);
     }
     Ok(ConnectAttempt {
