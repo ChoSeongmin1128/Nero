@@ -40,6 +40,8 @@ mod tests {
         let root = temporary.path().canonicalize().unwrap();
         let core = nero_core::CoreHandle::open(&root).unwrap();
         let process = crate::processing::Processing::new(root.clone(), root.join("resources"));
+        let initial = process.snapshot();
+        assert!(initial.jobs.is_empty());
         let before = inventory(&root);
         for result in [
             process.prepare_summary(),
