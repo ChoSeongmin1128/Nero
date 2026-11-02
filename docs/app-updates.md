@@ -9,7 +9,8 @@ is independent of this signature and is not configured by this change.
 ## Runtime policy
 
 - The shared UI controller checks 45 seconds after initialization, then every six
-  hours. A failed check or download retries automatically after five minutes;
+  hours. A failed check or download without a ready package retries automatically
+  after five minutes, including failures from a manual settings check;
   an active download or a ready package is not replaced by a scheduled check.
   An available update downloads automatically. Installation requires the
   user's restart action, after the consuming screen has saved all open editors.
