@@ -2,6 +2,8 @@
 
 The runner launches an unmodified, locally installed native Claude Code binary. Authentication remains in Claude Code. Nero does not read or copy Claude credentials. The login process uses the official browser flow and does not display a terminal. Nero accepts a `claude.ai` authentication status for its subscription chat.
 
+Passive account snapshots check only whether a native-install or app-owned runtime file is present. Presence does not establish its signature, authentication or subscription entitlement. The settings action distinguishes preparation from an explicit login check. Selecting it validates the runtime, prepares the official app-owned runtime if needed, checks the existing login and opens login only when required. No status poll runs Claude Code or reads its credentials.
+
 A chat request uses an empty temporary working directory, safe and restricted modes, disabled built-in tools, an empty strict MCP configuration, and no persisted Claude Code session. Environment overrides for credentials, provider routing and custom endpoints are removed. Claude Code's managed organizational policy still applies. In particular, the official CLI documentation states that policy-configured hooks may run in safe mode; Nero does not override organizational policy.
 
 The macOS native binary is checked with Apple code signature validation and the Claude Code signing identity. Windows validates the Authenticode signature and publisher. The official installer path is discovered relative to the user's home directory. Binary updates between validation and execution remain a filesystem race. Neither platform signature check proves the service is reachable or that an account is entitled to a particular model.

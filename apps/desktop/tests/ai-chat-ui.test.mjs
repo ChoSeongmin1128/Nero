@@ -60,6 +60,20 @@ test('model picker navigates providers and models, handles unavailable accounts 
   await wait(() => app.window.document.activeElement === trigger);
 });
 
+for (const [runtime, label] of [['missing', '설치하고 로그인'], ['present', '로그인 확인']]) {
+  test(`Claude ${runtime} installation exposes the appropriate explicit action`, async t => {
+    const app = await fixture(t, { scenario: `claude-runtime-${runtime}`, prepareModels: false });
+    app.ui.setSettingsActive(true);
+    const row = () => [...app.node('ai-account-settings').querySelectorAll('.settings-client-row')].find(node => node.querySelector('.settings-client-name')?.textContent === 'Claude');
+    await wait(() => row()?.textContent.includes(label));
+    const button = [...row().querySelectorAll('button')].find(node => node.textContent === label);
+    await wait(() => !button.disabled);
+    assert.equal(app.calls.some(call => call[0] === 'connect'), false);
+    button.click();
+    await wait(() => app.calls.some(call => call[0] === 'connect' && call[1] === 'claude'));
+  });
+}
+
 test('Escape closes the focused AI popover without restoring focus to an unrelated action menu', async t => {
   const app = await fixture(t);
   const details = app.node('meeting-detail').querySelector('.transcript-maintenance');

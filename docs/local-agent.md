@@ -19,7 +19,10 @@ Nero의 저장 흐름에 요청하며 저장 파일을 직접 고치지 않는�
 ## 연결
 
 Nero의 `설정 > 연동`에서 Claude 또는 ChatGPT의 `연결`을 선택한다. Claude는 네이티브
-MCPB 확장의 설치 확인 화면을 열며 사용자가 Claude에서 설치를 확인한다. ChatGPT는 설치 상태를
+MCPB 확장을 준비한다. macOS에서는 Claude Desktop의 설치 확인 화면을 연다. Windows에서는
+Nero가 파일 경로와 가져오기 안내를 표시하며, Claude Desktop의 설정에서 확장 → 고급 →
+확장 설치로 해당 파일을 선택한다. Windows의 기본 파일 연결이나 다른 앱 설정은 바꾸지 않는다.
+Claude Desktop 설치와 Claude Code의 AI 계정 로그인은 별개다. ChatGPT는 설치 상태를
 확인해 필요한 로컬 플러그인을 등록하거나 업데이트한다. 설치 정보를 읽을 수 없으면 ChatGPT의
 연결 화면을 연다. 추가 승인이 요청되면 해당 클라이언트에서 확인한다. 다른 앱의 기존 MCP
 설정 파일이나 사용자 PATH를 Nero가 직접 덮어쓰지 않는다.

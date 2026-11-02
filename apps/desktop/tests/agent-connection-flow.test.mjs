@@ -124,7 +124,39 @@ test('manual connection owns a contextual dialog rather than a detached copy but
   assert.match(html, /<strong>직접 연결<\/strong>/);
   assert.match(html, /id="settings-agent-manual"[^>]+aria-label="직접 연결 안내 열기"/);
   assert.match(component, /DialogContent container=\{container\}/);
-  assert.match(component, /<DialogTitle>MCP 직접 연결<\/DialogTitle>/);
+  assert.match(component, /'MCP 직접 연결'/);
   assert.match(component, /<pre aria-labelledby="agent-prompt-label"/);
   assert.match(component, /AI 앱의 대화에 붙여넣어 Nero를 연결하세요/);
+});
+
+test('Claude extension import copies only its prepared file path and survives background polling', async () => {
+  const copied = [];
+  const flow = createAgentConnectionFlow({ writeText: async value => copied.push(value) });
+  const path = "C:\\Example User's Files\\Nero.mcpb";
+  flow.openClaudeExtension(path);
+  flow.update({ ...info, config: { token: 'must-not-copy' } });
+  await flow.copy();
+  assert.equal(flow.getSnapshot().mode, 'claude-extension');
+  assert.equal(flow.getSnapshot().prompt, path);
+  assert.deepEqual(copied, [path]);
+  flow.close();
+  flow.open(info);
+  assert.equal(flow.getSnapshot().mode, 'prompt');
+  assert.equal(flow.getSnapshot().copied, false);
+});
+
+test('a delayed previous copy cannot confirm a newly opened extension import', async () => {
+  const pending = deferred();
+  const flow = createAgentConnectionFlow({ writeText: () => pending.promise });
+  flow.open(info);
+  const first = flow.copy();
+  flow.openClaudeExtension('C:\\Prepared\\Nero.mcpb');
+  pending.resolve();
+  await first;
+  assert.equal(flow.getSnapshot().copied, false);
+  for (const invalid of [null, 'C:\\Prepared\\Nero.exe', 'Nero.mcpb\n']) {
+    flow.close();
+    flow.openClaudeExtension(invalid);
+    assert.equal(flow.getSnapshot().open, false);
+  }
 });

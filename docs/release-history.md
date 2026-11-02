@@ -3,6 +3,13 @@
 배포 버전별 설치 파일, 사용자 변경 사항과 알려진 제약은
 [GitHub Releases](https://github.com/ChoSeongmin1128/Nero/releases/latest)에서 확인하세요.
 
+## 0.0.1 (빌드62)
+
+- 연동 설정의 섹션 간격과 서비스 아이콘을 통일했습니다.
+- Claude Code 설치 여부와 로그인 상태를 구분해 안내합니다.
+- Windows에서 유효한 Claude Code 서명을 검사하지 못하던 문제를 수정했습니다.
+- Windows용 Claude Desktop 확장을 앱 내부에서 가져오는 경로를 안내합니다.
+
 ## 0.0.1 (빌드61)
 
 - 설정에서 AI 계정, MCP 연결과 Notion 연결을 구분했습니다.

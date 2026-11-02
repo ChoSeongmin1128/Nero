@@ -20,6 +20,8 @@ pub struct ConnectionInfo {
     config: Value,
     cli_example: String,
     clients: Vec<ClientInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    claude_extension_path: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -49,6 +51,11 @@ pub enum ConnectionAttempt {
 }
 
 impl ConnectionInfo {
+    pub fn with_claude_extension_path(mut self, path: Option<String>) -> Self {
+        self.claude_extension_path = path;
+        self
+    }
+
     pub fn connection_attempt(&self, client_id: &str) -> ConnectionAttempt {
         let Some(client) = self.clients.iter().find(|client| client.id == client_id) else {
             return ConnectionAttempt::Recheck;
@@ -207,6 +214,7 @@ fn connection_info_with_installations(
         config,
         cli_example,
         clients,
+        claude_extension_path: None,
     }
 }
 

@@ -36,6 +36,7 @@ impl ClaudeConnection {
         json!({"id":ACCOUNT_ID,"provider":"claude","state":if ready {"ready"} else {"signed_out"},"configured":true,"disconnectable":false})
     }
     pub fn snapshot(&self) -> Value {
+        let runtime_state = claude_runner::installation_state(&self.root);
         if self
             .login
             .lock()
@@ -43,11 +44,16 @@ impl ClaudeConnection {
             .as_ref()
             .is_some_and(|run| run.result.lock().unwrap().is_none())
         {
-            return json!({"id":ACCOUNT_ID,"provider":"claude","state":"connecting","configured":true,"disconnectable":false});
+            return json!({"id":ACCOUNT_ID,"provider":"claude","state":"connecting","runtimeState":runtime_state,"configured":true,"disconnectable":false});
         }
-        self.cached.lock().unwrap().clone().unwrap_or_else(|| {
+        let mut row = self.cached.lock().unwrap().clone().unwrap_or_else(|| {
             json!({"id":ACCOUNT_ID,"provider":"claude","state":"unknown","configured":true,"disconnectable":false})
-        })
+        });
+        row["runtimeState"] = json!(runtime_state);
+        if runtime_state == "missing" && row["state"] == "ready" {
+            row["state"] = json!("unknown");
+        }
+        row
     }
 
     pub fn begin(self: &Arc<Self>) -> Result<String, String> {

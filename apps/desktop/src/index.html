@@ -193,26 +193,30 @@
           </section>
           <section id="settings-agent-panel" role="tabpanel" aria-labelledby="settings-agent-tab" hidden>
             <h3 class="settings-panel-title">연동</h3>
-            <div id="ai-account-settings"></div>
-            <h4 class="settings-subtitle">MCP 연결</h4>
-            <div class="settings-group settings-clients">
-            <div class="settings-client-row">
-              <span class="settings-client-name">Claude</span>
-              <div class="settings-client-controls"><div class="settings-client-meta"><span id="settings-claude-spinner" class="activity-spinner" aria-hidden="true" hidden></span><span id="settings-claude-status" class="settings-client-status" role="status">확인 중</span></div><button id="settings-claude-connect" type="button" class="small" aria-label="Claude 연결" disabled>연결</button></div>
-              <p id="settings-claude-error" class="notice" role="alert" hidden></p>
+            <div class="settings-sections">
+              <div id="ai-account-settings"></div>
+              <section>
+                <h4 class="settings-subtitle">MCP 연결</h4>
+                <div class="settings-group settings-clients">
+                  <div class="settings-client-row">
+                    <span class="settings-client-name"><img class="brand-icon" data-brand-icon="claude" alt="" aria-hidden="true">Claude</span>
+                    <div class="settings-client-controls"><div class="settings-client-meta"><span id="settings-claude-spinner" class="activity-spinner" aria-hidden="true" hidden></span><span id="settings-claude-status" class="settings-client-status" role="status">확인 중</span></div><button id="settings-claude-connect" type="button" class="small" aria-label="Claude 연결" disabled>연결</button></div>
+                    <p id="settings-claude-error" class="notice" role="alert" hidden></p>
+                  </div>
+                  <div class="settings-client-row">
+                    <span class="settings-client-name"><img class="brand-icon" data-brand-icon="chatgpt" alt="" aria-hidden="true">ChatGPT</span>
+                    <div class="settings-client-controls"><div class="settings-client-meta"><span id="settings-codex-spinner" class="activity-spinner" aria-hidden="true" hidden></span><span id="settings-codex-status" class="settings-client-status" role="status">확인 중</span></div><button id="settings-codex-connect" type="button" class="small" aria-label="ChatGPT 연결" disabled>연결</button></div>
+                    <p id="settings-codex-error" class="notice" role="alert" hidden></p>
+                  </div>
+                  <div class="settings-agent-alternative">
+                    <div class="settings-agent-alternative-copy"><strong>직접 연결</strong></div>
+                    <button id="settings-agent-manual" type="button" class="small" aria-label="직접 연결 안내 열기">열기</button>
+                  </div>
+                </div>
+                <p id="settings-agent-status" class="notice" role="status" hidden></p>
+              </section>
+              <div id="calendar-settings"></div>
             </div>
-            <div class="settings-client-row">
-              <span class="settings-client-name">ChatGPT</span>
-              <div class="settings-client-controls"><div class="settings-client-meta"><span id="settings-codex-spinner" class="activity-spinner" aria-hidden="true" hidden></span><span id="settings-codex-status" class="settings-client-status" role="status">확인 중</span></div><button id="settings-codex-connect" type="button" class="small" aria-label="ChatGPT 연결" disabled>연결</button></div>
-              <p id="settings-codex-error" class="notice" role="alert" hidden></p>
-            </div>
-            <div class="settings-agent-alternative">
-              <div class="settings-agent-alternative-copy"><strong>직접 연결</strong></div>
-              <button id="settings-agent-manual" type="button" class="small" aria-label="직접 연결 안내 열기">열기</button>
-            </div>
-            </div>
-            <p id="settings-agent-status" class="notice" role="status" hidden></p>
-            <div id="calendar-settings"></div>
           </section>
           <section id="settings-people-panel" role="tabpanel" aria-labelledby="settings-people-tab" hidden></section>
           <section id="settings-templates-panel" role="tabpanel" aria-labelledby="settings-templates-tab" hidden></section>

@@ -1,5 +1,9 @@
 //! Claude Code subprocess transport. Credentials remain owned by Claude Code.
+mod installation;
 mod prepare;
+#[cfg(windows)]
+mod windows_signature;
+pub use installation::installation_state;
 pub use prepare::{discover_prepared, prepare};
 use serde_json::Value;
 use std::{
@@ -53,30 +57,7 @@ fn validate(binary: &Path) -> Result<(), String> {
 }
 #[cfg(windows)]
 fn validate(binary: &Path) -> Result<(), String> {
-    // https://code.claude.com/docs/en/setup#platform-code-signatures
-    let system = std::env::var_os("SystemRoot").ok_or(ERROR)?;
-    let powershell = PathBuf::from(system).join("System32/WindowsPowerShell/v1.0/powershell.exe");
-    let script = "$s = Get-AuthenticodeSignature -LiteralPath $env:NERO_CLAUDE_BINARY; if ($s.Status -eq 'Valid' -and $s.SignerCertificate.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false) -ceq 'Anthropic, PBC') { exit 0 }; exit 1";
-    use std::os::windows::process::CommandExt;
-    let result = Command::new(powershell)
-        .creation_flags(0x08000000)
-        .args([
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            script,
-        ])
-        .env("NERO_CLAUDE_BINARY", binary)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map_err(|_| ERROR)?;
-    if !result.success() {
-        return Err("Claude Code 실행 파일의 서명을 확인하지 못했습니다.".into());
-    }
-    Ok(())
+    windows_signature::validate(binary)
 }
 #[cfg(not(any(target_os = "macos", windows)))]
 fn validate(_binary: &Path) -> Result<(), String> {
