@@ -2473,6 +2473,7 @@ version = "0.0.1"
 dependencies = [
  "base64 0.22.1",
  "block2",
+ "core-foundation 0.10.1",
  "fs2",
  "hound",
  "jiff",
@@ -2484,6 +2485,8 @@ dependencies = [
  "objc2-foundation",
  "reqwest",
  "ring",
+ "security-framework 3.7.0",
+ "security-framework-sys",
  "semver",
  "serde",
  "serde_json",

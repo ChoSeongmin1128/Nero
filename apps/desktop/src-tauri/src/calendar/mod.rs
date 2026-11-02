@@ -58,6 +58,7 @@ struct State {
     notices: BTreeMap<String, Notice>,
     last_synced_at: Option<u64>,
 }
+#[derive(Clone)]
 struct Access {
     token: String,
     expires_at: u64,
@@ -74,6 +75,9 @@ struct Inner {
     authorization_url: Option<String>,
     cancel: Option<Arc<AtomicBool>>,
     auth_ready: bool,
+    credential_blocked: Option<String>,
+    stored_token: Option<(bool, StoredToken)>,
+    pending_token: Option<(bool, StoredToken, Access)>,
     needs_sync: bool,
     last_attempt: Option<u64>,
     last_tick: Option<u64>,
@@ -86,6 +90,7 @@ pub struct CalendarService {
     client: reqwest::Client,
     inner: Mutex<Inner>,
     generation: AtomicU64,
+    connection_epoch: AtomicU64,
     syncing: AtomicBool,
     token_gate: Mutex<()>,
     access_gate: tokio::sync::Mutex<()>,
@@ -171,12 +176,16 @@ impl CalendarService {
                 authorization_url: None,
                 cancel: None,
                 auth_ready: false,
+                credential_blocked: None,
+                stored_token: None,
+                pending_token: None,
                 needs_sync: true,
                 last_attempt: None,
                 last_tick: None,
                 error: None,
             }),
             generation: AtomicU64::new(0),
+            connection_epoch: AtomicU64::new(0),
             syncing: AtomicBool::new(false),
             token_gate: Mutex::new(()),
             access_gate: tokio::sync::Mutex::new(()),
@@ -258,6 +267,7 @@ impl CalendarService {
         if attempt.is_some_and(|attempt| inner.connecting_id.as_deref() != Some(attempt)) {
             return;
         }
+        self.connection_epoch.fetch_add(1, Ordering::AcqRel);
         self.generation.fetch_add(1, Ordering::AcqRel);
         if let Some(cancel) = inner.cancel.take() {
             cancel.store(true, Ordering::Release);
@@ -341,14 +351,19 @@ impl CalendarService {
             inner.state.token_slot,
             next,
             |slot| {
-                TokenStore.save(
-                    &StoredToken {
-                        refresh_token,
-                        account_id: account,
-                        client_id: config.client_id.clone(),
-                    },
-                    slot,
-                )
+                TokenStore
+                    .save(
+                        &StoredToken {
+                            refresh_token,
+                            account_id: account,
+                            client_id: config.client_id.clone(),
+                        },
+                        slot,
+                        crate::secret_store::Access::Interactive,
+                    )
+                    .map_err(|_| {
+                        "Google 연결을 저장하지 못했습니다. 다시 연결해 주세요.".to_string()
+                    })
             },
             |next| persist(&self.directory, next),
         )?;
@@ -362,6 +377,9 @@ impl CalendarService {
             expires_at: now_ms().saturating_add(response.expires_in.saturating_mul(1000)),
         });
         inner.auth_ready = true;
+        inner.credential_blocked = None;
+        inner.stored_token = None;
+        inner.pending_token = None;
         inner.needs_sync = true;
         inner.last_attempt = None;
         inner.error = None;
@@ -397,6 +415,46 @@ impl CalendarService {
         drop(inner);
         Ok(self.snapshot())
     }
+    fn recover_pending(
+        inner: &mut Inner,
+        save: impl FnOnce(&StoredToken, bool) -> Result<(), crate::secret_store::Error>,
+    ) -> Result<(), String> {
+        let (slot, token, access) = inner
+            .pending_token
+            .clone()
+            .ok_or("저장할 연결 정보가 없습니다.")?;
+        save(&token, slot)
+            .map_err(|_| "Google 연결을 저장하지 못했습니다. 다시 시도해 주세요.".to_string())?;
+        inner.pending_token = None;
+        inner.stored_token = Some((slot, token));
+        inner.access = (access.expires_at > now_ms().saturating_add(60_000)).then_some(access);
+        Ok(())
+    }
+    pub async fn sync_explicit(&self) -> Result<CalendarSnapshot, String> {
+        {
+            let _access = self.access_gate.lock().await;
+            let _gate = self.token_gate.lock().unwrap();
+            let mut inner = self.inner.lock().unwrap();
+            if inner.pending_token.is_some() {
+                Self::recover_pending(&mut inner, |token, slot| {
+                    TokenStore.save(token, slot, crate::secret_store::Access::Interactive)
+                })?;
+            } else if inner.credential_blocked.is_some() {
+                let slot = inner.state.token_slot;
+                let token = TokenStore
+                    .load(slot, crate::secret_store::Access::Interactive)
+                    .map_err(|_| {
+                        "Google 연결을 확인하지 못했습니다. 다시 시도해 주세요.".to_string()
+                    })?;
+                inner.stored_token = Some((slot, token));
+            }
+            inner.credential_blocked = None;
+            inner.error = None;
+            inner.needs_sync = true;
+            inner.last_attempt = None;
+        }
+        self.sync_now().await
+    }
     pub async fn disconnect(&self) -> Result<CalendarSnapshot, String> {
         self.cancel_connect();
         let _gate = self.token_gate.lock().unwrap();
@@ -409,10 +467,15 @@ impl CalendarService {
         inner.access = None;
         inner.scheduler = Scheduler::default();
         inner.auth_ready = false;
+        inner.credential_blocked = None;
+        inner.stored_token = None;
+        inner.pending_token = None;
         inner.needs_sync = false;
         inner.error = None;
         let saved = persist(&self.directory, &inner.state);
-        let removed = TokenStore.delete();
+        let removed = TokenStore
+            .delete()
+            .map_err(|_| "Google 연결을 삭제하지 못했습니다.".to_string());
         if let Err(message) = saved.and(removed) {
             inner.error = Some(message.clone());
             return Err(message);
@@ -425,6 +488,7 @@ impl CalendarService {
         self.config.is_some()
             && inner.state.account.is_some()
             && inner.connecting_id.is_none()
+            && inner.credential_blocked.is_none()
             && !self.syncing.load(Ordering::Acquire)
             && inner
                 .last_attempt
@@ -460,6 +524,7 @@ impl CalendarService {
         {
             inner.auth_ready = false;
             inner.access = None;
+            inner.credential_blocked = Some(error.message());
             inner.error = Some(error.message());
             inner.state.revision += 1;
         }
@@ -477,10 +542,112 @@ impl CalendarService {
         {
             inner.auth_ready = false;
             inner.access = None;
+            inner.credential_blocked = Some(error.message());
             inner.error = Some(error.message());
             inner.state.revision += 1;
         }
         error.message()
+    }
+    fn credential_error(&self, generation: u64, error: crate::secret_store::Error) -> String {
+        let message = "저장된 Google 연결에 접근할 수 없습니다. 다시 연결해 주세요.".to_string();
+        if error == crate::secret_store::Error::InteractionRequired {
+            let mut inner = self.inner.lock().unwrap();
+            if generation == self.generation.load(Ordering::Acquire) {
+                inner.credential_blocked = Some(message.clone());
+                inner.auth_ready = false;
+                inner.stored_token = None;
+            }
+        }
+        message
+    }
+    // The caller holds access_gate, so waiters share both successful loads and denial.
+    fn cached_token(
+        &self,
+        slot: bool,
+        generation: u64,
+        load: impl FnOnce() -> Result<StoredToken, crate::secret_store::Error>,
+    ) -> Result<StoredToken, String> {
+        {
+            let inner = self.inner.lock().unwrap();
+            if generation != self.generation.load(Ordering::Acquire) {
+                return Err("캘린더 선택이나 연결이 변경되었습니다.".into());
+            }
+            if let Some(message) = &inner.credential_blocked {
+                return Err(message.clone());
+            }
+            if let Some((_, token)) = inner
+                .stored_token
+                .as_ref()
+                .filter(|(saved, _)| *saved == slot)
+            {
+                return Ok(token.clone());
+            }
+        }
+        let token = load().map_err(|error| self.credential_error(generation, error))?;
+        let mut inner = self.inner.lock().unwrap();
+        if generation != self.generation.load(Ordering::Acquire) {
+            return Err("캘린더 선택이나 연결이 변경되었습니다.".into());
+        }
+        inner.stored_token = Some((slot, token.clone()));
+        Ok(token)
+    }
+    fn finish_refresh(
+        &self,
+        generation: u64,
+        connection_epoch: u64,
+        account: &str,
+        token_slot: bool,
+        stored: StoredToken,
+        response: google::TokenResponse,
+        save: impl FnOnce(&StoredToken, bool) -> Result<(), crate::secret_store::Error>,
+    ) -> Result<String, String> {
+        let _gate = self.token_gate.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap();
+        if connection_epoch != self.connection_epoch.load(Ordering::Acquire)
+            || inner.state.account.as_deref() != Some(account)
+            || inner.state.token_slot != token_slot
+            || self
+                .config
+                .as_ref()
+                .is_none_or(|config| stored.client_id != config.client_id)
+        {
+            return Err("캘린더 연결이 변경되었습니다.".into());
+        }
+        if let Some(refresh_token) = response.refresh_token {
+            let rotated = StoredToken {
+                refresh_token,
+                ..stored
+            };
+            if save(&rotated, token_slot).is_err() {
+                let message =
+                    "저장된 Google 연결에 접근할 수 없습니다. 다시 연결해 주세요.".to_string();
+                inner.pending_token = Some((
+                    token_slot,
+                    rotated,
+                    Access {
+                        token: response.access_token.clone(),
+                        expires_at: now_ms()
+                            .saturating_add(response.expires_in.saturating_mul(1000)),
+                    },
+                ));
+                inner.credential_blocked = Some(message.clone());
+                inner.error = Some(message.clone());
+                inner.state.revision += 1;
+                inner.auth_ready = false;
+                inner.stored_token = None;
+                return Err(message);
+            }
+            inner.stored_token = Some((token_slot, rotated));
+            inner.pending_token = None;
+        }
+        if generation != self.generation.load(Ordering::Acquire) {
+            return Err("캘린더 선택이나 연결이 변경되었습니다.".into());
+        }
+        inner.access = Some(Access {
+            token: response.access_token.clone(),
+            expires_at: now_ms().saturating_add(response.expires_in.saturating_mul(1000)),
+        });
+        Ok(response.access_token)
     }
     async fn query_context(&self, generation: u64) -> Result<QueryContext, String> {
         let _access = self.access_gate.lock().await;
@@ -488,13 +655,16 @@ impl CalendarService {
             .config
             .as_ref()
             .ok_or("이 버전에는 Google 캘린더 연결 정보가 설정되지 않았습니다.")?;
-        let (account, selected, token_slot, access) = {
+        let (account, selected, token_slot, access, connection_epoch) = {
             let inner = self.inner.lock().unwrap();
             if generation != self.generation.load(Ordering::Acquire) {
                 return Err("캘린더 선택이나 연결이 변경되었습니다.".into());
             }
             if inner.connecting_id.is_some() {
                 return Err("Google 연결을 확인하고 있습니다.".into());
+            }
+            if let Some(message) = &inner.credential_blocked {
+                return Err(message.clone());
             }
             (
                 inner
@@ -509,40 +679,31 @@ impl CalendarService {
                     .as_ref()
                     .filter(|access| access.expires_at > now_ms().saturating_add(60_000))
                     .map(|access| access.token.clone()),
+                self.connection_epoch.load(Ordering::Acquire),
             )
         };
         let token = if let Some(token) = access {
             token
         } else {
-            let stored = {
+            let stored = self.cached_token(token_slot, generation, || {
                 let _gate = self.token_gate.lock().unwrap();
-                TokenStore.load(token_slot)?
-            };
+                TokenStore.load(token_slot, crate::secret_store::Access::Silent)
+            })?;
             if stored.account_id != account {
                 return Err("저장된 Google 계정 연결이 다릅니다. 다시 연결해 주세요.".into());
             }
             let response = google::refresh(&self.client, config, &stored)
                 .await
                 .map_err(|error| self.sync_error(generation, error))?;
-            let _gate = self.token_gate.lock().unwrap();
-            let mut inner = self.inner.lock().unwrap();
-            if generation != self.generation.load(Ordering::Acquire) {
-                return Err("캘린더 선택이나 연결이 변경되었습니다.".into());
-            }
-            if let Some(refresh_token) = response.refresh_token {
-                TokenStore.save(
-                    &StoredToken {
-                        refresh_token,
-                        ..stored
-                    },
-                    token_slot,
-                )?;
-            }
-            inner.access = Some(Access {
-                token: response.access_token.clone(),
-                expires_at: now_ms().saturating_add(response.expires_in.saturating_mul(1000)),
-            });
-            response.access_token
+            self.finish_refresh(
+                generation,
+                connection_epoch,
+                &account,
+                token_slot,
+                stored,
+                response,
+                |token, slot| TokenStore.save(token, slot, crate::secret_store::Access::Silent),
+            )?
         };
         Ok(QueryContext {
             generation,
@@ -1332,6 +1493,219 @@ mod tests {
             Some("previous synthetic grant")
         );
     }
+    #[tokio::test]
+    async fn credential_denial_is_shared_and_successful_load_is_cached() {
+        use std::sync::atomic::AtomicUsize;
+        let temp = tempfile::tempdir().unwrap();
+        let mut service = Arc::new(CalendarService::new(temp.path().to_path_buf()).unwrap());
+        Arc::get_mut(&mut service).unwrap().config = Some(Config {
+            client_id: "synthetic".into(),
+            client_secret: None,
+        });
+        service.inner.lock().unwrap().state.account = Some("fixture".into());
+        assert!(service.should_sync(1));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let run = |service: Arc<CalendarService>, calls: Arc<AtomicUsize>| async move {
+            let _gate = service.access_gate.lock().await;
+            service.cached_token(false, 0, || {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Err(crate::secret_store::Error::InteractionRequired)
+            })
+        };
+        let (first, second) = tokio::join!(
+            run(service.clone(), calls.clone()),
+            run(service.clone(), calls.clone())
+        );
+        assert!(first.is_err() && second.is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(!service.should_sync(1));
+        let _ = service.snapshot();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        // Successful explicit reconnection resets the denial state.
+        service.inner.lock().unwrap().credential_blocked = None;
+        let token = StoredToken {
+            refresh_token: "synthetic".into(),
+            account_id: "fixture".into(),
+            client_id: "client".into(),
+        };
+        let _gate = service.access_gate.lock().await;
+        for _ in 0..2 {
+            assert!(service
+                .cached_token(false, 0, || {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(token.clone())
+                })
+                .is_ok());
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn rotated_token_denied_save_is_preserved_until_explicit_recovery() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = CalendarService::new(temp.path().to_path_buf()).unwrap();
+        let previous = StoredToken {
+            refresh_token: "old".into(),
+            account_id: "fixture".into(),
+            client_id: "client".into(),
+        };
+        let rotated = StoredToken {
+            refresh_token: "rotated".into(),
+            ..previous.clone()
+        };
+        let mut persisted = previous.clone();
+        let mut inner = service.inner.lock().unwrap();
+        inner.pending_token = Some((
+            false,
+            rotated.clone(),
+            Access {
+                token: "accepted-access".into(),
+                expires_at: now_ms() + 120_000,
+            },
+        ));
+        inner.credential_blocked = Some("blocked".into());
+        assert!(CalendarService::recover_pending(&mut inner, |_, _| Err(
+            crate::secret_store::Error::InteractionRequired
+        ))
+        .is_err());
+        assert!(persisted == previous);
+        assert!(inner.pending_token.is_some());
+        assert!(inner.credential_blocked.is_some());
+        CalendarService::recover_pending(&mut inner, |token, _| {
+            persisted = token.clone();
+            Ok(())
+        })
+        .unwrap();
+        assert!(persisted == rotated);
+        assert!(inner.pending_token.is_none());
+        assert_eq!(inner.access.as_ref().unwrap().token, "accepted-access");
+        assert!(inner.access.as_ref().unwrap().expires_at > now_ms() + 60_000);
+    }
+
+    #[tokio::test]
+    async fn delayed_refresh_preserves_rotation_after_selection_change_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut service = CalendarService::new(temp.path().to_path_buf()).unwrap();
+        service.config = Some(Config {
+            client_id: "client".into(),
+            client_secret: None,
+        });
+        service.inner.lock().unwrap().state.account = Some("fixture".into());
+        let old = StoredToken {
+            refresh_token: "old".into(),
+            account_id: "fixture".into(),
+            client_id: "client".into(),
+        };
+        let response = || google::TokenResponse {
+            access_token: "access".into(),
+            refresh_token: Some("rotated".into()),
+            expires_in: 3600,
+            scope: None,
+            token_type: "Bearer".into(),
+        };
+        // A mock HTTP response is held while the selected calendars change.
+        let generation = service.generation.load(Ordering::Acquire);
+        let epoch = service.connection_epoch.load(Ordering::Acquire);
+        let (send_response, receive_response) = tokio::sync::oneshot::channel();
+        let mut saved = None;
+        let request = async {
+            let response = receive_response.await.unwrap();
+            service.finish_refresh(
+                generation,
+                epoch,
+                "fixture",
+                false,
+                old.clone(),
+                response,
+                |token, _| {
+                    saved = Some(token.clone());
+                    Ok(())
+                },
+            )
+        };
+        let change_selection = async {
+            service.generation.fetch_add(1, Ordering::AcqRel);
+            send_response.send(response()).ok().unwrap();
+        };
+        let (result, ()) = tokio::join!(request, change_selection);
+        assert!(result.is_err());
+        assert_eq!(saved.unwrap().refresh_token, "rotated");
+        assert!(service.inner.lock().unwrap().access.is_none());
+
+        // If the silent save is denied, the rotated token stays pending even
+        // though this request's selection generation is stale.
+        assert!(service
+            .finish_refresh(
+                generation,
+                epoch,
+                "fixture",
+                false,
+                old.clone(),
+                response(),
+                |_, _| Err(crate::secret_store::Error::InteractionRequired)
+            )
+            .is_err());
+        {
+            let inner = service.inner.lock().unwrap();
+            assert_eq!(
+                inner.pending_token.as_ref().unwrap().1.refresh_token,
+                "rotated"
+            );
+            assert!(inner.credential_blocked.is_some());
+            assert!(inner.access.is_none());
+        }
+
+        // A disconnected or replaced identity never writes the old slot.
+        service.connection_epoch.fetch_add(1, Ordering::AcqRel);
+        let mut wrote = false;
+        assert!(service
+            .finish_refresh(
+                generation,
+                epoch,
+                "fixture",
+                false,
+                old,
+                response(),
+                |_, _| {
+                    wrote = true;
+                    Ok(())
+                }
+            )
+            .is_err());
+        assert!(!wrote);
+    }
+
+    #[test]
+    fn expired_pending_access_does_not_prevent_rotated_token_recovery() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = CalendarService::new(temp.path().to_path_buf()).unwrap();
+        let token = StoredToken {
+            refresh_token: "rotated".into(),
+            account_id: "fixture".into(),
+            client_id: "client".into(),
+        };
+        let mut inner = service.inner.lock().unwrap();
+        inner.pending_token = Some((
+            false,
+            token.clone(),
+            Access {
+                token: "expired".into(),
+                expires_at: 0,
+            },
+        ));
+        let mut saved = None;
+        CalendarService::recover_pending(&mut inner, |value, _| {
+            saved = Some(value.clone());
+            Ok(())
+        })
+        .unwrap();
+        assert!(saved.unwrap() == token);
+        assert!(inner.pending_token.is_none());
+        assert!(inner.access.is_none());
+        assert!(inner.stored_token.as_ref().unwrap().1 == token);
+    }
+
     fn reminder_service(root: &Path) -> CalendarService {
         let service = CalendarService::new(root.into()).unwrap();
         {

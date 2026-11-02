@@ -121,10 +121,10 @@ test('manual connection owns a contextual dialog rather than a detached copy but
   const html = await readFile(new URL('../src/index.html', import.meta.url), 'utf8');
   const component = await readFile(new URL('../src/agent-connection-dialog.jsx', import.meta.url), 'utf8');
   assert.doesNotMatch(html, /id="settings-agent-copy-prompt"/);
-  assert.match(html, /연결 프롬프트/);
-  assert.match(html, /id="settings-agent-manual"[^>]+aria-label="연결 프롬프트 열기"/);
+  assert.match(html, /<strong>직접 연결<\/strong>/);
+  assert.match(html, /id="settings-agent-manual"[^>]+aria-label="직접 연결 안내 열기"/);
   assert.match(component, /DialogContent container=\{container\}/);
-  assert.match(component, /<DialogTitle>연결 프롬프트<\/DialogTitle>/);
+  assert.match(component, /<DialogTitle>MCP 직접 연결<\/DialogTitle>/);
   assert.match(component, /<pre aria-labelledby="agent-prompt-label"/);
-  assert.match(component, /연결할 에이전트의 대화에 붙여넣으세요/);
+  assert.match(component, /AI 앱의 대화에 붙여넣어 Nero를 연결하세요/);
 });

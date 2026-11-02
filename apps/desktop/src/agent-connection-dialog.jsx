@@ -10,8 +10,8 @@ function ConnectionPrompt({ flow, container, finalFocus }) {
   return <Dialog open={state.open} onOpenChange={open => { if (!open) flow.close(); }}>
     <DialogContent container={container} className="agent-prompt-dialog" data-nero-ui-owned="" initialFocus={copy} finalFocus={finalFocus}>
       <DialogHeader>
-        <DialogTitle>연결 프롬프트</DialogTitle>
-        <DialogDescription>사용하는 에이전트에 아래 프롬프트를 전달해 Nero를 연결합니다.</DialogDescription>
+        <DialogTitle>MCP 직접 연결</DialogTitle>
+        <DialogDescription>아래 내용을 사용할 AI 앱의 대화에 붙여넣어 Nero를 연결하세요.</DialogDescription>
       </DialogHeader>
       <div className="agent-prompt-body">
         <div className="agent-prompt-code">
@@ -24,7 +24,6 @@ function ConnectionPrompt({ flow, container, finalFocus }) {
           </div>
           <pre aria-labelledby="agent-prompt-label" tabIndex={0}><code>{state.prompt}</code></pre>
         </div>
-        <p className="agent-prompt-instruction">복사한 내용을 연결할 에이전트의 대화에 붙여넣으세요.</p>
         <p className="agent-prompt-feedback" role={state.error ? 'alert' : 'status'} hidden={!state.error && !state.copied}>{state.error || '프롬프트를 복사했습니다.'}</p>
       </div>
     </DialogContent>

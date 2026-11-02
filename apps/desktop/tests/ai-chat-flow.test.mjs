@@ -34,9 +34,18 @@ async function harness(overrides = {}, options = {}) {
     cancelFetch: async requestId => { calls.push(['cancelSource', requestId]); },
     ...overrides,
   };
+  for (const name of ['accounts', 'finishConnect', 'cancelConnect', 'disconnect']) {
+    if (!bridge[name]) continue;
+    const original = bridge[name];
+    bridge[name] = async (...args) => ({ checked: true, ...await original(...args) });
+  }
   const flow = createAiChatFlow({ bridge, createId: () => `request-${++count}`, getMeetings: () => exampleMeetings, ...options });
   flow.setMeeting(exampleMeetings[0]); void flow.setActive(true);
   await tick(); await tick();
+  if (options.initialModels !== false && flow.getSnapshot().accounts.some(account => account.id === flow.getSnapshot().accountId && account.state === 'ready')) {
+    flow.selectProvider(flow.getSnapshot().provider, { explicit: true });
+    await tick();
+  }
   const emit = body => {
     const event = { requestId: 'request-1', conversationId: 'conversation', ...body };
     const conversation = store.get(event.conversationId);
@@ -273,6 +282,60 @@ test('stale model loads cannot enable a different provider', async () => {
   assert.equal(app.state().modelId, null); assert.deepEqual(app.state().models, []); app.flow.dispose();
 });
 
+test('unknown saved account avoids passive model access and can send after explicit selection', async () => {
+  const unknown = { ...readyAccount, state: 'unknown', canInvoke: false };
+  let modelCalls = 0, accountCalls = 0;
+  const app = await harness({
+    accounts: async () => { accountCalls++; return { checked: false, accounts: [unknown] }; },
+    models: async () => { modelCalls++; return { models: [{ id: 'model', label: 'Model' }], defaultModelId: 'model' }; },
+  });
+  app.flow.setSettingsActive(true); await tick();
+  app.flow.selectProvider('chatgpt'); await tick();
+  assert.equal(modelCalls, 0);
+  assert.equal(app.state().accountId, unknown.id);
+  app.flow.selectProvider('chatgpt', { explicit: true }); await tick(); await tick();
+  assert.equal(modelCalls, 1);
+  assert.ok(accountCalls >= 2);
+  app.flow.edit('Question');
+  assert.equal(app.flow.canSend(), true);
+  await app.flow.send();
+  assert.equal(app.calls.find(call => call[0] === 'send')[1].accountId, unknown.id);
+  app.flow.dispose();
+});
+
+test('settings refresh only updates account state and preserves explicitly loaded models', async () => {
+  let modelCalls = 0;
+  const app = await harness({
+    models: async () => { modelCalls++; return { models: [{ id: 'model', label: 'Model' }], defaultModelId: 'model' }; },
+  }, { initialModels: false });
+  app.flow.setSettingsActive(true); await tick();
+  assert.equal(modelCalls, 0);
+  app.flow.selectProvider('chatgpt', { explicit: true }); await tick();
+  assert.equal(modelCalls, 1);
+  assert.equal(app.state().modelId, 'model');
+  app.flow.setSettingsActive(false);
+  app.flow.setSettingsActive(true); await tick();
+  assert.equal(modelCalls, 1);
+  assert.equal(app.state().modelId, 'model');
+  assert.deepEqual(app.state().models.map(model => model.id), ['model']);
+  app.flow.dispose();
+});
+
+test('restored account completes without a finish attempt', async () => {
+  const unknown = { ...readyAccount, state: 'unknown' };
+  let restored = false, finishes = 0;
+  const app = await harness({
+    accounts: async () => ({ checked: restored, accounts: [restored ? readyAccount : unknown] }),
+    connect: async () => { restored = true; return { restored: true }; },
+    finishConnect: async () => { finishes++; return { accounts: [readyAccount] }; },
+  });
+  await app.flow.connect('chatgpt'); await tick();
+  assert.equal(finishes, 0);
+  assert.equal(app.state().accounts[0].state, 'ready');
+  assert.equal(app.state().connectionPhases.chatgpt, null);
+  app.flow.dispose();
+});
+
 test('failed automatic account completion can be explicitly retried', async () => {
   const pendingAccount = { ...readyAccount, state: 'signed_out' };
   let attempts = 0, complete = false;
@@ -386,7 +449,7 @@ test('reconnect passes the old account ID and selects the newly ready active acc
     finishConnect: async () => ({ accounts: [old, fresh], activeAccountId: 'new' }),
     models: async accountId => { modelLoads.push(accountId); return { models: [{ id: 'new-model', label: 'New model' }], defaultModelId: 'new-model' }; },
   });
-  await app.flow.connect('chatgpt'); await tick(); app.flow.edit('Question');
+  await app.flow.connect('chatgpt'); await tick(); app.flow.selectProvider('chatgpt', { explicit: true }); await tick(); app.flow.edit('Question');
   assert.deepEqual(reconnects, [['chatgpt', 'old']]); assert.equal(app.state().accountId, 'new'); assert.deepEqual(modelLoads, ['new']); assert.equal(app.flow.canSend(), true);
   await app.flow.send(); assert.equal(app.calls.find(call => call[0] === 'send')[1].accountId, 'new'); app.flow.dispose();
 });
@@ -398,7 +461,7 @@ test('declined plan permission reconnects through the same account registration'
     finishConnect:async()=>({accounts:[readyAccount],activeAccountId:readyAccount.id}) });
   await app.flow.connect('chatgpt'); await tick();
   assert.deepEqual(requested,[{provider:'chatgpt',accountId:readyAccount.id}]);
-  assert.equal(app.state().accountId,readyAccount.id);app.flow.edit('Question');assert.equal(app.flow.canSend(),true);
+  assert.equal(app.state().accountId,readyAccount.id);app.flow.selectProvider('chatgpt', { explicit: true });await tick();app.flow.edit('Question');assert.equal(app.flow.canSend(),true);
   app.flow.dispose();
 });
 
@@ -469,7 +532,7 @@ test('the active plan-disabled account is chosen over an older signed-out accoun
     finishConnect: async () => ({ accounts: [old, { ...active, state: 'ready' }], activeAccountId: active.id }),
   });
   assert.equal(app.state().accountId, active.id); await app.flow.connect('chatgpt'); await tick();
-  assert.deepEqual(reconnects, [active.id]); app.flow.edit('Question'); assert.equal(app.flow.canSend(), true); app.flow.dispose();
+  assert.deepEqual(reconnects, [active.id]); app.flow.selectProvider('chatgpt', { explicit: true }); await tick(); app.flow.edit('Question'); assert.equal(app.flow.canSend(), true); app.flow.dispose();
 });
 
 

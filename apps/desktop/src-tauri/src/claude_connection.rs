@@ -6,7 +6,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
 use tokio::sync::Notify;
 pub const ACCOUNT_ID: &str = "claude-code";
@@ -18,7 +18,7 @@ struct Login {
 }
 pub struct ClaudeConnection {
     root: PathBuf,
-    cached: Mutex<Option<(Instant, Value)>>,
+    cached: Mutex<Option<Value>>,
     login: Mutex<Option<Arc<Login>>>,
 }
 impl ClaudeConnection {
@@ -45,19 +45,11 @@ impl ClaudeConnection {
         {
             return json!({"id":ACCOUNT_ID,"provider":"claude","state":"connecting","configured":true,"disconnectable":false});
         }
-        if let Some((time, value)) = self.cached.lock().unwrap().as_ref() {
-            if time.elapsed() < Duration::from_secs(60) {
-                return value.clone();
-            }
-        }
-        let ready = self
-            .resolve()
-            .and_then(|runner| runner.auth_status(&AtomicBool::new(false)))
-            .unwrap_or(false);
-        let row = Self::row(ready);
-        *self.cached.lock().unwrap() = Some((Instant::now(), row.clone()));
-        row
+        self.cached.lock().unwrap().clone().unwrap_or_else(|| {
+            json!({"id":ACCOUNT_ID,"provider":"claude","state":"unknown","configured":true,"disconnectable":false})
+        })
     }
+
     pub fn begin(self: &Arc<Self>) -> Result<String, String> {
         let mut pending = self.login.lock().unwrap();
         if pending
@@ -97,7 +89,9 @@ impl ClaudeConnection {
             } else {
                 result
             };
-            *this.cached.lock().unwrap() = Some((Instant::now(), Self::row(accepted.is_ok())));
+            if accepted.is_ok() {
+                *this.cached.lock().unwrap() = Some(Self::row(true));
+            }
             *run.result.lock().unwrap() = Some(accepted);
             run.done.notify_waiters();
         });
@@ -167,7 +161,9 @@ impl ClaudeConnection {
         delta: impl FnMut(&str),
     ) -> Result<String, String> {
         let result = self.resolve()?.reply(model, prompt, cancel, delta);
-        if result.is_err() {
+        if result.is_ok() {
+            *self.cached.lock().unwrap() = Some(Self::row(true));
+        } else {
             *self.cached.lock().unwrap() = None;
         }
         result
@@ -189,6 +185,14 @@ mod tests {
         run
     }
 
+    #[test]
+    fn passive_snapshot_does_not_resolve_or_run_claude() {
+        let connection = ClaudeConnection::new(PathBuf::from("unused"));
+        for _ in 0..10 {
+            assert_eq!(connection.snapshot()["state"], "unknown");
+        }
+    }
+
     #[tokio::test]
     async fn cancel_waits_for_login_to_stop_before_acknowledging() {
         let connection = Arc::new(ClaudeConnection::new(PathBuf::from("unused")));
@@ -198,7 +202,7 @@ mod tests {
         tokio::task::yield_now().await;
         assert!(run.cancel.load(Ordering::Acquire));
         assert!(!task.is_finished());
-        *connection.cached.lock().unwrap() = Some((Instant::now(), ClaudeConnection::row(false)));
+        *connection.cached.lock().unwrap() = Some(ClaudeConnection::row(false));
         *run.result.lock().unwrap() = Some(Err("취소했습니다.".into()));
         run.done.notify_waiters();
         assert!(task.await.unwrap().is_ok());

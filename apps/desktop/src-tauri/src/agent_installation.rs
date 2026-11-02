@@ -1,5 +1,6 @@
 use super::{bounded_read, executable_name, payload_generation, read_json, ClientInfo};
 use serde_json::Value;
+use std::collections::HashSet;
 use std::ffi::OsString;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
@@ -14,7 +15,7 @@ pub(super) enum HostInstallation {
     Installed {
         directory: PathBuf,
         version: String,
-        enabled: bool,
+        enabled: Option<bool>,
     },
     Unknown(&'static str),
 }
@@ -35,20 +36,107 @@ impl HostInstallations {
     }
 }
 
-struct CachedInstallations {
-    roots: (PathBuf, PathBuf, PathBuf, PathBuf),
-    observed: Instant,
-    installations: HostInstallations,
+static INVALID_RECEIPTS: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+
+fn invalidate_receipt(connections: &Path) -> Result<(), ()> {
+    let path = receipt_path(connections);
+    let parent = path.parent().ok_or(())?;
+    match fs::symlink_metadata(parent) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Ok(_) if super::plain_directory(parent) => {
+            super::atomic_write(&path, b"null").map_err(|_| ())
+        }
+        _ => Err(()),
+    }
 }
 
-static CACHE: OnceLock<Mutex<Option<CachedInstallations>>> = OnceLock::new();
+fn config_identity(home: &Path) -> Result<Value, ()> {
+    let path = home.join("config.toml");
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok(serde_json::json!({"missing": true}))
+        }
+        Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
+            let modified = metadata
+                .modified()
+                .map_err(|_| ())?
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| ())?;
+            Ok(
+                serde_json::json!({"size": metadata.len(), "seconds": modified.as_secs(), "nanos": modified.subsec_nanos()}),
+            )
+        }
+        _ => Err(()),
+    }
+}
 
-fn invalidate_cache() {
-    let mut cache = CACHE
-        .get_or_init(|| Mutex::new(None))
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    *cache = None;
+fn receipt_path(connections: &Path) -> PathBuf {
+    connections.join("codex/host-installation.json")
+}
+
+fn save_codex_receipt(
+    home: &Path,
+    connections: &Path,
+    installed: &HostInstallation,
+    identity: &Value,
+) -> Result<(), ()> {
+    let HostInstallation::Installed {
+        directory,
+        version,
+        enabled: Some(enabled),
+    } = installed
+    else {
+        let path = receipt_path(connections);
+        if super::plain_directory(path.parent().ok_or(())?) {
+            super::atomic_write(&path, b"null").map_err(|_| ())?;
+        }
+        return Ok(());
+    };
+    let config = read_json(&directory.join(".mcp.json")).map_err(|_| ())?;
+    let generation = config["mcpServers"]["nero"]["env"]["NERO_CONNECTION_GENERATION"]
+        .as_str()
+        .filter(|value| super::valid_generation(value))
+        .ok_or(())?;
+    let value = serde_json::json!({"schemaVersion": 2, "home": home, "version": version, "generation": generation, "enabled": enabled, "configIdentity": identity});
+    let path = receipt_path(connections);
+    if !super::plain_directory(path.parent().ok_or(())?) {
+        return Err(());
+    }
+    super::atomic_write(&path, &serde_json::to_vec(&value).map_err(|_| ())?).map_err(|_| ())
+}
+
+fn receipt_codex(home: &Path, connections: &Path) -> HostInstallation {
+    let unknown = || HostInstallation::Unknown("ChatGPT 설치 상태를 다시 확인해 주세요.");
+    let Ok(value) = read_json(&receipt_path(connections)) else {
+        return unknown();
+    };
+    if value["schemaVersion"] != 2
+        || value["home"] != home.to_string_lossy().as_ref()
+        || config_identity(home).ok().as_ref() != Some(&value["configIdentity"])
+    {
+        return unknown();
+    }
+    let Some(version) = value["version"]
+        .as_str()
+        .filter(|value| safe_version(value))
+    else {
+        return unknown();
+    };
+    let Some(generation) = value["generation"]
+        .as_str()
+        .filter(|value| super::valid_generation(value))
+    else {
+        return unknown();
+    };
+    let Some(enabled) = value["enabled"].as_bool() else {
+        return unknown();
+    };
+    let entry = serde_json::json!({"installed":[{"pluginId":"nero@nero-local", "name":"nero", "marketplaceName":"nero-local", "installed":true, "enabled":enabled, "version":version, "source":{"path": connections.join("codex/releases").join(generation).join("plugins/nero")}}]});
+    codex_installation(
+        entry.to_string().as_bytes(),
+        home,
+        &connections.join("codex"),
+    )
 }
 
 pub(super) fn probe(
@@ -61,50 +149,76 @@ pub(super) fn probe(
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())
         .unwrap_or_else(|| home.join(".codex"));
-    let mut cache = CACHE
-        .get_or_init(|| Mutex::new(None))
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    probe_cached(
-        &mut cache,
-        (
-            home.to_owned(),
-            config.to_owned(),
-            connections.to_owned(),
-            codex_home.clone(),
-        ),
+    probe_with(config, connections, &codex_home, force_refresh, || {
+        codex_list(home)
+    })
+}
+
+fn probe_with(
+    config: &Path,
+    connections: &Path,
+    codex_home: &Path,
+    force_refresh: bool,
+    inspect: impl FnOnce() -> Result<Vec<u8>, &'static str>,
+) -> HostInstallations {
+    probe_with_storage(
+        config,
+        connections,
+        codex_home,
         force_refresh,
-        || {
-            let claude = claude_installation(&config.join("Claude"));
-            let codex = match codex_list(home) {
-                Ok(bytes) => codex_installation(&bytes, &codex_home, &connections.join("codex")),
-                Err(reason) => HostInstallation::Unknown(reason),
-            };
-            HostInstallations { claude, codex }
-        },
+        inspect,
+        invalidate_receipt,
+        save_codex_receipt,
     )
 }
 
-fn probe_cached(
-    cache: &mut Option<CachedInstallations>,
-    roots: (PathBuf, PathBuf, PathBuf, PathBuf),
+fn probe_with_storage(
+    config: &Path,
+    connections: &Path,
+    codex_home: &Path,
     force_refresh: bool,
-    inspect: impl FnOnce() -> HostInstallations,
+    inspect: impl FnOnce() -> Result<Vec<u8>, &'static str>,
+    invalidate: impl FnOnce(&Path) -> Result<(), ()>,
+    save: impl FnOnce(&Path, &Path, &HostInstallation, &Value) -> Result<(), ()>,
 ) -> HostInstallations {
-    if !force_refresh {
-        if let Some(cached) = cache.as_ref().filter(|cached| {
-            cached.roots == roots && cached.observed.elapsed() < Duration::from_secs(30)
-        }) {
-            return cached.installations.clone();
+    let claude = claude_installation(&config.join("Claude"));
+    let mut invalid = INVALID_RECEIPTS
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let key = receipt_path(connections);
+    let codex = if force_refresh {
+        invalid.insert(key.clone());
+        if invalidate(connections).is_err() {
+            HostInstallation::Unknown("ChatGPT 설치 기록을 갱신하지 못했습니다.")
+        } else if let Ok(before) = config_identity(codex_home) {
+            match inspect() {
+                Ok(bytes) if config_identity(codex_home).ok().as_ref() == Some(&before) => {
+                    let installed =
+                        codex_installation(&bytes, codex_home, &connections.join("codex"));
+                    if save(codex_home, connections, &installed, &before).is_err()
+                        || config_identity(codex_home).ok().as_ref() != Some(&before)
+                    {
+                        HostInstallation::Unknown("ChatGPT 설치 기록을 저장하지 못했습니다.")
+                    } else {
+                        invalid.remove(&key);
+                        installed
+                    }
+                }
+                Ok(_) => HostInstallation::Unknown(
+                    "ChatGPT 설정이 변경되어 설치 상태를 다시 확인해 주세요.",
+                ),
+                Err(reason) => HostInstallation::Unknown(reason),
+            }
+        } else {
+            HostInstallation::Unknown("ChatGPT 설정을 확인하지 못했습니다.")
         }
-    }
-    let installations = inspect();
-    *cache = Some(CachedInstallations {
-        roots,
-        observed: Instant::now(),
-        installations: installations.clone(),
-    });
-    installations
+    } else if invalid.contains(&key) {
+        HostInstallation::Unknown("ChatGPT 설치 상태를 다시 확인해 주세요.")
+    } else {
+        receipt_codex(codex_home, connections)
+    };
+    HostInstallations { claude, codex }
 }
 
 fn native_executable(path: &Path) -> Option<PathBuf> {
@@ -212,6 +326,18 @@ pub(super) fn install_codex(home: &Path, connection: &Path) -> Result<bool, Stri
     {
         return Err("ChatGPT 연결 패키지의 경로를 확인하지 못했습니다.".into());
     }
+    let connections = connection
+        .parent()
+        .ok_or("ChatGPT 연결 경로를 확인하지 못했습니다.")?;
+    {
+        let mut invalid = INVALID_RECEIPTS
+            .get_or_init(|| Mutex::new(HashSet::new()))
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        invalid.insert(receipt_path(connections));
+        invalidate_receipt(connections)
+            .map_err(|_| "ChatGPT 설치 기록을 갱신하지 못했습니다.".to_string())?;
+    }
     let Some(command) = codex_command(home) else {
         return Ok(false);
     };
@@ -231,7 +357,6 @@ pub(super) fn install_codex(home: &Path, connection: &Path) -> Result<bool, Stri
         }
         codex_list_output(command).map_err(str::to_owned)
     });
-    invalidate_cache();
     result.map(|()| true)
 }
 
@@ -397,7 +522,7 @@ fn codex_installation(bytes: &[u8], home: &Path, connection: &Path) -> HostInsta
         Some(HostInstallation::Installed {
             directory,
             version: version.into(),
-            enabled,
+            enabled: Some(enabled),
         })
     })();
     result.unwrap_or(HostInstallation::Unknown(
@@ -444,7 +569,7 @@ fn claude_installation(root: &Path) -> HostInstallation {
         Some(HostInstallation::Installed {
             directory,
             version: version.into(),
-            enabled,
+            enabled: Some(enabled),
         })
     })();
     result.unwrap_or(HostInstallation::Unknown(
@@ -614,7 +739,7 @@ pub(super) fn client_info(
             info.installed_version = Some(version.clone());
             match installed_payload(installed, client, root, directory, registration) {
                 Ok((payload, receipt)) => {
-                    info.installation_state = if !enabled {
+                    info.installation_state = if *enabled == Some(false) {
                         "disabled"
                     } else if payload == generation {
                         "current"
@@ -690,7 +815,6 @@ pub(super) fn client_info(
 mod tests {
     use super::*;
     use serde_json::json;
-    use std::cell::Cell;
 
     #[test]
     fn current_installation_stays_connected_without_historical_session_copy() {
@@ -723,7 +847,7 @@ mod tests {
         let installation = HostInstallation::Installed {
             directory: installed,
             version: "0.1.0-nero.33".into(),
-            enabled: true,
+            enabled: Some(true),
         };
         let info = client_info(
             "claude",
@@ -808,13 +932,6 @@ mod tests {
         fs::create_dir_all(moved.parent().unwrap()).unwrap();
         fs::rename(&native, &moved).unwrap();
         assert!(codex_desktop_executable(&bundle).is_some());
-    }
-
-    fn missing_hosts() -> HostInstallations {
-        HostInstallations {
-            claude: HostInstallation::Missing,
-            codex: HostInstallation::Missing,
-        }
     }
 
     fn prepared_codex_catalog(root: &Path) -> PathBuf {
@@ -932,37 +1049,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn host_refresh_uses_a_bounded_cache_and_only_explicit_force_skips_it() {
-        let temp = tempfile::tempdir().unwrap();
-        let roots = (
-            temp.path().join("home"),
-            temp.path().join("config"),
-            temp.path().join("connections"),
-            temp.path().join("codex"),
-        );
-        let mut cache = None;
-        let inspected = Cell::new(0);
-        let inspect = || {
-            inspected.set(inspected.get() + 1);
-            missing_hosts()
-        };
-        for _ in 0..10 {
-            probe_cached(&mut cache, roots.clone(), false, inspect);
-        }
-        assert_eq!(inspected.get(), 1);
-        probe_cached(&mut cache, roots.clone(), true, inspect);
-        assert_eq!(inspected.get(), 2);
-        cache.as_mut().unwrap().observed = Instant::now() - Duration::from_secs(31);
-        probe_cached(&mut cache, roots.clone(), false, inspect);
-        assert_eq!(inspected.get(), 3);
-        let mut different_roots = roots;
-        different_roots.3 = temp.path().join("other codex home");
-        probe_cached(&mut cache, different_roots, false, inspect);
-        assert_eq!(inspected.get(), 4);
-        assert!(!temp.path().join("home").exists());
-    }
-
     fn codex_fixture(root: &Path) -> (PathBuf, PathBuf, Value) {
         let home = root.join("codex home");
         let connection = root.join("connections/codex");
@@ -990,18 +1076,192 @@ mod tests {
     }
 
     #[test]
+    fn passive_probe_restores_verified_receipt_without_running_host() {
+        let temp = tempfile::tempdir().unwrap();
+        let (home, connection, value) = codex_fixture(temp.path());
+        let connections = connection.parent().unwrap();
+        fs::create_dir_all(&connection).unwrap();
+        let config = temp.path().join("config");
+        let calls = std::cell::Cell::new(0);
+        let inspect = || {
+            calls.set(calls.get() + 1);
+            Ok(value.to_string().into_bytes())
+        };
+        let initial = probe_with(&config, connections, &home, false, inspect);
+        assert!(matches!(initial.codex, HostInstallation::Unknown(_)));
+        assert_eq!(calls.get(), 0);
+        let explicit = probe_with(&config, connections, &home, true, inspect);
+        assert!(matches!(
+            explicit.codex,
+            HostInstallation::Installed {
+                enabled: Some(true),
+                ..
+            }
+        ));
+        assert_eq!(calls.get(), 1);
+        for _ in 0..12 {
+            let passive = probe_with(&config, connections, &home, false, inspect);
+            assert!(matches!(
+                passive.codex,
+                HostInstallation::Installed {
+                    enabled: Some(true),
+                    ..
+                }
+            ));
+        }
+        assert_eq!(calls.get(), 1);
+        fs::write(home.join("config.toml"), "changed").unwrap();
+        assert!(matches!(
+            probe_with(&config, connections, &home, false, inspect).codex,
+            HostInstallation::Unknown(_)
+        ));
+        assert_eq!(calls.get(), 1);
+    }
+
+    #[test]
+    fn passive_receipt_preserves_explicit_disabled_state_and_rejects_old_schema() {
+        let temp = tempfile::tempdir().unwrap();
+        let (home, connection, mut value) = codex_fixture(temp.path());
+        let connections = connection.parent().unwrap();
+        fs::create_dir_all(&connection).unwrap();
+        let config = temp.path().join("config");
+        value["installed"][0]["enabled"] = json!(false);
+        let calls = std::cell::Cell::new(0);
+        let inspect = || {
+            calls.set(calls.get() + 1);
+            Ok(value.to_string().into_bytes())
+        };
+        assert!(matches!(
+            probe_with(&config, connections, &home, true, inspect).codex,
+            HostInstallation::Installed {
+                enabled: Some(false),
+                ..
+            }
+        ));
+        for _ in 0..3 {
+            assert!(matches!(
+                probe_with(&config, connections, &home, false, inspect).codex,
+                HostInstallation::Installed {
+                    enabled: Some(false),
+                    ..
+                }
+            ));
+        }
+        assert_eq!(calls.get(), 1);
+        let path = receipt_path(connections);
+        let mut receipt = read_json(&path).unwrap();
+        receipt["schemaVersion"] = json!(1);
+        fs::write(&path, receipt.to_string()).unwrap();
+        assert!(matches!(
+            receipt_codex(&home, connections),
+            HostInstallation::Unknown(_)
+        ));
+    }
+
+    #[test]
+    fn config_change_during_host_probe_invalidates_the_observation() {
+        let temp = tempfile::tempdir().unwrap();
+        let (home, connection, value) = codex_fixture(temp.path());
+        let connections = connection.parent().unwrap();
+        fs::create_dir_all(&connection).unwrap();
+        let config = temp.path().join("config");
+        let inspect = || Ok(value.to_string().into_bytes());
+        assert!(matches!(
+            probe_with(&config, connections, &home, true, inspect).codex,
+            HostInstallation::Installed {
+                enabled: Some(true),
+                ..
+            }
+        ));
+        let changed = probe_with(&config, connections, &home, true, || {
+            fs::write(home.join("config.toml"), "changed while inspecting").unwrap();
+            Ok(value.to_string().into_bytes())
+        });
+        assert!(matches!(changed.codex, HostInstallation::Unknown(_)));
+        assert!(matches!(
+            probe_with(&config, connections, &home, false, inspect).codex,
+            HostInstallation::Unknown(_)
+        ));
+        assert!(matches!(
+            receipt_codex(&home, connections),
+            HostInstallation::Unknown(_)
+        ));
+    }
+
+    #[test]
+    fn failed_receipt_write_blocks_old_evidence_and_next_host_run() {
+        let temp = tempfile::tempdir().unwrap();
+        let (home, connection, value) = codex_fixture(temp.path());
+        let connections = connection.parent().unwrap();
+        fs::create_dir_all(&connection).unwrap();
+        let config = temp.path().join("config");
+        let inspect = || Ok(value.to_string().into_bytes());
+        assert!(matches!(
+            probe_with(&config, connections, &home, true, inspect).codex,
+            HostInstallation::Installed { .. }
+        ));
+        let calls = std::cell::Cell::new(0);
+        let failed = probe_with_storage(
+            &config,
+            connections,
+            &home,
+            true,
+            || {
+                calls.set(calls.get() + 1);
+                Err("failed")
+            },
+            |_| Err(()),
+            save_codex_receipt,
+        );
+        assert!(matches!(failed.codex, HostInstallation::Unknown(_)));
+        assert_eq!(calls.get(), 0);
+        assert!(matches!(
+            probe_with(&config, connections, &home, false, inspect).codex,
+            HostInstallation::Unknown(_)
+        ));
+        assert!(matches!(
+            probe_with(&config, connections, &home, true, inspect).codex,
+            HostInstallation::Installed { .. }
+        ));
+        let failed = probe_with_storage(
+            &config,
+            connections,
+            &home,
+            true,
+            inspect,
+            invalidate_receipt,
+            |_, _, _, _| Err(()),
+        );
+        assert!(matches!(failed.codex, HostInstallation::Unknown(_)));
+        assert!(matches!(
+            receipt_codex(&home, connections),
+            HostInstallation::Unknown(_)
+        ));
+        assert!(matches!(
+            probe_with(&config, connections, &home, false, inspect).codex,
+            HostInstallation::Unknown(_)
+        ));
+    }
+
+    #[test]
     fn codex_observation_requires_official_entry_and_matching_cache_manifest_and_source() {
         let temp = tempfile::tempdir().unwrap();
         let (home, connection, value) = codex_fixture(temp.path());
         assert!(matches!(
             codex_installation(value.to_string().as_bytes(), &home, &connection),
-            HostInstallation::Installed { enabled: true, .. }
+            HostInstallation::Installed {
+                enabled: Some(true),
+                ..
+            }
         ));
         let mut disabled = value.clone();
         disabled["installed"][0]["enabled"] = json!(false);
         assert!(matches!(
             codex_installation(disabled.to_string().as_bytes(), &home, &connection),
-            HostInstallation::Installed { enabled: false, .. }
+            HostInstallation::Installed {
+                enabled: Some(false),
+                ..
+            }
         ));
         assert!(matches!(
             codex_installation(br#"{"installed":[]}"#, &home, &connection),
@@ -1068,12 +1328,18 @@ mod tests {
         fs::write(&settings, json!({"isEnabled":true}).to_string()).unwrap();
         assert!(matches!(
             claude_installation(&root),
-            HostInstallation::Installed { enabled: true, .. }
+            HostInstallation::Installed {
+                enabled: Some(true),
+                ..
+            }
         ));
         fs::write(&settings, json!({"isEnabled":false}).to_string()).unwrap();
         assert!(matches!(
             claude_installation(&root),
-            HostInstallation::Installed { enabled: false, .. }
+            HostInstallation::Installed {
+                enabled: Some(false),
+                ..
+            }
         ));
         fs::write(
             &manifest,

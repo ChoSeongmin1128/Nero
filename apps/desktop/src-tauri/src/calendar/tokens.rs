@@ -1,10 +1,10 @@
+use crate::secret_store::{Access, Error};
 use serde::{Deserialize, Serialize};
 
 const SERVICE: &str = "io.github.choseongmin1128.nero.desktop.google-calendar";
 const LEGACY_SERVICE: &str = "io.github.choseongmin1128.grove.desktop.google-calendar";
 const ACCOUNT: &str = "google-calendar";
 const ALTERNATE_ACCOUNT: &str = "google-calendar-alternate";
-const UNAVAILABLE: &str = "저장된 Google 연결을 읽지 못했습니다. 다시 연결해 주세요.";
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -15,9 +15,10 @@ pub struct StoredToken {
 }
 
 trait Credentials {
-    fn read(&self, service: &str, account: &str) -> Result<Option<String>, String>;
-    fn write(&self, service: &str, account: &str, value: &str) -> Result<(), String>;
-    fn delete(&self, service: &str, account: &str) -> Result<(), String>;
+    fn read(&self, service: &str, account: &str, access: Access) -> Result<Option<String>, Error>;
+    fn write(&self, service: &str, account: &str, value: &str, access: Access)
+        -> Result<(), Error>;
+    fn delete(&self, service: &str, account: &str, access: Access) -> Result<(), Error>;
 }
 
 fn account(slot: bool) -> &'static str {
@@ -37,100 +38,84 @@ fn decode(value: &str) -> Result<StoredToken, String> {
         .map_err(|_| "저장된 Google 연결을 확인하지 못했습니다. 다시 연결해 주세요.".into())
 }
 
-fn verified_save(store: &impl Credentials, value: &StoredToken, slot: bool) -> Result<(), String> {
-    let encoded = serde_json::to_string(value).map_err(|_| UNAVAILABLE.to_string())?;
-    store.write(SERVICE, account(slot), &encoded)?;
-    let saved = store.read(SERVICE, account(slot))?.ok_or(UNAVAILABLE)?;
-    if decode(&saved)? != *value {
-        return Err(UNAVAILABLE.into());
+fn verified_save(
+    store: &impl Credentials,
+    value: &StoredToken,
+    slot: bool,
+    access: Access,
+) -> Result<(), Error> {
+    let encoded = serde_json::to_string(value).map_err(|_| Error::Unavailable)?;
+    store.write(SERVICE, account(slot), &encoded, access)?;
+    let saved = store
+        .read(SERVICE, account(slot), Access::Silent)?
+        .ok_or(Error::Unavailable)?;
+    if decode(&saved).map_err(|_| Error::Unavailable)? != *value {
+        return Err(Error::Unavailable);
     }
-    store.write(SERVICE, &marker(slot), "complete")
+    store.write(SERVICE, &marker(slot), "complete", Access::Silent)
 }
 
-fn load_or_migrate(store: &impl Credentials, slot: bool) -> Result<StoredToken, String> {
-    if let Some(value) = store.read(SERVICE, account(slot))? {
-        return decode(&value);
+fn load_or_migrate(
+    store: &impl Credentials,
+    slot: bool,
+    access: Access,
+) -> Result<StoredToken, Error> {
+    if let Some(value) = store.read(SERVICE, account(slot), access)? {
+        return decode(&value).map_err(|_| Error::Unavailable);
     }
-    if store.read(SERVICE, &marker(slot))?.is_some() {
-        return Err(UNAVAILABLE.into());
+    if store
+        .read(SERVICE, &marker(slot), Access::Silent)?
+        .is_some()
+    {
+        return Err(Error::InteractionRequired);
     }
     let encoded = store
-        .read(LEGACY_SERVICE, account(slot))?
-        .ok_or(UNAVAILABLE)?;
-    let value = decode(&encoded)?;
-    verified_save(store, &value, slot)?;
+        .read(LEGACY_SERVICE, account(slot), Access::Silent)?
+        .ok_or(Error::Unavailable)?;
+    let value = decode(&encoded).map_err(|_| Error::Unavailable)?;
+    verified_save(store, &value, slot, Access::Silent)?;
     Ok(value)
 }
 
-fn disconnect_slot(store: &impl Credentials, slot: bool) -> Result<(), String> {
+fn disconnect_slot(store: &impl Credentials, slot: bool) -> Result<(), Error> {
     // Preserve the old credential without restoring it after an explicit disconnect.
-    store.write(SERVICE, &marker(slot), "disconnected")?;
-    store.delete(SERVICE, account(slot))
+    store.write(SERVICE, &marker(slot), "disconnected", Access::Silent)?;
+    store.delete(SERVICE, account(slot), Access::Silent)
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
 struct SystemCredentials;
-
-#[cfg(any(target_os = "macos", target_os = "windows"))]
 impl Credentials for SystemCredentials {
-    fn read(&self, service: &str, account: &str) -> Result<Option<String>, String> {
-        let entry = keyring::Entry::new(service, account).map_err(|_| UNAVAILABLE)?;
-        match entry.get_password() {
-            Ok(value) => Ok(Some(value)),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(_) => Err(UNAVAILABLE.into()),
-        }
+    fn read(&self, service: &str, account: &str, access: Access) -> Result<Option<String>, Error> {
+        crate::secret_store::read(service, account, access)?
+            .map(|bytes| String::from_utf8(bytes).map_err(|_| Error::Unavailable))
+            .transpose()
     }
-    fn write(&self, service: &str, account: &str, value: &str) -> Result<(), String> {
-        keyring::Entry::new(service, account)
-            .map_err(|_| UNAVAILABLE)?
-            .set_password(value)
-            .map_err(|_| UNAVAILABLE.into())
+    fn write(
+        &self,
+        service: &str,
+        account: &str,
+        value: &str,
+        access: Access,
+    ) -> Result<(), Error> {
+        crate::secret_store::write(service, account, value.as_bytes(), access)
     }
-    fn delete(&self, service: &str, account: &str) -> Result<(), String> {
-        let entry = keyring::Entry::new(service, account).map_err(|_| UNAVAILABLE)?;
-        match entry.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(_) => Err(UNAVAILABLE.into()),
-        }
+    fn delete(&self, service: &str, account: &str, access: Access) -> Result<(), Error> {
+        crate::secret_store::delete(service, account, access)
     }
 }
 
 pub struct TokenStore;
 impl TokenStore {
-    pub fn load(&self, slot: bool) -> Result<StoredToken, String> {
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
-        {
-            load_or_migrate(&SystemCredentials, slot)
-        }
-        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-        {
-            let _ = slot;
-            Err(UNAVAILABLE.into())
-        }
+    pub fn load(&self, slot: bool, access: Access) -> Result<StoredToken, Error> {
+        load_or_migrate(&SystemCredentials, slot, access)
     }
-    pub fn save(&self, value: &StoredToken, slot: bool) -> Result<(), String> {
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
-        {
-            verified_save(&SystemCredentials, value, slot)
-        }
-        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-        {
-            let _ = (value, slot);
-            Err(UNAVAILABLE.into())
-        }
+    pub fn save(&self, value: &StoredToken, slot: bool, access: Access) -> Result<(), Error> {
+        verified_save(&SystemCredentials, value, slot, access)
     }
-    pub fn delete(&self) -> Result<(), String> {
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
-        {
-            let first = disconnect_slot(&SystemCredentials, false);
-            let second = disconnect_slot(&SystemCredentials, true);
-            first.and(second)
-        }
-        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-        {
-            Ok(())
-        }
+    pub fn delete(&self) -> Result<(), Error> {
+        let first = disconnect_slot(&SystemCredentials, false);
+        let second = disconnect_slot(&SystemCredentials, true);
+        first.and(second)
     }
 }
 
@@ -146,11 +131,23 @@ mod tests {
         reject_write: bool,
         corrupt_write: bool,
         reject_read: bool,
+        calls: RefCell<Vec<(String, String, String, bool)>>,
     }
     impl Credentials for Memory {
-        fn read(&self, service: &str, account: &str) -> Result<Option<String>, String> {
+        fn read(
+            &self,
+            service: &str,
+            account: &str,
+            access: Access,
+        ) -> Result<Option<String>, Error> {
+            self.calls.borrow_mut().push((
+                "read".into(),
+                service.into(),
+                account.into(),
+                matches!(access, Access::Interactive),
+            ));
             if self.reject_read {
-                return Err("locked".into());
+                return Err(Error::InteractionRequired);
             }
             Ok(self
                 .values
@@ -158,9 +155,21 @@ mod tests {
                 .get(&(service.into(), account.into()))
                 .cloned())
         }
-        fn write(&self, service: &str, account: &str, value: &str) -> Result<(), String> {
+        fn write(
+            &self,
+            service: &str,
+            account: &str,
+            value: &str,
+            access: Access,
+        ) -> Result<(), Error> {
+            self.calls.borrow_mut().push((
+                "write".into(),
+                service.into(),
+                account.into(),
+                matches!(access, Access::Interactive),
+            ));
             if self.reject_write {
-                return Err("denied".into());
+                return Err(Error::InteractionRequired);
             }
             self.values.borrow_mut().insert(
                 (service.into(), account.into()),
@@ -172,7 +181,13 @@ mod tests {
             );
             Ok(())
         }
-        fn delete(&self, service: &str, account: &str) -> Result<(), String> {
+        fn delete(&self, service: &str, account: &str, access: Access) -> Result<(), Error> {
+            self.calls.borrow_mut().push((
+                "delete".into(),
+                service.into(),
+                account.into(),
+                matches!(access, Access::Interactive),
+            ));
             self.values
                 .borrow_mut()
                 .remove(&(service.into(), account.into()));
@@ -196,19 +211,28 @@ mod tests {
         let store = Memory::default();
         for slot in [false, true] {
             let expected = legacy(&store, slot);
-            assert!(load_or_migrate(&store, slot).unwrap() == expected);
-            assert!(store.read(LEGACY_SERVICE, account(slot)).unwrap().is_some());
-            assert!(store.read(SERVICE, &marker(slot)).unwrap().is_some());
+            assert!(load_or_migrate(&store, slot, Access::Silent).unwrap() == expected);
+            assert!(store
+                .read(LEGACY_SERVICE, account(slot), Access::Silent)
+                .unwrap()
+                .is_some());
+            assert!(store
+                .read(SERVICE, &marker(slot), Access::Silent)
+                .unwrap()
+                .is_some());
         }
     }
     #[test]
     fn disconnect_does_not_resurrect_a_retained_credential() {
         let store = Memory::default();
         legacy(&store, false);
-        load_or_migrate(&store, false).unwrap();
+        load_or_migrate(&store, false, Access::Silent).unwrap();
         disconnect_slot(&store, false).unwrap();
-        assert!(load_or_migrate(&store, false).is_err());
-        assert!(store.read(LEGACY_SERVICE, ACCOUNT).unwrap().is_some());
+        assert!(load_or_migrate(&store, false, Access::Silent).is_err());
+        assert!(store
+            .read(LEGACY_SERVICE, ACCOUNT, Access::Silent)
+            .unwrap()
+            .is_some());
     }
     #[test]
     fn failures_never_remove_the_source_or_claim_migration_complete() {
@@ -227,7 +251,7 @@ mod tests {
             },
         ] {
             legacy(&store, false);
-            assert!(load_or_migrate(&store, false).is_err());
+            assert!(load_or_migrate(&store, false, Access::Silent).is_err());
             assert!(store
                 .values
                 .borrow()
@@ -239,6 +263,38 @@ mod tests {
         }
     }
     #[test]
+    fn explicit_load_and_save_limit_interaction_to_one_current_item() {
+        let store = Memory::default();
+        let token = legacy(&store, false);
+        store.calls.borrow_mut().clear();
+        assert!(load_or_migrate(&store, false, Access::Interactive).unwrap() == token);
+        let calls = store.calls.borrow();
+        assert_eq!(calls.iter().filter(|entry| entry.3).count(), 1);
+        assert_eq!(
+            calls[0],
+            ("read".into(), SERVICE.into(), ACCOUNT.into(), true)
+        );
+        assert!(calls.iter().skip(1).all(|entry| !entry.3));
+        drop(calls);
+
+        store.calls.borrow_mut().clear();
+        verified_save(&store, &token, false, Access::Interactive).unwrap();
+        let calls = store.calls.borrow();
+        assert_eq!(calls.iter().filter(|entry| entry.3).count(), 1);
+        assert_eq!(
+            calls[0],
+            ("write".into(), SERVICE.into(), ACCOUNT.into(), true)
+        );
+        assert!(calls.iter().skip(1).all(|entry| !entry.3));
+        drop(calls);
+
+        store.calls.borrow_mut().clear();
+        disconnect_slot(&store, false).unwrap();
+        disconnect_slot(&store, true).unwrap();
+        assert!(store.calls.borrow().iter().all(|entry| !entry.3));
+    }
+
+    #[test]
     fn current_credentials_take_precedence_over_retained_tokens() {
         let store = Memory::default();
         legacy(&store, false);
@@ -247,7 +303,7 @@ mod tests {
             account_id: "other".into(),
             client_id: "client".into(),
         };
-        verified_save(&store, &expected, false).unwrap();
-        assert!(load_or_migrate(&store, false).unwrap() == expected);
+        verified_save(&store, &expected, false, Access::Silent).unwrap();
+        assert!(load_or_migrate(&store, false, Access::Silent).unwrap() == expected);
     }
 }

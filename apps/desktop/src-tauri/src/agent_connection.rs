@@ -1752,7 +1752,7 @@ mod tests {
         installation::HostInstallation::Installed {
             directory: target.into(),
             version: "0.0.1-nero.22".into(),
-            enabled: true,
+            enabled: Some(true),
         }
     }
 
@@ -2392,7 +2392,7 @@ mod tests {
         let disabled = hosts(installation::HostInstallation::Installed {
             directory,
             version,
-            enabled: false,
+            enabled: Some(false),
         });
         let info =
             connection_info_with_installations(&resources, &root, &connections, Some(&disabled));

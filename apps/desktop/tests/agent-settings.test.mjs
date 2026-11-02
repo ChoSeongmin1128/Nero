@@ -109,7 +109,7 @@ test('connection is per client and only native evidence can mark it connected', 
 });
 
 for (const client of ['claude', 'codex']) {
-  test(`${client} exposes an update action and preserves native recovery detail`, async () => {
+  test(`${client} exposes an update action without redundant detail`, async () => {
     const detail = '새 연결 도구를 설치해 주세요.';
     const app = harness({ load: async () => ({ ...info, clients: info.clients.map(entry => entry.id === client ? { ...entry, state: 'update_required', detail } : entry) }) });
     await app.context.loadAgentConnection();
@@ -119,8 +119,8 @@ for (const client of ['claude', 'codex']) {
     assert.equal(app.byId(`settings-${client}-connect`).getAttribute('aria-label'), `${client === 'claude' ? 'Claude' : 'ChatGPT'} 업데이트`);
     assert.equal(app.byId(`settings-${client}-connect`).disabled, false);
     assert.equal(app.byId(`settings-${client}-connect`).hidden, false);
-    assert.equal(app.byId(`settings-${client}-error`).textContent, detail);
-    assert.equal(app.byId(`settings-${client}-error`).hidden, false);
+    assert.equal(app.byId(`settings-${client}-error`).textContent, '');
+    assert.equal(app.byId(`settings-${client}-error`).hidden, true);
     assert.equal(app.byId(`settings-${client}-error`).className, 'settings-client-note');
     assert.equal(app.byId(`settings-${client}-error`).getAttribute('role'), 'status');
     const other = client === 'claude' ? 'codex' : 'claude';
@@ -132,6 +132,7 @@ for (const client of ['claude', 'codex']) {
 for (const [result, label, action] of [
   ['update_required', '업데이트 필요', '업데이트'],
   ['installation_unknown', '설치 확인 필요', '다시 확인'],
+  ['installed', '설치됨', '다시 확인'],
   ['connected', '연결됨', '연결'],
 ]) {
   test(`update completion uses native ${result} evidence without inventing success`, async () => {
@@ -156,7 +157,7 @@ for (const [result, label, action] of [
     await app.context.loadAgentConnection(true);
     assert.equal(app.byId('settings-codex-status').textContent, '업데이트 중');
     assert.equal(app.byId('settings-codex-connect').textContent, '업데이트 중');
-    current = { ...current, clients: [current.clients[0], { ...current.clients[1], state: result }] };
+    current = { ...current, clients: [current.clients[0], { ...current.clients[1], state: result, ...(result === 'installed' ? { action: 'recheck' } : {}) }] };
     pending.resolve(current);
     await updating;
     assert.equal(app.byId('settings-codex-status').textContent, label);
@@ -193,6 +194,7 @@ for (const [result, label, action] of [
   ['error', '확인 불가', '다시 확인'],
   ['update_required', '업데이트 필요', '업데이트'],
   ['installation_unknown', '설치 확인 필요', '다시 확인'],
+  ['installed', '설치됨', '다시 확인'],
   ['connected', '연결됨', '연결'],
 ]) {
   test(`metadata recheck uses only one read and retains native ${result} state`, async () => {
@@ -214,7 +216,7 @@ for (const [result, label, action] of [
     assert.equal(app.byId('settings-claude-connect').disabled, false);
     assert.equal(app.byId('settings-claude-spinner').hidden, true);
     const detail = result === 'error' ? '연결 상태를 읽지 못했습니다. 다시 확인해 주세요.' : '';
-    pending.resolve({ ...info, clients: [info.clients[0], { ...info.clients[1], state: result, detail }] });
+    pending.resolve({ ...info, clients: [info.clients[0], { ...info.clients[1], state: result, detail, ...(result === 'installed' ? { action: 'recheck' } : {}) }] });
     await checking;
     assert.equal(reads, 2);
     assert.equal(installs, 0);
@@ -355,8 +357,8 @@ test('confirmed connections keep the same presentation across lazy session lifet
     await app.context.loadAgentConnection(true);
     assert.equal(app.byId('settings-codex-status').textContent, '연결됨');
     assert.equal(app.byId('settings-codex-connect').hidden, true);
-    assert.equal(app.byId('settings-codex-error').hidden, next !== 'outdated');
-    assert.equal(app.byId('settings-codex-error').textContent, next === 'outdated' ? detail : '');
+    assert.equal(app.byId('settings-codex-error').hidden, true);
+    assert.equal(app.byId('settings-codex-error').textContent, '');
   }
 });
 
@@ -400,7 +402,7 @@ test(`closing and reopening a ${initialState} request preserves ownership and re
 
 
 test('unknown host installation requests verification without assuming approval is pending', async () => {
-  const app = harness({ load: async () => ({ ...info, clients: [{ id: 'claude', state: 'installation_unknown', detail: 'Claude에서 Nero 연결을 확인해 주세요.' }, info.clients[1]] }) });
+  const app = harness({ load: async () => ({ ...info, clients: [{ id: 'claude', state: 'installation_unknown', action: 'recheck', detail: 'Claude에서 Nero 연결을 확인해 주세요.' }, info.clients[1]] }) });
   await app.context.loadAgentConnection();
   assert.equal(app.byId('settings-claude-status').textContent, '설치 확인 필요');
   assert.equal(app.byId('settings-claude-error').textContent, 'Claude에서 Nero 연결을 확인해 주세요.');
@@ -480,11 +482,12 @@ for (const state of ['installation_unknown', 'disabled']) {
 }
 
 test('cancelled setup with unknown host installation can reopen the connection screen', async () => {
-  const current = { ...info, clients: [info.clients[0], { ...info.clients[1], state: 'installation_unknown', installationState: 'unknown', sessionState: 'inactive', action: 'connect' }] };
+  const current = { ...info, clients: [info.clients[0], { ...info.clients[1], state: 'installation_unknown', installationState: 'unknown', sessionState: 'inactive', action: 'connect', detail: '설치 상태를 확인해 주세요.' }] };
   let opens = 0;
   const app = harness({ load: async () => current, connect: async () => { opens++; return current; } });
   await app.context.loadAgentConnection();
   assert.equal(app.byId('settings-codex-connect').textContent, '연결 화면 열기');
+  assert.equal(app.byId('settings-codex-error').hidden, true);
   await app.context.connectAgentClient('codex');
   await app.context.connectAgentClient('codex');
   assert.equal(opens, 2);
