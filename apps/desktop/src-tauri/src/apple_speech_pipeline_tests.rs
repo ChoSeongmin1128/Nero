@@ -32,6 +32,7 @@ fn apple_file_processing_preserves_text_and_skips_all_speaker_work_when_disabled
         )
         .unwrap();
         let process = Processing::new(root.clone(), resources);
+        *process.platform_supported_override.lock().unwrap() = Some(true);
         let core = CoreHandle::open(&root).unwrap();
         let input = base.join("synthetic.wav");
         let mut wav = hound::WavWriter::create(
@@ -98,4 +99,24 @@ fn apple_file_processing_preserves_text_and_skips_all_speaker_work_when_disabled
         assert!(core.transcript_history(&meeting.id).is_ok());
         drop(core);
     }
+}
+
+#[test]
+fn platform_override_is_instance_scoped_and_defaults_to_actual_gate() {
+    let temporary = tempfile::tempdir().unwrap();
+    let base = temporary.path().canonicalize().unwrap();
+    let first = Processing::new(base.join("first"), base.join("resources"));
+    let second = Processing::new(base.join("second"), base.join("resources"));
+    assert_eq!(first.platform_supported(), platform_supported());
+    assert_eq!(second.platform_supported(), platform_supported());
+
+    *first.platform_supported_override.lock().unwrap() = Some(true);
+    *second.platform_supported_override.lock().unwrap() = Some(false);
+    assert!(first.platform_supported());
+    assert!(!second.platform_supported());
+    assert!(!second.supported_for(SpeechEngine::AppleSpeech));
+
+    *first.platform_supported_override.lock().unwrap() = None;
+    assert_eq!(first.platform_supported(), platform_supported());
+    assert!(!second.platform_supported());
 }

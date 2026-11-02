@@ -202,6 +202,8 @@ impl RecordingTranscription {
 }
 
 pub struct Processing {
+    #[cfg(test)]
+    platform_supported_override: Mutex<Option<bool>>,
     speech_engine: Mutex<SpeechEngine>,
     speaker_enabled: Mutex<bool>,
     apple_speech_variant: Mutex<Option<AppleVariant>>,
@@ -405,6 +407,8 @@ impl Processing {
             });
         }
         Arc::new(Self {
+            #[cfg(test)]
+            platform_supported_override: Mutex::new(None),
             speech_engine: Mutex::new(speech_engine),
             speaker_enabled: Mutex::new(speaker_enabled),
             apple_speech_variant: Mutex::new(apple_speech_variant),
@@ -465,8 +469,15 @@ impl Processing {
         self.speech_preference_error.lock().unwrap().is_none()
             && self.supported_for(self.speech_engine())
     }
-    fn supported_for(&self, engine: SpeechEngine) -> bool {
+    fn platform_supported(&self) -> bool {
+        #[cfg(test)]
+        if let Some(supported) = *self.platform_supported_override.lock().unwrap() {
+            return supported;
+        }
         platform_supported()
+    }
+    fn supported_for(&self, engine: SpeechEngine) -> bool {
+        self.platform_supported()
             && crate::speech_audio::supported(self)
             && match engine {
                 SpeechEngine::Nemotron => crate::asr::supported(self),
@@ -1672,7 +1683,7 @@ impl Processing {
         } else if matches!(kind, "diarize" | "speaker-model") {
             crate::diarization::availability(self).0
         } else if engine == Some(SpeechEngine::AppleSpeech) {
-            platform_supported()
+            self.platform_supported()
                 && crate::speech_audio::supported(self)
                 && crate::apple_speech::probe(
                     &self.resources,
