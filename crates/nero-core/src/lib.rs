@@ -1,4 +1,6 @@
 pub mod agent_control;
+pub mod audio_normalize;
+mod audio_playback;
 mod capture;
 mod diarization;
 mod engine;
@@ -104,6 +106,17 @@ pub enum SessionState {
 pub struct AudioArtifact {
     pub session_id: String,
     pub relative_path: String,
+    pub frames: u64,
+    pub sample_rate: u32,
+    pub channels: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub playback: Option<AudioPlayback>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AudioPlayback {
+    pub policy: String,
     pub frames: u64,
     pub sample_rate: u32,
     pub channels: u16,

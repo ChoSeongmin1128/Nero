@@ -58,6 +58,49 @@ fn normalized_input_does_not_require_a_platform_converter() {
 }
 
 #[test]
+fn canonical_playback_and_live_analysis_keep_identity_and_cancel_without_mutation() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let process = Processing::new(root.join("library"), root.join("absent-resources"));
+    let source = root.join("playback.wav");
+    let live = root.join("live-analysis.wav");
+    for path in [&source, &live] {
+        let mut writer = WavWriter::create(
+            path,
+            WavSpec {
+                channels: 1,
+                sample_rate: SAMPLE_RATE,
+                bits_per_sample: 16,
+                sample_format: SampleFormat::Int,
+            },
+        )
+        .unwrap();
+        for frame in 0..683 {
+            writer
+                .write_sample(((frame % 31) * 317 - 4700) as i16)
+                .unwrap();
+        }
+        writer.finalize().unwrap();
+    }
+    let before = fs::read(&source).unwrap();
+    let prepared =
+        AnalysisAudio::prepare(&process, &source, &root, &AtomicBool::new(false)).unwrap();
+    let checkpoint = AnalysisAudio::from_live(&source, &live, &AtomicBool::new(false)).unwrap();
+    assert_eq!(prepared.frames, 683);
+    assert_eq!(prepared.evidence(), checkpoint.evidence());
+    assert_eq!(prepared.path(), source);
+    assert!(
+        matches!(AnalysisAudio::prepare(&process, &source, &root, &AtomicBool::new(true)), Err(error) if error.kind == FailureKind::Cancelled)
+    );
+    assert!(
+        matches!(AnalysisAudio::from_live(&source, &live, &AtomicBool::new(true)), Err(error) if error.kind == FailureKind::Cancelled)
+    );
+    assert_eq!(fs::read(&source).unwrap(), before);
+    assert_eq!(fs::read(&live).unwrap(), before);
+    assert!(!root.join("analysis.wav").exists());
+}
+
+#[test]
 fn float16k_import_is_converted_to_the_storage_and_model_pcm16_contract() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();

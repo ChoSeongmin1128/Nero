@@ -1029,6 +1029,7 @@ mod tests {
                 frames: 160000,
                 sample_rate: 16000,
                 channels: 1,
+                playback: None,
             });
             store.save(&meeting).unwrap();
             let folder = Uuid::new_v4().to_string();

@@ -7,6 +7,16 @@ separate playback WAV. A background reader consumes only complete frames already
 written to disk. Saved PCM is the backlog when inference falls behind; inference
 never waits inside the device callback. Original audio is retained.
 
+Native capture frames/rate/channels remain the time coordinates even when a
+native float32 playback WAV would exceed RIFF. Such recordings keep the original
+PCM and publish a separately described mono/16kHz/PCM16 playback WAV. Core playback,
+this saved-PCM reader and file analysis share the same bounded normalizer and
+native-sample downmix. The canonical playback's PCM therefore matches the live
+analysis PCM, including rounding, resampler delay and EOF frames. Source and
+analysis file hashes remain separate identities; a matching duration is not a
+substitute for either hash. Older float32 playback files are unchanged. See
+`audio-import.md` for the persisted playback policy and recovery checks.
+
 The engine is captured at session start. One isolated child holds an independent
 Nemotron 3 speaker stream throughout capture. With the default engine it also
 holds a Nemotron 3.5 Q8 ASR stream. Pause/resume retains both states. ASR

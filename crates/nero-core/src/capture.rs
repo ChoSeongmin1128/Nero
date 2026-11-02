@@ -9,7 +9,7 @@ use crate::{AudioArtifact, CoreError, Device, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use rtrb::{Consumer, Producer, RingBuffer};
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -438,21 +438,12 @@ impl CaptureReader {
             .checked_sub(self.consumed_frames)
             .ok_or(CoreError::StaleSession)?
             .min(maximum_frames as u64) as usize;
-        let mut bytes = vec![0; count * self.manifest.frame_bytes()];
-        self.file.read_exact(&mut bytes)?;
-        let width = self.manifest.encoding.bytes();
-        let mut mono = Vec::with_capacity(count);
-        for frame in bytes.chunks_exact(self.manifest.frame_bytes()) {
-            let mut sum = 0.0;
-            for value in frame.chunks_exact(width) {
-                let sample = self.manifest.encoding.sample(value);
-                if !sample.is_finite() {
-                    return Err(CoreError::Audio("음성 샘플이 올바르지 않습니다.".into()));
-                }
-                sum += f64::from(sample);
-            }
-            mono.push(sum / f64::from(self.manifest.channels));
-        }
+        let mono = crate::audio_playback::read_native_mono(
+            &mut self.file,
+            self.manifest.encoding,
+            self.manifest.channels,
+            count,
+        )?;
         self.consumed_frames += count as u64;
         Ok(mono)
     }

@@ -9,7 +9,10 @@ This file applies to the entire repository.
   input on macOS and Windows. Browser prototypes do not establish native support.
 - The current identity is `io.github.choseongmin1128.nero.desktop`. Identity changes require the explicit installer migration and strict completed receipt. Ordinary reads must not migrate or initialize a library. Never open the separately archived original Swift library implicitly. The old installed app and data are archived
   outside active application locations; do not launch the archive during validation.
-- New capture preserves native PCM and creates a separate float32 WAV for playback.
+- New capture preserves native PCM and creates a separate float32 WAV for playback
+  when its native geometry fits RIFF. Larger captures use a separately identified
+  mono/16kHz/PCM16 playback WAV through the shared bounded ASR normalizer. Keep
+  original frames/rate/channels separate from playback geometry and retain PCM.
   The legacy AAC/M4A and model rules in `legacy/swift/AGENTS.md` apply to the retired implementation,
   not this new format. Never discard original PCM after playback conversion.
 - The native app provides meetings, notes, microphone recording and playback. With

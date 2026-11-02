@@ -1,4 +1,4 @@
-use super::{check_cancel, failure, SAMPLE_RATE};
+use super::{check_cancel, failure};
 use crate::processing::plain_file;
 use crate::summary_failure::{Failure, FailureKind};
 #[cfg(test)]
@@ -69,10 +69,9 @@ fn convert(
     destination: &Path,
     cancel: &AtomicBool,
 ) -> Result<u64, Failure> {
-    let expected = (u128::from(frames) * u128::from(SAMPLE_RATE)
-        + u128::from(spec.sample_rate / 2))
-        / u128::from(spec.sample_rate);
-    if expected == 0 || expected * 2 + 36 > u128::from(u32::MAX) {
+    let expected = nero_core::audio_normalize::output_frames(frames, spec.sample_rate)
+        .map_err(|_| failure(FailureKind::Input))?;
+    if expected == 0 || u128::from(expected) * 2 + 36 > u128::from(u32::MAX) {
         return Err(failure(FailureKind::Input));
     }
     let mut output = super::output::PcmOutput::new(
@@ -87,6 +86,7 @@ fn convert(
 
 #[cfg(test)]
 mod tests {
+    use super::super::SAMPLE_RATE;
     use super::*;
     use std::fs;
     #[test]

@@ -1,3 +1,4 @@
+use crate::audio_playback::Playback;
 use crate::library::Library;
 use crate::{AudioArtifact, CoreError, Meeting, MeetingStatus, Result};
 use fs2::FileExt;
@@ -569,13 +570,22 @@ impl Store {
             }
         };
         manifest.phase = CapturePhase::Interrupted;
-        manifest.error = Some(if raw.metadata()?.len() < manifest.frame_bytes() as u64 {
+        let raw_bytes = raw.metadata()?.len();
+        manifest.error = Some(if raw_bytes < manifest.frame_bytes() as u64 {
             "저장된 오디오가 없어 녹음을 복구하지 못했습니다.".into()
         } else {
             "녹음이 중단되었습니다. 저장된 구간을 복구했습니다.".into()
         });
         drop(raw);
-        let outcome = finalize_audio(&self.root, &mut manifest);
+        let playback = stored.meeting.audio.as_ref().and_then(|artifact| {
+            (artifact.session_id == manifest.session_id
+                && artifact.frames == raw_bytes / manifest.frame_bytes() as u64
+                && artifact.sample_rate == manifest.sample_rate
+                && artifact.channels == manifest.channels)
+                .then(|| Playback::from_artifact(artifact).ok())
+                .flatten()
+        });
+        let outcome = finalize_audio_with_playback(&self.root, &mut manifest, playback);
         stored.meeting.status = MeetingStatus::Interrupted;
         stored.meeting.error = manifest.error.clone();
         match outcome {
@@ -603,12 +613,7 @@ impl Store {
         }
         validate_artifact(&meeting.id, artifact)?;
         let path = checked_path(&self.root, Path::new(&artifact.relative_path))?;
-        validate_playback(
-            &path,
-            artifact.frames,
-            artifact.sample_rate,
-            artifact.channels,
-        )?;
+        validate_playback(&path, &Playback::from_artifact(artifact)?)?;
         Ok(path)
     }
 }
@@ -682,6 +687,7 @@ fn validate_artifact(meeting_id: &str, artifact: &AudioArtifact) -> Result<()> {
             "녹음 파일 경로가 올바르지 않습니다.".into(),
         ));
     }
+    Playback::from_artifact(artifact)?;
     Ok(())
 }
 
@@ -698,6 +704,14 @@ pub(crate) fn finalize_audio(
     root: &Path,
     manifest: &mut Manifest,
 ) -> Result<Option<AudioArtifact>> {
+    finalize_audio_with_playback(root, manifest, None)
+}
+
+fn finalize_audio_with_playback(
+    root: &Path,
+    manifest: &mut Manifest,
+    playback: Option<Playback>,
+) -> Result<Option<AudioArtifact>> {
     manifest.validate()?;
     let raw = checked_path(root, &manifest.relative_dir().join("audio.pcm"))?;
     let file = open_read(&raw)?;
@@ -712,20 +726,13 @@ pub(crate) fn finalize_audio(
         manifest.phase = CapturePhase::Interrupted;
         manifest.error = Some("마지막 녹음 구간이 불완전하여 저장된 구간만 복구했습니다.".into());
     }
-    let sample_count = frames
-        .checked_mul(u64::from(manifest.channels))
-        .ok_or_else(|| CoreError::Storage("녹음 길이를 읽을 수 없습니다.".into()))?;
-    if sample_count > (u32::MAX as u64 - 1024) / 4 {
-        write_manifest(root, manifest)?;
-        return Err(CoreError::Storage(
-            "WAV 파일 크기 한도를 넘었습니다. 원본 녹음은 보관되어 있습니다.".into(),
-        ));
-    }
+    let playback = match playback {
+        Some(playback) => playback,
+        None => Playback::for_capture(frames, manifest.sample_rate, manifest.channels)?,
+    };
     let wav_relative = manifest.relative_dir().join("audio.wav");
     let wav_path = checked_path(root, &wav_relative)?;
-    if wav_path.exists()
-        && validate_playback(&wav_path, frames, manifest.sample_rate, manifest.channels).is_err()
-    {
+    if wav_path.exists() && validate_playback(&wav_path, &playback).is_err() {
         if !fs::symlink_metadata(&wav_path)?.is_file() {
             return Err(CoreError::Storage(
                 "재생 파일 경로에 다른 항목이 있습니다.".into(),
@@ -751,28 +758,10 @@ pub(crate) fn finalize_audio(
         let temporary_path = checked_path(root, &temporary)?;
         let output = create_new(&temporary_path)?;
         let durable = output.try_clone()?;
-        let mut writer = hound::WavWriter::new(
-            BufWriter::new(output),
-            hound::WavSpec {
-                channels: manifest.channels,
-                sample_rate: manifest.sample_rate,
-                bits_per_sample: 32,
-                sample_format: hound::SampleFormat::Float,
-            },
-        )
-        .map_err(wav_error)?;
+        let mut writer =
+            hound::WavWriter::new(BufWriter::new(output), playback.spec).map_err(wav_error)?;
         let mut input = BufReader::new(file);
-        let mut sample = [0_u8; 8];
-        for _ in 0..sample_count {
-            input.read_exact(&mut sample[..manifest.encoding.bytes()])?;
-            writer
-                .write_sample(
-                    manifest
-                        .encoding
-                        .sample(&sample[..manifest.encoding.bytes()]),
-                )
-                .map_err(wav_error)?;
-        }
+        playback.write(&mut input, &mut writer, manifest)?;
         writer.finalize().map_err(wav_error)?;
         durable.sync_all()?;
         checked_path(root, &wav_relative)?;
@@ -789,21 +778,19 @@ pub(crate) fn finalize_audio(
         frames,
         sample_rate: manifest.sample_rate,
         channels: manifest.channels,
+        playback: playback.metadata(),
     }))
 }
 
-fn validate_playback(path: &Path, frames: u64, sample_rate: u32, channels: u16) -> Result<()> {
+fn validate_playback(path: &Path, playback: &Playback) -> Result<()> {
     let file = open_read(path)?;
     let file_length = file.metadata()?.len();
     let reader = hound::WavReader::new(BufReader::new(file)).map_err(wav_error)?;
     let spec = reader.spec();
     let samples = u64::from(reader.len());
-    if spec.channels != channels
-        || spec.sample_rate != sample_rate
-        || spec.bits_per_sample != 32
-        || spec.sample_format != hound::SampleFormat::Float
-        || u64::from(reader.duration()) != frames
-        || samples != frames.saturating_mul(u64::from(channels))
+    if spec != playback.spec
+        || u64::from(reader.duration()) != playback.frames
+        || samples != playback.frames.saturating_mul(u64::from(spec.channels))
     {
         return Err(CoreError::Storage(
             "녹음 파일과 저장 정보가 일치하지 않습니다.".into(),
@@ -811,7 +798,9 @@ fn validate_playback(path: &Path, frames: u64, sample_rate: u32, channels: u16) 
     }
     let mut input = reader.into_inner();
     let data_start = input.stream_position()?;
-    if file_length < data_start.saturating_add(samples.saturating_mul(4)) {
+    if file_length
+        < data_start.saturating_add(samples.saturating_mul(u64::from(spec.bits_per_sample / 8)))
+    {
         return Err(CoreError::Storage(
             "녹음 재생 파일의 일부가 누락되었습니다.".into(),
         ));
@@ -1129,3 +1118,7 @@ pub(crate) fn now() -> u64 {
         .map(|time| time.as_millis().min(u64::MAX as u128) as u64)
         .unwrap_or(0)
 }
+
+#[cfg(test)]
+#[path = "audio_playback_tests.rs"]
+mod playback_tests;
