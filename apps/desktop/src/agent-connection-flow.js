@@ -13,7 +13,7 @@ export function bindConnectionDialogKeys(container, { isOpen, close }) {
 
 export function createAgentConnectionFlow({ writeText }) {
   let request = 0;
-  let state = { open: false, prompt: '', copying: false, copied: false, error: '' };
+  let state = { open: false, mode: 'prompt', prompt: '', copying: false, copied: false, error: '' };
   const listeners = new Set();
   const publish = changes => {
     state = { ...state, ...changes };
@@ -24,10 +24,15 @@ export function createAgentConnectionFlow({ writeText }) {
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     open(info) {
       request += 1;
-      publish({ open: true, prompt: agentConnectionPrompt(info), copying: false, copied: false, error: '' });
+      publish({ open: true, mode: 'prompt', prompt: agentConnectionPrompt(info), copying: false, copied: false, error: '' });
+    },
+    openClaudeExtension(path) {
+      if (typeof path !== 'string' || !path.endsWith('.mcpb') || /[\x00-\x1f]/.test(path)) return;
+      request += 1;
+      publish({ open: true, mode: 'claude-extension', prompt: path, copying: false, copied: false, error: '' });
     },
     update(info) {
-      if (!state.open) return;
+      if (!state.open || state.mode !== 'prompt') return;
       const prompt = agentConnectionPrompt(info);
       if (prompt === state.prompt) return;
       request += 1;

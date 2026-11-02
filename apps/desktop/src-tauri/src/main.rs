@@ -213,9 +213,11 @@ async fn agent_connect_client(
         } else {
             Ok(false)
         };
-        if matches!(&installed, Ok(false)) {
-            open_connection(&action)?;
-        }
+        let claude_extension_path = if matches!(&installed, Ok(false)) {
+            open_connection(&action)?
+        } else {
+            None
+        };
         let observations =
             agent_connection::observe_connection_state(&resources, &root, &connections);
         let info = agent_connection::connection_info_with_hosts(
@@ -226,7 +228,8 @@ async fn agent_connect_client(
             &config,
             matches!(&installed, Ok(true)),
         )
-        .with_observation_errors(observations);
+        .with_observation_errors(observations)
+        .with_claude_extension_path(claude_extension_path);
         Ok(match installed {
             Ok(_) => info,
             Err(detail) => info.with_action_error(&client, detail),
@@ -236,7 +239,7 @@ async fn agent_connect_client(
     .map_err(|_| "연결 화면을 열지 못했습니다. 다시 시도해 주세요.".to_string())?
 }
 
-fn open_connection(action: &agent_connection::ConnectionAction) -> Result<(), String> {
+fn open_connection(action: &agent_connection::ConnectionAction) -> Result<Option<String>, String> {
     let valid = match action.kind.as_str() {
         "file" => {
             std::path::Path::new(&action.target).is_absolute()
@@ -252,6 +255,12 @@ fn open_connection(action: &agent_connection::ConnectionAction) -> Result<(), St
     if !valid || action.target.contains('\0') {
         return Err("연결 대상을 확인하지 못했습니다.".into());
     }
+    // Windows MSIX Claude Desktop does not reliably register .mcpb. Use its
+    // documented in-app extension importer, not an OS app chooser or guessed URI.
+    #[cfg(target_os = "windows")]
+    if action.kind == "file" {
+        return Ok(Some(action.target.clone()));
+    }
     #[cfg(target_os = "macos")]
     {
         let mut command = std::process::Command::new("/usr/bin/open");
@@ -263,7 +272,7 @@ fn open_connection(action: &agent_connection::ConnectionAction) -> Result<(), St
             .output()
             .map_err(|_| "앱을 열지 못했습니다. 설치 상태를 확인해 주세요.".to_string())?;
         if status.status.success() {
-            return Ok(());
+            return Ok(None);
         }
     }
     #[cfg(target_os = "windows")]
@@ -299,7 +308,7 @@ fn open_connection(action: &agent_connection::ConnectionAction) -> Result<(), St
             )
         };
         if result > 32 {
-            return Ok(());
+            return Ok(None);
         }
     }
     Err("앱을 열지 못했습니다. 설치 상태를 확인해 주세요.".into())

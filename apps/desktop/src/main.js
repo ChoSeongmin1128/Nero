@@ -718,6 +718,7 @@ async function connectAgentClient(client) {
     integrationMonitor.acceptAgents(info);
     const updated = info.clients?.find(item => item.id === client);
     if (updated) agentConnection.info = { ...agentConnection.info, clients: agentConnection.info.clients.map(item => item.id === client ? updated : item) };
+    if (client === 'claude' && info.claudeExtensionPath) agentConnectionDialog.openClaudeExtension(info.claudeExtensionPath, byId('settings-claude-connect'));
   } catch (error) {
     const message = typeof error === 'string' ? error : error?.message;
     const reason = typeof message === 'string' && message.length <= 160 && !/[\r\n]/.test(message) && /[가-힣]/.test(message) ? message : checking ? '확인하지 못했습니다. 다시 시도해 주세요.' : '연결하지 못했습니다. 다시 시도해 주세요.';
