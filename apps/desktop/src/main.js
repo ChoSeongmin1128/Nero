@@ -32,6 +32,8 @@ import { mountTranscriptActions } from './transcript-actions.js';
 import { liveTranscriptRows } from './live-transcript.js';
 import { meetingResultPreview } from './meeting-result-preview.js';
 import { mountMeetingDetail } from './meeting-detail-ui.js';
+import { mountAiChat } from './ai-chat-ui.jsx';
+import * as aiChatBridge from './ai-chat-bridge.js';
 import { mountSummaryEvidence } from './summary-evidence.js';
 import { mountAgentConnectionDialog } from './agent-connection-dialog.jsx';
 import { mountTemplateSettings } from './template-settings.jsx';
@@ -105,6 +107,7 @@ let selectionRequest = 0;
 function beginNavigation(history = false) { if (!history) viewHistory?.cancel(); const request = ++selectionRequest; return () => request === selectionRequest; }
 let speakerReplay = null;
 let summaryEvidence = null;
+let aiChat = null;
 let lastLiveTranscript = null;
 const processingActions = new Map();
 const processingErrors = new Map();
@@ -389,6 +392,7 @@ function render() {
   renderProcessing();
   const meeting = currentMeeting();
   calendarReference.render(meeting);
+  aiChat?.setMeeting(meeting);
   byId('meeting-attendees').hidden = !meeting;
   byId('meeting-attendees').disabled = !state.connected || state.busy;
   setHTML('meeting-attendees', `${icon('users')}<span>참석자${meeting?.attendees?.length ? ` ${meeting.attendees.length}명` : ''}</span>`);
@@ -745,6 +749,7 @@ function renderSettings() {
   renderTerminologySettings();
   templateSettings.setActive(dialog.open && state.settingsPanel === 'templates');
   calendarSettings.setActive(dialog.open && state.settingsPanel === 'agent');
+  aiChat?.setSettingsActive(dialog.open && state.settingsPanel === 'agent');
   if (dialog.open && state.settingsPanel === 'people') peopleSettings.show(); else peopleSettings.hide();
   for (const name of settingsPanels) {
     const selected = state.settingsPanel === name;
@@ -953,7 +958,7 @@ async function selectSettingsPanel(name, focus = false) {
 byId('settings-close').addEventListener('click', () => { void closeSettings(); });
 bindDialogDismiss(byId('settings-dialog'), { dismiss: closeSettings, blocked: () => templateSettings.isConfirming() || peopleSettings.isConfirming() });
 bindDialogDismiss(byId('quit-dialog'));
-byId('settings-dialog').addEventListener('close', () => { templateSettings.hide(); peopleSettings.hide(); void summaryTemplatePicker.reload(); resetTerminologySettings(); resetAgentConnection(); globalThis.NeroControls.close?.(); returnFocusTarget(byId(state.settingsReturnId) || byId('settings'), byId('navigation-toggle')).focus({ preventScroll: true }); });
+byId('settings-dialog').addEventListener('close', () => { aiChat?.setSettingsActive(false); templateSettings.hide(); peopleSettings.hide(); void summaryTemplatePicker.reload(); resetTerminologySettings(); resetAgentConnection(); globalThis.NeroControls.close?.(); returnFocusTarget(byId(state.settingsReturnId) || byId('settings'), byId('navigation-toggle')).focus({ preventScroll: true }); });
 for (const name of settingsPanels) byId(`settings-${name}-tab`).addEventListener('click', () => { void selectSettingsPanel(name, true); });
 byId('settings-dialog').addEventListener('keydown', event => {
   if (event.isComposing || event.keyCode === 229 || (templateSettings.isConfirming() || peopleSettings.isConfirming())) return;
@@ -1555,12 +1560,48 @@ byId('quit-dialog').addEventListener('click', (event) => {
 });
 byId('quit-dialog').addEventListener('close', () => { pendingQuitSessionId = null; });
 
-const detail = mountMeetingDetail({ byId, finishEditing, onError: showError, onReveal(view) {
+const detail = mountMeetingDetail({ byId, finishEditing, onError: showError, onInspectorChange: (view, open) => aiChat?.setInspector(view, open), onReveal(view) {
   if (view !== 'transcript') summaryEvidence?.reset();
   if (view === 'transcript') byId('transcript-rows').querySelectorAll('textarea').forEach(resizeTranscriptEditor);
   for (const actions of Object.values(documentActions)) actions.close();
   globalThis.NeroControls.close?.();
 } });
+aiChat = mountAiChat({
+  node: byId('ai-chat-inspector'), settingsNode: byId('ai-account-settings'), tabsNode: byId('inspector-tabs'),
+  bridge: { ...aiChatBridge,
+    appendNote: request => finishEditing(async () => {
+      if (state.selectedId !== request.meetingId) throw new Error('회의를 다시 선택해 주세요.');
+      const result = await aiChatBridge.appendNote(request);
+      acceptSnapshot(await bridge.readSnapshot());
+      return result;
+    }),
+    saveSummary: request => finishEditing(async () => {
+      if (state.selectedId !== request.meetingId) throw new Error('회의를 다시 선택해 주세요.');
+      return aiChatBridge.saveSummary(request);
+    }),
+  },
+  beforeWrite: () => finishEditing(() => true),
+  getTemplate: async () => (await summaryTemplatePicker.selected()).id,
+  onSelect: view => detail.select(view),
+  onSettings: () => { void openSettings('agent', 'detail-ai-open').catch(showError); },
+  onSaved: async (kind, meetingId) => { if (state.selectedId === meetingId) { if (kind === 'summary') await loadSummary(meetingId); render(); } },
+  async onCitation(citation) {
+    if (citation.kind === 'notion') { await aiChatBridge.openSource(citation.url); return; }
+    if (citation.kind !== 'meeting' || citation.meetingId !== state.selectedId || !citation.segmentId) throw new Error('현재 회의에서 이 출처를 찾을 수 없습니다.');
+    await finishEditing(async () => {
+      if (citation.meetingId !== state.selectedId) return;
+      const index = state.transcriptDraft?.doc?.segments.findIndex(segment => segment.id === citation.segmentId) ?? -1;
+      if (index < 0) throw new Error('현재 음성 기록에서 이 발언을 찾을 수 없습니다.');
+      await detail.select('transcript');
+      const row = byId('transcript-rows').querySelector(`[data-transcript-row="${index}"]`);
+      if (!row) throw new Error('현재 음성 기록에서 이 발언을 찾을 수 없습니다.');
+      byId('transcript-rows').querySelectorAll('[data-citation-active]').forEach(node => node.removeAttribute('data-citation-active'));
+      row.setAttribute('data-citation-active', 'true');
+      row.scrollIntoView({ block: 'center', behavior: globalThis.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches ? 'instant' : 'smooth' });
+      row.focus({ preventScroll: true });
+    });
+  },
+});
 summaryEvidence = mountSummaryEvidence({
   container: byId('summary-content'), panel: byId('summary-evidence'),
   onOpen: () => detail.select('transcript'),
