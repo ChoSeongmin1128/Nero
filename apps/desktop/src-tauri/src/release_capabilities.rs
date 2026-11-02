@@ -15,17 +15,30 @@ mod tests {
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
 
-    fn inventory(root: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
-        fn visit(root: &Path, directory: &Path, entries: &mut BTreeMap<PathBuf, Option<Vec<u8>>>) {
+    #[derive(Debug, PartialEq)]
+    enum InventoryEntry {
+        Directory,
+        WriterLock(u64),
+        File(Vec<u8>),
+    }
+
+    fn inventory(root: &Path) -> BTreeMap<PathBuf, InventoryEntry> {
+        fn visit(root: &Path, directory: &Path, entries: &mut BTreeMap<PathBuf, InventoryEntry>) {
             for entry in std::fs::read_dir(directory).unwrap() {
                 let entry = entry.unwrap();
                 let path = entry.path();
                 let relative = path.strip_prefix(root).unwrap().to_path_buf();
                 if entry.file_type().unwrap().is_dir() {
-                    entries.insert(relative, None);
+                    entries.insert(relative, InventoryEntry::Directory);
                     visit(root, &path, entries);
+                } else if relative == Path::new("store.lock") {
+                    // Windows keeps the active writer lock exclusively open.
+                    entries.insert(
+                        relative,
+                        InventoryEntry::WriterLock(entry.metadata().unwrap().len()),
+                    );
                 } else {
-                    entries.insert(relative, Some(std::fs::read(path).unwrap()));
+                    entries.insert(relative, InventoryEntry::File(std::fs::read(path).unwrap()));
                 }
             }
         }
