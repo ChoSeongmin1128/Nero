@@ -392,7 +392,8 @@ function render() {
   renderProcessing();
   const meeting = currentMeeting();
   calendarReference.render(meeting);
-  aiChat?.setMeeting(meeting);
+  aiChat?.setMeeting(state.libraryOpen || setupVisible ? null : meeting);
+  byId('ai-chat-open').disabled = !state.connected;
   byId('meeting-attendees').hidden = !meeting;
   byId('meeting-attendees').disabled = !state.connected || state.busy;
   setHTML('meeting-attendees', `${icon('users')}<span>참석자${meeting?.attendees?.length ? ` ${meeting.attendees.length}명` : ''}</span>`);
@@ -1560,34 +1561,33 @@ byId('quit-dialog').addEventListener('click', (event) => {
 });
 byId('quit-dialog').addEventListener('close', () => { pendingQuitSessionId = null; });
 
-const detail = mountMeetingDetail({ byId, finishEditing, onError: showError, onInspectorChange: (view, open) => aiChat?.setInspector(view, open), onReveal(view) {
+const detail = mountMeetingDetail({ byId, finishEditing, onError: showError, onReveal(view) {
   if (view !== 'transcript') summaryEvidence?.reset();
   if (view === 'transcript') byId('transcript-rows').querySelectorAll('textarea').forEach(resizeTranscriptEditor);
   for (const actions of Object.values(documentActions)) actions.close();
   globalThis.NeroControls.close?.();
 } });
 aiChat = mountAiChat({
-  node: byId('ai-chat-inspector'), settingsNode: byId('ai-account-settings'), tabsNode: byId('inspector-tabs'),
+  node: byId('ai-chat-inspector'), settingsNode: byId('ai-account-settings'), trigger: byId('ai-chat-open'), layoutRoot: byId('app-body'), resizeHandle: byId('ai-chat-resize'),
   bridge: { ...aiChatBridge,
     appendNote: request => finishEditing(async () => {
-      if (state.selectedId !== request.meetingId) throw new Error('회의를 다시 선택해 주세요.');
       const result = await aiChatBridge.appendNote(request);
       acceptSnapshot(await bridge.readSnapshot());
       return result;
     }),
     saveSummary: request => finishEditing(async () => {
-      if (state.selectedId !== request.meetingId) throw new Error('회의를 다시 선택해 주세요.');
       return aiChatBridge.saveSummary(request);
     }),
   },
   beforeWrite: () => finishEditing(() => true),
   getTemplate: async () => (await summaryTemplatePicker.selected()).id,
-  onSelect: view => detail.select(view),
-  onSettings: () => { void openSettings('agent', 'detail-ai-open').catch(showError); },
+  getMeetings: () => state.snapshot.meetings.filter(meeting => !meeting.deletedAt),
+  onSettings: () => { void openSettings('agent', 'ai-chat-open').catch(showError); },
   onSaved: async (kind, meetingId) => { if (state.selectedId === meetingId) { if (kind === 'summary') await loadSummary(meetingId); render(); } },
   async onCitation(citation) {
     if (citation.kind === 'notion') { await aiChatBridge.openSource(citation.url); return; }
-    if (citation.kind !== 'meeting' || citation.meetingId !== state.selectedId || !citation.segmentId) throw new Error('현재 회의에서 이 출처를 찾을 수 없습니다.');
+    if (citation.kind !== 'meeting' || !citation.meetingId || !citation.segmentId || !state.snapshot.meetings.some(meeting => meeting.id === citation.meetingId && !meeting.deletedAt)) throw new Error('이 회의의 출처를 열 수 없습니다.');
+    if (state.selectedId !== citation.meetingId || state.libraryOpen) await selectMeeting(citation.meetingId);
     await finishEditing(async () => {
       if (citation.meetingId !== state.selectedId) return;
       const index = state.transcriptDraft?.doc?.segments.findIndex(segment => segment.id === citation.segmentId) ?? -1;

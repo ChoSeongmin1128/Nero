@@ -4,15 +4,28 @@ import { createAiChatFlow } from '../src/ai-chat-flow.js';
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
 const readyAccount = { id: 'account', provider: 'chatgpt', state: 'ready', configured: true, label: 'Example' };
+const exampleMeetings = [{ id: 'meeting-a', title: 'Example meeting' }, { id: 'meeting-b', title: 'Another meeting' }];
 async function harness(overrides = {}, options = {}) {
-  const calls = [], events = [];
-  let count = 0;
+  const calls = [], events = [], store = new Map([['conversation', { id: 'conversation', title: 'Existing conversation', messages: [], activeRequestId: null }]]);
+  let count = 0, conversationCount = 1;
+  const summary = value => ({ id: value.id, title: value.title, messageCount: value.messages.length, activeRequestId: value.activeRequestId });
   const bridge = {
     accounts: async () => ({ accounts: [readyAccount, { id: 'claude', provider: 'claude', state: 'unavailable', configured: false }] }),
     models: async () => ({ models: [{ id: 'model', label: 'Model' }], defaultModelId: 'model' }),
-    read: async meetingId => ({ id: null, meetingId, messages: [] }),
+    list: async () => [...store.values()].map(summary),
+    create: async () => { const value = { id: `conversation-${++conversationCount}`, title: '새 대화', messages: [], activeRequestId: null }; store.set(value.id, value); return structuredClone(value); },
+    read: async id => { if (!store.has(id)) throw Error('Conversation missing'); return structuredClone(store.get(id)); },
+    remove: async id => { store.delete(id); calls.push(['remove', id]); },
     subscribe: async callback => { events.push(callback); return () => {}; },
-    send: async request => { calls.push(['send', request]); return { conversationId: 'conversation', requestId: request.requestId }; },
+    send: async request => {
+      calls.push(['send', request]);
+      const conversation = store.get(request.conversationId);
+      const attachments = request.meetingIds.map(meetingId => ({ kind: 'meeting', meetingId, title: exampleMeetings.find(item => item.id === meetingId)?.title }));
+      const saveTargets = attachments.map(item => ({ meetingId: item.meetingId, title: item.title, canSaveSummary: true }));
+      conversation.messages.push({ id: `user:${request.requestId}`, role: 'user', status: 'completed', text: request.message, attachments }, { id: `assistant:${request.requestId}`, requestId: request.requestId, role: 'assistant', text: '', status: 'streaming', attachments, saveTargets, sequence: 0 });
+      conversation.activeRequestId = request.requestId;
+      return { conversationId: request.conversationId, requestId: request.requestId };
+    },
     cancel: async requestId => { calls.push(['cancel', requestId]); },
     saveSummary: async request => { calls.push(['summary', request]); },
     appendNote: async request => { calls.push(['note', request]); },
@@ -21,23 +34,112 @@ async function harness(overrides = {}, options = {}) {
     cancelFetch: async requestId => { calls.push(['cancelSource', requestId]); },
     ...overrides,
   };
-  const flow = createAiChatFlow({ bridge, createId: () => `request-${++count}`, ...options });
-  flow.setMeeting({ id: 'meeting-a', title: 'Example meeting' }); flow.setActive(true);
+  const flow = createAiChatFlow({ bridge, createId: () => `request-${++count}`, getMeetings: () => exampleMeetings, ...options });
+  flow.setMeeting(exampleMeetings[0]); void flow.setActive(true);
   await tick(); await tick();
-  return { flow, calls, events, state: () => flow.getSnapshot(), emit: event => events[0]({ meetingId: 'meeting-a', requestId: 'request-1', conversationId: 'conversation', ...event }) };
+  const emit = body => {
+    const event = { requestId: 'request-1', conversationId: 'conversation', ...body };
+    const conversation = store.get(event.conversationId);
+    const message = conversation?.messages.find(item => item.requestId === event.requestId && item.role === 'assistant');
+    if (message) { event.attachments ??= message.attachments; event.saveTargets ??= message.saveTargets; message.text = event.type === 'delta' ? message.text + (event.text || '') : event.text ?? message.text; message.status = event.type === 'delta' ? 'streaming' : event.type; message.sequence = event.sequence ?? message.sequence; if (event.messageId) message.id = event.messageId; if (event.citations) message.citations = event.citations; if (['completed', 'failed', 'cancelled'].includes(event.type)) conversation.activeRequestId = null; }
+    events[0](event);
+  };
+  return { flow, calls, events, store, state: () => flow.getSnapshot(), emit };
 }
 
-test('meeting context is included by default and explicit removal keeps conversation ownership', async () => {
-  const app = await harness(); app.flow.edit('Question'); assert.equal(app.flow.canSend(), true);
-  app.flow.includeMeeting(false); await app.flow.send();
-  assert.equal(app.calls[0][1].meetingId, 'meeting-a'); assert.equal(app.calls[0][1].includeMeeting, false);
-  assert.equal(app.state().conversation.activeRequestId, 'request-1');
-  app.emit({ type: 'delta', text: 'Actual ' }); app.emit({ type: 'delta', text: 'answer' });
-  assert.equal(app.state().conversation.messages.at(-1).text, 'Actual answer');
-  app.emit({ type: 'completed', messageId: 'message-1', citations: [{ reference: 1, kind: 'meeting' }] });
-  assert.equal(app.state().conversation.activeRequestId, null);
-  assert.equal(app.state().conversation.messages.at(-1).id, 'message-1');
+test('opening from a meeting attaches it while the conversation has independent ownership', async () => {
+  const app = await harness();
+  assert.equal(app.state().conversation.id, 'conversation');
+  assert.deepEqual(app.state().conversation.meetings.map(item => item.id), ['meeting-a']);
+  app.flow.removeMeeting('meeting-a'); app.flow.edit('General question'); await app.flow.send();
+  assert.deepEqual(app.calls[0][1].meetingIds, []);
+  assert.equal(app.calls[0][1].conversationId, 'conversation');
+  assert.equal('meetingId' in app.calls[0][1], false);
   app.flow.dispose();
+});
+
+test('meeting and library navigation preserve the same draft attachments and response stream', async () => {
+  const app = await harness(); app.flow.edit('Question'); await app.flow.send();
+  app.flow.edit('Next question'); app.flow.setMeeting(exampleMeetings[1]); app.flow.setMeeting(null);
+  app.emit({ type: 'completed', messageId: 'answer', text: 'Still here' });
+  assert.equal(app.state().conversation.id, 'conversation'); assert.equal(app.state().conversation.draft, 'Next question');
+  assert.equal(app.state().conversation.messages.at(-1).text, 'Still here');
+  assert.deepEqual(app.state().conversation.meetings.map(item => item.id), ['meeting-a']);
+  app.flow.dispose();
+});
+
+test('opening AI from another meeting adds a visible attachment instead of replacing the chat', async () => {
+  const app = await harness(); app.flow.edit('Draft'); app.flow.setMeeting(exampleMeetings[1]);
+  await app.flow.open(exampleMeetings[1]);
+  assert.equal(app.state().conversation.id, 'conversation'); assert.equal(app.state().conversation.draft, 'Draft');
+  assert.deepEqual(app.state().conversation.meetings.map(item => item.id), ['meeting-a', 'meeting-b']);
+  app.flow.attachMeeting(exampleMeetings[1]); assert.equal(app.state().conversation.meetings.length, 2);
+  app.flow.removeMeeting('meeting-a'); await app.flow.send(); assert.deepEqual(app.calls[0][1].meetingIds, ['meeting-b']); app.flow.dispose();
+});
+
+test('new conversations and history switching keep independent streams and drafts', async () => {
+  const app = await harness(); app.flow.edit('First'); await app.flow.send(); app.flow.edit('First draft');
+  await app.flow.newConversation({ attachCurrent: false });
+  assert.equal(app.state().conversation.id, null); assert.equal(app.store.size, 1); assert.deepEqual(app.state().conversation.meetings, []);
+  app.flow.edit('Second draft');
+  app.emit({ type: 'completed', text: 'First answer', messageId: 'first-answer' });
+  assert.equal(app.state().conversation.messages.length, 0); assert.equal(app.state().conversation.draft, 'Second draft');
+  await app.flow.selectConversation('conversation'); assert.equal(app.state().conversation.messages.at(-1).text, 'First answer'); assert.equal(app.state().conversation.draft, 'First draft');
+  await app.flow.newConversation({ attachCurrent: false }); assert.equal(app.state().conversation.draft, 'Second draft');
+  await app.flow.send(); const second = app.state().conversation.id; assert.equal(second, 'conversation-2'); assert.equal(app.store.size, 2);
+  app.flow.edit('Another draft'); await app.flow.selectConversation('conversation'); await app.flow.selectConversation(second); assert.equal(app.state().conversation.draft, 'Another draft'); app.flow.dispose();
+});
+
+test('Notion loading follows a conversation across meeting navigation', async () => {
+  const pending = deferred(), app = await harness({ fetchSources: () => pending.promise });
+  const load = app.flow.addSource('https://notion.so/example'); app.flow.setMeeting(exampleMeetings[1]); app.flow.setMeeting(null);
+  pending.resolve({ sources: [{ sourceId: 'notion:snapshot', title: 'Selected page' }] }); assert.equal(await load, true);
+  assert.equal(app.state().conversation.sources[0].sourceId, 'notion:snapshot'); assert.equal(app.calls.length, 0); app.flow.dispose();
+});
+
+test('switching conversations cancels source loading and discards its late result', async () => {
+  const pending = deferred(), app = await harness({ fetchSources: () => pending.promise });
+  const load = app.flow.addSource('https://notion.so/example'); const next = await app.flow.newConversation({ attachCurrent: false });
+  pending.resolve({ sources: [{ sourceId: 'notion:late' }] }); assert.equal(await load, false);
+  assert.equal(app.state().conversation.id, next); assert.deepEqual(app.state().conversation.sources, []); assert.equal(app.state().fetching, false); assert.equal(app.calls[0][0], 'cancelSource'); app.flow.dispose();
+});
+
+test('late reads cannot replace a selected independent conversation', async () => {
+  const old = deferred(); const app = await harness({ read: id => id === 'conversation' ? old.promise : Promise.resolve({ id, title: 'Other', messages: [] }) });
+  const selection = app.flow.selectConversation('other'); await selection;
+  old.resolve({ id: 'conversation', messages: [{ id: 'old', role: 'assistant', status: 'completed', text: 'Old' }] }); await tick();
+  assert.equal(app.state().conversation.id, 'other'); assert.deepEqual(app.state().conversation.messages, []); app.flow.dispose();
+});
+
+test('list failures do not create an empty replacement for unknown stored history', async () => {
+  let creates = 0;
+  const app = await harness({ list: async () => { throw Error('History unavailable'); }, create: async () => { creates++; return { id: 'wrong', messages: [] }; } });
+  assert.equal(creates, 0); assert.equal(app.state().conversation.id, null); assert.equal(app.state().listError, 'History unavailable'); app.flow.dispose();
+});
+
+test('completed answer saving requires an explicit target when multiple meetings are attached', async () => {
+  const app = await harness(); app.flow.attachMeeting(exampleMeetings[1]); app.flow.edit('Compare meetings'); await app.flow.send();
+  app.emit({ type: 'completed', text: 'Answer', messageId: 'answer' });
+  assert.equal(await app.flow.save('summary', 'answer'), false);
+  assert.equal(await app.flow.save('summary', 'answer', 'meeting-b'), true);
+  assert.equal(app.calls.find(call => call[0] === 'summary')[1].meetingId, 'meeting-b');
+  assert.equal(await app.flow.save('note', 'answer', 'unattached'), false); app.flow.dispose();
+});
+
+test('copy survives meeting navigation but never copies into a newly selected conversation', async () => {
+  let pending = deferred(); const copied = [];
+  const app = await harness({ exportAnswer: () => pending.promise }, { writeClipboard: async text => copied.push(text) });
+  app.flow.edit('Question'); await app.flow.send(); app.emit({ type: 'completed', text: 'Answer', messageId: 'answer' });
+  const copy = app.flow.copy('answer', 'txt'); app.flow.setMeeting(null); pending.resolve({ text: 'Answer', format: 'txt' }); assert.equal(await copy, true);
+  pending = deferred(); const laterCopy = app.flow.copy('answer', 'txt'); await app.flow.newConversation({ attachCurrent: false });
+  pending.resolve({ text: 'Old', format: 'txt' }); assert.equal(await laterCopy, false); assert.deepEqual(copied, ['Answer']); app.flow.dispose();
+});
+
+test('deleting a conversation removes its history without changing the meeting or other conversations', async () => {
+  const app = await harness(); await app.flow.newConversation({ attachCurrent: false }); app.flow.edit('New question'); await app.flow.send(); const next = app.state().conversation.id;
+  app.emit({ conversationId: next, type: 'completed', text: 'New answer', messageId: 'answer' }); await app.flow.removeConversation(next);
+  assert.equal(app.state().conversation.id, 'conversation'); assert.equal(app.state().meeting.id, 'meeting-a'); assert.equal(app.store.has(next), false);
+  assert.deepEqual(app.state().conversationList.map(item => item.id), ['conversation']); app.flow.dispose();
 });
 
 test('unavailable Claude never fabricates a response or sends a request', async () => {
@@ -52,24 +154,6 @@ test('send is locked synchronously and handles events arriving before the receip
   app.emit({ type: 'delta', text: 'From event' }); app.emit({ type: 'completed', messageId: 'answer' });
   pending.resolve({ conversationId: 'conversation', requestId: 'request-1' }); await first;
   assert.equal(app.state().conversation.messages.at(-1).text, 'From event'); assert.equal(app.state().conversation.activeRequestId, null); app.flow.dispose();
-});
-
-test('streaming another meeting cannot populate the currently selected meeting', async () => {
-  const app = await harness(); app.flow.edit('A question'); await app.flow.send();
-  app.flow.setMeeting({ id: 'meeting-b', title: 'B' }); await tick();
-  app.emit({ type: 'completed', messageId: 'answer', text: 'A answer' });
-  assert.equal(app.state().conversation.messages.length, 0);
-  app.flow.setMeeting({ id: 'meeting-a', title: 'A' });
-  assert.equal(app.state().conversation.messages.at(-1).text, 'A answer'); app.flow.dispose();
-});
-
-test('late read completion cannot replace another meeting or create messages on failure', async () => {
-  const pending = deferred(); const app = await harness({ read: id => id === 'meeting-a' ? pending.promise : Promise.resolve({ id: null, messages: [] }) });
-  app.flow.setMeeting({ id: 'meeting-b', title: 'B' }); await tick();
-  pending.resolve({ id: 'old', messages: [{ id: 'old-answer', text: 'Old', role: 'assistant', status: 'completed' }] }); await tick();
-  assert.equal(app.state().conversation.id, null); assert.equal(app.state().conversation.messages.length, 0); app.flow.dispose();
-  const failed = await harness({ read: async () => { throw Error('Read failed'); } }); failed.flow.edit('Question');
-  assert.equal(failed.flow.canSend(), false); assert.equal(await failed.flow.send(), false); failed.flow.dispose();
 });
 
 test('stop waits for a terminal event and failed cancellation remains retryable', async () => {
@@ -98,13 +182,6 @@ test('Notion sources use opaque snapshot IDs and repeated page reads replace onl
   await app.flow.addSource('https://notion.so/example'); await app.flow.addSource('https://notion.so/example');
   assert.equal(app.state().conversation.sources.length, 1); app.flow.edit('Question'); await app.flow.send();
   assert.deepEqual(app.calls[0][1].sourceIds, ['notion:page:2']); app.flow.dispose();
-});
-
-test('switching meetings cancels source loading and discards its late result', async () => {
-  const pending = deferred(); const app = await harness({ fetchSources: () => pending.promise });
-  const load = app.flow.addSource('https://notion.so/example'); app.flow.setMeeting({ id: 'meeting-b', title: 'B' });
-  pending.resolve({ sources: [{ sourceId: 'old' }] }); await load;
-  assert.equal(app.state().conversation.sources.length, 0); assert.equal(app.state().fetching, false); assert.equal(app.calls[0][0], 'cancelSource'); app.flow.dispose();
 });
 
 test('summary requests use the existing selected template and flush before sending', async () => {
@@ -219,19 +296,8 @@ test('completed answers copy only native formatted text without citation options
   app.emit({ type: 'completed', text: 'Raw answer [1]', messageId: 'answer' });
   assert.equal(await app.flow.copy('answer', 'txt'), true); assert.equal(await app.flow.copy('answer', 'md'), true);
   assert.deepEqual(copied, ['Native answer', '**Native answer**']);
-  assert.deepEqual(exports[0], { conversationId: 'conversation', messageId: 'answer', meetingId: 'meeting-a', format: 'txt' });
+  assert.deepEqual(exports[0], { conversationId: 'conversation', messageId: 'answer', format: 'txt' });
   assert.equal(app.state().conversation.feedback, '복사했습니다.'); app.flow.dispose();
-});
-
-test('copy failures show no success feedback and meeting changes invalidate pending exports', async () => {
-  const pending = deferred(), copied = [];
-  const app = await harness({ exportAnswer: () => pending.promise }, { writeClipboard: async text => copied.push(text) });
-  app.flow.edit('Question'); await app.flow.send(); app.emit({ type: 'completed', text: 'Answer', messageId: 'answer' });
-  const copy = app.flow.copy('answer', 'txt'); app.flow.setMeeting({ id: 'meeting-b', title: 'B' }); app.flow.setMeeting({ id: 'meeting-a', title: 'A' });
-  pending.resolve({ text: 'Old answer', format: 'txt' }); assert.equal(await copy, false); assert.deepEqual(copied, []); app.flow.dispose();
-  const failed = await harness({ exportAnswer: async () => ({ text: 'Answer', format: 'txt' }) }, { writeClipboard: async () => { throw Error('Clipboard denied'); } });
-  failed.flow.edit('Question'); await failed.flow.send(); failed.emit({ type: 'completed', text: 'Answer', messageId: 'answer' });
-  assert.equal(await failed.flow.copy('answer', 'txt'), false); assert.equal(failed.state().conversation.feedback, ''); assert.equal(failed.state().conversation.error, 'Clipboard denied'); failed.flow.dispose();
 });
 
 test('reconnect passes the old account ID and selects the newly ready active account', async () => {
@@ -258,23 +324,9 @@ test('declined plan permission reconnects through the same account registration'
   app.flow.dispose();
 });
 
-test('re-entering a restored meeting refreshes a cached stream even when its terminal event was missed', async () => {
-  let reads = 0, cancelled = false;
-  const persisted = () => ({ id: 'conversation', activeRequestId: cancelled ? null : 'request-1', messages: [
-    { id: 'question', role: 'user', text: 'Question', status: 'completed' },
-    { id: 'answer', requestId: 'request-1', role: 'assistant', text: 'Partial answer', status: cancelled ? 'cancelled' : 'streaming', sequence: cancelled ? 2 : 1 },
-  ] });
-  const app = await harness({ read: async () => { reads++; return persisted(); } });
-  assert.equal(app.state().conversation.activeRequestId, 'request-1');
-  app.flow.setMeeting(null); app.flow.setActive(false); cancelled = true;
-  app.flow.setMeeting({ id: 'meeting-a', title: 'Restored meeting' }); app.flow.setActive(true); await tick();
-  assert.equal(reads, 2); assert.equal(app.state().conversation.messages.at(-1).status, 'cancelled');
-  assert.equal(app.state().conversation.activeRequestId, null); app.flow.edit('Next question'); assert.equal(app.flow.canSend(), true); app.flow.dispose();
-});
-
 test('explicit forced read can replace an active cached snapshot and merge a racing terminal event', async () => {
   const refresh = deferred(); let reads = 0;
-  const app = await harness({ read: async () => { reads++; return reads === 1 ? { id: null, messages: [] } : refresh.promise; } });
+  const app = await harness({ read: async () => { reads++; return reads === 1 ? { id: 'conversation', messages: [] } : refresh.promise; } });
   app.flow.edit('Question'); await app.flow.send(); app.emit({ type: 'delta', sequence: 1, text: 'First' });
   const loading = app.flow.loadConversation(true); assert.equal(reads, 2);
   app.emit({ type: 'completed', sequence: 3, text: 'First second', messageId: 'answer' });
@@ -294,7 +346,7 @@ test('a deletion cancellation event releases the hidden conversation account-dis
 test('forced refresh waits for a locally starting request before reading its persisted snapshot', async () => {
   const receipt = deferred(); let reads = 0;
   const app = await harness({ send: () => receipt.promise, read: async () => {
-    reads++; return reads === 1 ? { id: null, messages: [] } : { id: 'conversation', activeRequestId: 'request-1', messages: [{ id: 'answer', requestId: 'request-1', role: 'assistant', status: 'streaming', text: '', sequence: 0 }] };
+    reads++; return reads === 1 ? { id: 'conversation', messages: [] } : { id: 'conversation', activeRequestId: 'request-1', messages: [{ id: 'answer', requestId: 'request-1', role: 'assistant', status: 'streaming', text: '', sequence: 0 }] };
   } });
   app.flow.edit('Question'); const send = app.flow.send(); await tick();
   const refresh = app.flow.loadConversation(true); await tick(); assert.equal(reads, 1);
@@ -325,7 +377,7 @@ test('superseded read failures cannot overwrite the latest snapshot or release i
 
 test('multiple forced reads during a pending send wait for acceptance and only the newest reads', async () => {
   const receipt = deferred(); let reads = 0;
-  const app = await harness({ send: () => receipt.promise, read: async () => { reads++; return { id: reads === 1 ? null : 'conversation', messages: [] }; } });
+  const app = await harness({ send: () => receipt.promise, read: async () => { reads++; return { id: 'conversation', messages: [] }; } });
   app.flow.edit('Question'); const send = app.flow.send(); await tick(); const first = app.flow.loadConversation(true), second = app.flow.loadConversation(true);
   receipt.resolve({ conversationId: 'conversation', requestId: 'request-1' }); await Promise.all([send, first, second]);
   assert.equal(reads, 2); assert.equal(app.state().conversation.loading, false); app.flow.dispose();
@@ -340,4 +392,68 @@ test('the active plan-disabled account is chosen over an older signed-out accoun
   });
   assert.equal(app.state().accountId, active.id); await app.flow.connect('chatgpt'); await tick();
   assert.deepEqual(reconnects, [active.id]); app.flow.edit('Question'); assert.equal(app.flow.canSend(), true); app.flow.dispose();
+});
+
+
+test('a new composer keeps attachments and draft without creating any native history until send', async () => {
+  let creates = 0;
+  const app = await harness({ list: async () => [], create: async () => { creates++; return { id: 'first-persisted', title: 'New', messages: [], activeRequestId: null }; }, send: async request => { app.calls.push(['send', request]); return { conversationId: request.conversationId, requestId: request.requestId }; } });
+  assert.equal(creates, 0); assert.equal(app.state().conversation.id, null); assert.equal(app.state().conversation.loaded, true);
+  app.flow.edit('Draft'); await app.flow.addSource('https://notion.so/example');
+  await app.flow.newConversation(); await app.flow.newConversation();
+  assert.equal(creates, 0); assert.equal(app.state().conversation.draft, 'Draft'); assert.equal(app.state().conversation.sources.length, 1); assert.equal(app.state().conversation.meetings.length, 1);
+  assert.equal(app.flow.canSend(), true); await app.flow.send(); assert.equal(creates, 1); assert.equal(app.state().conversation.id, 'first-persisted');
+  assert.deepEqual(app.calls.find(call => call[0] === 'send')[1].meetingIds, ['meeting-a']); app.flow.dispose();
+});
+
+test('duplicate sends during lazy creation share one synchronous admission', async () => {
+  const created = deferred(); let creates = 0, sends = 0;
+  const app = await harness({ list: async () => [], create: () => { creates++; return created.promise; }, send: async request => { sends++; return { conversationId: request.conversationId, requestId: request.requestId }; } });
+  app.flow.edit('Question'); const first = app.flow.send(); await tick(); assert.equal(await app.flow.send(), false);
+  await app.flow.newConversation(); assert.equal(app.state().conversation.action, 'sending');
+  created.resolve({ id: 'persisted', title: 'New', messages: [], activeRequestId: null }); assert.equal(await first, true);
+  assert.equal(creates, 1); assert.equal(sends, 1); assert.equal(app.state().conversation.activeRequestId, 'request-1'); app.flow.dispose();
+});
+
+test('a delayed open cannot attach its old meeting to a subsequently selected conversation', async () => {
+  const previous = deferred(); const app = await harness({ read: id => id === 'conversation' ? previous.promise : Promise.resolve({ id, messages: [] }) });
+  await app.flow.selectConversation('other'); previous.resolve({ id: 'conversation', messages: [] }); await tick();
+  assert.equal(app.state().conversation.id, 'other'); assert.deepEqual(app.state().conversation.meetings, []); app.flow.dispose();
+});
+
+
+test('an old opening request cannot add its meeting after an explicit fresh composer selection', async () => {
+  const history = deferred(); const app = await harness({ list: () => history.promise });
+  await app.flow.newConversation({ attachCurrent: false }); history.resolve([]); await tick();
+  assert.equal(app.state().conversation.id, null); assert.deepEqual(app.state().conversation.meetings, []); app.flow.dispose();
+});
+
+
+test('summary saving uses native target capability while note appending remains available', async () => {
+  const app = await harness(); app.flow.edit('Question'); await app.flow.send();
+  app.emit({ type: 'completed', text: 'Answer', messageId: 'answer', saveTargets: [{ meetingId: 'meeting-a', title: 'Meeting', canSaveSummary: false }] });
+  assert.equal(await app.flow.save('summary', 'answer', 'meeting-a'), false);
+  assert.equal(await app.flow.save('note', 'answer', 'meeting-a'), true); app.flow.dispose();
+});
+
+test('a failed screen refresh after persistence does not report the successful write as failed', async () => {
+  let writes = 0;
+  const app = await harness({ saveSummary: async () => { writes++; } }, { onSaved: async () => { throw Error('Refresh failed'); } });
+  app.flow.edit('Question'); await app.flow.send(); app.emit({ type: 'completed', text: 'Answer', messageId: 'answer' });
+  assert.equal(await app.flow.save('summary', 'answer'), true); assert.equal(writes, 1); assert.equal(app.state().conversation.feedback, '요약을 저장했습니다.'); assert.match(app.state().conversation.error, /표시하지 못/); app.flow.dispose();
+});
+
+
+test('native history refresh updates the active title without replacing its draft or messages', async () => {
+  let title = 'Initial';
+  const app = await harness({ list: async () => [{ id: 'conversation', title }] });
+  app.flow.edit('Draft'); title = 'Question title'; await app.flow.loadList(true);
+  assert.equal(app.state().conversation.title, 'Question title'); assert.equal(app.state().conversation.draft, 'Draft'); app.flow.dispose();
+});
+
+test('typing into the initial composer prevents a late history list from switching away', async () => {
+  const history = deferred(); const app = await harness({ list: () => history.promise });
+  app.flow.edit('My new question'); history.resolve([{ id: 'conversation', title: 'Old conversation' }]); await tick();
+  assert.equal(app.state().conversation.id, null); assert.equal(app.state().conversation.draft, 'My new question');
+  assert.equal(app.flow.canSend(), true); app.flow.dispose();
 });

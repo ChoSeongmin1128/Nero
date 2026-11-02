@@ -11,7 +11,10 @@ export const finishConnect = attemptId => call('ai_chat_finish_connect', { attem
 export const cancelConnect = attemptId => call('ai_chat_cancel_connect', { attemptId });
 export const disconnect = accountId => call('ai_chat_disconnect', { accountId });
 export const models = accountId => call('ai_chat_models', { accountId });
-export const read = meetingId => call('ai_chat_read', { meetingId });
+export const list = () => call('ai_chat_list');
+export const create = () => call('ai_chat_create');
+export const read = conversationId => call('ai_chat_read', { conversationId });
+export const remove = conversationId => call('ai_chat_delete', { conversationId });
 export const send = request => call('ai_chat_send', request);
 export const cancel = requestId => call('ai_chat_cancel', { requestId });
 export const saveSummary = request => call('ai_chat_save_summary', request);

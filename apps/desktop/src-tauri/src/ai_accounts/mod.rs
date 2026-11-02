@@ -47,7 +47,7 @@ pub struct AccountSnapshot {
     pub configured: bool,
     pub reason: Option<String>,
 }
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountsSnapshot {
     pub active_account_id: Option<String>,
@@ -135,6 +135,7 @@ pub struct AiAccounts {
     operation: Arc<tokio::sync::Mutex<()>>,
     pending: Arc<Mutex<Option<Arc<oauth::Pending>>>>,
     closing: Arc<AtomicBool>,
+    public_snapshot: Arc<Mutex<Option<AccountsSnapshot>>>,
 }
 
 impl AiAccounts {
@@ -158,12 +159,25 @@ impl AiAccounts {
             operation: Arc::new(tokio::sync::Mutex::new(())),
             pending: Arc::new(Mutex::new(None)),
             closing: Arc::new(AtomicBool::new(false)),
+            public_snapshot: Arc::new(Mutex::new(None)),
         })
     }
     pub fn snapshot(&self) -> Result<AccountsSnapshot, String> {
-        let state = self.read()?;
-        Ok(AccountsSnapshot {
-            active_account_id: state.active_account_id,
+        let mut cached = self
+            .public_snapshot
+            .lock()
+            .map_err(|_| "AI 연결 상태를 확인하지 못했습니다.")?;
+        if let Some(snapshot) = cached.as_ref() {
+            return Ok(snapshot.clone());
+        }
+        let state = credentials::read::<SavedState>(self.store.as_ref())?;
+        let snapshot = Self::public_view(&state);
+        *cached = Some(snapshot.clone());
+        Ok(snapshot)
+    }
+    fn public_view(state: &SavedState) -> AccountsSnapshot {
+        AccountsSnapshot {
+            active_account_id: state.active_account_id.clone(),
             accounts: state.accounts.iter().map(AccountRecord::snapshot).collect(),
             providers: vec![
                 ProviderInfo {
@@ -179,7 +193,7 @@ impl AiAccounts {
                     reason: None,
                 },
             ],
-        })
+        }
     }
     pub fn begin_sign_in(
         &self,
@@ -901,10 +915,23 @@ impl AiAccounts {
         Ok(value)
     }
     fn read(&self) -> Result<SavedState, String> {
-        credentials::read(self.store.as_ref())
+        let mut cached = self
+            .public_snapshot
+            .lock()
+            .map_err(|_| "AI 연결 상태를 확인하지 못했습니다.")?;
+        let result = credentials::read::<SavedState>(self.store.as_ref());
+        *cached = result.as_ref().ok().map(Self::public_view);
+        result
     }
     fn save(&self, state: &SavedState) -> Result<(), String> {
-        credentials::write(self.store.as_ref(), state)
+        let mut cached = self
+            .public_snapshot
+            .lock()
+            .map_err(|_| "AI 연결 상태를 확인하지 못했습니다.")?;
+        *cached = None;
+        credentials::write(self.store.as_ref(), state)?;
+        *cached = Some(Self::public_view(state));
+        Ok(())
     }
     fn file_guard(&self) -> Result<File, String> {
         fs::create_dir_all(&self.directory).map_err(|_| "AI 연결 상태를 준비하지 못했습니다.")?;
@@ -1084,15 +1111,22 @@ async fn with_cancel<T>(
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+    use std::sync::atomic::AtomicUsize;
     #[derive(Default)]
     struct Memory {
         values: Mutex<BTreeMap<String, Vec<u8>>>,
+        reads: AtomicUsize,
+        fail_write: AtomicBool,
     }
     impl credentials::Credentials for Memory {
         fn read(&self, name: &str) -> Result<Option<Vec<u8>>, String> {
+            self.reads.fetch_add(1, Ordering::Relaxed);
             Ok(self.values.lock().unwrap().get(name).cloned())
         }
         fn write(&self, name: &str, value: &[u8]) -> Result<(), String> {
+            if self.fail_write.load(Ordering::Relaxed) {
+                return Err("synthetic credential write failure".into());
+            }
             self.values
                 .lock()
                 .unwrap()
@@ -1395,6 +1429,114 @@ mod tests {
         let second = AiAccounts::with_store(temp.path().join("ai"), store).unwrap();
         let _held = first.file_guard().unwrap();
         assert!(second.file_guard().is_err());
+    }
+
+    #[test]
+    fn repeated_public_snapshots_share_one_secret_read_across_clones_and_threads() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Arc::new(Memory::default());
+        credentials::write(
+            store.as_ref(),
+            &SavedState {
+                host_id: Some("fixture-host".into()),
+                active_account_id: Some("first".into()),
+                accounts: vec![record("first", "fixture-client")],
+            },
+        )
+        .unwrap();
+        let manager = AiAccounts::with_store(temp.path().join("ai"), store.clone()).unwrap();
+        let before = store.reads.load(Ordering::Relaxed);
+        let first = manager.snapshot().unwrap();
+        let after_first = store.reads.load(Ordering::Relaxed);
+        assert!(after_first > before);
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        let mut threads = Vec::new();
+        for _ in 0..8 {
+            let manager = manager.clone();
+            let barrier = barrier.clone();
+            threads.push(std::thread::spawn(move || {
+                barrier.wait();
+                for _ in 0..20 {
+                    assert!(manager.snapshot().unwrap().accounts[0].can_invoke);
+                }
+            }));
+        }
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        assert_eq!(store.reads.load(Ordering::Relaxed), after_first);
+        let encoded = serde_json::to_string(&first).unwrap();
+        assert!(!encoded.contains("PRIVATE"));
+        assert!(!encoded.contains("fixture-client"));
+        assert!(!temp.path().join("ai").exists());
+    }
+    #[test]
+    fn successful_save_refreshes_public_metadata_without_an_extra_snapshot_secret_read() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Arc::new(Memory::default());
+        let manager = AiAccounts::with_store(temp.path().join("ai"), store.clone()).unwrap();
+        assert!(manager.snapshot().unwrap().accounts.is_empty());
+        let mut account = record("first", "fixture-client");
+        account.tokens = None;
+        manager
+            .save(&SavedState {
+                host_id: None,
+                active_account_id: Some("first".into()),
+                accounts: vec![account],
+            })
+            .unwrap();
+        let after_save = store.reads.load(Ordering::Relaxed);
+        let snapshot = manager.snapshot().unwrap();
+        assert_eq!(snapshot.active_account_id.as_deref(), Some("first"));
+        assert_eq!(snapshot.accounts[0].state, "signed_out");
+        assert_eq!(store.reads.load(Ordering::Relaxed), after_save);
+    }
+    #[test]
+    fn failed_credential_save_invalidates_public_metadata_instead_of_claiming_the_change() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Arc::new(Memory::default());
+        let manager = AiAccounts::with_store(temp.path().join("ai"), store.clone()).unwrap();
+        let initial = SavedState {
+            host_id: None,
+            active_account_id: Some("first".into()),
+            accounts: vec![record("first", "fixture-client")],
+        };
+        manager.save(&initial).unwrap();
+        assert!(manager.snapshot().unwrap().accounts[0].can_invoke);
+        store.fail_write.store(true, Ordering::Relaxed);
+        assert!(manager.save(&SavedState::default()).is_err());
+        store.fail_write.store(false, Ordering::Relaxed);
+        let after_failure = store.reads.load(Ordering::Relaxed);
+        let recovered = manager.snapshot().unwrap();
+        assert!(recovered.accounts[0].can_invoke);
+        assert!(store.reads.load(Ordering::Relaxed) > after_failure);
+        let after_recovery = store.reads.load(Ordering::Relaxed);
+        manager.snapshot().unwrap();
+        assert_eq!(store.reads.load(Ordering::Relaxed), after_recovery);
+    }
+    #[tokio::test]
+    async fn invocation_freshly_reads_external_changes_instead_of_trusting_public_metadata() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Arc::new(Memory::default());
+        let manager = AiAccounts::with_store(temp.path().join("ai"), store.clone()).unwrap();
+        let mut saved = SavedState {
+            host_id: None,
+            active_account_id: Some("first".into()),
+            accounts: vec![record("first", "fixture-client")],
+        };
+        manager.save(&saved).unwrap();
+        assert!(manager.snapshot().unwrap().accounts[0].can_invoke);
+        saved.accounts[0].tokens = None;
+        saved.accounts[0].revision += 1;
+        credentials::write(store.as_ref(), &saved).unwrap();
+        let after_external_change = store.reads.load(Ordering::Relaxed);
+        assert!(manager.snapshot().unwrap().accounts[0].can_invoke);
+        assert_eq!(store.reads.load(Ordering::Relaxed), after_external_change);
+        assert!(manager.subscription_session("first").await.is_err());
+        assert!(store.reads.load(Ordering::Relaxed) > after_external_change);
+        let after_invocation = store.reads.load(Ordering::Relaxed);
+        assert!(!manager.snapshot().unwrap().accounts[0].can_invoke);
+        assert_eq!(store.reads.load(Ordering::Relaxed), after_invocation);
     }
 }
 

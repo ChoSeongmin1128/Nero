@@ -1,8 +1,8 @@
 import { mountNotesWidth } from './notes-width.js';
 
-const views = ['summary', 'transcript', 'notes', 'ai'];
+const views = ['summary', 'transcript', 'notes'];
 
-export function mountMeetingDetail({ byId, finishEditing, onReveal = () => {}, onError = () => {}, onInspectorChange = () => {} }) {
+export function mountMeetingDetail({ byId, finishEditing, onReveal = () => {}, onError = () => {} }) {
   const body = byId('detail-body-scroll');
   const summary = byId('summary-section'), transcript = byId('transcript-section');
   const inspector = byId('detail-inspector'), notes = byId('notes-section');
@@ -19,22 +19,16 @@ export function mountMeetingDetail({ byId, finishEditing, onReveal = () => {}, o
   }
   function display() {
     const current = memory(), notesOpen = Boolean(current?.notesOpen);
-    const inspectorView = current?.inspectorView || 'notes';
     summary.hidden = !meetingId || !summaryVisible;
     transcript.hidden = !meetingId || !transcriptVisible;
     byId('result-transcript-home').hidden = transcript.hidden;
     inspector.hidden = !meetingId || !notesOpen;
     width.update(!inspector.hidden);
-    notes.hidden = inspector.hidden || inspectorView !== 'notes';
-    const ai = byId('ai-chat-inspector');
-    if (ai) ai.hidden = inspector.hidden || inspectorView !== 'ai';
-    byId('inspector-search-toggle').hidden = inspectorView !== 'notes';
-    byId('meeting-detail').dataset.inspector = inspector.hidden ? '' : inspectorView;
-    onInspectorChange(inspectorView, !inspector.hidden);
+    notes.hidden = inspector.hidden;
     for (const [view, control] of controls) {
       if (!control) continue;
       control.hidden = !meetingId;
-      if (view === 'notes' || view === 'ai') control.setAttribute('aria-expanded', String(notesOpen && inspectorView === view));
+      if (view === 'notes') control.setAttribute('aria-expanded', String(notesOpen));
       else {
         control.disabled = view === 'transcript' && !transcriptVisible || view === 'summary' && !summaryVisible;
         control.setAttribute('aria-pressed', String(current?.section === view));
@@ -49,7 +43,7 @@ export function mountMeetingDetail({ byId, finishEditing, onReveal = () => {}, o
   }
   function update({ id, recording = false, summaryLoaded = false, transcriptLoaded = false, hasTranscript = false, hasPreview = false, hasAudio = false, showSummary = true }) {
     if (id !== meetingId) { meetingId = id; request++; pendingRestore = true; }
-    if (id && !memories.has(id)) memories.set(id, { section: 'summary', notesOpen: false, inspectorView: 'notes', explicitNotes: false, recordingSeen: false, scroll: 0, notesScroll: 0 });
+    if (id && !memories.has(id)) memories.set(id, { section: 'summary', notesOpen: false, explicitNotes: false, recordingSeen: false, scroll: 0, notesScroll: 0 });
     summaryVisible = showSummary;
     transcriptVisible = hasAudio || hasTranscript || hasPreview || recording;
     ready = summaryLoaded && transcriptLoaded;
@@ -68,18 +62,18 @@ export function mountMeetingDetail({ byId, finishEditing, onReveal = () => {}, o
         if (id !== meetingId || intent !== request) return false;
         rememberScroll();
         const current = memory();
-        if (view === 'notes' || view === 'ai') { current.notesOpen = toggle && (current.inspectorView || 'notes') === view ? !current.notesOpen : true; current.inspectorView = view; current.explicitNotes = true; }
+        if (view === 'notes') { current.notesOpen = toggle ? !current.notesOpen : true; current.explicitNotes = true; }
         else current.section = view;
         display();
         onReveal(view);
-        if (view !== 'notes' && view !== 'ai') {
+        if (view !== 'notes') {
           const section = view === 'summary' ? summary : transcript;
           const reduced = body.ownerDocument?.defaultView?.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
           section.scrollIntoView?.({ block: 'start', behavior: reduced ? 'instant' : 'smooth' });
           if (focus) section.focus({ preventScroll: true });
         } else if (focus) {
           const preview = byId('notes-search-preview');
-          const target = view === 'ai' ? byId('ai-chat-inspector')?.querySelector('textarea') : preview && !preview.hidden ? preview : editor;
+          const target = preview && !preview.hidden ? preview : editor;
           (current.notesOpen ? target : controls.get(view))?.focus({ preventScroll: true });
         }
         return true;
@@ -88,12 +82,12 @@ export function mountMeetingDetail({ byId, finishEditing, onReveal = () => {}, o
   }
   body.addEventListener('scroll', rememberScroll);
   editor.addEventListener('scroll', rememberScroll);
-  for (const [view, control] of controls) control?.addEventListener('click', () => { void select(view, { focus: true, toggle: view === 'notes' || view === 'ai' }); });
-  close.addEventListener('click', () => { if (memory()?.notesOpen) void select(memory()?.inspectorView || 'notes', { toggle: true, focus: true }); });
+  for (const [view, control] of controls) control?.addEventListener('click', () => { void select(view, { focus: true, toggle: view === 'notes' }); });
+  close.addEventListener('click', () => { if (memory()?.notesOpen) void select('notes', { toggle: true, focus: true }); });
   inspector.addEventListener('keydown', event => {
     if (event.key === 'Escape' && !event.defaultPrevented && !event.isComposing && !event.target.closest?.('[role="listbox"],[role="menu"],[open]')) {
-      event.preventDefault(); if (memory()?.notesOpen) void select(memory()?.inspectorView || 'notes', { toggle: true, focus: true });
+      event.preventDefault(); if (memory()?.notesOpen) void select('notes', { toggle: true, focus: true });
     }
   });
-  return { update, select, rememberScroll, active: () => memory()?.section || 'summary', notesOpen: () => Boolean(memory()?.notesOpen && (memory()?.inspectorView || 'notes') === 'notes'), inspectorOpen: () => Boolean(memory()?.notesOpen) };
+  return { update, select, rememberScroll, active: () => memory()?.section || 'summary', notesOpen: () => Boolean(memory()?.notesOpen), inspectorOpen: () => Boolean(memory()?.notesOpen) };
 }

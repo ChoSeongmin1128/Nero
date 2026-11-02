@@ -250,16 +250,70 @@ pub async fn ai_chat_models(
     state.chat()?.models(&account_id).await
 }
 #[tauri::command]
-pub async fn ai_chat_read(
+pub async fn ai_chat_list(
     window: WebviewWindow,
+    app: AppHandle,
     state: State<'_, AiDesktop>,
-    meeting_id: String,
+) -> Result<Vec<ai_chat::ConversationSummary>, String> {
+    require_main(&window)?;
+    let transition = app.state::<DesktopState>().lifecycle.begin_transition()?;
+    let chat = state.chat()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _transition = transition;
+        chat.list()
+    })
+    .await
+    .map_err(|_| "대화 목록을 불러오지 못했습니다.".to_string())?
+}
+#[tauri::command]
+pub async fn ai_chat_create(
+    window: WebviewWindow,
+    app: AppHandle,
+    state: State<'_, AiDesktop>,
 ) -> Result<ai_chat::Conversation, String> {
     require_main(&window)?;
+    let transition = app.state::<DesktopState>().lifecycle.begin_transition()?;
     let chat = state.chat()?;
-    tauri::async_runtime::spawn_blocking(move || chat.read(&meeting_id))
-        .await
-        .map_err(|_| "대화를 불러오지 못했습니다.".to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        let _transition = transition;
+        chat.create()
+    })
+    .await
+    .map_err(|_| "새 대화를 만들지 못했습니다.".to_string())?
+}
+#[tauri::command]
+pub async fn ai_chat_delete(
+    window: WebviewWindow,
+    app: AppHandle,
+    state: State<'_, AiDesktop>,
+    conversation_id: String,
+) -> Result<(), String> {
+    require_main(&window)?;
+    let transition = app.state::<DesktopState>().lifecycle.begin_transition()?;
+    let chat = state.chat()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _transition = transition;
+        chat.delete(&conversation_id)
+    })
+    .await
+    .map_err(|_| "대화를 삭제하지 못했습니다.".to_string())?
+}
+#[tauri::command]
+pub async fn ai_chat_read(
+    window: WebviewWindow,
+    app: AppHandle,
+    state: State<'_, AiDesktop>,
+    conversation_id: String,
+) -> Result<ai_chat::Conversation, String> {
+    require_main(&window)?;
+    let transition = app.state::<DesktopState>().lifecycle.begin_transition()?;
+    let chat = state.chat()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _transition = transition;
+        chat.read(&conversation_id)
+    })
+    .await
+    .map_err(|_| "대화를 불러오지 못했습니다.".to_string())?
 }
 #[tauri::command]
 pub async fn ai_chat_send(
@@ -267,9 +321,8 @@ pub async fn ai_chat_send(
     app: AppHandle,
     state: State<'_, AiDesktop>,
     request_id: String,
-    conversation_id: Option<String>,
-    meeting_id: String,
-    include_meeting: bool,
+    conversation_id: String,
+    meeting_ids: Vec<String>,
     account_id: String,
     model_id: String,
     message: String,
@@ -282,8 +335,7 @@ pub async fn ai_chat_send(
     let request = ai_chat::SendRequest {
         request_id,
         conversation_id,
-        meeting_id,
-        include_meeting,
+        meeting_ids,
         account_id,
         model_id,
         message,
@@ -319,8 +371,10 @@ async fn apply_answer(
     meeting_id: String,
     summary: bool,
 ) -> Result<Value, String> {
+    let transition = app.state::<DesktopState>().lifecycle.begin_transition()?;
     let chat = state.chat()?;
     let result = tauri::async_runtime::spawn_blocking(move || {
+        let _transition = transition;
         if summary {
             chat.save_summary(&conversation_id, &message_id, &meeting_id)
         } else {
@@ -482,13 +536,12 @@ pub async fn ai_chat_answer_document(
     state: State<'_, AiDesktop>,
     conversation_id: String,
     message_id: String,
-    meeting_id: String,
     format: nero_core::DocumentFormat,
 ) -> Result<Value, String> {
     require_main(&window)?;
     let chat = state.chat()?;
     let text = tauri::async_runtime::spawn_blocking(move || {
-        chat.answer_document(&conversation_id, &message_id, &meeting_id, format)
+        chat.answer_document(&conversation_id, &message_id, format)
     })
     .await
     .map_err(|_| "답변을 복사하지 못했습니다.".to_string())??;

@@ -1,125 +1,24 @@
 import * as React from 'react';
 import { createRoot } from 'react-dom/client';
-import { Tabs } from '@base-ui/react/tabs';
-import { ArrowUp, Square, Plus, X, FileText, RotateCcw, NotebookPen, Copy, Check } from 'lucide-react';
-import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '../../../design-system/components/ui/select.jsx';
-import { Popover, PopoverTrigger, PopoverContent, PopoverTitle } from '../../../design-system/components/ui/popover.jsx';
 import { createAiChatFlow, selectAiAccount } from './ai-chat-flow.js';
+import { GlobalAiChat } from './ai-chat-shell.jsx';
+import { mountAiChatLayout } from './ai-chat-layout.js';
 
 const providers = [{ value: 'chatgpt', label: 'ChatGPT' }, { value: 'claude', label: 'Claude' }];
-const accountLabel = { ready: '연결됨', signed_out: '연결 필요', unavailable: '사용할 수 없음', plan_disabled: '구독 확인 필요', connecting: '연결 중' };
-
-function SourcePicker({ flow, state, onSettings }) {
-  const [open, setOpen] = React.useState(false), [link, setLink] = React.useState('');
-  const input = React.useRef(null);
-  React.useEffect(() => { if (!state.active) setOpen(false); }, [state.active]);
-  const busy = Boolean(state.conversation.activeRequestId || state.conversation.action);
-  return <Popover open={open && state.active} onOpenChange={setOpen}>
-    <PopoverTrigger className="quiet small with-icon" disabled={busy} onClick={() => { void flow.loadNotion(); }}><Plus size={14} aria-hidden="true" />자료 추가</PopoverTrigger>
-    <PopoverContent className="ai-source-popover" initialFocus={input} finalFocus={state.active ? undefined : false}>
-      <PopoverTitle className="ai-source-title">Notion 자료</PopoverTitle>
-      <form onSubmit={async event => { event.preventDefault(); if (await flow.addSource(link)) { setLink(''); setOpen(false); } }}>
-        <label htmlFor="ai-source-link">페이지 링크</label>
-        <input ref={input} id="ai-source-link" type="url" value={link} placeholder="https://www.notion.so/..." onChange={event => setLink(event.target.value)} disabled={state.fetching} required />
-        {state.notion && !state.notion.connected && <button type="button" className="small" onClick={() => { setOpen(false); onSettings(); }}>Notion 연결</button>}
-        {state.sourceError && <p role="alert" className="ai-chat-error">{state.sourceError}</p>}
-        <div className="ai-source-actions">{state.fetching ? <button type="button" className="small" onClick={() => { void flow.cancelSource(); }}>취소</button> : null}<button type="submit" className="small primary" disabled={state.fetching || !link.trim() || !state.notion?.connected}>{state.fetching ? '불러오는 중' : '추가'}</button></div>
-      </form>
-    </PopoverContent>
-  </Popover>;
-}
-
-function AnswerCopy({ flow, state, message }) {
-  const [open, setOpen] = React.useState(false), [openedFor, setOpenedFor] = React.useState(null);
-  const owner = state.meeting?.id;
-  React.useEffect(() => { setOpen(false); }, [state.active, owner]);
-  const pending = Boolean(state.conversation.action);
-  const copy = async format => { if (await flow.copy(message.id, format)) setOpen(false); };
-  return <Popover open={open && state.active && openedFor === owner} onOpenChange={next => { if (next) setOpenedFor(owner); setOpen(next); }}>
-    <PopoverTrigger type="button" className="quiet small icon" disabled={pending || Boolean(state.conversation.activeRequestId)} aria-label="AI 답변 복사" title="AI 답변 복사">
-      {state.conversation.copiedMessageId === message.id ? <Check size={17} aria-hidden="true" /> : <Copy size={17} aria-hidden="true" />}
-    </PopoverTrigger>
-    <PopoverContent align="end" className="nero-action-popover" data-nero-ui-owned="" finalFocus={state.active && openedFor === owner ? undefined : false}>
-      <PopoverTitle className="sr-only">AI 답변 복사</PopoverTitle>
-      <button type="button" className="quiet small" disabled={pending} onClick={() => { void copy('txt'); }}>텍스트로 복사</button>
-      <button type="button" className="quiet small" disabled={pending} onClick={() => { void copy('md'); }}>마크다운으로 복사</button>
-      {pending && <span className="processing-inline type-caption" role="status"><span className="activity-spinner" aria-hidden="true" />준비 중</span>}
-      {state.conversation.error && <p className="notice type-caption" role="alert">{state.conversation.error}</p>}
-    </PopoverContent>
-  </Popover>;
-}
-
-export function AiChat({ flow, onSettings = () => {}, onCitation = async () => {} }) {
-  const state = React.useSyncExternalStore(flow.subscribe, flow.getSnapshot);
-  const conversation = state.conversation;
-  const account = state.accounts.find(item => item.id === state.accountId && item.provider === state.provider);
-  const busy = Boolean(conversation.activeRequestId || conversation.action);
-  const transcript = React.useRef(null), pinned = React.useRef(true), composer = React.useRef(null);
-  const meetingId = state.meeting?.id;
-  const [providerOpen, setProviderOpen] = React.useState(false), [modelOpen, setModelOpen] = React.useState(false);
-  React.useEffect(() => { if (!state.active) { setProviderOpen(false); setModelOpen(false); } }, [state.active]);
-  const [citationError, setCitationError] = React.useState('');
-  const revealCitation = async citation => { try { setCitationError(''); await onCitation(citation); } catch (error) { setCitationError(error?.message || '자료를 열지 못했습니다.'); } };
-  React.useLayoutEffect(() => { pinned.current = true; if (transcript.current) transcript.current.scrollTop = transcript.current.scrollHeight; }, [meetingId]);
-  React.useLayoutEffect(() => { if (pinned.current && transcript.current) transcript.current.scrollTop = transcript.current.scrollHeight; }, [conversation.messages]);
-  const unavailable = account?.state === 'unavailable' || (state.accountsLoaded && !account);
-  return <div className="ai-chat" data-nero-ui-owned="">
-    <div className="ai-chat-toolbar">
-      <Select open={state.active && providerOpen} onOpenChange={setProviderOpen} value={state.provider} onValueChange={value => flow.selectProvider(value)} items={providers} disabled={busy}>
-        <SelectTrigger className="ai-provider-select" aria-label="AI 선택"><SelectValue /></SelectTrigger>
-        <SelectContent>{providers.map(provider => <SelectItem key={provider.value} value={provider.value}>{provider.label}</SelectItem>)}</SelectContent>
-      </Select>
-      {state.models.length > 0 && <Select open={state.active && modelOpen} onOpenChange={setModelOpen} value={state.modelId} onValueChange={value => flow.selectModel(value)} items={state.models.map(model => ({ value: model.id, label: model.label }))} disabled={busy || state.modelsBusy}>
-        <SelectTrigger className="ai-model-select" aria-label="모델 선택"><SelectValue /></SelectTrigger>
-        <SelectContent>{state.models.map(model => <SelectItem key={model.id} value={model.id}>{model.label}</SelectItem>)}</SelectContent>
-      </Select>}
-    </div>
-    <div ref={transcript} className="ai-chat-messages" role="log" aria-label="AI 대화" aria-live="polite" aria-relevant="additions text" onScroll={event => { const node = event.currentTarget; pinned.current = node.scrollHeight - node.scrollTop - node.clientHeight < 48; }}>
-      {conversation.loading ? <p className="ai-chat-empty" role="status">대화를 불러오는 중</p> : !conversation.messages.length && <div className="ai-chat-empty"><p>회의에 대해 물어보세요.</p><button type="button" className="small" disabled={busy} onClick={() => { flow.summaryPrompt(); composer.current?.focus(); }}>결정 사항과 할 일 정리</button></div>}
-      {conversation.messages.map(message => <article key={message.id} className={`ai-chat-message ai-chat-message--${message.role}`} aria-label={message.role === 'user' ? '내 질문' : 'AI 답변'}>
-        <span className="ai-chat-role">{message.role === 'user' ? '나' : 'AI'}</span>
-        {message.text && (message.role === 'assistant' && globalThis.NeroUI?.summaryDocument ? <div className="ai-chat-markdown" dangerouslySetInnerHTML={{ __html: globalThis.NeroUI.summaryDocument(message.text) }} onClick={event => { const control = event.target.closest('[data-summary-citations]'); if (!control) return; const refs = control.dataset.summaryCitations.split(',').map(Number); const citation = message.citations?.find(item => refs.includes(item.reference)); if (citation) void revealCitation(citation); else setCitationError('답변이 완료되면 출처를 확인할 수 있습니다.'); }} /> : <div className="ai-chat-text">{message.text}</div>)}
-        {message.status === 'streaming' && <p className="ai-chat-message-status" role="status">{message.text ? '답변 중' : '생각 중'}</p>}
-        {['cancelled', 'interrupted'].includes(message.status) && <p className="ai-chat-message-status">{message.status === 'cancelled' ? '중지됨' : '답변이 중단되었습니다.'}</p>}
-        {message.status === 'failed' && <p className="ai-chat-error">{message.error || '답변을 받지 못했습니다.'}</p>}
-        {message.citations?.length > 0 && <ul className="ai-chat-citations" aria-label="참고 자료">{message.citations.map((citation, index) => <li key={`${citation.reference}:${index}`}><button type="button" className="quiet small" onClick={() => { void revealCitation(citation); }}>[{citation.reference}] {citation.label || `자료 ${index + 1}`}</button></li>)}</ul>}
-        {message.role === 'assistant' && message.status === 'completed' && message.text.trim() && <div className="ai-chat-message-actions"><AnswerCopy flow={flow} state={state} message={message} />
-          <button type="button" className="quiet small with-icon" disabled={busy} onClick={() => { void flow.save('summary', message.id); }}><FileText size={14} aria-hidden="true" />요약 저장</button>
-          <button type="button" className="quiet small with-icon" disabled={busy} onClick={() => { void flow.save('note', message.id); }}><NotebookPen size={14} aria-hidden="true" />메모 추가</button>
-        </div>}
-        {message.role === 'assistant' && ['failed', 'cancelled', 'interrupted'].includes(message.status) && <button type="button" className="quiet small with-icon" disabled={busy || !account || account.state !== 'ready'} onClick={() => { void flow.retry(message.id); }}><RotateCcw size={14} aria-hidden="true" />다시 시도</button>}
-      </article>)}
-    </div>
-    <div className="ai-chat-bottom">
-      {citationError && <p className="ai-chat-error" role="alert">{citationError}</p>}
-      {(state.accountsError || state.modelError || conversation.error) && <p className="ai-chat-error" role="alert">{state.accountsError || state.modelError || conversation.error}</p>}
-      {!conversation.loaded && !conversation.loading && conversation.error && <button type="button" className="small" onClick={() => { void flow.loadConversation(true); }}>대화 다시 불러오기</button>}
-      {conversation.feedback && <p className="ai-chat-feedback" role="status">{conversation.feedback}</p>}
-      {!state.accountsBusy && account?.state !== 'ready' && <div className="ai-chat-connect"><span>{unavailable ? `${state.provider === 'claude' ? 'Claude' : 'ChatGPT'}를 사용할 수 없습니다.` : 'AI 계정을 연결해 주세요.'}</span><button type="button" className="small" onClick={onSettings}>계정 설정</button></div>}
-      <div className="ai-chat-sources" aria-label="포함된 자료">
-        {conversation.includeMeeting && state.meeting && <span className="ai-source-chip"><FileText size={13} aria-hidden="true" /><span title={state.meeting.title}>{state.meeting.title || '현재 회의'}</span><button type="button" className="quiet small icon" aria-label="현재 회의 제외" disabled={busy} onClick={() => flow.includeMeeting(false)}><X size={12} aria-hidden="true" /></button></span>}
-        {!conversation.includeMeeting && <button type="button" className="quiet small" disabled={busy} onClick={() => flow.includeMeeting(true)}>현재 회의 포함</button>}
-        {conversation.sources.map(source => <span className="ai-source-chip" key={source.sourceId}><FileText size={13} aria-hidden="true" /><span title={source.title || source.url}>{source.title || 'Notion 자료'}</span><button type="button" className="quiet small icon" aria-label={`${source.title || 'Notion 자료'} 제외`} disabled={busy} onClick={() => flow.removeSource(source.sourceId)}><X size={12} aria-hidden="true" /></button></span>)}
-      </div>
-      <form className="ai-chat-composer" onSubmit={event => { event.preventDefault(); void flow.send(); }}>
-        <textarea ref={composer} className="text-input" aria-label="AI에게 질문" placeholder="질문을 입력하세요" value={conversation.draft} disabled={!state.meeting} rows={3} onChange={event => flow.edit(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && !event.isComposing) { event.preventDefault(); if (flow.canSend()) void flow.send(); } }} />
-        <div className="ai-chat-compose-actions"><SourcePicker flow={flow} state={state} onSettings={onSettings} />{conversation.activeRequestId ? <button type="button" className="small icon" aria-label="답변 중지" title="답변 중지" disabled={conversation.stopping} onClick={() => { void flow.stop(); }}><Square size={14} aria-hidden="true" /></button> : <button type="submit" className="primary small icon" aria-label="질문 보내기" title="질문 보내기" disabled={!flow.canSend()}><ArrowUp size={16} aria-hidden="true" /></button>}</div>
-      </form>
-    </div>
-  </div>;
-}
+const accountLabel = { ready: '로그인됨', signed_out: '로그인 필요', unavailable: '사용할 수 없음', plan_disabled: '구독 확인 필요', connecting: '로그인 중' };
+export const AiChat = GlobalAiChat;
 
 export function AiAccounts({ flow }) {
   const state = React.useSyncExternalStore(flow.subscribe, flow.getSnapshot);
   return <div className="ai-accounts" data-nero-ui-owned="">
-    <h4 className="settings-subtitle">AI 계정</h4>
+    <h4 className="settings-subtitle">Nero에서 AI 사용</h4>
     <div className="settings-group">{providers.map(provider => {
       const account = selectAiAccount(state.accounts, provider.value, { selectedId: state.accountId, activeAccountId: state.activeAccountId });
       const phase = state.connectionPhases[provider.value];
       return <div className="settings-client-row" key={provider.value}>
         <span className="settings-client-name">{provider.label}</span>
-        <div className="settings-client-controls"><span className="settings-client-status" role="status">{phase === 'cancelling' ? '취소 중' : phase === 'starting' ? '연결 중' : phase === 'waiting' ? '로그인 대기' : state.accountsBusy ? '확인 중' : accountLabel[account?.state] || '사용할 수 없음'}</span>
-          {phase ? <>{phase === 'failed' && <button type="button" className="small" onClick={() => { void flow.retryConnect(provider.value); }}>다시 시도</button>}<button type="button" className="quiet small" disabled={phase === 'cancelling'} onClick={() => { void flow.cancelConnect(provider.value); }}>취소</button></> : account?.state === 'ready' ? <button type="button" className="small" disabled={state.accountsBusy || Boolean(state.conversation.activeRequestId)} onClick={() => { void flow.disconnect(account.id); }}>해제</button> : <button type="button" className="small" disabled={state.accountsBusy || !account?.configured || !['signed_out', 'plan_disabled'].includes(account.state)} onClick={() => { void flow.connect(provider.value); }}>연결</button>}
+        <div className="settings-client-controls"><span className="settings-client-status" role="status">{phase === 'cancelling' ? '취소 중' : phase === 'starting' ? '로그인 중' : phase === 'waiting' ? '로그인 대기' : state.accountsBusy ? '확인 중' : accountLabel[account?.state] || '사용할 수 없음'}</span>
+          {phase ? <>{phase === 'failed' && <button type="button" className="small" onClick={() => { void flow.retryConnect(provider.value); }}>다시 시도</button>}<button type="button" className="quiet small" disabled={phase === 'cancelling'} onClick={() => { void flow.cancelConnect(provider.value); }}>취소</button></> : account?.state === 'ready' ? <button type="button" className="small" disabled={state.accountsBusy || Boolean(state.conversation.activeRequestId)} onClick={() => { void flow.disconnect(account.id); }}>로그아웃</button> : <button type="button" className="small" disabled={state.accountsBusy || !account?.configured || !['signed_out', 'plan_disabled'].includes(account.state)} onClick={() => { void flow.connect(provider.value); }}>로그인</button>}
         </div>
         {account?.label && account.state === 'ready' && <p className="ai-account-label">{account.label}</p>}
         {account?.state === 'plan_disabled' && account.detail && <p className="ai-account-label" role="status">{account.detail}</p>}
@@ -134,18 +33,20 @@ export function AiAccounts({ flow }) {
   </div>;
 }
 
-export function mountAiChat({ node, settingsNode, tabsNode, bridge, onSelect, onSettings, onCitation, beforeWrite, onSaved, getTemplate, writeClipboard }) {
-  const flow = createAiChatFlow({ bridge, beforeWrite, onSaved, getTemplate, writeClipboard });
-  const root = createRoot(node), settingsRoot = createRoot(settingsNode), tabsRoot = createRoot(tabsNode);
-  root.render(<AiChat flow={flow} onSettings={onSettings} onCitation={onCitation} />);
-  settingsRoot.render(<AiAccounts flow={flow} />);
-  let selected = null;
-  const setInspector = (view, open) => {
-    flow.setActive(open && view === 'ai');
-    if (selected === view) return;
-    selected = view;
-    tabsRoot.render(<Tabs.Root value={view} onValueChange={value => { void onSelect(value); }} data-nero-ui-owned=""><Tabs.List className="ai-inspector-tabs" aria-label="보조 패널"><Tabs.Tab id="inspector-notes-tab" value="notes" aria-controls="notes-section">메모</Tabs.Tab><Tabs.Tab id="inspector-ai-tab" value="ai" aria-controls="ai-chat-inspector">AI</Tabs.Tab></Tabs.List></Tabs.Root>);
+export function mountAiChat({ node, settingsNode, trigger, layoutRoot, resizeHandle, bridge, onSettings, onCitation, beforeWrite, onSaved, getTemplate, getMeetings = () => [], writeClipboard }) {
+  const flow = createAiChatFlow({ bridge, beforeWrite, onSaved, getTemplate, getMeetings, writeClipboard });
+  const root = createRoot(node), settingsRoot = createRoot(settingsNode);
+  const layout = mountAiChatLayout({ root: layoutRoot, handle: resizeHandle, panel: node.parentElement, trigger });
+  const close = () => { flow.setActive(false); layout.update(false); trigger?.focus({ preventScroll: true }); };
+  const open = meeting => { layout.update(true); void flow.open(meeting); };
+  const toggle = () => flow.getSnapshot().active ? close() : open(flow.getSnapshot().meeting);
+  trigger?.addEventListener('click', toggle);
+  const escape = event => {
+    if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || event.target.closest?.('[role="listbox"],[role="menu"],[data-base-ui-portal]')) return;
+    event.preventDefault(); close();
   };
-  setInspector('notes', false);
-  return { flow, setInspector, setMeeting: meeting => flow.setMeeting(meeting), setSettingsActive: active => flow.setSettingsActive(active), dispose() { flow.dispose(); root.unmount(); settingsRoot.unmount(); tabsRoot.unmount(); } };
+  node.addEventListener('keydown', escape);
+  root.render(<GlobalAiChat flow={flow} onSettings={onSettings} onCitation={onCitation} onClose={close} getMeetings={getMeetings} />);
+  settingsRoot.render(<AiAccounts flow={flow} />);
+  return { flow, open, close, setMeeting: meeting => flow.setMeeting(meeting), setSettingsActive: active => flow.setSettingsActive(active), dispose() { trigger?.removeEventListener('click', toggle); node.removeEventListener('keydown', escape); layout.destroy(); flow.dispose(); root.unmount(); settingsRoot.unmount(); } };
 }

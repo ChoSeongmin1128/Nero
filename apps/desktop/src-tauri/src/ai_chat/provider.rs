@@ -10,6 +10,9 @@ use std::time::Duration;
 const MAX_BODY: usize = 4 * 1024 * 1024;
 const MAX_FRAME: usize = 512 * 1024;
 const INCOMPLETE: &str = "AI가 답변을 완성하지 못했습니다. 다시 시도해 주세요.";
+const REPLY_TIMEOUT: Duration = Duration::from_secs(600);
+const TIMED_OUT: &str = "AI 응답 시간이 초과되었습니다. 다시 시도해 주세요.";
+const MAX_CLAUDE_RETRIES: usize = 2;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -40,7 +43,7 @@ fn client() -> Result<reqwest::Client, String> {
         .redirect(reqwest::redirect::Policy::none())
         .user_agent(concat!("Nero/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(Duration::from_secs(20))
-        .timeout(Duration::from_secs(600))
+        .timeout(REPLY_TIMEOUT)
         .build()
         .map_err(|_| "AI 연결을 준비하지 못했습니다.".into())
 }
@@ -58,7 +61,7 @@ fn http_error(status: reqwest::StatusCode) -> String {
     match status.as_u16() {
         401 => "AI 계정에 다시 로그인해 주세요.",
         403 => "이 계정에서 요청한 AI 연결을 허용하지 않았습니다.",
-        429 => "AI 서비스가 사용량을 제한했습니다. 잠시 후 다시 시도해 주세요.",
+        429 => "AI 서비스가 요청을 제한했습니다. 잠시 후 다시 시도해 주세요.",
         413 => "선택한 자료가 너무 많습니다. 자료를 줄여 다시 시도해 주세요.",
         500..=599 => "AI 서비스가 응답하지 않습니다. 잠시 후 다시 시도해 주세요.",
         _ => "AI가 요청을 처리하지 못했습니다. 다시 시도해 주세요.",
@@ -85,7 +88,7 @@ fn failure_message(status: reqwest::StatusCode, code: Option<&str>) -> String {
             "AI 계정에 다시 로그인해 주세요.".into()
         }
         Some("rate_limit_error" | "rate_limit_exceeded" | "insufficient_quota") => {
-            "AI 서비스가 사용량을 제한했습니다. 잠시 후 다시 시도해 주세요.".into()
+            "AI 서비스가 요청을 제한했습니다. 잠시 후 다시 시도해 주세요.".into()
         }
         Some("permission_error" | "permission_denied") => {
             "이 계정에서 요청한 AI 연결을 허용하지 않았습니다.".into()
@@ -98,6 +101,26 @@ fn failure_message(status: reqwest::StatusCode, code: Option<&str>) -> String {
 }
 async fn http_failure(mut response: reqwest::Response, provider: &str) -> String {
     let status = response.status();
+    #[cfg(test)]
+    let diagnostic_headers = response
+        .headers()
+        .iter()
+        .filter_map(|(name, value)| {
+            let key = name.as_str();
+            if key == "retry-after"
+                || key == "x-should-retry"
+                || key.starts_with("anthropic-ratelimit-")
+            {
+                value
+                    .to_str()
+                    .ok()
+                    .filter(|v| v.len() <= 256)
+                    .map(|v| (key.to_string(), Value::String(v.into())))
+            } else {
+                None
+            }
+        })
+        .collect::<serde_json::Map<String, Value>>();
     let request_id = safe_code(
         response
             .headers()
@@ -126,6 +149,17 @@ async fn http_failure(mut response: reqwest::Response, provider: &str) -> String
             .as_str()
             .or_else(|| body["error"]["type"].as_str()),
     );
+    #[cfg(test)]
+    if let Ok(path) = std::env::var("NERO_AI_PROBE_DIAGNOSTIC") {
+        let message = body["error"]["message"]
+            .as_str()
+            .filter(|message| !message.contains("sk-ant-") && !message.contains("eyJ"))
+            .map(|message| message.chars().take(2048).collect::<String>());
+        let diagnostic = json!({"provider":provider,"status":status.as_u16(),"code":code,"message":message,"requestId":request_id,"headers":diagnostic_headers,"detailCode":safe_code(body["error"]["details"]["error_code"].as_str()),"syntheticInput":true});
+        if let Ok(bytes) = serde_json::to_vec_pretty(&diagnostic) {
+            let _ = std::fs::write(path, bytes);
+        }
+    }
     eprintln!(
         "Nero AI provider failure: provider={provider} status={} code={} request_id={request_id}",
         status.as_u16(),
@@ -498,6 +532,83 @@ fn request_body(provider: &str, model: &ChatModel, instructions: &str, input: Ve
         json!({"model":model.id,"instructions":instructions,"input":input,"store":false,"stream":true})
     }
 }
+fn clone_reply_request(
+    request: &reqwest::Request,
+    deadline: tokio::time::Instant,
+) -> Result<reqwest::Request, String> {
+    let remaining = deadline
+        .checked_duration_since(tokio::time::Instant::now())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or(TIMED_OUT)?;
+    let mut request = request
+        .try_clone()
+        .ok_or("AI 요청을 준비하지 못했습니다.")?;
+    *request.timeout_mut() = Some(remaining);
+    Ok(request)
+}
+fn claude_retry_delay(
+    provider: &str,
+    status: reqwest::StatusCode,
+    headers: &reqwest::header::HeaderMap,
+    retries: usize,
+    random: f64,
+) -> Option<Duration> {
+    if provider != "claude"
+        || status != reqwest::StatusCode::TOO_MANY_REQUESTS
+        || retries >= MAX_CLAUDE_RETRIES
+        || headers.get("x-should-retry").and_then(|v| v.to_str().ok()) != Some("true")
+        || headers
+            .keys()
+            .any(|name| name.as_str().starts_with("anthropic-ratelimit-unified"))
+    {
+        return None;
+    }
+    let seconds = |name: &str, divisor: f64| {
+        headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.trim().parse::<f64>().ok())
+            .filter(|v| v.is_finite() && *v >= 0.0)
+            .map(|v| v / divisor)
+    };
+    if headers.contains_key("retry-after-ms") || headers.contains_key("retry-after") {
+        let delay = seconds("retry-after-ms", 1000.0).or_else(|| seconds("retry-after", 1.0))?;
+        return (delay <= 60.0).then(|| Duration::from_secs_f64(delay));
+    }
+    // Anthropic SDK backoff: https://github.com/anthropics/anthropic-sdk-typescript/blob/main/src/client.ts
+    Some(Duration::from_secs_f64(
+        0.5 * 2_f64.powi(retries as i32) * (1.0 - random.clamp(0.0, 1.0) * 0.25),
+    ))
+}
+fn retry_random() -> f64 {
+    let bytes = uuid::Uuid::new_v4().into_bytes();
+    u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as f64 / u32::MAX as f64
+}
+async fn wait_retry(
+    delay: Duration,
+    deadline: tokio::time::Instant,
+    cancel: &AtomicBool,
+) -> Result<(), String> {
+    if cancel.load(Ordering::Acquire) {
+        return Err("취소했습니다.".into());
+    }
+    if deadline.saturating_duration_since(tokio::time::Instant::now()) <= delay {
+        return Err(TIMED_OUT.into());
+    }
+    tokio::select! {
+        biased;
+        _ = wait_cancel(cancel) => Err("취소했습니다.".into()),
+        _ = tokio::time::sleep(delay) => {
+            if cancel.load(Ordering::Acquire) {
+                Err("취소했습니다.".into())
+            } else if tokio::time::Instant::now() >= deadline {
+                Err(TIMED_OUT.into())
+            } else {
+                Ok(())
+            }
+        }
+    }
+}
 pub async fn reply(
     access: &ProviderAccess,
     model: &ChatModel,
@@ -514,40 +625,69 @@ pub async fn reply(
     if cancel.load(Ordering::Acquire) {
         return Err("취소했습니다.".into());
     }
-    let request = authorize(client()?.post(endpoint), access)
+    let deadline = tokio::time::Instant::now() + REPLY_TIMEOUT;
+    let client = client()?;
+    let request = authorize(client.post(endpoint), access)
         .header("Accept", "text/event-stream")
-        .json(&request_body(&access.provider, model, instructions, input));
-    let mut response = tokio::select! {
-        response = request.send() => response.map_err(|_| "AI 서비스에 연결하지 못했습니다.")?,
-        _ = wait_cancel(&cancel) => return Err("취소했습니다.".into()),
-    };
-    if !response.status().is_success() {
-        return Err(http_failure(response, &access.provider).await);
-    }
-    let mut wire = Wire::default();
-    let mut events = Events::default();
-    loop {
-        let chunk = tokio::select! {
-            chunk = response.chunk() => chunk.map_err(|_| "AI 응답이 중단되었습니다. 다시 시도해 주세요.")?,
-            _ = wait_cancel(&cancel) => return Err("취소했습니다.".into()),
+        .json(&request_body(&access.provider, model, instructions, input))
+        .build()
+        .map_err(|_| "AI 요청을 준비하지 못했습니다.")?;
+    let response = async {
+        let mut retries = 0;
+        let mut response = loop {
+            if cancel.load(Ordering::Acquire) {
+                return Err("취소했습니다.".into());
+            }
+            let response = client
+                .execute(clone_reply_request(&request, deadline)?)
+                .await
+                .map_err(|_| "AI 서비스에 연결하지 못했습니다.")?;
+            if response.status().is_success() {
+                break response;
+            }
+            let Some(delay) = claude_retry_delay(
+                &access.provider,
+                response.status(),
+                response.headers(),
+                retries,
+                retry_random(),
+            ) else {
+                return Err(http_failure(response, &access.provider).await);
+            };
+            retries += 1;
+            drop(response);
+            wait_retry(delay, deadline, &cancel).await?;
         };
-        let Some(chunk) = chunk else {
-            break;
-        };
-        wire.feed(&chunk, |value| {
-            events.event(&access.provider, value, &mut delta)
-        })?;
-        if events.completed {
-            break;
+        let mut wire = Wire::default();
+        let mut events = Events::default();
+        loop {
+            let chunk = response
+                .chunk()
+                .await
+                .map_err(|_| "AI 응답이 중단되었습니다. 다시 시도해 주세요.")?;
+            let Some(chunk) = chunk else {
+                break;
+            };
+            wire.feed(&chunk, |value| {
+                events.event(&access.provider, value, &mut delta)
+            })?;
+            if events.completed {
+                break;
+            }
         }
+        if cancel.load(Ordering::Acquire) {
+            return Err("취소했습니다.".into());
+        }
+        if let Some(value) = wire.tail()? {
+            events.event(&access.provider, value, &mut delta)?;
+        }
+        events.finish()
+    };
+    tokio::select! {
+        biased;
+        _ = wait_cancel(&cancel) => Err("취소했습니다.".into()),
+        result = tokio::time::timeout_at(deadline, response) => result.unwrap_or_else(|_| Err(TIMED_OUT.into())),
     }
-    if cancel.load(Ordering::Acquire) {
-        return Err("취소했습니다.".into());
-    }
-    if let Some(value) = wire.tail()? {
-        events.event(&access.provider, value, &mut delta)?;
-    }
-    events.finish()
 }
 async fn wait_cancel(cancel: &AtomicBool) {
     while !cancel.load(Ordering::Acquire) {
@@ -558,6 +698,164 @@ async fn wait_cancel(cancel: &AtomicBool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn retry_headers() -> reqwest::header::HeaderMap {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("x-should-retry", "true".parse().unwrap());
+        headers
+    }
+    #[test]
+    fn retries_only_explicit_transient_claude_throttles_before_the_limit() {
+        let mut headers = retry_headers();
+        let status = reqwest::StatusCode::TOO_MANY_REQUESTS;
+        assert!(claude_retry_delay("claude", status, &headers, 0, 0.0).is_some());
+        assert!(claude_retry_delay("claude", status, &headers, 1, 0.0).is_some());
+        assert!(claude_retry_delay("claude", status, &headers, 2, 0.0).is_none());
+        assert!(claude_retry_delay("chatgpt", status, &headers, 0, 0.0).is_none());
+        for status in [401, 403, 408, 409, 500, 503] {
+            assert!(claude_retry_delay(
+                "claude",
+                reqwest::StatusCode::from_u16(status).unwrap(),
+                &headers,
+                0,
+                0.0,
+            )
+            .is_none());
+        }
+        headers.remove("x-should-retry");
+        assert!(claude_retry_delay("claude", status, &headers, 0, 0.0).is_none());
+        headers.insert("x-should-retry", "false".parse().unwrap());
+        assert!(claude_retry_delay("claude", status, &headers, 0, 0.0).is_none());
+        headers.insert("x-should-retry", "true".parse().unwrap());
+        headers.insert(
+            "anthropic-ratelimit-unified-status",
+            "allowed".parse().unwrap(),
+        );
+        assert!(claude_retry_delay("claude", status, &headers, 0, 0.0).is_none());
+    }
+    #[test]
+    fn retry_backoff_has_bounded_exponential_jitter() {
+        let headers = retry_headers();
+        let delay = |retries, random| {
+            claude_retry_delay(
+                "claude",
+                reqwest::StatusCode::TOO_MANY_REQUESTS,
+                &headers,
+                retries,
+                random,
+            )
+            .unwrap()
+        };
+        assert_eq!(delay(0, 0.0), Duration::from_millis(500));
+        assert_eq!(delay(0, 1.0), Duration::from_millis(375));
+        assert_eq!(delay(1, 0.0), Duration::from_millis(1000));
+        assert_eq!(delay(1, 1.0), Duration::from_millis(750));
+        for _ in 0..16 {
+            let delay = delay(0, retry_random());
+            assert!((Duration::from_millis(375)..=Duration::from_millis(500)).contains(&delay));
+        }
+    }
+    #[test]
+    fn retry_after_is_respected_without_shortening_long_server_delays() {
+        let mut headers = retry_headers();
+        let delay = |headers: &reqwest::header::HeaderMap| {
+            claude_retry_delay(
+                "claude",
+                reqwest::StatusCode::TOO_MANY_REQUESTS,
+                headers,
+                0,
+                0.0,
+            )
+        };
+        headers.insert("retry-after", "9".parse().unwrap());
+        assert_eq!(delay(&headers), Some(Duration::from_secs(9)));
+        headers.insert("retry-after-ms", "1500".parse().unwrap());
+        assert_eq!(delay(&headers), Some(Duration::from_millis(1500)));
+        headers.insert("retry-after-ms", "60000".parse().unwrap());
+        assert_eq!(delay(&headers), Some(Duration::from_secs(60)));
+        headers.insert("retry-after-ms", "60001".parse().unwrap());
+        assert!(delay(&headers).is_none());
+        headers.remove("retry-after-ms");
+        headers.insert("retry-after", "60.001".parse().unwrap());
+        assert!(delay(&headers).is_none());
+        headers.insert("retry-after", "0".parse().unwrap());
+        assert_eq!(delay(&headers), Some(Duration::ZERO));
+        for invalid in [
+            "invalid",
+            "-1",
+            "NaN",
+            "inf",
+            "Wed, 21 Oct 2030 07:28:00 GMT",
+        ] {
+            headers.insert("retry-after", invalid.parse().unwrap());
+            assert!(delay(&headers).is_none());
+        }
+    }
+    #[test]
+    fn cloned_attempt_preserves_the_frozen_request_and_shares_its_deadline() {
+        let request = reqwest::Client::new()
+            .post("https://example.invalid/v1/messages?beta=true")
+            .header("Authorization", "Bearer synthetic")
+            .header("anthropic-beta", "oauth-2025-04-20")
+            .timeout(REPLY_TIMEOUT)
+            .json(&json!({"messages":[{"role":"user","content":"frozen"}],"stream":true}))
+            .build()
+            .unwrap();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+        let attempt = clone_reply_request(&request, deadline).unwrap();
+        assert_eq!(attempt.method(), request.method());
+        assert_eq!(attempt.url(), request.url());
+        assert_eq!(attempt.headers(), request.headers());
+        assert_eq!(
+            attempt.body().unwrap().as_bytes(),
+            request.body().unwrap().as_bytes()
+        );
+        assert!(attempt.timeout().copied().unwrap() <= Duration::from_secs(1));
+        assert_eq!(request.timeout().copied(), Some(REPLY_TIMEOUT));
+        assert_eq!(
+            clone_reply_request(&request, tokio::time::Instant::now()).unwrap_err(),
+            TIMED_OUT
+        );
+    }
+    #[tokio::test]
+    async fn retry_wait_stops_promptly_on_cancellation() {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let trigger = async {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            cancel.store(true, Ordering::Release);
+        };
+        let wait = tokio::time::timeout(
+            Duration::from_millis(500),
+            wait_retry(
+                Duration::from_secs(60),
+                tokio::time::Instant::now() + REPLY_TIMEOUT,
+                &cancel,
+            ),
+        );
+        let (result, ()) = tokio::join!(wait, trigger);
+        assert_eq!(result.unwrap().unwrap_err(), "취소했습니다.");
+    }
+    #[tokio::test]
+    async fn retry_wait_cannot_extend_the_request_deadline() {
+        let cancel = AtomicBool::new(false);
+        let result = wait_retry(
+            Duration::from_secs(60),
+            tokio::time::Instant::now() + Duration::from_millis(10),
+            &cancel,
+        )
+        .await;
+        assert_eq!(result.unwrap_err(), TIMED_OUT);
+        cancel.store(true, Ordering::Release);
+        assert_eq!(
+            wait_retry(
+                Duration::ZERO,
+                tokio::time::Instant::now() + REPLY_TIMEOUT,
+                &cancel
+            )
+            .await
+            .unwrap_err(),
+            "취소했습니다."
+        );
+    }
     fn decode(provider: &str, bytes: &[u8]) -> Result<String, String> {
         let mut wire = Wire::default();
         let mut events = Events::default();

@@ -169,7 +169,8 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
       aiChatOptions = options;
       return {
         setMeeting(meeting) { testAiLifecycle.push(['meeting', meeting?.id || null]); },
-        setInspector(view, open) { testAiLifecycle.push(['inspector', view, open]); },
+        open(meeting) { testAiLifecycle.push(['open', meeting?.id || null]); },
+        close() { testAiLifecycle.push(['close']); },
         setSettingsActive(active) { testAiLifecycle.push(['settings', active]); },
         dispose() {},
       };
@@ -1883,14 +1884,17 @@ test('active library search remains visible and clearable when navigation is col
  assert.equal(page.element('library-search-status').hidden,true);
 });
 
-test('main wires AI inspector and account settings through the mounted UI contract', async () => {
+test('main wires a global AI panel independently from meeting notes', async () => {
   const page = await openApp(); await page.app.selectMeeting('a');
   assert.equal(page.app.aiChatOptions.node.id, 'ai-chat-inspector');
   assert.equal(page.app.aiChatOptions.settingsNode.id, 'ai-account-settings');
-  assert.equal(page.app.aiChatOptions.tabsNode.id, 'inspector-tabs');
+  assert.equal(page.app.aiChatOptions.trigger.id, 'ai-chat-open');
+  assert.equal(page.app.aiChatOptions.layoutRoot.id, 'app-body');
+  assert.equal(page.app.aiChatOptions.resizeHandle.id, 'ai-chat-resize');
+  assert.equal(page.app.aiChatOptions.tabsNode, undefined);
   assert.ok(page.aiLifecycle.some(entry => entry[0] === 'meeting' && entry[1] === 'a'));
-  await page.app.detail.select('ai');
-  assert.ok(page.aiLifecycle.some(entry => entry[0] === 'inspector' && entry[1] === 'ai' && entry[2]));
+  assert.equal(await page.app.detail.select('ai'), false);
+  assert.ok(page.app.aiChatOptions.getMeetings().some(meeting => meeting.id === 'a'));
   await page.app.openSettings('agent');
   assert.equal(page.aiLifecycle.filter(entry => entry[0] === 'settings').at(-1)[1], true);
   page.element('settings-dialog').close();
