@@ -35,7 +35,7 @@ export function mountAppUpdateView({ container, sidebarAction, bridge, saveEdits
     get('message').textContent = message;
     get('message').hidden = !message;
     const checkingBlocked = ['checking', 'downloading', 'ready', 'waiting', 'installing', 'recoveryRequired'].includes(status.phase) || status.downloadReady || status.recoveryRequired;
-    get('action').textContent = sidebar ? '업데이트 확인' : action.label;
+    get('action').textContent = sidebar && status.phase !== 'checking' ? '업데이트 확인' : action.label;
     get('action').disabled = busy || (sidebar ? Boolean(checkingBlocked) : action.disabled);
     get('recovery').hidden = !status.recoveryMessage;
     get('recovery').textContent = status.recoveryMessage || '';
@@ -47,9 +47,11 @@ export function mountAppUpdateView({ container, sidebarAction, bridge, saveEdits
       const downloading = status.phase === 'downloading';
       const percent = status.totalBytes > 0 ? Math.min(100, Math.max(0, Math.floor((status.downloadedBytes || 0) / status.totalBytes * 100))) : null;
       const recovery = status.recoveryRequired || status.phase === 'recoveryRequired';
-      const label = recovery ? '업데이트 복구' : downloading ? `다운로드${percent === null ? '' : ` ${percent}%`}` : status.phase === 'installing' ? '업데이트 중' : '업데이트';
-      sidebar.hidden = !['downloading', 'ready', 'waiting', 'installing', 'error', 'recoveryRequired'].includes(status.phase) && !status.recoveryMessage;
-      sidebar.disabled = busy || action.disabled;
+      const label = recovery ? '업데이트 복구' : downloading ? `다운로드${percent === null ? '' : ` ${percent}%`}` : action.label;
+      const keepVisible = ['checking', 'available'].includes(status.phase) && (busy || !sidebar.hidden);
+      const canAct = recovery || (action.action === 'install' && Boolean(status.downloadReady));
+      sidebar.hidden = !keepVisible && !canAct && !['downloading', 'installing'].includes(status.phase);
+      sidebar.disabled = busy || action.disabled || !canAct;
       sidebar.dataset.updatePhase = status.phase;
       sidebar.setAttribute('aria-label', downloading ? `업데이트 ${label}` : label);
       sidebar.title = downloading ? `업데이트 ${label}` : label;
@@ -77,7 +79,11 @@ export function mountAppUpdateView({ container, sidebarAction, bridge, saveEdits
     try { return await updater[action.action](); }
     finally { busy = false; render(updater.getSnapshot()); }
   }
-  const click = () => { void perform(); };
+  const click = () => {
+    const status = updater.getSnapshot();
+    const action = appUpdateAction(status);
+    if (action.action === 'quitForRecovery' || (action.action === 'install' && status.downloadReady)) void perform();
+  };
   const checkClick = async () => {
     if (!sidebar) { await perform(); return; }
     if (busy || get('action').disabled) return;

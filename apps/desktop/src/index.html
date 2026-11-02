@@ -12,6 +12,8 @@
     <link rel="stylesheet" href="/shared/controls.css">
     <link rel="stylesheet" href="/style.css">
     <link rel="stylesheet" href="/agent-connections.css">
+    <link rel="stylesheet" href="/ai-chat-ui.css">
+    <link rel="stylesheet" href="/meeting-context.css">
     <link rel="stylesheet" href="/speakers.css">
     <link rel="stylesheet" href="/transcript-actions.css">
     <link rel="stylesheet" href="/document-tools.css">
@@ -19,6 +21,7 @@
     <script src="/shared/components.js"></script>
   </head>
   <body class="application-shell">
+    <div id="app-body" class="app-body" data-ai-open="false"><div class="app-primary">
     <header class="application-toolbar" aria-label="앱 도구" data-tauri-drag-region>
       <div class="application-toolbar-actions" role="group" aria-label="화면 이동 및 회의 만들기">
         <div class="navigation-history" role="group" aria-label="화면 이동"><button id="navigation-back" type="button" class="quiet small icon" data-ui-icon="arrow-left" aria-label="이전 화면" title="이전 화면" disabled></button><button id="navigation-forward" type="button" class="quiet small icon" data-ui-icon="arrow-right" aria-label="다음 화면" title="다음 화면" disabled></button></div>
@@ -50,7 +53,7 @@
         </div>
         <footer class="sidebar-footer"><div id="sidebar-update-expanded"><button id="sidebar-app-update" type="button" class="quiet small with-icon" hidden><span data-detail-icon="download" aria-hidden="true"></span><span data-app-update-label>업데이트</span><progress data-app-update-progress hidden aria-label="업데이트 다운로드"></progress></button></div><div id="sidebar-settings-expanded"><button id="settings" class="quiet small with-icon" type="button" aria-label="설정" title="설정"><span data-detail-icon="settings" aria-hidden="true"></span><span>설정</span></button></div></footer>
       </aside>
-      <main class="main-content navigation-content"><header class="navigation-toolbar"><nav id="navigation-breadcrumbs" class="navigation-breadcrumbs" aria-label="현재 위치"></nav></header>
+      <main class="main-content navigation-content"><header class="navigation-toolbar"><nav id="navigation-breadcrumbs" class="navigation-breadcrumbs" aria-label="현재 위치"></nav><button id="ai-chat-open" type="button" class="quiet small with-icon" aria-controls="app-ai-sidebar" aria-expanded="false" title="AI 대화"><span data-ui-icon="messages-square" aria-hidden="true"></span><span>AI</span></button></header>
         <div id="error" class="notice app-error" role="alert" hidden><span id="error-message"></span><button id="retry-save" class="small" type="button" hidden>다시 저장</button><button id="dismiss-error" class="quiet small icon" type="button" data-ui-icon="x" aria-label="오류 안내 닫기" title="오류 안내 닫기"><span class="sr-only">오류 안내 닫기</span></button></div>
         <section id="setup-screen" class="setup-screen" aria-labelledby="setup-title" hidden>
           <div class="setup-content">
@@ -82,7 +85,7 @@
           <div class="detail-common">
           <header class="detail-header"><div class="detail-library-actions"><div class="detail-return" hidden><button id="library-back" type="button" class="quiet small">회의 목록</button><span id="meeting-folder-context"></span></div><div class="row"><button id="detail-summary-open" type="button" class="quiet small with-icon" aria-controls="summary-section" aria-pressed="true"><span data-detail-icon="file-text" aria-hidden="true"></span><span>요약</span></button><button id="detail-transcript-open" type="button" class="quiet small with-icon" aria-controls="transcript-section" aria-pressed="false"><span data-detail-icon="notebook-tabs" aria-hidden="true"></span><span>음성 기록</span></button><button id="detail-notes-open" type="button" class="quiet small with-icon" aria-controls="detail-inspector" aria-expanded="false"><span data-detail-icon="notebook-pen" aria-hidden="true"></span><span>메모</span></button><button id="document-search-toggle" type="button" class="quiet small icon" aria-expanded="false" aria-controls="document-search" data-ui-icon="search" aria-label="내용 검색" title="내용 검색"><span class="sr-only">내용 검색</span></button><span id="summary-document-actions"></span><details class="meeting-menu detail-more" data-meeting-menu><summary aria-label="회의 더보기" title="회의 더보기"><span data-detail-icon="ellipsis" aria-hidden="true"></span></summary><div class="action-menu"><button id="meeting-move" type="button" class="quiet small">폴더 이동</button><button id="meeting-trash" type="button" class="quiet small danger-text">휴지통으로 이동</button></div></details></div></div>
             <div class="detail-title-row"><label class="sr-only" for="meeting-title">회의 제목</label><input id="meeting-title" class="text-input text-input--title meeting-title" type="text" placeholder="회의 제목" maxlength="200" autocomplete="off"><span id="meeting-status"></span></div>
-            <div class="draft-calendar-action"><button id="create-calendar-meeting" type="button" class="quiet small with-icon" hidden disabled><span data-detail-icon="calendar-days" aria-hidden="true"></span><span>일정 연결</span></button></div><div id="calendar-meeting-reference" hidden></div><div class="detail-context"><div class="meeting-day-field"><label class="sr-only" for="meeting-day">회의 날짜</label><input id="meeting-day" data-field="meeting-day" type="date"></div><div class="meeting-timestamps muted type-caption"><span id="recorded-at" hidden></span></div><button id="meeting-attendees" type="button" class="quiet small with-icon" hidden>참석자</button><div class="detail-actions"><span id="save-spinner" class="activity-spinner" aria-hidden="true" hidden></span><span id="save-status" class="muted type-caption" role="status" hidden></span></div></div>
+            <div class="draft-calendar-action"><button id="create-calendar-meeting" type="button" class="quiet small with-icon" hidden disabled><span data-detail-icon="calendar-days" aria-hidden="true"></span><span>일정 연결</span></button></div><div id="calendar-meeting-reference" hidden></div><div class="detail-context"><div class="meeting-day-field"><label class="sr-only" for="meeting-day">회의 날짜</label><input id="meeting-day" data-field="meeting-day" type="date"></div><div class="meeting-timestamps muted type-caption"><span id="recorded-at" hidden></span></div><button id="meeting-attendees" type="button" class="quiet small with-icon" hidden>참석자</button><span id="meeting-context-control"></span><div class="detail-actions"><span id="save-spinner" class="activity-spinner" aria-hidden="true" hidden></span><span id="save-status" class="muted type-caption" role="status" hidden></span></div></div>
             <span id="meeting-date-message" class="meeting-date-message type-caption" role="status" hidden></span>
           </header>
         <div id="processing" class="processing-notice" hidden><span id="processing-spinner" class="activity-spinner" aria-hidden="true"></span><span id="processing-result-icon" class="processing-result-icon" aria-hidden="true" hidden></span><div class="processing-copy" role="status"><strong id="processing-title"></strong><span id="processing-message"></span><details id="processing-error-info" class="type-caption" hidden><summary>오류 정보</summary><div id="processing-error-fields"></div></details></div><progress id="processing-progress" aria-label="모델 다운로드 진행률" hidden></progress><span id="processing-percent" class="type-caption" hidden></span><button id="cancel-processing" type="button" class="quiet small">취소</button><button id="retry-processing" type="button" class="small" hidden>다시 시도</button><button id="open-processing-meeting" type="button" class="quiet small" hidden>회의 열기</button><button id="dismiss-processing" type="button" class="quiet small" hidden>알림 닫기</button><p id="processing-warning" class="processing-warning type-caption" role="status" hidden></p></div>
@@ -127,12 +130,15 @@
           </div>
           </div>
           <aside id="detail-inspector" class="detail-inspector" aria-labelledby="detail-inspector-title" hidden>
-            <div id="notes-resize" class="notes-resize" tabindex="0" role="separator" aria-orientation="vertical" aria-label="메모 너비 조절" aria-controls="detail-inspector" hidden></div>
-            <header class="inspector-header"><h2 id="detail-inspector-title">메모</h2><button id="inspector-search-toggle" type="button" class="quiet small icon" data-ui-icon="search" aria-label="메모 검색" aria-controls="document-search" aria-expanded="false"></button><button id="detail-inspector-close" type="button" class="quiet small icon" aria-label="메모 닫기" title="메모 닫기"><span data-ui-icon="x" aria-hidden="true"></span></button></header>
-            <section id="notes-section" class="notes-section detail-panel" role="region" aria-label="메모" tabindex="0" hidden><div class="section-heading"><h2 class="sr-only"><label for="meeting-notes">메모</label></h2></div><div id="notes-search-preview" class="notes-search-preview" role="region" tabindex="0" aria-label="메모 검색 결과" hidden></div><textarea id="meeting-notes" class="text-input" placeholder="안건이나 기억할 내용을 적어 두세요." spellcheck="false"></textarea></section>
+            <div id="notes-resize" class="notes-resize" tabindex="0" role="separator" aria-orientation="vertical" aria-label="보조 패널 너비 조절" aria-controls="detail-inspector" hidden></div>
+            <header class="inspector-header"><h2 id="detail-inspector-title">메모</h2><button id="inspector-search-toggle" type="button" class="quiet small icon" data-ui-icon="search" aria-label="메모 검색" aria-controls="document-search" aria-expanded="false"></button><button id="detail-inspector-close" type="button" class="quiet small icon" aria-label="보조 패널 닫기" title="보조 패널 닫기"><span data-ui-icon="x" aria-hidden="true"></span></button></header>
+            <section id="notes-section" class="notes-section detail-panel" aria-label="메모" tabindex="0" hidden><div class="section-heading"><h2 class="sr-only"><label for="meeting-notes">메모</label></h2></div><div id="notes-search-preview" class="notes-search-preview" role="region" tabindex="0" aria-label="메모 검색 결과" hidden></div><textarea id="meeting-notes" class="text-input" placeholder="안건이나 기억할 내용을 적어 두세요." spellcheck="false"></textarea></section>
           </aside>
         </section>
       </main>
+    </div>
+    </div>
+    <aside id="app-ai-sidebar" class="app-ai-sidebar" aria-label="AI 대화" aria-hidden="true" inert><div id="ai-chat-resize" class="ai-chat-resize" tabindex="0" role="separator" aria-orientation="vertical" aria-label="AI 패널 너비 조절" hidden></div><section id="ai-chat-inspector" class="ai-chat-host" aria-label="AI"></section></aside>
     </div>
     <span id="copy-feedback" class="sr-only" role="status"></span>
     <dialog id="settings-dialog" class="settings-dialog app-settings-dialog" aria-labelledby="settings-title">
@@ -187,7 +193,8 @@
           </section>
           <section id="settings-agent-panel" role="tabpanel" aria-labelledby="settings-agent-tab" hidden>
             <h3 class="settings-panel-title">연동</h3>
-            <h4 class="settings-subtitle">AI 에이전트</h4>
+            <div id="ai-account-settings"></div>
+            <h4 class="settings-subtitle">다른 AI 앱에서 Nero 사용</h4>
             <div class="settings-group settings-clients">
             <div class="settings-client-row">
               <span class="settings-client-name">Claude</span>

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Nero - Google Calendar 연결</title>
+  <title>Nero - {{PROVIDER}} 연결</title>
   <style nonce="{{NONCE}}">
 {{APPEARANCE}}
 {{TYPOGRAPHY}}
@@ -25,18 +25,19 @@
   <main aria-live="polite">
     <div class="brand">Nero</div>
     <span class="indicator" aria-hidden="true"></span>
-    <h1 id="title">Google Calendar 연결 중</h1>
+    <h1 id="title">{{PROVIDER}} 연결 중</h1>
     <p id="message">연결을 마무리하고 있습니다.</p>
     <p id="fallback" hidden>이 탭을 닫아도 됩니다.</p>
   </main>
   <script nonce="{{NONCE}}">
+    const callbackConfig = {{CONFIG}};
     document.documentElement.dataset.mode = matchMedia('(prefers-color-scheme:dark)').matches ? 'dark' : 'light';
     history.replaceState(null, '', location.pathname);
     function finishConnection(result) {
       document.querySelector('main').dataset.result = result.ok ? 'success' : 'error';
       document.querySelector('.indicator').textContent = result.ok ? '\u2713' : '!';
-      document.getElementById('title').textContent = result.ok ? 'Google Calendar 연결 완료' : '연결하지 못했습니다';
-      document.getElementById('message').textContent = result.ok ? 'Nero에서 캘린더를 선택해 주세요.' : result.message;
+      document.getElementById('title').textContent = result.ok ? `${callbackConfig.provider} 연결 완료` : '연결하지 못했습니다';
+      document.getElementById('message').textContent = result.ok ? callbackConfig.successMessage : result.message;
       document.getElementById('fallback').hidden = !result.ok;
       document.title = result.ok ? 'Nero - 연결 완료' : 'Nero - 연결 실패';
       if (result.ok) setTimeout(() => window.close(), 800);

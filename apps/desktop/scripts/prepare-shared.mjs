@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 import { buildControls } from './build-controls.mjs';
+import { npmProjectDirectory } from './npm-project-directory.mjs';
 
 const app = fileURLToPath(new URL('..', import.meta.url));
 const source = resolve(app, '../../design-system');
@@ -20,11 +21,12 @@ const licenses = resolve(target, 'licenses');
 await mkdir(licenses, { recursive: true });
 await copyFile(resolve(source, 'components/ui/LICENSE.md'), resolve(licenses, 'shadcn-ui.txt'));
 const npmArgs = ['ls', '--omit=dev', '--all', '--parseable'];
+const npmDirectory = await npmProjectDirectory(app);
 const runtimePackages = (process.env.npm_execpath
-  ? execFileSync(process.execPath, [process.env.npm_execpath, ...npmArgs], { cwd: app, encoding: 'utf8' })
+  ? execFileSync(process.execPath, [process.env.npm_execpath, ...npmArgs], { cwd: npmDirectory, encoding: 'utf8' })
   : process.platform === 'win32'
-    ? execFileSync('cmd.exe', ['/d', '/s', '/c', 'npm ls --omit=dev --all --parseable'], { cwd: app, encoding: 'utf8' })
-    : execFileSync('npm', npmArgs, { cwd: app, encoding: 'utf8' })).trim().split('\n').slice(1);
+    ? execFileSync('cmd.exe', ['/d', '/s', '/c', 'npm ls --omit=dev --all --parseable'], { cwd: npmDirectory, encoding: 'utf8' })
+    : execFileSync('npm', npmArgs, { cwd: npmDirectory, encoding: 'utf8' })).trim().split('\n').slice(1);
 const licenseManifest = [];
 for (const folder of runtimePackages) {
   const metadata = JSON.parse(await readFile(resolve(folder, 'package.json'), 'utf8'));

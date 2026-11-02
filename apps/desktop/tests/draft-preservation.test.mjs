@@ -133,11 +133,12 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     requestQuit() { const pending = deferred(); exits.push({ type: 'quit', pending }); return pending.promise; },
     hideMain() { const pending = deferred(); exits.push({ type: 'close', pending }); return pending.promise; },
   };
-  const copied = [], agentDialogCalls = [];
+  const copied = [], agentDialogCalls = [], aiLifecycle = [];
+  const aiBridge = { appendNote: async () => {}, saveSummary: async () => {}, openSource: async () => {} };
   const templateSettings = { setActive() {}, beforeLeave: async () => true, isConfirming: () => false, hide() {} };
   const context = vm.createContext({ snapshotSignatures, compareSnapshotSignatures, requestAudioPlayback, createIntegrationMonitor, liveTranscriptRows, meetingResultPreview, renderMeetingMenu, testMountNotificationCenter: mountNotificationCenter,
     navigator: { clipboard: { writeText: async text => { copied.push(text); } } },
-    document, testBridge: bridge, testAgentDialogCalls: agentDialogCalls, testTemplateSettings: templateSettings, localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
+    document, testBridge: bridge, testAiBridge: aiBridge, testAiLifecycle: aiLifecycle, testAgentDialogCalls: agentDialogCalls, testTemplateSettings: templateSettings, localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
     NeroControls: { enhanceAll() {} },
     setTimeout: () => 1, clearTimeout() {}, requestAnimationFrame: (callback) => callback(),
   });
@@ -162,7 +163,18 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     const createTranscriptActions = mountTranscriptActions;
     mountTranscriptActions = options => { restoreForTest = options.onRestored; return createTranscriptActions(options); };
     ${librarySource.slice(0, librarySource.indexOf('export function mountLibrary')).replace(/^import .*;\r?\n/gm, '').replace(/^export \{.*\}.*;\r?\n/gm, '').replace(/^export /gm, '')}
-    let summaryEvidenceOptions;
+    let summaryEvidenceOptions, aiChatOptions;
+    const aiChatBridge = testAiBridge;
+    const mountAiChat = options => {
+      aiChatOptions = options;
+      return {
+        setMeeting(meeting) { testAiLifecycle.push(['meeting', meeting?.id || null]); },
+        open(meeting) { testAiLifecycle.push(['open', meeting?.id || null]); },
+        close() { testAiLifecycle.push(['close']); },
+        setSettingsActive(active) { testAiLifecycle.push(['settings', active]); },
+        dispose() {},
+      };
+    };
     const mountSummaryEvidence = options => { summaryEvidenceOptions = options; return { reset() {}, update() {}, restoreFocus() {} }; };
     const mountTemplateSettings = () => testTemplateSettings;
     const mountAppUpdateRecovery = () => ({ update() {} });
@@ -170,6 +182,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     const mountSpeechModelPicker = () => ({update(){}});
     const mountPeopleSettings = () => ({show(){},hide(){},beforeLeave:async()=>true,isConfirming:()=>false});
     const mountMeetingAttendees = () => ({open:async()=>{},beforeLeave:async()=>true,dispose(){}});
+    const mountMeetingContext = () => ({setMeeting(){},close(){},dispose(){}});
     const mountNotificationCenter = testMountNotificationCenter;
     const mountCalendarSettings = () => ({ setActive() {} });
     const mountCalendarMeetingPicker = () => ({open(){}, close(){}, isOpen(){return false;}});
@@ -189,11 +202,11 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     const bridge = testBridge;
     const { ui, icon, escape, button, duration, recordingStatus, statusMarkup, sessionControls, applySystemAppearance } = testUI;
     ${executable}
-    return { state, detail, documentSearch, summaryEvidenceOptions, appLeaveEditors: [templateSettings, peopleSettings, meetingAttendees, speakers], restoreTranscript: restoreForTest, selectMeeting, saveDraft, finishEditing, onEdit, onQuitRequest, onAgentWriteRequest, refreshDevices, acceptSnapshot, saveTranscript, loadTranscript, acceptProcessing, loadSummary, renderSummary, createMeeting, openSetup, openSettings, changeMicrophone, changeMeetingDate, render, prepareAudio, exportDocument, editTranscriptRow, completeTranscriptRow, cancelTranscriptRow, cancelProcessing, retryProcessing, acknowledgeProcessing };
+    return { state, detail, documentSearch, summaryEvidenceOptions, aiChatOptions, appLeaveEditors: [templateSettings, peopleSettings, meetingAttendees, speakers], restoreTranscript: restoreForTest, selectMeeting, saveDraft, finishEditing, onEdit, onQuitRequest, onAgentWriteRequest, refreshDevices, acceptSnapshot, saveTranscript, loadTranscript, acceptProcessing, loadSummary, renderSummary, createMeeting, openSetup, openSettings, changeMicrophone, changeMeetingDate, render, prepareAudio, exportDocument, editTranscriptRow, completeTranscriptRow, cancelTranscriptRow, cancelProcessing, retryProcessing, acknowledgeProcessing };
   })()`, context);
   await tick();
   return {
-    app, element, updates, exits, bridge, copied, agentDialogCalls, templateSettings, settingsTabs, transcriptUpdates, savedTranscript: () => transcript,
+    app, element, updates, exits, bridge, aiBridge, aiLifecycle, copied, agentDialogCalls, templateSettings, settingsTabs, transcriptUpdates, savedTranscript: () => transcript,
     focused: () => document.activeElement?.id,
     editTranscript(text) {
       const target = element('transcript-rows').querySelector('[data-segment="0"]') || { dataset: { segment: '0' } };
@@ -1870,4 +1883,35 @@ test('active library search remains visible and clearable when navigation is col
  await page.element('library-search-clear').listeners.get('click')();
  assert.equal(page.element('search').value,'');
  assert.equal(page.element('library-search-status').hidden,true);
+});
+
+test('main wires a global AI panel independently from meeting notes', async () => {
+  const page = await openApp(); await page.app.selectMeeting('a');
+  assert.equal(page.app.aiChatOptions.node.id, 'ai-chat-inspector');
+  assert.equal(page.app.aiChatOptions.settingsNode.id, 'ai-account-settings');
+  assert.equal(page.app.aiChatOptions.trigger.id, 'ai-chat-open');
+  assert.equal(page.app.aiChatOptions.layoutRoot.id, 'app-body');
+  assert.equal(page.app.aiChatOptions.resizeHandle.id, 'ai-chat-resize');
+  assert.equal(page.app.aiChatOptions.tabsNode, undefined);
+  assert.ok(page.aiLifecycle.some(entry => entry[0] === 'meeting' && entry[1] === 'a'));
+  assert.equal(await page.app.detail.select('ai'), false);
+  assert.ok(page.app.aiChatOptions.getMeetings().some(meeting => meeting.id === 'a'));
+  await page.app.openSettings('agent');
+  assert.equal(page.aiLifecycle.filter(entry => entry[0] === 'settings').at(-1)[1], true);
+  page.element('settings-dialog').close();
+  assert.equal(page.aiLifecycle.filter(entry => entry[0] === 'settings').at(-1)[1], false);
+});
+
+test('AI note append flushes the latest draft and holds the existing editor lock through native completion', async () => {
+  const page = await openApp(); await page.app.selectMeeting('a'); page.edit('AI 작업 전에 저장할 초안');
+  const native = deferred(), calls = [];
+  page.aiBridge.appendNote = async request => { calls.push(request); await native.promise; };
+  const append = page.app.aiChatOptions.bridge.appendNote({ meetingId: 'a', conversationId: 'conversation', messageId: 'answer' });
+  await tick();
+  assert.equal(calls.length, 0); assert.equal(page.element('meeting-notes').readOnly, true);
+  assert.equal(page.updates[0].notes, 'AI 작업 전에 저장할 초안'); page.updates[0].pending.resolve();
+  await tick();
+  assert.equal(calls.length, 1); assert.equal(page.element('meeting-notes').readOnly, true);
+  native.resolve(); await append;
+  assert.equal(page.element('meeting-notes').readOnly, false);
 });

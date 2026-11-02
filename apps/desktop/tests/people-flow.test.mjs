@@ -31,13 +31,19 @@ test('a conflicting roster save preserves the local draft and does not pretend i
   assert.equal(flow.getSnapshot().attendees.length, 1); assert.match(flow.getSnapshot().error, /변경/);
 });
 
-test('promotion saves pending meeting changes then uses both latest revisions; failure retains the saved roster', async () => {
+test('promotion stays in the roster draft and applies with manual changes in one write', async () => {
   const calls = [];
-  const flow = createAttendeeFlow({ bridge: { readMeetingAttendees: async () => meeting(), readPeopleCatalog: async () => empty(), replaceMeetingAttendees: async (id, version, attendees) => meeting(id, attendees, 'meeting:2'), promoteMeetingAttendee: async (...args) => { calls.push(args); throw Error('인원 목록이 변경됐습니다.'); } }, uuid: () => 'guest' });
+  let sequence = 0;
+  const flow = createAttendeeFlow({ bridge: { readMeetingAttendees: async () => meeting(), readPeopleCatalog: async () => empty(), applyMeetingAttendeeDraft: async (...args) => { calls.push(args); throw Error('인원 목록이 변경됐습니다.'); } }, uuid: () => `draft-${++sequence}` });
   await flow.open('meeting'); flow.addTemporary(); flow.rename('guest', '김하늘');
-  assert.equal(await flow.promote('guest', ' 김하늘 '), false);
-  assert.deepEqual(calls, [['meeting', 'meeting:2', 'catalog:1', 'guest', '김하늘']]);
-  assert.equal(flow.isDirty(), false); assert.equal(flow.getSnapshot().attendees[0].name, '김하늘');
+  assert.equal(await flow.promote('draft-1', ' 김하늘 '), true);
+  assert.equal(calls.length, 0);
+  assert.equal(flow.getSnapshot().catalog.people[0].name, '김하늘');
+  assert.equal(await flow.save(), false);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].slice(0, 2), ['meeting', 'meeting:1']);
+  assert.deepEqual(calls[0][2].promotions, [{ attendeeId: 'draft-1', person: { id: 'draft-2', name: '김하늘' } }]);
+  assert.equal(flow.isDirty(), true); assert.equal(flow.getSnapshot().attendees[0].name, '김하늘');
 });
 
 test('a slow meeting request cannot replace a different meeting opened later', async () => {

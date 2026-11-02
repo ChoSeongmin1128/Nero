@@ -16,6 +16,8 @@ type Result<T> = std::result::Result<T, String>;
 struct Request {
     #[serde(default)]
     asr_engine: crate::speech_choice::SpeechEngine,
+    #[serde(default = "crate::speech_choice::enabled")]
+    speaker_enabled: bool,
     #[serde(default)]
     whisper_executable: Option<PathBuf>,
     asr_model: PathBuf,
@@ -60,12 +62,22 @@ pub(super) fn entry(path: &Path) -> Result<ExitPolicy> {
     {
         return Err("ASR model does not match its pin".into());
     }
-    let speaker_sha = digest(&request.speaker.model)?;
-    if speaker_sha != "08456d9e22cd9a323c0364d98375f3746d6e68507ebb705cd46438c534c7a3a1" {
+    let speaker_sha = if request.speaker_enabled {
+        digest(&request.speaker.model)?
+    } else {
+        String::new()
+    };
+    if request.speaker_enabled
+        && speaker_sha != "08456d9e22cd9a323c0364d98375f3746d6e68507ebb705cd46438c534c7a3a1"
+    {
         return Err("Speaker model does not match its pin".into());
     }
     let library_sha = digest(&request.asr_library)?;
-    let speaker_library_sha = digest(&request.speaker.library)?;
+    let speaker_library_sha = if request.speaker_enabled {
+        digest(&request.speaker.library)?
+    } else {
+        String::new()
+    };
     // Unfinished multi-model destruction faults on the pinned Windows runtime.
     // Preserve those handles on error; completed streams close in reverse order.
     let mut asr = if request.asr_engine == crate::speech_choice::SpeechEngine::Nemotron {
@@ -96,13 +108,20 @@ pub(super) fn entry(path: &Path) -> Result<ExitPolicy> {
         None
     };
     let whisper_cancel = std::sync::atomic::AtomicBool::new(false);
-    let mut speaker_api = ManuallyDrop::new(
-        speaker::Api::load(&request.speaker.library, request.speaker.backend)
-            .map_err(|e| e.to_string()),
-    );
-    let mut speaker_error = speaker_api.as_ref().err().cloned();
+    let mut speaker_api = ManuallyDrop::new(if request.speaker_enabled {
+        Some(
+            speaker::Api::load(&request.speaker.library, request.speaker.backend)
+                .map_err(|e| e.to_string()),
+        )
+    } else {
+        None
+    });
+    let mut speaker_error = speaker_api
+        .as_ref()
+        .and_then(|result| result.as_ref().err())
+        .cloned();
     let mut diar = match &*speaker_api {
-        Ok(api) => {
+        Some(Ok(api)) => {
             match speaker::Native::open(api, &request.speaker.model, request.speaker.backend) {
                 Ok(native) => Some(ManuallyDrop::new(native)),
                 Err(e) => {
@@ -111,17 +130,21 @@ pub(super) fn entry(path: &Path) -> Result<ExitPolicy> {
                 }
             }
         }
-        Err(_) => None,
+        _ => None,
     };
     let mut timeline = speaker::Timeline::new();
     let probability_path = request.speaker.output.join("probabilities.f32le");
-    let mut posterior = BufWriter::new(
-        OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&probability_path)
-            .map_err(|e| e.to_string())?,
-    );
+    let mut posterior = if request.speaker_enabled {
+        Some(BufWriter::new(
+            OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&probability_path)
+                .map_err(|e| e.to_string())?,
+        ))
+    } else {
+        None
+    };
     let mut input = BufReader::new(std::io::stdin().lock());
     let mut count = 0_u64;
     let mut hash = Sha256::new();
@@ -181,10 +204,10 @@ pub(super) fn entry(path: &Path) -> Result<ExitPolicy> {
                 new_window = true;
             }
         }
-        if let Some(native) = &diar {
+        if let (Some(native), Some(posterior)) = (&diar, posterior.as_mut()) {
             if let Err(error) = native
                 .push(&samples)
-                .and_then(|_| native.collect(&mut timeline, &mut posterior, count / 160 + 1))
+                .and_then(|_| native.collect(&mut timeline, posterior, count / 160 + 1))
             {
                 speaker_error = Some(error.to_string());
                 diar = None;
@@ -200,8 +223,12 @@ pub(super) fn entry(path: &Path) -> Result<ExitPolicy> {
                 && (boundary || count - last_preview >= 180 * 16000)
         {
             if let Some(result) = &latest {
-                posterior.flush().map_err(|e| e.to_string())?;
-                let words = preview_speakers(&result["words"], &probability_path)?;
+                let words = if let Some(posterior) = posterior.as_mut() {
+                    posterior.flush().map_err(|e| e.to_string())?;
+                    preview_speakers(&result["words"], &probability_path)?
+                } else {
+                    result["words"].clone()
+                };
                 emit(
                     &json!({"kind":"preview","meetingId":request.meeting_id,"sessionId":request.session_id,
                     "generation":count,"words":words,"text":result["text"],"provisional":true}),
@@ -272,7 +299,7 @@ pub(super) fn entry(path: &Path) -> Result<ExitPolicy> {
             started,
             &native,
             timeline,
-            posterior,
+            posterior.take().ok_or("Missing speaker output")?,
         ) {
             speaker_error = Some(error.to_string());
         } else {
@@ -307,7 +334,7 @@ pub(super) fn entry(path: &Path) -> Result<ExitPolicy> {
             .unwrap()
             .join("live-outcome.json"),
         &json!({"frames":count,
-        "asrCompleted":true,"speakerCompleted":speaker_error.is_none(),"speakerError":speaker_error,
+        "asrCompleted":true,"speakerEnabled":request.speaker_enabled,"speakerCompleted":request.speaker_enabled && speaker_error.is_none(),"speakerError":speaker_error,
         "elapsedSeconds":started.elapsed().as_secs_f64()}),
     )?;
     Ok(if speaker_error.is_none() {

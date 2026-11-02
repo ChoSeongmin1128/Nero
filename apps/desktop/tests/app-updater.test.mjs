@@ -14,6 +14,87 @@ test('automatic checks download an update but never install it', async () => {
   updater.dispose();
 });
 
+test('a failed automatic check retries and downloads without a user click or automatic installation', async () => {
+  const calls = [], scheduled = [];
+  let checks = 0;
+  const updater = createAppUpdater({ invoke: async command => {
+    calls.push(command);
+    if (command === 'app_update_check') {
+      if (++checks === 1) throw Error('temporary network failure');
+      return { phase: 'available' };
+    }
+    return command === 'app_update_download' ? { phase: 'ready', downloadReady: true } : { phase: 'idle' };
+  }, listen: async () => () => {}, schedule: (fn, delay) => { scheduled.push({ fn, delay }); return scheduled.length; }, unschedule() {} });
+  await updater.start();
+  await scheduled[0].fn();
+  assert.equal(updater.getSnapshot().phase, 'error');
+  assert.equal(scheduled[1].delay, 5 * 60 * 1000);
+  await scheduled[1].fn();
+  assert.deepEqual(calls, ['app_update_status', 'app_update_check', 'app_update_check', 'app_update_download']);
+  assert.equal(updater.getSnapshot().downloadReady, true);
+  assert.equal(scheduled[2].delay, 6 * 60 * 60 * 1000);
+  await scheduled[2].fn();
+  assert.equal(calls.length, 4, 'a ready download stays ready for the single restart action');
+  updater.dispose();
+});
+
+test('automatic checks do not interrupt an active download', async () => {
+  const calls = [], scheduled = [];
+  const updater = createAppUpdater({ invoke: async command => { calls.push(command); return { phase: 'downloading' }; },
+    listen: async () => () => {}, schedule: (fn, delay) => { scheduled.push({ fn, delay }); return scheduled.length; }, unschedule() {} });
+  await updater.start();
+  await scheduled[0].fn();
+  assert.deepEqual(calls, ['app_update_status']);
+  assert.equal(updater.getSnapshot().phase, 'downloading');
+  assert.equal(scheduled[1].delay, 5 * 60 * 1000);
+  updater.dispose();
+});
+
+for (const failure of ['check', 'download']) {
+  test(`manual ${failure} failure replaces the existing six-hour timer with one five-minute retry`, async () => {
+    const calls = [], pending = new Map();
+    let mode = 'current', nextId = 0, emit;
+    const fireNext = async () => {
+      assert.equal(pending.size, 1);
+      const [id, task] = [...pending][0];
+      pending.delete(id);
+      await task.fn();
+    };
+    const updater = createAppUpdater({ invoke: async command => {
+      calls.push(command);
+      if (command === 'app_update_check') {
+        if (mode === 'fail' && failure === 'check') throw Error('manual check failed');
+        return { phase: mode === 'current' ? 'current' : 'available' };
+      }
+      if (command === 'app_update_download') {
+        if (mode === 'fail') throw Error('manual download failed');
+        return { phase: 'ready', downloadReady: true };
+      }
+      return { phase: 'idle' };
+    }, listen: async (_, callback) => { emit = callback; return () => {}; },
+    schedule: (fn, delay) => { pending.set(++nextId, { fn, delay }); return nextId; },
+    unschedule: id => pending.delete(id) });
+    await updater.start();
+    await fireNext();
+    assert.equal([...pending.values()][0].delay, 6 * 60 * 60 * 1000);
+    mode = 'fail';
+    assert.equal(await updater.check(), false);
+    assert.equal(updater.getSnapshot().phase, 'error');
+    assert.equal(pending.size, 1);
+    assert.equal([...pending.values()][0].delay, 5 * 60 * 1000);
+    mode = 'recover';
+    await fireNext();
+    assert.equal(updater.getSnapshot().downloadReady, true);
+    assert.equal(calls.includes('app_update_install'), false);
+    assert.equal(pending.size, 1);
+    assert.equal([...pending.values()][0].delay, 6 * 60 * 60 * 1000);
+    emit({ payload: { phase: 'recoveryRequired', recoveryRequired: true } });
+    assert.equal(pending.size, 0, 'recovery removes even the new scheduled timer');
+    updater.dispose();
+    assert.equal(pending.size, 0);
+  });
+}
+
 test('install waits for editor saves and serializes duplicate clicks', async () => {
   let release;
   const saved = new Promise(resolve => { release = resolve; });

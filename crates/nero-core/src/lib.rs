@@ -1,4 +1,5 @@
 pub mod agent_control;
+mod apple_speech;
 pub mod audio_normalize;
 mod audio_playback;
 mod capture;
@@ -461,6 +462,16 @@ impl CoreHandle {
         self.call(move |engine| engine.commit_whisper_transcript(&id, expected, raw))
     }
 
+    pub fn commit_apple_transcript(
+        &self,
+        id: &str,
+        expected: Option<TranscriptVersion>,
+        raw: Vec<u8>,
+    ) -> Result<Transcript> {
+        let id = id.to_owned();
+        self.call(move |engine| engine.commit_apple_transcript(&id, expected, raw))
+    }
+
     pub fn edit_transcript(
         &self,
         id: &str,
@@ -518,6 +529,85 @@ impl CoreHandle {
     pub fn summary_input(&self, id: &str) -> Result<SummaryInput> {
         let id = id.to_owned();
         self.call(move |engine| engine.summary_input(&id))
+    }
+    pub fn chat_context_input(
+        &self,
+        id: &str,
+    ) -> Result<(Meeting, Option<(SummaryInput, SummaryContext)>)> {
+        let id = id.to_owned();
+        self.call(move |engine| {
+            let meeting = engine
+                .meetings()
+                .into_iter()
+                .find(|meeting| meeting.id == id && meeting.deleted_at.is_none())
+                .ok_or(CoreError::MeetingNotFound)?;
+            let input = if engine.transcript(&id)?.is_some() {
+                let input = engine.summary_input(&id)?;
+                let context = SummaryContext::new(
+                    &input.source,
+                    &input.notes,
+                    &input.attendees,
+                    input.expected_id.clone(),
+                )?;
+                Some((input, context))
+            } else {
+                None
+            };
+            Ok((meeting, input))
+        })
+    }
+    pub fn import_summary_checked(
+        &self,
+        id: &str,
+        expected_version: &str,
+        context: SummaryContext,
+        text: String,
+        producer: ExternalSummaryProducer,
+    ) -> Result<Summary> {
+        let (id, expected) = (id.to_owned(), expected_version.to_owned());
+        self.call(move |engine| {
+            let meeting = engine
+                .meetings()
+                .into_iter()
+                .find(|meeting| meeting.id == id && meeting.deleted_at.is_none())
+                .ok_or(CoreError::MeetingNotFound)?;
+            if agent_control::meeting_edit_version(&meeting)? != expected {
+                return Err(CoreError::EditConflict);
+            }
+            engine.import_summary(&id, context, text, producer)
+        })
+    }
+    pub fn append_meeting_note(
+        &self,
+        id: &str,
+        expected_version: &str,
+        context: Option<SummaryContext>,
+        addition: &str,
+    ) -> Result<Meeting> {
+        let (id, expected, addition) = (
+            id.to_owned(),
+            expected_version.to_owned(),
+            addition.to_owned(),
+        );
+        self.call(move |engine| {
+            let current = engine
+                .meetings()
+                .into_iter()
+                .find(|meeting| meeting.id == id && meeting.deleted_at.is_none())
+                .ok_or(CoreError::MeetingNotFound)?;
+            if agent_control::meeting_edit_version(&current)? != expected {
+                return Err(CoreError::EditConflict);
+            }
+            if let Some(context) = context {
+                engine.validate_summary_context(&id, &context)?;
+            }
+            let notes = if current.notes.is_empty() {
+                addition
+            } else {
+                format!("{}\n\n{}", current.notes, addition)
+            };
+            engine.update_meeting(&id, current.title, notes)
+        })
     }
     pub fn commit_summary(&self, id: &str, draft: SummaryDraft) -> Result<Summary> {
         let id = id.to_owned();
@@ -647,5 +737,34 @@ mod shutdown_gate_tests {
         core.resume_after_failed_shutdown().unwrap();
         core.create_folder("작업 재개").unwrap();
         assert_eq!(core.list_meetings().unwrap()[0].notes, "메모");
+    }
+}
+
+#[cfg(test)]
+mod ai_answer_tests {
+    use super::*;
+    #[test]
+    fn append_uses_the_captured_meeting_revision_and_preserves_intervening_edits() {
+        let root = tempfile::tempdir().unwrap();
+        let core = CoreHandle::open(root.path().canonicalize().unwrap()).unwrap();
+        let meeting = core.create_meeting("기존 제목", "기존 메모").unwrap();
+        let version = agent_control::meeting_edit_version(&meeting).unwrap();
+        let saved = core
+            .append_meeting_note(&meeting.id, &version, None, "AI 답변")
+            .unwrap();
+        assert_eq!(saved.title, "기존 제목");
+        assert_eq!(saved.notes, "기존 메모\n\nAI 답변");
+        assert!(matches!(
+            core.append_meeting_note(&meeting.id, &version, None, "중복"),
+            Err(CoreError::EditConflict)
+        ));
+        let version = agent_control::meeting_edit_version(&saved).unwrap();
+        core.update_meeting(&meeting.id, "바뀐 제목", "사용자 편집")
+            .unwrap();
+        assert!(matches!(
+            core.append_meeting_note(&meeting.id, &version, None, "늦은 답변"),
+            Err(CoreError::EditConflict)
+        ));
+        assert_eq!(core.list_meetings().unwrap()[0].notes, "사용자 편집");
     }
 }

@@ -18,10 +18,17 @@ This file applies to the entire repository.
 - The native app provides meetings, notes, microphone recording and playback. With
   packaged workers, Apple silicon/macOS 26 supports native file import and local
   Nemotron 3.5 Q8 speech recognition. Explicit setup prepares the pinned ASR model
-  and the smaller Nemotron 3 speaker model; speech readiness gates new meetings,
+  and, when speaker analysis is enabled, the smaller Nemotron 3 speaker model; speech readiness gates new meetings,
   recording and import. Packaged llama.cpp enables on-demand Gemma 4 E4B Q4 summaries
   with separately stored source revisions; summary preparation remains optional.
   Do not fabricate transcripts or summary results.
+- Initial setup and Settings can explicitly select macOS system transcription on supported
+  Apple silicon/macOS 26 devices. Resolve the supported SpeechTranscriber or
+  DictationTranscriber variant before preparation, freeze it per session/job and never
+  silently switch after execution failure. System language assets are prepared only
+  on explicit request. Preserve native phrase ranges, exact input/finalize evidence
+  and OS/provider identity; do not invent word times. This path runs after recording
+  ends and does not provide live previews. See `scripts/apple-speech/README.md`.
 - Default recognition sends the complete recording through one stateful
   NeMo-Speech.cpp stream with endpointing disabled, then finishes the stream at EOF.
   `commit_nemotron_transcript` requires pinned model/runtime identity, full input-frame
@@ -46,7 +53,10 @@ This file applies to the entire repository.
   Save native ASR before speaker finalization and reuse it through the normal
   checkpoint/continuation path. See `docs/live-speech.md`; source checks do not
   establish microphone, low-memory laptop or macOS acceptance.
-- Save recognition before optional terminology correction and the separate
+- Speaker analysis is separately selectable in initial setup and Settings, frozen per
+  session/job and defaults to enabled for existing preferences/jobs. Disabling it skips
+  speaker preparation, readiness reads, live speaker streams and final analysis.
+  Save recognition before optional terminology correction and the optional separate
   whole-recording Nemotron 3 speaker stage. Persist the source-bound diarization
   continuation under the same job ID so a speaker-stage retry does not rerun ASR.
   Failure or cancellation retains the saved text and audio. Existing meetings are
@@ -96,6 +106,17 @@ This file applies to the entire repository.
   and revision checks. Host clients own tool approval policy. Meeting deletion means
   recoverable trash; no permanent purge tool is exposed. See `docs/local-agent.md`;
   do not edit another AI client's settings implicitly.
+- In-app AI chat owns global conversations, independent of meetings and notes. Send
+  only explicitly selected meeting and Notion snapshots; retain immutable per-request
+  citations and source origins. Claude subscription chat uses an unmodified,
+  platform-signature-validated official Claude Code runtime with its own user login,
+  bounded child-process execution and restricted tools/MCP. Nero must not copy its
+  credentials. ChatGPT uses the separate SIWC account service. Never silently change
+  to API-key billing. Keep in-app login distinct from external Nero CLI/MCP connections.
+- Meeting Notion references store immutable source IDs, not duplicate document bodies.
+  Explicit refresh replaces only that meeting's reference after fetching outside the
+  mutation gate; revision conflicts, cancellation and failures preserve the previous
+  reference. Past conversation inputs remain unchanged. See `docs/notion-context.md`.
 - Model selection will prefer qualified GPU paths and retain CPU compatibility.
   Initial diarization support targets up to eight actual speakers; more attendees
   must not block recording or transcription. Preserve transcription on speaker-stage failure.
@@ -159,7 +180,7 @@ behavior. Separate implemented behavior, proposals and unverified platform suppo
   shared with external users. Normal version, updater and NSIS downgrade guards
   remain active; existing build49 installations need an explicit manual transition.
 - Product and integration versions are independent. The next integration generation
-  is `0.3.0-nero.37`; do not lower a host package to match product `0.0.1`.
+  is `0.3.0-nero.38`; do not lower a host package to match product `0.0.1`.
   Undistributed development binaries follow the bounded retention rules below.
 - Published release tags, assets and public release notes identify distributed source.
   A dirty build must not be attributed to its HEAD alone. Distribution bundles require

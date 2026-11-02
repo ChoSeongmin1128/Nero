@@ -3,6 +3,7 @@ use nero_core::{
     agent_control::meeting_edit_version, CoreHandle, Meeting, MeetingAttendee, PeopleCatalog,
     Person, PersonGroup, PromotedAttendee,
 };
+use nero_core::people::{GoogleAttendeeDraft, GoogleAttendeeRoster};
 use serde::Serialize;
 use tauri::{AppHandle, State, WebviewWindow};
 
@@ -68,6 +69,31 @@ pub async fn people_catalog(
 ) -> Result<PeopleCatalog, String> {
     require_main(&window)?;
     on_core(state.core.clone(), |core| core.people_catalog()).await
+}
+
+#[tauri::command]
+pub async fn google_attendee_roster(
+    window: WebviewWindow,
+    state: State<'_, DesktopState>,
+    id: String,
+) -> Result<GoogleAttendeeRoster, String> {
+    require_main(&window)?;
+    on_core(state.core.clone(), move |core| core.google_attendee_roster(&id)).await
+}
+
+#[tauri::command]
+pub async fn apply_meeting_attendee_draft(
+    window: WebviewWindow,
+    app: AppHandle,
+    state: State<'_, DesktopState>,
+    id: String,
+    expected_version: String,
+    draft: GoogleAttendeeDraft,
+) -> Result<GoogleAttendeeRoster, String> {
+    require_main(&window)?;
+    mutate(app, state.core.clone(), move |core| {
+        core.apply_meeting_attendee_draft(&id, &expected_version, draft)
+    }).await
 }
 
 #[tauri::command]

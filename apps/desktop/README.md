@@ -8,6 +8,9 @@ guidance are in the [project README](../../README.md) and [user guide](../../doc
 Install a supported Node.js version (see `package.json`), Rust and the native Tauri
 prerequisites for the target OS. Windows builds need MSVC Build Tools, the Windows
 SDK and WebView2; use a native Windows environment rather than WSL for acceptance.
+macOS builds require Xcode with the macOS 26 SDK for the Apple Speech helper.
+Desktop CI selects Xcode 26.0.1 explicitly and checks the SDK major version;
+set `DEVELOPER_DIR` to a suitable Xcode installation for local builds.
 
 From this directory:
 
@@ -222,10 +225,13 @@ frontend directory and are bundled through the existing Tauri resource mappings.
   evidence and word timestamps. The core projects sentence rows without speaker labels.
   There is no silent chunk-ASR fallback. Original audio and previous results remain
   available after an unsupported or failed input. Inference uploads no audio.
+- On macOS 26, the system speech option transcribes Korean after recording ends.
+  It uses system language assets instead of a Nero ASR model; asset preparation may
+  download data. Availability depends on the system. Speaker analysis remains optional.
 - Optional machine-local terminology profiles create a separate correction revision
   after recognition. Uncertain names remain unchanged; an absent optional contextual
   model does not block recognition. See [terminology correction](../../docs/terminology.md).
-- After recognition is saved and optional terminology correction finishes, independent
+- When enabled, after recognition is saved and optional terminology correction finishes, independent
   Nemotron 3 speaker analysis processes the complete finalized recording in one
   stateful run using the shared native speech package. The source-bound continuation
   is durable under the same job ID; a speaker-stage retry does not rerun ASR. Failure
@@ -306,6 +312,10 @@ the package does not complete the update; a verified current initialization does
 Nero retains that observation independently of a live connection. Codex catalog paths
 stay stable while older generation executables remain readable. Client metadata
 observation failures have a query-only retry and do not block another integration.
+
+## In-app AI and meeting references
+
+The current source includes a global AI sidebar with conversation-specific meeting and Notion attachments. ChatGPT uses Sign in with ChatGPT; Claude uses a signature-verified official Claude Code executable and its own login. The separate local agent connections described above remain independent. See [in-app AI](../../docs/in-app-ai.md) and [Notion references](../../docs/notion-context.md) for source contracts. These features are not established as available in a released or installed build by this source documentation.
 
 ## Recording and dates
 

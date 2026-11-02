@@ -7,6 +7,7 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '.
 import { attendeeInputAction, attendeeLabel, createAttendeeFlow, createPeopleCatalogFlow, filterPeople, personGroups, splitPeopleNames } from './people-flow.js';
 import { ConfirmDialog } from '../../../design-system/components/ui/confirm-dialog.jsx';
 import './people-ui.css';
+import { GoogleAttendeePicker } from './google-attendee-ui.jsx';
 
 function useConfirmation() {
   const [request, setRequest] = React.useState(null);
@@ -143,6 +144,7 @@ function AttendeeDialog({ flow, container, origin, controls }) {
   const close = async () => {
     if (!state.open) return true;
     if ((state.busy && !state.loading) || confirmation.request || promoting) return false;
+    if (state.googleConnecting && !await flow.cancelMeetConnect()) return false;
     if (flow.isDirty() && !await confirmation.ask('참석자 변경을 버릴까요?', '저장하지 않은 참석자 변경은 반영되지 않습니다.', '버리기')) return false;
     return flow.close();
   };
@@ -167,11 +169,11 @@ function AttendeeDialog({ flow, container, origin, controls }) {
           {state.error && !state.busy && <button type="button" className="small" onClick={async () => { if (!flow.isDirty() || await confirmation.ask('최신 내용을 불러올까요?', '불러오기에 성공하면 저장하지 않은 참석자 변경이 바뀝니다.', '불러오기', false)) await flow.reload(); }}>다시 불러오기</button>}
           {state.meeting && <>
             <section className="attendee-add" aria-label="참석자 추가">
-              <label className="attendee-search"><Search size={16} aria-hidden="true" /><span className="sr-only">사람, 그룹 검색 또는 새 이름 입력</span><input ref={searchInput} type="search" value={query} placeholder="사람, 그룹 검색 또는 새 이름 입력"
+              <div className="people-list-tools"><label className="attendee-search" style={{ flex: 1, minWidth: 0 }}><Search size={16} aria-hidden="true" /><span className="sr-only">사람, 그룹 검색 또는 새 이름 입력</span><input ref={searchInput} type="search" value={query} placeholder="사람, 그룹 검색 또는 새 이름 입력"
                 onChange={event => { const value = event.currentTarget.value; setQuery(value); if (!composing(event) && /[,\r\n]/.test(value)) addTyped(value); }}
                 onCompositionEnd={event => { if (/[,\r\n]/.test(event.currentTarget.value)) addTyped(event.currentTarget.value); }}
                 onPaste={event => { const value = event.clipboardData.getData('text'); if (/[,\r\n]/.test(value)) { event.preventDefault(); const input = event.currentTarget; addTyped(input.value.slice(0, input.selectionStart) + value + input.value.slice(input.selectionEnd)); } }}
-                onKeyDown={event => { if (event.key === 'Enter' && !composing(event) && query.trim()) { event.preventDefault(); addTyped(query); } }} disabled={state.busy} /></label>
+                onKeyDown={event => { if (event.key === 'Enter' && !composing(event) && query.trim()) { event.preventDefault(); addTyped(query); } }} disabled={state.busy} /></label><button type="button" className="small" disabled={state.busy || state.googleLoading || state.googleConnecting} onClick={() => { void flow.loadGoogle(); }}>Google에서 추가</button></div>
               <div className="attendee-options">
                 {matchingGroups.length > 0 && <><h4 className="attendee-option-heading">그룹</h4>{matchingGroups.map(group => <button type="button" className="people-option" key={group.id} disabled={state.busy} onClick={() => add(state.catalog.people.filter(person => group.personIds.includes(person.id)))}><Users size={16} aria-hidden="true" /><span>{group.name}</span><span className="muted type-caption">{group.personIds.filter(id => !selected.has(id)).length}명 추가</span></button>)}</>}
                 {matchingPeople.length > 0 && <><h4 className="attendee-option-heading">사람</h4>{matchingPeople.map(person => <button type="button" className="people-option" key={person.id} disabled={state.busy} aria-label={`${person.name} 추가`} onClick={() => add([person])}><UserRound size={16} aria-hidden="true" /><span className="people-option-copy">{person.name}<span className="people-memberships type-caption">{personGroups(state.catalog, person.id).map(group => group.name).join(', ')}</span></span><Plus size={15} aria-hidden="true" /></button>)}</>}
@@ -180,17 +182,18 @@ function AttendeeDialog({ flow, container, origin, controls }) {
                 {typedName && !matchingPeople.length && !matchingGroups.length && !canAddName && <p className="people-empty" role="status">이미 선택한 참석자입니다.</p>}
               </div>
             </section>
+            <GoogleAttendeePicker state={state} flow={flow} container={container} />
             <section className="people-section attendee-selected" aria-label="선택한 참석자"><h4 className="type-label">선택한 참석자 <span className="muted">{state.attendees.length}명</span></h4>
               <div className="attendee-chips">{state.attendees.map(item => <AttendeeChip key={item.id} item={item} label={attendeeLabel(item, state.attendees)} busy={state.busy} flow={flow} onPromote={() => { setName(item.name || ''); setPromoting(item.id); }} />)}{!state.attendees.length && <p className="people-empty">아직 선택한 참석자가 없습니다.</p>}</div>
             </section>
           </>}
         </div>
-        <DialogFooter><button type="button" disabled={state.busy && !state.loading} onClick={() => { void close(); }}>취소</button><button type="button" className="primary" disabled={state.busy || !state.meeting} onClick={async () => { if (await flow.save()) flow.close(); }}>적용</button></DialogFooter>
+        <DialogFooter><button type="button" disabled={state.busy && !state.loading} onClick={() => { void close(); }}>취소</button><button type="button" className="primary" disabled={state.busy || state.googleConnecting || !state.meeting} onClick={async () => { if (await flow.save()) flow.close(); }}>적용</button></DialogFooter>
       </DialogContent>
     </Dialog>
     <Dialog open={Boolean(promoting)} onOpenChange={open => { if (!open && !state.busy) setPromoting(null); }}>
       <DialogContent container={container} className="people-confirm" showCloseButton={false} data-nero-ui-owned="">
-        <DialogHeader><DialogTitle>인원 목록에 추가</DialogTitle><DialogDescription>다른 회의에서도 선택할 수 있습니다.</DialogDescription></DialogHeader>
+        <DialogHeader><DialogTitle>인원 목록에 추가</DialogTitle><DialogDescription>적용하면 다른 회의에서도 선택할 수 있습니다.</DialogDescription></DialogHeader>
         <form className="people-editor" onSubmit={async event => { event.preventDefault(); if (await flow.promote(promoting, name)) setPromoting(null); }}><label>이름<input autoFocus value={name} required maxLength={120} disabled={state.busy} onChange={event => setName(event.target.value)} /></label><Feedback state={state} /><DialogFooter><button type="button" disabled={state.busy} onClick={() => setPromoting(null)}>취소</button><button type="submit" className="primary" disabled={state.busy || !name.trim()}>추가</button></DialogFooter></form>
       </DialogContent>
     </Dialog>

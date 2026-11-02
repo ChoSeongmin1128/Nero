@@ -1,0 +1,17 @@
+{
+  "source": "Public ring 0.17.14 tests/rsa_test_public_key_2048.der fixture; synthetic token signed offline with its published test-only key. No private key is stored here.",
+  "now": 1700000000,
+  "token": "eyJhbGciOiJSUzI1NiIsImtpZCI6Im5lcm8tcHVibGljLXRlc3QtZml4dHVyZSJ9.eyJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsImF1ZCI6Im9haWFwcF9maXh0dXJlIiwic3ViIjoic3ludGhldGljLXN1YmplY3QiLCJpYXQiOjE2OTk5OTk5MDAsImV4cCI6MTcwMDAwMTAwMCwibm9uY2UiOiJzeW50aGV0aWMtbm9uY2UiLCJlbWFpbCI6ImZpeHR1cmVAZXhhbXBsZS5pbnZhbGlkIiwibmFtZSI6IlN5bnRoZXRpYyBBY2NvdW50In0.kvA4lfT79IkvQdyiOKe72yFE1M7jSkkN8DkbUI6t1pNVH7aamD1uVBYnvrik5fGU37s35OOVHct33sZnoTYRj_PkffrfRBTRyx50DU-JvKFIXEA8rnc73phr8jpsWMWZDpnfVRrxakbU2G6FF8xmRfOZamtZc2SV-rAS0k1yt2Pq6tP0KdsHhY5IclzhnopUQ9pZ1UrVX7MbWcwLFsarhbLcZ3JO7rQCgK5K2DtYg-fqFisjAzDHW9fMCLiljvfVIGVZJEHL3RffSx38vblaYu9mN4UaZIWDdxLRbsJHmp-r1kcihDdyiSX5--oKXH0HqXTL3sDA50pZp5TXeJg7Jw",
+  "jwks": {
+    "keys": [
+      {
+        "kty": "RSA",
+        "kid": "nero-public-test-fixture",
+        "alg": "RS256",
+        "use": "sig",
+        "n": "yKeFAKWiUNuO02yFuNz4PEvhlTEU-qrHYW4Ookki-mt6sB-FWCyBXMO9617UZ2K8U2rMqotycFsAzvMWsuxQj7lpckG540I4QZzM9zOe64sGIUevT1ky9hPZvArnC_bVbUQy6D4TdnWHUxv6ndVlMXQSRL516LySJrn6RLS4oQE1jX6Lt10MckpPEeznd3YmP67-eWEusdcWRud-iYKGa-FADq_DWA0xObQaqnOAGHNy8i41vVWyiElhZciB7RVNWBEkXFLVbMCdSRbU8qULz1rgomN_TPpr-dqvwRPbqDg7bdfabdjbIthRCo0xFZgzCJCaGgMyUXqlXoluFUJJsw",
+        "e": "AQAB"
+      }
+    ]
+  }
+}

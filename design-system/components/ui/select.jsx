@@ -14,7 +14,7 @@ export function SelectValue({ className, ...props }) {
 
 export function SelectTrigger({ className, children, ...props }) {
   return <Primitive.Trigger data-slot="select-trigger" className={cn('nero-select-trigger', className)} {...props}>
-    {children}<Primitive.Icon><ChevronDown size={14} aria-hidden="true" /></Primitive.Icon>
+    {children}<Primitive.Icon className="nero-select-chevron"><ChevronDown size={14} aria-hidden="true" /></Primitive.Icon>
   </Primitive.Trigger>;
 }
 

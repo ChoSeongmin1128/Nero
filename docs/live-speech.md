@@ -2,6 +2,11 @@
 
 This is a source contract, not a microphone, target-laptop or macOS acceptance receipt.
 
+Nemotron and Whisper use the paths below. Speaker analysis is optional and frozen
+with the selected engine at recording start. Disabling it keeps the ASR stream
+and skips the speaker stream and final analysis. macOS system transcription
+currently runs after recording ends and does not publish live previews.
+
 The recorder retains its device callback, bounded queue, original PCM writer and
 separate playback WAV. A background reader consumes only complete frames already
 written to disk. Saved PCM is the backlog when inference falls behind; inference

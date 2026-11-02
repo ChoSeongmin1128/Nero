@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 pub const SCOPES: &str = "https://www.googleapis.com/auth/calendar.calendarlist.readonly https://www.googleapis.com/auth/calendar.events.readonly";
+pub const MEET_SCOPE: &str = "https://www.googleapis.com/auth/meetings.space.readonly";
 
 #[derive(Clone)]
 pub struct Config {
@@ -54,6 +55,7 @@ pub struct ConnectRequest {
 
 pub struct Pending {
     pub id: String,
+    pub include_meet: bool,
     listener: TcpListener,
     state: String,
     path: String,
@@ -64,6 +66,12 @@ pub struct Pending {
 }
 impl Pending {
     pub fn begin(config: &Config) -> Result<(Self, ConnectRequest), String> {
+        Self::begin_with_meet(config, false)
+    }
+    pub fn begin_with_meet(
+        config: &Config,
+        include_meet: bool,
+    ) -> Result<(Self, ConnectRequest), String> {
         if !valid_client_id(&config.client_id) {
             return Err("Google 캘린더 연결 정보가 설정되지 않았습니다.".into());
         }
@@ -86,11 +94,16 @@ impl Pending {
         let path = format!("/oauth2/callback/{id}");
         let redirect_uri = format!("http://127.0.0.1:{port}{path}");
         let mut url = Url::parse("https://accounts.google.com/o/oauth2/v2/auth").unwrap();
+        let scopes = if include_meet {
+            format!("{SCOPES} {MEET_SCOPE}")
+        } else {
+            SCOPES.into()
+        };
         url.query_pairs_mut().extend_pairs([
             ("client_id", config.client_id.as_str()),
             ("redirect_uri", redirect_uri.as_str()),
             ("response_type", "code"),
-            ("scope", SCOPES),
+            ("scope", scopes.as_str()),
             ("state", state.as_str()),
             ("code_challenge", challenge.as_str()),
             ("code_challenge_method", "S256"),
@@ -104,6 +117,7 @@ impl Pending {
         Ok((
             Self {
                 id,
+                include_meet,
                 listener,
                 state,
                 path,
@@ -308,6 +322,28 @@ fn callback(request: &str, host: &str, path: &str, state: &str) -> Callback {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn meet_scope_is_requested_only_for_explicit_optional_reconnection() {
+        let config = Config {
+            client_id: "synthetic.apps.googleusercontent.com".into(),
+            client_secret: Some("synthetic".into()),
+        };
+        let (normal, normal_request) = Pending::begin(&config).unwrap();
+        let (meet, meet_request) = Pending::begin_with_meet(&config, true).unwrap();
+        let scopes = |request: ConnectRequest| {
+            Url::parse(&request.authorization_url)
+                .unwrap()
+                .query_pairs()
+                .find(|(key, _)| key == "scope")
+                .unwrap()
+                .1
+                .into_owned()
+        };
+        assert_eq!(scopes(normal_request), SCOPES);
+        assert!(!normal.include_meet);
+        assert!(meet.include_meet);
+        assert_eq!(scopes(meet_request), format!("{SCOPES} {MEET_SCOPE}"));
+    }
     #[test]
     fn desktop_configuration_requires_both_registered_client_values() {
         let id = "synthetic.apps.googleusercontent.com";

@@ -73,6 +73,9 @@ body { overflow: hidden; }
 .audio-controls > button, .audio-controls > select, .audio-controls > .nero-select { flex: none; }
 .audio-controls > select, .audio-controls .nero-select-trigger { min-height: 29px; padding: 4px 8px; font-size: var(--text-caption-size); }
 .audio-controls > .nero-select { width: auto; }
+.audio-controls .nero-select:has(> #audio-speed) .nero-select-trigger { border-color: transparent; background: transparent; }
+.audio-controls .nero-select:has(> #audio-speed) .nero-select-trigger:hover:not(:disabled) { background: var(--hover); }
+.audio-controls .nero-select:has(> #audio-speed) .nero-select-chevron { display: none; }
 .audio-controls #audio-mute[aria-pressed="true"] { color: var(--accent); background: var(--accent-subtle); }
 @media (max-width: 900px) { .audio-controls { flex-wrap: wrap; gap: 8px; } .audio-timeline { flex-basis: 150px; } }
 .audio-region p { margin-top: 9px; }

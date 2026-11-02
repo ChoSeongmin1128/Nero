@@ -45,6 +45,11 @@ pub(crate) struct Library {
     pub people: crate::people::People,
     #[serde(default)]
     pub meeting_attendees: BTreeMap<String, Vec<crate::MeetingAttendee>>,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::people::google_identity::GoogleIdentityState::is_empty"
+    )]
+    pub google_identity: crate::people::google_identity::GoogleIdentityState,
 }
 
 impl Default for Library {
@@ -56,6 +61,7 @@ impl Default for Library {
             pending_purges: BTreeSet::new(),
             people: Default::default(),
             meeting_attendees: BTreeMap::new(),
+            google_identity: Default::default(),
         }
     }
 }
@@ -68,6 +74,7 @@ impl Library {
             ));
         }
         self.people.validate()?;
+        self.google_identity.validate()?;
         for (id, attendees) in &self.meeting_attendees {
             store::validate_id(id)?;
             crate::people::validate_attendees(attendees)?;

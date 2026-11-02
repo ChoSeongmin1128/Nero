@@ -29,6 +29,7 @@ impl CalendarDesktop {
                 revision: 0,
                 configured: false,
                 connected: false,
+                meet_connected: false,
                 connecting: false,
                 restoring: false,
                 account_label: None,
@@ -209,7 +210,27 @@ pub async fn begin_calendar_connect(
     crate::require_main(&window)?;
     let service = state.service()?;
     let request = service.begin_connect()?;
-    publish(&app);
+    open_connect_request(&app, service, request).await
+}
+
+#[tauri::command]
+pub async fn begin_meet_connect(
+    app: tauri::AppHandle,
+    window: WebviewWindow,
+    state: tauri::State<'_, CalendarDesktop>,
+) -> Result<ConnectAttempt, String> {
+    crate::require_main(&window)?;
+    let service = state.service()?;
+    let request = service.begin_meet_connect()?;
+    open_connect_request(&app, service, request).await
+}
+
+async fn open_connect_request(
+    app: &tauri::AppHandle,
+    service: Arc<CalendarService>,
+    request: calendar::ConnectRequest,
+) -> Result<ConnectAttempt, String> {
+    publish(app);
     let url = request.authorization_url;
     let opened = tauri::async_runtime::spawn_blocking(move || open_authorization(&url))
         .await
@@ -217,12 +238,31 @@ pub async fn begin_calendar_connect(
         .and_then(|result| result);
     if let Err(error) = opened {
         service.cancel_connect();
-        publish(&app);
+        publish(app);
         return Err(error);
     }
     Ok(ConnectAttempt {
         attempt_id: request.attempt_id,
     })
+}
+
+#[tauri::command]
+pub async fn fetch_google_attendees(
+    window: WebviewWindow,
+    state: tauri::State<'_, DesktopState>,
+    calendar: tauri::State<'_, CalendarDesktop>,
+    id: String,
+    include_meet: bool,
+) -> Result<calendar::GoogleAttendeeFetch, String> {
+    crate::require_main(&window)?;
+    let reference = crate::on_core(state.core.clone(), move |core| {
+        core.list_meetings()?.into_iter()
+            .find(|meeting| meeting.id == id && meeting.deleted_at.is_none())
+            .ok_or(nero_core::CoreError::MeetingNotFound)?
+            .calendar_reference
+            .ok_or_else(|| nero_core::CoreError::InvalidInput("연결한 일정이 없습니다.".into()))
+    }).await?;
+    calendar.service()?.google_attendees(&reference, include_meet).await
 }
 
 #[tauri::command]

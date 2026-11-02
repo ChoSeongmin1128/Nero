@@ -7,12 +7,18 @@ export function createAppUpdater({ invoke, listen, saveEdits, onChange = () => {
   let recoveryQuitting = false;
   let removeListener;
   let timer;
+  const scheduleCheck = delay => {
+    if (timer !== undefined) unschedule(timer);
+    timer = undefined;
+    if (!disposed && !snapshot.recoveryRequired && removeListener) timer = schedule(autoCheck, delay);
+  };
   const publish = value => {
     if (disposed || !value) return;
     if (snapshot.recoveryRequired && !value.recoveryRequired) return;
     snapshot = { ...value };
     setInstalling(snapshot.phase === 'installing' || Boolean(snapshot.recoveryRequired));
     onChange(snapshot);
+    if (snapshot.recoveryRequired || (snapshot.phase === 'error' && !snapshot.downloadReady)) scheduleCheck(5 * 60 * 1000);
   };
   const run = async (command, before) => {
     if (disposed || busy) return false;
@@ -54,9 +60,15 @@ export function createAppUpdater({ invoke, listen, saveEdits, onChange = () => {
     }).finally(() => { if (snapshot.phase !== 'installing' && !snapshot.recoveryRequired) setInstalling(false); });
   };
   const autoCheck = async () => {
+    timer = undefined;
     if (disposed || snapshot.recoveryRequired) return;
-    await check();
-    if (!disposed && !snapshot.recoveryRequired) timer = schedule(autoCheck, 6 * 60 * 60 * 1000);
+    if (busy || ['checking', 'downloading', 'installing'].includes(snapshot.phase)) {
+      scheduleCheck(5 * 60 * 1000);
+      return;
+    }
+    if (!snapshot.downloadReady) await check();
+    if (timer === undefined) scheduleCheck(
+      snapshot.phase === 'error' && !snapshot.downloadReady ? 5 * 60 * 1000 : 6 * 60 * 60 * 1000);
   };
   return {
     async start() {
@@ -65,7 +77,7 @@ export function createAppUpdater({ invoke, listen, saveEdits, onChange = () => {
       if (disposed) { stop(); return; }
       removeListener = stop;
       await run('app_update_status');
-      if (!disposed && !snapshot.recoveryRequired) timer = schedule(autoCheck, 45_000);
+      scheduleCheck(45_000);
     },
     check, download, install,
     quitForRecovery,

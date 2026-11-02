@@ -230,6 +230,7 @@ enum TranscriptCommitPolicy {
     WholeMoss,
     Nemotron,
     Whisper,
+    AppleSpeech,
 }
 
 fn present_chunk<'de, D>(
@@ -1270,6 +1271,15 @@ impl Engine {
         self.commit_transcript_with_policy(id, expected, raw, TranscriptCommitPolicy::Whisper)
     }
 
+    pub fn commit_apple_transcript(
+        &mut self,
+        id: &str,
+        expected: Option<TranscriptVersion>,
+        raw: Vec<u8>,
+    ) -> Result<Transcript> {
+        self.commit_transcript_with_policy(id, expected, raw, TranscriptCommitPolicy::AppleSpeech)
+    }
+
     fn commit_transcript_with_policy(
         &mut self,
         id: &str,
@@ -1303,6 +1313,9 @@ impl Engine {
         let document = match policy {
             TranscriptCommitPolicy::Nemotron => {
                 crate::nemotron::decode_asr(&raw, duration, &audio.session_id, &transcript_id)?
+            }
+            TranscriptCommitPolicy::AppleSpeech => {
+                crate::apple_speech::decode(&raw, duration, &audio.session_id, &transcript_id)?
             }
             TranscriptCommitPolicy::Whisper => {
                 crate::whisper::decode_asr(&raw, duration, &audio.session_id, &transcript_id)?

@@ -113,7 +113,11 @@ pub(crate) fn decode_provider(
         return Err(derived_invalid());
     }
     let value: serde_json::Value = serde_json::from_slice(raw).map_err(|_| derived_invalid())?;
-    if value["model"] == crate::whisper::MODEL {
+    if value["model"] == crate::apple_speech::MODEL
+        || value["model"] == crate::apple_speech::DICTATION_MODEL
+    {
+        crate::apple_speech::decode(raw, duration, session, id)
+    } else if value["model"] == crate::whisper::MODEL {
         crate::whisper::decode_asr(raw, duration, session, id)
     } else {
         decode_asr(raw, duration, session, id)
@@ -313,6 +317,7 @@ pub(crate) fn is_projector(version: &str) -> bool {
             | WORD_PROJECTOR_VERSION
             | crate::whisper::PROJECTOR_VERSION
             | WHISPER_WORD_PROJECTOR_VERSION
+            | crate::apple_speech::PROJECTOR
     )
 }
 

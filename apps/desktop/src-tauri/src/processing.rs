@@ -1,5 +1,5 @@
 use crate::job_journal::{JobRecord, JobStatus, Journal};
-use crate::speech_choice::{SpeechChoice, SpeechEngine};
+use crate::speech_choice::{AppleVariant, SpeechChoice, SpeechEngine};
 use nero_core::{CoreHandle, SessionState, Snapshot};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -80,6 +80,8 @@ pub(super) struct Model {
 #[serde(rename_all = "camelCase")]
 pub struct Progress {
     pub speech_engine: Option<SpeechEngine>,
+    pub speaker_enabled: bool,
+    pub apple_speech: crate::apple_speech::Availability,
     pub speech_choices: Vec<SpeechChoice>,
     pub revision: u64,
     pub id: Option<String>,
@@ -117,6 +119,8 @@ pub struct Progress {
 #[serde(rename_all = "camelCase")]
 pub struct JobView {
     pub speech_engine: SpeechEngine,
+    pub speaker_enabled: bool,
+    pub apple_speech_variant: Option<AppleVariant>,
     pub id: String,
     pub kind: String,
     pub meeting_id: Option<String>,
@@ -199,6 +203,9 @@ impl RecordingTranscription {
 
 pub struct Processing {
     speech_engine: Mutex<SpeechEngine>,
+    speaker_enabled: Mutex<bool>,
+    apple_speech_variant: Mutex<Option<AppleVariant>>,
+    apple_speech: Mutex<crate::apple_speech::Availability>,
     speech_preference_error: Mutex<Option<String>>,
     pub(super) root: PathBuf,
     pub(super) resources: PathBuf,
@@ -350,10 +357,16 @@ impl Drop for Worker {
 
 impl Processing {
     pub fn new(root: PathBuf, resources: PathBuf) -> Arc<Self> {
-        let (speech_engine, speech_preference_error) = match crate::speech_choice::load(&root) {
-            Ok(engine) => (engine, None),
-            Err(error) => (SpeechEngine::default(), Some(error)),
-        };
+        let (speech_engine, speaker_enabled, apple_speech_variant, speech_preference_error) =
+            match crate::speech_choice::load(&root) {
+                Ok(preference) => (
+                    preference.engine,
+                    preference.speaker_enabled,
+                    preference.apple_speech_variant,
+                    None,
+                ),
+                Err(error) => (SpeechEngine::default(), true, None, Some(error)),
+            };
         let journal = Journal::new(root.clone());
         let (records, issues, journal_error) = match journal.recover_available() {
             Ok(report) => (report.records, report.issues, None),
@@ -393,6 +406,9 @@ impl Processing {
         }
         Arc::new(Self {
             speech_engine: Mutex::new(speech_engine),
+            speaker_enabled: Mutex::new(speaker_enabled),
+            apple_speech_variant: Mutex::new(apple_speech_variant),
+            apple_speech: Mutex::new(crate::apple_speech::probe(&resources, apple_speech_variant)),
             speech_preference_error: Mutex::new(speech_preference_error),
             root,
             resources,
@@ -423,6 +439,12 @@ impl Processing {
     pub(super) fn speech_engine(&self) -> SpeechEngine {
         *self.speech_engine.lock().unwrap()
     }
+    pub(super) fn speaker_enabled(&self) -> bool {
+        *self.speaker_enabled.lock().unwrap()
+    }
+    pub(super) fn apple_speech_variant(&self) -> Option<AppleVariant> {
+        *self.apple_speech_variant.lock().unwrap()
+    }
     pub(super) fn model_dir(&self) -> Result<PathBuf, String> {
         self.model_dir_for(self.speech_engine())
     }
@@ -449,9 +471,13 @@ impl Processing {
             && match engine {
                 SpeechEngine::Nemotron => crate::asr::supported(self),
                 SpeechEngine::WhisperTurbo => crate::whisper_asr::supported(&self.resources),
+                SpeechEngine::AppleSpeech => self.apple_speech.lock().unwrap().supported,
             }
     }
     fn model_ready_for(&self, engine: SpeechEngine) -> bool {
+        if engine == SpeechEngine::AppleSpeech {
+            return self.apple_speech.lock().unwrap().ready;
+        }
         let Ok(path) = self.model_dir_for(engine) else {
             return false;
         };
@@ -470,6 +496,17 @@ impl Processing {
             })
     }
     pub fn set_speech_engine(&self, engine: SpeechEngine) -> Result<Progress, String> {
+        self.set_speech_selection(engine, self.speaker_enabled(), None)
+    }
+    pub fn set_speaker_enabled(&self, enabled: bool) -> Result<Progress, String> {
+        self.set_speech_selection(self.speech_engine(), enabled, self.apple_speech_variant())
+    }
+    fn set_speech_selection(
+        &self,
+        engine: SpeechEngine,
+        speaker_enabled: bool,
+        preferred_variant: Option<AppleVariant>,
+    ) -> Result<Progress, String> {
         let running = self.running.lock().unwrap();
         if self.shutting_down.load(Ordering::Acquire)
             || self.recording.load(Ordering::Acquire)
@@ -486,11 +523,22 @@ impl Processing {
         {
             return Err("녹음과 처리 작업을 마친 뒤 음성 인식 모델을 변경해 주세요.".into());
         }
+        if engine == SpeechEngine::AppleSpeech {
+            *self.apple_speech.lock().unwrap() =
+                crate::apple_speech::probe(&self.resources, preferred_variant);
+        }
         if !self.supported_for(engine) {
             return Err("이 기기에 선택한 음성 인식 실행기가 준비되지 않았습니다.".into());
         }
-        crate::speech_choice::save(&self.root, engine)?;
+        let variant = if engine == SpeechEngine::AppleSpeech {
+            self.apple_speech.lock().unwrap().variant
+        } else {
+            None
+        };
+        crate::speech_choice::save(&self.root, engine, speaker_enabled, variant)?;
+        *self.apple_speech_variant.lock().unwrap() = variant;
         *self.speech_engine.lock().unwrap() = engine;
+        *self.speaker_enabled.lock().unwrap() = speaker_enabled;
         *self.speech_preference_error.lock().unwrap() = None;
         self.update(|_| ());
         drop(running);
@@ -505,6 +553,8 @@ impl Processing {
                 .iter()
                 .map(|record| JobView {
                     speech_engine: record.speech_engine,
+                    speaker_enabled: record.speaker_enabled,
+                    apple_speech_variant: record.apple_speech_variant,
                     id: record.id.clone(),
                     kind: record.kind.clone(),
                     meeting_id: record.meeting_id.clone(),
@@ -539,6 +589,8 @@ impl Processing {
             progress
         };
         progress.supported = self.supported();
+        progress.speaker_enabled = self.speaker_enabled();
+        progress.apple_speech = self.apple_speech.lock().unwrap().clone();
         progress.local_summary_enabled = crate::release_capabilities::LOCAL_SUMMARY_ENABLED;
         progress.local_summary_message = crate::release_capabilities::LOCAL_SUMMARY_MESSAGE.into();
         progress.speech_engine = self
@@ -571,7 +623,11 @@ impl Processing {
             progress.speaker_supported,
             progress.speaker_ready,
             progress.speaker_bytes,
-        ) = crate::diarization::availability(self);
+        ) = if self.speaker_enabled() {
+            crate::diarization::availability(self)
+        } else {
+            (false, false, 0)
+        };
         let model = self.model();
         progress.model_bytes = model.files.iter().map(|file| file.bytes).sum();
         progress.model_ready = progress
@@ -1517,6 +1573,8 @@ impl Processing {
             template,
             requested_id,
             None,
+            None,
+            None,
             action,
         )
     }
@@ -1529,6 +1587,8 @@ impl Processing {
         template: Option<crate::summary_template::TemplateRef>,
         requested_id: Option<String>,
         engine: Option<SpeechEngine>,
+        speaker_enabled: Option<bool>,
+        apple_variant: Option<AppleVariant>,
         action: impl FnOnce(Arc<Self>, Arc<AtomicBool>, PathBuf) -> Result<Option<String>, String>
             + Send
             + 'static,
@@ -1549,6 +1609,8 @@ impl Processing {
             template,
             requested_id,
             engine,
+            speaker_enabled,
+            apple_variant,
             action,
         )
     }
@@ -1575,6 +1637,8 @@ impl Processing {
             template,
             requested_id,
             None,
+            None,
+            None,
             action,
         )
     }
@@ -1588,6 +1652,8 @@ impl Processing {
         template: Option<crate::summary_template::TemplateRef>,
         requested_id: Option<String>,
         engine: Option<SpeechEngine>,
+        speaker_enabled: Option<bool>,
+        apple_variant: Option<AppleVariant>,
         action: impl FnOnce(Arc<Self>, Arc<AtomicBool>, PathBuf) -> Result<Option<String>, String>
             + Send
             + 'static,
@@ -1605,6 +1671,14 @@ impl Processing {
             crate::summary::availability(self).0
         } else if matches!(kind, "diarize" | "speaker-model") {
             crate::diarization::availability(self).0
+        } else if engine == Some(SpeechEngine::AppleSpeech) {
+            platform_supported()
+                && crate::speech_audio::supported(self)
+                && crate::apple_speech::probe(
+                    &self.resources,
+                    apple_variant.or_else(|| self.apple_speech_variant()),
+                )
+                .supported
         } else {
             self.supported_for(engine.unwrap_or_else(|| self.speech_engine()))
         };
@@ -1646,9 +1720,33 @@ impl Processing {
         {
             return Err("작업 ID가 올바르지 않거나 이미 사용되었습니다.".into());
         }
+        let inherited = self
+            .records
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|record| record.retry_successor_id.as_deref() == Some(&id))
+            .map(|record| {
+                (
+                    record.speech_engine,
+                    record.speaker_enabled,
+                    record.apple_speech_variant,
+                )
+            });
+        let engine = engine.or_else(|| inherited.map(|choice| choice.0));
+        let speaker_enabled = speaker_enabled.or_else(|| inherited.map(|choice| choice.1));
+        let apple_variant = apple_variant.or_else(|| inherited.and_then(|choice| choice.2));
         let created_at = now();
         let record = JobRecord {
             speech_engine: engine.unwrap_or_else(|| self.speech_engine()),
+            speaker_enabled: speaker_enabled.unwrap_or_else(|| self.speaker_enabled()),
+            apple_speech_variant: if engine.unwrap_or_else(|| self.speech_engine())
+                == SpeechEngine::AppleSpeech
+            {
+                apple_variant.or_else(|| self.apple_speech_variant())
+            } else {
+                None
+            },
             schema_version: 1,
             id: id.clone(),
             kind: kind.into(),
@@ -1820,7 +1918,7 @@ impl Processing {
         self: &Arc<Self>,
         include_summary: bool,
     ) -> Result<Progress, String> {
-        self.prepare_meeting_models_with_id(include_summary, None, None)
+        self.prepare_meeting_models_with_id(include_summary, None, None, None, None)
     }
 
     fn prepare_meeting_models_with_id(
@@ -1828,6 +1926,8 @@ impl Processing {
         include_summary: bool,
         requested_id: Option<String>,
         required_engine: Option<SpeechEngine>,
+        required_speakers: Option<bool>,
+        required_variant: Option<AppleVariant>,
     ) -> Result<Progress, String> {
         if include_summary {
             crate::release_capabilities::require_local_summary()?;
@@ -1836,21 +1936,31 @@ impl Processing {
             return Err("앱을 종료하고 있습니다.".into());
         }
         let engine = required_engine.unwrap_or_else(|| self.speech_engine());
+        let speaker_enabled = required_speakers.unwrap_or_else(|| self.speaker_enabled());
+        let apple_variant = required_variant.or_else(|| self.apple_speech_variant());
         let progress = self.snapshot();
-        if !self.supported_for(engine) || (include_summary && !progress.summary_supported) {
+        let apple_status = (engine == SpeechEngine::AppleSpeech)
+            .then(|| crate::apple_speech::probe(&self.resources, apple_variant));
+        if !apple_status
+            .as_ref()
+            .map_or_else(|| self.supported_for(engine), |status| status.supported)
+            || (include_summary && !progress.summary_supported)
+        {
             return Err("이 환경에서는 음성 인식과 회의 요약을 아직 사용할 수 없습니다.".into());
         }
-        let required = self.remaining_model_bytes(engine.manifest(), engine.label())?
-            + if progress.speaker_supported {
-                self.remaining_model_bytes(crate::diarization::MANIFEST, "Nemotron3")?
-            } else {
-                0
-            }
-            + if include_summary {
-                self.remaining_model_bytes(crate::summary::MANIFEST, "Gemma4-E4B")?
-            } else {
-                0
-            };
+        let required = if engine == SpeechEngine::AppleSpeech {
+            0
+        } else {
+            self.remaining_model_bytes(engine.manifest(), engine.label())?
+        } + if speaker_enabled && crate::diarization::availability(self).0 {
+            self.remaining_model_bytes(crate::diarization::MANIFEST, "Nemotron3")?
+        } else {
+            0
+        } + if include_summary {
+            self.remaining_model_bytes(crate::summary::MANIFEST, "Gemma4-E4B")?
+        } else {
+            0
+        };
         crate::storage_space::check(&self.root, required)?;
         self.start_scoped_with_engine(
             "setup",
@@ -1861,15 +1971,21 @@ impl Processing {
             None,
             requested_id,
             Some(engine),
-            move |this, cancel, _path| {
+            Some(speaker_enabled),
+            apple_variant,
+            move |this, cancel, path| {
                 let progress = this.snapshot();
                 let total = Self::model_for(engine)
                     .files
                     .iter()
                     .map(|file| file.bytes)
                     .sum::<u64>()
-                    + if progress.speaker_supported {
-                        progress.speaker_bytes
+                    + if speaker_enabled && crate::diarization::availability(&this).0 {
+                        crate::diarization::model()
+                            .files
+                            .iter()
+                            .map(|file| file.bytes)
+                            .sum()
                     } else {
                         0
                     }
@@ -1878,9 +1994,29 @@ impl Processing {
                     } else {
                         0
                     };
-                let mut first =
-                    this.prepare_files(engine.manifest(), engine.label(), &cancel, 0, total)?;
-                if progress.speaker_supported {
+                let mut first = if engine == SpeechEngine::AppleSpeech {
+                    this.update(|p| {
+                        p.phase = Some("preparing".into());
+                        p.message = "macOS 한국어 언어 자산을 준비하고 있습니다.".into();
+                    });
+                    let result = crate::apple_speech::prepare(
+                        &this,
+                        &path,
+                        &cancel,
+                        apple_variant.ok_or("macOS 전사 방식을 다시 선택해 주세요.")?,
+                    );
+                    *this.apple_speech.lock().unwrap() =
+                        crate::apple_speech::probe(&this.resources, apple_variant);
+                    let status = result.map_err(|error| {
+                        this.update(|p| p.failure_kind = Some(error.kind));
+                        error.message
+                    })?;
+                    *this.apple_speech.lock().unwrap() = status;
+                    0
+                } else {
+                    this.prepare_files(engine.manifest(), engine.label(), &cancel, 0, total)?
+                };
+                if speaker_enabled && crate::diarization::availability(&this).0 {
                     first += this.prepare_files(
                         crate::diarization::MANIFEST,
                         "Nemotron3",
@@ -2316,11 +2452,15 @@ impl Processing {
                 record.include_summary,
                 Some(successor_id.into()),
                 Some(record.speech_engine),
+                Some(record.speaker_enabled),
+                record.apple_speech_variant,
             )?,
             "model" => self.prepare_meeting_models_with_id(
                 false,
                 Some(successor_id.into()),
                 Some(record.speech_engine),
+                Some(record.speaker_enabled),
+                record.apple_speech_variant,
             )?,
             "summary-model" => self.prepare_named_model_with_id(
                 crate::summary::MANIFEST,
@@ -2341,6 +2481,8 @@ impl Processing {
                 Some(successor_id.into()),
                 None,
                 Some(record.speech_engine),
+                Some(record.speaker_enabled),
+                record.apple_speech_variant,
             )?,
             "summary" => self.summarize_bound_with_template(
                 core,
@@ -2459,7 +2601,7 @@ impl Processing {
         core: CoreHandle,
         meeting_id: String,
     ) -> Result<Progress, String> {
-        self.transcribe_bound(core, meeting_id, None, None, None, None)
+        self.transcribe_bound(core, meeting_id, None, None, None, None, None, None)
     }
     fn transcribe_bound(
         self: &Arc<Self>,
@@ -2469,6 +2611,8 @@ impl Processing {
         requested_id: Option<String>,
         required_session: Option<String>,
         required_engine: Option<SpeechEngine>,
+        required_speakers: Option<bool>,
+        required_variant: Option<AppleVariant>,
     ) -> Result<Progress, String> {
         let session_id = core
             .snapshot()
@@ -2491,7 +2635,23 @@ impl Processing {
             .transcript(&meeting_id)
             .map_err(message)?
             .map(|d| d.version);
+        let session_choice = if required_session.is_some() {
+            crate::speech_choice::load_session(&self.root, &session_id)?
+        } else {
+            None
+        };
+        let apple_variant = required_variant
+            .or_else(|| {
+                session_choice
+                    .as_ref()
+                    .and_then(|choice| choice.apple_speech_variant)
+            })
+            .or_else(|| self.apple_speech_variant());
+        let speaker_enabled = required_speakers
+            .or_else(|| session_choice.as_ref().map(|choice| choice.speaker_enabled))
+            .unwrap_or_else(|| self.speaker_enabled());
         let engine = required_engine
+            .or_else(|| session_choice.as_ref().map(|choice| choice.engine))
             .or_else(|| {
                 self.live
                     .lock()
@@ -2501,7 +2661,12 @@ impl Processing {
                     .map(|job| job.engine)
             })
             .unwrap_or_else(|| self.speech_engine());
-        if !self.supported_for(engine) || !self.model_ready_for(engine) {
+        let apple_status = (engine == SpeechEngine::AppleSpeech)
+            .then(|| crate::apple_speech::probe(&self.resources, apple_variant));
+        if apple_status.as_ref().map_or_else(
+            || !self.supported_for(engine) || !self.model_ready_for(engine),
+            |status| !status.supported || !status.ready,
+        ) {
             return Err("먼저 음성 인식 모델을 준비해 주세요.".into());
         }
         let source_core = core.clone();
@@ -2513,6 +2678,8 @@ impl Processing {
             None,
             requested_id,
             Some(engine),
+            Some(speaker_enabled),
+            apple_variant,
             move |this, cancel, path| {
                 if core.audio_path(&meeting_id).map_err(message)? != audio
                     || core
@@ -2540,7 +2707,11 @@ impl Processing {
                     p.message = "모델을 확인하고 있습니다.".into();
                 });
                 let model = Self::model_for(engine);
-                let directory = this.model_dir_for(engine)?;
+                let directory = if engine == SpeechEngine::AppleSpeech {
+                    path.clone()
+                } else {
+                    this.model_dir_for(engine)?
+                };
                 for item in &model.files {
                     cancelled(&cancel)?;
                     let matches = matches_file(&directory.join(&item.name), item, &cancel);
@@ -2552,7 +2723,12 @@ impl Processing {
                 }
                 this.update(|p| {
                     p.phase = Some("recognizing".into());
-                    p.message = "마지막 구간과 화자를 정리하고 있습니다.".into();
+                    p.message = if speaker_enabled {
+                        "마지막 구간과 화자를 정리하고 있습니다."
+                    } else {
+                        "마지막 구간을 정리하고 있습니다."
+                    }
+                    .into();
                 });
                 let _finalization = this.wait_live_asr(&meeting_id, &session_id, &cancel)?;
                 let live = match this.take_live(&meeting_id, &session_id) {
@@ -2561,7 +2737,8 @@ impl Processing {
                 }
                 .filter(|live| {
                     serde_json::from_slice::<serde_json::Value>(&live.raw).is_ok_and(|value| {
-                        value["model"] == model.repository
+                        engine != SpeechEngine::AppleSpeech
+                            && value["model"] == model.repository
                             && value["modelRevision"] == model.revision
                     })
                 });
@@ -2584,6 +2761,13 @@ impl Processing {
                 let raw = match &live {
                     Some(live) => Ok(live.raw.clone()),
                     None => match engine {
+                        SpeechEngine::AppleSpeech => crate::apple_speech::recognize(
+                            &this,
+                            prepared.path(),
+                            &path,
+                            &cancel,
+                            apple_variant.ok_or("macOS 전사 방식을 다시 선택해 주세요.")?,
+                        ),
                         SpeechEngine::Nemotron => crate::asr::recognize(
                             &this,
                             prepared.path(),
@@ -2607,6 +2791,12 @@ impl Processing {
                     },
                 }
                 .map_err(|error| {
+                    if engine == SpeechEngine::AppleSpeech
+                        && this.apple_speech_variant() == apple_variant
+                    {
+                        *this.apple_speech.lock().unwrap() =
+                            crate::apple_speech::probe(&this.resources, apple_variant);
+                    }
                     this.update(|progress| progress.failure_kind = Some(error.kind));
                     error.message
                 })?;
@@ -2628,6 +2818,9 @@ impl Processing {
                 let source = this.checkpoint_transcript_following(
                     &cancel,
                     || match engine {
+                        SpeechEngine::AppleSpeech => {
+                            core.commit_apple_transcript(&meeting_id, expected, raw)
+                        }
                         SpeechEngine::Nemotron => {
                             core.commit_nemotron_transcript(&meeting_id, expected, raw)
                         }
@@ -2636,7 +2829,11 @@ impl Processing {
                         }
                     },
                     |progress, source| {
-                        this.bind_speaker_continuation(progress, &core, &meeting_id, source)
+                        if speaker_enabled {
+                            this.bind_speaker_continuation(progress, &core, &meeting_id, source)
+                        } else {
+                            Ok(())
+                        }
                     },
                 )?;
                 this.update(|p| p.live_transcript = None);
@@ -2651,6 +2848,9 @@ impl Processing {
                     &cancel,
                 )?;
                 cancelled(&cancel)?;
+                if !speaker_enabled {
+                    return Ok(Some(meeting_id));
+                }
                 // Recognition is already durable. A speaker-stage retry must never rerun ASR.
                 let source = core
                     .transcript(&meeting_id)
@@ -2781,7 +2981,16 @@ impl Processing {
     ) -> Result<Option<nero_core::Transcript>, String> {
         self.checkpoint_transcript_following(cancel, commit, |progress, result| {
             if let Some(source) = result {
-                self.bind_speaker_continuation(progress, core, meeting_id, source)?;
+                if self
+                    .records
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .find(|record| Some(&record.id) == progress.id.as_ref())
+                    .is_some_and(|record| record.speaker_enabled)
+                {
+                    self.bind_speaker_continuation(progress, core, meeting_id, source)?;
+                }
             }
             Ok(())
         })
@@ -2829,7 +3038,7 @@ impl Processing {
                         .is_some_and(|session| preview["sessionId"] == session.id)
             }) {
                 preview["finishing"] = serde_json::json!(true);
-                preview["message"] = serde_json::json!("마지막 구간과 화자를 정리하고 있습니다.");
+                preview["message"] = serde_json::json!("마지막 구간을 정리하고 있습니다.");
             }
         });
         self.transcribe_bound(
@@ -2838,6 +3047,8 @@ impl Processing {
             None,
             None,
             snapshot.session.as_ref().map(|session| session.id.clone()),
+            None,
+            None,
             None,
         )
         .map(Some)
@@ -2870,7 +3081,7 @@ mod speech_choice_tests {
         let (_temporary, process) = fixture();
         let before = process.snapshot();
         assert_eq!(before.speech_engine, Some(SpeechEngine::Nemotron));
-        assert_eq!(before.speech_choices.len(), 2);
+        assert_eq!(before.speech_choices.len(), 3);
         let after = process
             .set_speech_engine(SpeechEngine::WhisperTurbo)
             .unwrap();
@@ -2880,7 +3091,7 @@ mod speech_choice_tests {
         assert!(after.jobs.is_empty());
         assert!(!process.root.join("meetings").exists());
         assert_eq!(
-            crate::speech_choice::load(&process.root).unwrap(),
+            crate::speech_choice::load(&process.root).unwrap().engine,
             SpeechEngine::WhisperTurbo
         );
         assert!(!process
@@ -2904,6 +3115,8 @@ mod speech_choice_tests {
                 None,
                 None,
                 Some(SpeechEngine::WhisperTurbo),
+                None,
+                None,
                 move |_, _, _| {
                     started.send(()).unwrap();
                     wait.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -3964,6 +4177,8 @@ mod tests {
         let created_at = now();
         let queued = JobRecord {
             speech_engine: crate::speech_choice::SpeechEngine::default(),
+            speaker_enabled: true,
+            apple_speech_variant: None,
             schema_version: 1,
             id: Uuid::new_v4().to_string(),
             kind: "summary".into(),
@@ -4536,3 +4751,7 @@ mod setup_tests {
         }
     }
 }
+
+#[cfg(all(test, target_os = "macos"))]
+#[path = "apple_speech_pipeline_tests.rs"]
+mod apple_speech_pipeline_tests;

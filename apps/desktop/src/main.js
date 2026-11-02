@@ -32,6 +32,9 @@ import { mountTranscriptActions } from './transcript-actions.js';
 import { liveTranscriptRows } from './live-transcript.js';
 import { meetingResultPreview } from './meeting-result-preview.js';
 import { mountMeetingDetail } from './meeting-detail-ui.js';
+import { mountAiChat } from './ai-chat-ui.jsx';
+import { mountMeetingContext } from './meeting-context-ui.jsx';
+import * as aiChatBridge from './ai-chat-bridge.js';
 import { mountSummaryEvidence } from './summary-evidence.js';
 import { mountAgentConnectionDialog } from './agent-connection-dialog.jsx';
 import { mountTemplateSettings } from './template-settings.jsx';
@@ -79,8 +82,8 @@ const microphonePreference = readMicrophonePreference();
 let sidebarViews = null, viewHistory = null;
 const state = { snapshot: { meetings: [], folders: [], session: null }, libraryOpen: false, libraryFilter: 'all', librarySelection: new Set(), libraryBusy: false, librarySearchIds: null, librarySearchHits: [], pendingSearchIntent: null, setupReturnId: null, librarySearchPending: false, librarySearchUnavailable: 0, selectedId: null, devices: [], devicesLoaded: false, deviceId: microphonePreference.id, deviceName: microphonePreference.name, settingsPanel: 'appearance', summaryFeatureError: '', settingsKey: '', settingsError: '', settingsReturnId: 'settings', setupFromSettings: false, autoRecorder: readAutoRecorder(), recorderSettingBusy: false, snapshotSignatures: null, processingKey: '', processingCancellingId: null, transcriptEditing: null, audioRequest: 0, audioLoading: null, dateSaving: null, dateKey: '', dateError: null, lastError: null, errorIsSave: false, connected: false, busy: false, composing: false, transcriptComposing: false, editLocks: 0, draft: null, saveTimer: null, saveQueue: Promise.resolve(), listKey: '', controlsKey: '', audioKey: '', processing: { status: 'idle', supported: false, modelReady: false, localSummaryEnabled: false }, transcriptDraft: null, transcriptKey: '', transcriptLoadId: 0, transcriptSaveQueue: Promise.resolve(), summary: null, summaryKey: '', summaryLoadId: 0, summaryLoaded: false, transcriptLoaded: false, summaryLoadError: false, transcriptLoadError: false, setupRequested: false };
 const speechPickers = [
-  mountSpeechModelPicker({ node: byId('setup-speech-picker'), onSelect: selectSpeechEngine }),
-  mountSpeechModelPicker({ node: byId('settings-speech-picker'), onSelect: selectSpeechEngine, onPrepare: prepareSpeechModels }),
+  mountSpeechModelPicker({ node: byId('setup-speech-picker'), onSelect: selectSpeechEngine, onSpeakerChange: selectSpeakerEnabled }),
+  mountSpeechModelPicker({ node: byId('settings-speech-picker'), onSelect: selectSpeechEngine, onPrepare: prepareSpeechModels, onSpeakerChange: selectSpeakerEnabled }),
 ];
 let speechSelectionError = '';
 const appUpdateRecovery = mountAppUpdateRecovery({ document, quit: () => appUpdateView.quitForRecovery() });
@@ -105,6 +108,7 @@ let selectionRequest = 0;
 function beginNavigation(history = false) { if (!history) viewHistory?.cancel(); const request = ++selectionRequest; return () => request === selectionRequest; }
 let speakerReplay = null;
 let summaryEvidence = null;
+let aiChat = null, meetingContext = null;
 let lastLiveTranscript = null;
 const processingActions = new Map();
 const processingErrors = new Map();
@@ -317,9 +321,10 @@ function renderSetup() {
   byId('setup-message').textContent = !state.connected ? '준비 상태 확인 중' : unsupported ? '현재 음성 인식은 지원되는 음성 인식 실행 환경에서 사용할 수 있습니다.' : running ? '' : failed ? job.message : '';
   byId('setup-message').hidden = !byId('setup-message').textContent;
   byId('setup-message').dataset.state = failed ? job.status : '';
-  byId('setup-download').hidden = ready || unsupported || running;
+  const speakerNeedsPreparation = job.speakerEnabled !== false && job.speakerSupported === true && job.speakerReady === false;
+  byId('setup-download').hidden = (ready && !speakerNeedsPreparation) || unsupported || running;
   byId('setup-download').disabled = !state.connected || state.busy || Boolean(pendingJob(state.processing, { models: true }));
-  byId('setup-download').textContent = failed ? '다시 다운로드' : '다운로드';
+  byId('setup-download').textContent = failed ? '다시 시도' : job.speechEngine === 'appleSpeech' ? '준비' : '다운로드';
   byId('setup-cancel').hidden = !running;
   byId('setup-cancel').disabled = feedback.cancelDisabled || state.busy;
   byId('setup-cancel').textContent = feedback.cancelLabel;
@@ -352,6 +357,14 @@ function selectSpeechEngine(engine) {
     catch (error) { speechSelectionError = error.message || '음성 인식 모델을 변경하지 못했습니다.'; }
   });
 }
+function selectSpeakerEnabled(enabled) {
+  return run(async () => {
+    speechSelectionError = '';
+    renderSpeechModels();
+    try { await acceptProcessing(await bridge.setSpeakerEnabled(enabled)); }
+    catch (error) { speechSelectionError = error.message || '화자 구분 설정을 변경하지 못했습니다.'; }
+  });
+}
 function prepareSpeechModels() {
   return run(async () => {
     speechSelectionError = '';
@@ -380,6 +393,9 @@ function render() {
   renderProcessing();
   const meeting = currentMeeting();
   calendarReference.render(meeting);
+  aiChat?.setMeeting(state.libraryOpen || setupVisible ? null : meeting);
+  meetingContext?.setMeeting(state.libraryOpen || setupVisible ? null : meeting);
+  byId('ai-chat-open').disabled = !state.connected;
   byId('meeting-attendees').hidden = !meeting;
   byId('meeting-attendees').disabled = !state.connected || state.busy;
   setHTML('meeting-attendees', `${icon('users')}<span>참석자${meeting?.attendees?.length ? ` ${meeting.attendees.length}명` : ''}</span>`);
@@ -736,6 +752,7 @@ function renderSettings() {
   renderTerminologySettings();
   templateSettings.setActive(dialog.open && state.settingsPanel === 'templates');
   calendarSettings.setActive(dialog.open && state.settingsPanel === 'agent');
+  aiChat?.setSettingsActive(dialog.open && state.settingsPanel === 'agent');
   if (dialog.open && state.settingsPanel === 'people') peopleSettings.show(); else peopleSettings.hide();
   for (const name of settingsPanels) {
     const selected = state.settingsPanel === name;
@@ -944,7 +961,7 @@ async function selectSettingsPanel(name, focus = false) {
 byId('settings-close').addEventListener('click', () => { void closeSettings(); });
 bindDialogDismiss(byId('settings-dialog'), { dismiss: closeSettings, blocked: () => templateSettings.isConfirming() || peopleSettings.isConfirming() });
 bindDialogDismiss(byId('quit-dialog'));
-byId('settings-dialog').addEventListener('close', () => { templateSettings.hide(); peopleSettings.hide(); void summaryTemplatePicker.reload(); resetTerminologySettings(); resetAgentConnection(); globalThis.NeroControls.close?.(); returnFocusTarget(byId(state.settingsReturnId) || byId('settings'), byId('navigation-toggle')).focus({ preventScroll: true }); });
+byId('settings-dialog').addEventListener('close', () => { aiChat?.setSettingsActive(false); templateSettings.hide(); peopleSettings.hide(); void summaryTemplatePicker.reload(); resetTerminologySettings(); resetAgentConnection(); globalThis.NeroControls.close?.(); returnFocusTarget(byId(state.settingsReturnId) || byId('settings'), byId('navigation-toggle')).focus({ preventScroll: true }); });
 for (const name of settingsPanels) byId(`settings-${name}-tab`).addEventListener('click', () => { void selectSettingsPanel(name, true); });
 byId('settings-dialog').addEventListener('keydown', event => {
   if (event.isComposing || event.keyCode === 229 || (templateSettings.isConfirming() || peopleSettings.isConfirming())) return;
@@ -1552,6 +1569,42 @@ const detail = mountMeetingDetail({ byId, finishEditing, onError: showError, onR
   for (const actions of Object.values(documentActions)) actions.close();
   globalThis.NeroControls.close?.();
 } });
+meetingContext = mountMeetingContext({ node: byId('meeting-context-control'), bridge: aiChatBridge, getMeeting: () => state.libraryOpen ? null : currentMeeting(), onSettings: () => { void openSettings('agent', 'meeting-context-control').catch(showError); } });
+aiChat = mountAiChat({
+  node: byId('ai-chat-inspector'), settingsNode: byId('ai-account-settings'), trigger: byId('ai-chat-open'), layoutRoot: byId('app-body'), resizeHandle: byId('ai-chat-resize'),
+  bridge: { ...aiChatBridge,
+    appendNote: request => finishEditing(async () => {
+      const result = await aiChatBridge.appendNote(request);
+      acceptSnapshot(await bridge.readSnapshot());
+      return result;
+    }),
+    saveSummary: request => finishEditing(async () => {
+      return aiChatBridge.saveSummary(request);
+    }),
+  },
+  beforeWrite: () => finishEditing(() => true),
+  getTemplate: async () => (await summaryTemplatePicker.selected()).id,
+  getMeetings: () => state.snapshot.meetings.filter(meeting => !meeting.deletedAt),
+  onSettings: () => { void openSettings('agent', 'ai-chat-open').catch(showError); },
+  onSaved: async (kind, meetingId) => { if (state.selectedId === meetingId) { if (kind === 'summary') await loadSummary(meetingId); render(); } },
+  async onCitation(citation) {
+    if (citation.kind === 'notion') { await aiChatBridge.openSource(citation.url); return; }
+    if (citation.kind !== 'meeting' || !citation.meetingId || !citation.segmentId || !state.snapshot.meetings.some(meeting => meeting.id === citation.meetingId && !meeting.deletedAt)) throw new Error('이 회의의 출처를 열 수 없습니다.');
+    if (state.selectedId !== citation.meetingId || state.libraryOpen) await selectMeeting(citation.meetingId);
+    await finishEditing(async () => {
+      if (citation.meetingId !== state.selectedId) return;
+      const index = state.transcriptDraft?.doc?.segments.findIndex(segment => segment.id === citation.segmentId) ?? -1;
+      if (index < 0) throw new Error('현재 음성 기록에서 이 발언을 찾을 수 없습니다.');
+      await detail.select('transcript');
+      const row = byId('transcript-rows').querySelector(`[data-transcript-row="${index}"]`);
+      if (!row) throw new Error('현재 음성 기록에서 이 발언을 찾을 수 없습니다.');
+      byId('transcript-rows').querySelectorAll('[data-citation-active]').forEach(node => node.removeAttribute('data-citation-active'));
+      row.setAttribute('data-citation-active', 'true');
+      row.scrollIntoView({ block: 'center', behavior: globalThis.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches ? 'instant' : 'smooth' });
+      row.focus({ preventScroll: true });
+    });
+  },
+});
 summaryEvidence = mountSummaryEvidence({
   container: byId('summary-content'), panel: byId('summary-evidence'),
   onOpen: () => detail.select('transcript'),

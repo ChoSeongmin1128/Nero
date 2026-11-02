@@ -25,7 +25,6 @@ export function mountMeetingDetail({ byId, finishEditing, onReveal = () => {}, o
     inspector.hidden = !meetingId || !notesOpen;
     width.update(!inspector.hidden);
     notes.hidden = inspector.hidden;
-    byId('meeting-detail').dataset.inspector = inspector.hidden ? '' : 'notes';
     for (const [view, control] of controls) {
       if (!control) continue;
       control.hidden = !meetingId;
@@ -74,7 +73,8 @@ export function mountMeetingDetail({ byId, finishEditing, onReveal = () => {}, o
           if (focus) section.focus({ preventScroll: true });
         } else if (focus) {
           const preview = byId('notes-search-preview');
-          (current.notesOpen ? preview && !preview.hidden ? preview : editor : controls.get('notes')).focus({ preventScroll: true });
+          const target = preview && !preview.hidden ? preview : editor;
+          (current.notesOpen ? target : controls.get(view))?.focus({ preventScroll: true });
         }
         return true;
       }));
@@ -89,5 +89,5 @@ export function mountMeetingDetail({ byId, finishEditing, onReveal = () => {}, o
       event.preventDefault(); if (memory()?.notesOpen) void select('notes', { toggle: true, focus: true });
     }
   });
-  return { update, select, rememberScroll, active: () => memory()?.section || 'summary', notesOpen: () => Boolean(memory()?.notesOpen) };
+  return { update, select, rememberScroll, active: () => memory()?.section || 'summary', notesOpen: () => Boolean(memory()?.notesOpen), inspectorOpen: () => Boolean(memory()?.notesOpen) };
 }

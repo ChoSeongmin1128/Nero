@@ -187,7 +187,7 @@ pub async fn refresh(
     .await
 }
 
-async fn get(client: &Client, token: &str, url: Url) -> Result<Value, Failure> {
+pub(super) async fn get(client: &Client, token: &str, url: Url) -> Result<Value, Failure> {
     let response = client
         .get(url)
         .bearer_auth(token)
@@ -198,7 +198,10 @@ async fn get(client: &Client, token: &str, url: Url) -> Result<Value, Failure> {
         })?;
     response_json(response, 4 * 1024 * 1024).await
 }
-fn next_page(page: &Value, seen: &mut BTreeSet<String>) -> Result<Option<String>, Failure> {
+pub(super) fn next_page(
+    page: &Value,
+    seen: &mut BTreeSet<String>,
+) -> Result<Option<String>, Failure> {
     let Some(token) = page.get("nextPageToken") else {
         return Ok(None);
     };
@@ -212,7 +215,7 @@ fn next_page(page: &Value, seen: &mut BTreeSet<String>) -> Result<Option<String>
     Ok(Some(token.into()))
 }
 
-fn items(page: &Value) -> Result<&[Value], Failure> {
+pub(super) fn items(page: &Value) -> Result<&[Value], Failure> {
     if !page.is_object() {
         return Err(invalid());
     }
@@ -319,7 +322,7 @@ pub async fn events_between(
     Ok(result.into_values().map(|(_, event)| event).collect())
 }
 
-fn events_url(
+pub(super) fn events_url(
     calendar: &CalendarChoice,
     from: &str,
     to: &str,
@@ -392,7 +395,7 @@ fn event_time(value: &Value) -> Result<u64, Failure> {
     };
     u64::try_from(time.as_millisecond()).map_err(|_| invalid())
 }
-fn normalize(
+pub(super) fn normalize(
     account: &str,
     calendar: &CalendarChoice,
     raw: &Value,

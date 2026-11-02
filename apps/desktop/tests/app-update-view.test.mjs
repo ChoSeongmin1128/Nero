@@ -27,7 +27,7 @@ function setup(t, overrides = {}) {
     appUpdateStatus: async () => status('idle'),
     checkAppUpdate: async () => { calls.push('check'); return status('available'); },
     downloadAppUpdate: async () => { calls.push('download'); return status('ready', { downloadReady: true }); },
-    installAppUpdate: async () => { calls.push('install'); return status('waiting'); },
+    installAppUpdate: async () => { calls.push('install'); return status('waiting', { downloadReady: true }); },
     subscribeAppUpdate: async callback => { emit = callback; return () => {}; }, ...overrides.bridge,
   };
   const view = mountAppUpdateView({ container: window.document.getElementById('app-update'), bridge,
@@ -146,9 +146,9 @@ test('sidebar exposes download progress and requires a click after download comp
   app.get('action').click(); await tick();
   assert.deepEqual(app.calls, ['check', 'download']);
   assert.equal(app.sidebar.hidden, false);
-  assert.equal(app.sidebar.getAttribute('aria-label'), '업데이트');
-  assert.equal(app.sidebar.title, '업데이트');
-  assert.equal(app.sidebar.querySelector('[data-app-update-label]').textContent, '업데이트');
+  assert.equal(app.sidebar.getAttribute('aria-label'), '다시 시작해 업데이트');
+  assert.equal(app.sidebar.title, '다시 시작해 업데이트');
+  assert.equal(app.sidebar.querySelector('[data-app-update-label]').textContent, '다시 시작해 업데이트');
   assert.equal(app.get('action').textContent, '업데이트 확인');
   assert.equal(app.get('action').disabled, true);
   app.emit(status('downloading', { totalBytes: 100, downloadedBytes: 40 }));
@@ -166,6 +166,46 @@ test('sidebar exposes download progress and requires a click after download comp
   assert.deepEqual(app.calls, ['check', 'download']);
   app.sidebar.click(); await tick();
   assert.deepEqual(app.calls, ['check', 'download', 'install']);
+});
+
+test('manual update keeps its action visible through check and download, then offers an explicit restart', async t => {
+  let finishCheck, finishDownload;
+  const calls = [];
+  const app = setup(t, { sidebar: true, bridge: {
+    checkAppUpdate: () => { calls.push('check'); return new Promise(resolve => { finishCheck = resolve; }); },
+    downloadAppUpdate: () => { calls.push('download'); return new Promise(resolve => { finishDownload = resolve; }); },
+    installAppUpdate: async () => { calls.push('install'); return status('installing'); },
+  } });
+  await app.view.start();
+  app.emit(status('checking'));
+  assert.equal(app.sidebar.hidden, true, 'routine background checks stay quiet');
+  app.emit(status('error', { message: '다시 확인해 주세요.' }));
+  assert.equal(app.sidebar.hidden, true, 'a missing download must not offer a restart button');
+  app.sidebar.click(); await tick();
+  assert.deepEqual(calls, []);
+  app.get('action').click(); await tick();
+  app.emit(status('checking'));
+  assert.equal(app.sidebar.hidden, false);
+  assert.equal(app.sidebar.disabled, true);
+  assert.equal(app.sidebar.getAttribute('aria-label'), '확인 중…');
+  assert.equal(app.get('action').textContent, '확인 중…');
+  app.sidebar.click(); await tick();
+  assert.deepEqual(calls, ['check']);
+  finishCheck(status('available')); await tick();
+  assert.equal(app.sidebar.hidden, false);
+  assert.deepEqual(calls, ['check', 'download']);
+  app.emit(status('downloading', { totalBytes: 100, downloadedBytes: 40 }));
+  assert.equal(app.sidebar.hidden, false);
+  assert.equal(app.sidebar.disabled, true);
+  assert.equal(app.sidebar.getAttribute('aria-label'), '업데이트 다운로드 40%');
+  finishDownload(status('ready', { downloadReady: true })); await tick();
+  assert.equal(app.sidebar.hidden, false);
+  assert.equal(app.sidebar.disabled, false);
+  assert.equal(app.sidebar.getAttribute('aria-label'), '다시 시작해 업데이트');
+  assert.equal(app.sidebar.querySelector('[data-app-update-label]').textContent, '다시 시작해 업데이트');
+  assert.deepEqual(calls, ['check', 'download'], 'download completion never installs automatically');
+  app.sidebar.click(); await tick();
+  assert.deepEqual(calls, ['check', 'download', 'install'], 'one ready-state click starts installation');
 });
 
 test('sidebar waits for saves and native waiting keeps the update available', async t => {
@@ -188,12 +228,12 @@ test('sidebar waits for saves and native waiting keeps the update available', as
   assert.equal(app.window.document.querySelector('.workspace').inert, false);
 });
 
-test('sidebar failure remains actionable and destroyed view removes its listener', async t => {
+test('a failed download exposes retry through settings and notices, never through the restart button', async t => {
   const app = setup(t, { sidebar: true });
   await app.view.start();
   app.emit(status('error', { message: '네트워크를 확인해 주세요.' }));
-  assert.equal(app.sidebar.hidden, false);
-  assert.equal(app.sidebar.disabled, false);
+  assert.equal(app.sidebar.hidden, true);
+  assert.equal(app.sidebar.disabled, true);
   assert.equal(app.get('action').disabled, false);
   assert.equal(app.notices.at(-1)[0].message, '네트워크를 확인해 주세요.');
   app.view.destroy();

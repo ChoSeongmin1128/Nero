@@ -13,3 +13,9 @@
 .speech-model-picker:disabled .speech-model-choice { cursor: default; }
 #setup-speech-picker { margin-bottom: 16px; }
 #settings-speech-picker { margin: 20px 0; }
+
+.speech-speaker-setting { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0; cursor: pointer; }
+.speech-speaker-setting[hidden] { display: none; }
+.speech-speaker-copy { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.speech-speaker-setting input { flex: none; margin: 0; accent-color: var(--accent); }
+.speech-model-picker:disabled .speech-speaker-setting { cursor: default; }

@@ -447,6 +447,7 @@ impl Engine {
         for id in &ids {
             library.placements.remove(id);
             library.meeting_attendees.remove(id);
+            library.google_identity.meetings.remove(id);
             library.pending_purges.insert(id.clone());
         }
         self.commit_library(library)?;

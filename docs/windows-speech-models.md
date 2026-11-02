@@ -3,11 +3,15 @@
 Setup and Settings share the same selector. Nemotron 3.5 streaming ASR 0.6B Q8
 is the default. Whisper large-v3-turbo Q5 is an explicit alternative using the
 packaged whisper.cpp CLI with Vulkan preference and a separate CPU runtime on
-Windows. Both use the independent Nemotron 3 Q8
-speaker model. SenseVoice is not a product engine.
+Windows. Both can use the independent Nemotron 3 Q8
+speaker model when speaker analysis is enabled. SenseVoice is not a product engine.
 
 Selection is stored locally for subsequent work. Selection does not download
-weights: preparation verifies the selected ASR model and shared speaker model.
+weights: preparation verifies the selected ASR model and, when enabled, the shared speaker model.
+The independent speaker switch is shared by Setup and Settings. Disabled analysis
+skips speaker downloads, live inference and the final speaker stage. Existing
+preferences/jobs without the switch retain enabled behavior; recorded sessions and
+retries preserve their original selection.
 Summary preparation remains optional. Recording, import and new meetings use the
 selected engine's readiness gate. Selection is rejected during recording, running
 or queued processing. Each job/session captures its engine, including explicit

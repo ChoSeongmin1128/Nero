@@ -2,12 +2,18 @@
 
 mod agent_connection;
 mod agent_mutations;
+mod ai_accounts;
+mod ai_chat;
+mod ai_chat_desktop;
 #[cfg(target_os = "macos")]
 mod app_menu;
 mod app_updater;
+mod apple_speech;
 mod asr;
 mod calendar;
 mod calendar_desktop;
+mod claude_connection;
+mod claude_runner;
 mod diarization;
 mod downloads;
 mod export;
@@ -20,19 +26,23 @@ mod live_speech;
 mod live_speech_worker;
 #[cfg(target_os = "macos")]
 mod macos_recorder;
+mod meeting_context;
+mod meeting_context_desktop;
 mod memory;
 mod microphone_permission;
+mod notion_context;
+mod oauth_callback;
+mod path_safety;
 mod people_desktop;
-mod processing;
 mod process_tree;
+mod processing;
 mod recorder_geometry;
 mod recorder_policy;
 mod release_capabilities;
 mod speaker_worker;
 mod speech_audio;
-mod speech_library;
 mod speech_choice;
-mod whisper_asr;
+mod speech_library;
 mod storage_space;
 mod summary;
 mod summary_checkpoint;
@@ -41,6 +51,7 @@ mod summary_failure;
 mod summary_template;
 mod template_settings;
 mod terminology;
+mod whisper_asr;
 use nero_core::{
     CoreHandle, Device, DocumentFormat, DocumentKind, ExportedDocument, Meeting, Snapshot,
     SummaryCitations, SummaryView, Transcript, TranscriptHistory, TranscriptSpeaker,
@@ -865,14 +876,31 @@ async fn delete_folder(
 ) -> Result<Snapshot, String> {
     require_main(&window)?;
     let processing = state.processing.clone();
+    let removal_app = app.clone();
     let result = on_core(state.core.clone(), move |core| {
-        let Some(request) = request else { return core.delete_folder(&id); };
-        if request.folder.id != id { return Err(nero_core::CoreError::InvalidState("폴더 정보가 변경되었습니다. 다시 확인해 주세요.".into())); }
+        let Some(request) = request else {
+            return core.delete_folder(&id);
+        };
+        if request.folder.id != id {
+            return Err(nero_core::CoreError::InvalidState(
+                "폴더 정보가 변경되었습니다. 다시 확인해 주세요.".into(),
+            ));
+        }
         if request.trash_meetings && !request.meetings.is_empty() {
-            let ids = request.meetings.iter().map(|meeting| meeting.id.clone()).collect::<Vec<_>>();
-            processing.meeting_trash(&core, &ids, || core.delete_folder_checked(request.clone()))
-        } else { core.delete_folder_checked(request) }
-    }).await;
+            let ids = request
+                .meetings
+                .iter()
+                .map(|meeting| meeting.id.clone())
+                .collect::<Vec<_>>();
+            ai_chat_desktop::meeting_removal(&removal_app, &ids, false, || {
+                processing
+                    .meeting_trash(&core, &ids, || core.delete_folder_checked(request.clone()))
+            })
+        } else {
+            core.delete_folder_checked(request)
+        }
+    })
+    .await;
     finish_library_change(&app, state.core.clone(), result).await
 }
 
@@ -901,8 +929,11 @@ async fn trash_meetings(
 ) -> Result<Snapshot, String> {
     require_main(&window)?;
     let processing = state.processing.clone();
+    let removal_app = app.clone();
     let result = on_core(state.core.clone(), move |core| {
-        processing.meeting_trash(&core, &ids, || core.trash_meetings(ids.clone()))
+        ai_chat_desktop::meeting_removal(&removal_app, &ids, false, || {
+            processing.meeting_trash(&core, &ids, || core.trash_meetings(ids.clone()))
+        })
     })
     .await;
     finish_library_change(&app, state.core.clone(), result).await
@@ -929,18 +960,21 @@ async fn purge_meetings(
 ) -> Result<Snapshot, String> {
     require_main(&window)?;
     let processing = state.processing.clone();
+    let removal_app = app.clone();
     let result = on_core(state.core.clone(), move |core| {
-        processing.meeting_removal(&core, &ids, || {
-            processing.bind_legacy_jobs(&core)?;
-            let result = core.purge_meetings(ids.clone());
-            let remaining = core.list_meetings()?;
-            let purged = ids
-                .iter()
-                .filter(|id| !remaining.iter().any(|meeting| &meeting.id == *id))
-                .cloned()
-                .collect::<Vec<_>>();
-            let cleanup = processing.purge_meeting_jobs(&purged);
-            result.and(cleanup)
+        ai_chat_desktop::meeting_removal(&removal_app, &ids, true, || {
+            processing.meeting_removal(&core, &ids, || {
+                processing.bind_legacy_jobs(&core)?;
+                let result = core.purge_meetings(ids.clone());
+                let remaining = core.list_meetings()?;
+                let purged = ids
+                    .iter()
+                    .filter(|id| !remaining.iter().any(|meeting| &meeting.id == *id))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let cleanup = processing.purge_meeting_jobs(&purged);
+                result.and(cleanup)
+            })
         })
     })
     .await;
@@ -1275,6 +1309,7 @@ async fn request_quit(
 ) -> Result<(), String> {
     require_main(&window)?;
     let exit_lease = state.lifecycle.begin_exit(lifecycle::ExitKind::Quit)?;
+    let ai_shutdown = ai_chat_desktop::prepare_shutdown(&app).await?;
     let processing = state.processing.clone();
     let core = state.core.clone();
     let quitting = state.quitting.clone();
@@ -1282,6 +1317,7 @@ async fn request_quit(
     // Own the lease inside the side-effecting task, so dropping the IPC future
     // cannot release it while shutdown is still running in the background.
     tauri::async_runtime::spawn_blocking(move || {
+        let _ai_shutdown = ai_shutdown;
         if let Err(error) = processing.shutdown() {
             processing.resume();
             return Err(error);
@@ -1333,9 +1369,18 @@ fn set_speech_engine(
     window: WebviewWindow,
     state: tauri::State<'_, DesktopState>,
     engine: speech_choice::SpeechEngine,
-) -> Result<Progress,String> {
+) -> Result<Progress, String> {
     require_main(&window)?;
     state.processing.set_speech_engine(engine)
+}
+#[tauri::command]
+fn set_speaker_enabled(
+    window: WebviewWindow,
+    state: tauri::State<'_, DesktopState>,
+    enabled: bool,
+) -> Result<Progress, String> {
+    require_main(&window)?;
+    state.processing.set_speaker_enabled(enabled)
 }
 #[tauri::command]
 fn prepare_model(
@@ -1397,10 +1442,7 @@ async fn import_audio(
     let source = tauri::async_runtime::spawn_blocking(move || {
         app.dialog()
             .file()
-            .add_filter(
-                "음성",
-                speech_audio::import_extensions(),
-            )
+            .add_filter("음성", speech_audio::import_extensions())
             .blocking_pick_file()
     })
     .await
@@ -1692,7 +1734,37 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
+            ai_chat_desktop::ai_chat_accounts,
+            ai_chat_desktop::ai_chat_connect,
+            ai_chat_desktop::ai_chat_finish_connect,
+            ai_chat_desktop::ai_chat_cancel_connect,
+            ai_chat_desktop::ai_chat_disconnect,
+            ai_chat_desktop::ai_chat_models,
+            ai_chat_desktop::ai_chat_list,
+            ai_chat_desktop::ai_chat_create,
+            ai_chat_desktop::ai_chat_delete,
+            ai_chat_desktop::ai_chat_read,
+            ai_chat_desktop::ai_chat_send,
+            ai_chat_desktop::ai_chat_cancel,
+            ai_chat_desktop::ai_chat_save_summary,
+            ai_chat_desktop::ai_chat_answer_document,
+            ai_chat_desktop::ai_chat_append_note,
+            ai_chat_desktop::ai_chat_open_source,
+            ai_chat_desktop::notion_connection_snapshot,
+            ai_chat_desktop::begin_notion_connect,
+            ai_chat_desktop::finish_notion_connect,
+            ai_chat_desktop::cancel_notion_connect,
+            ai_chat_desktop::disconnect_notion_context,
+            ai_chat_desktop::fetch_notion_sources,
+            ai_chat_desktop::cancel_notion_fetch,
+            ai_chat_desktop::read_notion_sources,
+            meeting_context_desktop::meeting_context_sources,
+            meeting_context_desktop::meeting_context_add,
+            meeting_context_desktop::meeting_context_refresh,
+            meeting_context_desktop::meeting_context_remove,
             people_desktop::people_catalog,
+            people_desktop::google_attendee_roster,
+            people_desktop::apply_meeting_attendee_draft,
             people_desktop::replace_people_catalog,
             people_desktop::meeting_attendees,
             people_desktop::replace_meeting_attendees,
@@ -1709,6 +1781,8 @@ fn main() {
             calendar_desktop::open_calendar_join_url,
             calendar_desktop::create_meeting_from_calendar,
             calendar_desktop::begin_calendar_connect,
+            calendar_desktop::begin_meet_connect,
+            calendar_desktop::fetch_google_attendees,
             calendar_desktop::finish_calendar_connect,
             calendar_desktop::reopen_calendar_connect,
             calendar_desktop::cancel_calendar_connect,
@@ -1758,6 +1832,7 @@ fn main() {
             request_quit,
             processing_status,
             set_speech_engine,
+            set_speaker_enabled,
             prepare_model,
             prepare_meeting_models,
             draft_attachment_target,
@@ -1807,6 +1882,12 @@ fn main() {
                 lifecycle: lifecycle::Lifecycle::default(),
             });
             calendar_desktop::install(app.handle(), root.clone());
+            ai_chat_desktop::install(
+                app.handle(),
+                root.clone(),
+                app.path().resource_dir()?,
+                core.clone(),
+            );
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 let mut previous: Option<Snapshot> = None;

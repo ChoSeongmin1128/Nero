@@ -133,7 +133,18 @@ impl Processing {
         else {
             return Ok(());
         };
+        let choice = crate::speech_choice::freeze_session(
+            &self.root,
+            &session.id,
+            self.speech_engine(),
+            self.speaker_enabled(),
+            self.apple_speech_variant(),
+        )?;
         self.cancel_live()?;
+        if choice.engine == SpeechEngine::AppleSpeech {
+            self.update(|progress| progress.live_transcript = None);
+            return Ok(());
+        }
         self.update(|p| {
             p.live_transcript = Some(
                 json!({"meetingId":session.meeting_id,"sessionId":session.id,
@@ -152,7 +163,8 @@ impl Processing {
         let cancel = Arc::new(AtomicBool::new(false));
         let running = Arc::new(AtomicBool::new(true));
         let child = Arc::new(Mutex::new(None));
-        let engine = self.speech_engine();
+        let engine = choice.engine;
+        let speaker_enabled = choice.speaker_enabled && crate::diarization::availability(self).1;
         let job = Arc::new(LiveJob {
             engine,
             meeting_id: session.meeting_id.clone(),
@@ -181,6 +193,7 @@ impl Processing {
                         cancel,
                         child,
                         engine,
+                        speaker_enabled,
                     );
                     if let Err(error) = result {
                         let _ = fs::write(
@@ -313,6 +326,7 @@ fn run(
     cancel: Arc<AtomicBool>,
     child: Arc<Mutex<Option<Child>>>,
     engine: SpeechEngine,
+    speaker_enabled: bool,
 ) -> Result<(), String> {
     let _guard = ChildGuard {
         child: child.clone(),
@@ -321,8 +335,11 @@ fn run(
     let asr = Processing::model_for(engine);
     let model_path = process.model_dir_for(engine)?.join(&asr.files[0].name);
     let speaker_model = crate::diarization::model();
-    let speaker_weights =
-        crate::diarization::model_dir(&process)?.join(&speaker_model.files[0].name);
+    let speaker_weights = if speaker_enabled {
+        crate::diarization::model_dir(&process)?.join(&speaker_model.files[0].name)
+    } else {
+        path.join("unused-speaker-model")
+    };
     let gpu = crate::diarization::library(&process, true).is_file();
     let library = crate::diarization::library(&process, gpu);
     let backend = json!(if gpu {
@@ -335,9 +352,11 @@ fn run(
         "cpu"
     });
     let speaker_path = path.join("speaker");
-    fs::create_dir(&speaker_path).map_err(|e| e.to_string())?;
+    if speaker_enabled {
+        fs::create_dir(&speaker_path).map_err(|e| e.to_string())?;
+    }
     let audio = path.join("analysis.wav");
-    let request = json!({"asrEngine":engine,"whisperExecutable":crate::whisper_asr::executable(&process.resources),
+    let request = json!({"speakerEnabled":speaker_enabled,"asrEngine":engine,"whisperExecutable":crate::whisper_asr::executable(&process.resources),
         "asrModel":model_path,"asrLibrary":library,"meetingId":meeting_id,"sessionId":session_id,
         "speaker":{"schemaVersion":1,"audio":audio,"model":speaker_weights,"library":library,
             "output":speaker_path,"backend":backend,"modelSha256":speaker_model.files[0].sha256,
@@ -530,6 +549,9 @@ fn publish_asr(
         || match engine {
             SpeechEngine::Nemotron => {
                 result["streamFramesFed"] != frames || result["nativeStreamFinished"] != true
+            }
+            SpeechEngine::AppleSpeech => {
+                return Err("macOS 기본 전사는 녹음 종료 후 처리합니다.".into())
             }
             SpeechEngine::WhisperTurbo => {
                 result["completed"] != true
@@ -747,9 +769,7 @@ mod lifecycle_tests {
         let root = temporary.path().canonicalize().unwrap();
         let process = Processing::new(root.clone(), root);
         let mut command = Command::new("/bin/sh");
-        command
-            .args(["-c", "exec sleep 30"])
-            .stdout(Stdio::piped());
+        command.args(["-c", "exec sleep 30"]).stdout(Stdio::piped());
         let mut child = crate::process_tree::spawn(&mut command).unwrap();
         let mut stdout = child.stdout.take().unwrap();
         let active = Arc::new(AtomicBool::new(true));

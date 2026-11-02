@@ -1,3 +1,4 @@
+import { createGoogleAttendeeDraft, removeDraftAttendee, stageGoogleAttendee } from './google-attendee-draft.js';
 const clone = value => JSON.parse(JSON.stringify(value));
 export const attendeeLabel = (attendee, attendees) => attendee.name?.trim() || `참석자 ${Math.max(0, attendees.filter(item => !item.name?.trim()).findIndex(item => item.id === attendee.id)) + 1}`;
 
@@ -30,44 +31,45 @@ export function addPeople(attendees, people, uuid = () => crypto.randomUUID()) {
 }
 
 export function createAttendeeFlow({ bridge, onChanged = () => {}, uuid = () => crypto.randomUUID() }) {
-  let state = { open: false, busy: false, loading: false, meeting: null, catalog: null, attendees: [], error: '' };
-  let saved = [], expected = '', epoch = 0, meetingId = null;
+  let state = { open: false, busy: false, loading: false, meeting: null, catalog: null, attendees: [], sources: [], identityLinks: [], personLinks: [], promotions: [], error: '', googleOpen: false, googleLoading: false, googleResult: null, googleError: '', googleConnecting: false, googlePhase: 'idle' };
+  let saved = '', expected = '', epoch = 0, meetingId = null, baseCatalog = null, googleEpoch = 0, attemptId = null, beginning = null;
   const listeners = new Set();
   const publish = changes => { state = { ...state, ...changes }; listeners.forEach(listener => listener()); };
-  const dirty = () => JSON.stringify(saved) !== JSON.stringify(state.attendees);
+  const draft = () => ({ attendees: state.attendees, sources: state.sources, personLinks: state.personLinks, promotions: state.promotions });
+  const dirty = () => saved !== JSON.stringify(draft());
   const accept = value => {
-    saved = nameUnnamedAttendees(clone(value.meeting.attendees || [])); expected = value.editVersion;
-    publish({ meeting: value.meeting, attendees: clone(saved) });
+    const next = createGoogleAttendeeDraft(value); next.attendees = nameUnnamedAttendees(next.attendees);
+    saved = JSON.stringify(next); expected = value.editVersion;
+    if (value.catalog) baseCatalog = clone(value.catalog);
+    publish({ ...next, meeting: value.meeting, identityLinks: clone(value.identityLinks || []), ...(baseCatalog ? { catalog: clone(baseCatalog) } : {}) });
+  };
+  const read = async () => {
+    if (bridge.readGoogleAttendeeRoster) return bridge.readGoogleAttendeeRoster(meetingId);
+    const [meeting, catalog] = await Promise.all([bridge.readMeetingAttendees(meetingId), bridge.readPeopleCatalog()]);
+    return { ...meeting, catalog };
   };
   const operate = async task => {
-    if (!state.open || state.busy) return false;
+    if (!state.open || state.busy || state.googleConnecting) return false;
     const generation = epoch;
     publish({ busy: true, error: '' });
     try { await task(); return generation === epoch; }
     catch (error) { if (generation === epoch) publish({ error: error?.message || '참석자를 저장하지 못했습니다.' }); return false; }
     finally { if (generation === epoch) publish({ busy: false }); }
   };
-  const persist = async () => {
-    if (!dirty()) return;
-    accept(await bridge.replaceMeetingAttendees(state.meeting.id, expected, state.attendees.map(item => ({ ...item, name: item.name?.trim() || undefined }))));
-    await onChanged();
-  };
-  return {
+  const catalogFor = promotions => ({ ...baseCatalog, people: [...baseCatalog.people, ...promotions.map(promotion => promotion.person)] });
+  const flow = {
     getSnapshot: () => state,
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     isDirty: dirty,
     async open(id) {
-      meetingId = id;
-      const generation = ++epoch;
-      publish({ open: true, busy: true, loading: true, meeting: null, catalog: null, attendees: [], error: '' }); saved = [];
-      try {
-        const [meeting, catalog] = await Promise.all([bridge.readMeetingAttendees(id), bridge.readPeopleCatalog()]);
-        if (generation !== epoch) return;
-        accept(meeting); publish({ catalog });
-      } catch (error) { if (generation === epoch) publish({ error: error?.message || '참석자를 불러오지 못했습니다.' }); }
+      if (state.open && state.googleConnecting && !await flow.cancelMeetConnect()) return false;
+      meetingId = id; const generation = ++epoch; googleEpoch++; baseCatalog = null; saved = JSON.stringify({ attendees: [], sources: [], personLinks: [], promotions: [] });
+      publish({ open: true, busy: true, loading: true, meeting: null, catalog: null, attendees: [], sources: [], identityLinks: [], personLinks: [], promotions: [], error: '', googleOpen: false, googleLoading: false, googleResult: null, googleError: '', googleConnecting: false, googlePhase: 'idle' });
+      try { const value = await read(); if (generation === epoch) accept(value); }
+      catch (error) { if (generation === epoch) publish({ error: error?.message || '참석자를 불러오지 못했습니다.' }); }
       finally { if (generation === epoch) publish({ busy: false, loading: false }); }
     },
-    close() { if (state.busy && !state.loading) return false; epoch += 1; publish({ open: false, busy: false, loading: false }); return true; },
+    close() { if (state.googleConnecting || state.busy && !state.loading) return false; epoch++; googleEpoch++; publish({ open: false, busy: false, loading: false, googleLoading: false }); return true; },
     add(persons) { if (!state.busy) publish({ attendees: addPeople(state.attendees, persons, uuid) }); },
     addTemporary(name = '') { if (!state.busy) publish({ attendees: nameUnnamedAttendees([...state.attendees, { id: uuid(), ...(name.trim() ? { name: name.trim() } : {}) }]) }); },
     addInput(text) {
@@ -82,20 +84,88 @@ export function createAttendeeFlow({ bridge, onChanged = () => {}, uuid = () => 
       publish({ attendees, error: '' }); return true;
     },
     rename(id, name) { if (!state.busy) publish({ attendees: state.attendees.map(item => item.id === id ? { ...item, name: name || undefined } : item) }); },
-    remove(id) { if (!state.busy) publish({ attendees: state.attendees.filter(item => item.id !== id) }); },
-    save() { return operate(persist); },
-    reload() { return operate(async () => { const [meeting, catalog] = await Promise.all([bridge.readMeetingAttendees(meetingId), bridge.readPeopleCatalog()]); accept(meeting); publish({ catalog }); }); },
-    promote(id, name) {
+    remove(id) { if (!state.busy) { const next = removeDraftAttendee(draft(), id); publish({ ...next, catalog: catalogFor(next.promotions) }); } },
+    save() {
       return operate(async () => {
-        const personName = name.trim();
-        if (!personName) throw new Error('이름을 입력해 주세요.');
-        await persist();
-        const result = await bridge.promoteMeetingAttendee(state.meeting.id, expected, state.catalog.editVersion, id, personName);
-        accept(result); publish({ catalog: result.catalog }); await onChanged();
+        if (!dirty()) return;
+        const next = clone(draft()); next.attendees = next.attendees.map(item => ({ ...item, name: item.name?.trim() || undefined }));
+        let result;
+        if (bridge.applyMeetingAttendeeDraft) result = await bridge.applyMeetingAttendeeDraft(state.meeting.id, expected, next);
+        else {
+          if (next.sources.length || next.personLinks.length || next.promotions.length) throw new Error('Nero 앱을 업데이트해 주세요.');
+          result = await bridge.replaceMeetingAttendees(state.meeting.id, expected, next.attendees);
+        }
+        accept(result);
+        await Promise.resolve(onChanged()).catch(() => {});
       });
     },
-    dispose() { epoch += 1; listeners.clear(); state = { ...state, open: false }; },
+    reload() { return operate(async () => { const value = await read(); accept(value); publish({ googleResult: null, googleError: '' }); }); },
+    async promote(id, name) {
+      if (state.busy || !state.catalog) return false;
+      const personName = name.trim(), attendee = state.attendees.find(item => item.id === id);
+      if (!personName || personName.length > 120 || !attendee || attendee.personId) { publish({ error: '이름과 참석자를 확인해 주세요.' }); return false; }
+      const person = { id: uuid(), name: personName };
+      const promotions = [...state.promotions, { attendeeId: id, person }];
+      const personLinks = state.sources.some(entry => entry.attendeeId === id) ? [...state.personLinks.filter(link => link.attendeeId !== id), { attendeeId: id, personId: person.id }] : state.personLinks;
+      publish({ attendees: state.attendees.map(item => item.id === id ? { ...item, personId: person.id, name: personName } : item), promotions, personLinks, catalog: catalogFor(promotions), error: '' });
+      return true;
+    },
+    async loadGoogle() {
+      if (!state.open || state.busy || state.googleLoading || state.googleConnecting) return false;
+      const generation = epoch, token = ++googleEpoch;
+      publish({ googleOpen: true, googleLoading: true, googleError: '' });
+      try {
+        const result = await bridge.fetchGoogleAttendees(state.meeting.id, true);
+        if (generation !== epoch || token !== googleEpoch) return false;
+        const byKey = new Map(result.sources.map(source => [source.sourceKey, source]));
+        publish({ googleResult: result, sources: state.sources.map(entry => byKey.has(entry.source.sourceKey) ? { ...entry, source: clone(byKey.get(entry.source.sourceKey)) } : entry) }); return true;
+      } catch (error) { if (generation === epoch && token === googleEpoch) publish({ googleError: error?.message || 'Google 참석자를 불러오지 못했습니다.' }); return false; }
+      finally { if (generation === epoch && token === googleEpoch) publish({ googleLoading: false }); }
+    },
+    chooseGoogle(source, choice) {
+      if (state.busy || state.googleConnecting) return false;
+      try { const next = stageGoogleAttendee(draft(), state.catalog, source, choice, uuid); publish({ ...next, catalog: catalogFor(next.promotions), googleError: '' }); return true; }
+      catch (error) { publish({ googleError: error.message }); return false; }
+    },
+    hideGoogle() { if (!state.googleConnecting) publish({ googleOpen: false }); },
+    async connectMeet() {
+      if (!state.open || state.busy || state.googleConnecting) return false;
+      const generation = epoch, token = ++googleEpoch;
+      publish({ googleConnecting: true, googlePhase: 'opening', googleError: '' });
+      try {
+        beginning = bridge.beginMeetConnect(); const attempt = await beginning; beginning = null;
+        if (generation !== epoch || token !== googleEpoch) return false;
+        attemptId = attempt.attemptId; publish({ googlePhase: 'authorizing' });
+        await bridge.finishCalendarConnect(attemptId);
+        if (generation !== epoch || token !== googleEpoch) return false;
+        attemptId = null; publish({ googleConnecting: false, googlePhase: 'idle' });
+        return flow.loadGoogle();
+      } catch (error) {
+        if (generation === epoch && token === googleEpoch) { beginning = null; attemptId = null; publish({ googleConnecting: false, googlePhase: 'idle', googleError: error?.message || 'Meet 연결을 완료하지 못했습니다.' }); }
+        return false;
+      }
+    },
+    async cancelMeetConnect() {
+      if (!state.googleConnecting) return true;
+      if (state.googlePhase === 'cancelling') return false;
+      const generation = epoch; googleEpoch++; publish({ googlePhase: 'cancelling', googleError: '' });
+      try {
+        let id = attemptId;
+        if (!id && beginning) { try { id = (await beginning).attemptId; } catch {} }
+        attemptId = id;
+        if (id) await bridge.cancelCalendarConnect(id);
+        attemptId = null; beginning = null;
+        if (generation === epoch) publish({ googleConnecting: false, googlePhase: 'idle' }); return true;
+      } catch (error) { if (generation === epoch) publish({ googlePhase: 'cancelFailed', googleError: error?.message || 'Meet 연결 취소를 다시 시도해 주세요.' }); return false; }
+    },
+    async reopenMeetConnect() {
+      if (!attemptId || state.googlePhase !== 'authorizing') return false;
+      try { await bridge.reopenCalendarConnect(attemptId); return true; }
+      catch (error) { publish({ googleError: error?.message || '브라우저를 다시 열지 못했습니다.' }); return false; }
+    },
+    dispose() { void flow.cancelMeetConnect(); epoch++; googleEpoch++; listeners.clear(); state = { ...state, open: false }; },
   };
+  return flow;
 }
 
 export function createPeopleCatalogFlow({ bridge, uuid = () => crypto.randomUUID() }) {
