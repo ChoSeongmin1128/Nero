@@ -563,7 +563,7 @@ pub async fn start_calendar_recording(
 pub async fn open_calendar_join_url(window: WebviewWindow, url: String) -> Result<(), String> {
     crate::require_main(&window)?;
     let parsed = checked_join_url(&url)?;
-    tauri::async_runtime::spawn_blocking(move || open_default_browser(&parsed))
+    tauri::async_runtime::spawn_blocking(move || crate::external_open::open_url(&parsed))
         .await
         .map_err(|_| "참가 링크를 열지 못했습니다.".to_string())?
         .map_err(|_| "참가 링크를 열지 못했습니다.".to_string())
@@ -595,57 +595,8 @@ fn open_authorization(url: &str) -> Result<(), String> {
     {
         return Err("Google 연결 주소를 확인하지 못했습니다.".into());
     }
-    open_default_browser(&parsed)
+    crate::external_open::open_url(&parsed)
         .map_err(|_| "기본 브라우저를 열지 못했습니다. 다시 연결해 주세요.".into())
-}
-
-fn open_default_browser(url: &reqwest::Url) -> Result<(), ()> {
-    let url = url.as_str();
-    #[cfg(target_os = "macos")]
-    if std::process::Command::new("/usr/bin/open")
-        .arg(url)
-        .status()
-        .is_ok_and(|status| status.success())
-    {
-        return Ok(());
-    }
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::ffi::OsStrExt;
-        #[link(name = "shell32")]
-        extern "system" {
-            fn ShellExecuteW(
-                window: *mut std::ffi::c_void,
-                operation: *const u16,
-                file: *const u16,
-                parameters: *const u16,
-                directory: *const u16,
-                show: i32,
-            ) -> isize;
-        }
-        let wide = |value: &str| {
-            std::ffi::OsStr::new(value)
-                .encode_wide()
-                .chain(Some(0))
-                .collect::<Vec<_>>()
-        };
-        let operation = wide("open");
-        let target = wide(url);
-        if unsafe {
-            ShellExecuteW(
-                std::ptr::null_mut(),
-                operation.as_ptr(),
-                target.as_ptr(),
-                std::ptr::null(),
-                std::ptr::null(),
-                1,
-            )
-        } > 32
-        {
-            return Ok(());
-        }
-    }
-    Err(())
 }
 
 #[cfg(test)]

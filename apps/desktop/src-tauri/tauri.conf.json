@@ -5,7 +5,7 @@
   "identifier": "io.github.choseongmin1128.nero.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build && npm run verify:native && npm run prepare:agent",
+    "beforeBuildCommand": "npm run build && npm run prepare:notices && npm run verify:native && npm run prepare:agent",
     "devUrl": "http://127.0.0.1:1420",
     "frontendDist": "../dist"
   },
@@ -67,7 +67,7 @@
     "category": "Productivity",
     "macOS": {
       "minimumSystemVersion": "26.0",
-      "bundleVersion": "57",
+      "bundleVersion": "58",
       "infoPlist": "Info.plist"
     },
     "windows": {

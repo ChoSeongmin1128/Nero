@@ -22,6 +22,11 @@ On Windows use `--bundles nsis` instead of `--bundles app`. Build outputs are un
 the workspace's `.work/rust-target`. Run Rust tests from the repository root with
 `cargo test -p nero-core --locked`. Build/test one native target at a time.
 
+Development and test profiles keep filename/line backtraces and disable incremental
+compilation to limit local cache growth. For an explicit debugger session, override
+`CARGO_PROFILE_DEV_DEBUG=full` or `CARGO_PROFILE_TEST_DEBUG=full` for that command.
+Retire completed validation caches after retaining the required small receipts.
+
 ## Windows installation and updates
 
 Prepare both native packages before creating a Windows installer. These commands

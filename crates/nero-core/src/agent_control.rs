@@ -1151,6 +1151,7 @@ mod tests {
             frames: 16000,
             sample_rate: 16000,
             channels: 1,
+            playback: None,
         });
         changes.push(changed);
         for changed in changes {

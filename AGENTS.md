@@ -9,7 +9,10 @@ This file applies to the entire repository.
   input on macOS and Windows. Browser prototypes do not establish native support.
 - The current identity is `io.github.choseongmin1128.nero.desktop`. Identity changes require the explicit installer migration and strict completed receipt. Ordinary reads must not migrate or initialize a library. Never open the separately archived original Swift library implicitly. The old installed app and data are archived
   outside active application locations; do not launch the archive during validation.
-- New capture preserves native PCM and creates a separate float32 WAV for playback.
+- New capture preserves native PCM and creates a separate float32 WAV for playback
+  when its native geometry fits RIFF. Larger captures use a separately identified
+  mono/16kHz/PCM16 playback WAV through the shared bounded ASR normalizer. Keep
+  original frames/rate/channels separate from playback geometry and retain PCM.
   The legacy AAC/M4A and model rules in `legacy/swift/AGENTS.md` apply to the retired implementation,
   not this new format. Never discard original PCM after playback conversion.
 - The native app provides meetings, notes, microphone recording and playback. With
@@ -156,7 +159,7 @@ behavior. Separate implemented behavior, proposals and unverified platform suppo
   shared with external users. Normal version, updater and NSIS downgrade guards
   remain active; existing build49 installations need an explicit manual transition.
 - Product and integration versions are independent. The next integration generation
-  is `0.3.0-nero.35`; do not lower a host package to match product `0.0.1`.
+  is `0.3.0-nero.36`; do not lower a host package to match product `0.0.1`.
   Undistributed development binaries follow the bounded retention rules below.
 - Published release tags, assets and public release notes identify distributed source.
   A dirty build must not be attributed to its HEAD alone. Distribution bundles require
@@ -185,7 +188,11 @@ behavior. Separate implemented behavior, proposals and unverified platform suppo
   copies are disposable after their source/hash history is recorded. Do not accumulate
   per-release `.app` copies, `data-before` folders or standalone installer clones.
 - Use `.work/rust-target` as the single Cargo target cache. Retire temporary alternate
-  targets when their experiment is finished. Temporary notary upload archives belong
+  targets when their experiment is finished. Dev/test profiles use line-table debug
+  information without incremental caches; enable full debugger information only for
+  a specific debugging session. Retire completed validation's debug artifacts after
+  recording results, and check free space before another heavy build. Preserve
+  release inputs still needed by active packaging. Temporary notary upload archives belong
   to an auto-cleaned temporary directory and are not retained beside final artifacts.
 - During macOS GUI/release verification, keep a bounded temporary display/idle/user-active
   assertion while working and release it when finished. Do not change persistent

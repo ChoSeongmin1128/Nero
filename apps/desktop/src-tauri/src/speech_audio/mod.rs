@@ -19,7 +19,7 @@ mod wav;
 pub(crate) use formats::import_extensions;
 pub(crate) use import::stage_import;
 
-pub const SAMPLE_RATE: u32 = 16000;
+pub use nero_core::audio_normalize::SAMPLE_RATE;
 
 pub(super) fn supported(process: &Processing) -> bool {
     cfg!(all(target_os = "windows", target_arch = "x86_64"))

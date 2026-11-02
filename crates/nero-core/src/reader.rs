@@ -502,7 +502,7 @@ impl<'a> Transaction<'a> {
             store::validate_id(id).map_err(|_| ReadError::InvalidDocument)?;
         }
         if let Some(audio) = &stored.meeting.audio {
-            store::validate_id(&audio.session_id).map_err(|_| ReadError::InvalidDocument)?;
+            store::validate_artifact(id, audio).map_err(|_| ReadError::InvalidDocument)?;
         }
         if capture_details {
             if let Some(capture_id) = &stored.capture_id {
@@ -1029,6 +1029,7 @@ mod tests {
                 frames: 160000,
                 sample_rate: 16000,
                 channels: 1,
+                playback: None,
             });
             store.save(&meeting).unwrap();
             let folder = Uuid::new_v4().to_string();
@@ -1246,6 +1247,59 @@ mod tests {
             .unwrap();
         assert_eq!(before, tree_hash(&fixture.root));
         drop(owner);
+    }
+
+    #[test]
+    fn playback_metadata_is_read_only_validated_and_bound_to_query_source_identity() {
+        let fixture = Fixture::new();
+        let reader = fixture.reader();
+        let before = reader
+            .query("meeting_get", json!({"meetingId":fixture.id}))
+            .unwrap();
+        let path = fixture
+            .root
+            .join("meetings")
+            .join(&fixture.id)
+            .join("meeting.json");
+        let mut stored: StoredMeeting = store::read_json(&path).unwrap();
+        let audio = stored.meeting.audio.as_mut().unwrap();
+        audio.playback = Some(crate::AudioPlayback {
+            policy: "native-pcm-speech-playback-v1".into(),
+            frames: audio.frames,
+            sample_rate: 16_000,
+            channels: 1,
+        });
+        fs::write(&path, serde_json::to_vec(&stored).unwrap()).unwrap();
+        let persisted = tree_hash(&fixture.root);
+        let after = reader
+            .query("meeting_get", json!({"meetingId":fixture.id}))
+            .unwrap();
+        assert_ne!(before["sourceVersion"], after["sourceVersion"]);
+        assert_ne!(before["editVersion"], after["editVersion"]);
+        assert_eq!(persisted, tree_hash(&fixture.root));
+        assert!(matches!(
+            reader.query(
+                "meeting_get",
+                json!({"meetingId":fixture.id,"expectedSourceVersion":before["sourceVersion"]})
+            ),
+            Err(CoreError::Reader(ReadError::SourceVersionMismatch))
+        ));
+        stored
+            .meeting
+            .audio
+            .as_mut()
+            .unwrap()
+            .playback
+            .as_mut()
+            .unwrap()
+            .policy = "unverified".into();
+        fs::write(&path, serde_json::to_vec(&stored).unwrap()).unwrap();
+        let persisted = tree_hash(&fixture.root);
+        assert!(matches!(
+            reader.query("meeting_get", json!({"meetingId":fixture.id})),
+            Err(CoreError::Reader(ReadError::InvalidDocument))
+        ));
+        assert_eq!(persisted, tree_hash(&fixture.root));
     }
 
     #[test]

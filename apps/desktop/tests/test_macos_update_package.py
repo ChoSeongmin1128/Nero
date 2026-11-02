@@ -3,6 +3,7 @@ import io
 import json
 from pathlib import Path
 import plistlib
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -43,12 +44,24 @@ class MacUpdatePackageTests(unittest.TestCase):
             app, receipt = self.fixture(root)
             out = root / 'Nero44.app.tar.gz'
             checked = []
-            result = mac.package(app, out, receipt, trust=lambda value: checked.append(value))
+            notices_checked = []
+            result = mac.package(app, out, receipt, trust=lambda value: checked.append(value),
+                                 notices=lambda value: notices_checked.append(value))
             self.assertEqual(len(checked), 2)
+            self.assertEqual(len(notices_checked), 2)
             self.assertEqual(result['artifact']['sha256'], mac.installer.sha(out))
             self.assertEqual(json.loads(Path(str(out) + '.build-info.json').read_text())['sourceCommit'], 'a' * 40)
             with self.assertRaisesRegex(RuntimeError, 'already exists'):
+                mac.package(app, out, receipt, trust=lambda _: None, notices=lambda _: None)
+
+    def test_missing_distribution_notices_prevent_final_updater_package(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            app, receipt = self.fixture(root)
+            out = root / 'Nero44.app.tar.gz'
+            with self.assertRaises(subprocess.CalledProcessError):
                 mac.package(app, out, receipt, trust=lambda _: None)
+            self.assertFalse(out.exists())
 
     def test_modified_signed_bundle_never_creates_package(self):
         with tempfile.TemporaryDirectory() as folder:

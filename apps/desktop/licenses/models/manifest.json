@@ -1,0 +1,110 @@
+[
+  {
+    "manifest": "config/models/nemotron-asr.json",
+    "model": {
+      "repository": "nvidia/nemotron-3.5-asr-streaming-0.6b",
+      "revision": "1c8deaecc64b91f034d73e08dd8b64625eb3395d",
+      "files": [
+        {
+          "name": "nemotron-3.5-asr-streaming-0.6b.q8_0.gguf",
+          "bytes": 741548352,
+          "sha256": "a5c435f294eea8f88ce68dd27b8c3bfea7f777cb2fbba04fcd30eaa555f429ae"
+        }
+      ]
+    },
+    "license": "OpenMDW-1.1",
+    "declaration": {
+      "source": "https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b/raw/1c8deaecc64b91f034d73e08dd8b64625eb3395d/README.md",
+      "sha256": "a3344caadf796c084c6b90a9fa5978068fd45e3a019790bebe50489bb3c0f7b7",
+      "licenseMetadata": "license: other\nlicense_name: openmdw-1.1\nlicense_link: >-"
+    },
+    "notices": [
+      {
+        "path": "OpenMDW-1.1.txt",
+        "source": "https://raw.githubusercontent.com/OpenMDW/openmdw/b26b32b34ad2edcc29a7707abb68dcfb25a538c1/1.1/LICENSE.OpenMDW-1.1",
+        "sha256": "2ab44b68365473c112f5092211a38f231cb23e50de68b75a13369adbd76a74df"
+      }
+    ]
+  },
+  {
+    "manifest": "apps/desktop/models/diarization.json",
+    "model": {
+      "repository": "nvidia/Nemotron-3-Diarization",
+      "revision": "f667ed73aee57d40cc39428eb768b4fd87a0a29e",
+      "files": [
+        {
+          "name": "Nemotron-3-Diarization.q8_0.gguf",
+          "bytes": 107012128,
+          "sha256": "08456d9e22cd9a323c0364d98375f3746d6e68507ebb705cd46438c534c7a3a1"
+        }
+      ]
+    },
+    "license": "OpenMDW-1.1",
+    "declaration": {
+      "source": "https://huggingface.co/nvidia/Nemotron-3-Diarization/raw/f667ed73aee57d40cc39428eb768b4fd87a0a29e/README.md",
+      "sha256": "5fe88ca4020d2ee134f806a0a02c52c19855b73047bc2e6f25b9171e1abeebfd",
+      "licenseMetadata": "license: openmdw-1.1"
+    },
+    "notices": [
+      {
+        "path": "OpenMDW-1.1.txt",
+        "source": "https://raw.githubusercontent.com/OpenMDW/openmdw/b26b32b34ad2edcc29a7707abb68dcfb25a538c1/1.1/LICENSE.OpenMDW-1.1",
+        "sha256": "2ab44b68365473c112f5092211a38f231cb23e50de68b75a13369adbd76a74df"
+      }
+    ]
+  },
+  {
+    "manifest": "apps/desktop/models/summary.json",
+    "model": {
+      "repository": "google/gemma-4-E4B-it-qat-q4_0-gguf",
+      "revision": "4b4a2c1d584be7264f87aac328a1bc739ce81b6c",
+      "files": [
+        {
+          "name": "gemma-4-E4B_q4_0-it.gguf",
+          "bytes": 5154941280,
+          "sha256": "676c35070db6dbe52f93e9c864ee0fba4eddea94b9c875d9cb10daff453fbaee"
+        }
+      ]
+    },
+    "license": "Apache-2.0",
+    "declaration": {
+      "source": "https://huggingface.co/google/gemma-4-E4B-it-qat-q4_0-gguf/raw/4b4a2c1d584be7264f87aac328a1bc739ce81b6c/README.md",
+      "sha256": "6c8dbc23d482d76d6a02e6804941fae6dccdcd20e6372c26e4dec35e21348607",
+      "licenseMetadata": "license: apache-2.0\nlicense_link: https://ai.google.dev/gemma/docs/gemma_4_license"
+    },
+    "notices": [
+      {
+        "path": "Apache-2.0.txt",
+        "source": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+        "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+      }
+    ]
+  },
+  {
+    "manifest": "config/models/whisper-turbo.json",
+    "model": {
+      "repository": "ggerganov/whisper.cpp",
+      "revision": "5359861c739e955e79d9a303bcbc70fb988958b1",
+      "files": [
+        {
+          "name": "ggml-large-v3-turbo-q5_0.bin",
+          "bytes": 574041195,
+          "sha256": "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2"
+        }
+      ]
+    },
+    "license": "MIT",
+    "declaration": {
+      "source": "https://huggingface.co/ggerganov/whisper.cpp/raw/5359861c739e955e79d9a303bcbc70fb988958b1/README.md",
+      "sha256": "21fd967098804f33fc84e803fb0e5ab7666d71801f4027cf28a65e7af09c1758",
+      "licenseMetadata": "license: mit"
+    },
+    "notices": [
+      {
+        "path": "Whisper-MIT.txt",
+        "source": "https://raw.githubusercontent.com/openai/whisper/6e3be77e1a105e59086e3e21ff5f609fd6fa89a5/LICENSE",
+        "sha256": "b5d65a59060e68c4ff940e1eddfa6f94b2d68fdf58ed7f4dd57721c997e35e9d"
+      }
+    ]
+  }
+]

@@ -10,6 +10,7 @@
     "version:check": "node scripts/version.mjs check",
     "prepare:icons": "node scripts/prepare-icons.mjs",
     "prepare:shared": "node scripts/prepare-shared.mjs",
+    "prepare:notices": "python3 -B scripts/distribution-notices.py",
     "prepare:agent": "node scripts/prepare-agent.mjs",
     "verify:native": "node scripts/verify-native.mjs",
     "dev": "npm run prepare:shared && vite --host 127.0.0.1 --port 1420 --strictPort",

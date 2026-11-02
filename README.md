@@ -78,4 +78,6 @@ Intel Mac과 Linux용 설치 파일은 제공하지 않습니다. Windows 설치
 
 [사용 안내](docs/README.md)에서 설치, 연결과 문제 해결 방법을 확인하세요. 오류나 개선 의견은 [Issues](https://github.com/ChoSeongmin1128/Nero/issues)에 남겨 주세요. 운영체제, 앱 버전과 재현 순서를 적어 주시면 확인에 도움이 됩니다. 녹음 원본이나 민감한 회의 내용은 공개 이슈에 첨부하지 마세요.
 
+[개인정보처리방침](https://choseongmin1128.github.io/Nero/privacy.html)에서 데이터 처리와 외부 연결 범위를 확인할 수 있습니다.
+
 소스에서 실행하거나 기여하려면 [개발 안내](apps/desktop/README.md)를 확인하세요. 포함된 외부 구성 요소와 모델의 이용 조건은 [서드파티 고지](THIRD_PARTY_NOTICES.md)를 따릅니다.
