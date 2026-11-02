@@ -110,18 +110,9 @@ impl Storage {
 }
 
 fn ensure_safe_ancestors(path: &Path) -> Result<()> {
-    let mut current = PathBuf::new();
-    for part in path.components() {
-        current.push(part);
-        match fs::symlink_metadata(&current) {
-            Ok(metadata) if metadata.file_type().is_symlink() => return Err(Error::Storage),
-            Ok(_) => (),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
-            Err(_) => return Err(Error::Storage),
-        }
-    }
-    Ok(())
+    crate::path_safety::safe_ancestors(path).map_err(|_| Error::Storage)
 }
+
 fn read_json<T: DeserializeOwned>(path: &Path, maximum: usize) -> Result<T> {
     ensure_safe_ancestors(path)?;
     let metadata = fs::symlink_metadata(path).map_err(|_| Error::Storage)?;
@@ -157,4 +148,34 @@ fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
     file.as_file().sync_all().map_err(|_| Error::Storage)?;
     file.persist(path).map_err(|_| Error::Storage)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepts_canonical_root_and_missing_app_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap().join("app");
+        assert!(Storage::new(root).is_ok());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rejects_junction_ancestor() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().to_path_buf();
+        let target = root.join("target");
+        let link = root.join("link");
+        fs::create_dir(&target).unwrap();
+        let status = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(&target)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert!(Storage::new(link.join("app")).is_err());
+    }
 }

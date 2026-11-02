@@ -85,27 +85,9 @@ fn validate_id(id: &str) -> Result<(), String> {
         Err(invalid())
     }
 }
+
 fn safe(path: &Path) -> Result<(), String> {
-    let mut current = PathBuf::new();
-    for part in path.components() {
-        current.push(part);
-        match fs::symlink_metadata(&current) {
-            Ok(meta) if meta.file_type().is_symlink() => return Err(invalid()),
-            #[cfg(windows)]
-            Ok(meta)
-                if {
-                    use std::os::windows::fs::MetadataExt;
-                    meta.file_attributes() & 0x400 != 0
-                } =>
-            {
-                return Err(invalid())
-            }
-            Ok(_) => (),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
-            Err(_) => return Err(invalid()),
-        }
-    }
-    Ok(())
+    crate::path_safety::safe_ancestors(path).map_err(|_| invalid())
 }
 
 pub struct MeetingContextStore {
