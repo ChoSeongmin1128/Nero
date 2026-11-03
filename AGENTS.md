@@ -172,7 +172,11 @@ behavior. Separate implemented behavior, proposals and unverified platform suppo
   verified latest public product version, regardless of first-user sharing status.
   Internal test builds may retain the product version and only increase the global
   build number; documentation-only changes do not create a release or bump either.
-  Stage changes such as `0.1.0` or `1.0.0` require an explicit product decision.
+  Every MINOR or MAJOR increase requires the user's review decision or approval
+  after presenting the reason, scope and compatibility impact. Do not apply the
+  version change or publish its tag/release before that response is confirmed.
+  A general implementation or deployment request does not authorize such a bump.
+  Update the increment policy when a stage change such as `0.1.0` or `1.0.0` is agreed.
   The first external-user
   compatibility baseline must be recorded when users actually receive a build,
   using that product version, build number and source commit.
