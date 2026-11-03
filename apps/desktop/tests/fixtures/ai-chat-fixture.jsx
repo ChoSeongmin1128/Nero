@@ -59,7 +59,7 @@ export function mountAiChatFixture({ document, scenario = 'ready', delay = 20 })
     },
     cancel: async requestId => { calls.push(['cancel', requestId]); const previous = requests.get(requestId); requests.delete(requestId); if (!previous) return; const conversation = conversations.get(previous.conversationId); const message = conversation.messages.at(-1); message.status = 'cancelled'; message.sequence += 1; conversation.activeRequestId = null; later(() => receiver?.({ requestId, conversationId: previous.conversationId, type: 'cancelled', sequence: message.sequence, text: message.text })); },
     exportAnswer: async value => { calls.push(['exportAnswer', value]); return { text: value.format === 'md' ? '## 결정 사항\n- 예시 답변' : '결정 사항\n예시 답변', format: value.format }; },
-    saveSummary: async value => { calls.push(['summary', value]); },
+    saveSummary: async value => { calls.push(['summary', value]); return { summaryId: 'example-summary' }; },
     appendNote: async value => { calls.push(['note', value]); },
     notionSnapshot: async () => ({ connected: scenario !== 'oauth', workspaceName: '예시 공간' }),
     fetchSources: async value => { calls.push(['source', value]); return { sources: [{ sourceId: 'notion:example:revision', pageId: 'example', title: '예시 자료', url: value.links[0], body: '합성 자료입니다.' }] }; },

@@ -27,7 +27,7 @@ async function harness(overrides = {}, options = {}) {
       return { conversationId: request.conversationId, requestId: request.requestId };
     },
     cancel: async requestId => { calls.push(['cancel', requestId]); },
-    saveSummary: async request => { calls.push(['summary', request]); },
+    saveSummary: async request => { calls.push(['summary', request]); return { summaryId: 'summary' }; },
     appendNote: async request => { calls.push(['note', request]); },
     notionSnapshot: async () => ({ connected: true }),
     fetchSources: async request => { calls.push(['source', request]); return { sources: [{ sourceId: 'notion:page:revision', pageId: 'page', title: 'Example source' }] }; },

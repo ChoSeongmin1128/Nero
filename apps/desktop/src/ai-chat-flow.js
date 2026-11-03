@@ -211,7 +211,7 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
       const message = messages[index], meetingId = message.summaryTargetId;
       if (message.saveTargets.some(target => target.meetingId === meetingId && target.canSaveSummary === true)) {
         updateConversation(id, { action: `summary:${message.id}` });
-        void (async () => { try { await beforeWrite(meetingId); await bridge.saveSummary({ conversationId: id, messageId: message.id, meetingId }); updateConversation(id, { feedback: '요약을 저장했습니다.' }); await onSaved('summary', meetingId); } catch (error) { updateConversation(id, { error: errorMessage(error, '요약을 저장하지 못했습니다. 다시 시도해 주세요.') }); } finally { if (conversations.get(id)?.action === `summary:${message.id}`) updateConversation(id, { action: null }); } })();
+        void (async () => { try { await beforeWrite(meetingId); const result = await bridge.saveSummary({ conversationId: id, messageId: message.id, meetingId }); if (!result?.summaryId) throw new Error('요약 저장 결과를 확인하지 못했습니다.'); updateConversation(id, { feedback: '요약을 저장했습니다.' }); await onSaved('summary', meetingId); } catch (error) { updateConversation(id, { error: errorMessage(error, '요약을 저장하지 못했습니다. 다시 시도해 주세요.') }); } finally { if (conversations.get(id)?.action === `summary:${message.id}`) updateConversation(id, { action: null }); } })();
       } else updateConversation(id, { error: '선택한 회의에 요약을 저장할 수 없습니다.' });
     }
   };
@@ -226,7 +226,7 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
     await flow.newConversation({ attachCurrent: false, fromOpen: true });
     return null;
   }
-  const canStart = text => Boolean(subscriptionReady && state.conversation.key && state.conversation.loaded && ready() && state.modelId && !state.modelsBusy && !state.modelError && !state.conversation.loading && !state.conversation.contextBusy && !state.conversation.activeRequestId && !state.conversation.action && !state.fetching && (text.trim() || state.conversation.skillId) && (!state.conversation.skillId || (state.conversation.meetings.length === 1 && state.conversation.meetings[0].id === state.conversation.summaryTargetId)));
+  const canStart = (text, context = state.conversation) => Boolean(subscriptionReady && state.conversation.key && state.conversation.loaded && ready() && state.modelId && !state.modelsBusy && !state.modelError && !state.conversation.loading && !state.conversation.contextBusy && !state.conversation.activeRequestId && !state.conversation.action && !state.fetching && (text.trim() || context.skillId) && (!context.skillId || (context.meetings.length === 1 && context.meetings[0].id === context.summaryTargetId)));
   const flow = {
     getSnapshot: () => state,
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
@@ -374,11 +374,11 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
       updateConversation(id, { sources: current.sources.filter(item => item.sourceId !== sourceId), excludedSourceKeys: removed ? [...new Set([...(current.excludedSourceKeys || []), sourceKey(removed)])] : current.excludedSourceKeys, compositionInitialized: true });
     },
     async send(text = state.conversation.draft, options = {}) {
-      if (!canStart(text)) return false;
+      const context = { ...state.conversation, meetings: options.meetings || state.conversation.meetings, sources: options.sources || state.conversation.sources, skillId: options.skillId ?? state.conversation.skillId, summaryTargetId: options.summaryTargetId ?? state.conversation.summaryTargetId };
+      if (!canStart(text, context)) return false;
       selectionInitialized = true;
       let id = state.conversation.key;
       const requestId = createId(), accountId = state.accountId, modelId = state.modelId;
-      const context = { ...state.conversation, meetings: options.meetings || state.conversation.meetings, sources: options.sources || state.conversation.sources };
       let finishStart;
       const starting = { requestId, done: new Promise(resolve => { finishStart = resolve; }) };
       pendingStarts.set(id, starting);
@@ -402,7 +402,7 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
           void flow.loadList(true);
         }
         const attachments = attachmentsFor(context), saveTargets = context.meetings.map(meeting => ({ meetingId: meeting.id, title: meeting.title, canSaveSummary: false }));
-        const messages = [...context.messages, { id: `user:${requestId}`, role: 'user', text: text.trim(), status: 'completed', templateId, skillId, summaryTargetId: context.summaryTargetId, attachments }, { id: `assistant:${requestId}`, requestId, role: 'assistant', text: '', status: 'streaming', skillId, summaryTargetId: context.summaryTargetId, citations: [], attachments, saveTargets }];
+        const messages = [...context.messages, { id: `user:${requestId}`, role: 'user', text: text.trim() || '첨부한 회의를 요약해 주세요.', status: 'completed', templateId, skillId, summaryTargetId: context.summaryTargetId, attachments }, { id: `assistant:${requestId}`, requestId, role: 'assistant', text: '', status: 'streaming', skillId, summaryTargetId: context.summaryTargetId, citations: [], attachments, saveTargets }];
         updateConversation(id, { messages, draft: '', useTemplate: false, templateId: null, skillId: null, summaryTargetId: null, action: null, activeRequestId: requestId });
         const receipt = await bridge.send({ requestId, conversationId: id, meetingIds: context.meetings.map(meeting => meeting.id), accountId, modelId, message: text.trim() || '첨부한 회의를 요약해 주세요.', sourceIds: context.sources.map(item => item.sourceId), sourceOrigins: Object.fromEntries(context.sources.filter(item => !item.unknownOrigin).map(item => [item.sourceId, { directSourceId: item.directSource?.sourceId || null, meetingSources: Object.fromEntries(Object.entries(item.meetingSources || {}).map(([meetingId, source]) => [meetingId, source.sourceId])) }])), ...(templateId ? { templateId } : {}), ...(skillId ? { skillId, summaryTargetId: context.summaryTargetId } : {}) });
         if (receipt.conversationId !== id) throw new Error('대화 응답을 확인하지 못했습니다.');
@@ -426,7 +426,7 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
       if (!prompt) return false;
       const selection = attachmentSelection(prompt.attachments);
       if ((prompt.attachments || []).filter(item => item.kind === 'meeting').length !== selection.meetings.length) { updateConversation(state.conversation.key, { error: '삭제된 회의를 제외하고 다시 질문해 주세요.' }); return false; }
-      return flow.send(prompt.text, { templateId: prompt.templateId, skillId: prompt.skillId, ...selection });
+      return flow.send(prompt.text, { templateId: prompt.templateId, skillId: prompt.skillId, summaryTargetId: prompt.summaryTargetId, ...selection });
     },
     async stop() {
       const id = state.conversation.id, requestId = state.conversation.activeRequestId;
