@@ -73,7 +73,9 @@ export function mountSpeechModelPicker({ node, onSelect, onPrepare, onSpeakerCha
       row.input.checked = choice.id === current;
       row.input.disabled = choice.supported !== true;
       row.title.textContent = choice.id === 'nemotron' ? 'Nemotron 3.5' : choice.id === 'whisperTurbo' ? 'Whisper large-v3-turbo' : choice.id === 'appleSpeech' ? 'macOS 기본 전사' : choice.label;
-      row.description.textContent = choice.id === 'nemotron' ? '기본' : choice.id === 'whisperTurbo' ? '다른 인식 결과가 필요할 때' : choice.id === 'appleSpeech' ? 'macOS의 음성 인식 사용' : '';
+      if (choice.id === 'whisperLargeV3') row.title.textContent = 'Whisper large-v3';
+      if (choice.recommended) row.title.textContent += ' (추천)';
+      row.description.textContent = choice.recommended && choice.recommendationReason ? choice.recommendationReason : choice.id === 'nemotron' ? '기본' : choice.id === 'whisperTurbo' ? '속도와 정확도 균형' : choice.id === 'whisperLargeV3' ? '정확도 우선, 처리 시간 증가' : choice.id === 'appleSpeech' ? 'macOS의 음성 인식 사용' : '';
       row.description.hidden = !row.description.textContent;
       row.metadata.textContent = choice.supported !== true ? '사용할 수 없음' : choice.ready ? '' : choice.id === 'appleSpeech' ? '언어 데이터 준비 필요' : '다운로드 필요';
       row.metadata.hidden = !row.metadata.textContent;

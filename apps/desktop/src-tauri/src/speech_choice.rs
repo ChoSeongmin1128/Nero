@@ -8,15 +8,22 @@ pub enum SpeechEngine {
     #[default]
     Nemotron,
     WhisperTurbo,
+    WhisperLargeV3,
     AppleSpeech,
 }
 
 impl SpeechEngine {
-    pub(super) const ALL: [Self; 3] = [Self::Nemotron, Self::WhisperTurbo, Self::AppleSpeech];
+    pub(super) const ALL: [Self; 4] = [
+        Self::Nemotron,
+        Self::WhisperTurbo,
+        Self::WhisperLargeV3,
+        Self::AppleSpeech,
+    ];
     pub(super) fn manifest(self) -> &'static str {
         match self {
             Self::Nemotron => crate::asr::MANIFEST,
             Self::WhisperTurbo => crate::whisper_asr::MANIFEST,
+            Self::WhisperLargeV3 => crate::whisper_asr::LARGE_MANIFEST,
             Self::AppleSpeech => crate::apple_speech::MANIFEST,
         }
     }
@@ -24,6 +31,7 @@ impl SpeechEngine {
         match self {
             Self::Nemotron => crate::asr::LABEL,
             Self::WhisperTurbo => "WhisperTurbo",
+            Self::WhisperLargeV3 => "WhisperLargeV3",
             Self::AppleSpeech => "AppleSpeech",
         }
     }
@@ -31,6 +39,7 @@ impl SpeechEngine {
         match self {
             Self::Nemotron => "Nemotron 3.5 · 기본",
             Self::WhisperTurbo => "Whisper large-v3-turbo · 구간 처리",
+            Self::WhisperLargeV3 => "Whisper large-v3 · 구간 처리",
             Self::AppleSpeech => "macOS 기본 전사",
         }
     }
@@ -38,6 +47,7 @@ impl SpeechEngine {
         match self {
             Self::AppleSpeech => "녹음 종료 후 macOS에서 한국어를 전사합니다. Nero 전용 음성 인식 모델이 필요하지 않습니다. 준비 시 시스템 언어 자산을 다운로드할 수 있습니다.",
             Self::Nemotron => "녹음과 함께 음성 기록을 준비합니다. 지원되는 GPU를 우선 사용하고 CPU로도 처리할 수 있습니다.",
+            Self::WhisperLargeV3 => "고사양 Mac용 큰 모델입니다. 모델 다운로드와 구간별 처리에 더 많은 저장 공간과 메모리, 시간이 필요합니다.",
             Self::WhisperTurbo => if cfg!(windows) {
                 "한국어를 포함한 언어별 결과가 Nemotron과 다를 수 있습니다. Windows에서는 CPU로 구간별 처리하며, 더 많은 메모리와 처리 시간이 필요할 수 있습니다. 녹음 종료 후에도 추가로 기다릴 수 있습니다."
             } else {
@@ -71,6 +81,8 @@ pub struct SpeechChoice {
     pub model_bytes: u64,
     pub ready: bool,
     pub supported: bool,
+    pub recommended: bool,
+    pub recommendation_reason: Option<&'static str>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -242,6 +254,8 @@ mod tests {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct SessionChoice {
     schema_version: u32,
+    #[serde(default)]
+    pub(super) glossary_snapshot_required: bool,
     pub(super) engine: SpeechEngine,
     pub(super) speaker_enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -300,6 +314,7 @@ pub(super) fn freeze_session(
     let mut file = tempfile::NamedTempFile::new_in(directory).map_err(|_| invalid())?;
     let choice = SessionChoice {
         schema_version: 1,
+        glossary_snapshot_required: true,
         engine,
         speaker_enabled,
         apple_speech_variant,

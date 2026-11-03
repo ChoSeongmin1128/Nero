@@ -306,21 +306,30 @@ impl ClaudeConnection {
         &self,
         model: &str,
         prompt: &str,
+        effort: Option<&str>,
         cancel: Arc<AtomicBool>,
         delta: impl FnMut(&str),
     ) -> Result<claude_runner::Reply, String> {
-        if !self
-            .models
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|entry| entry.value == model)
-        {
+        let operation = lock_operation(&self.model_operation, &cancel)?;
+        let runner = self.resolve()?;
+        let identity = runner.identity(&cancel)?;
+        let models = self.model_cache.read_for_runtime(&identity).map_err(|_| "Claude 실행 파일이 바뀌었거나 모델 목록을 확인할 수 없습니다. 모델 목록을 새로고침해 주세요.".to_string())?;
+        if !models.iter().any(|entry| {
+            entry.value == model
+                && effort.map_or(true, |value| {
+                    entry.supports_effort == Some(true)
+                        && entry
+                            .supported_effort_levels
+                            .iter()
+                            .any(|level| level == value)
+                })
+        }) {
             return Err(
                 "선택한 Claude 모델을 확인하지 못했습니다. 모델 목록을 새로고침해 주세요.".into(),
             );
         }
-        let result = self.resolve()?.reply(model, prompt, cancel, delta);
+        drop(operation);
+        let result = runner.reply(model, prompt, effort, cancel, delta);
         if result.is_ok() {
             *self.cached.lock().unwrap() = Some(Self::row(true));
         } else {
@@ -369,6 +378,8 @@ mod tests {
             value: "sonnet".into(),
             display_name: "Sonnet".into(),
             resolved_model: None,
+            supports_effort: None,
+            supported_effort_levels: vec![],
         };
         cache.write(&[model], Some(&"a".repeat(64))).unwrap();
         let connection = ClaudeConnection::new(root.clone());
@@ -427,6 +438,7 @@ mod tests {
         let result = connection.reply(
             "claude-unknown",
             "prompt",
+            None,
             Arc::new(AtomicBool::new(false)),
             |_| {},
         );

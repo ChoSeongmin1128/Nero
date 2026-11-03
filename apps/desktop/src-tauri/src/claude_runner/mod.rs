@@ -229,9 +229,11 @@ mod tests {
     }
     #[test]
     fn parses_only_matching_supported_model_metadata() {
-        let output = br#"{"type":"control_response","response":{"subtype":"success","request_id":"models","response":{"account":{"email":"private"},"models":[{"value":"sonnet","displayName":"Sonnet","resolvedModel":"claude-sonnet-5-5"},{"value":"claude-opus-5-5","displayName":"Opus 5.5"},{"value":"--bad","displayName":"bad"}]}}}
+        let output = br#"{"type":"control_response","response":{"subtype":"success","request_id":"models","response":{"account":{"email":"private"},"models":[{"value":"sonnet","displayName":"Sonnet","resolvedModel":"claude-sonnet-5-5","supportsEffort":true,"supportedEffortLevels":["low","high"]},{"value":"claude-opus-5-5","displayName":"Opus 5.5"},{"value":"--bad","displayName":"bad"}]}}}
 "#;
         let models = parse_supported_models(output).unwrap();
+        assert_eq!(models[0].supports_effort, Some(true));
+        assert_eq!(models[0].supported_effort_levels, vec!["low", "high"]);
         assert_eq!(models[0].value, "sonnet");
         assert_eq!(
             models[0].resolved_model.as_deref(),
@@ -253,6 +255,18 @@ mod tests {
         stream.feed(br#"{"type":"stream_event","event":{"type":"message_start","message":{"model":"claude-opus-5-5"}}}
 "#, &mut |_| {}).unwrap();
         assert_eq!(stream.actual_model(), None);
+    }
+    #[test]
+    fn reply_command_includes_only_the_selected_effort() {
+        let cmd = reply_command(Path::new("claude"), Path::new("."), "sonnet", Some("high"));
+        let args = cmd
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(args.windows(2).any(|pair| pair == ["--model", "sonnet"]));
+        assert!(args.windows(2).any(|pair| pair == ["--effort", "high"]));
+        let default = reply_command(Path::new("claude"), Path::new("."), "sonnet", None);
+        assert!(!default.get_args().any(|arg| arg == "--effort"));
     }
     #[test]
     fn captures_success_and_rejects_failure() {
@@ -455,6 +469,7 @@ impl Runner {
         &self,
         model: &str,
         prompt: &str,
+        effort: Option<&str>,
         cancel: Arc<AtomicBool>,
         mut delta: impl FnMut(&str),
     ) -> Result<Reply, String> {
@@ -465,29 +480,7 @@ impl Runner {
             return Err("Claude Code에서 구독 계정으로 로그인해 주세요.".into());
         }
         let work = tempfile::tempdir().map_err(|_| ERROR)?;
-        let mut cmd = command(&self.binary);
-        cmd.current_dir(work.path()).args([
-            "--print",
-            "--safe-mode",
-            "--restricted",
-            "--tools",
-            "",
-            "--disallowedTools",
-            "mcp__*",
-            "--strict-mcp-config",
-            "--mcp-config",
-            "{\"mcpServers\":{}}",
-            "--settings",
-            "{}",
-            "--no-session-persistence",
-            "--no-chrome",
-            "--model",
-            model,
-            "--include-partial-messages",
-            "--output-format",
-            "stream-json",
-            "--verbose",
-        ]);
+        let cmd = reply_command(&self.binary, work.path(), model, effort);
         let mut stream = ReplyStream::default();
         run(cmd, prompt.as_bytes().to_vec(), TIMEOUT, &cancel, |chunk| {
             stream.feed(chunk, &mut delta)
@@ -500,12 +493,46 @@ impl Runner {
     }
 }
 
+fn reply_command(binary: &Path, work: &Path, model: &str, effort: Option<&str>) -> Command {
+    let mut cmd = command(binary);
+    cmd.current_dir(work).args([
+        "--print",
+        "--safe-mode",
+        "--restricted",
+        "--tools",
+        "",
+        "--disallowedTools",
+        "mcp__*",
+        "--strict-mcp-config",
+        "--mcp-config",
+        "{\"mcpServers\":{}}",
+        "--settings",
+        "{}",
+        "--no-session-persistence",
+        "--no-chrome",
+        "--model",
+        model,
+        "--include-partial-messages",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+    ]);
+    if let Some(effort) = effort {
+        cmd.args(["--effort", effort]);
+    }
+    cmd
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SupportedModel {
     pub value: String,
     pub display_name: String,
     pub resolved_model: Option<String>,
+    #[serde(default)]
+    pub supports_effort: Option<bool>,
+    #[serde(default)]
+    pub supported_effort_levels: Vec<String>,
 }
 
 pub(crate) fn valid_model(value: &str) -> bool {
@@ -555,6 +582,20 @@ fn parse_supported_models(output: &[u8]) -> Result<Vec<SupportedModel>, String> 
                     .as_str()
                     .filter(|v| valid_model(v))
                     .map(str::to_owned),
+                supports_effort: row["supportsEffort"].as_bool(),
+                supported_effort_levels: row["supportedEffortLevels"]
+                    .as_array()
+                    .map(|levels| {
+                        levels
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .filter(|level| {
+                                matches!(*level, "low" | "medium" | "high" | "xhigh" | "max")
+                            })
+                            .map(str::to_owned)
+                            .collect()
+                    })
+                    .unwrap_or_default(),
             });
         }
         if !result.is_empty() {

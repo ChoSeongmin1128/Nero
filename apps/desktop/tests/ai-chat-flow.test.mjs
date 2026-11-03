@@ -450,7 +450,7 @@ test('reconnect passes the old account ID and selects the newly ready active acc
     finishConnect: async () => ({ accounts: [old, fresh], activeAccountId: 'new' }),
     models: async accountId => { modelLoads.push(accountId); return { models: [{ id: 'new-model', label: 'New model' }], defaultModelId: 'new-model' }; },
   });
-  await app.flow.connect('chatgpt'); await tick(); app.flow.selectProvider('chatgpt', { explicit: true }); await tick(); app.flow.edit('Question');
+  await app.flow.connect('chatgpt'); await tick(); app.flow.edit('Question');
   assert.deepEqual(reconnects, [['chatgpt', 'old']]); assert.equal(app.state().accountId, 'new'); assert.deepEqual(modelLoads, ['new']); assert.equal(app.flow.canSend(), true);
   await app.flow.send(); assert.equal(app.calls.find(call => call[0] === 'send')[1].accountId, 'new'); app.flow.dispose();
 });
@@ -679,7 +679,7 @@ test('starting Claude connection invalidates its cache and selection until expli
   const completion = deferred(), staleRefresh = deferred();
   let count = 0, deferRefresh = false;
   const app = await harness({ accounts: async () => ({ accounts: [readyAccount, claude] }),
-    models: async id => { if (id !== 'claude') return { models: [{ id: 'model', label: 'Model' }] }; count++; if (deferRefresh) return staleRefresh.promise; return { models: [{ id: count === 1 ? 'old' : 'new', label: 'Claude model' }] }; },
+    models: async (id, refresh) => { if (refresh === false) return { models: [] }; if (id !== 'claude') return { models: [{ id: 'model', label: 'Model' }] }; count++; if (deferRefresh) return staleRefresh.promise; return { models: [{ id: count === 1 ? 'old' : 'new', label: 'Claude model' }] }; },
     connect: async () => ({ attemptId: 'attempt' }), finishConnect: () => completion.promise,
     cancelConnect: async () => ({ accounts: [readyAccount, claude] }),
   });
@@ -692,7 +692,7 @@ test('starting Claude connection invalidates its cache and selection until expli
   await app.flow.cancelConnect('claude'); completion.resolve({ accounts: [readyAccount, claude] }); await connection;
   assert.equal(app.state().modelId, null); assert.deepEqual(app.flow.modelsFor('claude').models, []);
   deferRefresh = false; await app.flow.refreshModelGroup('claude');
-  assert.equal(app.state().modelId, null); app.flow.chooseModel('claude', 'claude', 'new');
+  assert.equal(app.state().modelId, 'new'); app.flow.chooseModel('claude', 'claude', 'new');
   assert.equal(app.state().modelId, 'new'); app.flow.dispose();
 });
 
@@ -702,7 +702,7 @@ test('Claude connection invalidation preserves selected ChatGPT model', async ()
     connect: async () => ({ attemptId: 'attempt' }), finishConnect: async () => ({ accounts: [readyAccount, claude] }) });
   await app.flow.refreshModelGroup('claude'); await app.flow.connect('claude');
   assert.equal(app.state().provider, 'chatgpt'); assert.equal(app.state().modelId, 'model');
-  assert.deepEqual(app.flow.modelsFor('claude').models, []); app.flow.dispose();
+  assert.deepEqual(app.flow.modelsFor('claude').models, [{ id: 'model', label: 'Model' }]); app.flow.dispose();
 });
 
 
@@ -714,4 +714,24 @@ test('summary target follows the sole attached meeting and blocks zero or multip
   app.flow.removeMeeting('meeting-b'); assert.equal(app.state().conversation.summaryTargetId, null); assert.equal(app.flow.canSend(), false);
   app.flow.attachMeeting(exampleMeetings[0]); assert.equal(app.state().conversation.summaryTargetId, 'meeting-a'); assert.equal(app.flow.canSend(), true);
   await app.flow.send(); assert.equal(app.calls.find(call => call[0] === 'send')[1].summaryTargetId, 'meeting-a'); app.flow.dispose();
+});
+
+ test('effort follows model capability and is sent with the request', async () => {
+  const app = await harness({ models: async () => ({ models: [{ id: 'model', label: 'Model', effort: { supported: true, levels: ['low', 'high'], default: 'low' } }, { id: 'other', label: 'Other', effort: { supported: false, levels: [] } }], defaultModelId: 'model' }) });
+  app.flow.selectEffort('high'); assert.equal(app.state().effort, 'high');
+  app.flow.selectEffort('max'); assert.equal(app.state().effort, 'high');
+  app.flow.edit('Question'); await app.flow.send(); assert.equal(app.calls.find(call => call[0] === 'send')[1].effort, 'high');
+  app.emit({ type: 'completed', sequence: 1, text: 'Answer', messageId: 'answer' });
+  app.flow.chooseModel('chatgpt', 'account', 'other'); assert.equal(app.state().effort, null);
+  app.flow.dispose();
+});
+
+test('retry keeps the failed request effort even after the picker changes', async () => {
+  const app = await harness({ models: async () => ({ models: [{ id: 'model', label: 'Model', effort: { supported: true, levels: ['low', 'high'] } }], defaultModelId: 'model' }) });
+  app.flow.selectEffort('high'); app.flow.edit('Question'); await app.flow.send();
+  app.emit({ type: 'failed', sequence: 1, text: '', messageId: 'answer' });
+  app.flow.selectEffort('low'); await app.flow.retry('answer');
+  const sends = app.calls.filter(call => call[0] === 'send');
+  assert.equal(sends[1][1].effort, 'high');
+  app.flow.dispose();
 });

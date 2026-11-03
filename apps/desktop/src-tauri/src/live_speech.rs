@@ -133,6 +133,7 @@ impl Processing {
         else {
             return Ok(());
         };
+        let existing = crate::speech_choice::load_session(&self.root, &session.id)?;
         let choice = crate::speech_choice::freeze_session(
             &self.root,
             &session.id,
@@ -140,6 +141,16 @@ impl Processing {
             self.speaker_enabled(),
             self.apple_speech_variant(),
         )?;
+        let glossary = if existing.is_none() {
+            crate::glossary_context::freeze_session(&self.root, &session.id, &session.meeting_id)?
+        } else {
+            crate::glossary_context::capture_context(
+                &self.root,
+                &session.id,
+                &session.meeting_id,
+                Some(&choice),
+            )?
+        };
         self.cancel_live()?;
         if choice.engine == SpeechEngine::AppleSpeech {
             self.update(|progress| progress.live_transcript = None);
@@ -194,6 +205,7 @@ impl Processing {
                         child,
                         engine,
                         speaker_enabled,
+                        glossary,
                     );
                     if let Err(error) = result {
                         let _ = fs::write(
@@ -327,6 +339,7 @@ fn run(
     child: Arc<Mutex<Option<Child>>>,
     engine: SpeechEngine,
     speaker_enabled: bool,
+    glossary: crate::glossary_context::Context,
 ) -> Result<(), String> {
     let _guard = ChildGuard {
         child: child.clone(),
@@ -357,6 +370,7 @@ fn run(
     }
     let audio = path.join("analysis.wav");
     let request = json!({"speakerEnabled":speaker_enabled,"asrEngine":engine,"whisperExecutable":crate::whisper_asr::executable(&process.resources),
+        "glossaryPrompt":if matches!(engine, SpeechEngine::WhisperTurbo | SpeechEngine::WhisperLargeV3) { glossary.prompt() } else { String::new() }, "glossaryEvidence":glossary.evidence(engine),
         "asrModel":model_path,"asrLibrary":library,"meetingId":meeting_id,"sessionId":session_id,
         "speaker":{"schemaVersion":1,"audio":audio,"model":speaker_weights,"library":library,
             "output":speaker_path,"backend":backend,"modelSha256":speaker_model.files[0].sha256,
@@ -553,8 +567,9 @@ fn publish_asr(
             SpeechEngine::AppleSpeech => {
                 return Err("macOS 기본 전사는 녹음 종료 후 처리합니다.".into())
             }
-            SpeechEngine::WhisperTurbo => {
-                result["completed"] != true
+            SpeechEngine::WhisperTurbo | SpeechEngine::WhisperLargeV3 => {
+                result["modelSha256"] != model["files"][0]["sha256"]
+                    || result["completed"] != true
                     || result["completionEvidence"] != "whisper-cli-windows-exit0-v1"
             }
         }

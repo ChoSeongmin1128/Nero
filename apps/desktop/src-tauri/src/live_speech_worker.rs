@@ -25,6 +25,10 @@ struct Request {
     speaker: speaker::Request,
     meeting_id: String,
     session_id: String,
+    #[serde(default)]
+    glossary_prompt: String,
+    #[serde(default)]
+    glossary_evidence: Value,
 }
 fn digest(path: &Path) -> Result<String> {
     crate::speech_audio::digest(path).map_err(|e| e.message)
@@ -89,7 +93,11 @@ pub(super) fn entry(path: &Path) -> Result<ExitPolicy> {
     } else {
         None
     };
-    let mut whisper = if request.asr_engine == crate::speech_choice::SpeechEngine::WhisperTurbo {
+    let mut whisper = if matches!(
+        request.asr_engine,
+        crate::speech_choice::SpeechEngine::WhisperTurbo
+            | crate::speech_choice::SpeechEngine::WhisperLargeV3
+    ) {
         Some(crate::whisper_asr::Buffered::new(
             request
                 .whisper_executable
@@ -103,6 +111,8 @@ pub(super) fn entry(path: &Path) -> Result<ExitPolicy> {
                 .ok_or("Missing live work root")?
                 .to_path_buf(),
             true,
+            request.asr_engine,
+            request.glossary_prompt.clone(),
         )?)
     } else {
         None
@@ -260,7 +270,7 @@ pub(super) fn entry(path: &Path) -> Result<ExitPolicy> {
     {
         return Err("Live audio/model/runtime changed".into());
     }
-    let raw = if let Some(asr) = asr.as_mut() {
+    let mut raw = if let Some(asr) = asr.as_mut() {
         asr.finish()?;
         let result = asr.drain()?.ok_or("No final ASR result")?;
         if result["final"] != true {
@@ -279,6 +289,7 @@ pub(super) fn entry(path: &Path) -> Result<ExitPolicy> {
             .ok_or("Missing ASR engine")?
             .finish(count, &fed_sha, &whisper_cancel)?
     };
+    raw["glossaryContext"] = request.glossary_evidence.clone();
     save(
         &request
             .speaker

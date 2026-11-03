@@ -36,6 +36,8 @@ pub(super) enum JobStatus {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct JobRecord {
     #[serde(default)]
+    pub glossary_snapshot_required: bool,
+    #[serde(default)]
     pub speech_engine: crate::speech_choice::SpeechEngine,
     #[serde(default = "crate::speech_choice::enabled")]
     pub speaker_enabled: bool,
@@ -485,8 +487,12 @@ mod tests {
         let original = record(JobStatus::Queued);
         let mut raw = serde_json::to_value(&original).unwrap();
         raw.as_object_mut().unwrap().remove("speakerEnabled");
+        raw.as_object_mut()
+            .unwrap()
+            .remove("glossarySnapshotRequired");
         let recovered: JobRecord = serde_json::from_value(raw.clone()).unwrap();
         assert!(recovered.speaker_enabled);
+        assert!(!recovered.glossary_snapshot_required);
         raw["speakerEnabled"] = serde_json::json!(false);
         raw["speechEngine"] = serde_json::json!("appleSpeech");
         raw["appleSpeechVariant"] = serde_json::json!("dictationTranscriber");
@@ -504,6 +510,7 @@ mod tests {
 
     fn record(status: JobStatus) -> JobRecord {
         JobRecord {
+            glossary_snapshot_required: false,
             speech_engine: crate::speech_choice::SpeechEngine::default(),
             speaker_enabled: true,
             apple_speech_variant: None,

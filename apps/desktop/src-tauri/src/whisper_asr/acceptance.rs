@@ -40,7 +40,16 @@ fn native_audio_import_whisper_execution_and_persisted_reader() {
             prepared.path(),
         )
         .unwrap();
-    let raw = recognize(&resources, prepared.path(), &work, &cancel, &model).unwrap();
+    let raw = recognize(
+        &resources,
+        prepared.path(),
+        &work,
+        &cancel,
+        &model,
+        crate::speech_choice::SpeechEngine::WhisperTurbo,
+        "",
+    )
+    .unwrap();
     prepared.verify(&imported.path, &cancel).unwrap();
     let value: Value = serde_json::from_slice(&raw).unwrap();
     assert_eq!(value["completed"], true);

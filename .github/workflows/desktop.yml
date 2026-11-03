@@ -7,6 +7,10 @@ on:
         description: Build an unsigned Windows NSIS installer without installing or publishing it
         type: boolean
         default: false
+      sign_windows_installer:
+        description: Request SignPath signing for the Windows installer built by this run
+        type: boolean
+        default: false
       use_dependency_cache:
         description: Reuse dependency downloads; disable for a cold verification run
         type: boolean
@@ -49,7 +53,10 @@ jobs:
   native:
     name: Native checks (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
+    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.sign_windows_installer && 120 || 45 }}
     strategy:
       fail-fast: false
       max-parallel: 1
@@ -63,6 +70,33 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Validate Windows signing request
+        if: runner.os == 'Windows' && github.event_name == 'workflow_dispatch' && inputs.sign_windows_installer
+        shell: pwsh
+        env:
+          REQUESTED_BUILD: ${{ inputs.build_windows_installer }}
+          IS_FORK: ${{ github.event.repository.fork }}
+          CURRENT_REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if ($env:REQUESTED_BUILD -ne 'true') { throw 'Signing requires build_windows_installer.' }
+          if ($env:IS_FORK -ne 'false' -or $env:CURRENT_REF -ne "refs/heads/$env:DEFAULT_BRANCH") {
+            throw 'Signing is restricted to manual runs on the original repository default branch.'
+          }
+      - name: Check SignPath configuration
+        if: runner.os == 'Windows' && github.event_name == 'workflow_dispatch' && inputs.sign_windows_installer && inputs.build_windows_installer && github.event.repository.fork == false && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        shell: pwsh
+        env:
+          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+          SIGNPATH_ORGANIZATION_ID: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          SIGNPATH_PROJECT_SLUG: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          SIGNPATH_SIGNING_POLICY_SLUG: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          SIGNPATH_CERTIFICATE_THUMBPRINT: ${{ vars.SIGNPATH_CERTIFICATE_THUMBPRINT }}
+        run: |
+          foreach ($name in @('SIGNPATH_API_TOKEN', 'SIGNPATH_ORGANIZATION_ID', 'SIGNPATH_PROJECT_SLUG', 'SIGNPATH_SIGNING_POLICY_SLUG', 'SIGNPATH_CERTIFICATE_THUMBPRINT')) {
+            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) { throw "$name is required for signing." }
+          }
+          if ($env:SIGNPATH_CERTIFICATE_THUMBPRINT -notmatch '^[0-9a-fA-F]{40}$') { throw 'SIGNPATH_CERTIFICATE_THUMBPRINT must be a SHA-1 certificate thumbprint.' }
       - name: Prepare macOS SDK
         if: runner.os == 'macOS'
         env:
@@ -254,6 +288,57 @@ jobs:
         env:
           NERO_REQUIRE_NSIS_TESTS: '1'
         run: python -B -m unittest discover -s apps/desktop/tests -p test_windows_installer.py -v
+      - name: Stage installer for SignPath
+        if: runner.os == 'Windows' && github.event_name == 'workflow_dispatch' && inputs.sign_windows_installer && inputs.build_windows_installer && github.event.repository.fork == false && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem -Path '.work/rust-target/release/bundle/nsis' -Filter '*.exe' -File -ErrorAction Stop)
+          if ($installers.Count -ne 1) { throw 'Expected exactly one Windows installer.' }
+          New-Item -ItemType Directory -Path '.work/signpath-input' -Force | Out-Null
+          Copy-Item -LiteralPath $installers[0].FullName -Destination '.work/signpath-input/Nero-setup.exe'
+      - name: Upload unsigned signing input
+        id: unsigned-installer
+        if: runner.os == 'Windows' && github.event_name == 'workflow_dispatch' && inputs.sign_windows_installer && inputs.build_windows_installer && github.event.repository.fork == false && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: windows-unsigned-signing-input
+          path: .work/signpath-input/Nero-setup.exe
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 7
+      - name: Request SignPath installer signature
+        if: runner.os == 'Windows' && github.event_name == 'workflow_dispatch' && inputs.sign_windows_installer && inputs.build_windows_installer && github.event.repository.fork == false && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.unsigned-installer.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: .work/signpath-output
+      - name: Verify signed installer
+        env:
+          SIGNPATH_CERTIFICATE_THUMBPRINT: ${{ vars.SIGNPATH_CERTIFICATE_THUMBPRINT }}
+        if: runner.os == 'Windows' && github.event_name == 'workflow_dispatch' && inputs.sign_windows_installer && inputs.build_windows_installer && github.event.repository.fork == false && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem -Path '.work/signpath-output' -File -Recurse -ErrorAction Stop)
+          if ($files.Count -ne 1 -or $files[0].Name -ne 'Nero-setup.exe') { throw 'Unexpected signed artifact contents.' }
+          $signature = Get-AuthenticodeSignature -LiteralPath $files[0].FullName
+          if ($signature.Status -ne 'Valid' -or $null -eq $signature.TimeStamperCertificate -or $signature.SignerCertificate.Thumbprint -ne $env:SIGNPATH_CERTIFICATE_THUMBPRINT) { throw 'The installer signature, signer, or timestamp is invalid.' }
+          $signature | Select-Object Status, SignerCertificate, TimeStamperCertificate
+          Get-FileHash -Algorithm SHA256 -LiteralPath $files[0].FullName
+      - name: Upload signed Windows installer
+        if: runner.os == 'Windows' && github.event_name == 'workflow_dispatch' && inputs.sign_windows_installer && inputs.build_windows_installer && github.event.repository.fork == false && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: windows-signed-installer
+          path: .work/signpath-output/Nero-setup.exe
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 7
       # Only reviewed default-branch dispatches populate caches; PRs restore downloads only.
       - name: Save npm downloads
         if: success() && github.event_name == 'workflow_dispatch' && inputs.use_dependency_cache && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && steps.npm-downloads.outputs.cache-hit != 'true'

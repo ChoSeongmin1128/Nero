@@ -56,7 +56,7 @@ test('onboarding and settings share both choices and wait for native selection b
     assert.equal(f.get(`${place}-speech-picker`).querySelectorAll('input[type=radio]').length,2);
     assert.match(f.get(`${place}-speech-picker`).textContent,/음성 처리 모델/);
     assert.doesNotMatch(f.get(`${place}-speech-picker`).textContent,/모델 파일|MB|GB|GPU|CPU/);
-    assert.match(f.get(`${place}-speech-picker`).textContent,/다른 인식 결과가 필요할 때/);
+    assert.match(f.get(`${place}-speech-picker`).textContent,/속도와 정확도 균형/);
   }
   f.radio('setup','whisperTurbo').focus();
   f.radio('setup','whisperTurbo').click();
@@ -159,4 +159,15 @@ test('Apple speech prepares system assets only after an explicit prepare action'
   f.get('setup-download').click();
   await wait(() => f.calls.some(call => call.name === 'prepareMeetingModels'));
   assert.deepEqual(f.calls.find(call => call.name === 'prepareMeetingModels').args, [false]);
+});
+
+test('hardware recommendation shows the optional full model without changing or downloading the selected model', async t => {
+  const f = await fixture(t, { speech: { speechChoices: [...choices, { id: 'whisperLargeV3', label: 'Whisper large-v3', description: '정확도 우선', modelBytes: 1081140203, ready: false, supported: true, recommended: true, recommendationReason: '이 Mac에서 정확도 우선 모델을 사용할 수 있습니다.' }] } });
+  for (const place of ['setup', 'settings']) {
+    assert.equal(f.radio(place, 'nemotron').checked, true);
+    assert.equal(f.radio(place, 'whisperLargeV3').checked, false);
+    assert.match(f.get(`${place}-speech-picker`).textContent, /Whisper large-v3 \(추천\)/);
+    assert.match(f.get(`${place}-speech-picker`).textContent, /정확도 우선 모델/);
+  }
+  assert.equal(f.calls.some(call => ['setSpeechEngine', 'prepareMeetingModels', 'transcribeAudio'].includes(call.name)), false);
 });

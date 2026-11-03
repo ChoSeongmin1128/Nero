@@ -89,6 +89,8 @@ pub fn now() -> u64 {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Message {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
     #[serde(default)]
     pub request_fingerprint: Option<String>,
     #[serde(default)]

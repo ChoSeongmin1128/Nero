@@ -492,3 +492,28 @@ test('all meetings use the same list icon in expanded and compact navigation, di
   assert.equal(compact, expanded);
   assert.notEqual(create, expanded);
 });
+
+test('recording location action requires validated playback and sends only the meeting id', async t => {
+  const { window, document, state, library, bridge } = await setup(t);
+  const calls = [];
+  bridge.revealRecordingFile = async id => calls.push(id);
+  const button = document.getElementById('meeting-reveal');
+  const menu = button.closest('details');
+  state.selectedId = 'filed';
+  library.render();
+  assert.equal(button.disabled, true);
+  state.audioKey = 'filed:undefined:96000';
+  document.getElementById('audio-message').dataset.state = 'ready';
+  menu.dispatchEvent(new window.Event('toggle'));
+  assert.equal(button.disabled, false);
+  button.click();
+  await settle();
+  assert.deepEqual(calls, ['filed']);
+  state.snapshot.session = { state: 'recording', meetingId: 'filed' };
+  menu.dispatchEvent(new window.Event('toggle'));
+  assert.equal(button.disabled, true);
+  state.snapshot.session = null;
+  document.getElementById('audio-message').dataset.state = 'error';
+  menu.dispatchEvent(new window.Event('toggle'));
+  assert.equal(button.disabled, true);
+});

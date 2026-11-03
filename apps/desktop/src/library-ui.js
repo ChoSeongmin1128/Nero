@@ -428,10 +428,15 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
       location.title = name;
       location.hidden = !meeting;
     }
+    updateReveal();
     byId('meeting-move').disabled = disabled || !meeting || meeting.deletedAt != null;
     byId('meeting-trash').disabled = disabled || !meeting || meeting.deletedAt != null || Boolean(meeting && runningRecording([meeting.id]));
     preview();
     if (sidebar) byId('navigation-sidebar').dispatchEvent(new owner.defaultView.CustomEvent('nero:sidebar-content-updated'));
+  }
+  function updateReveal() {
+    const meeting = current(state().selectedId);
+    byId('meeting-reveal').disabled = !state().connected || state().libraryBusy || !meeting || meeting.deletedAt != null || !meeting.audio || Boolean(runningRecording([meeting.id])) || state().audioKey !== `${meeting.id}:${meeting.audio?.relativePath}:${meeting.audio?.frames}` || byId('audio-message').dataset.state !== 'ready';
   }
   function actionFor(action, ids) {
     if (!ids.length || state().libraryBusy) return;
@@ -505,6 +510,12 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
   byId('library-select-all').addEventListener('click', selectAll);
   byId('library-selection-clear').addEventListener('click', () => { if (state().libraryBusy || !state().connected) return; resetSelection(); renderApp(); });
   for (const action of ['move', 'trash', 'restore', 'purge']) byId(`library-${action}`).addEventListener('click', () => actionFor(action, selectedIds()));
+  byId('meeting-reveal').addEventListener('click', () => {
+    const id = state().selectedId;
+    closeMenu(menus.active, true);
+    if (id) void bridge.revealRecordingFile(id).catch(showError);
+  });
+  byId('meeting-reveal').closest?.('details')?.addEventListener('toggle', updateReveal);
   for (const action of ['move', 'trash']) byId(`meeting-${action}`).addEventListener('click', () => { closeMenu(menus.active, true); actionFor(action, [state().selectedId].filter(Boolean)); });
   byId('meeting-list').addEventListener('click', event => {
     const toggle = event.target.closest('[data-library-toggle]');

@@ -100,3 +100,7 @@
 .ai-command-list > button { display: flex; justify-content: space-between; padding: 7px 9px; border: 0; background: transparent; color: var(--text); text-align: left; }
 .ai-command-list > button[aria-selected="true"] { background: var(--hover); }
 .ai-command-list small { color: var(--text-secondary); }
+
+.ai-message-attachments .brand-icon { width: 12px; height: 12px; }
+.ai-source-chip > .brand-icon { width: 14px; height: 14px; }
+.ai-source-kinds .brand-icon { width: 14px; height: 14px; vertical-align: middle; margin-right: 4px; }

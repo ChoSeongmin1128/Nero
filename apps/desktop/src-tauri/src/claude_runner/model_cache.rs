@@ -29,9 +29,18 @@ impl ModelCache {
         }
     }
     pub fn read(&self) -> Vec<SupportedModel> {
-        self.read_inner().unwrap_or_default()
+        self.read_inner()
+            .map(|cache| cache.models)
+            .unwrap_or_default()
     }
-    fn read_inner(&self) -> Result<Vec<SupportedModel>, String> {
+    pub fn read_for_runtime(&self, identity: &str) -> Result<Vec<SupportedModel>, String> {
+        let cache = self.read_inner()?;
+        if cache.runtime_sha256.as_deref() != Some(identity) {
+            return Err(ERROR.into());
+        }
+        Ok(cache.models)
+    }
+    fn read_inner(&self) -> Result<Cache, String> {
         crate::path_safety::safe_ancestors(&self.path).map_err(|_| ERROR)?;
         let file = fs::File::open(&self.path).map_err(|_| ERROR)?;
         if !file.metadata().map_err(|_| ERROR)?.is_file() {
@@ -57,7 +66,7 @@ impl ModelCache {
         {
             return Err(ERROR.into());
         }
-        Ok(cache.models)
+        Ok(cache)
     }
     pub fn write(&self, models: &[SupportedModel], hash: Option<&str>) -> Result<(), String> {
         if !valid(models)
@@ -103,6 +112,10 @@ fn valid(models: &[SupportedModel]) -> bool {
                 && model.display_name.len() <= 256
                 && !model.display_name.chars().any(char::is_control)
                 && model.resolved_model.as_deref().is_none_or(valid_model)
+                && model.supported_effort_levels.len() <= 5
+                && model.supported_effort_levels.iter().all(|level| {
+                    matches!(level.as_str(), "low" | "medium" | "high" | "xhigh" | "max")
+                })
                 && !models[..index]
                     .iter()
                     .any(|other| other.value == model.value)
@@ -121,9 +134,16 @@ mod tests {
             value: "sonnet".into(),
             display_name: "Sonnet".into(),
             resolved_model: None,
+            supports_effort: None,
+            supported_effort_levels: vec![],
         };
         cache.write(&[model], Some(&"a".repeat(64))).unwrap();
         assert_eq!(ModelCache::new(&root).read()[0].value, "sonnet");
+        assert_eq!(
+            cache.read_for_runtime(&"a".repeat(64)).unwrap()[0].value,
+            "sonnet"
+        );
+        assert!(cache.read_for_runtime(&"b".repeat(64)).is_err());
         assert!(cache.write(&cache.read(), Some("bad hash")).is_err());
         assert_eq!(cache.read()[0].value, "sonnet");
         let path = dir.path().join("ai-accounts/claude-models-public-v1.json");

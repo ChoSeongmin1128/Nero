@@ -232,6 +232,10 @@ frontend directory and are bundled through the existing Tauri resource mappings.
 - On macOS 26, the system speech option transcribes Korean after recording ends.
   It uses system language assets instead of a Nero ASR model; asset preparation may
   download data. Availability depends on the system. Speaker analysis remains optional.
+- Apple Silicon can also explicitly select the separately pinned Whisper large-v3
+  Q5 model. Hardware recommendations do not change the user's selected engine or
+  download models. See [speech model selection](../../docs/speech-model-selection.md)
+  for selection, memory policy and reviewed meeting glossary context.
 - Optional machine-local terminology profiles create a separate correction revision
   after recognition. Uncertain names remain unchanged; an absent optional contextual
   model does not block recognition. See [terminology correction](../../docs/terminology.md).

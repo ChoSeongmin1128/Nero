@@ -31,6 +31,8 @@ pub struct SendRequest {
     pub meeting_ids: Vec<String>,
     pub account_id: String,
     pub model_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
     pub message: String,
     #[serde(default)]
     pub source_ids: Vec<String>,
@@ -409,6 +411,11 @@ impl AiChat {
                     provider::ChatModel {
                         id: model.value,
                         label,
+                        effort: provider::EffortCapability {
+                            supported: model.supports_effort,
+                            levels: model.supported_effort_levels,
+                            default: None,
+                        },
                         max_output_tokens: None,
                     }
                 })
@@ -614,6 +621,7 @@ impl AiChat {
         conversation.model_id = Some(request.model_id.clone());
         conversation.active_request_id = Some(request.request_id.clone());
         conversation.messages.push(Message {
+            effort: request.effort.clone(),
             request_fingerprint: Some(fingerprint.clone()),
             sequence: 0,
             id: uuid::Uuid::new_v4().to_string(),
@@ -638,6 +646,7 @@ impl AiChat {
             note_receipts: Default::default(),
         });
         conversation.messages.push(Message {
+            effort: request.effort.clone(),
             request_fingerprint: Some(fingerprint.clone()),
             sequence: 0,
             id: message_id.clone(),
@@ -738,6 +747,7 @@ impl AiChat {
                         let reply = this.claude.reply(
                             &request.model_id,
                             &prompt,
+                            request.effort.as_deref(),
                             cancel.clone(),
                             &mut deliver,
                         )?;
@@ -761,11 +771,15 @@ impl AiChat {
                         .iter()
                         .find(|model| model.id == request.model_id)
                         .ok_or("이 AI 계정에서 선택한 모델을 사용할 수 없습니다.")?;
+                    if let Some(effort) = request.effort.as_deref() {
+                        if !selected.effort.allows(effort) { return Err("선택한 추론 수준을 사용할 수 없습니다. 모델 목록을 새로고침해 주세요.".into()); }
+                    }
                     provider::reply(
                         &access,
                         selected,
                         &prepared.instructions,
                         history,
+                        request.effort.as_deref(),
                         cancel.clone(),
                         &mut deliver,
                     )
@@ -1050,6 +1064,7 @@ mod tests {
             "cached-account".into(),
             Models {
                 models: vec![provider::ChatModel {
+                    effort: Default::default(),
                     id: "model".into(),
                     label: "공개 모델 이름".into(),
                     max_output_tokens: None,
@@ -1072,6 +1087,7 @@ mod tests {
     }
     fn message(id: &str, request: &str, binding: Binding, status: &str) -> Message {
         Message {
+            effort: None,
             request_fingerprint: Some("fingerprint".into()),
             sequence: 0,
             id: id.into(),
@@ -1343,6 +1359,7 @@ mod tests {
         let (id, request, _) = seed(&chat, &[], "streaming");
         let second = chat.create().unwrap().id.unwrap();
         let make = |conversation_id: String| SendRequest {
+            effort: None,
             request_id: request.clone(),
             conversation_id,
             meeting_ids: vec![],

@@ -19,8 +19,77 @@ const MAX_CLAUDE_RETRIES: usize = 2;
 pub struct ChatModel {
     pub id: String,
     pub label: String,
+    #[serde(default)]
+    pub effort: EffortCapability,
     #[serde(skip)]
     pub(super) max_output_tokens: Option<u64>,
+}
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EffortCapability {
+    pub supported: Option<bool>,
+    pub levels: Vec<String>,
+    pub default: Option<String>,
+}
+impl EffortCapability {
+    pub fn allows(&self, value: &str) -> bool {
+        self.supported == Some(true) && self.levels.iter().any(|level| level == value)
+    }
+}
+fn catalog_effort(row: &Value) -> EffortCapability {
+    let mut supported = row["supports_reasoning"].as_bool();
+    let mut levels = Vec::new();
+    if supported != Some(false) {
+        if let Some(rows) = row["supported_reasoning_levels"].as_array() {
+            for item in rows {
+                let level = item.as_str().or_else(|| item["effort"].as_str());
+                if let Some(level) = level.filter(|v| {
+                    matches!(
+                        *v,
+                        "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
+                    )
+                }) {
+                    if !levels.iter().any(|v| v == level) {
+                        levels.push(level.to_string());
+                    }
+                }
+            }
+        }
+    }
+    if supported.is_none() && !levels.is_empty() {
+        supported = Some(true);
+    }
+    let default = row["default_reasoning_level"]
+        .as_str()
+        .filter(|v| levels.iter().any(|level| level == *v))
+        .map(str::to_owned);
+    if supported.is_some() || !levels.is_empty() {
+        return EffortCapability {
+            supported,
+            levels,
+            default,
+        };
+    }
+    // OpenAI model pages, reviewed 2026-11-03:
+    // https://developers.openai.com/api/docs/models/gpt-6-astra
+    // https://developers.openai.com/api/docs/models/gpt-6.1-sol
+    // https://developers.openai.com/api/docs/models/gpt-6-sol
+    // https://developers.openai.com/api/docs/models/gpt-6-luna
+    let id = row["slug"].as_str().or_else(|| row["id"].as_str());
+    let (values, default): (&[&str], Option<&str>) = match id {
+        Some("gpt-6-astra") => (&["low", "medium", "high", "xhigh", "max"], None),
+        Some("gpt-6.1-sol") => (&["low", "medium", "high", "xhigh", "max"], Some("medium")),
+        Some("gpt-6-sol" | "gpt-6-luna") => (
+            &["none", "low", "medium", "high", "xhigh", "max"],
+            Some("medium"),
+        ),
+        _ => return EffortCapability::default(),
+    };
+    EffortCapability {
+        supported: Some(true),
+        levels: values.iter().map(|v| (*v).to_owned()).collect(),
+        default: default.map(str::to_owned),
+    }
 }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -219,6 +288,7 @@ fn model_rows(value: &Value) -> Result<Vec<ChatModel>, String> {
         models.push(ChatModel {
             id: id.into(),
             label: label.into(),
+            effort: catalog_effort(row),
             max_output_tokens: row["max_tokens"].as_u64().filter(|v| *v > 0),
         });
     }
@@ -236,6 +306,7 @@ fn claude_models() -> Models {
     .map(|(id, label)| ChatModel {
         id: id.into(),
         label: label.into(),
+        effort: EffortCapability::default(),
         max_output_tokens: Some(128000),
     })
     .collect::<Vec<_>>();
@@ -524,12 +595,22 @@ impl Events {
         Ok(self.text)
     }
 }
-fn request_body(provider: &str, model: &ChatModel, instructions: &str, input: Vec<Value>) -> Value {
+fn request_body(
+    provider: &str,
+    model: &ChatModel,
+    instructions: &str,
+    input: Vec<Value>,
+    effort: Option<&str>,
+) -> Value {
     if provider == "claude" {
         json!({"model":model.id,"system":instructions,"messages":input,
             "max_tokens":model.max_output_tokens.unwrap_or(8192).min(32768),"stream":true})
     } else {
-        json!({"model":model.id,"instructions":instructions,"input":input,"store":false,"stream":true})
+        let mut body = json!({"model":model.id,"instructions":instructions,"input":input,"store":false,"stream":true});
+        if let Some(effort) = effort {
+            body["reasoning"] = json!({"effort":effort});
+        }
+        body
     }
 }
 fn clone_reply_request(
@@ -614,6 +695,7 @@ pub async fn reply(
     model: &ChatModel,
     instructions: &str,
     input: Vec<Value>,
+    effort: Option<&str>,
     cancel: Arc<AtomicBool>,
     mut delta: impl FnMut(&str),
 ) -> Result<String, String> {
@@ -629,7 +711,13 @@ pub async fn reply(
     let client = client()?;
     let request = authorize(client.post(endpoint), access)
         .header("Accept", "text/event-stream")
-        .json(&request_body(&access.provider, model, instructions, input))
+        .json(&request_body(
+            &access.provider,
+            model,
+            instructions,
+            input,
+            effort,
+        ))
         .build()
         .map_err(|_| "AI 요청을 준비하지 못했습니다.")?;
     let response = async {
@@ -901,11 +989,34 @@ mod tests {
             &models[0],
             "Nero meeting assistant",
             vec![json!({"role":"user","content":"hello"})],
+            None,
         );
         assert_eq!(body["system"], "Nero meeting assistant");
         assert!(body.get("api_key").is_none());
         assert!(body.get("tools").is_none());
         assert_eq!(body["max_tokens"], 32000);
+    }
+    #[test]
+    fn effort_metadata_and_documented_fallback_are_model_specific() {
+        let models = model_rows(&json!({"models":[
+            {"slug":"gpt-6.1-sol"},
+            {"slug":"gpt-6-astra","supports_reasoning":false,"supported_reasoning_levels":[{"effort":"high"}]},
+            {"slug":"custom","supported_reasoning_levels":[{"effort":"low"},{"effort":"high"}],"default_reasoning_level":"high"},
+            {"slug":"unknown"}
+        ]})).unwrap();
+        assert!(models[0].effort.allows("xhigh"));
+        assert!(!models[0].effort.allows("none"));
+        assert_eq!(models[0].effort.default.as_deref(), Some("medium"));
+        assert_eq!(models[1].effort.supported, Some(false));
+        assert!(models[1].effort.levels.is_empty());
+        assert!(!models[1].effort.allows("high"));
+        assert!(models[2].effort.allows("high"));
+        assert_eq!(models[3].effort.supported, None);
+        let body = request_body("chatgpt", &models[0], "test", vec![], Some("high"));
+        assert_eq!(body["reasoning"]["effort"], "high");
+        assert!(request_body("chatgpt", &models[0], "test", vec![], None)
+            .get("reasoning")
+            .is_none());
     }
     #[test]
     fn completed_text_mismatch_is_rejected() {
@@ -958,7 +1069,7 @@ mod live_probe {
             let session=accounts.subscription_session(&account.id).await?;
             let access=ProviderAccess{provider:provider.clone(),access_token:session.access_token().into()};
             let selected_model=if let Ok(model)=std::env::var("NERO_AI_PROBE_MODEL"){
-                ChatModel{id:model.clone(),label:model,max_output_tokens:Some(128)}
+                ChatModel{id:model.clone(),label:model,effort:EffortCapability::default(),max_output_tokens:Some(128)}
             }else{
                 let catalog=models(&access).await?;
                 catalog.models.into_iter().next().ok_or("이 계정에서 사용할 모델을 찾지 못했습니다.")?
@@ -966,7 +1077,7 @@ mod live_probe {
             let model=&selected_model;
             write("requesting_synthetic_answer",None,Some(&model.id));
             eprintln!("Nero subscription probe: requesting synthetic answer");
-            let answer=reply(&access,model,"You are Nero, a meeting assistant. Reply to this connectivity test with exactly: Nero connection verified",vec![json!({"role":"user","content":"Connectivity test. No meeting or personal data is included."})],Arc::new(AtomicBool::new(false)),|_|{}).await?;
+            let answer=reply(&access,model,"You are Nero, a meeting assistant. Reply to this connectivity test with exactly: Nero connection verified",vec![json!({"role":"user","content":"Connectivity test. No meeting or personal data is included."})],None,Arc::new(AtomicBool::new(false)),|_|{}).await?;
             if answer.trim().is_empty(){return Err("AI 답변이 비어 있습니다.".to_string());}
             write("completed",None,Some(&model.id));Ok::<(),String>(())
         }.await;

@@ -51,6 +51,15 @@ This file applies to the entire repository.
   never pass it off as word timing or relax arbitrary input bounds. Selection
   applies to future work, is frozen per job/session and never silently switches
   models or reprocesses old meetings. See `docs/windows-speech-models.md`.
+- Apple Silicon also supports separately pinned Whisper large-v3 Q5. Keep the full
+  model's hash/revision and native 32-layer validation distinct from Turbo's 4-layer
+  output. Hardware recommendations are suggestions, not automatic downloads or
+  preference changes. See `docs/speech-model-selection.md`.
+- Notion-derived glossary terms require explicit user review. Freeze approved
+  terms and source revisions per capture/job; Whisper may use the bounded prompt,
+  while unsupported engines must report it unused. Reuse across meetings requires
+  explicit selection and a matching connected Notion page. Preserve prior job
+  snapshots and do not create correction rules or speaker identities implicitly.
 - During new recording, a background saved-PCM reader may feed one persistent ASR
   stream and an independent speaker stream. Publish provisional replacements at
   60–180 seconds without resetting models, finish only after successful capture EOF,

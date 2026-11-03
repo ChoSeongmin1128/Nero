@@ -15,9 +15,11 @@ mod calendar_desktop;
 mod claude_connection;
 mod claude_runner;
 mod diarization;
+mod domain_glossary;
 mod downloads;
 mod export;
 mod external_open;
+mod glossary_context;
 mod identity_migration;
 mod job_journal;
 mod lifecycle;
@@ -38,12 +40,14 @@ mod process_tree;
 mod processing;
 mod recorder_geometry;
 mod recorder_policy;
+mod recording_files;
 mod release_capabilities;
 mod secret_store;
 mod speaker_worker;
 mod speech_audio;
 mod speech_choice;
 mod speech_library;
+mod speech_recommendation;
 mod storage_space;
 mod summary;
 mod summary_checkpoint;
@@ -1781,6 +1785,9 @@ fn main() {
     };
     let app = builder
         .invoke_handler(tauri::generate_handler![
+            recording_files::reveal_recording_file,
+            domain_glossary::domain_glossary_view,
+            domain_glossary::domain_glossary_save,
             write_clipboard_text,
             ai_chat_desktop::ai_chat_accounts,
             ai_chat_desktop::ai_chat_connect,

@@ -35,3 +35,5 @@ export const meetingSources = meetingId => call('meeting_context_sources', { mee
 export const meetingAddSource = request => call('meeting_context_add', request);
 export const meetingRemoveSource = request => call('meeting_context_remove', request);
 export const meetingRefreshSource = request => call('meeting_context_refresh', request);
+export const domainGlossaryView = meetingId => call('domain_glossary_view', { meetingId });
+export const domainGlossarySave = request => call('domain_glossary_save', request);

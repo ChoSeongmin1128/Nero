@@ -482,6 +482,10 @@ impl Processing {
             && match engine {
                 SpeechEngine::Nemotron => crate::asr::supported(self),
                 SpeechEngine::WhisperTurbo => crate::whisper_asr::supported(&self.resources),
+                SpeechEngine::WhisperLargeV3 => {
+                    cfg!(all(target_os = "macos", target_arch = "aarch64"))
+                        && crate::whisper_asr::supported(&self.resources)
+                }
                 SpeechEngine::AppleSpeech => self.apple_speech.lock().unwrap().supported,
             }
     }
@@ -623,8 +627,11 @@ impl Processing {
                     .sum(),
                 ready: self.model_ready_for(engine),
                 supported: self.supported_for(engine),
+                recommended: false,
+                recommendation_reason: None,
             })
             .collect();
+        crate::speech_recommendation::apply(&mut progress.speech_choices);
         (
             progress.summary_supported,
             progress.summary_ready,
@@ -1749,6 +1756,7 @@ impl Processing {
         let apple_variant = apple_variant.or_else(|| inherited.and_then(|choice| choice.2));
         let created_at = now();
         let record = JobRecord {
+            glossary_snapshot_required: kind == "transcribe",
             speech_engine: engine.unwrap_or_else(|| self.speech_engine()),
             speaker_enabled: speaker_enabled.unwrap_or_else(|| self.speaker_enabled()),
             apple_speech_variant: if engine.unwrap_or_else(|| self.speech_engine())
@@ -2139,14 +2147,14 @@ impl Processing {
                 self.update(|p| {
                     p.model_stage = Some(
                         match label {
-                            MODEL_LABEL | "WhisperTurbo" => "speech",
+                            MODEL_LABEL | "WhisperTurbo" | "WhisperLargeV3" => "speech",
                             "Nemotron3" => "speakers",
                             _ => "summary",
                         }
                         .into(),
                     );
                     p.message = match label {
-                        MODEL_LABEL | "WhisperTurbo" => "음성 인식 모델 확인 중",
+                        MODEL_LABEL | "WhisperTurbo" | "WhisperLargeV3" => "음성 인식 모델 확인 중",
                         "Nemotron3" => "화자 구분 모델 확인 중",
                         _ => "요약 모델 확인 중",
                     }
@@ -2160,7 +2168,9 @@ impl Processing {
                 if !matches {
                     self.update(|p| {
                         p.message = match label {
-                            MODEL_LABEL | "WhisperTurbo" => "음성 인식 모델 다운로드 중",
+                            MODEL_LABEL | "WhisperTurbo" | "WhisperLargeV3" => {
+                                "음성 인식 모델 다운로드 중"
+                            }
                             "Nemotron3" => "화자 구분 모델 다운로드 중",
                             _ => "요약 모델 다운로드 중",
                         }
@@ -2680,6 +2690,40 @@ impl Processing {
         ) {
             return Err("먼저 음성 인식 모델을 준비해 주세요.".into());
         }
+        let job_id = requested_id
+            .clone()
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
+        let previous_job = self
+            .records
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|record| record.retry_successor_id.as_deref() == Some(&job_id))
+            .map(|record| (record.id.clone(), record.glossary_snapshot_required));
+        let inherited = if let Some((previous, required)) = previous_job {
+            let previous_path = self.root.join("processing").join(previous);
+            Some(crate::glossary_context::retry_context(
+                &previous_path,
+                &meeting_id,
+                required,
+            )?)
+        } else if required_session.is_some() {
+            Some(crate::glossary_context::capture_context(
+                &self.root,
+                &session_id,
+                &meeting_id,
+                session_choice.as_ref(),
+            )?)
+        } else {
+            None
+        };
+        let job_path = directory(&self.root, &format!("processing/{job_id}"))?;
+        let glossary = crate::glossary_context::freeze_job(
+            &self.root,
+            &job_path,
+            &meeting_id,
+            inherited.as_ref(),
+        )?;
         let source_core = core.clone();
         self.start_meeting_with_engine(
             "transcribe",
@@ -2687,7 +2731,7 @@ impl Processing {
             &source_core,
             required_fingerprint,
             None,
-            requested_id,
+            Some(job_id),
             Some(engine),
             Some(speaker_enabled),
             apple_variant,
@@ -2749,6 +2793,7 @@ impl Processing {
                 .filter(|live| {
                     serde_json::from_slice::<serde_json::Value>(&live.raw).is_ok_and(|value| {
                         engine != SpeechEngine::AppleSpeech
+                            && value["glossaryContext"] == glossary.evidence(engine)
                             && value["model"] == model.repository
                             && value["modelRevision"] == model.revision
                     })
@@ -2786,19 +2831,23 @@ impl Processing {
                             &cancel,
                             &directory,
                         ),
-                        SpeechEngine::WhisperTurbo => crate::whisper_asr::recognize(
-                            &this.resources,
-                            prepared.path(),
-                            &path,
-                            &cancel,
-                            &directory,
-                        )
-                        .map_err(|message| {
-                            crate::summary_failure::Failure::new(
-                                crate::summary_failure::FailureKind::Output,
-                                message,
+                        SpeechEngine::WhisperTurbo | SpeechEngine::WhisperLargeV3 => {
+                            crate::whisper_asr::recognize(
+                                &this.resources,
+                                prepared.path(),
+                                &path,
+                                &cancel,
+                                &directory,
+                                engine,
+                                &glossary.prompt(),
                             )
-                        }),
+                            .map_err(|message| {
+                                crate::summary_failure::Failure::new(
+                                    crate::summary_failure::FailureKind::Output,
+                                    message,
+                                )
+                            })
+                        }
                     },
                 }
                 .map_err(|error| {
@@ -2811,6 +2860,10 @@ impl Processing {
                     this.update(|progress| progress.failure_kind = Some(error.kind));
                     error.message
                 })?;
+                let mut raw_value: serde_json::Value =
+                    serde_json::from_slice(&raw).map_err(message)?;
+                raw_value["glossaryContext"] = glossary.evidence(engine);
+                let raw = serde_json::to_vec(&raw_value).map_err(message)?;
                 let mut output = OpenOptions::new()
                     .write(true)
                     .create_new(true)
@@ -2835,7 +2888,7 @@ impl Processing {
                         SpeechEngine::Nemotron => {
                             core.commit_nemotron_transcript(&meeting_id, expected, raw)
                         }
-                        SpeechEngine::WhisperTurbo => {
+                        SpeechEngine::WhisperTurbo | SpeechEngine::WhisperLargeV3 => {
                             core.commit_whisper_transcript(&meeting_id, expected, raw)
                         }
                     },
@@ -4187,6 +4240,7 @@ mod tests {
         });
         let created_at = now();
         let queued = JobRecord {
+            glossary_snapshot_required: false,
             speech_engine: crate::speech_choice::SpeechEngine::default(),
             speaker_enabled: true,
             apple_speech_variant: None,

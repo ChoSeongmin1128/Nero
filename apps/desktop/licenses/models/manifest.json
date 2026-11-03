@@ -106,5 +106,32 @@
         "sha256": "b5d65a59060e68c4ff940e1eddfa6f94b2d68fdf58ed7f4dd57721c997e35e9d"
       }
     ]
+  },
+  {
+    "manifest": "config/models/whisper-large-v3.json",
+    "model": {
+      "repository": "ggerganov/whisper.cpp",
+      "revision": "fb5ed9369c26eaf08392504d8446da431e0fffb9",
+      "files": [
+        {
+          "name": "ggml-large-v3-q5_0.bin",
+          "bytes": 1081140203,
+          "sha256": "d75795ecff3f83b5faa89d1900604ad8c780abd5739fae406de19f23ecd98ad1"
+        }
+      ]
+    },
+    "license": "MIT",
+    "declaration": {
+      "source": "https://huggingface.co/ggerganov/whisper.cpp/raw/5359861c739e955e79d9a303bcbc70fb988958b1/README.md",
+      "sha256": "21fd967098804f33fc84e803fb0e5ab7666d71801f4027cf28a65e7af09c1758",
+      "licenseMetadata": "license: mit"
+    },
+    "notices": [
+      {
+        "path": "Whisper-MIT.txt",
+        "source": "https://raw.githubusercontent.com/openai/whisper/6e3be77e1a105e59086e3e21ff5f609fd6fa89a5/LICENSE",
+        "sha256": "b5d65a59060e68c4ff940e1eddfa6f94b2d68fdf58ed7f4dd57721c997e35e9d"
+      }
+    ]
   }
 ]

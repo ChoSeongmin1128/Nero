@@ -106,6 +106,19 @@ fn service(app: &AppHandle) -> Result<Arc<MeetingContexts>, String> {
         .map(|state| state.inner().clone())
         .ok_or("회의 자료를 준비하지 못했습니다.".into())
 }
+pub(crate) fn with_meeting<T>(
+    app: &AppHandle,
+    meeting_id: &str,
+    action: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let state = service(app)?;
+    let _guard = state
+        .gate
+        .lock()
+        .map_err(|_| "회의 자료를 확인하지 못했습니다.")?;
+    state.require_meeting(meeting_id)?;
+    action()
+}
 pub fn removal<T>(
     app: &AppHandle,
     ids: &[String],
@@ -128,6 +141,11 @@ pub fn removal<T>(
             state
                 .store
                 .delete(id)
+                .map_err(nero_core::CoreError::InvalidState)?;
+            let desktop = app.state::<DesktopState>();
+            crate::domain_glossary::delete(&desktop.processing.root, id)
+                .map_err(nero_core::CoreError::InvalidState)?;
+            crate::glossary_context::delete_meeting(&desktop.processing.root, id)
                 .map_err(nero_core::CoreError::InvalidState)?;
         }
     }
