@@ -180,7 +180,7 @@ fn reject_production_data_path(root: &Path) -> Result<(), QueryError> {
             })
         })
     };
-    if protected(root) {
+    if !root.is_absolute() || protected(root) {
         return Err(denied());
     }
     // Resolve every existing prefix so a symlink followed by a missing fixture path
@@ -188,6 +188,10 @@ fn reject_production_data_path(root: &Path) -> Result<(), QueryError> {
     let mut resolved = PathBuf::new();
     for component in root.components() {
         resolved.push(component.as_os_str());
+        // A Windows drive prefix is not rooted until its following RootDir.
+        if matches!(component, std::path::Component::Prefix(_)) {
+            continue;
+        }
         match std::fs::canonicalize(&resolved) {
             Ok(path) => resolved = path,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -456,6 +460,24 @@ mod tests {
                     "unsafe_data_dir"
                 );
             }
+            assert!(!protected.exists());
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn canonical_windows_prefix_allows_missing_fixtures_but_keeps_production_blocked() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let missing = root.join("missing");
+        assert!(reject_production_data_path(&missing).is_ok());
+        assert!(!missing.exists());
+        for identifier in [APP_IDENTIFIER, "io.github.choseongmin1128.grove.desktop"] {
+            let protected = root.join(identifier);
+            assert_eq!(
+                reject_production_data_path(&protected).unwrap_err().code,
+                "unsafe_data_dir"
+            );
             assert!(!protected.exists());
         }
     }
