@@ -350,6 +350,15 @@ impl AiChat {
             Err("회의를 찾을 수 없습니다.".into())
         }
     }
+    pub async fn models_refresh(&self, id: &str) -> Result<Models, String> {
+        if id == crate::claude_connection::ACCOUNT_ID {
+            let claude = self.claude.clone();
+            tauri::async_runtime::spawn_blocking(move || claude.refresh_models())
+                .await
+                .map_err(|_| "Claude 모델 목록을 새로고침하지 못했습니다.".to_string())??;
+        }
+        self.models(id).await
+    }
     pub async fn models(&self, id: &str) -> Result<Models, String> {
         if id == crate::claude_connection::ACCOUNT_ID {
             let models = self

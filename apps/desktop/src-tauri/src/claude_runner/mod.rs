@@ -1,5 +1,7 @@
 //! Claude Code subprocess transport. Credentials remain owned by Claude Code.
 mod installation;
+mod model_cache;
+pub use model_cache::ModelCache;
 mod prepare;
 #[cfg(windows)]
 mod windows_signature;
@@ -390,10 +392,29 @@ impl Runner {
         }
         Ok(())
     }
-    pub fn supported_models(&self, cancel: &AtomicBool) -> Result<Vec<SupportedModel>, String> {
-        if !self.auth_status(cancel)? {
-            return Err("Claude Code에서 구독 계정으로 로그인해 주세요.".into());
+    pub fn identity(&self) -> Result<String, String> {
+        use sha2::{Digest, Sha256};
+        let mut file = std::fs::File::open(&self.binary).map_err(|_| ERROR)?;
+        let mut hash = Sha256::new();
+        let mut total = 0u64;
+        let mut buffer = [0u8; 65536];
+        loop {
+            let n = file.read(&mut buffer).map_err(|_| ERROR)?;
+            if n == 0 {
+                break;
+            }
+            total += n as u64;
+            if total > 512 * 1024 * 1024 {
+                return Err(ERROR.into());
+            }
+            hash.update(&buffer[..n]);
         }
+        if total == 0 {
+            return Err(ERROR.into());
+        }
+        Ok(format!("{:x}", hash.finalize()))
+    }
+    pub fn supported_models(&self, cancel: &AtomicBool) -> Result<Vec<SupportedModel>, String> {
         let work = tempfile::tempdir().map_err(|_| ERROR)?;
         let mut cmd = command(&self.binary);
         cmd.current_dir(work.path()).args([
@@ -474,14 +495,14 @@ impl Runner {
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SupportedModel {
     pub value: String,
     pub display_name: String,
     pub resolved_model: Option<String>,
 }
 
-fn valid_model(value: &str) -> bool {
+pub(crate) fn valid_model(value: &str) -> bool {
     value
         .as_bytes()
         .first()
