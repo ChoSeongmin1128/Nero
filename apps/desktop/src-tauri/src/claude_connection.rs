@@ -303,8 +303,7 @@ impl ClaudeConnection {
             .any(|entry| entry.value == model)
         {
             return Err(
-                "이 Claude 계정에서 선택한 모델을 사용할 수 없습니다. 연결을 다시 확인해 주세요."
-                    .into(),
+                "선택한 Claude 모델을 확인하지 못했습니다. 모델 목록을 새로고침해 주세요.".into(),
             );
         }
         let result = self.resolve()?.reply(model, prompt, cancel, delta);
