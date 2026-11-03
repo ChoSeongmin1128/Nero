@@ -52,6 +52,14 @@ fn lock_operation<'a>(
         }
     }
 }
+pub struct ShutdownGuard {
+    connection: Arc<ClaudeConnection>,
+}
+impl Drop for ShutdownGuard {
+    fn drop(&mut self) {
+        self.connection.refresh.lock().unwrap().stopping = false;
+    }
+}
 pub struct ClaudeConnection {
     root: PathBuf,
     cached: Mutex<Option<Value>>,
@@ -214,15 +222,21 @@ impl ClaudeConnection {
             notified.await;
         }
     }
-    pub async fn drain(&self) -> Result<(), String> {
+    pub async fn prepare_shutdown(self: &Arc<Self>) -> Result<ShutdownGuard, String> {
         let refresh = {
             let mut state = self.refresh.lock().unwrap();
+            if state.stopping {
+                return Err("Claude 연결을 이미 정리 중입니다.".into());
+            }
             state.stopping = true;
             let active = state.active.clone();
             if let Some(run) = &active {
                 run.cancel.store(true, Ordering::Release);
             }
             active
+        };
+        let guard = ShutdownGuard {
+            connection: self.clone(),
         };
         let login = self.login.lock().unwrap().clone();
         if let Some(run) = &login {
@@ -238,7 +252,7 @@ impl ClaudeConnection {
         })
         .await
         .map_err(|_| "Claude 연결을 정리 중입니다. 잠시 후 다시 시도해 주세요.".to_string())?;
-        Ok(())
+        Ok(guard)
     }
     fn invalidate_models(&self) -> Result<(), String> {
         self.model_cache.write(&[], None)?;
@@ -365,7 +379,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn drain_cancels_and_waits_for_active_refresh() {
+    async fn shutdown_guard_cancels_refresh_and_reopens_on_drop() {
         let connection = Arc::new(ClaudeConnection::new(PathBuf::from("unused")));
         let run = Arc::new(Refresh {
             cancel: AtomicBool::new(false),
@@ -374,13 +388,36 @@ mod tests {
         });
         connection.refresh.lock().unwrap().active = Some(run.clone());
         let pending = connection.clone();
-        let task = tokio::spawn(async move { pending.drain().await });
+        let task = tokio::spawn(async move { pending.prepare_shutdown().await });
         tokio::task::yield_now().await;
         assert!(run.cancel.load(Ordering::Acquire));
         assert!(!task.is_finished());
         drop(RefreshGuard(run));
-        assert!(task.await.unwrap().is_ok());
+        let guard = task.await.unwrap().unwrap();
+        assert!(connection.refresh.lock().unwrap().stopping);
         assert!(connection.refresh_models().is_err());
+        drop(guard);
+        assert!(!connection.refresh.lock().unwrap().stopping);
+    }
+
+    #[tokio::test]
+    async fn interrupted_shutdown_releases_guard_while_refresh_finishes() {
+        let connection = Arc::new(ClaudeConnection::new(PathBuf::from("unused")));
+        let run = Arc::new(Refresh {
+            cancel: AtomicBool::new(false),
+            completed: AtomicBool::new(false),
+            done: Notify::new(),
+        });
+        connection.refresh.lock().unwrap().active = Some(run.clone());
+        let pending = connection.clone();
+        let task = tokio::spawn(async move { pending.prepare_shutdown().await });
+        tokio::task::yield_now().await;
+        assert!(connection.refresh.lock().unwrap().stopping);
+        task.abort();
+        let _ = task.await;
+        assert!(!connection.refresh.lock().unwrap().stopping);
+        assert!(connection.refresh_models().is_err());
+        drop(RefreshGuard(run));
     }
 
     #[test]
