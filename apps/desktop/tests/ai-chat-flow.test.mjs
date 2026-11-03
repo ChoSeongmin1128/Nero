@@ -598,3 +598,20 @@ test('typing into the initial composer prevents a late history list from switchi
   assert.equal(app.state().conversation.id, null); assert.equal(app.state().conversation.draft, 'My new question');
   assert.equal(app.flow.canSend(), true); app.flow.dispose();
 });
+
+
+test('selected template survives editing and skill saves only its explicit target', async () => {
+  const app = await harness({ composerCatalog: async () => ({ skills: [{ id: 'meeting-summary', name: '회의 요약' }], templates: [{ id: 'template', name: '요약', revision: 'r1' }], defaultTemplateId: 'template' }) });
+  await app.flow.loadCatalog();
+  app.flow.selectTemplate('template'); app.flow.selectSkill('meeting-summary'); app.flow.edit('정리해 주세요');
+  assert.equal(app.flow.getSnapshot().conversation.templateId, 'template');
+  assert.equal(app.flow.canSend(), false);
+  app.flow.selectSummaryTarget('meeting-a'); assert.equal(app.flow.canSend(), true);
+  await app.flow.send();
+  const request = app.calls.find(call => call[0] === 'send')[1];
+  assert.equal(request.templateId, 'template'); assert.equal(request.skillId, 'meeting-summary'); assert.equal(request.summaryTargetId, 'meeting-a');
+  app.emit({ type: 'completed', sequence: 1, messageId: 'answer', text: '요약', saveTargets: [{ meetingId: 'meeting-a', canSaveSummary: true }] });
+  await tick(); await tick();
+  assert.deepEqual(app.calls.find(call => call[0] === 'summary')[1], { conversationId: 'conversation', messageId: 'answer', meetingId: 'meeting-a' });
+  app.flow.dispose();
+});

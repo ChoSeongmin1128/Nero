@@ -22,6 +22,7 @@ export function mountAiChatFixture({ document, scenario = 'ready', delay = 20 })
     meetingAddSource: async request => { meetingSources.push({ sourceId: request.sourceId, pageId: 'example', title: '예시 자료', url: 'https://www.notion.so/12345678123412341234123456789012' }); return { revision: ++contextRevision, sources: structuredClone(meetingSources) }; },
     meetingRefreshSource: async request => { meetingSources = meetingSources.map(source => ({ ...source, sourceId: request.sourceId })); return { revision: ++contextRevision, sources: structuredClone(meetingSources) }; },
     meetingRemoveSource: async request => { meetingSources = meetingSources.filter(source => source.pageId !== request.pageId); return { revision: ++contextRevision, sources: structuredClone(meetingSources) }; },
+    composerCatalog: async () => ({ skills: [{ id: 'meeting-summary', name: '회의 요약', aliases: ['회의요약', 'meeting-summary'] }], templates: [{ id: 'example-template', name: '기본 요약', revision: 'r1' }], defaultTemplateId: 'example-template' }),
     accounts: async () => accountSnapshot(),
     connect: async (provider, accountId) => { calls.push(['connect', provider, accountId]); return { attemptId: 'example-attempt' }; },
     finishConnect: async attemptId => { calls.push(['finishConnect', attemptId]); return new Promise(resolve => { finishLogin = resolve; }); },

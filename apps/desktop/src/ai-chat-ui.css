@@ -91,3 +91,10 @@
   .ai-chat-host { width: 100%; }
 }
 @media (prefers-reduced-motion: reduce) { .app-body, .app-ai-sidebar { transition: none; } }
+
+.ai-model-heading-row { padding: 5px 8px; }
+.ai-model-heading-row > button { margin-left: auto; }
+.ai-command-list { display: flex; flex-direction: column; max-height: 200px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.ai-command-list > button { display: flex; justify-content: space-between; padding: 7px 9px; border: 0; background: transparent; color: var(--text); text-align: left; }
+.ai-command-list > button[aria-selected="true"] { background: var(--hover); }
+.ai-command-list small { color: var(--text-secondary); }

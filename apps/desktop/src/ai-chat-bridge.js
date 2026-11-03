@@ -5,6 +5,7 @@ function call(command, args = {}) {
   if (!isTauri()) return Promise.reject(new Error('Nero 앱에서 열어 주세요.'));
   return invoke(command, args).catch(error => { throw new Error(typeof error === 'string' ? error : '요청을 처리하지 못했습니다. 다시 시도해 주세요.'); });
 }
+export const composerCatalog = () => call('ai_chat_composer_catalog');
 export const accounts = () => call('ai_chat_accounts');
 export const connect = (provider, accountId = null) => call('ai_chat_connect', { provider, accountId });
 export const finishConnect = attemptId => call('ai_chat_finish_connect', { attemptId });

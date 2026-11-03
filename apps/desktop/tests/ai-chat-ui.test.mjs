@@ -23,7 +23,7 @@ async function fixture(t, options = {}) {
   if (options.prepareModels !== false && state.accounts.some(account => account.id === state.accountId && account.state === 'ready')) {
     node('ai-chat-inspector').querySelector('[aria-label="AI 모델 선택"]').click();
     await wait(() => window.document.querySelector('.ai-model-popover'));
-    [...window.document.querySelectorAll('.ai-model-popover button')].find(button => button.textContent.trim() === 'ChatGPT').click();
+    [...window.document.querySelectorAll('.ai-model-popover section')][0].querySelector('button').click();
     await wait(() => [...window.document.querySelectorAll('.ai-model-popover button')].some(button => button.textContent.trim() === '예시 모델'));
     [...window.document.querySelectorAll('.ai-model-popover button')].find(button => button.textContent.trim() === '예시 모델').click();
     await wait(() => !window.document.querySelector('.ai-model-popover'));
@@ -33,31 +33,17 @@ async function fixture(t, options = {}) {
   return { ...app, window, node, button: text => { const buttons = [...node('ai-chat-inspector').querySelectorAll('button')]; return buttons.find(button => button.getAttribute('aria-label') === text) || buttons.find(button => button.textContent.trim() === text); } };
 }
 
-test('model picker navigates providers and models, handles unavailable accounts and closes on Escape', async t => {
+test('model picker shows both providers without changing selection while browsing', async t => {
   const app = await fixture(t);
-  const trigger = app.button('AI 모델 선택');
-  trigger.click();
+  const trigger = app.button('AI 모델 선택'); trigger.click();
   await wait(() => app.window.document.querySelector('.ai-model-popover'));
-  const menu = () => app.window.document.querySelector('.ai-model-popover');
-  const option = text => [...menu().querySelectorAll('button')].find(node => node.textContent.trim() === text);
-  option('Claude').click();
-  await wait(() => menu()?.textContent.includes('사용할 수 없는 AI입니다.'));
-  assert.equal(app.ui.flow.getSnapshot().provider, 'claude');
-  assert.ok(option('계정 설정'));
-  menu().querySelector('[aria-label="AI 목록으로 돌아가기"]').click();
-  await wait(() => option('ChatGPT'));
-  option('ChatGPT').click();
-  await wait(() => option('예시 모델'));
-  option('예시 모델').click();
-  await wait(() => !menu());
-  await wait(() => app.window.document.activeElement === trigger);
+  const menu = app.window.document.querySelector('.ai-model-popover');
+  assert.match(menu.textContent, /ChatGPT/); assert.match(menu.textContent, /Claude/);
+  assert.equal(app.ui.flow.getSnapshot().provider, 'chatgpt');
   assert.equal(app.ui.flow.getSnapshot().modelId, 'example-model');
-  assert.match(trigger.textContent, /예시 모델/);
-  trigger.click(); await wait(() => menu());
-  await wait(() => app.window.document.activeElement.closest('.ai-model-popover'));
+  assert.ok(menu.querySelector('img[src*="chatgpt"]')); assert.ok(menu.querySelector('img[src*="claude"]'));
   app.window.document.activeElement.dispatchEvent(new app.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-  await wait(() => !menu());
-  await wait(() => app.window.document.activeElement === trigger);
+  await wait(() => !app.window.document.querySelector('.ai-model-popover'));
 });
 
 for (const [runtime, label] of [['missing', '설치하고 로그인'], ['present', '로그인 확인']]) {
@@ -235,9 +221,10 @@ test('saved account loads models only after choosing its provider', async t => {
   trigger.click();
   await wait(() => app.window.document.querySelector('.ai-model-popover'));
   assert.equal(app.calls.filter(call => call[0] === 'models').length, 0);
-  [...app.window.document.querySelectorAll('.ai-model-popover button')].find(node => node.textContent.trim() === 'ChatGPT').click();
+  app.window.document.querySelector('.ai-model-popover section button').click();
   await wait(() => app.window.document.querySelector('.ai-model-popover')?.textContent.includes('예시 모델'));
   assert.equal(app.calls.filter(call => call[0] === 'models').length, 1);
+  [...app.window.document.querySelectorAll('.ai-model-popover button')].find(node => node.textContent.trim() === '예시 모델').click();
   assert.equal(app.node('ai-chat-inspector').textContent.includes('AI 계정에 로그인해 주세요.'), false);
   app.ui.flow.edit('Question');
   await wait(() => !app.node('ai-chat-inspector').querySelector('[aria-label="질문 보내기"]').disabled);
@@ -373,4 +360,19 @@ test('the account settings display and reconnect the active plan-disabled accoun
   [...row.querySelectorAll('button')].find(node => node.textContent === '로그인').click();
   await wait(() => app.calls.some(call => call[0] === 'connect'));
   assert.equal(app.calls.find(call => call[0] === 'connect')[2], 'active-plan-account');
+});
+
+
+test('slash chooser selects a skill without sending and requires a meeting target', async t => {
+  const app = await fixture(t);
+  const input = app.node('ai-chat-inspector').querySelector('textarea');
+  Object.getOwnPropertyDescriptor(app.window.HTMLTextAreaElement.prototype, 'value').set.call(input, '/회의'); input.dispatchEvent(new app.window.Event('input', { bubbles: true }));
+  await wait(() => app.node('ai-chat-inspector').querySelector('[role="listbox"]'));
+  input.dispatchEvent(new app.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+  await wait(() => app.node('ai-chat-inspector').querySelector('[aria-label="요약할 회의"]'));
+  assert.equal(app.calls.some(call => call[0] === 'send'), false);
+  assert.equal(app.node('ai-chat-inspector').querySelector('[aria-label="질문 보내기"]').disabled, true);
+  const select = app.node('ai-chat-inspector').querySelector('[aria-label="요약할 회의"]');
+  select.value = 'example-meeting'; select.dispatchEvent(new app.window.Event('change', { bubbles: true }));
+  await wait(() => !app.node('ai-chat-inspector').querySelector('[aria-label="질문 보내기"]').disabled);
 });
