@@ -223,6 +223,23 @@ mod tests {
         cmd
     }
     #[test]
+    fn parses_only_matching_supported_model_metadata() {
+        let output = br#"{"type":"control_response","response":{"subtype":"success","request_id":"models","response":{"account":{"email":"private"},"models":[{"value":"sonnet","displayName":"Sonnet","resolvedModel":"claude-sonnet-5-5"},{"value":"claude-opus-5-5","displayName":"Opus 5.5"},{"value":"--bad","displayName":"bad"}]}}}
+"#;
+        let models = parse_supported_models(output).unwrap();
+        assert_eq!(models[0].value, "sonnet");
+        assert_eq!(
+            models[0].resolved_model.as_deref(),
+            Some("claude-sonnet-5-5")
+        );
+        assert_eq!(models[1].value, "claude-opus-5-5");
+        assert_eq!(models[1].resolved_model, None);
+        assert!(parse_supported_models(
+            br#"{"type":"control_response","response":{"subtype":"error","request_id":"models"}}"#
+        )
+        .is_err());
+    }
+    #[test]
     fn captures_success_and_rejects_failure() {
         let cancel = AtomicBool::new(false);
         assert_eq!(
@@ -363,6 +380,40 @@ impl Runner {
         }
         Ok(())
     }
+    pub fn supported_models(&self, cancel: &AtomicBool) -> Result<Vec<SupportedModel>, String> {
+        if !self.auth_status(cancel)? {
+            return Err("Claude Code에서 구독 계정으로 로그인해 주세요.".into());
+        }
+        let work = tempfile::tempdir().map_err(|_| ERROR)?;
+        let mut cmd = command(&self.binary);
+        cmd.current_dir(work.path()).args([
+            "--print",
+            "--safe-mode",
+            "--restricted",
+            "--tools",
+            "",
+            "--disallowedTools",
+            "mcp__*",
+            "--strict-mcp-config",
+            "--mcp-config",
+            "{\"mcpServers\":{}}",
+            "--settings",
+            "{}",
+            "--setting-sources",
+            "",
+            "--disable-slash-commands",
+            "--no-session-persistence",
+            "--no-chrome",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+        ]);
+        let input = b"{\"type\":\"control_request\",\"request_id\":\"models\",\"request\":{\"subtype\":\"initialize\"}}\n".to_vec();
+        let output = capture(cmd, input, Duration::from_secs(30), cancel)?;
+        parse_supported_models(&output)
+    }
     pub fn reply(
         &self,
         model: &str,
@@ -406,6 +457,71 @@ impl Runner {
         })?;
         stream.finish(&mut delta)
     }
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SupportedModel {
+    pub value: String,
+    pub display_name: String,
+    pub resolved_model: Option<String>,
+}
+
+fn valid_model(value: &str) -> bool {
+    value
+        .as_bytes()
+        .first()
+        .is_some_and(u8::is_ascii_alphanumeric)
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b'.' | b'[' | b']'))
+}
+
+fn parse_supported_models(output: &[u8]) -> Result<Vec<SupportedModel>, String> {
+    for line in output
+        .split(|b| *b == b'\n')
+        .filter(|line| !line.is_empty())
+    {
+        let frame: Value = serde_json::from_slice(line).map_err(|_| ERROR)?;
+        if frame["type"] != "control_response" || frame["response"]["request_id"] != "models" {
+            continue;
+        }
+        if frame["response"]["subtype"] != "success" {
+            return Err(ERROR.into());
+        }
+        let rows = frame["response"]["response"]["models"]
+            .as_array()
+            .ok_or(ERROR)?;
+        let mut result = Vec::new();
+        for row in rows {
+            let Some(value) = row["value"].as_str().filter(|v| valid_model(v)) else {
+                continue;
+            };
+            let Some(name) = row["displayName"]
+                .as_str()
+                .filter(|v| !v.is_empty() && v.len() <= 256 && !v.chars().any(char::is_control))
+            else {
+                continue;
+            };
+            if result.iter().any(|m: &SupportedModel| m.value == value) {
+                continue;
+            }
+            result.push(SupportedModel {
+                value: value.into(),
+                display_name: name.into(),
+                resolved_model: row["resolvedModel"]
+                    .as_str()
+                    .filter(|v| valid_model(v))
+                    .map(str::to_owned),
+            });
+        }
+        if !result.is_empty() {
+            return Ok(result);
+        }
+        return Err(ERROR.into());
+    }
+    Err(ERROR.into())
 }
 
 #[derive(Default)]
