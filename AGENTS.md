@@ -167,20 +167,29 @@ behavior. Separate implemented behavior, proposals and unverified platform suppo
 ## Native installation and artifacts
 
 - Nero release versions follow `docs/versioning.md`; keep version mirrors consistent
-  with `node apps/desktop/scripts/version.mjs check`. Product numbering restarts at `0.0.1`, while build numbers continue increasing. The first external-user
+  with `node apps/desktop/scripts/version.mjs check`. During the current `0.0.x`
+  phase, every new public binary release increments PATCH by exactly one from the
+  verified latest public product version, regardless of first-user sharing status.
+  Internal test builds may retain the product version and only increase the global
+  build number; documentation-only changes do not create a release or bump either.
+  Stage changes such as `0.1.0` or `1.0.0` require an explicit product decision.
+  The first external-user
   compatibility baseline must be recorded when users actually receive a build,
   using that product version, build number and source commit.
   Existing private meeting data, audio, models, integrations, identifiers and keys
   remain preserved before and after that baseline. Do not initialize or discard
   them implicitly; use an explicit migration or separate archival when needed.
-- A one-time pre-sharing release-record reset is authorized: reset GitHub release
-  entries, their release tags and public release documentation for the new
-  `0.0.1` baseline. Preserve Git commits and unique private build/signing
-  evidence. This exception does not authorize another reset or rewriting releases
-  shared with external users. Normal version, updater and NSIS downgrade guards
-  remain active; existing build49 installations need an explicit manual transition.
-- Product and integration versions are independent. The next integration generation
-  is `0.3.0-nero.39`; do not lower a host package to match product `0.0.1`.
+- New public tags use `v<version>`, release titles use `Nero <version>`, and files
+  use the exact names in `docs/versioning.md`. Do not create more same-version
+  public build releases or concatenate build numbers into product versions. Before
+  publishing, compare the actual latest public release/feed, not only local files.
+  Existing historical tags, assets and signed feed identities stay unchanged.
+  The earlier one-time release-record reset is finished and must not be repeated.
+  Normal version, updater and NSIS downgrade guards remain active.
+- Product and integration versions are independent. Read the integration generation
+  from `apps/desktop/agent/release.json`; change it when the actual CLI/MCP/skill or
+  integration package changes, not merely to match the product version. Keep an
+  unchanged generation only after verifying reused integration bytes and metadata.
   Undistributed development binaries follow the bounded retention rules below.
 - Published release tags, assets and public release notes identify distributed source.
   A dirty build must not be attributed to its HEAD alone. Distribution bundles require
