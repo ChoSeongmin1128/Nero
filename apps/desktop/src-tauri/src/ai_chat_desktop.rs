@@ -64,6 +64,7 @@ pub fn install(app: &AppHandle, root: PathBuf, resources: PathBuf, core: nero_co
     });
 }
 pub struct AiShutdown {
+    _claude: Option<crate::claude_connection::ShutdownGuard>,
     _accounts: Option<crate::ai_accounts::ShutdownGuard>,
     _notion: Option<crate::notion_context::NotionShutdownGuard>,
 }
@@ -78,8 +79,11 @@ pub async fn prepare_shutdown(app: &AppHandle) -> Result<AiShutdown, String> {
             )
         })
         .unwrap_or_default();
+    let claude = match &chat {
+        Some(chat) => Some(chat.claude.prepare_shutdown().await?),
+        None => None,
+    };
     if let Some(chat) = chat {
-        chat.claude.drain().await?;
         tauri::async_runtime::spawn_blocking(move || chat.drain(std::time::Duration::from_secs(5)))
             .await
             .map_err(|_| "AI 대화를 저장하지 못했습니다.".to_string())??;
@@ -93,6 +97,7 @@ pub async fn prepare_shutdown(app: &AppHandle) -> Result<AiShutdown, String> {
         None => None,
     };
     Ok(AiShutdown {
+        _claude: claude,
         _accounts: accounts,
         _notion: notion,
     })
@@ -307,15 +312,30 @@ pub async fn ai_chat_disconnect(
     account_snapshot(&state).await
 }
 #[tauri::command]
+pub fn ai_chat_composer_catalog(window: WebviewWindow, app: AppHandle) -> Result<Value, String> {
+    require_main(&window)?;
+    require_open(&app)?;
+    let root = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| "템플릿 위치를 확인하지 못했습니다.".to_string())?;
+    ai_chat::composer_catalog(&root)
+}
+#[tauri::command]
 pub async fn ai_chat_models(
     window: WebviewWindow,
     app: AppHandle,
     state: State<'_, AiDesktop>,
     account_id: String,
+    refresh: Option<bool>,
 ) -> Result<ai_chat::Models, String> {
     require_main(&window)?;
     require_open(&app)?;
-    state.chat()?.models(&account_id).await
+    if refresh.unwrap_or(false) {
+        state.chat()?.models_refresh(&account_id).await
+    } else {
+        state.chat()?.models(&account_id).await
+    }
 }
 #[tauri::command]
 pub async fn ai_chat_list(
@@ -397,6 +417,8 @@ pub async fn ai_chat_send(
     source_ids: Vec<String>,
     source_origins: Option<std::collections::BTreeMap<String, ai_chat::SourceOrigin>>,
     template_id: Option<String>,
+    skill_id: Option<String>,
+    summary_target_id: Option<String>,
 ) -> Result<ai_chat::Started, String> {
     require_main(&window)?;
     let transition = app.state::<DesktopState>().lifecycle.begin_transition()?;
@@ -411,6 +433,8 @@ pub async fn ai_chat_send(
         source_ids,
         source_origins,
         template_id,
+        skill_id,
+        summary_target_id,
     };
     tauri::async_runtime::spawn_blocking(move || {
         let _transition = transition;

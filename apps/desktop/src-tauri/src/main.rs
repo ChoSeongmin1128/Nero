@@ -1750,6 +1750,7 @@ fn main() {
             ai_chat_desktop::ai_chat_cancel_connect,
             ai_chat_desktop::ai_chat_disconnect,
             ai_chat_desktop::ai_chat_models,
+            ai_chat_desktop::ai_chat_composer_catalog,
             ai_chat_desktop::ai_chat_list,
             ai_chat_desktop::ai_chat_create,
             ai_chat_desktop::ai_chat_delete,

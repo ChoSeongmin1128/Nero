@@ -22,7 +22,7 @@ pub struct ChatModel {
     #[serde(skip)]
     pub(super) max_output_tokens: Option<u64>,
 }
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Models {
     pub models: Vec<ChatModel>,

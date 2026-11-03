@@ -11,7 +11,7 @@ export const connect = (provider, accountId = null) => call('ai_chat_connect', {
 export const finishConnect = attemptId => call('ai_chat_finish_connect', { attemptId });
 export const cancelConnect = attemptId => call('ai_chat_cancel_connect', { attemptId });
 export const disconnect = accountId => call('ai_chat_disconnect', { accountId });
-export const models = accountId => call('ai_chat_models', { accountId });
+export const models = (accountId, refresh = true) => call('ai_chat_models', { accountId, refresh });
 export const list = () => call('ai_chat_list');
 export const create = () => call('ai_chat_create');
 export const read = conversationId => call('ai_chat_read', { conversationId });

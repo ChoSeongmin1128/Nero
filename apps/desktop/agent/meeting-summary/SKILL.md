@@ -5,6 +5,8 @@ description: Nero 회의 검색, 음성 기록 확인, 회의 요약 생성/저�
 
 # Nero 회의 요약
 
+<!-- nero-summary-writing-rules -->
+
 - 폴더명으로 요청하면 `folders_list`에서 현재 ID를 찾은 뒤 목록/검색의 `folderId`에 사용합니다. 미분류는 `unfiled:true`입니다. 폴더명을 제목 검색어로 대신 쓰거나 ID를 추정하지 않습니다.
 - `meetings_list`/`meetings_search`로 회의를 고릅니다. 동명 회의는 날짜/녹음 시각으로 구분하고 필요한 메모만 `meeting_get`으로 확인합니다. 날짜 필터는 녹음 시각 우선, 없으면 생성 시각이며 사용자 지정 회의 날짜와 별개입니다.
 - 날짜를 지정할 때는 `on:"YYYY-MM-DD"`/`timezone:"Asia/Seoul"` 또는 명시적 epoch from/to를 사용합니다. 문자열 날짜의 시간대를 추정하지 않습니다. `maxBytes`를 지정하면 실제 반환 개수가 줄 수 있으며 nextOffset으로 이어 읽습니다.

@@ -57,6 +57,9 @@ for (const [target, platform, binary] of [
     for (const text of texts) assert.doesNotMatch(text, /\/Users\/|[A-Z]:\\|python|node_modules|https?:\/\/(?!agent-plugins\.org)/);
     assert.deepEqual(await readFile(join(destination, 'icon.png')), await readFile(icon));
     const skill = await readFile(join(destination, 'meeting-summary/SKILL.md'), 'utf8');
+    const rules = await readFile(join(source, 'meeting-summary/writing-rules.md'), 'utf8');
+    assert.ok(skill.includes(rules.trim()));
+    assert.doesNotMatch(skill, /<!-- nero-summary-writing-rules -->/);
     assert.match(skill, /pagination\.nextOffset/);
     assert.match(skill, /sourceVersion/);
     assert.match(skill, /editVersion/);

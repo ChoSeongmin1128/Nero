@@ -106,6 +106,14 @@ pub struct Message {
     pub provider: Option<String>,
     #[serde(default)]
     pub model_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual_model_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<super::context::TemplateSelection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skill_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_target_id: Option<String>,
     #[serde(default)]
     pub binding: Option<Binding>,
     #[serde(default)]

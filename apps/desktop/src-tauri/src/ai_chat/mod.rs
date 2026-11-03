@@ -1,5 +1,7 @@
 mod context;
 mod provider;
+mod skills;
+pub use skills::catalog as composer_catalog;
 mod store;
 use crate::ai_accounts::{AiAccounts, Provider};
 use crate::notion_context::NotionContextService;
@@ -35,6 +37,10 @@ pub struct SendRequest {
     #[serde(default)]
     pub source_origins: Option<std::collections::BTreeMap<String, context::SourceOrigin>>,
     pub template_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skill_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_target_id: Option<String>,
 }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -53,6 +59,14 @@ pub struct ChatEvent {
     pub attachments: Option<Vec<context::Attachment>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub save_targets: Option<Vec<context::SaveTarget>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub template: Option<context::TemplateSelection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skill_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary_target_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actual_model_id: Option<String>,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -84,6 +98,7 @@ pub struct AiChat {
     pub notion: Option<Arc<NotionContextService>>,
     store: Mutex<store::Store>,
     running: Mutex<HashMap<String, Active>>,
+    model_catalogs: Mutex<HashMap<String, Models>>,
 }
 fn provider_id(provider: Provider) -> &'static str {
     match provider {
@@ -145,6 +160,7 @@ impl AiChat {
             accounts,
             notion,
             running: Mutex::new(HashMap::new()),
+            model_catalogs: Mutex::new(HashMap::new()),
         }
     }
     pub fn is_busy(&self) -> bool {
@@ -280,6 +296,10 @@ impl AiChat {
                     sequence: message.sequence,
                     attachments: Some(message.attachments.clone()),
                     save_targets: Some(message.save_targets.clone()),
+                    template: message.template.clone(),
+                    skill_id: message.skill_id.clone(),
+                    summary_target_id: message.summary_target_id.clone(),
+                    actual_model_id: message.actual_model_id.clone(),
                 };
                 conversation.active_request_id = None;
                 conversation.updated_at = store::now();
@@ -356,6 +376,20 @@ impl AiChat {
             tauri::async_runtime::spawn_blocking(move || claude.refresh_models())
                 .await
                 .map_err(|_| "Claude 모델 목록을 새로고침하지 못했습니다.".to_string())??;
+        } else {
+            let session = self.accounts.subscription_session(id).await?;
+            if session.provider != Provider::ChatGpt {
+                return Err("AI 계정 연결을 확인해 주세요.".into());
+            }
+            let catalog = provider::models(&provider::ProviderAccess {
+                provider: provider_id(session.provider).into(),
+                access_token: session.access_token().into(),
+            })
+            .await?;
+            self.model_catalogs
+                .lock()
+                .unwrap()
+                .insert(id.into(), catalog);
         }
         self.models(id).await
     }
@@ -389,21 +423,28 @@ impl AiChat {
                 default_model_id,
             });
         }
-        let session = self.accounts.subscription_session(id).await?;
-        if session.provider != Provider::ChatGpt {
-            return Err("Claude 계정 연결을 확인해 주세요.".into());
-        }
-        provider::models(&provider::ProviderAccess {
-            provider: provider_id(session.provider).into(),
-            access_token: session.access_token().into(),
-        })
-        .await
+        Ok(self
+            .model_catalogs
+            .lock()
+            .unwrap()
+            .get(id)
+            .cloned()
+            .unwrap_or(Models {
+                models: vec![],
+                default_model_id: None,
+            }))
     }
     pub fn start(
         self: &Arc<Self>,
         request: SendRequest,
         emit: Arc<dyn Fn(ChatEvent) + Send + Sync>,
     ) -> Result<Started, String> {
+        skills::validate(
+            request.skill_id.as_deref(),
+            request.summary_target_id.as_deref(),
+            &request.meeting_ids,
+            request.template_id.as_deref(),
+        )?;
         store::id(&request.request_id)?;
         store::id(&request.conversation_id)?;
         for id in &request.meeting_ids {
@@ -470,6 +511,18 @@ impl AiChat {
             documents,
             request.template_id.as_deref(),
         )?;
+        if request.skill_id.as_deref() == Some(skills::MEETING_SUMMARY) {
+            if prepared
+                .binding
+                .targets()
+                .iter()
+                .all(|target| target.summary_context.is_none())
+            {
+                return Err("음성 기록이 준비된 회의를 선택해 주세요.".into());
+            }
+            prepared.instructions.push_str("\n첨부한 회의의 요약 본문을 작성합니다. 저장은 Nero가 처리하므로 저장을 완료했다고 답하지 않습니다.\n");
+            prepared.instructions.push_str(skills::WRITING_RULES);
+        }
         if let Some(origins) = &request.source_origins {
             let notion = self
                 .notion
@@ -573,6 +626,9 @@ impl AiChat {
             provider: None,
             model_id: None,
             actual_model_id: None,
+            template: prepared.binding.template_selection.clone(),
+            skill_id: request.skill_id.clone(),
+            summary_target_id: request.summary_target_id.clone(),
             binding: None,
             saved_summary_id: None,
             note_saved: false,
@@ -594,6 +650,9 @@ impl AiChat {
             provider: Some(provider_id(selected_provider).into()),
             model_id: Some(request.model_id.clone()),
             actual_model_id: None,
+            template: prepared.binding.template_selection.clone(),
+            skill_id: request.skill_id.clone(),
+            summary_target_id: request.summary_target_id.clone(),
             binding: Some(prepared.binding.clone()),
             saved_summary_id: None,
             note_saved: false,
@@ -663,6 +722,10 @@ impl AiChat {
                             sequence,
                             attachments: None,
                             save_targets: None,
+                            template: None,
+                            skill_id: None,
+                            summary_target_id: None,
+                            actual_model_id: None,
                         });
                     };
                     if selected_provider == Provider::Claude {
@@ -737,6 +800,10 @@ impl AiChat {
                         sequence: sequence + 1,
                         attachments: Some(prepared.binding.attachments()),
                         save_targets: Some(prepared.binding.save_targets()),
+                        template: prepared.binding.template_selection.clone(),
+                        skill_id: request.skill_id.clone(),
+                        summary_target_id: request.summary_target_id.clone(),
+                        actual_model_id: None,
                     });
                 }
             })
@@ -811,6 +878,10 @@ impl AiChat {
             sequence,
             attachments: Some(message.attachments.clone()),
             save_targets: Some(message.save_targets.clone()),
+            template: message.template.clone(),
+            skill_id: message.skill_id.clone(),
+            summary_target_id: message.summary_target_id.clone(),
+            actual_model_id: message.actual_model_id.clone(),
         };
         store.write(&conversation)?;
         Ok(Some(event))
@@ -920,7 +991,11 @@ impl AiChat {
                     text,
                     context::producer(
                         message.provider.as_deref().unwrap_or("AI"),
-                        message.model_id.as_deref().unwrap_or("unknown"),
+                        message
+                            .actual_model_id
+                            .as_deref()
+                            .or(message.model_id.as_deref())
+                            .unwrap_or("unknown"),
                         binding.template,
                     ),
                 )
@@ -962,6 +1037,31 @@ impl AiChat {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn passive_models_do_not_require_an_account_session() {
+        let (_root, chat) = service();
+        assert!(chat
+            .models("missing-account")
+            .await
+            .unwrap()
+            .models
+            .is_empty());
+        chat.model_catalogs.lock().unwrap().insert(
+            "cached-account".into(),
+            Models {
+                models: vec![provider::ChatModel {
+                    id: "model".into(),
+                    label: "공개 모델 이름".into(),
+                    max_output_tokens: None,
+                }],
+                default_model_id: Some("model".into()),
+            },
+        );
+        assert_eq!(
+            chat.models("cached-account").await.unwrap().models[0].id,
+            "model"
+        );
+    }
     fn service() -> (tempfile::TempDir, Arc<AiChat>) {
         let root = tempfile::tempdir().unwrap();
         let core = CoreHandle::open(root.path().canonicalize().unwrap()).unwrap();
@@ -984,6 +1084,9 @@ mod tests {
             provider: Some("chatgpt".into()),
             model_id: Some("synthetic".into()),
             actual_model_id: None,
+            template: binding.template_selection.clone(),
+            skill_id: None,
+            summary_target_id: None,
             attachments: binding.attachments(),
             save_targets: binding.save_targets(),
             binding: Some(binding),
@@ -1249,6 +1352,8 @@ mod tests {
             source_ids: vec![],
             source_origins: None,
             template_id: None,
+            skill_id: None,
+            summary_target_id: None,
         };
         let store = chat.store.lock().unwrap();
         let running = chat.running.lock().unwrap();

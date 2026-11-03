@@ -399,6 +399,7 @@ test('reopening model picker never probes models', async t => {
   trigger.click(); await wait(() => app.window.document.querySelector('.ai-model-popover'));
   app.window.document.activeElement.dispatchEvent(new app.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
   await wait(() => !app.window.document.querySelector('.ai-model-popover'));
+  await app.window.happyDOM.whenAsyncComplete();
   await wait(() => app.window.document.activeElement === trigger);
   trigger.click(); await wait(() => app.window.document.querySelector('.ai-model-popover'));
   assert.equal(app.calls.filter(call => call[0] === 'models').length, before);

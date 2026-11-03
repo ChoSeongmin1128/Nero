@@ -315,7 +315,7 @@ observation failures have a query-only retry and do not block another integratio
 
 ## In-app AI and meeting references
 
-The current source includes a global AI sidebar with conversation-specific meeting and Notion attachments. ChatGPT uses Sign in with ChatGPT; Claude uses a signature-verified official Claude Code executable and its own login. The separate local agent connections described above remain independent. See [in-app AI](../../docs/in-app-ai.md) and [Notion references](../../docs/notion-context.md) for source contracts. These features are not established as available in a released or installed build by this source documentation.
+The current source includes a global AI sidebar with conversation-specific meeting and Notion attachments. Its single model picker groups cached choices by service and refreshes them explicitly. Claude uses the official launcher's advertised model names and IDs; response model identity is recorded separately when provided. The meeting-summary command requires one meeting and an explicitly selected template, snapshots its saved prompt at send time, and checks the completed summary save. ChatGPT uses Sign in with ChatGPT; Claude uses a signature-verified official Claude Code executable and its own login. The separate local agent connections described above remain independent. See [in-app AI](../../docs/in-app-ai.md) and [Notion references](../../docs/notion-context.md) for source contracts. These features are not established as available in a released or installed build by this source documentation.
 
 ## Recording and dates
 
