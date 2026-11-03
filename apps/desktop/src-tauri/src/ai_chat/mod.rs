@@ -352,21 +352,32 @@ impl AiChat {
     }
     pub async fn models(&self, id: &str) -> Result<Models, String> {
         if id == crate::claude_connection::ACCOUNT_ID {
-            return Ok(Models {
-                models: ["sonnet", "opus", "haiku"]
-                    .into_iter()
-                    .map(|id| provider::ChatModel {
-                        id: id.into(),
-                        label: match id {
-                            "sonnet" => "Sonnet",
-                            "opus" => "Opus",
-                            _ => "Haiku",
+            let models = self
+                .claude
+                .models()
+                .into_iter()
+                .map(|model| {
+                    let label = match model.resolved_model.as_deref() {
+                        Some(resolved) if resolved != model.display_name => {
+                            format!("{} ({})", model.display_name, resolved)
                         }
-                        .into(),
+                        _ => model.display_name,
+                    };
+                    provider::ChatModel {
+                        id: model.value,
+                        label,
                         max_output_tokens: None,
-                    })
-                    .collect(),
-                default_model_id: Some("sonnet".into()),
+                    }
+                })
+                .collect::<Vec<_>>();
+            let default_model_id = models
+                .iter()
+                .find(|m| m.id == "sonnet")
+                .or_else(|| models.first())
+                .map(|m| m.id.clone());
+            return Ok(Models {
+                models,
+                default_model_id,
             });
         }
         let session = self.accounts.subscription_session(id).await?;
@@ -552,6 +563,7 @@ impl AiChat {
             error: None,
             provider: None,
             model_id: None,
+            actual_model_id: None,
             binding: None,
             saved_summary_id: None,
             note_saved: false,
@@ -572,6 +584,7 @@ impl AiChat {
             error: None,
             provider: Some(provider_id(selected_provider).into()),
             model_id: Some(request.model_id.clone()),
+            actual_model_id: None,
             binding: Some(prepared.binding.clone()),
             saved_summary_id: None,
             note_saved: false,
@@ -610,6 +623,7 @@ impl AiChat {
             tauri::async_runtime::block_on(async move {
                 let mut sequence = 0;
                 let mut persistence_error = false;
+                let mut actual_model_id = None;
                 let result = async {
                     let mut deliver = |delta: &str| {
                         if cancel.load(Ordering::Acquire) {
@@ -649,12 +663,14 @@ impl AiChat {
                             serde_json::to_string(&history)
                                 .map_err(|_| "대화를 준비하지 못했습니다.")?
                         );
-                        return this.claude.reply(
+                        let reply = this.claude.reply(
                             &request.model_id,
                             &prompt,
                             cancel.clone(),
                             &mut deliver,
-                        );
+                        )?;
+                        actual_model_id = reply.actual_model_id;
+                        return Ok(reply.text);
                     }
                     let session = this
                         .accounts
@@ -693,6 +709,7 @@ impl AiChat {
                     },
                     persistence_error,
                     sequence + 1,
+                    actual_model_id,
                 );
                 if let Ok(Some(event)) = event {
                     emit(event);
@@ -723,6 +740,7 @@ impl AiChat {
         result: Result<String, String>,
         persistence_error: bool,
         sequence: u64,
+        actual_model_id: Option<String>,
     ) -> Result<Option<ChatEvent>, String> {
         let store = self.store.lock().unwrap();
         let mut running = self.running.lock().unwrap();
@@ -754,6 +772,7 @@ impl AiChat {
         }) {
             Ok((text, citations)) => {
                 message.text = text;
+                message.actual_model_id = actual_model_id;
                 message.citations = citations;
                 message.status = "completed".into();
                 message.error = None;
@@ -955,6 +974,7 @@ mod tests {
             error: None,
             provider: Some("chatgpt".into()),
             model_id: Some("synthetic".into()),
+            actual_model_id: None,
             attachments: binding.attachments(),
             save_targets: binding.save_targets(),
             binding: Some(binding),
@@ -1031,7 +1051,13 @@ mod tests {
         .unwrap();
         assert!(chat.is_busy());
         let event = chat
-            .finish(&request, Ok("답변 완료".into()), false, 2)
+            .finish(
+                &request,
+                Ok("답변 완료".into()),
+                false,
+                2,
+                Some("claude-sonnet-5-5".into()),
+            )
             .unwrap()
             .unwrap();
         assert_eq!(event.kind, "completed");
@@ -1043,6 +1069,14 @@ mod tests {
         let conversation = chat.read(&id).unwrap();
         assert_eq!(conversation.messages[0].id, answer);
         assert_eq!(conversation.messages[0].text, "답변 완료");
+        assert_eq!(
+            conversation.messages[0].model_id.as_deref(),
+            Some("synthetic")
+        );
+        assert_eq!(
+            conversation.messages[0].actual_model_id.as_deref(),
+            Some("claude-sonnet-5-5")
+        );
         assert_eq!(
             conversation.messages[0]
                 .binding
@@ -1069,7 +1103,7 @@ mod tests {
         chat.delete(&first).unwrap();
         assert!(cancel.load(Ordering::Acquire));
         assert!(chat
-            .finish(&request, Ok("늦은 답변".into()), false, 2)
+            .finish(&request, Ok("늦은 답변".into()), false, 2, None)
             .unwrap()
             .is_none());
         assert!(chat.read(&first).is_err());
@@ -1086,7 +1120,7 @@ mod tests {
         let worker = chat.clone();
         let request_copy = request.clone();
         let done = std::thread::spawn(move || {
-            worker.finish(&request_copy, Ok("완료 경쟁".into()), false, 2)
+            worker.finish(&request_copy, Ok("완료 경쟁".into()), false, 2, None)
         });
         chat.cancel(&request).unwrap();
         drop(held);
@@ -1104,7 +1138,7 @@ mod tests {
         assert_eq!(stored.messages[0].sequence, 1);
         chat.cancel(&request).unwrap();
         let event = chat
-            .finish(&request, Err("취소".into()), false, 2)
+            .finish(&request, Err("취소".into()), false, 2, None)
             .unwrap()
             .unwrap();
         assert_eq!(event.kind, "cancelled");
@@ -1186,7 +1220,9 @@ mod tests {
             .join(format!("{id}.json"));
         std::fs::rename(&path, root.path().join("preserved.json")).unwrap();
         std::fs::create_dir(&path).unwrap();
-        assert!(chat.finish(&request, Ok("완료".into()), false, 2).is_err());
+        assert!(chat
+            .finish(&request, Ok("완료".into()), false, 2, None)
+            .is_err());
         assert!(!chat.is_busy());
     }
     #[test]

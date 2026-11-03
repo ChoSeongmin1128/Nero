@@ -240,6 +240,16 @@ mod tests {
         .is_err());
     }
     #[test]
+    fn actual_model_is_only_recorded_when_stream_unambiguous() {
+        let mut stream = ReplyStream::default();
+        stream.feed(br#"{"type":"stream_event","event":{"type":"message_start","message":{"model":"claude-sonnet-5-5"}}}
+"#, &mut |_| {}).unwrap();
+        assert_eq!(stream.actual_model().as_deref(), Some("claude-sonnet-5-5"));
+        stream.feed(br#"{"type":"stream_event","event":{"type":"message_start","message":{"model":"claude-opus-5-5"}}}
+"#, &mut |_| {}).unwrap();
+        assert_eq!(stream.actual_model(), None);
+    }
+    #[test]
     fn captures_success_and_rejects_failure() {
         let cancel = AtomicBool::new(false);
         assert_eq!(
@@ -420,8 +430,8 @@ impl Runner {
         prompt: &str,
         cancel: Arc<AtomicBool>,
         mut delta: impl FnMut(&str),
-    ) -> Result<String, String> {
-        if !matches!(model, "sonnet" | "opus" | "haiku") {
+    ) -> Result<Reply, String> {
+        if !valid_model(model) {
             return Err("Claude 모델을 확인해 주세요.".into());
         }
         if !self.auth_status(&cancel)? {
@@ -455,7 +465,11 @@ impl Runner {
         run(cmd, prompt.as_bytes().to_vec(), TIMEOUT, &cancel, |chunk| {
             stream.feed(chunk, &mut delta)
         })?;
-        stream.finish(&mut delta)
+        let text = stream.finish(&mut delta)?;
+        Ok(Reply {
+            text,
+            actual_model_id: stream.actual_model(),
+        })
     }
 }
 
@@ -524,6 +538,12 @@ fn parse_supported_models(output: &[u8]) -> Result<Vec<SupportedModel>, String> 
     Err(ERROR.into())
 }
 
+#[derive(Debug)]
+pub struct Reply {
+    pub text: String,
+    pub actual_model_id: Option<String>,
+}
+
 #[derive(Default)]
 struct ReplyStream {
     pending: Vec<u8>,
@@ -531,6 +551,7 @@ struct ReplyStream {
     result: Option<String>,
     stop: Option<String>,
     saw_partial: bool,
+    actual_models: std::collections::BTreeSet<String>,
 }
 impl ReplyStream {
     fn feed(&mut self, chunk: &[u8], delta: &mut impl FnMut(&str)) -> Result<(), String> {
@@ -545,6 +566,14 @@ impl ReplyStream {
                 Some("stream_event") => {
                     self.saw_partial = true;
                     let event = &v["event"];
+                    if event["type"] == "message_start" {
+                        if let Some(model) = event["message"]["model"]
+                            .as_str()
+                            .filter(|v| valid_model(v))
+                        {
+                            self.actual_models.insert(model.to_owned());
+                        }
+                    }
                     if event["type"] == "content_block_delta"
                         && event["delta"]["type"] == "text_delta"
                     {
@@ -573,7 +602,14 @@ impl ReplyStream {
         }
         Ok(())
     }
-    fn finish(mut self, delta: &mut impl FnMut(&str)) -> Result<String, String> {
+    fn actual_model(&self) -> Option<String> {
+        if self.actual_models.len() == 1 {
+            self.actual_models.iter().next().cloned()
+        } else {
+            None
+        }
+    }
+    fn finish(&mut self, delta: &mut impl FnMut(&str)) -> Result<String, String> {
         if !self.pending.is_empty() {
             self.feed(b"\n", delta)?;
         }
@@ -582,7 +618,7 @@ impl ReplyStream {
         {
             return Err("Claude 답변이 완성되지 않았습니다. 다시 시도해 주세요.".into());
         }
-        let result = self.result.ok_or(ERROR)?;
+        let result = self.result.take().ok_or(ERROR)?;
         if self.streamed.is_empty() {
             delta(&result);
         } else if self.streamed != result {

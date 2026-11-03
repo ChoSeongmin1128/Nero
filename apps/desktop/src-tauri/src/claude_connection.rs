@@ -19,6 +19,7 @@ struct Login {
 pub struct ClaudeConnection {
     root: PathBuf,
     cached: Mutex<Option<Value>>,
+    models: Mutex<Vec<claude_runner::SupportedModel>>,
     login: Mutex<Option<Arc<Login>>>,
 }
 impl ClaudeConnection {
@@ -26,6 +27,7 @@ impl ClaudeConnection {
         Self {
             root: root.join("ai-runtime/claude-code"),
             cached: Mutex::new(None),
+            models: Mutex::new(Vec::new()),
             login: Mutex::new(None),
         }
     }
@@ -64,6 +66,7 @@ impl ClaudeConnection {
         {
             return Err("Claude 로그인을 진행 중입니다.".into());
         }
+        self.models.lock().unwrap().clear();
         let run = Arc::new(Login {
             id: uuid::Uuid::new_v4().to_string(),
             cancel: Arc::new(AtomicBool::new(false)),
@@ -81,10 +84,10 @@ impl ClaudeConnection {
                 };
                 let cancel = run.cancel.clone();
                 tauri::async_runtime::spawn_blocking(move || {
-                    if runner.auth_status(&cancel)? {
-                        return Ok(());
+                    if !runner.auth_status(&cancel)? {
+                        runner.login(&cancel)?;
                     }
-                    runner.login(&cancel)
+                    runner.supported_models(&cancel)
                 })
                 .await
                 .map_err(|_| "Claude 로그인을 완료하지 못했습니다.".to_string())?
@@ -93,7 +96,9 @@ impl ClaudeConnection {
             let accepted = if run.cancel.load(Ordering::Acquire) {
                 Err("취소했습니다.".into())
             } else {
-                result
+                result.map(|models| {
+                    *this.models.lock().unwrap() = models;
+                })
             };
             if accepted.is_ok() {
                 *this.cached.lock().unwrap() = Some(Self::row(true));
@@ -159,18 +164,34 @@ impl ClaudeConnection {
         }
         Ok(())
     }
+    pub fn models(&self) -> Vec<claude_runner::SupportedModel> {
+        self.models.lock().unwrap().clone()
+    }
     pub fn reply(
         &self,
         model: &str,
         prompt: &str,
         cancel: Arc<AtomicBool>,
         delta: impl FnMut(&str),
-    ) -> Result<String, String> {
+    ) -> Result<claude_runner::Reply, String> {
+        if !self
+            .models
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|entry| entry.value == model)
+        {
+            return Err(
+                "이 Claude 계정에서 선택한 모델을 사용할 수 없습니다. 연결을 다시 확인해 주세요."
+                    .into(),
+            );
+        }
         let result = self.resolve()?.reply(model, prompt, cancel, delta);
         if result.is_ok() {
             *self.cached.lock().unwrap() = Some(Self::row(true));
         } else {
             *self.cached.lock().unwrap() = None;
+            self.models.lock().unwrap().clear();
         }
         result
     }
@@ -189,6 +210,20 @@ mod tests {
         });
         *connection.login.lock().unwrap() = Some(run.clone());
         run
+    }
+
+    #[test]
+    fn model_cache_is_passive_and_rejects_unadvertised_selection() {
+        let connection = ClaudeConnection::new(PathBuf::from("unused"));
+        assert!(connection.models().is_empty());
+        let result = connection.reply(
+            "claude-unknown",
+            "prompt",
+            Arc::new(AtomicBool::new(false)),
+            |_| {},
+        );
+        assert!(result.is_err());
+        assert!(connection.models().is_empty());
     }
 
     #[test]
