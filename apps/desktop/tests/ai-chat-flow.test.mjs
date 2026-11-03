@@ -615,3 +615,44 @@ test('selected template survives editing and skill saves only its explicit targe
   assert.deepEqual(app.calls.find(call => call[0] === 'summary')[1], { conversationId: 'conversation', messageId: 'answer', meetingId: 'meeting-a' });
   app.flow.dispose();
 });
+
+
+test('model refresh failure retains cached models and selected model', async () => {
+  let fail = false;
+  const app = await harness({ models: async () => { if (fail) throw Error('refresh failed'); return { models: [{ id: 'model', label: 'Model' }] }; } });
+  fail = true; await app.flow.refreshModelGroup('chatgpt');
+  assert.equal(app.state().modelId, 'model');
+  assert.deepEqual(app.flow.modelsFor('chatgpt').models, [{ id: 'model', label: 'Model' }]);
+  assert.match(app.flow.modelsFor('chatgpt').error, /refresh failed/);
+  app.flow.dispose();
+});
+
+test('duplicate completion saves summary once and retains actual model metadata', async () => {
+  const app = await harness();
+  app.flow.selectTemplate('template'); app.flow.selectSummaryTarget('meeting-a');
+  await app.flow.send();
+  const event = { type: 'completed', sequence: 1, messageId: 'answer', text: 'Summary', actualModelId: 'actual-model', template: { id: 'template', name: 'Summary', revision: 'r2' }, saveTargets: [{ meetingId: 'meeting-a', canSaveSummary: true }] };
+  app.emit(event); app.emit(event); await tick(); await tick();
+  assert.equal(app.calls.filter(call => call[0] === 'summary').length, 1);
+  assert.equal(app.state().conversation.messages.at(-1).actualModelId, 'actual-model');
+  app.flow.dispose();
+});
+
+test('retry after reading restores summary target and template ID from stored metadata', async () => {
+  const app = await harness();
+  const saved = app.store.get('conversation');
+  saved.messages = [{ id: 'user-old', role: 'user', text: 'Question', status: 'completed', attachments: [{ kind: 'meeting', meetingId: 'meeting-a' }] }, { id: 'answer-old', role: 'assistant', status: 'failed', text: '', skillId: 'meeting-summary', summaryTargetId: 'meeting-a', template: { id: 'template', name: 'Summary', revision: 'old' } }];
+  await app.flow.loadConversation(true);
+  assert.equal(await app.flow.retry('answer-old'), true);
+  const request = app.calls.find(call => call[0] === 'send')[1];
+  assert.equal(request.templateId, 'template'); assert.equal(request.summaryTargetId, 'meeting-a');
+  assert.equal(request.skillId, 'meeting-summary'); assert.equal('revision' in request, false);
+  app.flow.dispose();
+});
+
+test('removing a skill clears its template and target', async () => {
+  const app = await harness(); app.flow.selectTemplate('template'); app.flow.selectSummaryTarget('meeting-a');
+  app.flow.selectSkill(null);
+  assert.equal(app.state().conversation.skillId, null); assert.equal(app.state().conversation.templateId, null); assert.equal(app.state().conversation.summaryTargetId, null);
+  app.flow.dispose();
+});

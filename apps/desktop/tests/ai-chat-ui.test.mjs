@@ -370,9 +370,36 @@ test('slash chooser selects a skill without sending and requires a meeting targe
   await wait(() => app.node('ai-chat-inspector').querySelector('[role="listbox"]'));
   input.dispatchEvent(new app.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
   await wait(() => app.node('ai-chat-inspector').querySelector('[aria-label="요약할 회의"]'));
+  assert.match(app.node('ai-chat-inspector').textContent, /요약할 템플릿을 선택해 주세요/);
   assert.equal(app.calls.some(call => call[0] === 'send'), false);
   assert.equal(app.node('ai-chat-inspector').querySelector('[aria-label="질문 보내기"]').disabled, true);
   const select = app.node('ai-chat-inspector').querySelector('[aria-label="요약할 회의"]');
   select.value = 'example-meeting'; select.dispatchEvent(new app.window.Event('change', { bubbles: true }));
+  assert.equal(app.node('ai-chat-inspector').querySelector('[aria-label="질문 보내기"]').disabled, true);
+  await wait(() => [...app.node('ai-chat-inspector').querySelectorAll('[role=option]')].some(item => item.textContent.includes('기본 요약')));
+  [...app.node('ai-chat-inspector').querySelectorAll('[role=option]')].find(item => item.textContent.includes('기본 요약')).click();
   await wait(() => !app.node('ai-chat-inspector').querySelector('[aria-label="질문 보내기"]').disabled);
+});
+
+
+test('IME Enter does not select a slash option or send', async t => {
+  const app = await fixture(t);
+  const input = app.node('ai-chat-inspector').querySelector('textarea');
+  Object.getOwnPropertyDescriptor(app.window.HTMLTextAreaElement.prototype, 'value').set.call(input, '/회의');
+  input.dispatchEvent(new app.window.Event('input', { bubbles: true }));
+  await wait(() => app.node('ai-chat-inspector').querySelector('[role="listbox"]'));
+  input.dispatchEvent(new app.window.KeyboardEvent('keydown', { key: 'Enter', isComposing: true, bubbles: true, cancelable: true }));
+  assert.equal(app.ui.flow.getSnapshot().conversation.skillId, null);
+  assert.equal(app.calls.some(call => call[0] === 'send'), false);
+});
+
+test('reopening model picker never probes models', async t => {
+  const app = await fixture(t); const trigger = app.button('AI 모델 선택');
+  const before = app.calls.filter(call => call[0] === 'models').length;
+  trigger.click(); await wait(() => app.window.document.querySelector('.ai-model-popover'));
+  app.window.document.activeElement.dispatchEvent(new app.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await wait(() => !app.window.document.querySelector('.ai-model-popover'));
+  await wait(() => app.window.document.activeElement === trigger);
+  trigger.click(); await wait(() => app.window.document.querySelector('.ai-model-popover'));
+  assert.equal(app.calls.filter(call => call[0] === 'models').length, before);
 });
