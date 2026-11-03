@@ -9,6 +9,8 @@ serde_json = { version = "1.0", features = ["float_roundtrip"] }
 [profile.dev]
 debug = "line-tables-only"
 incremental = false
+# Rust's post-link stripping can misalign Mach-O proc-macro libraries.
+strip = "none"
 
 [profile.dev.package.sha2]
 opt-level = 3

@@ -11,6 +11,8 @@ npm run tauri -- dev
 
 환경은 컴파일 프로필과 `development` 기능으로 결정합니다. 실행 시 환경변수로 전환하지 않습니다. Tauri 설정의 앱 이름/식별자가 컴파일된 환경과 다르면 플러그인, 창, 저장소를 초기화하기 전에 종료합니다. `cargo run`으로 기본 운영 설정을 그대로 사용하는 디버그 실행은 거부됩니다. Dev CLI에서도 운영/Grove 데이터 경로를 `--data-dir`로 지정할 수 없습니다.
 
+개발 프로필은 최소 디버그 정보를 사용하고 후처리 strip을 비활성화합니다. macOS의 동적 라이브러리 정렬 오류를 피하기 위한 설정이며, 전체 디버그 정보를 만들거나 빌드된 바이너리를 사후 수정하지 않습니다.
+
 ```sh
 npm run tauri -- build --debug --bundles app --ci -- --locked
 npm run tauri -- build --features development --bundles app --ci -- --locked
