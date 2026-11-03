@@ -1,0 +1,36 @@
+{
+  "productName": "Nero Dev",
+  "identifier": "io.github.choseongmin1128.nero.desktop.dev",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "dragDropEnabled": false,
+        "title": "Nero Dev",
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": {
+          "x": 12,
+          "y": 18
+        },
+        "width": 1180,
+        "height": 790,
+        "minWidth": 640,
+        "minHeight": 560,
+        "center": true
+      }
+    ],
+    "security": {
+      "assetProtocol": {
+        "scope": [
+          "$APPDATA/meetings/*/sessions/*/audio.wav"
+        ]
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": []
+    }
+  }
+}

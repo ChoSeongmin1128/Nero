@@ -136,6 +136,9 @@ async fn agent_connection_info(
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
+    if nero_core::environment::CURRENT.development {
+        return Ok(agent_connection::development_info(&root));
+    }
     let connections = connection_directory(&app)?;
     let home = app
         .path()
@@ -165,7 +168,10 @@ async fn agent_connection_info(
 fn connection_directory(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     app.path()
         .config_dir()
-        .map(|path| path.join("Nero").join("connections"))
+        .map(|path| {
+            path.join(nero_core::environment::CURRENT.connections_directory)
+                .join("connections")
+        })
         .map_err(|_| "연결 설정 경로를 확인하지 못했습니다.".to_string())
 }
 
@@ -176,6 +182,9 @@ async fn agent_connect_client(
     client: String,
 ) -> Result<agent_connection::ConnectionInfo, String> {
     require_main(&window)?;
+    if nero_core::environment::CURRENT.development {
+        return Err("개발 앱에서는 외부 MCP 연결을 등록하지 않습니다.".into());
+    }
     let resources = app
         .path()
         .resource_dir()
@@ -1734,15 +1743,28 @@ fn main() {
             }
         }
     }
+    let context = tauri::generate_context!();
+    if let Err(error) = nero_core::environment::CURRENT.validate_bundle(
+        &context.config().identifier,
+        context.config().product_name.as_deref(),
+    ) {
+        eprintln!("{error}");
+        std::process::exit(78);
+    }
     let builder = tauri::Builder::default();
     #[cfg(target_os = "macos")]
     let builder = builder.menu(app_menu::default);
-    let app = builder
+    let builder = builder
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
             show_main(app)
         }))
-        .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init());
+    let builder = if nero_core::environment::CURRENT.development {
+        builder
+    } else {
+        builder.plugin(tauri_plugin_updater::Builder::new().build())
+    };
+    let app = builder
         .invoke_handler(tauri::generate_handler![
             ai_chat_desktop::ai_chat_accounts,
             ai_chat_desktop::ai_chat_connect,
@@ -1964,7 +1986,7 @@ fn main() {
                 }
             }
         })
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("Nero를 시작하지 못했습니다.");
     app.run(|app, event| {
         #[cfg(target_os = "macos")]

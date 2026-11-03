@@ -10,18 +10,19 @@ export function createAppUpdater({ invoke, listen, saveEdits, onChange = () => {
   const scheduleCheck = delay => {
     if (timer !== undefined) unschedule(timer);
     timer = undefined;
-    if (!disposed && !snapshot.recoveryRequired && removeListener) timer = schedule(autoCheck, delay);
+    if (!disposed && snapshot.enabled !== false && !snapshot.recoveryRequired && removeListener) timer = schedule(autoCheck, delay);
   };
   const publish = value => {
     if (disposed || !value) return;
     if (snapshot.recoveryRequired && !value.recoveryRequired) return;
     snapshot = { ...value };
+    if (snapshot.enabled === false && timer !== undefined) { unschedule(timer); timer = undefined; }
     setInstalling(snapshot.phase === 'installing' || Boolean(snapshot.recoveryRequired));
     onChange(snapshot);
     if (snapshot.recoveryRequired || (snapshot.phase === 'error' && !snapshot.downloadReady)) scheduleCheck(5 * 60 * 1000);
   };
   const run = async (command, before) => {
-    if (disposed || busy) return false;
+    if (disposed || busy || (snapshot.enabled === false && command !== 'app_update_status')) return false;
     if (snapshot.recoveryRequired) return false;
     busy = true;
     try {
@@ -50,7 +51,7 @@ export function createAppUpdater({ invoke, listen, saveEdits, onChange = () => {
     } finally { recoveryQuitting = false; }
   };
   const install = () => {
-    if (disposed || busy || snapshot.recoveryRequired) return Promise.resolve(false);
+    if (disposed || busy || snapshot.enabled === false || snapshot.recoveryRequired) return Promise.resolve(false);
     return run('app_update_install', async () => {
       if (typeof saveEdits !== 'function') throw Error('열려 있는 편집 내용을 먼저 저장해 주세요.');
       const saved = await saveEdits();
@@ -61,7 +62,7 @@ export function createAppUpdater({ invoke, listen, saveEdits, onChange = () => {
   };
   const autoCheck = async () => {
     timer = undefined;
-    if (disposed || snapshot.recoveryRequired) return;
+    if (disposed || snapshot.enabled === false || snapshot.recoveryRequired) return;
     if (busy || ['checking', 'downloading', 'installing'].includes(snapshot.phase)) {
       scheduleCheck(5 * 60 * 1000);
       return;
@@ -87,6 +88,7 @@ export function createAppUpdater({ invoke, listen, saveEdits, onChange = () => {
 }
 
 export function appUpdateAction(status) {
+  if (status?.enabled === false) return { action: null, label: '', disabled: true };
   if (status?.recoveryRequired || status?.phase === 'recoveryRequired') return { action: 'quitForRecovery', label: '복구 안내 확인 후 종료', disabled: false };
   if (status?.phase === 'checking') return { action: null, label: '확인 중…', disabled: true };
   if (status?.phase === 'downloading') return { action: null, label: '다운로드 중…', disabled: true };

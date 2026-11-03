@@ -639,7 +639,7 @@ function renderAgentConnection() {
   const { info, error } = agentConnection;
   agentConnectionDialog.update(info);
   const available = Boolean(info?.available && info.executablePath && info.config);
-  const message = error || (info && !available ? '연결 도구가 포함되지 않은 빌드입니다.' : '');
+  const message = error || (info && !available ? info.unavailableReason || '연결 도구가 포함되지 않은 빌드입니다.' : '');
   byId('settings-agent-status').textContent = message;
   byId('settings-agent-status').hidden = !message;
   for (const client of ['claude', 'codex']) {

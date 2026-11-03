@@ -57,13 +57,16 @@ for (const name of ['nero-logo-light.svg', 'nero-logo-dark.svg', 'nero-symbol-li
 
 const git = (...args) => execFileSync('git', args, { cwd: resolve(app, '../..'), encoding: 'utf8' }).trim();
 const config = JSON.parse(await readFile(resolve(app, 'src-tauri/tauri.conf.json'), 'utf8'));
+const development = process.env.NERO_BUILD_ENV === 'development';
+if (process.env.NERO_BUILD_ENV && !['development', 'production'].includes(process.env.NERO_BUILD_ENV)) throw Error('Invalid NERO_BUILD_ENV.');
 const release = resolve(app, '.generated/release');
 await mkdir(release, { recursive: true });
 await writeFile(resolve(release, 'build-info.json'), JSON.stringify({
   formatVersion: 1,
   version: config.version,
   build: config.bundle.macOS.bundleVersion,
-  bundleIdentifier: config.identifier,
+  bundleIdentifier: development ? 'io.github.choseongmin1128.nero.desktop.dev' : config.identifier,
+  ...(development ? { environment: 'development' } : {}),
   sourceCommit: git('rev-parse', 'HEAD'),
   sourceTree: git('rev-parse', 'HEAD^{tree}'),
   sourceDirty: Boolean(git('status', '--porcelain', '--untracked-files=normal')),

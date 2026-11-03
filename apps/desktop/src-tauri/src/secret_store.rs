@@ -92,33 +92,41 @@ mod interaction {
     }
 }
 
-fn allowed(service: &str, account: &str) -> bool {
+fn allowed_for(profile: &nero_core::environment::Profile, service: &str, account: &str) -> bool {
     !account.is_empty()
-        && matches!(
-            service,
-            "io.github.choseongmin1128.nero.desktop.ai-accounts"
-                | "io.github.choseongmin1128.nero.desktop.notion-context"
-                | "io.github.choseongmin1128.nero.desktop.google-calendar"
-                | "io.github.choseongmin1128.grove.desktop.google-calendar"
-        )
+        && [
+            profile.ai_credentials_service,
+            profile.notion_credentials_service,
+            profile.calendar_credentials_service,
+        ]
+        .contains(&service)
+}
+
+fn read_allowed_for(
+    profile: &nero_core::environment::Profile,
+    service: &str,
+    account: &str,
+) -> bool {
+    allowed_for(profile, service, account)
+        || (!account.is_empty() && profile.legacy_calendar_service == Some(service))
 }
 
 pub fn read(service: &str, account: &str, access: Access) -> Result<Option<Vec<u8>>, Error> {
-    if !allowed(service, account) {
+    if !read_allowed_for(&nero_core::environment::CURRENT, service, account) {
         return Err(Error::Unavailable);
     }
     platform::read(service, account, access)
 }
 
 pub fn write(service: &str, account: &str, value: &[u8], access: Access) -> Result<(), Error> {
-    if !allowed(service, account) {
+    if !allowed_for(&nero_core::environment::CURRENT, service, account) {
         return Err(Error::Unavailable);
     }
     platform::write(service, account, value, access)
 }
 
 pub fn delete(service: &str, account: &str, access: Access) -> Result<(), Error> {
-    if !allowed(service, account) {
+    if !allowed_for(&nero_core::environment::CURRENT, service, account) {
         return Err(Error::Unavailable);
     }
     platform::delete(service, account, access)
@@ -390,19 +398,35 @@ mod platform {
 
 #[cfg(test)]
 mod tests {
-    use super::allowed;
+    use super::{allowed_for, read_allowed_for};
+    use nero_core::environment::{DEVELOPMENT, PRODUCTION};
+
     #[test]
-    fn restricts_service_and_account() {
-        assert!(allowed(
-            "io.github.choseongmin1128.nero.desktop.ai-accounts",
-            "token"
-        ));
-        assert!(!allowed(
-            "io.github.choseongmin1128.nero.desktop.ai-accounts",
-            ""
-        ));
-        assert!(!allowed("Claude Code-credentials", "token"));
-        assert!(!allowed("", "token"));
+    fn services_are_isolated_and_only_production_reads_grove() {
+        let dev = DEVELOPMENT;
+        let prod = PRODUCTION;
+        for service in [
+            dev.ai_credentials_service,
+            dev.notion_credentials_service,
+            dev.calendar_credentials_service,
+        ] {
+            assert!(allowed_for(&dev, service, "token"));
+            assert!(!read_allowed_for(&prod, service, "token"));
+            assert!(!allowed_for(&dev, service, ""));
+        }
+        for service in [
+            prod.ai_credentials_service,
+            prod.notion_credentials_service,
+            prod.calendar_credentials_service,
+        ] {
+            assert!(allowed_for(&prod, service, "token"));
+            assert!(!read_allowed_for(&dev, service, "token"));
+        }
+        let grove = prod.legacy_calendar_service.unwrap();
+        assert!(read_allowed_for(&prod, grove, "token"));
+        assert!(!allowed_for(&prod, grove, "token"));
+        assert!(!read_allowed_for(&dev, grove, "token"));
+        assert!(!read_allowed_for(&dev, "Claude Code-credentials", "token"));
     }
 }
 

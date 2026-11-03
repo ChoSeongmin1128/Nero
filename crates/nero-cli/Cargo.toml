@@ -8,6 +8,9 @@ publish = false
 name = "nero"
 path = "src/main.rs"
 
+[features]
+development = ["nero-core/development"]
+
 [dependencies]
 fs2 = "0.4.3"
 nero-core = { path = "../nero-core" }

@@ -12,11 +12,21 @@ fn invalid() -> io::Error {
 }
 
 pub fn validate_startup(root: &Path) -> io::Result<()> {
-    let legacy = root.with_file_name(LEGACY_IDENTIFIER);
-    if legacy.try_exists()? || legacy.is_symlink() || root.is_symlink() {
+    validate_profile_startup(root, nero_core::environment::CURRENT.development)
+}
+
+fn validate_profile_startup(root: &Path, development: bool) -> io::Result<()> {
+    if root.is_symlink() {
         return Err(invalid());
     }
     if root.try_exists()? && !root.is_dir() {
+        return Err(invalid());
+    }
+    if development {
+        return Ok(());
+    }
+    let legacy = root.with_file_name(LEGACY_IDENTIFIER);
+    if legacy.try_exists()? || legacy.is_symlink() {
         return Err(invalid());
     }
     let receipt = root.join(RECEIPT);
@@ -43,24 +53,24 @@ mod tests {
         let old = temp.path().join(LEGACY_IDENTIFIER);
         let root = temp.path().join(IDENTIFIER);
         std::fs::create_dir(&old).unwrap();
-        assert!(validate_startup(&root).is_err());
+        assert!(validate_profile_startup(&root, false).is_err());
         assert!(!root.exists());
         std::fs::create_dir(&root).unwrap();
-        assert!(validate_startup(&root).is_err());
+        assert!(validate_profile_startup(&root, false).is_err());
     }
 
     #[test]
     fn fresh_install_and_valid_completed_migration_are_read_only() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join(IDENTIFIER);
-        assert!(validate_startup(&root).is_ok());
+        assert!(validate_profile_startup(&root, false).is_ok());
         assert!(!root.exists());
         std::fs::create_dir(&root).unwrap();
         let receipt = json!({"schemaVersion":1,"fromIdentifier":LEGACY_IDENTIFIER,
             "toIdentifier":IDENTIFIER,"sourceData":temp.path().join(LEGACY_IDENTIFIER),
             "destinationData":root,"status":"completed"});
         std::fs::write(root.join(RECEIPT), receipt.to_string()).unwrap();
-        assert!(validate_startup(&root).is_ok());
+        assert!(validate_profile_startup(&root, false).is_ok());
         for (key, value) in [
             ("status", "pending"),
             ("destinationData", "/other"),
@@ -69,8 +79,23 @@ mod tests {
             let mut invalid_receipt = receipt.clone();
             invalid_receipt[key] = json!(value);
             std::fs::write(root.join(RECEIPT), invalid_receipt.to_string()).unwrap();
-            assert!(validate_startup(&root).is_err());
+            assert!(validate_profile_startup(&root, false).is_err());
         }
+    }
+
+    #[test]
+    fn development_ignores_legacy_and_production_migration_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp
+            .path()
+            .join("io.github.choseongmin1128.nero.desktop.dev");
+        std::fs::create_dir(temp.path().join(LEGACY_IDENTIFIER)).unwrap();
+        std::fs::create_dir(temp.path().join(IDENTIFIER)).unwrap();
+        assert!(validate_profile_startup(&root, true).is_ok());
+        assert!(!root.exists());
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join(RECEIPT), b"invalid").unwrap();
+        assert!(validate_profile_startup(&root, true).is_ok());
     }
 
     #[cfg(unix)]
@@ -79,6 +104,6 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join(IDENTIFIER);
         std::os::unix::fs::symlink(temp.path().join("missing"), &root).unwrap();
-        assert!(validate_startup(&root).is_err());
+        assert!(validate_profile_startup(&root, false).is_err());
     }
 }

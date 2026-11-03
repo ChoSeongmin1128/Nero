@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-const SERVICE: &str = "io.github.choseongmin1128.nero.desktop.ai-accounts";
+const SERVICE: &str = nero_core::environment::CURRENT.ai_credentials_service;
 const INDEX: &str = "credential-state-v1";
 const SINGLE: &str = "credential-state-v2";
 const CHUNK_BYTES: usize = 1024;

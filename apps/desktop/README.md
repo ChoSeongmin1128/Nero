@@ -12,6 +12,10 @@ macOS builds require Xcode with the macOS 26 SDK for the Apple Speech helper.
 Desktop CI selects Xcode 26.0.1 explicitly and checks the SDK major version;
 set `DEVELOPER_DIR` to a suitable Xcode installation for local builds.
 
+For isolated development profiles, storage, credentials and updater behavior, see
+[Development](../../docs/development.md). `npm run dev` starts only the web preview;
+use `npm run tauri -- dev` to start the native development app.
+
 From this directory:
 
 ```sh

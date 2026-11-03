@@ -1,8 +1,8 @@
 use crate::secret_store::{Access, Error};
 use serde::{Deserialize, Serialize};
 
-const SERVICE: &str = "io.github.choseongmin1128.nero.desktop.google-calendar";
-const LEGACY_SERVICE: &str = "io.github.choseongmin1128.grove.desktop.google-calendar";
+const SERVICE: &str = nero_core::environment::CURRENT.calendar_credentials_service;
+const LEGACY_SERVICE: Option<&str> = nero_core::environment::CURRENT.legacy_calendar_service;
 const ACCOUNT: &str = "google-calendar";
 const ALTERNATE_ACCOUNT: &str = "google-calendar-alternate";
 
@@ -43,44 +43,48 @@ fn verified_save(
     value: &StoredToken,
     slot: bool,
     access: Access,
+    service: &str,
 ) -> Result<(), Error> {
     let encoded = serde_json::to_string(value).map_err(|_| Error::Unavailable)?;
-    store.write(SERVICE, account(slot), &encoded, access)?;
+    store.write(service, account(slot), &encoded, access)?;
     let saved = store
-        .read(SERVICE, account(slot), Access::Silent)?
+        .read(service, account(slot), Access::Silent)?
         .ok_or(Error::Unavailable)?;
     if decode(&saved).map_err(|_| Error::Unavailable)? != *value {
         return Err(Error::Unavailable);
     }
-    store.write(SERVICE, &marker(slot), "complete", Access::Silent)
+    store.write(service, &marker(slot), "complete", Access::Silent)
 }
 
 fn load_or_migrate(
     store: &impl Credentials,
     slot: bool,
     access: Access,
+    service: &str,
+    legacy_service: Option<&str>,
 ) -> Result<StoredToken, Error> {
-    if let Some(value) = store.read(SERVICE, account(slot), access)? {
+    if let Some(value) = store.read(service, account(slot), access)? {
         return decode(&value).map_err(|_| Error::Unavailable);
     }
     if store
-        .read(SERVICE, &marker(slot), Access::Silent)?
+        .read(service, &marker(slot), Access::Silent)?
         .is_some()
     {
         return Err(Error::InteractionRequired);
     }
+    let legacy_service = legacy_service.ok_or(Error::Unavailable)?;
     let encoded = store
-        .read(LEGACY_SERVICE, account(slot), Access::Silent)?
+        .read(legacy_service, account(slot), Access::Silent)?
         .ok_or(Error::Unavailable)?;
     let value = decode(&encoded).map_err(|_| Error::Unavailable)?;
-    verified_save(store, &value, slot, Access::Silent)?;
+    verified_save(store, &value, slot, Access::Silent, service)?;
     Ok(value)
 }
 
-fn disconnect_slot(store: &impl Credentials, slot: bool) -> Result<(), Error> {
+fn disconnect_slot(store: &impl Credentials, slot: bool, service: &str) -> Result<(), Error> {
     // Preserve the old credential without restoring it after an explicit disconnect.
-    store.write(SERVICE, &marker(slot), "disconnected", Access::Silent)?;
-    store.delete(SERVICE, account(slot), Access::Silent)
+    store.write(service, &marker(slot), "disconnected", Access::Silent)?;
+    store.delete(service, account(slot), Access::Silent)
 }
 
 struct SystemCredentials;
@@ -107,14 +111,14 @@ impl Credentials for SystemCredentials {
 pub struct TokenStore;
 impl TokenStore {
     pub fn load(&self, slot: bool, access: Access) -> Result<StoredToken, Error> {
-        load_or_migrate(&SystemCredentials, slot, access)
+        load_or_migrate(&SystemCredentials, slot, access, SERVICE, LEGACY_SERVICE)
     }
     pub fn save(&self, value: &StoredToken, slot: bool, access: Access) -> Result<(), Error> {
-        verified_save(&SystemCredentials, value, slot, access)
+        verified_save(&SystemCredentials, value, slot, access, SERVICE)
     }
     pub fn delete(&self) -> Result<(), Error> {
-        let first = disconnect_slot(&SystemCredentials, false);
-        let second = disconnect_slot(&SystemCredentials, true);
+        let first = disconnect_slot(&SystemCredentials, false, SERVICE);
+        let second = disconnect_slot(&SystemCredentials, true, SERVICE);
         first.and(second)
     }
 }
@@ -124,6 +128,13 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
     use std::collections::BTreeMap;
+
+    const SERVICE: &str = nero_core::environment::PRODUCTION.calendar_credentials_service;
+    const LEGACY_SERVICE: &str = match nero_core::environment::PRODUCTION.legacy_calendar_service {
+        Some(service) => service,
+        None => panic!("production must retain calendar migration"),
+    };
+    const DEV_SERVICE: &str = nero_core::environment::DEVELOPMENT.calendar_credentials_service;
 
     #[derive(Default)]
     struct Memory {
@@ -211,7 +222,11 @@ mod tests {
         let store = Memory::default();
         for slot in [false, true] {
             let expected = legacy(&store, slot);
-            assert!(load_or_migrate(&store, slot, Access::Silent).unwrap() == expected);
+            assert!(
+                load_or_migrate(&store, slot, Access::Silent, SERVICE, Some(LEGACY_SERVICE))
+                    .unwrap()
+                    == expected
+            );
             assert!(store
                 .read(LEGACY_SERVICE, account(slot), Access::Silent)
                 .unwrap()
@@ -226,9 +241,11 @@ mod tests {
     fn disconnect_does_not_resurrect_a_retained_credential() {
         let store = Memory::default();
         legacy(&store, false);
-        load_or_migrate(&store, false, Access::Silent).unwrap();
-        disconnect_slot(&store, false).unwrap();
-        assert!(load_or_migrate(&store, false, Access::Silent).is_err());
+        load_or_migrate(&store, false, Access::Silent, SERVICE, Some(LEGACY_SERVICE)).unwrap();
+        disconnect_slot(&store, false, SERVICE).unwrap();
+        assert!(
+            load_or_migrate(&store, false, Access::Silent, SERVICE, Some(LEGACY_SERVICE)).is_err()
+        );
         assert!(store
             .read(LEGACY_SERVICE, ACCOUNT, Access::Silent)
             .unwrap()
@@ -251,7 +268,10 @@ mod tests {
             },
         ] {
             legacy(&store, false);
-            assert!(load_or_migrate(&store, false, Access::Silent).is_err());
+            assert!(
+                load_or_migrate(&store, false, Access::Silent, SERVICE, Some(LEGACY_SERVICE))
+                    .is_err()
+            );
             assert!(store
                 .values
                 .borrow()
@@ -267,7 +287,17 @@ mod tests {
         let store = Memory::default();
         let token = legacy(&store, false);
         store.calls.borrow_mut().clear();
-        assert!(load_or_migrate(&store, false, Access::Interactive).unwrap() == token);
+        assert!(
+            load_or_migrate(
+                &store,
+                false,
+                Access::Interactive,
+                SERVICE,
+                Some(LEGACY_SERVICE)
+            )
+            .unwrap()
+                == token
+        );
         let calls = store.calls.borrow();
         assert_eq!(calls.iter().filter(|entry| entry.3).count(), 1);
         assert_eq!(
@@ -278,7 +308,7 @@ mod tests {
         drop(calls);
 
         store.calls.borrow_mut().clear();
-        verified_save(&store, &token, false, Access::Interactive).unwrap();
+        verified_save(&store, &token, false, Access::Interactive, SERVICE).unwrap();
         let calls = store.calls.borrow();
         assert_eq!(calls.iter().filter(|entry| entry.3).count(), 1);
         assert_eq!(
@@ -289,8 +319,8 @@ mod tests {
         drop(calls);
 
         store.calls.borrow_mut().clear();
-        disconnect_slot(&store, false).unwrap();
-        disconnect_slot(&store, true).unwrap();
+        disconnect_slot(&store, false, SERVICE).unwrap();
+        disconnect_slot(&store, true, SERVICE).unwrap();
         assert!(store.calls.borrow().iter().all(|entry| !entry.3));
     }
 
@@ -303,7 +333,41 @@ mod tests {
             account_id: "other".into(),
             client_id: "client".into(),
         };
-        verified_save(&store, &expected, false, Access::Silent).unwrap();
-        assert!(load_or_migrate(&store, false, Access::Silent).unwrap() == expected);
+        verified_save(&store, &expected, false, Access::Silent, SERVICE).unwrap();
+        assert!(
+            load_or_migrate(&store, false, Access::Silent, SERVICE, Some(LEGACY_SERVICE)).unwrap()
+                == expected
+        );
+    }
+    #[test]
+    fn development_never_reads_or_changes_production_and_grove_entries() {
+        let store = Memory::default();
+        assert!(nero_core::environment::DEVELOPMENT
+            .legacy_calendar_service
+            .is_none());
+        let token = legacy(&store, false);
+        store.values.borrow_mut().insert(
+            (SERVICE.into(), ACCOUNT.into()),
+            serde_json::to_string(&token).unwrap(),
+        );
+        let original = store.values.borrow().clone();
+        assert!(load_or_migrate(
+            &store,
+            false,
+            Access::Silent,
+            DEV_SERVICE,
+            nero_core::environment::DEVELOPMENT.legacy_calendar_service
+        )
+        .is_err());
+        verified_save(&store, &token, false, Access::Silent, DEV_SERVICE).unwrap();
+        disconnect_slot(&store, false, DEV_SERVICE).unwrap();
+        assert!(store
+            .calls
+            .borrow()
+            .iter()
+            .all(|call| call.1 == DEV_SERVICE));
+        for (key, value) in original {
+            assert_eq!(store.values.borrow().get(&key), Some(&value));
+        }
     }
 }

@@ -18,7 +18,10 @@ if (!target || !/^[a-z0-9_-]+$/.test(target) || target.includes('universal')) {
   throw Error('Build the Nero agent for one supported Rust target at a time.');
 }
 const targetDir = resolve(root, process.env.CARGO_TARGET_DIR || '.work/rust-target');
-const cargoArgs = ['build', '-p', 'nero-cli', '--release', '--locked', '--target', target, '--target-dir', targetDir];
+const development = process.env.NERO_BUILD_ENV === 'development';
+if (process.env.NERO_BUILD_ENV && !['development', 'production'].includes(process.env.NERO_BUILD_ENV)) throw Error('Invalid NERO_BUILD_ENV.');
+if (development && process.env.NERO_REUSE_SIGNED_AGENT_FROM) throw Error('Development builds cannot reuse a signed production agent.');
+const cargoArgs = ['build', '-p', 'nero-cli', '--release', '--locked', '--target', target, '--target-dir', targetDir, ...(development ? ['--features', 'development'] : [])];
 const command = process.platform === 'win32' ? 'cargo' : 'nice';
 const commandArgs = process.platform === 'win32' ? cargoArgs : ['-n', '10', 'cargo', ...cargoArgs];
 const cargoEnvironment = { ...process.env, CARGO_BUILD_JOBS: '2' };
@@ -49,6 +52,7 @@ const version = JSON.parse(await readFile(join(root, 'apps/desktop/package.json'
 const { integrationVersion } = JSON.parse(await readFile(join(root, 'apps/desktop/agent/release.json'), 'utf8'));
 const metadata = {
   version,
+  ...(development ? { environment: 'development' } : {}),
   integrationVersion,
   apiVersion: 1,
   target,

@@ -240,3 +240,13 @@ test('a failed download exposes retry through settings and notices, never throug
   app.sidebar.click(); await tick();
   assert.deepEqual(app.calls, []);
 });
+
+test('disabled updater hides both update actions', async t => {
+  const app = setup(t, { sidebar: true, bridge: { appUpdateStatus: async () => status('disabled', { enabled: false }) } });
+  await app.view.start();
+  assert.equal(app.get('action').hidden, true);
+  assert.equal(app.sidebar.hidden, true);
+  assert.equal(await app.view.perform(), false);
+  assert.deepEqual(app.scheduled, []);
+  assert.deepEqual(app.calls, []);
+});

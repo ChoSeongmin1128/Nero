@@ -7,7 +7,13 @@ This file applies to the entire repository.
 - `apps/desktop/` is the new Nero application. `crates/nero-core/` owns its
   platform-independent storage and recording state; CPAL provides native microphone
   input on macOS and Windows. Browser prototypes do not establish native support.
-- The current identity is `io.github.choseongmin1128.nero.desktop`. Identity changes require the explicit installer migration and strict completed receipt. Ordinary reads must not migrate or initialize a library. Never open the separately archived original Swift library implicitly. The old installed app and data are archived
+- The production identity is `io.github.choseongmin1128.nero.desktop`. Debug builds
+  and explicit `development` builds use `Nero Dev` and the `.desktop.dev` identity.
+  `nero_core::environment` owns profile storage/credential names. Validate the
+  compiled profile against Tauri configuration before initializing plugins/windows.
+  Development never consumes the production updater or registers external Nero MCP
+  packages. Use `npm run tauri -- dev`; see `docs/development.md`. Do not copy models
+  or production credentials into development. Production identity changes require the explicit installer migration and strict completed receipt. Ordinary reads must not migrate or initialize a library. Never open the separately archived original Swift library implicitly. The old installed app and data are archived
   outside active application locations; do not launch the archive during validation.
 - New capture preserves native PCM and creates a separate float32 WAV for playback
   when its native geometry fits RIFF. Larger captures use a separately identified

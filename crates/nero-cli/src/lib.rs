@@ -150,6 +150,9 @@ pub fn canonical_data_dir(root: &Path) -> Result<PathBuf, QueryError> {
             .map_err(|_| QueryError::invalid())?
             .join(root)
     };
+    if nero_core::environment::CURRENT.development {
+        reject_production_data_path(&root)?;
+    }
     if let Some(destination) = nero_core::identity::migrated_data_dir(&root) {
         return Ok(destination);
     }
@@ -160,6 +163,47 @@ pub fn canonical_data_dir(root: &Path) -> Result<PathBuf, QueryError> {
         });
     }
     Ok(root)
+}
+
+fn reject_production_data_path(root: &Path) -> Result<(), QueryError> {
+    let denied = || {
+        QueryError {
+        code: "unsafe_data_dir",
+        message: "개발 CLI에서는 운영 또는 이전 데이터 경로를 사용할 수 없습니다. 운영 CLI를 사용해 주세요.",
+    }
+    };
+    let protected = |path: &Path| {
+        path.components().any(|component| {
+            component.as_os_str().to_str().is_some_and(|name| {
+                name.eq_ignore_ascii_case(nero_core::identity::APP_IDENTIFIER)
+                    || name.eq_ignore_ascii_case("io.github.choseongmin1128.grove.desktop")
+            })
+        })
+    };
+    if protected(root) {
+        return Err(denied());
+    }
+    // Resolve every existing prefix so a symlink followed by a missing fixture path
+    // or by `..` cannot conceal a protected directory.
+    let mut resolved = PathBuf::new();
+    for component in root.components() {
+        resolved.push(component.as_os_str());
+        match std::fs::canonicalize(&resolved) {
+            Ok(path) => resolved = path,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                match std::fs::symlink_metadata(&resolved) {
+                    Ok(_) => return Err(denied()),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(_) => return Err(denied()),
+                }
+            }
+            Err(_) => return Err(denied()),
+        }
+        if protected(&resolved) {
+            return Err(denied());
+        }
+    }
+    Ok(())
 }
 
 fn query_error(error: CoreError) -> QueryError {
@@ -234,7 +278,7 @@ fn data_dir_for(
             .filter(|value| value.is_absolute())
             .or_else(|| home().map(|value| value.join(".local/share")))?,
     };
-    Some(base.join(APP_IDENTIFIER))
+    Some(base.join(nero_core::environment::CURRENT.identifier))
 }
 
 pub fn input_schema(method: &str) -> Map<String, Value> {
@@ -339,6 +383,7 @@ mod tests {
     use super::*;
     use std::ffi::OsString;
 
+    #[cfg(all(not(debug_assertions), not(feature = "development")))]
     #[test]
     fn incomplete_identity_migration_cannot_initialize_the_missing_source() {
         let temporary = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
@@ -384,6 +429,62 @@ mod tests {
     }
 
     #[test]
+    fn development_path_guard_rejects_protected_paths_and_allows_fixtures() {
+        let temp = tempfile::tempdir().unwrap();
+        let fixture = temp.path().join("fixture").join("missing");
+        assert!(reject_production_data_path(&fixture).is_ok());
+        for identifier in [APP_IDENTIFIER, "io.github.choseongmin1128.grove.desktop"] {
+            let protected = temp.path().join(identifier);
+            assert_eq!(
+                reject_production_data_path(&protected.join("missing"))
+                    .unwrap_err()
+                    .code,
+                "unsafe_data_dir"
+            );
+            assert_eq!(
+                reject_production_data_path(&protected.join("..").join("other"))
+                    .unwrap_err()
+                    .code,
+                "unsafe_data_dir"
+            );
+        }
+        if nero_core::environment::CURRENT.development {
+            let protected = temp.path().join(APP_IDENTIFIER);
+            for method in ["status", "app_update", "template_create", "meeting_update"] {
+                assert_eq!(
+                    dispatch(&protected, method, json!({})).unwrap_err().code,
+                    "unsafe_data_dir"
+                );
+            }
+            assert!(!protected.exists());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn development_path_guard_rejects_symlinks_to_protected_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let protected = temp.path().join(APP_IDENTIFIER);
+        std::fs::create_dir(&protected).unwrap();
+        let alias = temp.path().join("alias");
+        std::os::unix::fs::symlink(&protected, &alias).unwrap();
+        assert_eq!(
+            reject_production_data_path(&alias.join("missing"))
+                .unwrap_err()
+                .code,
+            "unsafe_data_dir"
+        );
+        let dangling = temp.path().join("dangling");
+        std::os::unix::fs::symlink(temp.path().join("missing"), &dangling).unwrap();
+        assert_eq!(
+            reject_production_data_path(&dangling.join("child"))
+                .unwrap_err()
+                .code,
+            "unsafe_data_dir"
+        );
+    }
+
+    #[test]
     fn platform_paths_use_the_native_identifier_without_legacy_fallback() {
         let xdg = if cfg!(windows) {
             "C:/custom/data"
@@ -398,15 +499,26 @@ mod tests {
         };
         assert_eq!(
             data_dir_for(env, "macos").unwrap(),
-            PathBuf::from("/home/example/Library/Application Support").join(APP_IDENTIFIER)
+            PathBuf::from("/home/example/Library/Application Support")
+                .join(nero_core::environment::CURRENT.identifier)
         );
         assert_eq!(
             data_dir_for(env, "windows").unwrap(),
-            PathBuf::from("C:/Users/example/AppData/Roaming").join(APP_IDENTIFIER)
+            PathBuf::from("C:/Users/example/AppData/Roaming")
+                .join(nero_core::environment::CURRENT.identifier)
         );
         assert_eq!(
             data_dir_for(env, "linux").unwrap(),
-            PathBuf::from(xdg).join(APP_IDENTIFIER)
+            PathBuf::from(xdg).join(nero_core::environment::CURRENT.identifier)
+        );
+        let expected_identifier = if nero_core::environment::CURRENT.development {
+            "io.github.choseongmin1128.nero.desktop.dev"
+        } else {
+            "io.github.choseongmin1128.nero.desktop"
+        };
+        assert_eq!(
+            data_dir_for(env, "macos").unwrap().file_name().unwrap(),
+            expected_identifier
         );
         assert!(data_dir_for(|_| None, "macos").is_none());
     }

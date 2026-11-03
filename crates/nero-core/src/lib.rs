@@ -5,6 +5,7 @@ mod audio_playback;
 mod capture;
 mod diarization;
 mod engine;
+pub mod environment;
 pub mod identity;
 mod library;
 mod nemotron;
