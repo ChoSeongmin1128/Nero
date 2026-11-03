@@ -68,6 +68,7 @@ use std::time::Duration;
 use tauri::{Emitter, Manager, WebviewWindow};
 #[cfg(not(target_os = "macos"))]
 use tauri::{WebviewUrl, WebviewWindowBuilder};
+use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_dialog::DialogExt;
 
 struct DesktopState {
@@ -1187,6 +1188,19 @@ async fn export_document(
 }
 
 #[tauri::command]
+fn write_clipboard_text(
+    window: WebviewWindow,
+    app: tauri::AppHandle,
+    contents: String,
+) -> Result<(), String> {
+    require_main(&window)?;
+    export::validate_contents(&contents)?;
+    app.clipboard()
+        .write_text(contents)
+        .map_err(|_| "클립보드에 복사하지 못했습니다. 다시 시도해 주세요.".into())
+}
+
+#[tauri::command]
 async fn export_text(
     window: WebviewWindow,
     app: tauri::AppHandle,
@@ -1758,7 +1772,8 @@ fn main() {
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
             show_main(app)
         }))
-        .plugin(tauri_plugin_dialog::init());
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_clipboard_manager::init());
     let builder = if nero_core::environment::CURRENT.development {
         builder
     } else {
@@ -1766,6 +1781,7 @@ fn main() {
     };
     let app = builder
         .invoke_handler(tauri::generate_handler![
+            write_clipboard_text,
             ai_chat_desktop::ai_chat_accounts,
             ai_chat_desktop::ai_chat_connect,
             ai_chat_desktop::ai_chat_finish_connect,

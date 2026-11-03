@@ -135,6 +135,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     hideMain() { const pending = deferred(); exits.push({ type: 'close', pending }); return pending.promise; },
   };
   const copied = [], agentDialogCalls = [], aiLifecycle = [];
+  bridge.writeClipboardText = async text => { copied.push(text); };
   const aiBridge = { appendNote: async () => {}, saveSummary: async () => {}, openSource: async () => {} };
   const templateSettings = { setActive() {}, beforeLeave: async () => true, isConfirming: () => false, hide() {} };
   const context = vm.createContext({ mountBrandIcons, snapshotSignatures, compareSnapshotSignatures, requestAudioPlayback, createIntegrationMonitor, liveTranscriptRows, meetingResultPreview, renderMeetingMenu, testMountNotificationCenter: mountNotificationCenter,
@@ -1650,6 +1651,15 @@ test('transcript copy and TXT/Markdown export include the whole saved document d
     assert.equal(page.app.state.transcriptDraft.dirty,false);
     if(!copy) assert.ok(exported[0].name.endsWith(`.${format}`));
   }
+});
+
+test('meeting and AI copies use the native clipboard bridge and propagate failures', async () => {
+  const page = await openApp(transcriptDocument());
+  assert.equal(page.app.aiChatOptions.writeClipboard, page.bridge.writeClipboardText);
+  await page.app.aiChatOptions.writeClipboard('합성 AI 답변');
+  assert.deepEqual(page.copied, ['합성 AI 답변']);
+  page.bridge.writeClipboardText = async () => { throw new Error('클립보드 실패'); };
+  await assert.rejects(page.app.exportDocument('transcript', 'txt', true), /클립보드 실패/);
 });
 
 

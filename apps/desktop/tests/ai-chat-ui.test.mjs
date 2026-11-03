@@ -105,7 +105,7 @@ test('the global AI sidebar and meeting notes stay independently open and preser
   assert.equal(app.node('meeting-notes').value, '보존할 메모 초안');
 });
 
-test('navigating meetings preserves the chat draft and opening AI explicitly attaches the new meeting', async t => {
+test('navigating meetings preserves the chat draft without attaching the new meeting', async t => {
   const app = await fixture(t);
   app.ui.flow.edit('두 회의를 비교할 질문');
   const next = { id: 'example-meeting-2', title: '다음 회의' };
@@ -116,11 +116,12 @@ test('navigating meetings preserves the chat draft and opening AI explicitly att
   assert.ok(app.button('예시 회의 제외'));
   assert.equal(app.button('다음 회의 제외'), undefined);
   app.ui.open(next);
-  await wait(() => app.button('다음 회의 제외'));
+  await wait(() => app.ui.flow.getSnapshot().meeting.id === next.id);
+  assert.equal(app.button('다음 회의 제외'), undefined);
   assert.equal(app.node('ai-chat-inspector').querySelector('textarea').value, '두 회의를 비교할 질문');
   app.node('ai-chat-inspector').querySelector('[aria-label="질문 보내기"]').click();
   await wait(() => app.calls.some(call => call[0] === 'send'));
-  assert.deepEqual(Array.from(app.calls.find(call => call[0] === 'send')[1].meetingIds), ['example-meeting', 'example-meeting-2']);
+  assert.deepEqual(Array.from(app.calls.find(call => call[0] === 'send')[1].meetingIds), ['example-meeting']);
 });
 
 test('new chat and history navigate independent conversations without changing meeting notes', async t => {
@@ -440,4 +441,32 @@ test('unmatched slash text remains an ordinary question', async t => {
   app.node('ai-chat-inspector').querySelector('[aria-label="질문 보내기"]').click();
   await wait(() => app.calls.some(call => call[0] === 'send'));
   assert.equal(app.calls.find(call => call[0] === 'send')[1].message, '/unknown-path');
+});
+
+test('meeting history filters saved question attachments without switching the active chat', async t => {
+  const app = await fixture(t);
+  app.ui.flow.edit('첫 회의 질문'); await app.ui.flow.send();
+  await wait(() => app.button('AI 답변 복사'));
+  const first = app.ui.flow.getSnapshot().conversation.id;
+  app.ui.setMeeting({ id: 'example-meeting-2', title: '다음 회의' });
+  app.button('새 대화').click();
+  await wait(() => app.ui.flow.getSnapshot().conversation.id === null);
+  app.ui.flow.edit('두 번째 회의 질문');
+  await wait(() => app.ui.flow.canSend());
+  assert.equal(await app.ui.flow.send(), true);
+  await wait(() => app.button('AI 답변 복사'));
+  const second = app.ui.flow.getSnapshot().conversation.id;
+  app.ui.flow.edit('유지할 초안');
+  app.button('대화 기록').click();
+  await wait(() => app.window.document.querySelector('.ai-history-popover'));
+  const menu = () => app.window.document.querySelector('.ai-history-popover');
+  await wait(() => menu().textContent.includes('두 번째 회의 질문'));
+  assert.equal(menu().textContent.includes('첫 회의 질문'), false);
+  [...menu().querySelectorAll('button')].find(button => button.textContent === '전체 대화').click();
+  await wait(() => menu().textContent.includes('첫 회의 질문'));
+  assert.equal(app.ui.flow.getSnapshot().conversation.id, second);
+  assert.equal(app.ui.flow.getSnapshot().conversation.draft, '유지할 초안');
+  [...menu().querySelectorAll('.ai-history-row > button:first-child')].find(button => button.textContent.includes('첫 회의 질문')).click();
+  await wait(() => app.ui.flow.getSnapshot().conversation.id === first);
+  assert.deepEqual(Array.from(app.ui.flow.getSnapshot().conversation.meetings, meeting => meeting.id), ['example-meeting']);
 });

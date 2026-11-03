@@ -219,6 +219,7 @@ pub struct ConversationSummary {
     pub model_id: Option<String>,
     pub message_count: usize,
     pub active_request_id: Option<String>,
+    pub meeting_ids: Vec<String>,
 }
 pub struct Store {
     root: PathBuf,
@@ -273,6 +274,16 @@ impl Store {
                 continue;
             }
             let conversation = self.read(value)?;
+            let meeting_ids = conversation
+                .messages
+                .iter()
+                .filter(|message| message.role == "user")
+                .flat_map(|message| &message.attachments)
+                .filter(|attachment| attachment.kind == "meeting")
+                .filter_map(|attachment| attachment.meeting_id.clone())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect();
             result.push(ConversationSummary {
                 id: value.into(),
                 title: conversation.title,
@@ -282,6 +293,7 @@ impl Store {
                 model_id: conversation.model_id,
                 message_count: conversation.messages.len(),
                 active_request_id: conversation.active_request_id,
+                meeting_ids,
             });
         }
         result.sort_by(|a, b| {
@@ -438,6 +450,32 @@ mod tests {
         let value = store.create().unwrap();
         assert!(store.read(value.id.as_deref().unwrap()).is_ok());
         assert!(!root.path().join("meetings").exists());
+    }
+    #[test]
+    fn list_collects_meetings_used_in_user_messages() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::new(root.path().into());
+        let mut value = store.create().unwrap();
+        let meeting_a = uuid::Uuid::new_v4().to_string();
+        let meeting_b = uuid::Uuid::new_v4().to_string();
+        let meeting_c = uuid::Uuid::new_v4().to_string();
+        let message = |role: &str, meeting: &str| {
+            serde_json::from_value(serde_json::json!({
+            "id": uuid::Uuid::new_v4().to_string(), "requestId": uuid::Uuid::new_v4().to_string(),
+            "role": role, "text": "example", "status": "completed",
+            "attachments": [{"kind": "meeting", "title": "example", "meetingId": meeting}]
+        })).unwrap()
+        };
+        value.messages = vec![
+            message("user", &meeting_a),
+            message("user", &meeting_b),
+            message("user", &meeting_a),
+            message("assistant", &meeting_c),
+        ];
+        store.write(&value).unwrap();
+        let mut expected = vec![meeting_a, meeting_b];
+        expected.sort();
+        assert_eq!(store.list().unwrap()[0].meeting_ids, expected);
     }
     #[test]
     fn deleted_conversation_is_not_recreated_by_late_write() {

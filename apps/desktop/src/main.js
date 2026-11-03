@@ -1422,7 +1422,7 @@ async function exportDocument(kind, format, copy = false, includeCitations = fal
     if (!meeting || meeting.id !== expectedId) throw new Error('회의가 바뀌었습니다. 내용을 다시 확인해 주세요.');
     const result = await bridge.exportDocument(meeting.id, kind, format, includeCitations);
     if (copy) {
-      await navigator.clipboard.writeText(result.text);
+      await bridge.writeClipboardText(result.text);
       byId('copy-feedback').textContent = `${kind === 'summary' ? '요약' : '전체 음성 기록'}을 복사했습니다.`;
       return true;
     }
@@ -1587,6 +1587,7 @@ aiChat = mountAiChat({
     }),
   },
   beforeWrite: () => finishEditing(() => true),
+  writeClipboard: bridge.writeClipboardText,
   getTemplate: async () => (await summaryTemplatePicker.selected()).id,
   getMeetings: () => state.snapshot.meetings.filter(meeting => !meeting.deletedAt),
   onSettings: () => { void openSettings('agent', 'ai-chat-open').catch(showError); },

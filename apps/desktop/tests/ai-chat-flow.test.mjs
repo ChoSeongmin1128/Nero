@@ -42,6 +42,7 @@ async function harness(overrides = {}, options = {}) {
   const flow = createAiChatFlow({ bridge, createId: () => `request-${++count}`, getMeetings: () => exampleMeetings, ...options });
   flow.setMeeting(exampleMeetings[0]); void flow.setActive(true);
   await tick(); await tick();
+  if (options.attachInitial !== false && flow.getSnapshot().conversation.id && flow.getSnapshot().conversation.loaded && !flow.getSnapshot().conversation.meetings.length) flow.attachMeeting(exampleMeetings[0]);
   if (options.initialModels !== false && flow.getSnapshot().accounts.some(account => account.id === flow.getSnapshot().accountId && account.state === 'ready')) {
     flow.selectProvider(flow.getSnapshot().provider, { explicit: true });
     await tick();
@@ -134,11 +135,11 @@ test('removed meetings and conversation changes isolate pending meeting sources'
   app.flow.dispose();
 });
 
-test('opening from a meeting attaches it while the conversation has independent ownership', async () => {
-  const app = await harness();
+test('opening from a meeting does not attach it to an existing conversation', async () => {
+  const app = await harness({}, { attachInitial: false });
   assert.equal(app.state().conversation.id, 'conversation');
-  assert.deepEqual(app.state().conversation.meetings.map(item => item.id), ['meeting-a']);
-  app.flow.removeMeeting('meeting-a'); app.flow.edit('General question'); await app.flow.send();
+  assert.deepEqual(app.state().conversation.meetings.map(item => item.id), []);
+  app.flow.edit('General question'); await app.flow.send();
   assert.deepEqual(app.calls[0][1].meetingIds, []);
   assert.equal(app.calls[0][1].conversationId, 'conversation');
   assert.equal('meetingId' in app.calls[0][1], false);
@@ -155,11 +156,11 @@ test('meeting and library navigation preserve the same draft attachments and res
   app.flow.dispose();
 });
 
-test('opening AI from another meeting adds a visible attachment instead of replacing the chat', async () => {
+test('opening AI from another meeting preserves the draft and attachments', async () => {
   const app = await harness(); app.flow.edit('Draft'); app.flow.setMeeting(exampleMeetings[1]);
   await app.flow.open(exampleMeetings[1]);
   assert.equal(app.state().conversation.id, 'conversation'); assert.equal(app.state().conversation.draft, 'Draft');
-  assert.deepEqual(app.state().conversation.meetings.map(item => item.id), ['meeting-a', 'meeting-b']);
+  assert.deepEqual(app.state().conversation.meetings.map(item => item.id), ['meeting-a']);
   app.flow.attachMeeting(exampleMeetings[1]); assert.equal(app.state().conversation.meetings.length, 2);
   app.flow.removeMeeting('meeting-a'); await app.flow.send(); assert.deepEqual(app.calls[0][1].meetingIds, ['meeting-b']); app.flow.dispose();
 });
@@ -567,6 +568,21 @@ test('an old opening request cannot add its meeting after an explicit fresh comp
   const history = deferred(); const app = await harness({ list: () => history.promise });
   await app.flow.newConversation({ attachCurrent: false }); history.resolve([]); await tick();
   assert.equal(app.state().conversation.id, null); assert.deepEqual(app.state().conversation.meetings, []); app.flow.dispose();
+});
+
+test('closing before the initial history loads does not attach the old meeting', async () => {
+  const history = deferred(); const app = await harness({ list: () => history.promise });
+  app.flow.setActive(false); history.resolve([]); await tick();
+  assert.deepEqual(app.state().conversation.meetings, []);
+  app.flow.setMeeting(null); await app.flow.open();
+  assert.deepEqual(app.state().conversation.meetings, []); app.flow.dispose();
+});
+
+test('an old history load cannot override an explicitly selected conversation', async () => {
+  const history = deferred(); const app = await harness({ list: () => history.promise, read: async id => ({ id, title: 'Selected', messages: [] }) }, { attachInitial: false });
+  await app.flow.selectConversation('selected'); history.resolve([{ id: 'old' }]); await tick();
+  assert.equal(app.state().conversation.id, 'selected');
+  assert.deepEqual(app.state().conversation.meetings, []); app.flow.dispose();
 });
 
 

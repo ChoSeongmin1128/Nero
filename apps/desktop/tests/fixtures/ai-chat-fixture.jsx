@@ -31,7 +31,7 @@ export function mountAiChatFixture({ document, scenario = 'ready', delay = 20 })
     notionFinish: async () => new Promise(resolve => { finishNotion = resolve; }),
     notionCancel: async () => ({ connected: false }),
     models: async () => { calls.push(['models']); return { models: [{ id: 'example-model', label: '예시 모델' }], defaultModelId: 'example-model' }; },
-    list: async () => [...conversations.values()].map(value => ({ id: value.id, title: value.title, messageCount: value.messages.length, activeRequestId: value.activeRequestId })),
+    list: async () => [...conversations.values()].map(value => ({ id: value.id, title: value.title, messageCount: value.messages.length, activeRequestId: value.activeRequestId, meetingIds: [...new Set(value.messages.filter(message => message.role === 'user').flatMap(message => (message.attachments || []).filter(item => item.kind === 'meeting').map(item => item.meetingId)))] })),
     create: async () => { const id = ++conversationCount === 1 ? 'example-conversation' : `example-conversation-${conversationCount}`; const value = { id, title: '새 대화', messages: [], activeRequestId: null }; conversations.set(id, value); return structuredClone(value); },
     read: async id => { if (!conversations.has(id)) throw Error('예시 대화를 찾지 못했습니다.'); return structuredClone(conversations.get(id)); },
     remove: async id => { conversations.delete(id); for (const [requestId, request] of requests) if (request.conversationId === id) requests.delete(requestId); calls.push(['remove', id]); },

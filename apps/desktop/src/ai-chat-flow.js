@@ -232,15 +232,16 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
       } else updateConversation(id, { error: '선택한 회의에 요약을 저장할 수 없습니다.' });
     }
   };
-  async function ensureConversation(force = false) {
+  async function ensureConversation(force = false, epoch = openEpoch) {
     if (selectionInitialized) { const id = state.conversation.id; if (id) await flow.loadConversation(force); return id; }
     await flow.loadList();
     if (listPromise) await listPromise;
+    if (disposed || epoch !== openEpoch || !state.active) return null;
     if (!state.listLoaded || state.listError) return null;
     if (selectionInitialized) return state.conversation.id;
     const id = state.conversationList[0]?.id;
     if (id) { await flow.selectConversation(id, { fromOpen: true }); return id; }
-    await flow.newConversation({ attachCurrent: false, fromOpen: true });
+    await flow.newConversation({ attachCurrent: true, fromOpen: true });
     return null;
   }
   const canStart = (text, context = state.conversation) => Boolean(subscriptionReady && state.conversation.key && state.conversation.loaded && ready() && state.modelId && !state.modelsBusy && !state.modelError && !state.conversation.loading && !state.conversation.contextBusy && !state.conversation.activeRequestId && !state.conversation.action && !state.fetching && (text.trim() || context.skillId) && (!context.skillId || (context.templateId && context.meetings.length === 1 && context.meetings[0].id === context.summaryTargetId)));
@@ -257,11 +258,11 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
     },
     async open(meeting = state.meeting) {
       const epoch = ++openEpoch;
+      flow.setMeeting(meeting);
       publish({ active: true });
       void flow.loadAccounts();
       void flow.loadCatalog();
-      const id = await ensureConversation(true);
-      if (!disposed && epoch === openEpoch && state.active && state.conversation.id === id && meeting) flow.attachMeeting(meeting);
+      await ensureConversation(true, epoch);
     },
     setActive(active) {
       if (active) return state.active ? undefined : flow.open();
@@ -295,7 +296,7 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
       if (!fromOpen) openEpoch += 1;
       selectionInitialized = true;
       if (state.conversation.key === DRAFT) {
-        if (attachCurrent && state.meeting) flow.attachMeeting(state.meeting);
+        if (fromOpen && attachCurrent && state.meeting) flow.attachMeeting(state.meeting);
         return null;
       }
       contextEpoch += 1;
@@ -424,6 +425,7 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
         updateConversation(id, { messages, draft: '', useTemplate: false, templateId: null, skillId: null, summaryTargetId: null, action: null, activeRequestId: requestId });
         const receipt = await bridge.send({ requestId, conversationId: id, meetingIds: context.meetings.map(meeting => meeting.id), accountId, modelId, message: text.trim() || '첨부한 회의를 요약해 주세요.', sourceIds: context.sources.map(item => item.sourceId), sourceOrigins: Object.fromEntries(context.sources.filter(item => !item.unknownOrigin).map(item => [item.sourceId, { directSourceId: item.directSource?.sourceId || null, meetingSources: Object.fromEntries(Object.entries(item.meetingSources || {}).map(([meetingId, source]) => [meetingId, source.sourceId])) }])), ...(templateId ? { templateId } : {}), ...(skillId ? { skillId, summaryTargetId: context.summaryTargetId } : {}) });
         if (receipt.conversationId !== id) throw new Error('대화 응답을 확인하지 못했습니다.');
+        void flow.loadList(true);
         return true;
       } catch (error) {
         const current = conversations.get(id);

@@ -25,18 +25,24 @@ function ModelPicker({ flow, state, busy, onSettings }) {
 }
 function ConversationHistory({ flow, state }) {
   const [open, setOpen] = React.useState(false), [deleting, setDeleting] = React.useState(null);
+  const [scope, setScope] = React.useState({ meetingId: state.meeting?.id || null, filter: state.meeting ? 'meeting' : 'all' });
+  const meetingId = state.meeting?.id || null;
+  const filter = scope.meetingId === meetingId ? scope.filter : meetingId ? 'meeting' : 'all';
+  const items = (state.conversationList || []).filter(item => filter === 'all' || item.meetingIds?.includes(meetingId));
+  React.useEffect(() => { setScope({ meetingId, filter: meetingId ? 'meeting' : 'all' }); }, [meetingId]);
   React.useEffect(() => { if (!state.active) { setOpen(false); setDeleting(null); } }, [state.active]);
-  return <><Popover open={state.active && open} onOpenChange={next => { setOpen(next); if (next) void flow.loadConversations(); }}>
+  return <><Popover open={state.active && open} onOpenChange={next => { setOpen(next); if (next) void flow.loadList(true); }}>
     <PopoverTrigger className="quiet ai-chat-history-trigger" aria-label="대화 기록"><span>{state.conversation.title || '새 대화'}</span><ChevronDown size={14} aria-hidden="true" /></PopoverTrigger>
     <PopoverContent className="ai-history-popover" align="start" finalFocus={state.active ? undefined : false}>
       <PopoverTitle className="ai-popover-title">대화 기록</PopoverTitle>
+      {meetingId && <div className="ai-source-kinds" aria-label="대화 범위">{[['meeting', '이 회의의 대화'], ['all', '전체 대화']].map(([value, label]) => <button type="button" className="quiet small" key={value} aria-pressed={filter === value} onClick={() => setScope({ meetingId, filter: value })}>{label}</button>)}</div>}
       {state.listBusy && <p className="ai-chat-muted" role="status">불러오는 중</p>}
       {state.listError && <p className="ai-chat-error" role="alert">{state.listError}</p>}
-      <div className="ai-history-list">{(state.conversationList || []).map(item => <div className="ai-history-row" key={item.id}>
+      <div className="ai-history-list">{items.map(item => <div className="ai-history-row" key={item.id}>
         <button type="button" className="quiet" aria-current={state.conversation.id === item.id ? 'true' : undefined} onClick={() => { void flow.selectConversation(item.id); setOpen(false); }}><MessageCircle size={15} aria-hidden="true" /><span>{item.title || '새 대화'}</span>{item.activeRequestId && <span className="activity-spinner" aria-label="답변 중" />}</button>
         <button type="button" className="quiet small icon" aria-label={`${item.title || '대화'} 삭제`} onClick={() => setDeleting(item)}><Trash2 size={15} aria-hidden="true" /></button>
       </div>)}</div>
-      {!state.listBusy && !state.conversationList?.length && <p className="ai-chat-muted">저장된 대화가 없습니다.</p>}
+      {!state.listBusy && !state.listError && !items.length && <p className="ai-chat-muted">{filter === 'meeting' ? '이 회의로 질문한 대화가 없습니다.' : '저장된 대화가 없습니다.'}</p>}
     </PopoverContent>
   </Popover><Dialog open={Boolean(deleting) && state.active} onOpenChange={next => { if (!next) setDeleting(null); }}>
     <DialogContent className="ai-conversation-confirm" data-nero-ui-owned="" showCloseButton={false}><DialogTitle>대화를 삭제할까요?</DialogTitle><DialogFooter><DialogClose className="quiet small">취소</DialogClose><button type="button" className="small danger" onClick={async () => { if (await flow.removeConversation(deleting.id)) setDeleting(null); }}>삭제</button></DialogFooter></DialogContent>
