@@ -7,6 +7,9 @@ mod prepare;
 mod windows_signature;
 pub use installation::installation_state;
 pub use prepare::{discover_prepared, prepare};
+pub fn discover_prepared_cancelled(root: &Path, cancel: &AtomicBool) -> Result<Runner, String> {
+    prepare::discover_prepared_with_cancel(root, Some(cancel))
+}
 use serde_json::Value;
 use std::{
     io::{Read, Write},
@@ -392,13 +395,16 @@ impl Runner {
         }
         Ok(())
     }
-    pub fn identity(&self) -> Result<String, String> {
+    pub fn identity(&self, cancel: &AtomicBool) -> Result<String, String> {
         use sha2::{Digest, Sha256};
         let mut file = std::fs::File::open(&self.binary).map_err(|_| ERROR)?;
         let mut hash = Sha256::new();
         let mut total = 0u64;
         let mut buffer = [0u8; 65536];
         loop {
+            if cancel.load(Ordering::Acquire) {
+                return Err("취소했습니다.".into());
+            }
             let n = file.read(&mut buffer).map_err(|_| ERROR)?;
             if n == 0 {
                 break;
