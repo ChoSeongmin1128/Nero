@@ -403,3 +403,21 @@ test('reopening model picker never probes models', async t => {
   trigger.click(); await wait(() => app.window.document.querySelector('.ai-model-popover'));
   assert.equal(app.calls.filter(call => call[0] === 'models').length, before);
 });
+
+
+test('Claude reconnect clears cached model without probing when the picker opens', async t => {
+  const app = await fixture(t, { scenario: 'claude-runtime-present', prepareModels: false });
+  await app.ui.flow.refreshModelGroup('claude'); app.ui.flow.chooseModel('claude', 'claude-code', 'example-model');
+  const before = app.calls.filter(call => call[0] === 'models').length;
+  void app.ui.flow.connect('claude');
+  await wait(() => app.ui.flow.getSnapshot().connectionPhases.claude === 'waiting');
+  assert.equal(app.ui.flow.getSnapshot().modelId, null);
+  app.button('AI 모델 선택').click(); await wait(() => app.window.document.querySelector('.ai-model-popover'));
+  const group = [...app.window.document.querySelectorAll('.ai-model-popover section')].find(item => item.textContent.includes('Claude'));
+  assert.match(group.textContent, /새로고침하여 모델을 불러오세요/);
+  assert.equal(app.calls.filter(call => call[0] === 'models').length, before);
+  group.querySelector('button').click();
+  await wait(() => group.textContent.includes('예시 모델'));
+  [...group.querySelectorAll('button')].find(item => item.textContent.trim() === '예시 모델').click();
+  await wait(() => app.ui.flow.getSnapshot().modelId === 'example-model');
+});

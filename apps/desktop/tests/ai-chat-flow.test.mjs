@@ -656,3 +656,35 @@ test('removing a skill clears its template and target', async () => {
   assert.equal(app.state().conversation.skillId, null); assert.equal(app.state().conversation.templateId, null); assert.equal(app.state().conversation.summaryTargetId, null);
   app.flow.dispose();
 });
+
+
+test('starting Claude connection invalidates its cache and selection until explicit refresh', async () => {
+  const claude = { id: 'claude', provider: 'claude', state: 'unknown', configured: true };
+  const completion = deferred(), staleRefresh = deferred();
+  let count = 0, deferRefresh = false;
+  const app = await harness({ accounts: async () => ({ accounts: [readyAccount, claude] }),
+    models: async id => { if (id !== 'claude') return { models: [{ id: 'model', label: 'Model' }] }; count++; if (deferRefresh) return staleRefresh.promise; return { models: [{ id: count === 1 ? 'old' : 'new', label: 'Claude model' }] }; },
+    connect: async () => ({ attemptId: 'attempt' }), finishConnect: () => completion.promise,
+    cancelConnect: async () => ({ accounts: [readyAccount, claude] }),
+  });
+  await app.flow.refreshModelGroup('claude'); app.flow.chooseModel('claude', 'claude', 'old');
+  deferRefresh = true; const pendingRefresh = app.flow.refreshModelGroup('claude');
+  const connection = app.flow.connect('claude'); await tick();
+  assert.equal(app.state().modelId, null); assert.deepEqual(app.flow.modelsFor('claude').models, []);
+  staleRefresh.resolve({ models: [{ id: 'old', label: 'Claude model' }] }); await pendingRefresh;
+  assert.deepEqual(app.flow.modelsFor('claude').models, []);
+  await app.flow.cancelConnect('claude'); completion.resolve({ accounts: [readyAccount, claude] }); await connection;
+  assert.equal(app.state().modelId, null); assert.deepEqual(app.flow.modelsFor('claude').models, []);
+  deferRefresh = false; await app.flow.refreshModelGroup('claude');
+  assert.equal(app.state().modelId, null); app.flow.chooseModel('claude', 'claude', 'new');
+  assert.equal(app.state().modelId, 'new'); app.flow.dispose();
+});
+
+test('Claude connection invalidation preserves selected ChatGPT model', async () => {
+  const claude = { id: 'claude', provider: 'claude', state: 'unknown', configured: true };
+  const app = await harness({ accounts: async () => ({ accounts: [readyAccount, claude] }),
+    connect: async () => ({ attemptId: 'attempt' }), finishConnect: async () => ({ accounts: [readyAccount, claude] }) });
+  await app.flow.refreshModelGroup('claude'); await app.flow.connect('claude');
+  assert.equal(app.state().provider, 'chatgpt'); assert.equal(app.state().modelId, 'model');
+  assert.deepEqual(app.flow.modelsFor('claude').models, []); app.flow.dispose();
+});

@@ -20,7 +20,7 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
   let state = { meeting: null, conversation: emptyConversation(), conversationList: [], listBusy: false, listLoaded: false, listError: '', provider: 'chatgpt', accountId: null, activeAccountId: null, modelId: null, models: [], accounts: [], accountsLoaded: false, accountsBusy: false, accountsError: '', catalog: { skills: [], templates: [] }, catalogError: '', modelGroups: {}, modelsBusy: false, modelError: '', attempts: {}, connectionPhases: {}, notion: null, notionBusy: false, notionAttempt: null, notionError: '', fetching: false, sourceError: '', active: false, settingsActive: false };
   let subscriptionReady = false, selectionInitialized = false, contextEpoch = 0, openEpoch = 0;
   let disposed = false, accountsPromise = null, listPromise = null, modelEpoch = 0, listEpoch = 0, sourceRequest = null, unsubscribe = null;
-  const conversations = new Map([[DRAFT, state.conversation]]), loads = new Map(), listeners = new Set(), connections = new Map(), eventBuffers = new Map(), pendingStarts = new Map(), contextLoads = new Map(), modelCache = new Map();
+  const conversations = new Map([[DRAFT, state.conversation]]), loads = new Map(), listeners = new Set(), connections = new Map(), eventBuffers = new Map(), pendingStarts = new Map(), contextLoads = new Map(), modelCache = new Map(), modelGenerations = new Map();
   try {
     const saved = JSON.parse(globalThis.localStorage?.getItem('nero.ai.models.v1') || '{}');
     for (const [id, value] of Object.entries(saved.accounts || {})) if (Array.isArray(value.models)) modelCache.set(id, { models: value.models.filter(item => typeof item.id === 'string' && typeof item.label === 'string').map(({ id, label }) => ({ id, label })), defaultModelId: value.defaultModelId });
@@ -28,6 +28,17 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
   } catch {}
   const persistModels = () => { try { globalThis.localStorage?.setItem('nero.ai.models.v1', JSON.stringify({ accounts: Object.fromEntries(modelCache), selection: { provider: state.provider, accountId: state.accountId, modelId: state.modelId } })); } catch {} };
   const publish = patch => { if (disposed) return; state = { ...state, ...patch }; listeners.forEach(listener => listener()); };
+  const invalidateModels = accountId => {
+    if (!accountId) return;
+    modelGenerations.set(accountId, (modelGenerations.get(accountId) || 0) + 1);
+    modelCache.delete(accountId);
+    const modelGroups = { ...state.modelGroups };
+    delete modelGroups[accountId];
+    const patch = { modelGroups, ...(state.provider === 'claude' && state.accountId === accountId ? { modelId: null, models: [], modelsBusy: false, modelError: '' } : {}) };
+    modelEpoch += 1;
+    if (disposed) state = { ...state, ...patch }; else publish(patch);
+    persistModels();
+  };
   const updateConversation = (id, patch) => {
     const value = { ...(conversations.get(id) || emptyConversation(id)), ...patch, id: id === DRAFT ? null : id, key: id };
     conversations.set(id, value);
@@ -133,7 +144,13 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
     connections.set(key, run);
     connectionPhase(key, 'starting');
     connectionError(key, null, '');
-    run.begin = Promise.resolve().then(() => key === 'notion' ? bridge.notionConnect() : bridge.connect(key, selectAiAccount(state.accounts, key, { selectedId: state.accountId, activeAccountId: state.activeAccountId })?.id || null));
+    run.begin = Promise.resolve().then(async () => {
+      if (key === 'notion') return bridge.notionConnect();
+      const accountId = selectAiAccount(state.accounts, key, { selectedId: state.accountId, activeAccountId: state.activeAccountId })?.id || null;
+      const result = await bridge.connect(key, accountId);
+      if (key === 'claude' && result?.attemptId) invalidateModels(accountId);
+      return result;
+    });
     try {
       const result = await run.begin;
       if (result.restored) {
@@ -492,15 +509,15 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
     async refreshModelGroup(provider) {
       const target = selectAiAccount(state.accounts, provider, { selectedId: state.provider === provider ? state.accountId : null, activeAccountId: state.activeAccountId });
       if (!usableAccount(target) || state.modelGroups[target.id]?.busy) return;
-      const accountId = target.id;
+      const accountId = target.id, generation = modelGenerations.get(target.id) || 0;
       publish({ modelGroups: { ...state.modelGroups, [accountId]: { busy: true, error: '' } } });
       try {
         const result = await bridge.models(accountId);
-        if (disposed) return;
+        if (disposed || generation !== (modelGenerations.get(accountId) || 0)) return;
         modelCache.set(accountId, { models: (result.models || []).map(({ id, label }) => ({ id, label })), defaultModelId: result.defaultModelId });
         persistModels();
         publish({ modelGroups: { ...state.modelGroups, [accountId]: { busy: false, error: '' } }, ...(state.accountId === accountId ? { models: modelCache.get(accountId).models } : {}) });
-      } catch (error) { if (!disposed) publish({ modelGroups: { ...state.modelGroups, [accountId]: { busy: false, error: errorMessage(error, '모델을 불러오지 못했습니다.') } } }); }
+      } catch (error) { if (!disposed && generation === (modelGenerations.get(accountId) || 0)) publish({ modelGroups: { ...state.modelGroups, [accountId]: { busy: false, error: errorMessage(error, '모델을 불러오지 못했습니다.') } } }); }
     },
     modelsFor(provider) {
       const target = selectAiAccount(state.accounts, provider, { selectedId: state.provider === provider ? state.accountId : null, activeAccountId: state.activeAccountId });
