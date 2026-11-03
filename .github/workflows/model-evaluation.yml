@@ -1,0 +1,28 @@
+name: Model evaluation tooling
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/model-evaluation.yml'
+      - 'scripts/model-evaluation/**'
+      - 'crates/nero-core/resources/models/moss.json'
+      - 'apps/desktop/models/summary.json'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: model-evaluation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test synthetic evaluation contracts without models
+        run: python3 -B -m unittest discover -s scripts/model-evaluation/tests -v

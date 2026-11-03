@@ -15,6 +15,7 @@
 [빌드](../apps/desktop/README.md), [버전과 데이터 호환성](versioning.md),
 [녹음 중 음성 처리](live-speech.md), [작업 관리](task-management.md),
 [메모리와 실패 복구](runtime-memory.md), [용어 보정](terminology.md),
-[회의 생성 진입점](shared-meeting-entrypoints.md)을 확인하세요.
+[회의 생성 진입점](shared-meeting-entrypoints.md),
+[로컬 모델 평가 도구](../scripts/model-evaluation/README.md)를 확인하세요.
 
 이 문서들은 저장소 소스의 사용법과 기술 계약을 다룹니다. 미배포 기능은 설치된 앱에 없을 수 있습니다. 배포된 버전의 변경 사항과 지원 범위는 [릴리스 안내](https://github.com/ChoSeongmin1128/Nero/releases/latest)가 기준입니다.
