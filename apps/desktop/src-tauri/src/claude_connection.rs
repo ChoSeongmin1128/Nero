@@ -67,6 +67,7 @@ impl ClaudeConnection {
             return Err("Claude 로그인을 진행 중입니다.".into());
         }
         self.models.lock().unwrap().clear();
+        *self.cached.lock().unwrap() = None;
         let run = Arc::new(Login {
             id: uuid::Uuid::new_v4().to_string(),
             cancel: Arc::new(AtomicBool::new(false)),
