@@ -605,8 +605,8 @@ test('selected template survives editing and skill saves only its explicit targe
   await app.flow.loadCatalog();
   app.flow.selectTemplate('template'); app.flow.selectSkill('meeting-summary'); app.flow.edit('정리해 주세요');
   assert.equal(app.flow.getSnapshot().conversation.templateId, 'template');
-  assert.equal(app.flow.canSend(), false);
-  app.flow.selectSummaryTarget('meeting-a'); assert.equal(app.flow.canSend(), true);
+  assert.equal(app.flow.canSend(), true);
+  assert.equal(app.state().conversation.summaryTargetId, 'meeting-a');
   await app.flow.send();
   const request = app.calls.find(call => call[0] === 'send')[1];
   assert.equal(request.templateId, 'template'); assert.equal(request.skillId, 'meeting-summary'); assert.equal(request.summaryTargetId, 'meeting-a');
@@ -687,4 +687,15 @@ test('Claude connection invalidation preserves selected ChatGPT model', async ()
   await app.flow.refreshModelGroup('claude'); await app.flow.connect('claude');
   assert.equal(app.state().provider, 'chatgpt'); assert.equal(app.state().modelId, 'model');
   assert.deepEqual(app.flow.modelsFor('claude').models, []); app.flow.dispose();
+});
+
+
+test('summary target follows the sole attached meeting and blocks zero or multiple meetings', async () => {
+  const app = await harness(); app.flow.selectTemplate('template');
+  assert.equal(app.state().conversation.summaryTargetId, 'meeting-a'); assert.equal(app.flow.canSend(), true);
+  app.flow.attachMeeting(exampleMeetings[1]); assert.equal(app.state().conversation.summaryTargetId, null); assert.equal(app.flow.canSend(), false);
+  app.flow.removeMeeting('meeting-a'); assert.equal(app.state().conversation.summaryTargetId, 'meeting-b'); assert.equal(app.flow.canSend(), true);
+  app.flow.removeMeeting('meeting-b'); assert.equal(app.state().conversation.summaryTargetId, null); assert.equal(app.flow.canSend(), false);
+  app.flow.attachMeeting(exampleMeetings[0]); assert.equal(app.state().conversation.summaryTargetId, 'meeting-a'); assert.equal(app.flow.canSend(), true);
+  await app.flow.send(); assert.equal(app.calls.find(call => call[0] === 'send')[1].summaryTargetId, 'meeting-a'); app.flow.dispose();
 });

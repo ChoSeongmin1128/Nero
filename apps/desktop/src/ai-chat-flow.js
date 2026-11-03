@@ -360,14 +360,15 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
       try { publish({ catalog: await bridge.composerCatalog(), catalogError: '' }); }
       catch (error) { publish({ catalogError: errorMessage(error, '목록을 불러오지 못했습니다.') }); }
     },
-    selectTemplate(templateId) { updateConversation(state.conversation.key, { templateId, useTemplate: false, ...(templateId ? { skillId: 'meeting-summary' } : {}) }); },
-    selectSkill(skillId) { updateConversation(state.conversation.key, { skillId, summaryTargetId: null, ...(!skillId ? { templateId: null } : {}) }); },
-    selectSummaryTarget(summaryTargetId) { if (state.conversation.meetings.some(item => item.id === summaryTargetId)) updateConversation(state.conversation.key, { summaryTargetId }); },
+    selectTemplate(templateId) { const meetings = state.conversation.meetings; updateConversation(state.conversation.key, { templateId, useTemplate: false, ...(templateId ? { skillId: 'meeting-summary', summaryTargetId: meetings.length === 1 ? meetings[0].id : null } : {}) }); },
+    selectSkill(skillId) { const meetings = state.conversation.meetings; updateConversation(state.conversation.key, { skillId, summaryTargetId: skillId && meetings.length === 1 ? meetings[0].id : null, ...(!skillId ? { templateId: null } : {}) }); },
+    selectSummaryTarget(summaryTargetId) { if (state.conversation.meetings.length === 1 && state.conversation.meetings[0].id === summaryTargetId) updateConversation(state.conversation.key, { summaryTargetId }); },
     summaryPrompt() { selectionInitialized = true; const id = state.conversation.key; if (id) updateConversation(id, { draft: '첨부한 회의의 결정 사항과 할 일을 정리해 주세요.', useTemplate: true }); },
     attachMeeting(meeting) {
       const next = meetingChoice(meeting), id = state.conversation.key;
       if (!id || !next || state.conversation.action === 'deleting' || state.conversation.meetings.some(item => item.id === next.id)) return false;
-      updateConversation(id, { meetings: [...state.conversation.meetings, next], compositionInitialized: true });
+      const meetings = [...state.conversation.meetings, next];
+      updateConversation(id, { meetings, ...(state.conversation.skillId ? { summaryTargetId: meetings.length === 1 ? meetings[0].id : null } : {}), compositionInitialized: true });
       loadMeetingSources(id, next.id); return true;
     },
     removeMeeting(meetingId) {
@@ -382,7 +383,7 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
         const selected = chooseSource({ ...source, meetingSources }, meetings);
         return selected ? [selected] : [];
       });
-      updateConversation(id, { meetings, sources, summaryTargetId: current.summaryTargetId === meetingId ? null : current.summaryTargetId, contextBusy: Boolean(pending?.size), compositionInitialized: true });
+      updateConversation(id, { meetings, sources, summaryTargetId: current.skillId && meetings.length === 1 ? meetings[0].id : null, contextBusy: Boolean(pending?.size), compositionInitialized: true });
     },
     removeSource(sourceId) {
       const id = state.conversation.key, current = state.conversation;
