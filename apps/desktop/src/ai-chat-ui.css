@@ -64,8 +64,10 @@
 .ai-chat-sources { display: flex; gap: 5px; flex-wrap: wrap; padding: 2px 2px 4px; }
 .ai-source-chip { display: inline-flex; align-items: center; min-width: 0; max-width: 100%; gap: 5px; padding: 4px 4px 4px 7px; border: 1px solid var(--border); border-radius: 8px; font-size: var(--text-caption-size); background: var(--surface-secondary); }
 .ai-source-chip > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ai-source-chip > svg, .ai-source-chip > button { flex: none; }
-.ai-source-chip button { min-height: 20px; width: 20px; padding: 3px; }
+.ai-source-chip > svg, .ai-source-chip > button.icon { flex: none; }
+.ai-source-chip > button { min-height: 20px; padding: 3px; }
+.ai-source-chip > button.icon { width: 20px; }
+.ai-source-chip > button:not(.icon) { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
 .ai-source-popover, .ai-history-popover { width: min(340px, calc(100vw - 32px)); padding: 10px; }
 .ai-popover-title { margin: 2px 4px 10px; font-size: var(--text-label-size); font-weight: var(--weight-medium); }
 .ai-source-kinds { display: flex; gap: 4px; margin-bottom: 10px; }
