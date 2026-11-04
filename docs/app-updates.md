@@ -191,12 +191,12 @@ alongside the other commands. Do not route that action through normal `request_q
    re-signing with the independent build is required. Windows can transfer its
    final installer to the signing machine; it does not need the private key.
 3. Run the native executable's headless verifier:
-   `nero-desktop --nero-verify-app-update <package> <package.sig> 0.0.1+<build>`.
+   `nero-desktop --nero-verify-app-update <package> <package.sig> <product>+<build>`.
    On macOS use the executable inside `Nero.app/Contents/MacOS/`. Success prints
    the authenticated payload SHA256 and exits zero. This mode opens no library,
    models, window or network connection. It uses the production embedded key.
 4. Generate a local combined feed with
-   `node apps/desktop/scripts/app-update-feed.mjs --version 0.0.1 --build <build>
+   `node apps/desktop/scripts/app-update-feed.mjs --version <product> --build <build>
    --tag <release-tag> --verifier <native-executable> --mac <app.tar.gz>
    --mac-provenance <mac-build-info.json> --mac-receipt <mac-package.receipt.json>
    --windows <setup.exe> --windows-provenance <windows-build-info.json>

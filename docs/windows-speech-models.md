@@ -1,5 +1,10 @@
 # Windows speech model selection
 
+This document describes the application source contract. New source features require
+their own Windows package and runtime acceptance; installed build metadata and release
+receipts identify the behavior actually delivered. Development isolation and installer
+verification are described in [development](development.md#windows-검증).
+
 Setup and Settings share the same selector. Nemotron 3.5 streaming ASR 0.6B Q8
 is the default. Whisper large-v3-turbo Q5 is an explicit alternative using the
 packaged whisper.cpp CLI with Vulkan preference and a separate CPU runtime on
@@ -76,3 +81,10 @@ Memory optimization does not establish acceptance on every 8 GB or low-power
 notebook, long microphone recording, battery life, Korean meeting accuracy or
 speaker accuracy. Those limits must remain separate from native file-fed runtime
 and persistence checks. Private device/evaluation receipts stay outside product Git.
+
+The separate [model-evaluation tooling](../scripts/model-evaluation/README.md) currently
+uses a POSIX process-group runner. Its Linux/CUDA Mini adapter is not a native Windows
+application engine, and WSL execution does not qualify the Windows installer or app.
+The optional full Whisper large-v3 Q5 application choice is Apple Silicon-only;
+Windows retains Nemotron and Whisper Turbo choices. Model recommendations do not
+download weights or change the selected engine automatically.

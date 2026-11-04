@@ -13,6 +13,8 @@
 ## 개발자를 위한 기술 문서
 
 [빌드](../apps/desktop/README.md), [버전과 데이터 호환성](versioning.md),
+[개발/운영 환경 분리](development.md), [전사 모델 선택](speech-model-selection.md),
+[Windows 전사 실행기](windows-speech-models.md),
 [녹음 중 음성 처리](live-speech.md), [작업 관리](task-management.md),
 [메모리와 실패 복구](runtime-memory.md), [용어 보정](terminology.md),
 [회의 생성 진입점](shared-meeting-entrypoints.md),

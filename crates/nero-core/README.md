@@ -1,6 +1,7 @@
 # Nero core
 
-Development recorder for the cross-platform rewrite. This crate does not load the
+Storage, native recording and source-bound transcript contracts for the desktop app.
+This crate does not load the
 legacy Swift library, migrate recordings, run models, connect accounts, or capture
 system output. The host supplies its separate application data directory.
 
@@ -78,11 +79,20 @@ original text; optimistic versions reject stale edits.
 Import retains the original file and its hash separately from normalized PCM/playback.
 The host owns format conversion, model preparation and worker cancellation.
 
-After durable ASR and optional terminology correction, the native host runs independent
+When speaker analysis is enabled, after durable ASR and optional terminology correction,
+the native host runs independent
 whole-recording Nemotron 3 diarization. Speaker output binds to the saved transcript
 revision and preserves words/times; a speaker-stage failure leaves recognition intact.
 The host persists the source-bound continuation under the same job ID and retries that
 stage without rerunning ASR. Existing meetings are not automatically reprocessed.
+
+The host freezes the selected engine and speaker-analysis preference per session/job.
+Supported choices include Nemotron, Whisper Turbo, optional full Whisper on Apple
+Silicon and supported macOS system transcription. Their completion/word/segment
+contracts remain distinct. An explicitly reviewed meeting glossary is frozen with its
+source revision/hash; unsupported providers do not receive an invented dictionary
+prompt. See [speech selection](../../docs/speech-model-selection.md),
+[terminology](../../docs/terminology.md) and [live processing](../../docs/live-speech.md).
 
 Only one recording can own a store. Session commands require the exact current ID;
 stale IDs cannot control a newer recording. Existing recordings cannot be overwritten
@@ -126,17 +136,20 @@ or invalid manifest is reported instead of guessing an audio format or deleting 
 
 ## Audio format
 
-This rewrite slice uses native-rate, native-channel PCM for crash recovery. The
+Capture uses native-rate, native-channel PCM for crash recovery. The
 supported device defaults are little-endian F32/F64/I16/I32. It requests input devices
 only and does not resample, downmix, denoise, identify speakers, or silently switch to
 another microphone. Unsupported formats fail while the meeting remains a draft.
 
 `audio.pcm` preserves bytes from the callback in the manifest's source format.
-`audio.wav` is a derived 32-bit floating-point WAV for playback. Integer and F64 inputs
-are converted only for this derived file; it is not a bit-exact replacement for the
-source. PCM is never deleted after conversion. Standard RIFF WAV has a 4 GiB boundary;
-if exceeded, the raw recording stays preserved and playback generation reports an
-interruption. RF64/segmented playback is not implemented in this slice.
+`audio.wav` is a separate playback artifact. Native-rate/channel 32-bit float output
+is used while it fits the guarded RIFF sample limit. Larger native captures use the
+shared bounded normalizer to produce mono/16 kHz/PCM16 playback and record its geometry
+separately from original frames/rate/channels. The converted playback is not a
+bit-exact replacement for the source. PCM is never deleted after conversion. If the
+normalized playback also exceeds RIFF limits, the original remains preserved and an
+explicit error is returned. RF64 and segmented playback are not implemented. See
+[audio import and playback](../../docs/audio-import.md) and `audio_playback.rs`.
 
 The legacy app's ADTS AAC/M4A contract continues to apply to legacy recordings. No
 existing audio is re-encoded or moved by this crate.
@@ -169,21 +182,30 @@ References checked 2026-10-19: [CPAL 0.18.2 traits](https://docs.rs/cpal/0.18.2/
 ## Native CI
 
 `.github/workflows/desktop.yml` defines macOS 15 and Windows Server 2025 native checks.
-It runs frontend dependency installation/tests/build, synthetic recording-core tests
-and a desktop-host compile check. The OS matrix is sequential, and Cargo uses two
-build jobs. No CI step opens a microphone, loads a model, installs the app or publishes
-a release. Windows Server is a native compile/test environment, not a Windows 11
-laptop acceptance test.
+It runs frontend installation/tests/build, Core and CLI tests, native processing
+tests, a desktop-host compile check and pinned runtime packaging/verification.
+The OS matrix is sequential, and Cargo uses two build jobs. Tests use synthetic
+input and runtime-version checks; they do not establish real microphone, model
+quality, account or installed-update acceptance. Windows Server is a native
+compile/test environment, not a Windows 11 laptop acceptance test.
 
-A manual dispatch can additionally build an unsigned Windows NSIS installer and
-check that an executable was generated. The installer is not run or uploaded. Its
-packaging check does not establish signing, SmartScreen behavior, installation,
+A manual dispatch can additionally build a Windows NSIS installer and run synthetic
+running-app guard tests. An optional, restricted SignPath request uploads the unsigned
+signing input and verifies the returned publisher signature/timestamp before storing
+the signed installer artifact. It requires approved external SignPath configuration;
+preparing CI does not establish that an account or signing approval exists. The
+workflow does not install Nero or publish a release/feed. Packaging alone does not
+establish SmartScreen behavior, installation,
 WebView2 first-run setup, audio quality, IME behavior or tray/window usability.
 Those require an actual target computer and explicit recording interaction.
 
-The workflow uses Node 24, the native stable Rust toolchain and locked dependency
-files. It adds no package/build cache. Action pins were checked against the official
-releases on 2026-10-19:
-[checkout v7.0.1](https://github.com/actions/checkout/releases/tag/v7.0.1) and
-[setup-node v7.1.0](https://github.com/actions/setup-node/releases/tag/v7.1.0).
-The workflow file is prepared locally; no remote run is claimed by this document.
+The workflow uses Node 24, native stable Rust and locked dependency files. It restores
+only npm/Cargo downloads; compiled outputs are not cached. Reviewed default-branch
+manual dispatches may save those download caches, while PRs restore only. The manual
+`use_dependency_cache` option disables this reuse. Action commits and exact steps
+are owned by the workflow rather than duplicated here.
+
+`.github/workflows/model-evaluation.yml` independently tests the POSIX research
+evaluation tool with synthetic inputs on Ubuntu. It downloads no model and does not
+build the application. Workflow configuration and local tests do not by themselves
+prove a successful remote CI run.

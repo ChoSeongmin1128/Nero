@@ -23,6 +23,16 @@ npm run tauri -- build --bundles app --ci -- --locked
 
 공식 Claude Code를 통한 외부 로그인은 같은 운영체제 사용자의 Claude Code 계정을 공유합니다. Nero는 이 자격 증명을 복사하거나 임의의 `HOME`으로 전환하지 않습니다. 이 외부 로그인은 개발 앱과 운영 앱 각각의 데이터 및 Nero 전용 비밀 저장소와 별개입니다.
 
+## Windows 검증
+
+Windows용 빌드와 설치 검사는 Windows의 MSVC/WebView2 및 `--bundles nsis` 경로를 사용합니다. Dev 설치 프로그램의 이름, 식별자, 설치/제거 경로와 패키지 내부 CLI를 검사한 결과와 실제 Dev 설치/GUI/한국어 IME/로그인/마이크 검증은 구분합니다. macOS 또는 Linux 검사 통과로 Windows 실기기 검증을 대체하지 않습니다. 테스트 순서와 설치 프로그램 제약은 [데스크톱 빌드](../apps/desktop/README.md#windows-installation-and-updates), 음성 실행 계약은 [Windows 전사 모델](windows-speech-models.md)을 확인하세요.
+
+## 모델 평가와 산출물
+
+[로컬 모델 평가 도구](../scripts/model-evaluation/README.md)는 앱과 분리된 연구용 CLI입니다. `plan`/`doctor`는 사전 조건을 검사하고 명시적인 `run`만 모델을 실행합니다. 모델과 평가용 음성, 정답, 독립 문맥의 실제 경로를 설정해야 하며 예시 설정이나 합성 단위 테스트만으로 실제 추론 준비가 완료되지는 않습니다. 현재 실행기는 macOS/Linux의 POSIX 프로세스 그룹을 사용합니다. Mini의 어댑터는 Linux/CUDA 경로이며 Mac 경로와 Windows 네이티브 평가 실행기는 구현되지 않았습니다.
+
+모델 가중치는 공통 로컬 경로에서 읽고 실험마다 복제하지 않습니다. 평가 원본과 결과는 Git에서 제외되는 비공개 경로에 보존합니다. 재생성 가능한 옛 빌드와 캐시는 사용 여부 및 참조를 확인한 후 정리하며, 현재 Dev 앱, 원본/모델/회의 데이터와 고유 검증 근거는 유지합니다. 공통 Cargo 대상은 `.work/rust-target`입니다. 모델 실행과 무거운 빌드/검사는 한 번에 하나만 수행합니다.
+
 ## Windows 설치 프로그램 서명 준비
 
 `Desktop checks`의 수동 실행에서 `build_windows_installer`와 `sign_windows_installer`를 함께 선택하면 기본 브랜치의 빌드 산출물을 SignPath에 전달합니다. 원본 저장소의 기본 브랜치 실행만 허용하며 PR과 포크는 서명 비밀을 사용하지 않습니다. 설정 누락, 서명 거부, 검증 실패는 실패로 처리합니다.

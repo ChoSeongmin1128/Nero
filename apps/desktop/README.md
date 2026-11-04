@@ -7,7 +7,9 @@ guidance are in the [project README](../../README.md) and [user guide](../../doc
 
 Install a supported Node.js version (see `package.json`), Rust and the native Tauri
 prerequisites for the target OS. Windows builds need MSVC Build Tools, the Windows
-SDK and WebView2; use a native Windows environment rather than WSL for acceptance.
+SDK and WebView2. Build and validate the Windows package in native Windows;
+the POSIX model-evaluation runner is a separate research tool and does not establish
+Windows application support.
 macOS builds require Xcode with the macOS 26 SDK for the Apple Speech helper.
 Desktop CI selects Xcode 26.0.1 explicitly and checks the SDK major version;
 set `DEVELOPER_DIR` to a suitable Xcode installation for local builds.
@@ -74,8 +76,10 @@ independently of client implementation. See `../../docs/app-updates.md` for pack
 Older builds without this client need a verified setup executable first.
 Downgrades across product versions are disabled. Rebuilds sharing `0.0.1` are
 still the same NSIS version; the separate build receipt does not prevent an older
-development build from being installed. Follow the first-user-sharing version
-policy rather than claiming build-order protection.
+development build from being installed. Every new public binary in the current
+`0.0.x` stage increments PATCH under the [version policy](../../docs/versioning.md).
+Internal builds may retain a product version; they must not become another public
+same-version build release.
 
 Ordinary removal preserves the data directory, including recordings, transcripts
 and downloaded models. Tauri's optional **Delete app data** checkbox permanently
@@ -132,10 +136,13 @@ Tauri, Rust and lockfile mirrors, and runs before a frontend build. Update them
 together from the repository root:
 
 ```sh
-node apps/desktop/scripts/version.mjs set 0.0.1 --build 3
+node apps/desktop/scripts/version.mjs set <version> --build <build>
 ```
 
-Before first user sharing, development changes may keep `0.0.1` and advance the build.
+An undistributed development build may retain the product version and advance the
+internal build. A new public binary must use PATCH + 1 from the verified latest public
+version, even before first user sharing. MINOR and MAJOR changes require the user's
+review decision or approval. Documentation-only changes do not bump either number.
 The [version policy](../../docs/versioning.md) separates product versions, monotonic
 build numbers and data formats. [GitHub Releases](https://github.com/ChoSeongmin1128/Nero/releases)
 records published versions, source tags and distribution assets. Generated `build-info.json` records
@@ -147,8 +154,8 @@ sign the canonical bundle in place, then use:
 
 ```sh
 python3 apps/desktop/scripts/sign-macos.py --app WORK/Nero.app \
-  --output WORK/Nero-0.0.1-build2-arm64.zip \
-  --dmg-output WORK/Nero-0.0.1-build2-arm64.dmg --notarize
+  --output WORK/approved-app.zip \
+  --dmg-output WORK/Nero-<version>.dmg --notarize
 ```
 
 Developer ID and notary credentials come from the invoking environment. `dmgbuild`
@@ -163,6 +170,9 @@ verifies its SHA256 and exact embedded app before making a new DMG, without
 rebuilding/resigning the app. The DMG receipt separately records the packaging
 commit. Archive rejected, undistributed containers before reusing an output path;
 never replace an already distributed artifact.
+
+The ZIP above is an intermediate signing input, not the public download name.
+Public DMG, NSIS, updater archive and tag names follow the version policy.
 
 For an existing updater-enabled installation, publish and verify the release, then
 use the app's update check/download/restart flow. Confirm the target source/build
@@ -201,6 +211,9 @@ frontend directory and are bundled through the existing Tauri resource mappings.
 
 ## Current behavior
 
+This section describes source contracts. The installed application implements its
+packaged source revision; an unshipped source change is not an installed update.
+
 - Local CLI/MCP queries read meetings, folders, notes, corrected voice records and
   summaries without initializing capture, models or recovery. Explicit meeting edits
   use the running app's writer; template edits share the local catalog with settings.
@@ -208,6 +221,8 @@ frontend directory and are bundled through the existing Tauri resource mappings.
   native tool; see [local agent integration](../../docs/local-agent.md).
 
 - Create meetings, edit title/notes and reopen them after restarting.
+- Reveal a finalized recording's playback file in Finder or File Explorer through
+  the main-window native command and Core's validated meeting path.
 - Select an input device and explicitly start microphone recording.
 - When no input device is available, recording stays disabled; connect a microphone
   and refresh the device list to enable it. Existing recording controls stay available.
@@ -282,11 +297,13 @@ connection stores its grant in the platform credential store.
 ## First use
 
 New meetings, new recordings and file import require speech recognition to be
-prepared. Initial setup includes Nemotron 3.5 Q8 ASR and the smaller Nemotron 3 speaker
-model when its runtime is supported. Meeting summary is optional: select its initially
-unchecked choice to include it in the initial download, or download it separately
-later. Preparation starts only after a click, verifies each model and retains completed
-models and partial downloads.
+prepared. Setup selects a supported engine and separately enables or disables speaker
+analysis. Nemotron or Whisper preparation verifies that ASR model and, when enabled,
+the smaller Nemotron speaker model. macOS system transcription prepares supported
+language assets instead of a Nero ASR model. Local automatic summary preparation and
+generation are currently gated off; existing summaries and AI/agent summary saving
+remain available. Preparation starts only after a click, verifies each selected model
+and retains completed models and partial downloads.
 Normal controls show no model sizes. Available disk space is checked before transfer
 and periodically while downloading; insufficient space surfaces a recovery message.
 The UI calls the generated text "음성 기록" and the summary "회의록".
@@ -294,7 +311,9 @@ The UI calls the generated text "음성 기록" and the summary "회의록".
 Saved meetings, notes, playback and existing results remain accessible when models
 are unavailable. Active recording pause/resume/stop does not depend on readiness.
 Missing platform workers show an unsupported state instead of offering a download;
-the current complete meeting pipeline therefore still requires Apple silicon/macOS 26.
+supported targets use their own packaged workers. Windows requires its native x64
+packages, while macOS system speech and the macOS converter require supported
+Apple silicon/macOS 26. See the source-specific model and import guides.
 
 ## Appearance
 
@@ -312,8 +331,9 @@ Large surfaces, selection, hover and focus use neutral tones. Recent meetings sh
 or creation time; opening a detail selects only that meeting in the recent list.
 Returning to the library restores its previous folder filter.
 
-Settings / Connections offers direct Claude/Codex installation and a separate action
-for other agents. The latter opens a dialog containing the full connection prompt,
+Settings / Connections separates in-app AI accounts, Notion, external Nero MCP
+connections and Google Calendar. Claude/ChatGPT MCP preparation and an action for
+other agents remain separate from account login. The latter opens the full connection prompt,
 copy action and destination instruction. It does not change external client settings.
 An existing integration that needs a newer package shows an update action. Preparing
 the package does not complete the update; a verified current initialization does.
@@ -379,9 +399,9 @@ save dialog. Pending corrections are saved before export, original model text is
 substituted, and an outdated summary retains a source-change warning in the exported file.
 Writes complete in a temporary file before atomically replacing the chosen destination.
 
-The optional summary model is prepared separately from result export. Model download
-shows a byte-based percentage; it does not represent recognition or summarization
-completion. Creating a meeting remains available while that optional download runs.
+Result export does not require the optional summary model. Model download progress is
+byte-based and does not represent recognition or summarization completion. The current
+automatic-summary feature gate is described below.
 
 ## Recording settings
 
@@ -391,8 +411,9 @@ input is available. The device ID/name preference persists in the app webview's
 local storage; it is separate from meeting data and never written to the repository.
 A missing explicit selection blocks the next recording instead of silently switching
 to another device. Recording start refreshes availability. Existing capture keeps its
-input and disables preference changes until it ends. Settings / General provides inline
-optional summary preparation and download progress without a separate model page.
+input and disables preference changes until it ends. Setup/Recording owns speech
+engine and speaker-analysis choices; the disabled local-summary feature does not expose
+an active preparation action in General.
 
 ## Brand assets
 
@@ -463,13 +484,23 @@ The current recorder has a RIFF WAV size limit and no automatic device reconnect
 It interrupts rather than silently claiming success on device/queue/write errors.
 See the core README for queue capacity and file recovery details.
 
-Automatic voice identity matching and reference-based summary context remain future
-integrations. Native worker completion does not establish transcript accuracy,
+Automatic voice identity matching remains separate from account/attendee linking.
+Explicit Notion references and approved meeting glossary context are implemented;
+their presence does not automatically establish names or create correction rules.
+Native worker completion does not establish transcript accuracy,
 eight-person diarization quality or speaker identities; model qualification and release
 acceptance remain separate work.
 
 
 ## On-demand summaries
+
+The local automatic-summary implementation is retained but
+`release_capabilities::LOCAL_SUMMARY_ENABLED` is currently false. Product preparation
+and generation commands reject it and the UI hides those actions. The following
+runtime/pipeline contract describes retained code and explicit diagnostic tests, not
+an available product workflow. Existing summary reads/exports and subscription AI or
+external-agent summary saving remain available. Optional terminology classification
+can reuse an already prepared model through its separate structured-inference path.
 
 Package the pinned native runtime before building the app (build-time Python only):
 
@@ -490,11 +521,10 @@ A missing system Vulkan loader selects the CPU route without installing a GPU dr
 Windows includes separate Vulkan and CPU bundles; unsupported architectures
 remain unavailable. A runtime build does not prove Windows execution or GPU support.
 
-In the app, add the optional `회의 요약` feature in Settings / General, then
-select `요약하기` on a meeting with an existing voice record.
 `models/summary.json` pins the exact Gemma 4 E4B QAT Q4_0 revision, size and SHA256.
-Weights are kept in the app's own data directory. No recording or transcript is sent
-to a provider. First preparation requires network access; verified models run offline.
+Existing prepared weights remain in the app's data directory. This local runtime
+does not send recordings or transcripts to a provider. The product gate does not
+authorize a new model preparation or diagnostic run.
 
 Only one processing job runs at a time. A summary worker binds to loopback with an
 unpredictable per-process API key, uses a single slot, two CPU threads and low priority,
