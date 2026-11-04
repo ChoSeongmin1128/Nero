@@ -168,10 +168,143 @@ class AdapterTests(unittest.TestCase):
             process = Process()
             response = {'choices': [{'finish_reason': 'stop', 'message': {'content': json.dumps({'decisions': [{'id': 'a', 'decision': 'accept'}]})}}]}
             request = {'adapter': 'correction', 'model': {'path': str(model)}, 'runtime': {'executable': str(server)}, 'text': 'alpha beta', 'candidates': [{'id': 'a', 'start': 0, 'end': 5, 'original': 'alpha', 'replacement': 'A'}]}
-            with patch.object(adapter.socket, 'socket', return_value=Socket()), patch.object(adapter.subprocess, 'Popen', return_value=process), patch.object(adapter, 'local_request', side_effect=[None, response]):
+            with patch.object(adapter.socket, 'socket', return_value=Socket()), patch.object(adapter.subprocess, 'Popen', return_value=process) as popen, patch.object(adapter, 'local_request', side_effect=[None, response]) as calls:
                 result = adapter.correction(request, root)
             self.assertEqual(result['text'], 'A beta')
             self.assertTrue(process.stopped)
+            args = popen.call_args.args[0]
+            for flag, value in (('--reasoning', 'off'), ('--ctx-size', '8192'), ('--parallel', '1'), ('--chat-template-kwargs', '{"enable_thinking": false}')):
+                self.assertEqual(args[args.index(flag) + 1], value)
+            self.assertIn('--jinja', args)
+            self.assertIn('--no-context-shift', args)
+            body = calls.call_args_list[1].args[3]
+            self.assertEqual(body['chat_template_kwargs'], {'enable_thinking': False})
+            self.assertEqual((body['temperature'], body['top_k'], body['max_tokens']), (0, 1, 768))
+            schema = body['response_format']['json_schema']
+            self.assertTrue(schema['strict'])
+            self.assertEqual(schema['schema']['properties']['decisions']['items']['properties']['id']['enum'], ['a'])
+            self.assertEqual(result['metadata']['runtime']['reasoning'], 'off')
+
+    def test_correction_rejects_empty_content(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / 'model.gguf').write_bytes(b'synthetic')
+            (root / 'server').write_bytes(b'synthetic')
+            class Process:
+                def poll(self): return None
+                def terminate(self): pass
+                def wait(self, timeout=None): return 0
+            response = {'choices': [{'finish_reason': 'stop', 'message': {'content': '', 'reasoning_content': 'thinking'}}]}
+            request = {'adapter': 'correction', 'model': {'path': str(root / 'model.gguf')}, 'runtime': {'executable': str(root / 'server')}, 'text': 'alpha beta', 'candidates': [{'id': 'a', 'start': 0, 'end': 5, 'original': 'alpha', 'replacement': 'A'}]}
+            with patch.object(adapter.subprocess, 'Popen', return_value=Process()), patch.object(adapter, 'local_request', side_effect=[None, response]):
+                with self.assertRaisesRegex(ValueError, 'no content'):
+                    adapter.correction(request, root)
+
+    def test_correction_output_must_fit_server_context(self):
+        request = {'schema_version': 1, 'adapter': 'correction', 'task': 'postprocess', 'model': {}, 'decoding': {'max_new_tokens': 8192}}
+        with self.assertRaisesRegex(ValueError, 'server context'):
+            adapter.validate_request(request)
+
+    def test_correction_sampling_overrides_reach_request(self):
+        body = adapter.correction_body([], [{'id': 'a'}], {'temperature': 0.7, 'top_p': 0.8, 'top_k': 20, 'min_p': 0, 'presence_penalty': 1.5, 'seed': 2})
+        self.assertEqual((body['temperature'], body['top_p'], body['top_k'], body['presence_penalty'], body['seed']), (0.7, 0.8, 20, 1.5, 2))
+        self.assertEqual(body['chat_template_kwargs'], {'enable_thinking': False})
+        request = {'schema_version': 1, 'adapter': 'correction', 'task': 'postprocess', 'model': {}, 'decoding': {'top_k': -1}}
+        with self.assertRaisesRegex(ValueError, 'top_k'):
+            adapter.validate_request(request)
+
+    @unittest.skipUnless(importlib.util.find_spec('numpy'), 'chunked Qwen ASR needs numpy from the Qwen runtime')
+    def test_qwen_chunked_transcription_covers_input(self):
+        import wave as wavemod
+        import numpy as np
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / 'model').mkdir()
+            audio = root / 'a.wav'
+            with wavemod.open(str(audio), 'wb') as w:
+                w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000); w.writeframes(b'\x01\x00' * 16000 * 5)
+            seen = {}
+            class Result:
+                def __init__(self, text): self.text, self.language = text, 'Korean'
+            class Model:
+                @classmethod
+                def from_pretrained(cls, path, **kwargs): return cls()
+                def transcribe(self, audio, language, context):
+                    seen['audio'] = audio
+                    return [Result('part%d' % i) for i in range(len(audio))]
+            def split(wav, sr, max_chunk_sec):
+                step = int(sr * max_chunk_sec)
+                return [(wav[i:i + step], i / sr) for i in range(0, len(wav), step)]
+            fake = types.ModuleType('qwen_asr'); fake.Qwen3ASRModel = Model
+            inference = types.ModuleType('qwen_asr.inference'); utils = types.ModuleType('qwen_asr.inference.utils'); utils.split_audio_into_chunks = split
+            with patch.dict(sys.modules, {'qwen_asr': fake, 'qwen_asr.inference': inference, 'qwen_asr.inference.utils': utils}):
+                result = adapter.qwen({'adapter': 'qwen', 'model': {'path': str(root / 'model')}, 'audio_path': str(audio), 'decoding': {'chunk_seconds': 2}}, root)
+            self.assertEqual(result['text'], 'part0 part1 part2')
+            self.assertEqual(result['metadata']['chunking']['chunks'], 3)
+            self.assertEqual(sum(len(c) for c, _ in seen['audio']), 16000 * 5)
+        pcm = np.arange(10, dtype=np.float32) + 1
+        self.assertEqual(adapter.verify_chunk_coverage(pcm, [(pcm[:8], 0.0), (np.concatenate([pcm[8:], np.zeros(4, np.float32)]), 8 / 16000)]), 1)
+        with self.assertRaisesRegex(ValueError, 'cover'):
+            adapter.verify_chunk_coverage(pcm, [(pcm[:8], 0.0), (pcm[9:], 9 / 16000)])
+        request = {'schema_version': 1, 'adapter': 'qwen', 'task': 'asr', 'model': {}, 'decoding': {'chunk_seconds': 0.5}}
+        with self.assertRaisesRegex(ValueError, 'chunk_seconds'):
+            adapter.validate_request(request)
+
+    @unittest.skipUnless(importlib.util.find_spec('numpy'), 'chunked Qwen ASR needs numpy from the Qwen runtime')
+    def test_qwen_pause_boundary_pad_and_gain(self):
+        import wave as wavemod
+        import numpy as np
+        sr = 16000
+        rng = np.random.default_rng(0)
+        speech = lambda s: (rng.standard_normal(int(s * sr)) * 0.1).astype(np.float32)
+        quiet = lambda s: (rng.standard_normal(int(s * sr)) * 0.0005).astype(np.float32)
+        pcm = np.concatenate([speech(7), quiet(0.15), speech(1.3), quiet(0.8), speech(4)])
+        chunks = adapter.pause_split(pcm, sr, 8.0)
+        self.assertEqual(len(chunks), 2)
+        self.assertTrue(8.45 <= chunks[1][1] <= 9.25)
+        self.assertEqual(adapter.verify_chunk_coverage(pcm, chunks), 0)
+        raised = adapter.window_gain(np.concatenate([np.zeros(sr, np.float32), speech(1) * 0.2]), sr, -20)
+        self.assertTrue((raised[:sr] == 0).all())
+        self.assertAlmostEqual(20 * np.log10(np.sqrt(np.mean(raised[sr:sr + sr // 2] ** 2))), -20, delta=1.5)
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / 'model').mkdir()
+            audio = root / 'a.wav'
+            with wavemod.open(str(audio), 'wb') as w:
+                w.setnchannels(1); w.setsampwidth(2); w.setframerate(sr); w.writeframes((pcm * 32767).astype('<i2').tobytes())
+            seen = {}
+            class Result:
+                def __init__(self, text): self.text, self.language = text, 'Korean'
+            class Model:
+                @classmethod
+                def from_pretrained(cls, path, **kwargs): return cls()
+                def transcribe(self, audio, language, context):
+                    seen['audio'] = audio
+                    return [Result('part%d' % i) for i in range(len(audio))]
+            fake = types.ModuleType('qwen_asr'); fake.Qwen3ASRModel = Model
+            inference = types.ModuleType('qwen_asr.inference'); utils = types.ModuleType('qwen_asr.inference.utils'); utils.split_audio_into_chunks = None
+            decoding = {'chunk_seconds': 8, 'chunk_boundary': 'pause', 'chunk_pad_seconds': 1, 'chunk_gain_db': -20}
+            with patch.dict(sys.modules, {'qwen_asr': fake, 'qwen_asr.inference': inference, 'qwen_asr.inference.utils': utils}):
+                result = adapter.qwen({'adapter': 'qwen', 'model': {'path': str(root / 'model')}, 'audio_path': str(audio), 'decoding': decoding}, root)
+            self.assertEqual(result['text'], 'part0 part1')
+            self.assertEqual(result['metadata']['chunking']['boundary'], 'pause')
+            self.assertEqual([len(x) for x, _ in seen['audio']], [len(c) + 2 * sr for c, _ in chunks])
+            self.assertTrue((seen['audio'][0][0][:sr] == 0).all())
+        base = {'schema_version': 1, 'adapter': 'qwen', 'task': 'asr', 'model': {}}
+        adapter.validate_request({**base, 'decoding': decoding})
+        for bad, message in [({'chunk_boundary': 'pause'}, 'require chunk_seconds'), ({**decoding, 'chunk_boundary': 'vad'}, 'chunk_boundary'), ({**decoding, 'chunk_pad_seconds': 6}, 'chunk_pad_seconds'), ({**decoding, 'chunk_gain_db': 0}, 'chunk_gain_db')]:
+            with self.assertRaisesRegex(ValueError, message):
+                adapter.validate_request({**base, 'decoding': bad})
+
+    def test_qwen_dtype_is_limited(self):
+        request = {'schema_version': 1, 'adapter': 'qwen', 'task': 'asr', 'model': {}, 'runtime': {'dtype': 'bfloat16'}}
+        adapter.validate_request(request)
+        request['runtime']['dtype'] = 'int8'
+        with self.assertRaisesRegex(ValueError, 'dtype'):
+            adapter.validate_request(request)
+        moss = {'schema_version': 1, 'adapter': 'moss', 'task': 'asr', 'model': {}, 'runtime': {'dtype': 'bfloat16'}}
+        with self.assertRaisesRegex(ValueError, 'runtime fields'):
+            adapter.validate_request(moss)
 
     def test_nemotron_fixed_server_limits_are_reported(self):
         metadata = adapter.base({'adapter': 'nemotron', 'model': {}})

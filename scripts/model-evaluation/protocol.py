@@ -107,22 +107,26 @@ def load_config(path):
         if contained(output, absolute(entry["path"])) or contained(absolute(entry["path"]), output):
             raise ValueError("model and output paths must be separate")
         runtime = entry.get("runtime", {})
-        if not isinstance(runtime, dict) or set(runtime) - {"python", "executable", "device_map", "startup_timeout_seconds"}:
+        if not isinstance(runtime, dict) or set(runtime) - {"python", "executable", "device_map", "dtype", "startup_timeout_seconds"}:
             raise ValueError("invalid runtime options")
         for field in ("python", "executable"):
             if field in runtime:
                 absolute(runtime[field])
+        if "dtype" in runtime and (definition["adapter"] != "qwen" or runtime["dtype"] not in ("bfloat16", "float16", "float32")):
+            raise ValueError("dtype is a Qwen ASR option: bfloat16, float16 or float32")
         startup = runtime.get("startup_timeout_seconds", 600)
         if type(startup) not in (int, float) or not math.isfinite(startup) or startup <= 0:
             raise ValueError("invalid startup timeout")
         decoding = entry.get("decoding", {})
-        allowed = {"moss": set(), "qwen": {"max_new_tokens"}, "nemotron": {"max_new_tokens"}, "correction": {"temperature", "max_new_tokens"}}[definition["adapter"]]
+        allowed = {"moss": set(), "qwen": {"max_new_tokens", "chunk_seconds", "chunk_boundary", "chunk_pad_seconds", "chunk_gain_db"}, "nemotron": {"max_new_tokens"}, "correction": {"temperature", "max_new_tokens", "top_p", "top_k", "min_p", "presence_penalty", "repeat_penalty", "seed"}}[definition["adapter"]]
         if not isinstance(decoding, dict) or set(decoding) - allowed:
             raise ValueError("unsupported decoding option: " + key)
         if "max_new_tokens" in decoding and (type(decoding["max_new_tokens"]) is not int or decoding["max_new_tokens"] <= 0):
             raise ValueError("max_new_tokens must be a positive integer")
         if definition["adapter"] == "nemotron" and decoding.get("max_new_tokens", 1024) > 8192:
             raise ValueError("Mini adapter max_new_tokens cannot exceed its 8192 context limit")
+        if definition["adapter"] == "correction" and decoding.get("max_new_tokens", 768) >= 8192:
+            raise ValueError("correction max_new_tokens must fit the 8192 server context")
         if "temperature" in decoding and (type(decoding["temperature"]) not in (int, float) or not math.isfinite(decoding["temperature"]) or decoding["temperature"] < 0):
             raise ValueError("invalid temperature")
         profiles[key] = definition

@@ -19,6 +19,14 @@ import urllib.error
 import urllib.request
 import wave
 
+# Same llama-server limits as the desktop summary runtime (summary.rs).
+CORRECTION_CONTEXT = 8192
+CORRECTION_OUTPUT = 768
+QWEN_DTYPES = ('bfloat16', 'float16', 'float32')
+SAMPLING_FIELDS = ('top_p', 'top_k', 'min_p', 'presence_penalty', 'repeat_penalty', 'seed')
+QWEN_CHUNK_FIELDS = ('chunk_seconds', 'chunk_boundary', 'chunk_pad_seconds', 'chunk_gain_db')
+QWEN_BOUNDARIES = ('energy', 'pause')
+
 
 def fail(message):
     raise ValueError(message)
@@ -51,7 +59,7 @@ def base(request):
     model = request['model']
     kind = request['adapter']
     supplied = request.get('decoding', {})
-    defaults = {'moss': {'max_new_tokens': 65536, 'temperature': 0, 'top_p': 1, 'min_chunk_duration': 0, 'repetition_context_size': 100}, 'qwen': {'max_new_tokens': 1024}, 'nemotron': {'max_new_tokens': 1024, 'temperature': 0, 'enable_thinking': False, 'skip_special_tokens': False}, 'correction': {'max_new_tokens': 1024, 'temperature': 0}}
+    defaults = {'moss': {'max_new_tokens': 65536, 'temperature': 0, 'top_p': 1, 'min_chunk_duration': 0, 'repetition_context_size': 100}, 'qwen': {'max_new_tokens': 1024}, 'nemotron': {'max_new_tokens': 1024, 'temperature': 0, 'enable_thinking': False, 'skip_special_tokens': False}, 'correction': {'max_new_tokens': CORRECTION_OUTPUT, 'temperature': 0, 'top_k': 1, 'top_p': 1, 'seed': 0, 'enable_thinking': False}}
     decoding = {**defaults[kind], **supplied}
     distributions = {'qwen': ('qwen-asr', 'transformers', 'torch'), 'nemotron': ('vllm', 'nemo-toolkit'), 'moss': (), 'correction': ()}
     versions = {}
@@ -60,11 +68,13 @@ def base(request):
             versions[name] = importlib.metadata.version(name)
         except importlib.metadata.PackageNotFoundError:
             versions[name] = None
-    runtime = {k: v for k, v in request.get('runtime', {}).items() if k in ('python', 'executable', 'device_map', 'startup_timeout_seconds')}
+    runtime = {k: v for k, v in request.get('runtime', {}).items() if k in ('python', 'executable', 'device_map', 'dtype', 'startup_timeout_seconds')}
     runtime['python_version'] = platform.python_version()
     runtime['adapter_python_package_versions'] = versions
     if kind == 'qwen':
         runtime['max_inference_batch_size'] = 1
+    if kind == 'correction':
+        runtime.update(ctx_size=CORRECTION_CONTEXT, parallel=1, context_shift=False, reasoning='off', chat_template_kwargs={'enable_thinking': False}, response_format='json_schema strict')
     if kind == 'nemotron':
         runtime['gpu_memory_utilization'] = 0.9
         runtime['max_model_len'] = 8192
@@ -141,16 +151,97 @@ def qwen(req, output):
     kwargs = {'local_files_only': True, 'max_inference_batch_size': 1, 'max_new_tokens': decoder.get('max_new_tokens', 1024)}
     if req.get('runtime', {}).get('device_map'):
         kwargs['device_map'] = req['runtime']['device_map']
+    if req.get('runtime', {}).get('dtype'):
+        import torch
+        kwargs['dtype'] = getattr(torch, req['runtime']['dtype'])
     instance = Qwen3ASRModel.from_pretrained(str(model), **kwargs)
     terms = req.get('context', {}).get('terms', [])
-    results = instance.transcribe(audio=str(audio), language='Korean', context=', '.join(terms))
-    if len(results) != 1 or not isinstance(results[0].text, str):
-        fail('Unexpected Qwen ASR output')
+    context = ', '.join(terms)
     native = output / 'native.json'
-    write_json(native, {'text': results[0].text, 'language': results[0].language})
     meta = base(req)
     meta['context_used'] = bool(terms)
-    return {'text': results[0].text, 'segments': [], 'native_payload_path': str(native), 'completion': {'status': 'returned', 'evidence': 'runtime returned one result; EOS and input coverage not exposed'}, 'metadata': meta}
+    if 'chunk_seconds' not in decoder:
+        results = instance.transcribe(audio=str(audio), language='Korean', context=context)
+        if len(results) != 1 or not isinstance(results[0].text, str):
+            fail('Unexpected Qwen ASR output')
+        write_json(native, {'text': results[0].text, 'language': results[0].language})
+        return {'text': results[0].text, 'segments': [], 'native_payload_path': str(native), 'completion': {'status': 'returned', 'evidence': 'runtime returned one result; EOS and input coverage not exposed'}, 'metadata': meta}
+    import numpy as np
+    from qwen_asr.inference.utils import split_audio_into_chunks
+    with wave.open(str(audio), 'rb') as w:
+        if w.getnchannels() != 1 or w.getframerate() != 16000 or w.getsampwidth() != 2 or not w.getnframes():
+            fail('Chunked Qwen ASR requires nonempty mono 16 kHz PCM16 WAV')
+        frames = w.getnframes()
+        pcm = np.frombuffer(w.readframes(frames), dtype='<i2').astype(np.float32) / 32768.0
+    seconds = float(decoder['chunk_seconds'])
+    boundary = decoder.get('chunk_boundary', 'energy')
+    chunks = pause_split(pcm, 16000, seconds) if boundary == 'pause' else split_audio_into_chunks(pcm, 16000, seconds)
+    padded = verify_chunk_coverage(pcm, chunks)
+    pad = np.zeros(round(decoder.get('chunk_pad_seconds', 0) * 16000), dtype=np.float32)
+    inputs = [np.concatenate([pad, c, pad]) for c, _ in chunks]
+    if 'chunk_gain_db' in decoder:
+        inputs = [window_gain(x, 16000, decoder['chunk_gain_db']) for x in inputs]
+    results = instance.transcribe(audio=[(x, 16000) for x in inputs], language=['Korean'] * len(chunks), context=[context] * len(chunks))
+    if len(results) != len(chunks) or not all(isinstance(r.text, str) for r in results):
+        fail('Unexpected Qwen ASR output')
+    pieces = [{'offset_seconds': offset, 'samples': len(c), 'text': r.text, 'language': r.language} for (c, offset), r in zip(chunks, results)]
+    text = ' '.join(piece['text'].strip() for piece in pieces if piece['text'].strip())
+    write_json(native, {'text': text, 'chunks': pieces})
+    policy = 'longest pause boundaries' if boundary == 'pause' else 'qwen_asr split_audio_into_chunks low-energy boundaries'
+    meta['chunking'] = {'policy': policy, 'boundary': boundary, 'target_chunk_seconds': decoder['chunk_seconds'], 'pad_seconds': decoder.get('chunk_pad_seconds', 0), 'gain_db': decoder.get('chunk_gain_db'), 'chunks': len(chunks), 'input_frames': frames, 'covered_frames': frames, 'zero_padded_chunks': padded}
+    return {'text': text, 'segments': [], 'native_payload_path': str(native), 'completion': {'status': 'returned', 'evidence': 'chunks cover every input sample without overlap; per-chunk EOS not exposed'}, 'metadata': meta}
+
+
+def pause_split(pcm, sr, target, fwd=3.0, frame_ms=20):
+    import numpy as np
+    hop = sr * frame_ms // 1000
+    count = len(pcm) // hop
+    energy = np.sqrt(np.mean(pcm[:count * hop].reshape(count, hop) ** 2, axis=1) + 1e-12)
+    chunks, start = [], 0
+    while len(pcm) - start > int(target * sr):
+        lo = (start + int(target / 2 * sr)) // hop
+        hi = min(count, (start + int((target + fwd) * sr)) // hop)
+        window = energy[lo:hi]
+        quiet = window < min(np.percentile(window, 20) * 1.5, np.median(window) * 10 ** (-12 / 20))
+        best, middle, run = 0, None, 0
+        for i, q in enumerate(np.append(quiet, False)):
+            if q:
+                run += 1
+                continue
+            if run > best:
+                best, middle = run, i - run // 2 - 1
+            run = 0
+        cut = (lo + middle) * hop if middle is not None else start + int(target * sr)
+        chunks.append((pcm[start:cut], start / sr))
+        start = cut
+    chunks.append((pcm[start:], start / sr))
+    return chunks
+
+
+def window_gain(x, sr, target_db, window=0.5, max_gain=10.0, floor_db=-55.0):
+    # Quiet interjections were skipped by Qwen until each 0.5 s window was raised toward the target level.
+    import numpy as np
+    size = int(window * sr)
+    out = np.empty_like(x)
+    for i in range(0, len(x), size):
+        part = x[i:i + size]
+        rms = np.sqrt(np.mean(part ** 2)) + 1e-9
+        out[i:i + size] = part * (min(10 ** (target_db / 20) / rms, max_gain) if rms > 10 ** (floor_db / 20) else 1.0)
+    return np.clip(out, -1, 1)
+
+
+def verify_chunk_coverage(pcm, chunks, sr=16000):
+    starts = [round(offset * sr) for _, offset in chunks]
+    ends = starts[1:] + [len(pcm)]
+    if not chunks or starts[0] != 0 or any(b <= a for a, b in zip(starts, ends)):
+        fail('Chunks do not cover the input exactly')
+    padded = 0
+    for (chunk, _), start, end in zip(chunks, starts, ends):
+        size = end - start
+        if len(chunk) < size or (chunk[:size] != pcm[start:end]).any() or (chunk[size:] != 0).any():
+            fail('Chunks do not cover the input exactly')
+        padded += len(chunk) > size
+    return padded
 
 
 def nemotron_has_markers(text):
@@ -241,6 +332,15 @@ def apply_decisions(text, candidates, payload):
     return text
 
 
+def correction_server_args(exe, model, port, key):
+    return [str(exe), '--model', str(model), '--host', '127.0.0.1', '--port', str(port), '--api-key', key, '--no-webui', '--parallel', '1', '--ctx-size', str(CORRECTION_CONTEXT), '--no-context-shift', '--reasoning', 'off', '--jinja', '--chat-template-kwargs', json.dumps({'enable_thinking': False})]
+
+
+def correction_body(messages, candidates, decoding):
+    schema = {'type': 'object', 'additionalProperties': False, 'required': ['decisions'], 'properties': {'decisions': {'type': 'array', 'minItems': len(candidates), 'maxItems': len(candidates), 'items': {'type': 'object', 'additionalProperties': False, 'required': ['id', 'decision'], 'properties': {'id': {'type': 'string', 'enum': [c['id'] for c in candidates]}, 'decision': {'type': 'string', 'enum': ['accept', 'keep', 'uncertain']}}}}}}
+    return {'messages': messages, 'temperature': decoding.get('temperature', 0), 'top_k': decoding.get('top_k', 1), 'top_p': decoding.get('top_p', 1), 'min_p': decoding.get('min_p', 0), 'repeat_penalty': decoding.get('repeat_penalty', 1), 'presence_penalty': decoding.get('presence_penalty', 0), 'frequency_penalty': 0, 'max_tokens': decoding.get('max_new_tokens', CORRECTION_OUTPUT), 'seed': decoding.get('seed', 0), 'stream': False, 'cache_prompt': False, 'chat_template_kwargs': {'enable_thinking': False}, 'response_format': {'type': 'json_schema', 'json_schema': {'name': 'term_decisions', 'strict': True, 'schema': schema}}}
+
+
 def local_request(port, key, route, body=None, native_path=None):
     headers = {'Authorization': 'Bearer ' + key}
     if body is not None:
@@ -276,7 +376,7 @@ def correction(req, output):
         port = sock.getsockname()[1]
     key = secrets.token_urlsafe(32)
     with open(output / 'server.log', 'x', encoding='utf-8') as log:
-        proc = subprocess.Popen([str(exe), '--model', str(model), '--host', '127.0.0.1', '--port', str(port), '--api-key', key], stdout=log, stderr=subprocess.STDOUT)
+        proc = subprocess.Popen(correction_server_args(exe, model, port, key), stdout=log, stderr=subprocess.STDOUT)
     try:
         deadline = time.monotonic() + req.get('runtime', {}).get('startup_timeout_seconds', 120)
         while True:
@@ -293,14 +393,17 @@ def correction(req, output):
         messages = [{'role': 'system', 'content': 'For each candidate decide accept, keep, or uncertain based only on the transcript and approved terms. Never rewrite text or invent candidates. Return JSON object {"decisions":[{"id":"...","decision":"accept|keep|uncertain"}]}, exactly one per candidate.'}, {'role': 'user', 'content': content}]
         dec = req.get('decoding', {})
         native = output / 'native.json'
-        result = local_request(port, key, '/v1/chat/completions', {'messages': messages, 'temperature': dec.get('temperature', 0), 'max_tokens': dec.get('max_new_tokens', 1024), 'response_format': {'type': 'json_object'}}, native)
+        result = local_request(port, key, '/v1/chat/completions', correction_body(messages, candidates, dec), native)
         choice = result['choices'][0]
         if choice.get('finish_reason') != 'stop':
             fail('Correction generation did not finish normally')
+        if not isinstance(choice['message'].get('content'), str) or not choice['message']['content'].strip():
+            fail('Correction response has no content')
         answer = json.loads(choice['message']['content'])
         corrected = apply_decisions(text, candidates, answer)
         meta = base(req)
         meta['context_used'] = bool(req.get('context', {}).get('terms', []))
+        meta['reasoning_content_chars'] = len(choice['message'].get('reasoning_content') or '')
         return {'text': corrected, 'segments': [], 'native_payload_path': str(native), 'completion': {'status': 'complete', 'evidence': 'server finish_reason=stop and validated candidate decisions'}, 'metadata': meta}
     finally:
         proc.terminate()
@@ -359,15 +462,17 @@ def validate_request(req):
         fail('Invalid approved terms')
     if set(req['model']) - {'path', 'id', 'format', 'variant'}:
         fail('Unexpected model fields')
-    runtime_fields = {'moss': {'python', 'executable'}, 'qwen': {'python', 'device_map'}, 'nemotron': {'python', 'executable', 'startup_timeout_seconds'}, 'correction': {'python', 'executable', 'startup_timeout_seconds'}}
+    runtime_fields = {'moss': {'python', 'executable'}, 'qwen': {'python', 'device_map', 'dtype'}, 'nemotron': {'python', 'executable', 'startup_timeout_seconds'}, 'correction': {'python', 'executable', 'startup_timeout_seconds'}}
     runtime = req.get('runtime', {})
     if set(runtime) - runtime_fields[kind]:
         fail('Unsupported runtime fields for adapter')
     if 'startup_timeout_seconds' in runtime and (type(runtime['startup_timeout_seconds']) not in (int, float) or not math.isfinite(runtime['startup_timeout_seconds']) or runtime['startup_timeout_seconds'] <= 0):
         fail('Invalid startup timeout')
+    if 'dtype' in runtime and runtime['dtype'] not in QWEN_DTYPES:
+        fail('Unsupported dtype')
     if kind in ('moss', 'nemotron') and context.get('terms'):
         fail('This adapter does not support dictionary context')
-    accepted = {'moss': set(), 'qwen': {'max_new_tokens'}, 'nemotron': {'max_new_tokens'}, 'correction': {'temperature', 'max_new_tokens'}}
+    accepted = {'moss': set(), 'qwen': {'max_new_tokens', *QWEN_CHUNK_FIELDS}, 'nemotron': {'max_new_tokens'}, 'correction': {'temperature', 'max_new_tokens', *SAMPLING_FIELDS}}
     decoding = req.get('decoding', {})
     if set(decoding) - accepted[kind]:
         fail('Unsupported decoding fields for adapter')
@@ -375,8 +480,26 @@ def validate_request(req):
         fail('Invalid max_new_tokens')
     if kind == 'nemotron' and decoding.get('max_new_tokens', 1024) > 8192:
         fail('Nemotron max_new_tokens exceeds its model context')
+    if kind == 'correction' and decoding.get('max_new_tokens', CORRECTION_OUTPUT) >= CORRECTION_CONTEXT:
+        fail('Correction max_new_tokens exceeds its server context')
     if 'temperature' in decoding and (type(decoding['temperature']) not in (int, float) or not math.isfinite(decoding['temperature']) or decoding['temperature'] < 0):
         fail('Invalid temperature')
+    for field in ('top_p', 'min_p', 'presence_penalty', 'repeat_penalty', 'chunk_seconds', 'chunk_pad_seconds'):
+        if field in decoding and (type(decoding[field]) not in (int, float) or not math.isfinite(decoding[field]) or decoding[field] < 0):
+            fail('Invalid ' + field)
+    for field in ('top_k', 'seed'):
+        if field in decoding and (type(decoding[field]) is not int or decoding[field] < 0):
+            fail('Invalid ' + field)
+    if 'chunk_seconds' in decoding and not 1 <= decoding['chunk_seconds'] <= 1200:
+        fail('chunk_seconds must be between 1 and 1200')
+    if set(decoding) & set(QWEN_CHUNK_FIELDS[1:]) and 'chunk_seconds' not in decoding:
+        fail('chunk options require chunk_seconds')
+    if 'chunk_boundary' in decoding and decoding['chunk_boundary'] not in QWEN_BOUNDARIES:
+        fail('chunk_boundary must be energy or pause')
+    if decoding.get('chunk_pad_seconds', 0) > 5:
+        fail('chunk_pad_seconds must be between 0 and 5')
+    if 'chunk_gain_db' in decoding and (type(decoding['chunk_gain_db']) not in (int, float) or not -40 <= decoding['chunk_gain_db'] <= -6):
+        fail('chunk_gain_db must be between -40 and -6')
 
 
 
