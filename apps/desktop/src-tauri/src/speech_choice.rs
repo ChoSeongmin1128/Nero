@@ -249,32 +249,19 @@ mod tests {
         assert!(load_session(root, "../other").is_err());
     }
     #[test]
-    fn session_choices_stay_readable_by_build62_and_keep_the_glossary_requirement() {
-        // build62 (0.0.1 public) session schema. Only engines build62 knows are expected to
-        // stay readable; a session for a later engine is rejected there by design.
-        #[derive(Deserialize)]
-        #[serde(rename_all = "camelCase", deny_unknown_fields)]
-        #[allow(dead_code)]
-        struct Build62Session {
-            schema_version: u32,
-            engine: String,
-            speaker_enabled: bool,
-            #[serde(default)]
-            apple_speech_variant: Option<AppleVariant>,
-        }
+    fn build62_session_choices_are_read_and_new_sessions_record_the_glossary_requirement() {
         let root = tempfile::tempdir().unwrap();
         let session = uuid::Uuid::new_v4().to_string();
         let frozen =
             freeze_session(root.path(), &session, SpeechEngine::Nemotron, true, None).unwrap();
         assert!(frozen.glossary_snapshot_required);
-        let raw = std::fs::read(session_file(root.path(), &session).unwrap()).unwrap();
-        serde_json::from_slice::<Build62Session>(&raw).unwrap();
         assert!(
             load_session(root.path(), &session)
                 .unwrap()
                 .unwrap()
                 .glossary_snapshot_required
         );
+        // Exactly as build62 (0.0.1 public) wrote it, before the requirement existed.
         let legacy = uuid::Uuid::new_v4().to_string();
         std::fs::write(
             session_file(root.path(), &legacy).unwrap(),
@@ -318,8 +305,7 @@ mod tests {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct SessionChoice {
     schema_version: u32,
-    // Kept out of the file: released builds reject unknown fields. See `glossary_marker`.
-    #[serde(default, skip_serializing)]
+    #[serde(default)]
     pub(super) glossary_snapshot_required: bool,
     pub(super) engine: SpeechEngine,
     pub(super) speaker_enabled: bool,
@@ -331,17 +317,6 @@ fn session_file(root: &Path, session: &str) -> Result<std::path::PathBuf, String
     Ok(root
         .join("preferences/capture-speech")
         .join(format!("{session}.json")))
-}
-fn glossary_marker(root: &Path, session: &str) -> Result<std::path::PathBuf, String> {
-    Ok(session_file(root, session)?.with_extension("glossary-required"))
-}
-fn glossary_marked(root: &Path, session: &str) -> Result<bool, String> {
-    match std::fs::symlink_metadata(glossary_marker(root, session)?) {
-        Ok(meta) if meta.is_file() && !meta.file_type().is_symlink() => Ok(true),
-        Ok(_) => Err(invalid()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(_) => Err(invalid()),
-    }
 }
 pub(super) fn load_session(root: &Path, session: &str) -> Result<Option<SessionChoice>, String> {
     let path = session_file(root, session)?;
@@ -367,13 +342,12 @@ pub(super) fn load_session(root: &Path, session: &str) -> Result<Option<SessionC
     if raw.len() > 4096 {
         return Err(invalid());
     }
-    let mut choice: SessionChoice = serde_json::from_slice(&raw).map_err(|_| invalid())?;
+    let choice: SessionChoice = serde_json::from_slice(&raw).map_err(|_| invalid())?;
     if choice.schema_version != 1
         || (choice.engine == SpeechEngine::AppleSpeech && choice.apple_speech_variant.is_none())
     {
         return Err(invalid());
     }
-    choice.glossary_snapshot_required |= glossary_marked(root, session)?;
     Ok(Some(choice))
 }
 pub(super) fn freeze_session(
@@ -388,27 +362,6 @@ pub(super) fn freeze_session(
     }
     let path = session_file(root, session)?;
     let directory = crate::processing::directory(root, "preferences/capture-speech")?;
-    // Marker first: a crash before the choice is persisted leaves only a harmless marker.
-    match std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(glossary_marker(root, session)?)
-    {
-        Ok(marker) => {
-            marker.sync_all().map_err(|_| invalid())?;
-            // The marker must be durable before the choice that relies on it is renamed in.
-            #[cfg(unix)]
-            std::fs::File::open(&directory)
-                .and_then(|directory| directory.sync_all())
-                .map_err(|_| invalid())?;
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            if !glossary_marked(root, session)? {
-                return Err(invalid());
-            }
-        }
-        Err(_) => return Err(invalid()),
-    }
     let mut file = tempfile::NamedTempFile::new_in(directory).map_err(|_| invalid())?;
     let choice = SessionChoice {
         schema_version: 1,

@@ -1,8 +1,7 @@
 // Engine switches that wait for their models, and the one-time switch offer.
 //
-// Both live in their own preference files. Released builds read only
-// `preferences/speech.json` by name and reject unknown fields there, so new state must
-// never be added to that file. `speech.json` changes only at the moment of the switch.
+// Both live in their own preference files, so `preferences/speech.json` keeps holding only
+// the active choice and changes only at the moment of the switch.
 use crate::speech_choice::{AppleVariant, SpeechEngine};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;

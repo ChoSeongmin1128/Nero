@@ -35,9 +35,7 @@ pub(super) enum JobStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct JobRecord {
-    // Released builds reject unknown record fields. The requirement lives in a
-    // sidecar marker so older builds can still read records written by newer ones.
-    #[serde(default, skip_serializing)]
+    #[serde(default)]
     pub glossary_snapshot_required: bool,
     #[serde(default)]
     pub speech_engine: crate::speech_choice::SpeechEngine,
@@ -135,9 +133,6 @@ impl Journal {
         }
         let processing = ensure_child(&self.root, "processing")?;
         let job = ensure_child(&processing, &record.id)?;
-        if record.glossary_snapshot_required {
-            mark_glossary_required(&job)?;
-        }
         let states = ensure_child(&job, "job-state")?;
         let generation = match latest_generation(&states)? {
             Some((generation, path)) => {
@@ -289,45 +284,9 @@ fn read_job(path: &Path, id: &str) -> Result<Option<JobRecord>, String> {
     if !checked_directory(&states)? {
         return Ok(None);
     }
-    let mut record = latest_generation(&states)?
+    latest_generation(&states)?
         .map(|(_, path)| read_record(&path, id))
-        .transpose()?;
-    if let Some(record) = record.as_mut() {
-        record.glossary_snapshot_required |= glossary_required(path)?;
-    }
-    Ok(record)
-}
-
-const GLOSSARY_REQUIRED: &str = "glossary-snapshot-required";
-
-fn mark_glossary_required(job: &Path) -> Result<(), String> {
-    let path = job.join(GLOSSARY_REQUIRED);
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    no_follow(&mut options);
-    match options.open(&path) {
-        Ok(file) => {
-            file.sync_all().map_err(|_| invalid())?;
-            sync_directory(job)
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            glossary_required(job).and_then(|exists| exists.then_some(()).ok_or_else(invalid))
-        }
-        Err(_) => Err(invalid()),
-    }
-}
-
-fn glossary_required(job: &Path) -> Result<bool, String> {
-    match fs::symlink_metadata(job.join(GLOSSARY_REQUIRED)) {
-        Ok(meta)
-            if meta.is_file() && !meta.file_type().is_symlink() && !is_reparse_point(&meta) =>
-        {
-            Ok(true)
-        }
-        Ok(_) => Err(invalid()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(_) => Err(invalid()),
-    }
+        .transpose()
 }
 
 fn mark_recovered(record: &mut JobRecord) -> bool {
@@ -549,75 +508,38 @@ mod tests {
         );
     }
 
-    // The build62 (0.0.1 public) record schema, copied verbatim. Released builds must keep
-    // reading records that newer builds write for every engine they know. A record naming
-    // an engine added later (whisperLargeV3, qwenKo) is still rejected by them, by design:
-    // the older build reports it and changes nothing.
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase", deny_unknown_fields)]
-    #[allow(dead_code)]
-    struct Build62Record {
-        #[serde(default)]
-        speech_engine: Build62Engine,
-        #[serde(default)]
-        speaker_enabled: Option<bool>,
-        #[serde(default)]
-        apple_speech_variant: Option<serde_json::Value>,
-        schema_version: u32,
-        id: String,
-        kind: String,
-        meeting_id: Option<String>,
-        source_fingerprint: Option<String>,
-        include_summary: bool,
-        #[serde(default)]
-        summary_template_ref: Option<serde_json::Value>,
-        #[serde(default)]
-        acknowledged: bool,
-        #[serde(default)]
-        retry_successor_id: Option<String>,
-        #[serde(default)]
-        failure_kind: Option<serde_json::Value>,
-        status: JobStatus,
-        phase: Option<String>,
-        message: String,
-        created_at: u64,
-        updated_at: u64,
-    }
-    #[derive(Deserialize, Default)]
-    #[serde(rename_all = "camelCase")]
-    enum Build62Engine {
-        #[default]
-        Nemotron,
-        WhisperTurbo,
-        AppleSpeech,
-    }
-
+    // A record exactly as build62 (0.0.1 public) wrote it, before the glossary requirement
+    // existed. Users who skip updates arrive with these.
     #[test]
-    fn records_written_now_stay_readable_by_build62_and_keep_the_glossary_requirement() {
+    fn build62_records_are_read_and_keep_the_glossary_requirement_once_written() {
         let temporary = tempfile::tempdir().unwrap();
         let journal = Journal::new(temporary.path().into());
-        let mut original = record(JobStatus::Queued);
-        original.glossary_snapshot_required = true;
-        journal.write(&original).unwrap();
-        let mut next = original.clone();
-        next.glossary_snapshot_required = false;
-        next.status = JobStatus::Completed;
-        journal.write(&next).unwrap();
-        for entry in fs::read_dir(states(temporary.path(), &original)).unwrap() {
-            let raw = fs::read(entry.unwrap().path()).unwrap();
-            serde_json::from_slice::<Build62Record>(&raw).unwrap();
-        }
+        let old = record(JobStatus::Queued);
+        let states = states(temporary.path(), &old);
+        fs::create_dir_all(&states).unwrap();
+        let build62 = serde_json::json!({
+            "speechEngine": "nemotron", "speakerEnabled": true, "schemaVersion": 1,
+            "id": old.id, "kind": "transcribe", "meetingId": old.meeting_id,
+            "sourceFingerprint": old.source_fingerprint, "includeSummary": false,
+            "status": "queued", "phase": "recognizing", "message": "변환 중",
+            "createdAt": 1, "updatedAt": 2
+        });
+        fs::write(
+            states.join(format!("{:020}.json", 1)),
+            format!("{build62}\n"),
+        )
+        .unwrap();
+        let read = journal.records().unwrap().pop().unwrap();
+        assert_eq!(read.id, old.id);
+        assert!(!read.glossary_snapshot_required);
+        assert!(read.speaker_enabled);
+        let mut required = read.clone();
+        required.glossary_snapshot_required = true;
+        required.status = JobStatus::Completed;
+        journal.write(&required).unwrap();
         let saved = journal.records().unwrap().pop().unwrap();
         assert_eq!(saved.status, JobStatus::Completed);
         assert!(saved.glossary_snapshot_required);
-        let plain = record(JobStatus::Queued);
-        journal.write(&plain).unwrap();
-        assert!(!temporary
-            .path()
-            .join("processing")
-            .join(&plain.id)
-            .join(GLOSSARY_REQUIRED)
-            .exists());
     }
 
     fn record(status: JobStatus) -> JobRecord {
