@@ -53,3 +53,51 @@ export function processingNotices(progress = {}, meetingId) {
   const background = processingJobs(progress).filter(job => pendingStatuses.has(job.status) && job.id !== primary?.id);
   return { primary, background };
 }
+
+export const speechModelKinds = Object.freeze(['setup', 'model', 'speaker-model']);
+export const summaryModelKinds = Object.freeze(['summary-model']);
+const endedStatuses = new Set(['failed', 'cancelled', 'interrupted']);
+
+export function formatBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes < 0) return '';
+  if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(2)} GB`;
+  return `${Math.max(1, Math.round(bytes / 1e6))} MB`;
+}
+
+// One reading of a model download for every screen. Byte counts come only from the
+// job that owns them (processingJobs merges the running job's counters by id).
+export function modelPreparation(progress, kinds) {
+  const wanted = new Set(kinds);
+  const jobs = processingJobs(progress).filter(job => wanted.has(job.kind));
+  const active = jobs.find(job => pendingStatuses.has(job.status));
+  if (active) {
+    const counted = active.status !== 'queued' && Number.isFinite(active.totalBytes) && active.totalBytes > 0;
+    const value = counted ? Math.min(active.totalBytes, Math.max(0, Number(active.bytes) || 0)) : 0;
+    return {
+      state: active.status === 'queued' ? 'queued' : active.status === 'cancelling' ? 'cancelling' : 'running',
+      jobId: active.id,
+      percent: counted ? Math.floor(value / active.totalBytes * 100) : null,
+      value,
+      max: counted ? active.totalBytes : 0,
+      size: counted ? `${formatBytes(value)} / ${formatBytes(active.totalBytes)}` : '',
+      stage: active.status === 'queued' ? '앞선 작업이 끝나면 시작합니다.' : active.status === 'cancelling' ? '취소 중' : String(active.message || '').trim() || '준비 중',
+      cancellable: active.status !== 'cancelling' && active.committing !== true,
+    };
+  }
+  const ended = jobs.filter(job => endedStatuses.has(job.status) && job.acknowledged !== true && !job.retrySuccessorId).at(-1);
+  if (ended) {
+    return {
+      state: ended.status === 'cancelled' ? 'cancelled' : 'failed',
+      jobId: ended.id,
+      message: ended.status === 'cancelled' ? '다운로드를 취소했습니다. 받은 부분은 남아 있어 다시 시도하면 이어받습니다.'
+        : ended.status === 'interrupted' ? '다운로드가 중단되었습니다. 다시 시도하면 이어받습니다.'
+          : String(ended.message || '').trim() || '모델을 준비하지 못했습니다.',
+    };
+  }
+  return { state: 'idle' };
+}
+
+// The selected model's memory warning applies until its files are ready.
+export function memoryWarningFor(choice) {
+  return choice && choice.supported === true && choice.ready !== true && typeof choice.memoryWarning === 'string' ? choice.memoryWarning : '';
+}

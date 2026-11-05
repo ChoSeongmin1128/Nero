@@ -133,5 +133,37 @@
         "sha256": "b5d65a59060e68c4ff940e1eddfa6f94b2d68fdf58ed7f4dd57721c997e35e9d"
       }
     ]
+  },
+  {
+    "manifest": "config/models/qwen3-asr-ko.json",
+    "model": {
+      "repository": "seongmin0127/nero-qwen3-asr-ko-gguf",
+      "revision": "0bfb7be553a0c2fedbe3a0801d9996137101682a",
+      "files": [
+        {
+          "name": "qwen3-asr-1.7b-ko-q8-audiof16.gguf",
+          "bytes": 2800109184,
+          "sha256": "e401fc3718c3802f5e20eb9c6502d407e932bc9001bb33247e08454bd01b6bd4"
+        },
+        {
+          "name": "qwen3-forced-aligner-0.6b-q8_0.gguf",
+          "bytes": 985594624,
+          "sha256": "2efc3eb0db6eddb875e468e67dbc5a9ebcc840b94a583d1c336d0694cbeb7321"
+        }
+      ]
+    },
+    "license": "Apache-2.0",
+    "declaration": {
+      "source": "https://huggingface.co/seongmin0127/nero-qwen3-asr-ko-gguf/raw/0bfb7be553a0c2fedbe3a0801d9996137101682a/README.md",
+      "sha256": "c3bcf4e2f0d2f9265df5db33e3f019494e11016015cf24a719e33d79da11b3b9",
+      "licenseMetadata": "license: apache-2.0"
+    },
+    "notices": [
+      {
+        "path": "Apache-2.0.txt",
+        "source": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+        "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+      }
+    ]
   }
 ]

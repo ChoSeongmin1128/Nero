@@ -1,0 +1,13 @@
+{
+  "repository": "seongmin0127/nero-qwen3-asr-ko-gguf",
+  "revision": "0bfb7be553a0c2fedbe3a0801d9996137101682a",
+  "files": [{
+    "name": "qwen3-asr-1.7b-ko-q8-audiof16.gguf",
+    "bytes": 2800109184,
+    "sha256": "e401fc3718c3802f5e20eb9c6502d407e932bc9001bb33247e08454bd01b6bd4"
+  }, {
+    "name": "qwen3-forced-aligner-0.6b-q8_0.gguf",
+    "bytes": 985594624,
+    "sha256": "2efc3eb0db6eddb875e468e67dbc5a9ebcc840b94a583d1c336d0694cbeb7321"
+  }]
+}

@@ -18,6 +18,7 @@
     <link rel="stylesheet" href="/transcript-actions.css">
     <link rel="stylesheet" href="/document-tools.css">
     <script src="/shared/icons.js"></script>
+    <script src="/shared/markdown.js"></script>
     <script src="/shared/components.js"></script>
   </head>
   <body class="application-shell">
@@ -123,7 +124,7 @@
               <button id="retry-summary-load" type="button" class="small" hidden>다시 불러오기</button><p id="summary-message" class="muted type-caption" role="status"></p><div id="summary-content" class="summary-content"></div><div id="summary-evidence" class="summary-evidence" hidden></div>
             </section>
             <div id="result-transcript-home" class="result-transcript-home" hidden>            <section id="transcript-section" class="transcript-section detail-panel" role="region" aria-label="음성 기록" tabindex="0" hidden>
-              <div class="section-heading transcript-heading detail-panel-toolbar"><h2>음성 기록</h2><div class="row"><button id="speakers-button" type="button" class="small quiet icon" data-ui-icon="users" aria-label="화자 편집" title="화자 편집" hidden></button><details class="meeting-menu document-export transcript-maintenance"><summary aria-label="음성 기록 더보기" title="음성 기록 더보기"><span data-detail-icon="ellipsis" aria-hidden="true"></span></summary><div class="action-menu"><button id="transcribe" type="button" class="small quiet with-icon" disabled><span data-detail-icon="refresh-cw" aria-hidden="true"></span>다시 변환</button><button id="transcript-history" type="button" class="small quiet with-icon" hidden><span data-detail-icon="history" aria-hidden="true"></span>이전 기록</button></div></details><button id="save-transcript" type="button" class="small" disabled>수정 저장</button><span id="transcript-document-actions"></span></div></div>
+              <div class="section-heading transcript-heading detail-panel-toolbar"><h2>음성 기록</h2><div class="row"><button id="speakers-button" type="button" class="small quiet icon" data-ui-icon="users" aria-label="화자 편집" title="화자 편집" hidden></button><details id="transcript-menu" class="meeting-menu document-export transcript-maintenance" hidden><summary aria-label="음성 기록 더보기" title="음성 기록 더보기"><span data-detail-icon="ellipsis" aria-hidden="true"></span></summary><div class="action-menu"><button id="retranscribe" type="button" class="small quiet with-icon" hidden disabled><span data-detail-icon="refresh-cw" aria-hidden="true"></span>다시 변환</button><button id="transcript-history" type="button" class="small quiet with-icon" hidden><span data-detail-icon="history" aria-hidden="true"></span>이전 기록</button></div></details><button id="transcribe" type="button" class="small primary" hidden disabled>텍스트로 변환</button><button id="save-transcript" type="button" class="small" disabled>수정 저장</button><span id="transcript-document-actions"></span></div></div>
               <button id="retry-transcript-load" type="button" class="small" hidden>다시 불러오기</button><div id="transcript-scroll" class="transcript-scroll" tabindex="0"><p id="transcript-message" class="muted type-caption"></p><div id="transcript-rows"></div></div>
             </section>
 </div>
@@ -187,7 +188,7 @@
               <h4 id="settings-features-title" class="settings-subtitle">추가 기능</h4>
               <div class="settings-group"><div class="settings-row"><span>회의 요약</span><span id="settings-summary-control" class="settings-feature-control" tabindex="-1"><span id="settings-summary-state" class="muted type-caption"></span><button id="models" type="button" class="small">추가</button></span></div></div>
               <p id="settings-summary-error" class="notice type-caption" role="alert" hidden></p>
-              <div id="settings-summary-progress" class="settings-feature-progress" hidden><progress id="settings-feature-progress" aria-label="회의 요약 기능 다운로드"></progress><span id="settings-feature-stage" class="muted type-caption" role="status"></span><button id="settings-feature-cancel" type="button" class="quiet small">취소</button></div>
+              <div id="settings-summary-progress" class="settings-feature-progress" hidden><progress id="settings-feature-progress" aria-label="회의 요약 기능 다운로드"></progress><span id="settings-feature-stage" class="muted type-caption" role="status"></span><span id="settings-feature-size" class="muted type-caption"></span><button id="settings-feature-cancel" type="button" class="quiet small">취소</button></div>
             </section>
             <button id="privacy-policy" type="button" class="quiet small">개인정보처리방침</button>
           </section>
@@ -228,6 +229,9 @@
     <dialog id="library-dialog" class="library-dialog" aria-labelledby="library-dialog-title"><div id="library-dialog-body"></div></dialog>
     <dialog id="transcript-actions-dialog" class="library-dialog transcript-actions-dialog" aria-labelledby="transcript-actions-title"><div id="transcript-actions-body"></div></dialog>
     <dialog id="quit-dialog" class="quit-dialog" aria-labelledby="quit-title"></dialog>
+    <dialog id="speech-offer-dialog" class="quit-dialog speech-offer-dialog" aria-labelledby="speech-offer-title"></dialog>
+    <dialog id="drop-dialog" class="speaker-dialog"></dialog>
+    <div id="drop-overlay" class="drop-overlay" hidden><p id="drop-overlay-message" role="status"></p></div>
     <script type="module" src="/main.js"></script>
   </body>
 </html>

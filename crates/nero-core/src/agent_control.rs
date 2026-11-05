@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddrV4, TcpListener, TcpStream};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -189,6 +189,17 @@ pub const METHODS: [&str; 12] = [
 
 pub const JOB_METHODS: [&str; 2] = ["jobs_list", "job_cancel"];
 
+// Requests served by the running app's processing service rather than the core writer.
+// `speech_status` is an internal read used by `status`, not a separate agent tool.
+pub const PROCESSING_METHODS: [&str; 4] = [
+    "meeting_import",
+    "speech_status",
+    "speech_engine_set",
+    "speech_switch_cancel",
+];
+
+const MAX_IMPORT_PATH: usize = 4096;
+
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum AppUpdateAction {
@@ -282,6 +293,90 @@ impl JobRequest {
     }
 }
 
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(tag = "method", content = "params", deny_unknown_fields)]
+pub enum ProcessingRequest {
+    #[serde(rename = "meeting_import")]
+    MeetingImport {
+        path: String,
+        #[serde(rename = "meetingId")]
+        meeting_id: Option<String>,
+        #[serde(rename = "expectedVersion")]
+        expected_version: Option<String>,
+    },
+    #[serde(rename = "speech_status")]
+    SpeechStatus {},
+    #[serde(rename = "speech_engine_set")]
+    SpeechEngineSet {
+        engine: String,
+        #[serde(rename = "acknowledgeMemoryWarning", default)]
+        acknowledge_memory_warning: bool,
+    },
+    #[serde(rename = "speech_switch_cancel")]
+    SpeechSwitchCancel { target: String },
+}
+
+impl ProcessingRequest {
+    // Checks only the request shape. The app checks the file, models and its own state.
+    pub fn parse(method: &str, params: Value) -> std::result::Result<Self, ControlError> {
+        if !PROCESSING_METHODS.contains(&method) || !params.is_object() {
+            return Err(ControlError::invalid());
+        }
+        let request: Self = serde_json::from_value(json!({"method":method,"params":params}))
+            .map_err(|_| ControlError::invalid())?;
+        let valid = match &request {
+            Self::MeetingImport {
+                path,
+                meeting_id,
+                expected_version,
+            } => {
+                valid_import_path(path)
+                    && match (meeting_id, expected_version) {
+                        (None, None) => true,
+                        (Some(id), Some(version)) => {
+                            store::validate_id(id).is_ok() && valid_version(version)
+                        }
+                        _ => false,
+                    }
+            }
+            Self::SpeechStatus {} => true,
+            Self::SpeechEngineSet { engine, .. } | Self::SpeechSwitchCancel { target: engine } => {
+                valid_engine_id(engine)
+            }
+        };
+        if valid {
+            Ok(request)
+        } else {
+            Err(ControlError::invalid())
+        }
+    }
+}
+
+// An absolute, normalized path whose extension the library can retain. Whether it is an
+// existing regular file is decided by the app that reads it.
+pub fn valid_import_path(path: &str) -> bool {
+    let candidate = Path::new(path);
+    !path.is_empty()
+        && path.len() <= MAX_IMPORT_PATH
+        && !path.contains('\0')
+        && candidate.is_absolute()
+        && candidate
+            .components()
+            .all(|part| !matches!(part, Component::CurDir | Component::ParentDir))
+        && candidate
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|extension| {
+                crate::AUDIO_IMPORT_EXTENSIONS
+                    .iter()
+                    .any(|supported| extension.eq_ignore_ascii_case(supported))
+            })
+}
+
+fn valid_engine_id(engine: &str) -> bool {
+    (1..=64).contains(&engine.len()) && engine.bytes().all(|byte| byte.is_ascii_alphanumeric())
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AppMetadata {
@@ -295,6 +390,7 @@ enum ControlRequest {
     AppUpdate(AppUpdateAction),
     Mutation(Mutation),
     Job(JobRequest),
+    Processing(ProcessingRequest),
 }
 impl ControlRequest {
     fn parse(method: &str, params: Value) -> std::result::Result<Self, ControlError> {
@@ -308,6 +404,8 @@ impl ControlRequest {
             AppUpdateAction::parse(params).map(Self::AppUpdate)
         } else if JOB_METHODS.contains(&method) {
             JobRequest::parse(method, params).map(Self::Job)
+        } else if PROCESSING_METHODS.contains(&method) {
+            ProcessingRequest::parse(method, params).map(Self::Processing)
         } else {
             Mutation::parse(method, params).map(Self::Mutation)
         }
@@ -794,11 +892,13 @@ pub fn request(
     let mut stream = TcpStream::connect_timeout(&descriptor.address.into(), Duration::from_secs(2))
         .map_err(|_| ControlError::unavailable())?;
     stream
-        .set_read_timeout(Some(Duration::from_secs(if method == "app_metadata" {
-            2
-        } else {
-            45
-        })))
+        .set_read_timeout(Some(Duration::from_secs(
+            if matches!(method, "app_metadata" | "speech_status") {
+                2
+            } else {
+                45
+            },
+        )))
         .map_err(|_| ControlError::unavailable())?;
     stream
         .set_write_timeout(Some(Duration::from_secs(2)))
@@ -828,6 +928,56 @@ pub fn request(
             "app_update_failed" => (
                 "app_update_failed",
                 "업데이트 요청을 완료하지 못했습니다. Nero의 업데이트 상태를 확인해 주세요.",
+            ),
+            // The CLI validates these requests before sending, so an app rejecting their
+            // shape predates them.
+            "invalid_input" | "app_feature_unsupported"
+                if PROCESSING_METHODS.contains(&method) =>
+            {
+                (
+                    "app_feature_unsupported",
+                    "실행 중인 Nero는 이 요청을 지원하지 않습니다. Nero를 업데이트한 뒤 다시 시도해 주세요.",
+                )
+            }
+            "audio_file_unavailable" => (
+                "audio_file_unavailable",
+                "가져올 음성 파일을 찾을 수 없거나 일반 파일이 아닙니다.",
+            ),
+            "unsupported_audio_format" => (
+                "unsupported_audio_format",
+                "지원하지 않는 음성 파일 형식입니다.",
+            ),
+            "recording_active" => (
+                "recording_active",
+                "녹음 중에는 처리할 수 없습니다. 녹음을 마친 뒤 다시 시도해 주세요.",
+            ),
+            "speech_not_ready" => (
+                "speech_not_ready",
+                "음성 인식이 준비되지 않았습니다. Nero에서 음성 인식을 먼저 준비해 주세요.",
+            ),
+            "speech_engine_unknown" => (
+                "speech_engine_unknown",
+                "실행 중인 Nero가 알지 못하는 음성 인식 엔진입니다.",
+            ),
+            "speech_engine_unsupported" => (
+                "speech_engine_unsupported",
+                "이 기기에서 사용할 수 없는 음성 인식 엔진입니다.",
+            ),
+            "memory_warning_unacknowledged" => (
+                "memory_warning_unacknowledged",
+                "선택한 음성 인식 엔진의 메모리 경고에 대한 사용자 확인이 필요합니다.",
+            ),
+            "speech_switch_not_found" => (
+                "speech_switch_not_found",
+                "대기 중인 음성 인식 전환이 없습니다.",
+            ),
+            "processing_busy" => (
+                "processing_busy",
+                "처리 작업이 대기 또는 실행 중입니다. 작업이 끝난 뒤 다시 시도해 주세요.",
+            ),
+            "processing_rejected" => (
+                "processing_rejected",
+                "Nero가 요청을 처리하지 못했습니다. 현재 처리 상태를 확인해 주세요.",
             ),
             "invalid_input" => (
                 "invalid_input",
@@ -932,6 +1082,25 @@ impl Server {
             + Send
             + 'static,
     ) -> std::result::Result<Self, ControlError> {
+        // An app without a processing handler answers like one that predates it.
+        Self::start_with_processing(root, core, handler, jobs, metadata, updates, |_| {
+            Err(ControlError::invalid())
+        })
+    }
+
+    pub fn start_with_processing(
+        root: &Path,
+        core: CoreHandle,
+        handler: impl Fn(Mutation) -> std::result::Result<Value, ControlError> + Send + 'static,
+        jobs: impl Fn(JobRequest) -> std::result::Result<Value, ControlError> + Send + 'static,
+        metadata: impl Fn() -> std::result::Result<AppMetadata, ControlError> + Send + 'static,
+        updates: impl Fn(AppUpdateAction) -> std::result::Result<ControlReply, ControlError>
+            + Send
+            + 'static,
+        processing: impl Fn(ProcessingRequest) -> std::result::Result<Value, ControlError>
+            + Send
+            + 'static,
+    ) -> std::result::Result<Self, ControlError> {
         let path = descriptor_path(root)?;
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
             .map_err(|_| ControlError::new("app_not_ready", "Nero 수정 연결을 열지 못했습니다."))?;
@@ -1020,6 +1189,9 @@ impl Server {
                                     }
                                     ControlRequest::Job(request) => {
                                         jobs(request).map(ControlReply::new)
+                                    }
+                                    ControlRequest::Processing(request) => {
+                                        processing(request).map(ControlReply::new)
                                     }
                                 });
                             let (response, after_response) = match result {
@@ -1315,6 +1487,145 @@ mod tests {
         let response: Value = serde_json::from_slice(&read_frame(&mut stream).unwrap()).unwrap();
         assert!(response.get("error").is_some());
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn processing_requests_validate_shape_before_reaching_the_app() {
+        let id = uuid::Uuid::new_v4().to_string();
+        let version = format!("sha256:{}", "0".repeat(64));
+        let audio = std::env::temp_dir().join("synthetic-meeting.M4A");
+        let audio = audio.to_str().unwrap();
+        assert_eq!(
+            ProcessingRequest::parse("meeting_import", json!({"path":audio})).unwrap(),
+            ProcessingRequest::MeetingImport {
+                path: audio.into(),
+                meeting_id: None,
+                expected_version: None
+            }
+        );
+        assert!(ProcessingRequest::parse(
+            "meeting_import",
+            json!({"path":audio,"meetingId":id,"expectedVersion":version})
+        )
+        .is_ok());
+        assert_eq!(
+            ProcessingRequest::parse("speech_engine_set", json!({"engine":"qwenKo"})).unwrap(),
+            ProcessingRequest::SpeechEngineSet {
+                engine: "qwenKo".into(),
+                acknowledge_memory_warning: false
+            }
+        );
+        assert!(ProcessingRequest::parse("speech_status", json!({})).is_ok());
+        assert!(
+            ProcessingRequest::parse("speech_switch_cancel", json!({"target":"qwenKo"})).is_ok()
+        );
+        let parent = std::env::temp_dir().join("..").join("synthetic.wav");
+        for (method, params) in [
+            ("meeting_import", json!({"path":"synthetic.wav"})),
+            ("meeting_import", json!({"path":parent.to_str().unwrap()})),
+            (
+                "meeting_import",
+                json!({"path":std::env::temp_dir().join("notes.txt").to_str().unwrap()}),
+            ),
+            (
+                "meeting_import",
+                json!({"path":std::env::temp_dir().join("audio").to_str().unwrap()}),
+            ),
+            ("meeting_import", json!({"path":format!("{audio}\0.wav")})),
+            ("meeting_import", json!({"path":audio,"meetingId":id})),
+            (
+                "meeting_import",
+                json!({"path":audio,"expectedVersion":version}),
+            ),
+            (
+                "meeting_import",
+                json!({"path":audio,"meetingId":"../escape","expectedVersion":version}),
+            ),
+            (
+                "meeting_import",
+                json!({"path":audio,"meetingId":id,"expectedVersion":"old"}),
+            ),
+            ("meeting_import", json!({"path":audio,"transcribe":true})),
+            ("speech_status", json!({"refresh":true})),
+            ("speech_status", Value::Null),
+            ("speech_engine_set", json!({})),
+            ("speech_engine_set", json!({"engine":"../qwen"})),
+            (
+                "speech_engine_set",
+                json!({"engine":"qwenKo","download":false}),
+            ),
+            ("speech_switch_cancel", json!({})),
+            ("speech_purge", json!({})),
+        ] {
+            assert!(
+                ProcessingRequest::parse(method, params.clone()).is_err(),
+                "{method} {params}"
+            );
+        }
+    }
+
+    #[test]
+    fn processing_requests_use_authenticated_transport_and_report_older_apps() {
+        let (directory, core, _) = fixture();
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let received = calls.clone();
+        let server = Server::start_with_processing(
+            directory.path(),
+            core.clone(),
+            |_| panic!("not a core mutation"),
+            |_| panic!("not a job request"),
+            || Err(ControlError::unavailable()),
+            |_| Err(ControlError::invalid()),
+            move |request| {
+                received.lock().unwrap().push(request);
+                Ok(json!({"applied":true}))
+            },
+        )
+        .unwrap();
+        let audio = std::env::temp_dir().join("synthetic.wav");
+        let params = json!({"path":audio.to_str().unwrap()});
+        assert_eq!(
+            request(directory.path(), "meeting_import", params.clone()).unwrap(),
+            json!({"applied":true})
+        );
+        assert_eq!(
+            request(
+                directory.path(),
+                "meeting_import",
+                json!({"path":"relative.wav"})
+            )
+            .unwrap_err()
+            .code,
+            "invalid_input"
+        );
+        assert!(matches!(
+            calls.lock().unwrap().as_slice(),
+            [ProcessingRequest::MeetingImport {
+                meeting_id: None,
+                ..
+            }]
+        ));
+        drop(server);
+        let _older = Server::start_with_updates(
+            directory.path(),
+            core,
+            |_| panic!("not a core mutation"),
+            |_| panic!("not a job request"),
+            || Err(ControlError::unavailable()),
+            |_| Err(ControlError::invalid()),
+        )
+        .unwrap();
+        for (method, params) in [
+            ("meeting_import", params),
+            ("speech_status", json!({})),
+            ("speech_engine_set", json!({"engine":"nemotron"})),
+        ] {
+            assert_eq!(
+                request(directory.path(), method, params).unwrap_err().code,
+                "app_feature_unsupported"
+            );
+        }
+        assert!(!directory.path().join("models").exists());
     }
 
     #[test]

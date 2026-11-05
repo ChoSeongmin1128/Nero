@@ -230,6 +230,7 @@ enum TranscriptCommitPolicy {
     WholeMoss,
     Nemotron,
     Whisper,
+    Qwen,
     AppleSpeech,
 }
 
@@ -1271,6 +1272,15 @@ impl Engine {
         self.commit_transcript_with_policy(id, expected, raw, TranscriptCommitPolicy::Whisper)
     }
 
+    pub fn commit_qwen_transcript(
+        &mut self,
+        id: &str,
+        expected: Option<TranscriptVersion>,
+        raw: Vec<u8>,
+    ) -> Result<Transcript> {
+        self.commit_transcript_with_policy(id, expected, raw, TranscriptCommitPolicy::Qwen)
+    }
+
     pub fn commit_apple_transcript(
         &mut self,
         id: &str,
@@ -1319,6 +1329,9 @@ impl Engine {
             }
             TranscriptCommitPolicy::Whisper => {
                 crate::whisper::decode_asr(&raw, duration, &audio.session_id, &transcript_id)?
+            }
+            TranscriptCommitPolicy::Qwen => {
+                crate::qwen::decode_asr(&raw, duration, &audio.session_id, &transcript_id)?
             }
             _ => MossOutput::decode(&raw, duration, &audio.session_id, &transcript_id)?,
         };
@@ -1455,7 +1468,7 @@ impl Engine {
         if draft.posterior.is_some()
             && matches!(
                 draft.source.model.as_str(),
-                "nvidia/nemotron-3.5-asr-streaming-0.6b" | crate::whisper::MODEL
+                "nvidia/nemotron-3.5-asr-streaming-0.6b" | crate::whisper::MODEL | crate::qwen::MODEL
             )
         {
             let before = draft.source.version.clone();

@@ -19,3 +19,16 @@
 .speech-speaker-copy { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 .speech-speaker-setting input { flex: none; margin: 0; accent-color: var(--accent); }
 .speech-model-picker:disabled .speech-speaker-setting { cursor: default; }
+
+.speech-model-confirm, .speech-model-failure, .speech-memory-warning { margin-top: 12px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-secondary); }
+.speech-model-confirm[hidden], .speech-model-failure[hidden], .speech-memory-warning[hidden], .speech-model-progress[hidden] { display: none; }
+.speech-model-confirm p, .speech-model-failure p, .speech-memory-warning p { margin: 0; }
+.speech-model-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.speech-model-picker .speech-model-actions button { margin-top: 10px; }
+.speech-model-progress .setup-progress-meta { align-items: center; }
+.speech-model-picker .speech-model-progress button { margin-top: 0; }
+.speech-offer-dialog { width: 460px; }
+.speech-offer-facts { margin: 12px 0 0; padding-left: 18px; color: var(--text-secondary); line-height: var(--leading-reading); }
+.speech-offer-facts li + li { margin-top: 4px; }
+.speech-offer-dialog .notice { margin-top: 12px; }
+.speech-offer-dialog .notice[hidden], .speech-offer-dialog .speech-memory-warning[hidden] { display: none; }

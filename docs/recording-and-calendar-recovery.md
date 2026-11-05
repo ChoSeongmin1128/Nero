@@ -50,7 +50,9 @@ the system time zone. Creation/recording timestamps remain separate. Title origi
 persisted on new drafts, cleared by title edits and not guessed for older drafts.
 Reference and defaults are committed together. Reopening an already linked occurrence
 never reapplies provider defaults. A stale API authentication
-response cannot invalidate a refreshed access token.
+response cannot invalidate a refreshed access token. An API call that rejects the
+current access token drops only that token and retries once with a refreshed one;
+reconnection is requested only when the refresh token itself is rejected.
 
 ## Cancelled processing
 

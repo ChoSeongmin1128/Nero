@@ -19,6 +19,7 @@ function accept(snapshot) {
 }
 
 export const openPrivacyPolicy = () => call('open_privacy_policy');
+export const openDocumentLink = url => call('open_document_link', { url });
 export const readSnapshot = () => call('read_snapshot').then(accept);
 export const agentConnectionInfo = (forceHostRefresh = false) => call('agent_connection_info', { forceHostRefresh });
 export const connectAgentClient = (client) => call('agent_connect_client', { client });
@@ -72,10 +73,22 @@ export async function subscribeCloseRequest(callback) {
 export const processingStatus = () => call('processing_status');
 export const prepareModel = () => call('prepare_model');
 export const setSpeechEngine = engine => call('set_speech_engine', { engine });
+export const requestSpeechEngine = engine => call('request_speech_engine', { engine });
+export const cancelSpeechSwitch = () => call('cancel_speech_switch');
+export const respondSpeechOffer = accept => call('respond_speech_offer', { accept });
 export const setSpeakerEnabled = enabled => call('set_speaker_enabled', { enabled });
 export const prepareMeetingModels = (includeSummary = false) => call('prepare_meeting_models', { includeSummary });
 export const draftAttachmentTarget = (meetingId) => call('draft_attachment_target', { meetingId });
 export const importAudio = (target = null) => call('import_audio', { target });
+export const dropImportBegin = (name, size, target = null) => call('drop_import_begin', { name, size, target });
+export const dropImportChunk = (token, bytes) => {
+  if (!isTauri()) return Promise.reject(new Error(unavailable));
+  return invoke('drop_import_chunk', bytes, { headers: { 'x-nero-drop': token } }).catch((error) => {
+    throw new Error(typeof error === 'string' ? error : '끌어 놓은 음성 파일을 받지 못했습니다.');
+  });
+};
+export const dropImportFinish = token => call('drop_import_finish', { token });
+export const dropImportCancel = token => call('drop_import_cancel', { token });
 export const transcribeAudio = (meetingId) => call('transcribe_audio', { meetingId });
 export const cancelProcessing = (jobId) => call('cancel_processing', { jobId });
 export const retryProcessing = (jobId) => call('retry_processing', { jobId });

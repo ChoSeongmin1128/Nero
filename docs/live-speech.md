@@ -2,7 +2,8 @@
 
 This is a source contract, not a microphone, target-laptop or macOS acceptance receipt.
 
-Nemotron and Whisper use the paths below. Speaker analysis is optional and frozen
+Nemotron and Whisper use the paths below; Qwen3-ASR-ko uses the Nemotron path for
+its preview and is described in its own section. Speaker analysis is optional and frozen
 with the selected engine at recording start. Disabling it keeps the ASR stream
 and skips the speaker stream and final analysis. macOS system transcription
 currently runs after recording ends and does not publish live previews.
@@ -107,6 +108,38 @@ remains session-bound for the queued job. Interrupted or failed live processing 
 uses the existing finalized-file processing path. Restart does not reconstruct
 decoder state or automatically replay recordings. Interim text is not a saved,
 editable or exportable transcript.
+
+## Qwen3-ASR-ko final transcript
+
+On Apple Silicon, the Qwen3-ASR-ko selection is frozen like the other engines. During
+recording the isolated child runs the Nemotron 3.5 ASR stream and the speaker stream
+exactly as above. Nemotron text remains a provisional preview and is never committed
+for a Qwen session. The ordinary job accepts the session-bound live artifact only for
+its analysis WAV and speaker stream, then recognizes that same analysis WAV with the
+packaged CrispASR CLI. A missing or rejected live artifact uses the finalized-file
+path, followed by whole-recording speaker analysis.
+
+The recording is cut at the longest quiet run 15 to 33 seconds after each chunk start
+(20 ms energy frames). Chunks cover every frame without gaps or overlap. Each chunk
+receives one second of silence on both sides, then each 0.5 second window is moved
+toward -20 dB with at most +20 dB; windows below -55 dB are left unchanged. Noise
+suppression and dereverberation are not applied. One CrispASR process loads the pinned Qwen3-ASR
+GGUF and Qwen3-ForcedAligner GGUF once and writes one native JSON per chunk.
+
+Word times come only from aligner units. Each unit must match the next characters of
+the transcript text; only non-alphanumeric text may lack a unit, and a unit may not
+span two text words. Times are shifted by the chunk start and the padding, then
+limited to the chunk. Nothing is interpolated. A mismatch fails processing with the
+native outputs and audio preserved. Zero-length words keep an unknown speaker.
+
+`qwen3-pause-chunks-v1` with `crispasr-exit0-v1`, `forced-aligner-text-units-v1` and
+`window-gain-v1` binds the full PCM hash/frame count, pinned model, aligner and
+runtime identity, every chunk range, chunk input PCM hash, native-output hash, exit
+status and backend evidence. macOS requires positive Metal initialization, one model
+load and one processed input per chunk. The child receives no inherited `GGML_*` or
+`CRISPASR_*` overrides and its Metal pipeline cache is disabled, so it writes no
+cache outside the job folder. Model and runtime hashes are checked before and after
+the run. A failure never switches to the Nemotron preview silently.
 
 This reduces remaining work after a meeting when the device can keep up. It does
 not establish real-time speed on an 8 GB office laptop, accuracy, eight-person

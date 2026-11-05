@@ -101,7 +101,7 @@ def model_notices(root=ROOT):
     folder = root / 'apps/desktop/licenses/models'
     entries = load(folder / 'manifest.json')
     if {e['manifest'] for e in entries} != {
-        'config/models/nemotron-asr.json', 'config/models/whisper-turbo.json', 'config/models/whisper-large-v3.json',
+        'config/models/nemotron-asr.json', 'config/models/whisper-turbo.json', 'config/models/whisper-large-v3.json', 'config/models/qwen3-asr-ko.json',
         'apps/desktop/models/diarization.json', 'apps/desktop/models/summary.json',
     }:
         raise ValueError('Model notice catalog is incomplete')

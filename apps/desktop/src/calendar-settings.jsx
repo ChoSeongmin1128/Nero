@@ -97,10 +97,10 @@ function CalendarSettings({ flow }) {
       <h4 className="calendar-settings-subtitle">알림을 받을 캘린더</h4>
       <CalendarList calendars={snapshot.calendars} selected={snapshot.selectedCalendars} busy={state.busy} connecting={snapshot.connecting} onSelect={(id, checked) => flow.select(id, checked)} />
       {!snapshot.selectedCalendars.length && <p className="calendar-settings-description">캘린더를 선택하면 일정 알림을 받습니다.</p>}
-      <div className="calendar-settings-actions"><button type="button" className="small" disabled={state.busy || snapshot.connecting} onClick={() => { void flow.refresh(); }}>새로고침</button>{snapshot.lastSyncedAt && <span className="calendar-settings-synced">{new Date(snapshot.lastSyncedAt).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })} 확인</span>}</div>
+      {snapshot.lastSyncedAt && <div className="calendar-settings-actions"><span className="calendar-settings-synced">{new Date(snapshot.lastSyncedAt).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })} 확인</span></div>}
     </>}
     {!snapshot.configured && !snapshot.error && state.snapshot.revision >= 0 && <p className="notice" role="status">이 버전에는 Google Calendar 연결 정보가 없습니다.</p>}
-    {view.error && <p className="notice" role="alert">{view.error}</p>}
+    {view.error && <p className="notice" role="alert">{view.error}{snapshot.connected && !connecting && <> <button type="button" className="small quiet" disabled={state.busy} onClick={() => { void flow.refresh(); }}>다시 시도</button></>}</p>}
   </section>;
 }
 

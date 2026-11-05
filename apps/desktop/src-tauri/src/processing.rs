@@ -113,6 +113,8 @@ pub struct Progress {
     pub summary_committing: bool,
     pub jobs: Vec<JobView>,
     pub live_transcript: Option<serde_json::Value>,
+    pub speech_switch: Option<crate::speech_switch::SwitchView>,
+    pub speech_offer: Option<crate::speech_switch::OfferView>,
 }
 
 #[derive(Clone, Serialize, Default, PartialEq, Eq)]
@@ -209,6 +211,11 @@ pub struct Processing {
     apple_speech_variant: Mutex<Option<AppleVariant>>,
     apple_speech: Mutex<crate::apple_speech::Availability>,
     speech_preference_error: Mutex<Option<String>>,
+    speech_switch: Mutex<Option<crate::speech_switch::Pending>>,
+    speech_offers: Mutex<crate::speech_switch::Offers>,
+    speech_switch_error: Mutex<Option<String>>,
+    // A setup that already worked at startup; first-time setups are not offered a switch.
+    offer_eligible: AtomicBool,
     pub(super) root: PathBuf,
     pub(super) resources: PathBuf,
     progress: Mutex<Progress>,
@@ -369,6 +376,11 @@ impl Processing {
                 ),
                 Err(error) => (SpeechEngine::default(), true, None, Some(error)),
             };
+        // Auxiliary switch state never blocks recognition. Unreadable files are left as they
+        // are: a broken pending switch is ignored and a broken offer record hides the offer.
+        let speech_switch = crate::speech_switch::load_pending(&root).ok().flatten();
+        let speech_offers = crate::speech_switch::load_offers(&root)
+            .unwrap_or_else(|_| crate::speech_switch::Offers::suppressed());
         let journal = Journal::new(root.clone());
         let (records, issues, journal_error) = match journal.recover_available() {
             Ok(report) => (report.records, report.issues, None),
@@ -406,7 +418,7 @@ impl Processing {
                 ..Default::default()
             });
         }
-        Arc::new(Self {
+        let process = Arc::new(Self {
             #[cfg(test)]
             platform_supported_override: Mutex::new(None),
             speech_engine: Mutex::new(speech_engine),
@@ -414,6 +426,10 @@ impl Processing {
             apple_speech_variant: Mutex::new(apple_speech_variant),
             apple_speech: Mutex::new(crate::apple_speech::probe(&resources, apple_speech_variant)),
             speech_preference_error: Mutex::new(speech_preference_error),
+            speech_switch: Mutex::new(speech_switch),
+            speech_offers: Mutex::new(speech_offers),
+            offer_eligible: AtomicBool::new(false),
+            speech_switch_error: Mutex::new(None),
             root,
             resources,
             progress: Mutex::new(Progress::default()),
@@ -432,7 +448,11 @@ impl Processing {
             worker_cleanup_failed: AtomicBool::new(false),
             live: Mutex::new(None),
             live_completed: Mutex::new(HashMap::new()),
-        })
+        });
+        let working = process.speech_preference_error.lock().unwrap().is_none()
+            && process.model_ready_for(process.speech_engine());
+        process.offer_eligible.store(working, Ordering::Release);
+        process
     }
     pub(super) fn model(&self) -> Model {
         Self::model_for(self.speech_engine())
@@ -487,12 +507,47 @@ impl Processing {
                         && crate::whisper_asr::supported(&self.resources)
                 }
                 SpeechEngine::AppleSpeech => self.apple_speech.lock().unwrap().supported,
+                // Qwen needs the Nemotron stream for its recording preview.
+                SpeechEngine::QwenKo => {
+                    crate::qwen_asr::supported(&self.resources) && crate::asr::supported(self)
+                }
             }
+    }
+    // Every speech model a selection prepares, including Qwen's Nemotron preview model.
+    fn speech_bytes(engine: SpeechEngine) -> u64 {
+        engine
+            .requirements()
+            .into_iter()
+            .flat_map(|engine| Self::model_for(engine).files)
+            .map(|file| file.bytes)
+            .sum()
+    }
+    // Bytes still missing for every model `engine` needs; `.part` files count as received.
+    fn remaining_speech_bytes(&self, engine: SpeechEngine) -> Result<u64, String> {
+        if engine == SpeechEngine::AppleSpeech {
+            return Ok(0);
+        }
+        engine
+            .requirements()
+            .into_iter()
+            .try_fold(0, |sum, engine| {
+                Ok(sum + self.remaining_model_bytes(engine.manifest(), engine.label())?)
+            })
+    }
+    fn speakers_ready(&self, enabled: bool) -> bool {
+        let (supported, ready, _) = crate::diarization::availability(self);
+        !enabled || !supported || ready
     }
     fn model_ready_for(&self, engine: SpeechEngine) -> bool {
         if engine == SpeechEngine::AppleSpeech {
             return self.apple_speech.lock().unwrap().ready;
         }
+        engine
+            .requirements()
+            .into_iter()
+            .all(|engine| self.own_model_ready(engine))
+    }
+    fn own_model_ready(&self, engine: SpeechEngine) -> bool {
         let Ok(path) = self.model_dir_for(engine) else {
             return false;
         };
@@ -510,11 +565,235 @@ impl Processing {
                 })
             })
     }
+    // Selects an engine. A ready engine becomes active now. Without a working engine
+    // (first setup) the selection is only recorded; setup downloads it explicitly.
+    // Otherwise the current engine stays active while the target downloads, and
+    // `drive` switches once it is ready.
+    pub fn request_speech_engine(
+        self: &Arc<Self>,
+        engine: SpeechEngine,
+    ) -> Result<Progress, String> {
+        let speaker_enabled = self.speaker_enabled();
+        let variant = (engine == SpeechEngine::AppleSpeech)
+            .then(|| self.apple_speech_variant())
+            .flatten();
+        if engine == SpeechEngine::AppleSpeech {
+            *self.apple_speech.lock().unwrap() =
+                crate::apple_speech::probe(&self.resources, variant);
+        }
+        let working = self.speech_preference_error.lock().unwrap().is_none()
+            && self.model_ready_for(self.speech_engine());
+        // A deliberate move to another engine, with Qwen listed as recommended, answers the offer.
+        let answers_offer = engine != SpeechEngine::QwenKo && engine != self.speech_engine();
+        *self.speech_switch_error.lock().unwrap() = None;
+        if !working || (self.model_ready_for(engine) && self.speakers_ready(speaker_enabled)) {
+            self.set_speech_selection(engine, speaker_enabled, variant)?;
+            self.forget_speech_switch()?;
+            if answers_offer {
+                let _ = self.decide_speech_offer(crate::speech_switch::Decision::Declined);
+            }
+            return Ok(self.snapshot());
+        }
+        if !self.supported_for(engine) {
+            return Err("이 기기에 선택한 음성 인식 실행기가 준비되지 않았습니다.".into());
+        }
+        let pending = crate::speech_switch::Pending::new(engine, speaker_enabled, variant);
+        crate::speech_switch::save_pending(&self.root, &pending)?;
+        *self.speech_switch.lock().unwrap() = Some(pending);
+        if let Err(error) = self.prepare_meeting_models_with_id(
+            false,
+            None,
+            Some(engine),
+            Some(speaker_enabled),
+            variant,
+        ) {
+            self.forget_speech_switch()?;
+            return Err(error);
+        }
+        if answers_offer {
+            let _ = self.decide_speech_offer(crate::speech_switch::Decision::Declined);
+        }
+        Ok(self.snapshot())
+    }
+    // Drops a waiting switch and cancels its download. The active engine is unchanged.
+    pub fn cancel_speech_switch(&self) -> Result<Progress, String> {
+        *self.speech_switch_error.lock().unwrap() = None;
+        let target = self
+            .speech_switch
+            .lock()
+            .unwrap()
+            .map(|pending| pending.target);
+        self.forget_speech_switch()?;
+        if let Some(target) = target {
+            let downloads: Vec<String> = self
+                .records
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|record| {
+                    record.kind == "setup"
+                        && record.speech_engine == target
+                        && matches!(record.status, JobStatus::Queued | JobStatus::Running)
+                })
+                .map(|record| record.id.clone())
+                .collect();
+            for id in downloads {
+                self.cancel(&id)?;
+            }
+        }
+        Ok(self.snapshot())
+    }
+    // Records the existing-user offer decision first, so a failed start never leaves an
+    // unrecorded switch running. Accepting then starts the same flow as selecting.
+    pub fn respond_speech_offer(self: &Arc<Self>, accept: bool) -> Result<Progress, String> {
+        self.decide_speech_offer(if accept {
+            crate::speech_switch::Decision::Accepted
+        } else {
+            crate::speech_switch::Decision::Declined
+        })?;
+        if accept {
+            return self.request_speech_engine(SpeechEngine::QwenKo);
+        }
+        Ok(self.snapshot())
+    }
+    fn decide_speech_offer(&self, decision: crate::speech_switch::Decision) -> Result<(), String> {
+        let mut offers = self.speech_offers.lock().unwrap();
+        if offers.decided(crate::speech_switch::QWEN_OFFER) {
+            return Ok(());
+        }
+        crate::speech_switch::decide(
+            &self.root,
+            &mut offers,
+            crate::speech_switch::QWEN_OFFER,
+            decision,
+            now(),
+        )?;
+        drop(offers);
+        self.update(|_| ());
+        Ok(())
+    }
+    fn forget_speech_switch(&self) -> Result<(), String> {
+        let mut pending = self.speech_switch.lock().unwrap();
+        if pending.is_some() {
+            crate::speech_switch::clear_pending(&self.root)?;
+            *pending = None;
+            drop(pending);
+            self.update(|_| ());
+        }
+        Ok(())
+    }
+    // Called by `drive` with the `running` lock held and no job running.
+    fn reconcile_speech_switch(&self, running: &Option<Running>) {
+        let Some(pending) = *self.speech_switch.lock().unwrap() else {
+            return;
+        };
+        // A failed switch waits for the user instead of retrying on every poll.
+        if self.speech_switch_error.lock().unwrap().is_some()
+            || !self.idle_locked(running)
+            || !self.model_ready_for(pending.target)
+            || !self.speakers_ready(pending.speaker_enabled)
+        {
+            return;
+        }
+        if self.speech_preference_error.lock().unwrap().is_none()
+            && self.speech_engine() == pending.target
+        {
+            let _ = self.forget_speech_switch();
+            return;
+        }
+        match self.apply_speech_selection(
+            pending.target,
+            pending.speaker_enabled,
+            pending.apple_speech_variant,
+        ) {
+            Ok(()) => {
+                let _ = self.forget_speech_switch();
+            }
+            Err(error) => {
+                *self.speech_switch_error.lock().unwrap() = Some(error);
+                self.update(|_| ());
+            }
+        }
+    }
+    fn switch_view(&self) -> Option<crate::speech_switch::SwitchView> {
+        let pending = (*self.speech_switch.lock().unwrap())?;
+        let preparing = self.records.lock().unwrap().iter().any(|record| {
+            record.kind == "setup"
+                && record.speech_engine == pending.target
+                && matches!(
+                    record.status,
+                    JobStatus::Queued | JobStatus::Running | JobStatus::Cancelling
+                )
+        });
+        Some(crate::speech_switch::SwitchView {
+            target: pending.target,
+            preparing,
+            error: self.speech_switch_error.lock().unwrap().clone(),
+        })
+    }
+    // Offered only to setups that already worked when this process started, and only
+    // while nothing is running: snapshot runs on every progress tick.
+    fn offer_view(&self, progress: &Progress) -> Option<crate::speech_switch::OfferView> {
+        let engine = SpeechEngine::QwenKo;
+        let current = progress.speech_engine?;
+        if !self.offer_eligible.load(Ordering::Acquire)
+            || self
+                .speech_offers
+                .lock()
+                .unwrap()
+                .decided(crate::speech_switch::QWEN_OFFER)
+            || current == engine
+            || progress.speech_switch.is_some()
+            || progress
+                .jobs
+                .iter()
+                .any(|job| matches!(job.status.as_str(), "queued" | "running" | "cancelling"))
+            || !progress.model_ready
+            || !progress
+                .speech_choices
+                .iter()
+                .any(|choice| choice.id == engine && choice.supported)
+        {
+            return None;
+        }
+        let speakers = if self.speaker_enabled() && !progress.speaker_ready {
+            self.remaining_model_bytes(crate::diarization::MANIFEST, "Nemotron3")
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        Some(crate::speech_switch::OfferView {
+            id: crate::speech_switch::QWEN_OFFER,
+            engine,
+            title: engine.title(),
+            description: engine.description(),
+            download_bytes: self.remaining_speech_bytes(engine).unwrap_or(0) + speakers,
+            memory_warning: progress
+                .speech_choices
+                .iter()
+                .find(|choice| choice.id == engine)
+                .and_then(|choice| choice.memory_warning.clone()),
+        })
+    }
     pub fn set_speech_engine(&self, engine: SpeechEngine) -> Result<Progress, String> {
         self.set_speech_selection(engine, self.speaker_enabled(), None)
     }
     pub fn set_speaker_enabled(&self, enabled: bool) -> Result<Progress, String> {
         self.set_speech_selection(self.speech_engine(), enabled, self.apple_speech_variant())
+    }
+    // True when nothing could observe a selection change: no job, queue, capture or live child.
+    // The caller holds the `running` lock.
+    fn idle_locked(&self, running: &Option<Running>) -> bool {
+        !self.shutting_down.load(Ordering::Acquire)
+            && !self.recording.load(Ordering::Acquire)
+            && running.as_ref().is_none_or(|job| job.handle.is_finished())
+            && self.pending.lock().unwrap().is_empty()
+            && self
+                .live
+                .lock()
+                .unwrap()
+                .as_ref()
+                .is_none_or(|job| !job.running.load(Ordering::Acquire))
     }
     fn set_speech_selection(
         &self,
@@ -523,21 +802,20 @@ impl Processing {
         preferred_variant: Option<AppleVariant>,
     ) -> Result<Progress, String> {
         let running = self.running.lock().unwrap();
-        if self.shutting_down.load(Ordering::Acquire)
-            || self.recording.load(Ordering::Acquire)
-            || running
-                .as_ref()
-                .is_some_and(|job| !job.handle.is_finished())
-            || !self.pending.lock().unwrap().is_empty()
-            || self
-                .live
-                .lock()
-                .unwrap()
-                .as_ref()
-                .is_some_and(|job| job.running.load(Ordering::Acquire))
-        {
+        if !self.idle_locked(&running) {
             return Err("녹음과 처리 작업을 마친 뒤 음성 인식 모델을 변경해 주세요.".into());
         }
+        self.apply_speech_selection(engine, speaker_enabled, preferred_variant)?;
+        drop(running);
+        Ok(self.snapshot())
+    }
+    // Persists a selection. The caller has proven `idle_locked` under the `running` lock.
+    fn apply_speech_selection(
+        &self,
+        engine: SpeechEngine,
+        speaker_enabled: bool,
+        preferred_variant: Option<AppleVariant>,
+    ) -> Result<(), String> {
         if engine == SpeechEngine::AppleSpeech {
             *self.apple_speech.lock().unwrap() =
                 crate::apple_speech::probe(&self.resources, preferred_variant);
@@ -556,8 +834,7 @@ impl Processing {
         *self.speaker_enabled.lock().unwrap() = speaker_enabled;
         *self.speech_preference_error.lock().unwrap() = None;
         self.update(|_| ());
-        drop(running);
-        Ok(self.snapshot())
+        Ok(())
     }
     pub fn snapshot(&self) -> Progress {
         let mut progress = {
@@ -620,15 +897,12 @@ impl Processing {
                 id: engine,
                 label: engine.title(),
                 description: engine.description(),
-                model_bytes: Self::model_for(engine)
-                    .files
-                    .iter()
-                    .map(|file| file.bytes)
-                    .sum(),
+                model_bytes: Self::speech_bytes(engine),
                 ready: self.model_ready_for(engine),
                 supported: self.supported_for(engine),
                 recommended: false,
                 recommendation_reason: None,
+                memory_warning: None,
             })
             .collect();
         crate::speech_recommendation::apply(&mut progress.speech_choices);
@@ -651,6 +925,8 @@ impl Processing {
         progress.model_ready = progress
             .speech_engine
             .is_some_and(|engine| self.model_ready_for(engine));
+        progress.speech_switch = self.switch_view();
+        progress.speech_offer = self.offer_view(&progress);
         progress
     }
     pub(super) fn observe_memory(&self, state: crate::memory::MemoryState) -> bool {
@@ -803,6 +1079,7 @@ impl Processing {
                 .map_err(|_| "처리 작업의 종료를 확인하지 못했습니다.")?;
         }
         self.job_ready()?;
+        self.reconcile_speech_switch(&running);
         let mut queue = self.pending.lock().unwrap();
         let index = queue.iter().position(|job| {
             (!self.recording.load(Ordering::Acquire) || model_job(&job.record.kind))
@@ -1967,19 +2244,17 @@ impl Processing {
         {
             return Err("이 환경에서는 음성 인식과 회의 요약을 아직 사용할 수 없습니다.".into());
         }
-        let required = if engine == SpeechEngine::AppleSpeech {
-            0
-        } else {
-            self.remaining_model_bytes(engine.manifest(), engine.label())?
-        } + if speaker_enabled && crate::diarization::availability(self).0 {
-            self.remaining_model_bytes(crate::diarization::MANIFEST, "Nemotron3")?
-        } else {
-            0
-        } + if include_summary {
-            self.remaining_model_bytes(crate::summary::MANIFEST, "Gemma4-E4B")?
-        } else {
-            0
-        };
+        let required = self.remaining_speech_bytes(engine)?
+            + if speaker_enabled && crate::diarization::availability(self).0 {
+                self.remaining_model_bytes(crate::diarization::MANIFEST, "Nemotron3")?
+            } else {
+                0
+            }
+            + if include_summary {
+                self.remaining_model_bytes(crate::summary::MANIFEST, "Gemma4-E4B")?
+            } else {
+                0
+            };
         crate::storage_space::check(&self.root, required)?;
         self.start_scoped_with_engine(
             "setup",
@@ -1994,11 +2269,7 @@ impl Processing {
             apple_variant,
             move |this, cancel, path| {
                 let progress = this.snapshot();
-                let total = Self::model_for(engine)
-                    .files
-                    .iter()
-                    .map(|file| file.bytes)
-                    .sum::<u64>()
+                let total = Self::speech_bytes(engine)
                     + if speaker_enabled && crate::diarization::availability(&this).0 {
                         crate::diarization::model()
                             .files
@@ -2033,7 +2304,17 @@ impl Processing {
                     *this.apple_speech.lock().unwrap() = status;
                     0
                 } else {
-                    this.prepare_files(engine.manifest(), engine.label(), &cancel, 0, total)?
+                    let mut done = 0;
+                    for engine in engine.requirements() {
+                        done += this.prepare_files(
+                            engine.manifest(),
+                            engine.label(),
+                            &cancel,
+                            done,
+                            total,
+                        )?;
+                    }
+                    done
                 };
                 if speaker_enabled && crate::diarization::availability(&this).0 {
                     first += this.prepare_files(
@@ -2147,14 +2428,16 @@ impl Processing {
                 self.update(|p| {
                     p.model_stage = Some(
                         match label {
-                            MODEL_LABEL | "WhisperTurbo" | "WhisperLargeV3" => "speech",
+                            MODEL_LABEL | "WhisperTurbo" | "WhisperLargeV3" | "QwenKo" => "speech",
                             "Nemotron3" => "speakers",
                             _ => "summary",
                         }
                         .into(),
                     );
                     p.message = match label {
-                        MODEL_LABEL | "WhisperTurbo" | "WhisperLargeV3" => "음성 인식 모델 확인 중",
+                        MODEL_LABEL | "WhisperTurbo" | "WhisperLargeV3" | "QwenKo" => {
+                            "음성 인식 모델 확인 중"
+                        }
                         "Nemotron3" => "화자 구분 모델 확인 중",
                         _ => "요약 모델 확인 중",
                     }
@@ -2168,7 +2451,7 @@ impl Processing {
                 if !matches {
                     self.update(|p| {
                         p.message = match label {
-                            MODEL_LABEL | "WhisperTurbo" | "WhisperLargeV3" => {
+                            MODEL_LABEL | "WhisperTurbo" | "WhisperLargeV3" | "QwenKo" => {
                                 "음성 인식 모델 다운로드 중"
                             }
                             "Nemotron3" => "화자 구분 모델 다운로드 중",
@@ -2532,7 +2815,21 @@ impl Processing {
         Ok(())
     }
     pub fn import(self: &Arc<Self>, core: CoreHandle, source: PathBuf) -> Result<Progress, String> {
-        self.import_target(core, source, None)
+        self.import_target(core, source, None, None)
+    }
+
+    // A file dropped on the window: its cache copy is removed when the job is dropped.
+    pub(super) fn import_dropped(
+        self: &Arc<Self>,
+        core: CoreHandle,
+        upload: crate::drop_import::Finished,
+    ) -> Result<Progress, String> {
+        let cleanup = crate::drop_import::RemoveOnDrop(upload.directory);
+        if let Some(target) = &upload.target {
+            core.validate_draft_attachment(target.clone())
+                .map_err(message)?;
+        }
+        self.import_target(core, upload.path, upload.target, Some(cleanup))
     }
 
     pub fn import_into_draft(
@@ -2543,7 +2840,7 @@ impl Processing {
     ) -> Result<Progress, String> {
         core.validate_draft_attachment(target.clone())
             .map_err(message)?;
-        self.import_target(core, source, Some(target))
+        self.import_target(core, source, Some(target), None)
     }
 
     fn import_target(
@@ -2551,6 +2848,7 @@ impl Processing {
         core: CoreHandle,
         source: PathBuf,
         target: Option<nero_core::DraftAttachmentTarget>,
+        cleanup: Option<crate::drop_import::RemoveOnDrop>,
     ) -> Result<Progress, String> {
         self.start_scoped(
             "import",
@@ -2561,6 +2859,7 @@ impl Processing {
             None,
             None,
             move |this, cancel, path| {
+                let _cleanup = cleanup;
                 if let Some(target) = &target {
                     core.validate_draft_attachment(target.clone())
                         .map_err(message)?;
@@ -2786,6 +3085,10 @@ impl Processing {
                     .into();
                 });
                 let _finalization = this.wait_live_asr(&meeting_id, &session_id, &cancel)?;
+                // Qwen keeps the live audio and speaker stream but never commits the
+                // Nemotron preview text; its final transcript is recognized below.
+                let live_engine = engine.live_asr();
+                let live_model = Self::model_for(live_engine);
                 let live = match this.take_live(&meeting_id, &session_id) {
                     Some(live) => Some(live),
                     None => this.recover_live(&meeting_id, &session_id, &audio, &cancel)?,
@@ -2793,9 +3096,9 @@ impl Processing {
                 .filter(|live| {
                     serde_json::from_slice::<serde_json::Value>(&live.raw).is_ok_and(|value| {
                         engine != SpeechEngine::AppleSpeech
-                            && value["glossaryContext"] == glossary.evidence(engine)
-                            && value["model"] == model.repository
-                            && value["modelRevision"] == model.revision
+                            && value["glossaryContext"] == glossary.evidence(live_engine)
+                            && value["model"] == live_model.repository
+                            && value["modelRevision"] == live_model.revision
                     })
                 });
                 let prepared = match &live {
@@ -2815,8 +3118,27 @@ impl Processing {
                     p.message = "텍스트로 변환 중".into();
                 });
                 let raw = match &live {
-                    Some(live) => Ok(live.raw.clone()),
-                    None => match engine {
+                    Some(live) if engine == live_engine => Ok(live.raw.clone()),
+                    _ => match engine {
+                        SpeechEngine::QwenKo => {
+                            this.update(|p| {
+                                p.message =
+                                    "녹음 전체를 한국어 모델로 다시 전사하고 있습니다.".into();
+                            });
+                            crate::qwen_asr::recognize(
+                                &this.resources,
+                                prepared.path(),
+                                &path,
+                                &cancel,
+                                &directory,
+                            )
+                            .map_err(|message| {
+                                crate::summary_failure::Failure::new(
+                                    crate::summary_failure::FailureKind::Output,
+                                    message,
+                                )
+                            })
+                        }
                         SpeechEngine::AppleSpeech => crate::apple_speech::recognize(
                             &this,
                             prepared.path(),
@@ -2890,6 +3212,9 @@ impl Processing {
                         }
                         SpeechEngine::WhisperTurbo | SpeechEngine::WhisperLargeV3 => {
                             core.commit_whisper_transcript(&meeting_id, expected, raw)
+                        }
+                        SpeechEngine::QwenKo => {
+                            core.commit_qwen_transcript(&meeting_id, expected, raw)
                         }
                     },
                     |progress, source| {
@@ -3462,6 +3787,206 @@ mod tests {
         let root = temporary.path().canonicalize().unwrap();
         let process = Processing::new(root.clone(), root.clone());
         (temporary, process)
+    }
+
+    mod speech_switch_tests {
+        use super::*;
+
+        fn touch(path: &Path) {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, b"synthetic").unwrap();
+        }
+        // Executables exist and the platform is supported; no model is executed.
+        fn qwen_device() -> (tempfile::TempDir, Arc<Processing>) {
+            let (temporary, process) = setup();
+            *process.platform_supported_override.lock().unwrap() = Some(true);
+            touch(&process.worker("AudioPrepare"));
+            touch(&crate::qwen_asr::executable(&process.resources));
+            touch(&process.resources.join("native/crispasr/runtime.json"));
+            touch(&crate::asr::executable(&process, true));
+            (temporary, process)
+        }
+        // A sparse file of the pinned size plus the verified marker; hashes are not read.
+        fn ready(process: &Processing, engine: SpeechEngine) {
+            let directory = process.model_dir_for(engine).unwrap();
+            for file in Processing::model_for(engine).files {
+                fs::File::create(directory.join(&file.name))
+                    .unwrap()
+                    .set_len(file.bytes)
+                    .unwrap();
+            }
+            fs::write(directory.join("verified.json"), engine.manifest()).unwrap();
+        }
+
+        #[test]
+        fn a_waiting_switch_keeps_the_current_engine_until_its_models_are_ready() {
+            let (_temporary, process) = qwen_device();
+            if !process.supported_for(SpeechEngine::QwenKo) {
+                return; // Qwen runs only on Apple Silicon.
+            }
+            ready(&process, SpeechEngine::Nemotron);
+            process
+                .set_speech_selection(SpeechEngine::Nemotron, false, None)
+                .unwrap();
+            let pending = crate::speech_switch::Pending::new(SpeechEngine::QwenKo, false, None);
+            crate::speech_switch::save_pending(&process.root, &pending).unwrap();
+            *process.speech_switch.lock().unwrap() = Some(pending);
+            process.reconcile_speech_switch(&None);
+            assert_eq!(process.speech_engine(), SpeechEngine::Nemotron);
+            let waiting = process.snapshot();
+            assert!(waiting.model_ready);
+            assert_eq!(
+                waiting.speech_switch.as_ref().map(|view| view.target),
+                Some(SpeechEngine::QwenKo)
+            );
+            ready(&process, SpeechEngine::QwenKo);
+            process.recording.store(true, Ordering::Release);
+            process.reconcile_speech_switch(&None);
+            assert_eq!(process.speech_engine(), SpeechEngine::Nemotron);
+            process.recording.store(false, Ordering::Release);
+            process.reconcile_speech_switch(&None);
+            assert_eq!(process.speech_engine(), SpeechEngine::QwenKo);
+            assert_eq!(process.snapshot().speech_switch, None);
+            assert_eq!(
+                crate::speech_switch::load_pending(&process.root).unwrap(),
+                None
+            );
+            assert_eq!(
+                crate::speech_choice::load(&process.root).unwrap().engine,
+                SpeechEngine::QwenKo
+            );
+        }
+
+        #[test]
+        fn a_ready_target_switches_now_and_cancelling_keeps_the_active_engine() {
+            let (_temporary, process) = qwen_device();
+            if !process.supported_for(SpeechEngine::QwenKo) {
+                return;
+            }
+            ready(&process, SpeechEngine::Nemotron);
+            ready(&process, SpeechEngine::QwenKo);
+            process
+                .set_speech_selection(SpeechEngine::Nemotron, false, None)
+                .unwrap();
+            let pending =
+                crate::speech_switch::Pending::new(SpeechEngine::WhisperTurbo, false, None);
+            crate::speech_switch::save_pending(&process.root, &pending).unwrap();
+            *process.speech_switch.lock().unwrap() = Some(pending);
+            process.cancel_speech_switch().unwrap();
+            assert_eq!(process.speech_engine(), SpeechEngine::Nemotron);
+            assert_eq!(
+                crate::speech_switch::load_pending(&process.root).unwrap(),
+                None
+            );
+            let switched = process.request_speech_engine(SpeechEngine::QwenKo).unwrap();
+            assert_eq!(switched.speech_engine, Some(SpeechEngine::QwenKo));
+            assert_eq!(switched.speech_switch, None);
+        }
+
+        #[test]
+        fn first_setup_only_records_the_choice_and_broken_offer_files_block_nothing() {
+            let (_temporary, process) = qwen_device();
+            if !process.supported_for(SpeechEngine::QwenKo) {
+                return;
+            }
+            // Nothing works yet: the choice is recorded and setup downloads it explicitly.
+            let chosen = process.request_speech_engine(SpeechEngine::QwenKo).unwrap();
+            assert_eq!(chosen.speech_engine, Some(SpeechEngine::QwenKo));
+            assert_eq!(chosen.speech_switch, None);
+            assert!(process.pending.lock().unwrap().is_empty());
+            assert!(process.running.lock().unwrap().is_none());
+            ready(&process, SpeechEngine::Nemotron);
+            process
+                .set_speech_selection(SpeechEngine::Nemotron, false, None)
+                .unwrap();
+            let offers = process.root.join("preferences/speech-offers.json");
+            fs::write(&offers, b"not json").unwrap();
+            fs::write(
+                process.root.join("preferences/speech-switch.json"),
+                b"not json",
+            )
+            .unwrap();
+            let reopened = Processing::new(process.root.clone(), process.resources.clone());
+            *reopened.platform_supported_override.lock().unwrap() = Some(true);
+            let progress = reopened.snapshot();
+            assert!(progress.supported);
+            assert!(progress.model_ready);
+            assert_eq!(progress.speech_offer, None);
+            assert_eq!(progress.speech_switch, None);
+            reopened.respond_speech_offer(false).unwrap();
+            assert_eq!(fs::read(&offers).unwrap(), b"not json");
+        }
+
+        #[test]
+        fn a_failed_choice_keeps_the_offer_and_a_failed_switch_waits_for_the_user() {
+            let (_temporary, process) = qwen_device();
+            if !process.supported_for(SpeechEngine::QwenKo) {
+                return;
+            }
+            ready(&process, SpeechEngine::Nemotron);
+            ready(&process, SpeechEngine::WhisperTurbo);
+            process
+                .set_speech_selection(SpeechEngine::Nemotron, false, None)
+                .unwrap();
+            let process = Processing::new(process.root.clone(), process.resources.clone());
+            *process.platform_supported_override.lock().unwrap() = Some(true);
+            process.recording.store(true, Ordering::Release);
+            assert!(process
+                .request_speech_engine(SpeechEngine::WhisperTurbo)
+                .is_err());
+            process.recording.store(false, Ordering::Release);
+            assert!(process.snapshot().speech_offer.is_some());
+            ready(&process, SpeechEngine::QwenKo);
+            let pending = crate::speech_switch::Pending::new(SpeechEngine::QwenKo, false, None);
+            crate::speech_switch::save_pending(&process.root, &pending).unwrap();
+            *process.speech_switch.lock().unwrap() = Some(pending);
+            let speech = process.root.join("preferences/speech.json");
+            fs::remove_file(&speech).unwrap();
+            fs::create_dir(&speech).unwrap();
+            process.reconcile_speech_switch(&None);
+            let failed = process.snapshot().speech_switch.unwrap();
+            assert!(failed.error.is_some());
+            let revision = process.snapshot().revision;
+            process.reconcile_speech_switch(&None);
+            assert_eq!(
+                process.snapshot().revision,
+                revision,
+                "no retry on every poll"
+            );
+            process.cancel_speech_switch().unwrap();
+            assert_eq!(process.snapshot().speech_switch, None);
+            assert_eq!(process.speech_engine(), SpeechEngine::Nemotron);
+        }
+
+        #[test]
+        fn existing_users_see_the_offer_once_and_a_decline_is_remembered() {
+            let (_temporary, process) = qwen_device();
+            if !process.supported_for(SpeechEngine::QwenKo) {
+                return;
+            }
+            assert_eq!(process.snapshot().speech_offer, None); // nothing set up yet
+            ready(&process, SpeechEngine::Nemotron);
+            process
+                .set_speech_selection(SpeechEngine::Nemotron, false, None)
+                .unwrap();
+            // A setup finished in this run is not an existing user yet.
+            assert_eq!(process.snapshot().speech_offer, None);
+            let process = Processing::new(process.root.clone(), process.resources.clone());
+            *process.platform_supported_override.lock().unwrap() = Some(true);
+            let offer = process.snapshot().speech_offer.unwrap();
+            assert_eq!(offer.engine, SpeechEngine::QwenKo);
+            let manifest = Processing::model_for(SpeechEngine::QwenKo);
+            assert_eq!(
+                offer.download_bytes,
+                manifest.files.iter().map(|file| file.bytes).sum::<u64>()
+            );
+            process.respond_speech_offer(false).unwrap();
+            assert_eq!(process.snapshot().speech_offer, None);
+            assert_eq!(process.speech_engine(), SpeechEngine::Nemotron);
+            let reopened = Processing::new(process.root.clone(), process.resources.clone());
+            *reopened.platform_supported_override.lock().unwrap() = Some(true);
+            assert_eq!(reopened.snapshot().speech_offer, None);
+        }
     }
 
     #[test]

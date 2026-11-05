@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { markdownSource as buildMarkdownSource } from '../scripts/build-markdown.mjs';
 import test from 'node:test';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
@@ -6,7 +7,7 @@ import { build } from 'esbuild';
 import { Window } from 'happy-dom';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const html = await readFile(new URL('../src/index.html', import.meta.url), 'utf8');
-const shared = await readFile(new URL('../../../design-system/components.js', import.meta.url), 'utf8');
+const shared = await buildMarkdownSource() + '\n' + await readFile(new URL('../../../design-system/components.js', import.meta.url), 'utf8');
 const bundle = await build({ entryPoints: [root + 'tests/fixtures/ai-chat-fixture.jsx'], bundle: true, write: false, format: 'iife', globalName: 'AiFixture', jsx: 'automatic', nodePaths: [root + 'node_modules'], define: { 'process.env.NODE_ENV': '"production"' } });
 const wait = async predicate => { for (let i = 0; i < 120; i++) { if (predicate()) return; await new Promise(resolve => setTimeout(resolve, 5)); } assert.fail('AI UI did not settle'); };
 async function fixture(t, options = {}) {
@@ -62,7 +63,7 @@ for (const [runtime, label] of [['missing', '설치하고 로그인'], ['present
 
 test('Escape closes the focused AI popover without restoring focus to an unrelated action menu', async t => {
   const app = await fixture(t);
-  const details = app.node('meeting-detail').querySelector('.transcript-maintenance');
+  const details = app.node('meeting-detail').querySelector('[data-meeting-menu]');
   const summary = details.querySelector('summary');
   summary.dispatchEvent(new app.window.KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
   assert.equal(details.open, true);
@@ -213,18 +214,17 @@ test('settings distinguish subscription sign-in from external app and reference 
   assert.equal([...notion.querySelectorAll('button')].some(node => node.textContent === '로그아웃'), false);
 });
 
-test('saved account loads models only after choosing its provider', async t => {
+test('saved account loads models when the model menu opens, without a refresh button', async t => {
   const app = await fixture(t, { scenario: 'unknown' });
   app.ui.setSettingsActive(true); await wait(() => !app.ui.flow.getSnapshot().accountsBusy);
   assert.equal(app.calls.filter(call => call[0] === 'models').length, 0);
   const trigger = app.button('AI 모델 선택');
   assert.match(trigger.textContent, /모델 선택/);
   trigger.click();
-  await wait(() => app.window.document.querySelector('.ai-model-popover'));
-  assert.equal(app.calls.filter(call => call[0] === 'models').length, 0);
-  app.window.document.querySelector('.ai-model-popover section button').click();
   await wait(() => app.window.document.querySelector('.ai-model-popover')?.textContent.includes('예시 모델'));
-  assert.equal(app.calls.filter(call => call[0] === 'models').length, 1);
+  assert.equal(app.window.document.querySelector('.ai-model-popover').textContent.includes('새로고침'), false);
+  const loaded = app.calls.filter(call => call[0] === 'models').length;
+  assert.ok(loaded >= 1);
   [...app.window.document.querySelectorAll('.ai-model-popover button')].find(node => node.textContent.trim() === '예시 모델').click();
   assert.equal(app.node('ai-chat-inspector').textContent.includes('AI 계정에 로그인해 주세요.'), false);
   app.ui.flow.edit('Question');
@@ -407,15 +407,17 @@ test('reopening model picker never probes models', async t => {
 test('Claude reconnect clears cached model without probing when the picker opens', async t => {
   const app = await fixture(t, { scenario: 'claude-runtime-present', prepareModels: false });
   await app.ui.flow.refreshModelGroup('claude'); app.ui.flow.chooseModel('claude', 'claude-code', 'example-model');
-  const before = app.calls.filter(call => call[0] === 'models').length;
+  const claudeModels = () => app.calls.filter(call => call[0] === 'models' && call[1] === 'claude-code').length;
+  const before = claudeModels();
   void app.ui.flow.connect('claude');
   await wait(() => app.ui.flow.getSnapshot().connectionPhases.claude === 'waiting');
   assert.equal(app.ui.flow.getSnapshot().modelId, null);
   app.button('AI 모델 선택').click(); await wait(() => app.window.document.querySelector('.ai-model-popover'));
   const group = [...app.window.document.querySelectorAll('.ai-model-popover section')].find(item => item.textContent.includes('Claude'));
-  assert.match(group.textContent, /새로고침하여 모델을 불러오세요/);
-  assert.equal(app.calls.filter(call => call[0] === 'models').length, before);
-  group.querySelector('button').click();
+  assert.match(group.textContent, /연결을 마치면 모델 목록을 불러옵니다/);
+  assert.equal(group.textContent.includes('새로고침'), false);
+  assert.equal(claudeModels(), before);
+  app.completeLogin();
   await wait(() => group.textContent.includes('예시 모델'));
   [...group.querySelectorAll('button')].find(item => item.textContent.trim() === '예시 모델').click();
   await wait(() => app.ui.flow.getSnapshot().modelId === 'example-model');

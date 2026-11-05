@@ -38,6 +38,9 @@ pub const HELP: &str = "Nero 로컬 CLI
   templates reset ID --expected-revision HASH
   jobs list [--meeting-id ID] [--offset N] [--limit N]
   jobs cancel ID --expected-version HASH
+  meetings import ABSOLUTE_AUDIO_PATH [--meeting-id ID --expected-version HASH]
+  speech set ENGINE [--acknowledge-memory-warning]
+  speech cancel-switch --target ENGINE
   update status|check|download|install
   doctor
   mcp
@@ -79,6 +82,13 @@ accepted:true는 설치 완료가 아니며 다시 실행한 Nero의 버전/상�
 attendee-promote 파일은 attendeeId/name/expectedCatalogVersion 세 문자열입니다.
 요약 import 파일은 summary context의 context, 생성한 text, producer를 포함합니다.
 원문/메모/참석자/기존 요약이 바뀌면 저장하지 않습니다. 요약 저장은 실행 중인 Nero에 요청합니다.
+meetings import는 실행 중인 Nero가 원본을 복사해 가져오며 원본 파일을 옮기거나 바꾸지 않습니다.
+--meeting-id는 음성이 없는 빈 회의에만 붙이며 meetings get의 editVersion이 필요합니다.
+가져오기 작업 ID를 반환하며 jobs list로 진행을 확인합니다. 녹음 중이거나 음성 인식 준비 전에는 거부합니다.
+doctor의 speech는 현재 음성 인식 엔진, 화자 구분 설정, 선택지와 대기 중인 전환을 보여 줍니다.
+speech set은 준비된 엔진이면 바로 전환하고, 아니면 현재 엔진을 유지한 채 수 GB의 모델을
+내려받은 뒤 전환할 수 있습니다. 메모리 경고가 있으면 사용자 확인 후에만
+--acknowledge-memory-warning을 사용합니다. speech cancel-switch는 대기 중인 전환과 다운로드를 취소합니다.
 ";
 
 #[derive(Debug, PartialEq)]
@@ -159,7 +169,7 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Options, QueryError
             params: json!({}),
         },
         ["meetings" | "transcript" | "summary" | "folders" | "people" | "templates" | "jobs"
-        | "update", ..]
+        | "update" | "speech", ..]
             if strings
                 .iter()
                 .any(|value| matches!(*value, "--help" | "-h")) =>
@@ -171,6 +181,8 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Options, QueryError
             params: json!({"action":action}),
         },
         ["jobs", command, remaining @ ..] => parse_jobs(command, remaining)?,
+        ["meetings", "import", remaining @ ..] => parse_import(remaining)?,
+        ["speech", command, remaining @ ..] => parse_speech(command, remaining)?,
         ["templates", command, remaining @ ..] => parse_templates(command, remaining)?,
         ["summary", "import", remaining @ ..] => parse_summary_import(remaining)?,
         ["people", "update", remaining @ ..] => parse_people_mutation("people_update", remaining)?,
@@ -230,6 +242,84 @@ fn parse_jobs(command: &str, remaining: &[&str]) -> Result<Action, QueryError> {
     }
     let params = Value::Object(params);
     nero_core::agent_control::JobRequest::parse(method, params.clone())
+        .map_err(|_| QueryError::invalid())?;
+    Ok(Action::Request { method, params })
+}
+
+fn parse_import(remaining: &[&str]) -> Result<Action, QueryError> {
+    let (path, remaining) = remaining.split_first().ok_or_else(QueryError::invalid)?;
+    if path.starts_with("--") {
+        return Err(QueryError::invalid());
+    }
+    let mut params = Map::new();
+    params.insert("path".into(), json!(path));
+    let mut args = remaining.iter().copied();
+    while let Some(argument) = args.next() {
+        let (flag, inline) = argument
+            .split_once('=')
+            .map_or((argument, None), |(flag, value)| (flag, Some(value)));
+        let value = inline
+            .or_else(|| args.next())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(QueryError::invalid)?;
+        let key = match flag {
+            "--meeting-id" => "meetingId",
+            "--expected-version" => "expectedVersion",
+            _ => return Err(QueryError::invalid()),
+        };
+        if params.insert(key.into(), json!(value)).is_some() {
+            return Err(QueryError::invalid());
+        }
+    }
+    let params = Value::Object(params);
+    nero_core::agent_control::ProcessingRequest::parse("meeting_import", params.clone())
+        .map_err(|_| QueryError::invalid())?;
+    Ok(Action::Request {
+        method: "meeting_import",
+        params,
+    })
+}
+
+fn parse_speech(command: &str, remaining: &[&str]) -> Result<Action, QueryError> {
+    let mut params = Map::new();
+    let mut args = remaining.iter().copied();
+    let method = match command {
+        "set" => {
+            let engine = args
+                .next()
+                .filter(|value| !value.starts_with("--"))
+                .ok_or_else(QueryError::invalid)?;
+            params.insert("engine".into(), json!(engine));
+            for argument in args {
+                if argument != "--acknowledge-memory-warning"
+                    || params
+                        .insert("acknowledgeMemoryWarning".into(), json!(true))
+                        .is_some()
+                {
+                    return Err(QueryError::invalid());
+                }
+            }
+            "speech_engine_set"
+        }
+        "cancel-switch" => {
+            while let Some(argument) = args.next() {
+                let (flag, inline) = argument
+                    .split_once('=')
+                    .map_or((argument, None), |(flag, value)| (flag, Some(value)));
+                let value = inline
+                    .or_else(|| args.next())
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(QueryError::invalid)?;
+                if flag != "--target" || params.insert("target".into(), json!(value)).is_some() {
+                    return Err(QueryError::invalid());
+                }
+            }
+            "speech_switch_cancel"
+        }
+        _ => return Err(QueryError::invalid()),
+    };
+    let params = Value::Object(params);
+    nero_core::agent_control::ProcessingRequest::parse(method, params.clone())
         .map_err(|_| QueryError::invalid())?;
     Ok(Action::Request { method, params })
 }
@@ -974,6 +1064,7 @@ fn render(method: &str, value: &Value, timezone: &TimeZone) -> String {
                 output.push_str("앱 동봉 연동: 확인 불가(앱 실행/동봉 정보 확인 필요)\n");
             }
             output.push_str("공개 연동 최신 버전: 확인 안 됨\n");
+            output.push_str(&speech_lines(&value["speech"]));
             output.push_str("조회: 읽기 전용\n템플릿 관리: 가능\n회의 수정: Nero 실행 필요\n");
             output.push_str(if value["rootExists"] == true {
                 "데이터 폴더: 있음\n"
@@ -1009,6 +1100,53 @@ fn render(method: &str, value: &Value, timezone: &TimeZone) -> String {
         } else {
             output.push_str("요청한 조회 범위의 끝입니다.\n");
         }
+    }
+    output
+}
+
+fn speech_lines(speech: &Value) -> String {
+    if speech["state"] != "running" {
+        return if speech["state"] == "unsupported" {
+            "음성 인식: 확인 불가(실행 중인 Nero가 지원하지 않음)\n".into()
+        } else {
+            "음성 인식: 확인 불가(Nero 실행 필요)\n".into()
+        };
+    }
+    let title = |id: &Value| {
+        speech["choices"]
+            .as_array()
+            .and_then(|choices| choices.iter().find(|choice| &choice["id"] == id))
+            .map(|choice| text(&choice["title"]))
+            .unwrap_or_else(|| text(id))
+    };
+    let mut output = if speech["engine"].is_null() {
+        "음성 인식: 설정 확인 필요\n".to_owned()
+    } else {
+        format!(
+            "음성 인식: {} ({})\n",
+            title(&speech["engine"]),
+            if speech["ready"] == true {
+                "준비됨"
+            } else {
+                "준비 필요"
+            }
+        )
+    };
+    output.push_str(if speech["speakerEnabled"] == true {
+        "화자 구분: 사용\n"
+    } else {
+        "화자 구분: 사용 안 함\n"
+    });
+    if speech["switch"].is_object() {
+        output.push_str(&format!(
+            "대기 중인 전환: {} ({})\n",
+            title(&speech["switch"]["target"]),
+            if speech["switch"]["preparing"] == true {
+                "다운로드 중"
+            } else {
+                "다운로드 대기"
+            }
+        ));
     }
     output
 }
@@ -1081,6 +1219,115 @@ mod tests {
             &version
         ])
         .is_err());
+    }
+
+    #[test]
+    fn import_and_speech_commands_require_absolute_paths_and_explicit_targets() {
+        let id = "00000000-0000-0000-0000-000000000001";
+        let version = format!("sha256:{}", "a".repeat(64));
+        let audio = std::env::temp_dir().join("synthetic.m4a");
+        let audio = audio.to_str().unwrap();
+        assert_eq!(
+            args(&["meetings", "import", audio, "--json"])
+                .unwrap()
+                .action,
+            Action::Request {
+                method: "meeting_import",
+                params: json!({"path":audio})
+            }
+        );
+        assert_eq!(
+            args(&[
+                "meetings",
+                "import",
+                audio,
+                "--meeting-id",
+                id,
+                "--expected-version",
+                &version
+            ])
+            .unwrap()
+            .action,
+            Action::Request {
+                method: "meeting_import",
+                params: json!({"path":audio,"meetingId":id,"expectedVersion":version})
+            }
+        );
+        assert_eq!(
+            args(&["speech", "set", "qwenKo", "--acknowledge-memory-warning"])
+                .unwrap()
+                .action,
+            Action::Request {
+                method: "speech_engine_set",
+                params: json!({"engine":"qwenKo","acknowledgeMemoryWarning":true})
+            }
+        );
+        assert_eq!(
+            args(&["speech", "cancel-switch", "--target=qwenKo"])
+                .unwrap()
+                .action,
+            Action::Request {
+                method: "speech_switch_cancel",
+                params: json!({"target":"qwenKo"})
+            }
+        );
+        assert_eq!(
+            args(&["speech", "set", "--help"]).unwrap().action,
+            Action::Help
+        );
+        for arguments in [
+            vec!["meetings", "import"],
+            vec!["meetings", "import", "relative.m4a"],
+            vec!["meetings", "import", audio, "--meeting-id", id],
+            vec!["meetings", "import", audio, "--expected-version", &version],
+            vec!["meetings", "import", audio, "--transcribe"],
+            vec![
+                "meetings",
+                "import",
+                audio,
+                "--meeting-id",
+                id,
+                "--meeting-id",
+                id,
+                "--expected-version",
+                &version,
+            ],
+            vec!["speech", "set"],
+            vec!["speech", "set", "qwenKo", "--download"],
+            vec![
+                "speech",
+                "set",
+                "qwenKo",
+                "--acknowledge-memory-warning",
+                "--acknowledge-memory-warning",
+            ],
+            vec!["speech", "cancel-switch"],
+            vec!["speech", "cancel-switch", "--target", "../x"],
+            vec!["speech", "status"],
+        ] {
+            assert!(args(&arguments).is_err(), "{arguments:?}");
+        }
+    }
+
+    #[test]
+    fn human_status_names_the_speech_engine_and_waiting_switch() {
+        let output = render(
+            "status",
+            &json!({"versions":{"running":{"integrationVersion":"test"}},"rootExists":true,
+                "speech":{"state":"running","engine":"nemotron","ready":true,"speakerEnabled":false,
+                    "choices":[{"id":"nemotron","title":"Nemotron"},{"id":"qwenKo","title":"Qwen"}],
+                    "switch":{"target":"qwenKo","preparing":true,"jobId":null}}}),
+            &TimeZone::UTC,
+        );
+        assert!(output.contains("음성 인식: Nemotron (준비됨)"));
+        assert!(output.contains("화자 구분: 사용 안 함"));
+        assert!(output.contains("대기 중인 전환: Qwen (다운로드 중)"));
+        let stopped = render(
+            "status",
+            &json!({"versions":{},"speech":{"state":"unavailable","reason":"app_not_running"}}),
+            &TimeZone::UTC,
+        );
+        assert!(stopped.contains("음성 인식: 확인 불가(Nero 실행 필요)"));
     }
 
     #[test]

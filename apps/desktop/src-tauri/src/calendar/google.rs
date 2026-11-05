@@ -31,6 +31,9 @@ pub struct TokenResponse {
 #[derive(Debug)]
 pub enum Failure {
     Reconnect,
+    // An API call rejected the access token. The refresh token decides whether the
+    // connection is really gone, so this alone never asks the user to reconnect.
+    Unauthorized,
     Gone,
     Other(String),
 }
@@ -40,13 +43,16 @@ impl Failure {
             Self::Reconnect => {
                 "Google 연결이 만료되었거나 권한이 해제되었습니다. 다시 연결해 주세요.".into()
             }
-            Self::Gone => "캘린더 변경 정보를 다시 확인해야 합니다. 새로고침해 주세요.".into(),
+            Self::Unauthorized => {
+                "Google 캘린더 연결을 다시 확인하고 있습니다. 잠시 후 다시 시도해 주세요.".into()
+            }
+            Self::Gone => "캘린더 변경 정보를 다시 확인해야 합니다. 다시 시도해 주세요.".into(),
             Self::Other(message) => message.clone(),
         }
     }
 }
 fn invalid() -> Failure {
-    Failure::Other("Google 캘린더 응답을 확인하지 못했습니다. 다시 새로고침해 주세요.".into())
+    Failure::Other("Google 캘린더 응답을 확인하지 못했습니다. 다시 시도해 주세요.".into())
 }
 
 async fn read_json(mut response: reqwest::Response, maximum: usize) -> Result<Value, Failure> {
@@ -68,7 +74,7 @@ async fn read_json(mut response: reqwest::Response, maximum: usize) -> Result<Va
 
 async fn response_json(response: reqwest::Response, maximum: usize) -> Result<Value, Failure> {
     match response.status() {
-        StatusCode::UNAUTHORIZED => return Err(Failure::Reconnect),
+        StatusCode::UNAUTHORIZED => return Err(Failure::Unauthorized),
         StatusCode::GONE => return Err(Failure::Gone),
         value if !value.is_success() => {
             return Err(Failure::Other(

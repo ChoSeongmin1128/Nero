@@ -17,10 +17,10 @@ export function recordingStatus(state) {
   return ({ draft: '녹음 전', idle: '녹음 전', recording: '녹음 중', paused: '일시정지', finalizing: '저장 중', interrupted: '녹음 중단', completed: '녹음 완료' })[state] || '녹음 전';
 }
 
-export function statusMarkup(state) {
+export function statusMarkup(state, { imported = false } = {}) {
   if (state === 'interrupted') return ui.badge(recordingStatus(state), true);
   const phase = ['recording', 'paused'].includes(state) ? state : ['completed', 'finalizing'].includes(state) ? 'finished' : 'ready';
-  return ui.status(phase, recordingStatus(state));
+  return ui.status(phase, state === 'completed' && imported ? '가져온 음성' : recordingStatus(state));
 }
 
 export function sessionControls(session, busy = false) {

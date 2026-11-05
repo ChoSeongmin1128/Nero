@@ -216,7 +216,8 @@ packaged source revision; an unshipped source change is not an installed update.
 
 - Local CLI/MCP queries read meetings, folders, notes, corrected voice records and
   summaries without initializing capture, models or recovery. Explicit meeting edits
-  use the running app's writer; template edits share the local catalog with settings.
+  use the running app's writer; explicit audio imports and speech engine changes use
+  its processing service; template edits share the local catalog with settings.
   Revision checks protect both. Deletes use recoverable trash. Tauri builds bundle the
   native tool; see [local agent integration](../../docs/local-agent.md).
 

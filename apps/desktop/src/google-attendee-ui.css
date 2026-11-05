@@ -1,8 +1,11 @@
 .google-attendee-picker { gap: 12px; }
 .google-attendee-picker p { margin: 0; }
-.google-attendee-results { display: grid; gap: 16px; }
-.google-attendee-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(180px, 1fr); gap: 8px; align-items: center; padding: 8px 12px; }
+.google-attendee-results { display: grid; gap: 12px; }
+.google-attendee-row { display: grid; grid-template-columns: auto minmax(0, 1fr) minmax(160px, 0.8fr); gap: 10px; align-items: center; padding: 8px 12px; }
 .google-attendee-row + .google-attendee-row { border-top: 1px solid var(--border); }
-.google-attendee-choice { min-width: 0; display: flex; align-items: center; gap: 8px; }
-.google-attendee-choice > button:last-child { flex: none; }
-@media (max-width: 460px) { .google-attendee-row { grid-template-columns: minmax(0, 1fr); } }
+.google-attendee-check { margin: 0; }
+.google-attendee-identity { min-width: 0; display: grid; gap: 2px; }
+.google-attendee-identity > .text-input { width: 100%; }
+.google-attendee-hint { color: var(--warning-text); }
+.google-attendee-actions { justify-content: flex-end; }
+@media (max-width: 460px) { .google-attendee-row { grid-template-columns: auto minmax(0, 1fr); } .google-attendee-row > :last-child { grid-column: 2; } }

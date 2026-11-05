@@ -51,18 +51,20 @@
   function minutes(sections) {
     return `<article class="minutes-document">${sections.map(({ title, text, emptyText = "작성된 내용이 없습니다." }) => `<section><h3>${escape(title)}</h3><div class="minutes-text">${String(text || "").trim() ? escape(text) : `<span class="muted">${escape(emptyText)}</span>`}</div></section>`).join("")}</article>`;
   }
-  function summaryDocument(value, { searchQuery = "" } = {}) {
+  function summaryDocument(value, { searchQuery = "", streaming = false } = {}) {
+    const parser = root.NeroMarkdown;
+    if (!parser?.parse) throw new Error("Markdown parser is not loaded.");
     const headings = new Set(["회의 요약", "요약", "주요 내용", "논의 내용", "논의 사항", "결정 사항", "결정사항", "합의 사항", "다음 작업", "후속 작업", "할 일", "할일", "액션 아이템", "미결 사항", "확인 필요", "참고 사항"]);
     const term = String(searchQuery ?? "").trim();
     const pattern = term ? new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "giu") : null;
     let searchGroup = 0;
-    const references = text => {
+    const references = (text, defined = new Set()) => {
       const tokens = [];
       let cursor = 0;
       // Keep the saved one-based references. Never resolve them against current rows.
       for (const match of text.matchAll(/\[([0-9, \t-]+)\]/g)) {
         const before = text.slice(0, match.index), after = text.slice(match.index + match[0].length);
-        if (/(?:\\|!)$/.test(before) || /^(?:\(|\[[^0-9])/.test(after)) continue;
+        if (/(?:\\|!)$/.test(before) || /^(?:\(|\[[^0-9])/.test(after) || defined.has(match[1].replace(/\s+/g, " ").trim())) continue;
         const refs = [];
         let valid = true;
         for (const part of match[1].split(',')) {
@@ -107,6 +109,8 @@
         return html + escape(text.slice(cursor - start));
       };
       const render = node => {
+        if (node.br) { textHTML(node.text); return "<br>"; }
+        if (node.href) return `<a class="summary-link" href="${escape(node.href)}" title="${escape(node.href)}" draggable="false" data-summary-link="">${node.children.map(render).join("")}</a>`;
         if (node.children) return `<${node.tag}>${node.children.map(render).join("")}</${node.tag}>`;
         const start = offset;
         const html = textHTML(node.text);
@@ -119,50 +123,120 @@
       };
       return tokens.map(render).join("");
     };
-    const inline = text => {
+    // Citations are recognized on the raw text, where escapes and code are still visible,
+    // and carried through the parser as private-use placeholders.
+    // A per-render nonce keeps model text, even entity-encoded, from forging a placeholder.
+    const citations = [], nonce = Math.random().toString(36).slice(2, 10).padEnd(8, "0");
+    const placeholder = new RegExp(`\uE000${nonce}([0-9a-z]+)\uE001`, "g");
+    const protect = text => {
+      // A numeric label with a definition is a link reference, not a citation.
+      const defined = new Set([...text.matchAll(/^[ \t]{0,3}\[([0-9, \t-]+)\]:/gm)].map(match => match[1].replace(/\s+/g, " ").trim()));
+      let out = "";
+      for (const token of references(text, defined)) {
+        if (!token.references) { out += token.text; continue; }
+        // GFM autolinks run until whitespace, so a citation right after a URL would join it.
+        if (/(?:https?:\/\/|www\.)\S*$/i.test(out)) out += " ";
+        out += `\uE000${nonce}${(citations.push(token) - 1).toString(36)}\uE001`;
+      }
+      return out;
+    };
+    const restore = text => String(text ?? "").replace(placeholder, (_, index) => citations[parseInt(index, 36)]?.text ?? "");
+    const textTokens = text => {
       const tokens = [];
       let cursor = 0;
-      for (const match of text.matchAll(/(\*\*|__)(.+?)\1|`([^`]+)`/g)) {
-        tokens.push(...references(text.slice(cursor, match.index)));
-        tokens.push(match[3] == null ? { tag: "strong", children: references(match[2]) } : { tag: "code", children: [{ text: match[3] }] });
+      for (const match of String(text ?? "").matchAll(placeholder)) {
+        tokens.push(...lines(text.slice(cursor, match.index)));
+        const citation = citations[parseInt(match[1], 36)];
+        if (citation) tokens.push({ text: citation.text, references: citation.references });
         cursor = match.index + match[0].length;
       }
-      tokens.push(...references(text.slice(cursor)));
-      return renderTokens(tokens);
+      tokens.push(...lines(String(text ?? "").slice(cursor)));
+      return tokens;
     };
-    const blocks = [], paragraph = [];
-    let list = null, code = null;
-    const flushParagraph = () => { if (paragraph.length) blocks.push(`<p>${paragraph.splice(0).map(inline).join("<br>")}</p>`); };
-    const flushList = () => { if (list) { blocks.push(`<${list.tag}${list.start == null ? "" : ` start="${list.start}"`}>${list.items.map(item => `<li>${item.map(inline).join("<br>")}</li>`).join("")}</${list.tag}>`); list = null; } };
-    for (const line of String(value ?? "").replace(/\r\n?/g, "\n").split("\n")) {
-      const trimmed = line.trim();
-      if (/^```[^`]*$/.test(trimmed)) {
-        flushParagraph(); flushList();
-        if (code) { blocks.push(`<pre><code>${renderTokens([{ text: code.join("\n") }])}</code></pre>`); code = null; } else code = [];
-        continue;
+    const lines = text => text.split("\n").flatMap((line, index) => index ? [{ text: "\n", br: true }, { text: line }] : [{ text: line }]).filter(token => token.br || token.text);
+    const plain = tokens => tokens.map(token => token.children ? { ...token, children: plain(token.children) } : { text: token.text, br: token.br });
+    const safeLink = url => { try { const parsed = new URL(restore(url)); return parsed.protocol === "https:" && !parsed.username && !parsed.password ? parsed.href : ""; } catch { return ""; } };
+    const definitions = new Map();
+    const inline = nodes => (nodes || []).flatMap(node => {
+      switch (node.type) {
+        case "text": return textTokens(node.value);
+        case "strong": return [{ tag: "strong", children: inline(node.children) }];
+        case "emphasis": return [{ tag: "em", children: inline(node.children) }];
+        case "delete": return [{ tag: "del", children: inline(node.children) }];
+        case "inlineCode": return [{ tag: "code", children: [{ text: restore(node.value) }] }];
+        case "break": return [{ text: "\n", br: true }];
+        case "link": case "linkReference": {
+          const href = safeLink(node.type === "link" ? node.url : definitions.get(node.identifier) || "");
+          const children = plain(inline(node.children));
+          return href ? [{ tag: "a", href, children }] : children;
+        }
+        case "image": case "imageReference": return node.alt ? [{ text: restore(node.alt) }] : [];
+        case "footnoteReference": return [{ tag: "sup", children: [{ text: `[${node.label ?? node.identifier}]` }] }];
+        default: return node.children ? inline(node.children) : node.value ? textTokens(node.value) : [];
       }
-      if (code) { code.push(line); continue; }
-      if (!trimmed) { flushParagraph(); flushList(); continue; }
-      const markdownHeading = trimmed.match(/^(#{1,6})\s+(.+?)(?:\s+#+)?$/);
-      const plainHeading = trimmed.replace(/^(\*\*|__)(.+)\1$/, "$2").replace(/[:：]$/, "").trim();
-      if (markdownHeading || headings.has(plainHeading)) {
-        flushParagraph(); flushList();
-        const level = markdownHeading ? Math.min(6, Math.max(3, markdownHeading[1].length + 1)) : 3;
-        blocks.push(`<h${level}>${inline(markdownHeading ? markdownHeading[2] : plainHeading)}</h${level}>`);
-        continue;
+    });
+    const inlineHTML = nodes => renderTokens(inline(nodes));
+    const aligned = new Set(["left", "center", "right"]);
+    const block = (node, tight = false) => {
+      switch (node.type) {
+        case "heading": { const level = Math.min(6, Math.max(3, node.depth + 1)); return `<h${level}>${inlineHTML(node.children)}</h${level}>`; }
+        case "paragraph": return tight ? inlineHTML(node.children) : `<p>${inlineHTML(node.children)}</p>`;
+        case "list": {
+          const tag = node.ordered ? "ol" : "ul", start = node.ordered && Number.isSafeInteger(node.start) ? ` start="${node.start}"` : "";
+          return `<${tag}${start}>${node.children.map(item => block(item, !node.spread)).join("")}</${tag}>`;
+        }
+        case "listItem": {
+          const task = typeof node.checked === "boolean" ? `<span class="summary-task" data-checked="${node.checked}" aria-hidden="true"></span><span class="sr-only">${node.checked ? "완료" : "할 일"}</span>` : "";
+          return `<li${task ? ' class="summary-task-item"' : ""}>${task}${node.children.map(child => block(child, tight && !node.spread)).join("")}</li>`;
+        }
+        case "blockquote": return `<blockquote>${node.children.map(child => block(child)).join("")}</blockquote>`;
+        case "code": return `<pre><code>${renderTokens([{ text: restore(node.value) }])}</code></pre>`;
+        case "thematicBreak": return "<hr>";
+        case "table": {
+          const cell = (tag, item, index) => `<${tag}${aligned.has(node.align?.[index]) ? ` data-align="${node.align[index]}"` : ""}>${inlineHTML(item.children)}</${tag}>`;
+          const [head, ...rows] = node.children;
+          const body = rows.length ? `<tbody>${rows.map(row => `<tr>${row.children.map((item, index) => cell("td", item, index)).join("")}</tr>`).join("")}</tbody>` : "";
+          return `<div class="summary-table"><table><thead><tr>${(head?.children || []).map((item, index) => cell("th", item, index)).join("")}</tr></thead>${body}</table></div>`;
+        }
+        case "html": return `<p>${renderTokens(textTokens(node.value))}</p>`;
+        case "definition": return "";
+        case "footnoteDefinition": return `<div class="summary-footnote"><span class="summary-footnote-label">[${escape(node.label ?? node.identifier)}]</span>${node.children.map(child => block(child, true)).join(" ")}</div>`;
+        default: return node.children ? node.children.map(child => block(child)).join("") : "";
       }
-      const item = line.match(/^\s*(?:([-*+])\s+|(\d+)[.)]\s+)(.+)$/);
-      if (item) {
-        flushParagraph();
-        const tag = item[2] ? "ol" : "ul";
-        if (list?.tag !== tag) { flushList(); list = { tag, items: [], start: tag === "ol" && Number.isSafeInteger(Number(item[2])) ? Number(item[2]) : null }; }
-        list.items.push([item[3]]);
-      } else if (list && /^\s{2,}\S/.test(line)) list.items.at(-1).push(trimmed);
-      else { flushList(); paragraph.push(trimmed); }
-    }
-    flushParagraph(); flushList();
-    if (code) blocks.push(`<pre><code>${renderTokens([{ text: code.join("\n") }])}</code></pre>`);
-    return `<article class="summary-document">${blocks.join("")}</article>`;
+    };
+    // Model output often marks a section with a bare known title line instead of "#".
+    const headingText = line => {
+      const visible = line.filter(node => node.type !== "text" || node.value.trim());
+      if (visible.length !== 1) return "";
+      const [node] = visible;
+      const text = node.type === "text" ? node.value : node.type === "strong" && node.children.length === 1 && node.children[0].type === "text" ? node.children[0].value : "";
+      const title = text.trim().replace(/[:：]$/, "").trim();
+      return headings.has(title) ? title : "";
+    };
+    const promote = nodes => nodes.flatMap(node => {
+      if (node.type === "blockquote") return [{ ...node, children: promote(node.children) }];
+      if (node.type !== "paragraph") return [node];
+      const rows = [[]];
+      for (const child of node.children) {
+        if (child.type === "text" && child.value.includes("\n")) child.value.split("\n").forEach((part, index) => { if (index) rows.push([]); if (part) rows.at(-1).push({ ...child, value: part }); });
+        else if (child.type === "break") rows.push([]);
+        else rows.at(-1).push(child);
+      }
+      if (!rows.some(headingText)) return [node];
+      const out = [];
+      let pending = [];
+      const flush = () => { if (pending.length) out.push({ type: "paragraph", children: pending.flatMap((row, index) => index ? [{ type: "text", value: "\n" }, ...row] : row) }); pending = []; };
+      for (const row of rows) {
+        const title = headingText(row);
+        if (title) { flush(); out.push({ type: "heading", depth: 2, children: [{ type: "text", value: title }] }); }
+        else if (row.some(item => item.type !== "text" || item.value.trim())) pending.push(row);
+      }
+      flush();
+      return out;
+    });
+    const tree = parser.parse(protect(String(value ?? "").replace(/\r\n?/g, "\n").replace(/[\uE000\uE001]/g, "")), { streaming });
+    (function collect(node) { if (node.type === "definition" && !definitions.has(node.identifier)) definitions.set(node.identifier, node.url); (node.children || []).forEach(collect); })(tree);
+    return `<article class="summary-document">${promote(tree.children).map(child => block(child)).join("")}</article>`;
   }
   function dialogContent({ title, titleId = "modal-title", bodyHTML = "", actionsHTML = "" }) {
     return `<h2${attributes({ id: titleId })}>${escape(title)}</h2>${bodyHTML}${actionsHTML ? `<div class="modal-footer"><span></span><div class="row">${actionsHTML}</div></div>` : ""}`;

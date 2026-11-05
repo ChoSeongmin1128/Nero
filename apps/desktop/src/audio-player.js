@@ -68,6 +68,14 @@ export function connectAudioPlayer(document, icons = globalThis.NeroIcons, contr
   };
   toggle.addEventListener('click', togglePlayback);
   inspectorToggle?.addEventListener('click', togglePlayback);
+  // The 0.1 s slider step is for pointer precision; keys move in useful listening steps.
+  seek.addEventListener('keydown', (event) => {
+    const step = { ArrowLeft: -5, ArrowDown: -5, ArrowRight: 5, ArrowUp: 5, PageDown: -30, PageUp: 30 }[event.key];
+    if (seek.disabled || step === undefined || !Number.isFinite(audio.duration)) return;
+    event.preventDefault();
+    audio.currentTime = Math.min(audio.duration, Math.max(0, audio.currentTime + step));
+    clearStatus(); render();
+  });
   seek.addEventListener('input', () => {
     if (seek.disabled) return;
     audio.currentTime = Math.min(audio.duration, Math.max(0, Number(seek.value)));

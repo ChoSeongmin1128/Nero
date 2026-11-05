@@ -921,6 +921,107 @@ fn cli_and_mcp_forward_only_supported_app_update_actions_to_the_running_app() {
 }
 
 #[test]
+fn cli_and_mcp_forward_imports_and_speech_settings_to_the_running_app() {
+    use nero_core::agent_control::{ControlError, ProcessingRequest, Server};
+    use std::sync::{Arc, Mutex};
+    let root = temporary_root();
+    let core = nero_core::CoreHandle::open(root.path()).unwrap();
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let requests = received.clone();
+    let job = json!({"id":"77777777-7777-4777-8777-777777777777","kind":"import","meetingId":null,"status":"queued","editVersion":format!("sha256:{}", "b".repeat(64))});
+    let queued = job.clone();
+    let _server = Server::start_with_processing(
+        root.path(),
+        core,
+        |_| panic!("processing requests must not reach the core writer"),
+        |_| panic!("not a job request"),
+        || Err(ControlError::unavailable()),
+        |_| Err(ControlError::invalid()),
+        move |request| {
+            requests.lock().unwrap().push(request.clone());
+            match request {
+                ProcessingRequest::SpeechStatus {} => Ok(json!({"engine":"nemotron","speakerEnabled":true,"supported":true,"ready":true,
+                    "choices":[{"id":"nemotron","title":"Synthetic default","supported":true,"ready":true,"recommended":false,"memoryWarning":null,"modelBytes":1},
+                        {"id":"qwenKo","title":"Synthetic large","supported":true,"ready":false,"recommended":true,"memoryWarning":"Synthetic warning","modelBytes":2}],
+                    "switch":null})),
+                ProcessingRequest::MeetingImport { .. } => Ok(json!({"applied":true,"meetingId":null,"job":queued.clone()})),
+                ProcessingRequest::SpeechEngineSet { acknowledge_memory_warning: false, .. } => Err(ControlError::new("memory_warning_unacknowledged", "synthetic")),
+                ProcessingRequest::SpeechEngineSet { .. } => Ok(json!({"applied":true,"outcome":"downloading"})),
+                ProcessingRequest::SpeechSwitchCancel { .. } => Err(ControlError::new("speech_switch_not_found", "synthetic")),
+            }
+        },
+    )
+    .unwrap();
+    let audio = root.path().join("synthetic.wav");
+    let audio = audio.to_str().unwrap();
+    let output = command(root.path())
+        .args(["doctor", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let doctor: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(doctor["speech"]["state"], "running");
+    assert_eq!(
+        doctor["speech"]["choices"][1]["memoryWarning"],
+        "Synthetic warning"
+    );
+    let output = command(root.path())
+        .args(["meetings", "import", audio, "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let cli: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(cli["job"], job);
+    let mut process = McpProcess::start(root.path());
+    process.initialize();
+    process.send(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"meeting_import","arguments":{"path":audio}}}));
+    assert_eq!(tool_data(&process.result(2)), cli);
+    process.send(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"status","arguments":{}}}));
+    assert_eq!(tool_data(&process.result(3))["speech"], doctor["speech"]);
+    process.send(json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"speech_engine_set","arguments":{"engine":"qwenKo"}}}));
+    let warned = process.result(4);
+    assert_eq!(warned["result"]["isError"], true);
+    assert_eq!(
+        tool_data(&warned)["error"]["code"],
+        "memory_warning_unacknowledged"
+    );
+    process.send(json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"speech_engine_set","arguments":{"engine":"qwenKo","acknowledgeMemoryWarning":true}}}));
+    assert_eq!(tool_data(&process.result(5))["outcome"], "downloading");
+    process.send(json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"speech_switch_cancel","arguments":{"target":"qwenKo"}}}));
+    assert_eq!(
+        tool_data(&process.result(6))["error"]["code"],
+        "speech_switch_not_found"
+    );
+    let before = received.lock().unwrap().len();
+    for (id, name, arguments) in [
+        (7, "meeting_import", json!({"path":"relative.wav"})),
+        (
+            8,
+            "meeting_import",
+            json!({"path":audio,"meetingId":MEETING_ID}),
+        ),
+        (
+            9,
+            "speech_engine_set",
+            json!({"engine":"qwenKo","download":true}),
+        ),
+    ] {
+        process.send(json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":name,"arguments":arguments}}));
+        assert_eq!(
+            tool_data(&process.result(id))["error"]["code"],
+            "invalid_input"
+        );
+    }
+    assert_eq!(received.lock().unwrap().len(), before);
+    assert!(!root.path().join("models").exists());
+    assert!(!root.path().join("meetings").join("synthetic.wav").exists());
+}
+
+#[test]
 fn cli_and_mcp_observe_folder_moves_and_renames_on_each_read() {
     let root = fixture();
     let library_path = root.path().join("library.json");
@@ -1077,10 +1178,17 @@ fn stdio_initialization_tools_errors_and_framing_use_the_sdk() {
                 | "template_delete"
                 | "meetings_trash"
                 | "folder_delete"
+                | "speech_switch_cancel"
         ) {
             assert_eq!(tool["annotations"]["destructiveHint"], true);
         }
-        assert_eq!(tool["annotations"]["openWorldHint"], name == "app_update");
+        if matches!(name, "meeting_import" | "speech_engine_set") {
+            assert_eq!(tool["annotations"]["destructiveHint"], false);
+        }
+        assert_eq!(
+            tool["annotations"]["openWorldHint"],
+            matches!(name, "app_update" | "speech_engine_set")
+        );
     }
 
     process.send(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"meeting_get","arguments":{"meetingId":MEETING_ID,"offset":1,"limit":1}}}));

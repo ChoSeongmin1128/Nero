@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { ArrowUp, ArrowLeft, Bot, Square, Plus, X, FileText, RotateCcw, NotebookPen, Copy, Check, ChevronDown, ChevronRight, SquarePen, Trash2, MessageCircle } from 'lucide-react';
 import { Popover, PopoverTrigger, PopoverContent, PopoverTitle } from '../../../design-system/components/ui/popover.jsx';
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '../../../design-system/components/ui/select.jsx';
 import { brandIconUrl } from './brand-icons.js';
 import { BrandIcon } from './brand-icon.jsx';
 import { Dialog, DialogContent, DialogTitle, DialogFooter, DialogClose } from '../../../design-system/components/ui/dialog.jsx';
@@ -10,15 +11,15 @@ function ModelPicker({ flow, state, busy, onSettings }) {
   const [open, setOpen] = React.useState(false), trigger = React.useRef(null);
   const model = state.models.find(item => item.id === state.modelId);
   React.useEffect(() => { if (!state.active || busy) setOpen(false); }, [state.active, busy]);
-  return <Popover open={state.active && open} onOpenChange={setOpen}>
+  return <Popover open={state.active && open} onOpenChange={next => { setOpen(next); if (next) flow.ensureModels(); }}>
     <PopoverTrigger ref={trigger} type="button" className="quiet ai-model-trigger" disabled={busy} aria-label="AI 모델 선택"><Bot size={15} aria-hidden="true" /><span>{model?.label || '모델 선택'}</span><ChevronDown size={13} aria-hidden="true" /></PopoverTrigger>
     <PopoverContent className="ai-model-popover" align="start" side="top" finalFocus={state.active && !busy ? trigger : false}>
       <PopoverTitle className="sr-only">AI 모델 선택</PopoverTitle>
       {providers.map(provider => { const group = flow.modelsFor(provider.value); return <section key={provider.value}>
-        <div className="ai-model-heading-row"><img src={brandIconUrl(provider.value)} alt="" className="brand-icon" /><span>{provider.label}</span><button type="button" className="quiet small" disabled={!group.account || !['ready', 'unknown'].includes(group.account.state) || group.busy} onClick={() => void flow.refreshModelGroup(provider.value)}>새로고침</button></div>
+        <div className="ai-model-heading-row"><img src={brandIconUrl(provider.value)} alt="" className="brand-icon" /><span>{provider.label}</span></div>
         {group.models.map(item => <button type="button" className="quiet ai-model-option" key={item.id} onClick={() => { flow.chooseModel(provider.value, group.account.id, item.id); setOpen(false); }}><span>{item.label}</span>{state.accountId === group.account.id && item.id === state.modelId && <Check size={14} aria-label="선택됨" />}</button>)}
-        {group.busy && <p className="ai-chat-muted" role="status">모델을 불러오는 중</p>}{group.error && <p className="ai-chat-error" role="alert">{group.error}</p>}
-        {!group.models.length && !group.busy && <p className="ai-chat-muted">{group.account && ['ready', 'unknown'].includes(group.account.state) ? '새로고침하여 모델을 불러오세요.' : '계정 연결이 필요합니다.'}</p>}
+        {group.busy && <p className="ai-chat-muted" role="status">모델을 불러오는 중</p>}{group.error && <p className="ai-chat-error" role="alert">{group.error} <button type="button" className="quiet small" onClick={() => void flow.refreshModelGroup(provider.value)}>다시 시도</button></p>}
+        {!group.models.length && !group.busy && !group.error && <p className="ai-chat-muted">{state.connectionPhases[provider.value] ? '연결을 마치면 모델 목록을 불러옵니다.' : group.account && ['ready', 'unknown'].includes(group.account.state) ? '사용할 수 있는 모델이 없습니다.' : '계정 연결이 필요합니다.'}</p>}
       </section>; })}
       <button type="button" className="quiet ai-model-option" onClick={() => { setOpen(false); onSettings(); }}>계정 설정</button>
     </PopoverContent>
@@ -29,7 +30,13 @@ function EffortPicker({ flow, state, busy }) {
   if (!model) return null;
   if (effort?.supported === false) return <span className="ai-chat-muted">추론 설정 미지원</span>;
   if (effort?.supported !== true || !effort.levels?.length) return <span className="ai-chat-muted">추론 설정 확인 불가</span>;
-  return <label className="ai-chat-muted">추론 <select aria-label="추론 수준" disabled={busy} value={state.effort || ''} onChange={event => flow.selectEffort(event.target.value)}><option value="">기본값{effort.default ? ` (${effort.default})` : ''}</option>{effort.levels.map(level => <option key={level} value={level}>{level}</option>)}</select></label>;
+  const fallback = `기본값${effort.default ? ` (${effort.default})` : ''}`, value = state.effort || 'default';
+  return <span className="ai-chat-effort"><span aria-hidden="true">추론</span>
+    <Select value={value} disabled={busy} onValueChange={next => flow.selectEffort(next === 'default' ? '' : next)}>
+      <SelectTrigger aria-label="추론 수준"><SelectValue>{value === 'default' ? fallback : value}</SelectValue></SelectTrigger>
+      <SelectContent side="top"><SelectItem value="default">{fallback}</SelectItem>{effort.levels.map(level => <SelectItem key={level} value={level}>{level}</SelectItem>)}</SelectContent>
+    </Select>
+  </span>;
 }
 function ConversationHistory({ flow, state }) {
   const [open, setOpen] = React.useState(false), [deleting, setDeleting] = React.useState(null);
@@ -117,11 +124,11 @@ export function GlobalAiChat({ flow, onSettings = () => {}, onCitation = async (
   const unavailable = account?.state === 'unavailable' || state.accountsLoaded && !account;
   return <div className="ai-chat" data-nero-ui-owned="">
     <header className="ai-chat-header"><ConversationHistory flow={flow} state={state} /><button type="button" className="quiet small icon" aria-label="새 대화" title="새 대화" onClick={() => { void flow.newConversation({ attachCurrent: true }); }}><SquarePen size={17} aria-hidden="true" /></button><button type="button" className="quiet small icon" aria-label="AI 닫기" title="AI 닫기" onClick={onClose}><X size={18} aria-hidden="true" /></button></header>
-    <div ref={transcript} className="ai-chat-messages" role="log" aria-label="AI 대화" aria-live="polite" aria-relevant="additions text" onScroll={event => { const node = event.currentTarget; pinned.current = node.scrollHeight - node.scrollTop - node.clientHeight < 48; }}>
+    <div ref={transcript} className="ai-chat-messages" role="log" aria-label="AI 대화" aria-live="polite" aria-relevant="additions" onScroll={event => { const node = event.currentTarget; pinned.current = node.scrollHeight - node.scrollTop - node.clientHeight < 48; }}>
       {conversation.loading ? <p className="ai-chat-muted" role="status">대화를 불러오는 중</p> : !conversation.messages.length && <div className="ai-chat-empty"><MessageCircle size={28} strokeWidth={1.3} aria-hidden="true" /><h2>무엇을 도와드릴까요?</h2>{Boolean(conversation.meetings.length) && <button type="button" className="quiet small" onClick={() => { flow.summaryPrompt(); composer.current?.focus(); }}>결정 사항과 할 일 정리</button>}</div>}
       {conversation.messages.map(message => <article key={message.id} className={`ai-chat-message ai-chat-message--${message.role}`} aria-label={message.role === 'user' ? '내 질문' : 'AI 답변'}>
         {message.role === 'user' && message.attachments?.length > 0 && <div className="ai-message-attachments" aria-label="전송한 자료">{message.attachments.map((item, index) => <span key={item.meetingId || item.sourceId || index}>{item.kind === 'notion' ? <BrandIcon name="notion" /> : <FileText size={12} aria-hidden="true" />}{item.title}</span>)}</div>}
-        {message.text && (message.role === 'assistant' && globalThis.NeroUI?.summaryDocument ? <div className="ai-chat-markdown" dangerouslySetInnerHTML={{ __html: globalThis.NeroUI.summaryDocument(message.text) }} onClick={event => { const control = event.target.closest('[data-summary-citations]'); if (!control) return; const refs = control.dataset.summaryCitations.split(',').map(Number); const citation = message.citations?.find(item => refs.includes(item.reference)); if (citation) void reveal(citation); }} /> : <div className="ai-chat-text">{message.text}</div>)}
+        {message.text && (message.role === 'assistant' && globalThis.NeroUI?.summaryDocument ? <div className="ai-chat-markdown" dangerouslySetInnerHTML={{ __html: globalThis.NeroUI.summaryDocument(message.text, { streaming: message.status === 'streaming' }) }} onClick={event => { const control = event.target.closest('[data-summary-citations]'); if (!control) return; const refs = control.dataset.summaryCitations.split(',').map(Number); const citation = message.citations?.find(item => refs.includes(item.reference)); if (citation) void reveal(citation); }} /> : <div className="ai-chat-text">{message.text}</div>)}
         {message.role === 'assistant' && message.status === 'completed' && message.actualModelId && <p className="ai-chat-muted">모델: {message.actualModelId}</p>}
         {message.role === 'assistant' && message.template && <p className="ai-chat-muted">템플릿: {message.template.name} ({message.template.revision})</p>}
         {message.status === 'streaming' && <span className="ai-chat-message-status" role="status"><span className="activity-spinner" aria-hidden="true" /><span className="sr-only">답변 중</span></span>}

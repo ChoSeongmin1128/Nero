@@ -1,4 +1,4 @@
-import { createGoogleAttendeeDraft, removeDraftAttendee, stageGoogleAttendee } from './google-attendee-draft.js';
+import { createGoogleAttendeeDraft, removeDraftAttendee, stageGoogleAttendee, stageGoogleRow } from './google-attendee-draft.js';
 const clone = value => JSON.parse(JSON.stringify(value));
 export const attendeeLabel = (attendee, attendees) => attendee.name?.trim() || `참석자 ${Math.max(0, attendees.filter(item => !item.name?.trim()).findIndex(item => item.id === attendee.id)) + 1}`;
 
@@ -126,6 +126,14 @@ export function createAttendeeFlow({ bridge, onChanged = () => {}, uuid = () => 
       if (state.busy || state.googleConnecting) return false;
       try { const next = stageGoogleAttendee(draft(), state.catalog, source, choice, uuid); publish({ ...next, catalog: catalogFor(next.promotions), googleError: '' }); return true; }
       catch (error) { publish({ googleError: error.message }); return false; }
+    },
+    chooseGoogleRows(entries) {
+      if (state.busy || state.googleConnecting || !entries.length) return false;
+      try {
+        let next = draft();
+        for (const { row, choice, name } of entries) next = stageGoogleRow(next, state.catalog, row, choice, name, uuid);
+        publish({ ...next, catalog: catalogFor(next.promotions), googleError: '' }); return true;
+      } catch (error) { publish({ googleError: error.message }); return false; }
     },
     hideGoogle() { if (!state.googleConnecting) publish({ googleOpen: false }); },
     async connectMeet() {

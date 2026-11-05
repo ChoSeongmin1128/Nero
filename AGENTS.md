@@ -51,6 +51,13 @@ This file applies to the entire repository.
   never pass it off as word timing or relax arbitrary input bounds. Selection
   applies to future work, is frozen per job/session and never silently switches
   models or reprocesses old meetings. See `docs/windows-speech-models.md`.
+- Apple Silicon also supports Qwen3-ASR-ko through the separately pinned CrispASR CLI
+  (`scripts/native-crispasr`). Recording previews stay on the Nemotron stream; the
+  saved transcript is recognized after recording from the same analysis WAV, and the
+  live speaker stream is reused. Keep the pause-chunk, gain and aligner-unit rules in
+  `docs/live-speech.md`; never commit Nemotron preview text for a Qwen session or
+  interpolate aligner times. Memory warnings are advisory and need explicit user
+  acknowledgement before preparation.
 - Apple Silicon also supports separately pinned Whisper large-v3 Q5. Keep the full
   model's hash/revision and native 32-layer validation distinct from Turbo's 4-layer
   output. Hardware recommendations are suggestions, not automatic downloads or

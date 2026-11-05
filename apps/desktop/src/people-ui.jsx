@@ -130,7 +130,7 @@ function AttendeeChip({ item, label, busy, flow, onPromote }) {
     {editing ? <input autoFocus aria-label={`${label} 이름`} value={item.name || ''} placeholder={label} maxLength={120} disabled={busy}
       onChange={event => flow.rename(item.id, event.target.value)} onBlur={() => setEditing(false)}
       onKeyDown={event => { if (event.key === 'Enter' && !event.nativeEvent?.isComposing && !event.isComposing && event.keyCode !== 229) { event.preventDefault(); event.currentTarget.blur(); } }} />
-      : <button type="button" className="quiet attendee-chip-name" title="이름 수정" disabled={busy} onClick={() => setEditing(true)}>{label}</button>}
+      : <button type="button" className="quiet attendee-chip-name" title="이름 수정" aria-label={`${label} 이름 수정`} disabled={busy} onClick={() => setEditing(true)}><span>{label}</span><Pencil size={12} aria-hidden="true" /></button>}
     {!item.personId && <button type="button" className="quiet small icon" aria-label={`${label} 인원 목록에 저장`} title="인원 목록에 저장" disabled={busy} onClick={onPromote}><UserPlus size={14} aria-hidden="true" /></button>}
     <button type="button" className="quiet small icon" aria-label={`${label} 회의에서 제외`} title="회의에서 제외" disabled={busy} onClick={() => flow.remove(item.id)}><X size={14} aria-hidden="true" /></button>
   </div>;

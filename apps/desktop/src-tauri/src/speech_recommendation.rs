@@ -7,6 +7,9 @@ const GIB: u64 = 1024 * 1024 * 1024;
 // is a conservative recommendation, not a measured Q5 minimum or quality claim.
 const LARGE_RECOMMENDED_MEMORY: u64 = 16 * GIB;
 const COMPACT_MEMORY: u64 = 8 * GIB;
+// Measured peak memory footprint of one CrispASR Qwen + aligner process (M4 Pro, 2026-11-04).
+const QWEN_PEAK: u64 = 4_475_539_632;
+const QWEN_RECOMMENDED_MEMORY: u64 = 16 * GIB;
 
 fn physical_memory() -> Option<u64> {
     static MEMORY: OnceLock<Option<u64>> = OnceLock::new();
@@ -54,6 +57,14 @@ fn recommend(choices: &mut [SpeechChoice], apple_silicon: bool, memory: Option<u
             .any(|choice| choice.id == engine && choice.supported)
     };
     let preferred = if apple_silicon
+        && memory.is_some_and(|bytes| bytes >= QWEN_RECOMMENDED_MEMORY)
+        && supported(SpeechEngine::QwenKo)
+    {
+        Some((
+            SpeechEngine::QwenKo,
+            "녹음이 끝난 뒤 한국어 정확도가 높은 전사를 저장합니다.",
+        ))
+    } else if apple_silicon
         && memory.is_some_and(|bytes| bytes >= LARGE_RECOMMENDED_MEMORY)
         && supported(SpeechEngine::WhisperLargeV3)
     {
@@ -87,6 +98,30 @@ fn recommend(choices: &mut [SpeechChoice], apple_silicon: bool, memory: Option<u
         choice.recommendation_reason = preferred
             .filter(|(engine, _)| *engine == choice.id)
             .map(|(_, reason)| reason);
+        choice.memory_warning = (choice.id == SpeechEngine::QwenKo)
+            .then(|| qwen_memory_warning(memory))
+            .flatten();
+    }
+}
+
+fn qwen_memory_warning(memory: Option<u64>) -> Option<String> {
+    let peak = QWEN_PEAK as f64 / 1e9;
+    match memory {
+        Some(bytes) if bytes >= QWEN_RECOMMENDED_MEMORY => None,
+        Some(bytes) => {
+            let share = if QWEN_PEAK * 2 >= bytes {
+                "절반 이상을".to_owned()
+            } else {
+                format!("약 {}%를", QWEN_PEAK * 100 / bytes)
+            };
+            Some(format!(
+                "이 Mac 메모리 {}GB 중 약 {peak:.1}GB, {share} 쓸 수 있어 처리 중 느려지거나 실패할 수 있습니다.",
+                bytes / GIB
+            ))
+        }
+        None => Some(format!(
+            "이 Mac의 메모리를 확인하지 못했습니다. 처리 중 약 {peak:.1}GB를 쓸 수 있어 느려지거나 실패할 수 있습니다."
+        )),
     }
 }
 
@@ -105,12 +140,22 @@ mod tests {
                 supported: true,
                 recommended: false,
                 recommendation_reason: None,
+                memory_warning: None,
             })
             .collect()
     }
     #[test]
     fn recommendation_uses_memory_and_support_without_changing_selection() {
         let mut rows = choices();
+        recommend(&mut rows, true, Some(32 * GIB));
+        assert_eq!(
+            rows.iter().find(|row| row.recommended).unwrap().id,
+            SpeechEngine::QwenKo
+        );
+        rows.iter_mut()
+            .find(|row| row.id == SpeechEngine::QwenKo)
+            .unwrap()
+            .supported = false;
         recommend(&mut rows, true, Some(32 * GIB));
         assert_eq!(
             rows.iter().find(|row| row.recommended).unwrap().id,
@@ -145,5 +190,25 @@ mod tests {
         }
         recommend(&mut rows, true, Some(64 * GIB));
         assert!(!rows.iter().any(|row| row.recommended));
+    }
+}
+
+#[cfg(test)]
+mod memory_tests {
+    use super::*;
+    #[test]
+    fn qwen_warning_states_the_measured_share_below_sixteen_gib_and_unknown_memory() {
+        assert_eq!(qwen_memory_warning(Some(16 * GIB)), None);
+        let small = qwen_memory_warning(Some(8 * GIB)).unwrap();
+        assert!(
+            small.contains("8GB") && small.contains("4.5GB") && small.contains("절반 이상을"),
+            "{small}"
+        );
+        assert!(qwen_memory_warning(Some(12 * GIB))
+            .unwrap()
+            .contains("약 34%를"));
+        assert!(qwen_memory_warning(None)
+            .unwrap()
+            .contains("확인하지 못했습니다"));
     }
 }

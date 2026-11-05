@@ -17,6 +17,7 @@ mod claude_runner;
 mod diarization;
 mod domain_glossary;
 mod downloads;
+mod drop_import;
 mod export;
 mod external_open;
 mod glossary_context;
@@ -38,6 +39,7 @@ mod path_safety;
 mod people_desktop;
 mod process_tree;
 mod processing;
+mod qwen_asr;
 mod recorder_geometry;
 mod recorder_policy;
 mod recording_files;
@@ -48,6 +50,7 @@ mod speech_audio;
 mod speech_choice;
 mod speech_library;
 mod speech_recommendation;
+mod speech_switch;
 mod storage_space;
 mod summary;
 mod summary_checkpoint;
@@ -83,6 +86,7 @@ struct DesktopState {
     processing: Arc<Processing>,
     lifecycle: lifecycle::Lifecycle,
     recorder: Mutex<recorder_policy::RecorderPolicy>,
+    drops: Arc<drop_import::DropImports>,
 }
 
 fn require_main(window: &WebviewWindow) -> Result<(), String> {
@@ -110,6 +114,40 @@ async fn open_privacy_policy(window: WebviewWindow) -> Result<(), String> {
     })
     .await
     .map_err(|_| "개인정보처리방침을 열지 못했습니다.".to_string())?
+}
+
+// Model-written links must never replace an app window, whether clicked, dragged or opened
+// from a context menu, so every webview stays on the app's own pages.
+fn app_page(url: &tauri::Url) -> bool {
+    match url.scheme() {
+        "tauri" => url.host_str() == Some("localhost"),
+        "http" | "https" => {
+            url.host_str() == Some("tauri.localhost")
+                || (cfg!(debug_assertions)
+                    && matches!(url.host_str(), Some("127.0.0.1" | "localhost"))
+                    && url.port() == Some(1420))
+        }
+        "about" => url.path() == "blank",
+        _ => false,
+    }
+}
+
+fn navigation_guard<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
+    tauri::plugin::Builder::new("navigation-guard")
+        .on_navigation(|_, url| app_page(url))
+        .build()
+}
+
+// Links in summaries and AI answers. The page never navigates; only plain https opens.
+#[tauri::command]
+async fn open_document_link(window: WebviewWindow, url: String) -> Result<(), String> {
+    require_main(&window)?;
+    let url = reqwest::Url::parse(&url).map_err(|_| "링크 주소를 확인해 주세요.".to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        external_open::open_url(&url).map_err(|_| "링크를 열지 못했습니다.".to_string())
+    })
+    .await
+    .map_err(|_| "링크를 열지 못했습니다.".to_string())?
 }
 
 #[tauri::command]
@@ -1443,6 +1481,40 @@ async fn prepare_meeting_models(
         .prepare_meeting_models(include_summary.unwrap_or(false))
 }
 #[tauri::command]
+async fn request_speech_engine(
+    window: WebviewWindow,
+    state: tauri::State<'_, DesktopState>,
+    engine: speech_choice::SpeechEngine,
+) -> Result<Progress, String> {
+    require_main(&window)?;
+    let snapshot = on_core(state.core.clone(), |core| core.snapshot()).await?;
+    if active_session(&snapshot).is_some() {
+        return Err("녹음을 마친 뒤 음성 인식 모델을 변경해 주세요.".into());
+    }
+    state.processing.request_speech_engine(engine)
+}
+#[tauri::command]
+fn cancel_speech_switch(
+    window: WebviewWindow,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<Progress, String> {
+    require_main(&window)?;
+    state.processing.cancel_speech_switch()
+}
+#[tauri::command]
+async fn respond_speech_offer(
+    window: WebviewWindow,
+    state: tauri::State<'_, DesktopState>,
+    accept: bool,
+) -> Result<Progress, String> {
+    require_main(&window)?;
+    let snapshot = on_core(state.core.clone(), |core| core.snapshot()).await?;
+    if accept && active_session(&snapshot).is_some() {
+        return Err("녹음을 마친 뒤 음성 인식 모델을 변경해 주세요.".into());
+    }
+    state.processing.respond_speech_offer(accept)
+}
+#[tauri::command]
 async fn draft_attachment_target(
     window: WebviewWindow,
     state: tauri::State<'_, DesktopState>,
@@ -1497,6 +1569,77 @@ async fn import_audio(
         None => state.processing.import(state.core.clone(), source),
     }
     .map(Some)
+}
+// Starts receiving a file dropped on the window; the same checks as `import_audio`.
+#[tauri::command]
+async fn drop_import_begin(
+    window: WebviewWindow,
+    state: tauri::State<'_, DesktopState>,
+    name: String,
+    size: u64,
+    target: Option<nero_core::DraftAttachmentTarget>,
+) -> Result<String, String> {
+    require_main(&window)?;
+    state.processing.require_meeting_models()?;
+    if !state.processing.snapshot().supported {
+        return Err("이 기기의 음성 가져오기가 아직 준비되지 않았습니다.".into());
+    }
+    let snapshot = on_core(state.core.clone(), |core| core.snapshot()).await?;
+    if active_session(&snapshot).is_some() {
+        return Err("녹음을 마친 뒤 음성을 가져와 주세요.".into());
+    }
+    if let Some(target) = target.clone() {
+        on_core(state.core.clone(), move |core| {
+            core.validate_draft_attachment(target)
+        })
+        .await?;
+    }
+    // The cache copy and the meeting copy exist together until the import finishes.
+    storage_space::check(&state.processing.root, size.saturating_mul(2))?;
+    state.drops.begin(&name, size, target)
+}
+// Async so chunk writes and the final fsync stay off the main event loop.
+#[tauri::command]
+async fn drop_import_chunk(
+    window: WebviewWindow,
+    state: tauri::State<'_, DesktopState>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<(), String> {
+    require_main(&window)?;
+    let token = request
+        .headers()
+        .get("x-nero-drop")
+        .and_then(|value| value.to_str().ok())
+        .ok_or("끌어 놓은 음성 파일을 받지 못했습니다.")?
+        .to_owned();
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        state.drops.cancel(&token);
+        return Err("끌어 놓은 음성 파일을 받지 못했습니다.".into());
+    };
+    let bytes = bytes.clone();
+    let drops = state.drops.clone();
+    tauri::async_runtime::spawn_blocking(move || drops.chunk(&token, &bytes))
+        .await
+        .map_err(|_| "끌어 놓은 음성 파일을 받지 못했습니다.".to_string())?
+}
+#[tauri::command]
+async fn drop_import_finish(
+    window: WebviewWindow,
+    state: tauri::State<'_, DesktopState>,
+    token: String,
+) -> Result<Progress, String> {
+    require_main(&window)?;
+    let drops = state.drops.clone();
+    let upload = tauri::async_runtime::spawn_blocking(move || drops.finish(&token))
+        .await
+        .map_err(|_| "끌어 놓은 음성 파일을 받지 못했습니다.".to_string())??;
+    state.processing.import_dropped(state.core.clone(), upload)
+}
+#[tauri::command]
+fn drop_import_cancel(window: WebviewWindow, state: tauri::State<'_, DesktopState>, token: String) {
+    if require_main(&window).is_ok() {
+        state.drops.cancel(&token);
+    }
 }
 #[tauri::command]
 async fn transcribe_audio(
@@ -1777,7 +1920,8 @@ fn main() {
             show_main(app)
         }))
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_clipboard_manager::init());
+        .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(navigation_guard());
     let builder = if nero_core::environment::CURRENT.development {
         builder
     } else {
@@ -1832,6 +1976,7 @@ fn main() {
             app_updater::app_update_recovery_quit,
             agent_write_ready,
             open_privacy_policy,
+            open_document_link,
             calendar_desktop::read_calendar_settings,
             calendar_desktop::read_calendar_meeting_occurrences,
             calendar_desktop::open_calendar_join_url,
@@ -1891,8 +2036,15 @@ fn main() {
             set_speaker_enabled,
             prepare_model,
             prepare_meeting_models,
+            request_speech_engine,
+            cancel_speech_switch,
+            respond_speech_offer,
             draft_attachment_target,
             import_audio,
+            drop_import_begin,
+            drop_import_chunk,
+            drop_import_finish,
+            drop_import_cancel,
             transcribe_audio,
             cancel_processing,
             retry_processing,
@@ -1936,6 +2088,9 @@ fn main() {
                 recorder: Mutex::new(recorder_policy::RecorderPolicy::default()),
                 processing: processing.clone(),
                 lifecycle: lifecycle::Lifecycle::default(),
+                drops: Arc::new(drop_import::DropImports::new(
+                    app.path().app_cache_dir()?.join("dropped-audio"),
+                )),
             });
             calendar_desktop::install(app.handle(), root.clone());
             ai_chat_desktop::install(
@@ -2056,5 +2211,32 @@ mod search_tests {
         assert!(value.get("index").is_none());
         assert!(value.get("segmentId").is_none());
         assert!(value.get("transcriptVersion").is_none());
+    }
+}
+
+#[cfg(test)]
+mod navigation_tests {
+    use super::app_page;
+
+    #[test]
+    fn only_app_pages_can_load_in_a_window() {
+        for allowed in [
+            "tauri://localhost/index.html",
+            "http://tauri.localhost/",
+            "https://tauri.localhost/calendar.html",
+            "about:blank",
+        ] {
+            assert!(app_page(&allowed.parse().unwrap()), "{allowed}");
+        }
+        for blocked in [
+            "https://example.test/",
+            "http://localhost:8080/",
+            "file:///etc/hosts",
+            "data:text/html,x",
+            "tauri://example.test/",
+            "about:srcdoc",
+        ] {
+            assert!(!app_page(&blocked.parse().unwrap()), "{blocked}");
+        }
     }
 }

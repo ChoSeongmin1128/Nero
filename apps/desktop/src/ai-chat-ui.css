@@ -55,6 +55,8 @@
 .ai-chat-models { display: flex; align-items: center; gap: 6px; padding: 6px 1px 0; min-width: 0; }
 .ai-model-trigger { display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: 100%; min-height: 26px; padding: 3px 5px; color: var(--text-secondary); font-size: var(--text-caption-size); }
 .ai-model-trigger > span:first-of-type { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-chat-effort { display: inline-flex; flex: none; align-items: center; gap: 5px; color: var(--text-secondary); font-size: var(--text-caption-size); }
+.ai-chat-effort .nero-select-trigger { width: auto; min-height: 26px; padding: 2px 6px 2px 8px; gap: 6px; font-size: var(--text-caption-size); }
 .ai-model-provider { opacity: .75; white-space: nowrap; }
 .ai-model-popover { width: min(240px, calc(100vw - 32px)); padding: 6px; }
 .ai-model-heading { margin: 5px 8px; color: var(--text-secondary); font-size: var(--text-caption-size); }

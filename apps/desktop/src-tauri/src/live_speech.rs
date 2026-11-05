@@ -203,7 +203,7 @@ impl Processing {
                         &session_id,
                         cancel,
                         child,
-                        engine,
+                        engine.live_asr(),
                         speaker_enabled,
                         glossary,
                     );
@@ -564,8 +564,8 @@ fn publish_asr(
             SpeechEngine::Nemotron => {
                 result["streamFramesFed"] != frames || result["nativeStreamFinished"] != true
             }
-            SpeechEngine::AppleSpeech => {
-                return Err("macOS 기본 전사는 녹음 종료 후 처리합니다.".into())
+            SpeechEngine::AppleSpeech | SpeechEngine::QwenKo => {
+                return Err("이 전사 방식은 녹음 종료 후 처리합니다.".into())
             }
             SpeechEngine::WhisperTurbo | SpeechEngine::WhisperLargeV3 => {
                 result["modelSha256"] != model["files"][0]["sha256"]

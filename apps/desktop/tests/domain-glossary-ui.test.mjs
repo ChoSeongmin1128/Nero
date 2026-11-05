@@ -4,8 +4,14 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import { Window } from 'happy-dom';
 const root = fileURLToPath(new URL('../', import.meta.url));
-const bundle = await build({ stdin: { contents: `import React from 'react'; import {createRoot} from 'react-dom/client'; import {DomainGlossary} from './src/domain-glossary-ui.jsx'; window.mountGlossary = (node, bridge) => { const root = createRoot(node); const render = id => root.render(<DomainGlossary meetingId={id} bridge={bridge}/>); render("meeting"); window.switchGlossary = render; return () => root.unmount(); };`, resolveDir: root, loader: 'jsx' }, bundle: true, write: false, format: 'iife', nodePaths: [root + 'node_modules'], define: { 'process.env.NODE_ENV': '"production"' } });
+const bundle = await build({ stdin: { contents: `import React from 'react'; import {createRoot} from 'react-dom/client'; import {DomainGlossary} from './src/domain-glossary-ui.jsx'; window.mountGlossary = (node, bridge) => { const root = createRoot(node); const render = (id, revision) => root.render(<DomainGlossary meetingId={id} sourcesRevision={revision} bridge={bridge}/>); render("meeting"); window.switchGlossary = render; return () => root.unmount(); };`, resolveDir: root, loader: 'jsx' }, bundle: true, write: false, format: 'iife', nodePaths: [root + 'node_modules'], define: { 'process.env.NODE_ENV': '"production"' } });
 const wait = async predicate => { for (let n = 0; n < 100; n++) { await new Promise(done => setTimeout(done, 5)); if (predicate()) return; } assert.fail('Glossary UI did not settle'); };
+const options = window => [...window.document.querySelectorAll('[data-slot="select-content"]:not([data-closed]) [role="option"]')];
+const pick = async (window, label, text) => {
+  window.document.querySelector(`[aria-label="${label}"]`).click();
+  await wait(() => options(window).some(node => node.textContent === text));
+  options(window).find(node => node.textContent === text).click();
+};
 test('후보를 선택하고 직접 편집한 후 저장하며 출처를 유지합니다', async t => {
   const window = new Window({ settings: { enableJavaScriptEvaluation: true, suppressInsecureJavaScriptEnvironmentWarning: true } });
   window.document.body.innerHTML = '<main></main>'; window.eval(bundle.outputFiles[0].text);
@@ -16,10 +22,10 @@ test('후보를 선택하고 직접 편집한 후 저장하며 출처를 유지�
   });
   t.after(() => { dispose(); window.happyDOM.abort(); });
   await wait(() => window.document.querySelector('button')); window.document.querySelector('button').click();
-  await wait(() => window.document.querySelector('select option[value="0"]'));
-  const select = window.document.querySelector('select'); select.value = '0'; select.dispatchEvent(new window.Event('change', { bubbles: true }));
-  await wait(() => window.document.querySelector('input'));
-  const input = window.document.querySelector('input');
+  await wait(() => window.document.querySelector('[aria-label="자료에서 찾은 후보"]'));
+  await pick(window, '자료에서 찾은 후보', 'API (자료)');
+  await wait(() => window.document.querySelector('[id^="domain-term-"]'));
+  const input = window.document.querySelector('[id^="domain-term-"]');
   const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set; setter.call(input, '편집한 API'); input.dispatchEvent(new window.Event('input', { bubbles: true }));
   await wait(() => input.value === '편집한 API');
   [...window.document.querySelectorAll('button')].find(button => button.textContent === '용어집 저장').click();
@@ -37,9 +43,9 @@ test('다른 회의 용어는 선택하기 전 자동으로 추가되지 않습�
   });
   t.after(() => { dispose(); window.happyDOM.abort(); });
   await wait(() => window.document.querySelector('button')); window.document.querySelector('button').click();
-  await wait(() => window.document.querySelector('#domain-glossary-reuse')); assert.equal(window.document.querySelectorAll('input').length, 0);
-  const select = window.document.querySelector('#domain-glossary-reuse'); select.value = '0'; select.dispatchEvent(new window.Event('change', { bubbles: true }));
-  await wait(() => window.document.querySelector('input')); [...window.document.querySelectorAll('button')].find(button => button.textContent === '용어집 저장').click();
+  await wait(() => window.document.querySelector('[aria-label="다른 회의에서 가져오기"]')); assert.equal(window.document.querySelectorAll('[id^="domain-term-"]').length, 0);
+  await pick(window, '다른 회의에서 가져오기', '승인 용어 (이전 회의)');
+  await wait(() => window.document.querySelector('[id^="domain-term-"]')); [...window.document.querySelectorAll('button')].find(button => button.textContent === '용어집 저장').click();
   await wait(() => saved); assert.equal(saved.entries[0].term, '승인 용어'); assert.equal(saved.entries[0].sourceId, 'old-revision');
 });
 
@@ -56,13 +62,13 @@ for (const pendingPhase of ['load', 'save']) test(`회의 전환 시 늦은 ${pe
   });
   t.after(() => { dispose(); window.happyDOM.abort(); });
   await wait(() => window.document.querySelector('button')); window.document.querySelector('button').click();
-  if (pendingPhase === 'save') { await wait(() => window.document.querySelector('input')); [...window.document.querySelectorAll('button')].find(b => b.textContent === '용어집 저장').click(); await wait(() => saveStarted); }
+  if (pendingPhase === 'save') { await wait(() => window.document.querySelector('[id^="domain-term-"]')); [...window.document.querySelectorAll('button')].find(b => b.textContent === '용어집 저장').click(); await wait(() => saveStarted); }
   else await wait(() => window.document.querySelector('[role="status"]'));
   window.switchGlossary('next'); await wait(() => window.document.querySelector('button').textContent.includes('검토'));
-  window.document.querySelector('button').click(); await wait(() => window.document.querySelector('input')?.value === '새 회의');
+  window.document.querySelector('button').click(); await wait(() => window.document.querySelector('[id^="domain-term-"]')?.value === '새 회의');
   resolvePending(pendingPhase === 'load' ? snapshot('늦은 이전') : { revision: 1, entries: [{ term: '늦은 이전', sourceId: 'source' }] });
   await new Promise(done => setTimeout(done, 20));
-  assert.equal(window.document.querySelector('input').value, '새 회의');
+  assert.equal(window.document.querySelector('[id^="domain-term-"]').value, '새 회의');
   assert.equal([...window.document.querySelectorAll('button')].find(b => b.textContent === '용어집 저장').disabled, false);
 });
 
@@ -76,14 +82,14 @@ test('용어집을 접었다 다시 열어도 저장 전 편집을 유지합니�
   });
   t.after(() => { dispose(); window.happyDOM.abort(); });
   await wait(() => window.document.querySelector('button')); window.document.querySelector('button').click();
-  await wait(() => window.document.querySelector('input'));
-  const input = window.document.querySelector('input');
+  await wait(() => window.document.querySelector('[id^="domain-term-"]'));
+  const input = window.document.querySelector('[id^="domain-term-"]');
   Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(input, '수정한 표기');
   input.dispatchEvent(new window.Event('input', { bubbles: true }));
   await wait(() => input.value === '수정한 표기');
-  window.document.querySelector('button').click(); await wait(() => !window.document.querySelector('input'));
-  window.document.querySelector('button').click(); await wait(() => window.document.querySelector('input'));
-  assert.equal(window.document.querySelector('input').value, '수정한 표기'); assert.equal(reads, 1);
+  window.document.querySelector('button').click(); await wait(() => !window.document.querySelector('[id^="domain-term-"]'));
+  window.document.querySelector('button').click(); await wait(() => window.document.querySelector('[id^="domain-term-"]'));
+  assert.equal(window.document.querySelector('[id^="domain-term-"]').value, '수정한 표기'); assert.equal(reads, 1);
 });
 
 test('저장 중 접기로 완료 응답과 새 revision을 버리지 않습니다', async t => {
@@ -101,4 +107,32 @@ test('저장 중 접기로 완료 응답과 새 revision을 버리지 않습니�
   assert.equal(window.document.querySelector('button').disabled, true);
   resolveSave({ revision: 2, entries: [] }); await wait(() => !save().disabled);
   save().click(); await wait(() => requests.length === 2); assert.equal(requests[1].expectedRevision, 2);
+});
+
+test('자료가 바뀌면 저장하지 않은 수정이 없을 때만 후보를 다시 받습니다', async t => {
+  const window = new Window({ settings: { enableJavaScriptEvaluation: true, suppressInsecureJavaScriptEnvironmentWarning: true } });
+  window.document.body.innerHTML = '<main></main>'; window.eval(bundle.outputFiles[0].text);
+  let reads = 0;
+  const dispose = window.mountGlossary(window.document.querySelector('main'), {
+    domainGlossaryView: async () => { reads += 1; return { snapshot: { revision: 1, entries: [{ term: '저장된 용어', sourceId: 'source-1' }] }, candidates: [], reusable: [], unavailableSources: 0 }; },
+    domainGlossarySave: async request => ({ revision: 2, entries: request.entries }),
+  });
+  t.after(() => { dispose(); window.happyDOM.abort(); });
+  await wait(() => window.document.querySelector('button')); window.document.querySelector('button').click();
+  await wait(() => window.document.querySelector('#domain-term-0'));
+  assert.equal(reads, 1);
+  window.switchGlossary('meeting', 2);
+  await wait(() => reads === 2);
+  await wait(() => window.document.querySelector('#domain-term-0'));
+  const input = window.document.querySelector('#domain-term-0');
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set; setter.call(input, '수정 중'); input.dispatchEvent(new window.Event('input', { bubbles: true }));
+  await wait(() => input.value === '수정 중');
+  window.switchGlossary('meeting', 3);
+  await new Promise(done => setTimeout(done, 30));
+  assert.equal(reads, 2);
+  assert.equal(window.document.querySelector('#domain-term-0').value, '수정 중');
+  await wait(() => window.document.body.textContent.includes('저장하면 후보를 다시 불러옵니다'));
+  [...window.document.querySelectorAll('button')].find(button => button.textContent === '용어집 저장').click();
+  await wait(() => reads === 3);
+  assert.equal([...window.document.querySelectorAll('button')].some(button => button.textContent === '다시 불러오기'), false);
 });

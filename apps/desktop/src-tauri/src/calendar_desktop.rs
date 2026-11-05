@@ -256,13 +256,18 @@ pub async fn fetch_google_attendees(
 ) -> Result<calendar::GoogleAttendeeFetch, String> {
     crate::require_main(&window)?;
     let reference = crate::on_core(state.core.clone(), move |core| {
-        core.list_meetings()?.into_iter()
+        core.list_meetings()?
+            .into_iter()
             .find(|meeting| meeting.id == id && meeting.deleted_at.is_none())
             .ok_or(nero_core::CoreError::MeetingNotFound)?
             .calendar_reference
             .ok_or_else(|| nero_core::CoreError::InvalidInput("연결한 일정이 없습니다.".into()))
-    }).await?;
-    calendar.service()?.google_attendees(&reference, include_meet).await
+    })
+    .await?;
+    calendar
+        .service()?
+        .google_attendees(&reference, include_meet)
+        .await
 }
 
 #[tauri::command]

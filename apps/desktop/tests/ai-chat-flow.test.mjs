@@ -735,3 +735,18 @@ test('retry keeps the failed request effort even after the picker changes', asyn
   assert.equal(sends[1][1].effort, 'high');
   app.flow.dispose();
 });
+
+test('the model menu checks each usable account once per session and retries only after a failure', async () => {
+  let calls = 0, fail = true;
+  const app = await harness({ models: async () => { calls++; if (fail) throw Error('오프라인'); return { models: [{ id: 'model', label: 'Model' }], defaultModelId: 'model' }; } }, { initialModels: false });
+  assert.equal(calls, 0);
+  app.flow.ensureModels(); await tick(); await tick();
+  assert.equal(calls, 1);
+  assert.equal(app.flow.modelsFor('chatgpt').error, '오프라인');
+  fail = false; app.flow.ensureModels(); await tick(); await tick();
+  assert.equal(calls, 2);
+  assert.deepEqual(app.flow.modelsFor('chatgpt').models.map(model => model.id), ['model']);
+  app.flow.ensureModels(); await tick(); await tick();
+  assert.equal(calls, 2);
+  app.flow.dispose();
+});

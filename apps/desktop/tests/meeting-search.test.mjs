@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
+import { markdownSource as buildMarkdownSource } from '../scripts/build-markdown.mjs';
 import test from 'node:test';
 import { createRequire } from 'node:module';
 import { createMeetingSearch, literalOffsets, mountDocumentSearch } from '../src/meeting-search.js';
 
+new Function(await buildMarkdownSource())();
 const UI = createRequire(import.meta.url)('../../../design-system/components.js');
 const tick = () => new Promise(setImmediate);
 function deferred() { let resolve; const promise = new Promise(yes => { resolve = yes; }); return { promise, resolve }; }

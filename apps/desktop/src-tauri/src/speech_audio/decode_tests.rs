@@ -228,7 +228,11 @@ fn encoded_codec_matrix_preserves_duration_originals_and_rejects_incomplete_file
     for name in manifest["unsupported"].as_array().unwrap() {
         let source = fixtures.join(name.as_str().unwrap());
         let output = root.join("unsupported.wav");
-        assert!(prepare(&source, &output, &cancel).is_err(), "accepted unsupported {}", name);
+        assert!(
+            prepare(&source, &output, &cancel).is_err(),
+            "accepted unsupported {}",
+            name
+        );
         assert!(!output.exists());
     }
 }

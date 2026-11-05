@@ -30,7 +30,7 @@ export function createCalendarMeetingFlow({ bridge, onPrepared, onConfigure = ()
     try {
       const result = await bridge.readCalendarMeetingOccurrences({ day, timeZone: zone });
       if (current !== epoch || !state.open || disposed) return false;
-      if (result.day !== day || result.timeZone !== zone || !Number.isSafeInteger(result.scopeRevision) || result.scopeRevision < 0) throw Error('조회한 날짜와 캘린더 정보를 확인하지 못했습니다. 새로고침해 주세요.');
+      if (result.day !== day || result.timeZone !== zone || !Number.isSafeInteger(result.scopeRevision) || result.scopeRevision < 0) throw Error('조회한 날짜와 캘린더 정보를 확인하지 못했습니다. 다시 시도해 주세요.');
       publish({ loading: false, calendar: result.calendar, occurrences: result.occurrences, scopeRevision: result.scopeRevision });
       return true;
     } catch (error) {

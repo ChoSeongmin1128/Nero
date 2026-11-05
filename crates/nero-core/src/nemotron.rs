@@ -119,6 +119,8 @@ pub(crate) fn decode_provider(
         crate::apple_speech::decode(raw, duration, session, id)
     } else if value["model"] == crate::whisper::MODEL {
         crate::whisper::decode_asr(raw, duration, session, id)
+    } else if value["model"] == crate::qwen::MODEL {
+        crate::qwen::decode_asr(raw, duration, session, id)
     } else {
         decode_asr(raw, duration, session, id)
     }
@@ -309,6 +311,12 @@ fn push_sentence(
 
 pub(crate) const WORD_PROJECTOR_VERSION: &str = "nemotron-word-speakers-v1";
 pub(crate) const WHISPER_WORD_PROJECTOR_VERSION: &str = "whisper-word-speakers-v1";
+pub(crate) const QWEN_WORD_PROJECTOR_VERSION: &str = "qwen3-word-speakers-v1";
+
+// Whisper and the Qwen aligner can emit zero-length words; those keep an unknown speaker.
+fn zero_length_unknown(model: &str) -> bool {
+    model == crate::whisper::MODEL || model == crate::qwen::MODEL
+}
 
 pub(crate) fn is_projector(version: &str) -> bool {
     matches!(
@@ -317,6 +325,8 @@ pub(crate) fn is_projector(version: &str) -> bool {
             | WORD_PROJECTOR_VERSION
             | crate::whisper::PROJECTOR_VERSION
             | WHISPER_WORD_PROJECTOR_VERSION
+            | crate::qwen::PROJECTOR_VERSION
+            | QWEN_WORD_PROJECTOR_VERSION
             | crate::apple_speech::PROJECTOR
     )
 }
@@ -324,13 +334,15 @@ pub(crate) fn is_projector(version: &str) -> bool {
 pub(crate) fn is_word_projector(version: &str) -> bool {
     matches!(
         version,
-        WORD_PROJECTOR_VERSION | WHISPER_WORD_PROJECTOR_VERSION
+        WORD_PROJECTOR_VERSION | WHISPER_WORD_PROJECTOR_VERSION | QWEN_WORD_PROJECTOR_VERSION
     )
 }
 
 fn word_projector(model: &str) -> &'static str {
     if model == crate::whisper::MODEL {
         WHISPER_WORD_PROJECTOR_VERSION
+    } else if model == crate::qwen::MODEL {
+        QWEN_WORD_PROJECTOR_VERSION
     } else {
         WORD_PROJECTOR_VERSION
     }
@@ -345,7 +357,7 @@ fn unassigned_cause(atom: &WordAtom, model: &str, words: &[Word]) -> String {
     {
         "native_segment_context".into()
     } else if !atom.preserved
-        && model == crate::whisper::MODEL
+        && zero_length_unknown(model)
         && words[atom.word_start..atom.word_end]
             .iter()
             .all(|w| w.start == w.end)
@@ -427,7 +439,7 @@ pub(crate) fn canonical_asr(raw: &[u8]) -> Result<Vec<u8>> {
     if output.schema_version != 2
         || !matches!(
             output.projector_version.as_str(),
-            WORD_PROJECTOR_VERSION | WHISPER_WORD_PROJECTOR_VERSION
+            WORD_PROJECTOR_VERSION | WHISPER_WORD_PROJECTOR_VERSION | QWEN_WORD_PROJECTOR_VERSION
         )
         || hash(output.canonical_asr_raw.as_bytes()) != output.canonical_asr_sha256
     {
@@ -548,7 +560,7 @@ fn materialize(
         || hash(output.canonical_asr_raw.as_bytes()) != output.canonical_asr_sha256
         || output.word_slots.len() != words.len()
         || output.word_slots.iter().zip(words).any(|(slot, word)| {
-            if output.parent.model == crate::whisper::MODEL
+            if zero_length_unknown(&output.parent.model)
                 && (word.start == word.end || word.context_only())
             {
                 *slot != 0
@@ -819,6 +831,8 @@ pub(crate) fn create_speaker_generation(
                     | WORD_PROJECTOR_VERSION
                     | crate::whisper::PROJECTOR_VERSION
                     | WHISPER_WORD_PROJECTOR_VERSION
+                    | crate::qwen::PROJECTOR_VERSION
+                    | QWEN_WORD_PROJECTOR_VERSION
             )
     }) {
         return Err(derived_invalid());
@@ -843,7 +857,7 @@ pub(crate) fn create_speaker_generation(
         .map(|w| (w.start, w.end))
         .collect::<Vec<_>>();
     let mut slots = crate::diarization::posterior_slots(&draft, &positions, frames, sample_rate)?;
-    if baseline.model == crate::whisper::MODEL {
+    if zero_length_unknown(&baseline.model) {
         for (slot, word) in slots.iter_mut().zip(&parsed.words) {
             if word.start == word.end || word.context_only() {
                 *slot = 0;

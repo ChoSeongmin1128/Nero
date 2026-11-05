@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 import { buildControls } from './build-controls.mjs';
+import { buildMarkdown } from './build-markdown.mjs';
 import { npmProjectDirectory } from './npm-project-directory.mjs';
 
 const app = fileURLToPath(new URL('..', import.meta.url));
@@ -17,6 +18,7 @@ for (const name of ['appearance.css', 'appearance.js', 'fonts.css', 'typography.
   await copyFile(resolve(source, name), resolve(target, name));
 }
 await buildControls(resolve(target, 'controls.js'));
+await buildMarkdown(resolve(target, 'markdown.js'));
 const licenses = resolve(target, 'licenses');
 await mkdir(licenses, { recursive: true });
 await copyFile(resolve(source, 'components/ui/LICENSE.md'), resolve(licenses, 'shadcn-ui.txt'));

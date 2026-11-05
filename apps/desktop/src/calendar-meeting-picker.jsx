@@ -78,9 +78,9 @@ function CalendarMeetingPicker({ flow, container, finalFocus, onOpenLink }) {
           <span><strong>{event.title}</strong><span>{calendarOccurrenceTime(event, state.timeZone)}</span><span>{event.calendarName}</span></span>
         </label>)}</fieldset>}
         {selected && <CalendarLinks reference={{ ...selected, occurrenceKey: selected.key }} onOpen={onOpenLink} />}
-        {state.error && <p className="notice" role="alert">{state.error}</p>}
+        {state.error && <p className="notice" role="alert">{state.error} <button type="button" className="small quiet" disabled={busy} onClick={() => { void flow.refresh(); }}>다시 시도</button></p>}
       </div>
-      <DialogFooter><button type="button" disabled={busy} onClick={() => { void flow.refresh(); }}>새로고침</button><button type="button" disabled={state.creating} onClick={() => flow.close()}>취소</button><button type="button" className="primary" disabled={busy || !selected} onClick={() => { void flow.prepare(); }}>{state.creating ? '연결 중' : '일정 연결'}</button></DialogFooter>
+      <DialogFooter><button type="button" disabled={state.creating} onClick={() => flow.close()}>취소</button><button type="button" className="primary" disabled={busy || !selected} onClick={() => { void flow.prepare(); }}>{state.creating ? '연결 중' : '일정 연결'}</button></DialogFooter>
     </DialogContent>
   </Dialog>;
 }

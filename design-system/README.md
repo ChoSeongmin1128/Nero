@@ -56,6 +56,8 @@ Mac과 Windows의 웹 UI는 동봉한 Pretendard Variable 1.3.9를 같은 계약
 
 `NeroUI`는 HTML을 반환하고 이벤트는 소비 화면에 남긴다. 일반 사용자 문자열은 `text`나 지정된 데이터 속성으로 전달한다. `html/contentHTML/bodyHTML/actionsHTML`은 앱이 만든 신뢰 가능한 조합에만 사용하고, 그 안의 사용자 문자열은 `NeroUI.escape()`로 처리한다. 속성 이름은 허용된 HTML/ARIA/data 목록만 받는다.
 
+요약과 AI 답변의 `summaryDocument`는 `markdown.mjs`를 묶은 `markdown.js`(mdast 파서와 GFM 확장, 스트리밍 보정)를 먼저 불러온 뒤 쓴다. 구문 트리를 허용한 태그로만 그리며 근거 버튼과 검색 강조 규칙은 파서와 무관하게 유지한다. 앱은 공용 파일 준비 단계에서 `markdown.js`를 만든다.
+
 카탈로그와 제품은 `meetingRow/personRow/personOption/utterance/minutes/dialogContent`를 함께 사용한다. 기능별 시간/수정/참석자 선택의 기존 `data-action/data-field/id`를 유지한다. 선택 메뉴와 달력도 같은 `NeroControls`를 사용한다.
 
 선택/날짜는 같은 canonical React 소스를 사용한다. 앱은 Vite import로 기능 모달과 React 런타임을 공유하고, 정적 카탈로그/시안은 `build-controls.mjs`로 같은 엔트리를 standalone `controls.js`로 묶는다. 원본 `controls.js`는 빌드 입력이므로 소스 폴더를 그대로 HTTP에 올리지 말고 `build-preview.cjs`의 결과를 사용한다. React는 전용 host만 소유하며 소비 화면의 원래 native 입력, 저장, 녹음 상태를 소유하지 않는다. 출처/고정 커밋/원본 해시/MIT 고지는 `components/ui/`에 있고 앱에도 라이선스를 포함한다.

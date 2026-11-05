@@ -1,4 +1,11 @@
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { execFileSync } = require('node:child_process');
+const markdown = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'nero-markdown-')), 'markdown.js');
+execFileSync(process.execPath, [path.resolve(__dirname, '../../apps/desktop/scripts/build-markdown.mjs'), markdown]);
+require(markdown);
 const UI = require('../components.js');
 const { test } = require('node:test');
 
@@ -186,4 +193,59 @@ test('summary match groups stay unique across blocks and preserve literal Unicod
   const unicode = UI.summaryDocument('앞 **가**`나` A+B a+b', { searchQuery: '가나' });
   assert.match(unicode, /<strong><mark class="search-match" data-search-group="summary-1">가<\/mark><\/strong><code><mark class="search-match" data-search-group="summary-1">나<\/mark><\/code>/);
   assert.equal((UI.summaryDocument('**A+**`B` a+b', { searchQuery: 'a+b' }).match(/data-search-group="summary-2"/g) || []).length, 1);
+});
+
+test('summary renders GFM tables, quotes, emphasis and task lists with only allowed markup', () => {
+  const html = UI.summaryDocument('| 담당 | 내용 | 기한 |\n|:---|:---:|---:|\n| 김 | 확인 [2] | **명시 없음** |\n| 이 | `코드` 공유 | ~~취소~~ |\n\n> 인용 *기울임*\n\n- [x] 끝낸 일\n- [ ] 남은 일\n  - 하위 항목\n\n---');
+  assert.match(html, /<div class="summary-table"><table><thead><tr><th data-align="left">담당<\/th><th data-align="center">내용<\/th><th data-align="right">기한<\/th><\/tr><\/thead><tbody><tr><td data-align="left">김<\/td>/);
+  assert.match(html, /<td data-align="center">확인 <button[^>]*data-summary-citations="2"/);
+  assert.match(html, /<td data-align="right"><strong>명시 없음<\/strong><\/td>/);
+  assert.match(html, /<del>취소<\/del>/);
+  assert.match(html, /<blockquote><p>인용 <em>기울임<\/em><\/p><\/blockquote>/);
+  assert.match(html, /<li class="summary-task-item"><span class="summary-task" data-checked="true" aria-hidden="true"><\/span><span class="sr-only">완료<\/span>끝낸 일<\/li>/);
+  assert.match(html, /남은 일<ul><li>하위 항목<\/li><\/ul><\/li>/);
+  assert.match(html, /<hr>/);
+});
+
+test('summary links open only plain https addresses and never carry citations or raw HTML', () => {
+  const html = UI.summaryDocument('[문서 [1]](https://example.test/a?b=1&c=2) [위험](javascript:bad()) [데이터](data:text/html,x) [평문](http://example.test) <b onclick="x">굵게</b>\n\n<div onclick="bad()">블록</div>\n\nhttps://example.test/auto');
+  assert.match(html, /<a class="summary-link" href="https:\/\/example\.test\/a\?b=1&amp;c=2" title="https:\/\/example\.test\/a\?b=1&amp;c=2" draggable="false" data-summary-link="">문서 \[1\]<\/a>/);
+  assert.equal((html.match(/<a\b/g) || []).length, 2);
+  assert.match(html, /<a class="summary-link" href="https:\/\/example\.test\/auto"/);
+  assert.doesNotMatch(html, /javascript:|data:text|<b\b|<div onclick|<button/);
+  assert.match(html, /위험 데이터 평문 &lt;b onclick=&quot;x&quot;&gt;굵게&lt;\/b&gt;/);
+  assert.match(html, /<p>&lt;div onclick=&quot;bad\(\)&quot;&gt;블록&lt;\/div&gt;<\/p>/);
+});
+
+test('streaming answers close unfinished inline syntax and hold back an unfinished citation', () => {
+  assert.equal(UI.summaryDocument('**진행 중', { streaming: true }), '<article class="summary-document"><p><strong>진행 중</strong></p></article>');
+  const partial = UI.summaryDocument('확인 [2, 5-', { streaming: true });
+  assert.equal(partial, '<article class="summary-document"><p>확인</p></article>');
+  assert.doesNotMatch(UI.summaryDocument('[문서](https://exa', { streaming: true }), /<a\b|streamdown/);
+  assert.match(UI.summaryDocument('확인 [2, 5-', { streaming: false }), /\[2, 5-/);
+});
+
+test('summary input cannot forge the internal citation placeholders', () => {
+  assert.doesNotMatch(UI.summaryDocument('가짜 \uE0000\uE001 표시 [1]'), /data-summary-citations="1"[\s\S]*data-summary-citations/);
+  assert.equal((UI.summaryDocument('가짜 \uE0000\uE001 표시 [1]').match(/<button/g) || []).length, 1);
+  assert.doesNotMatch(UI.summaryDocument('\uE0000\uE001'), /\uE000|<button/);
+});
+
+test('known titles are promoted only from real paragraphs, never from code or list content', () => {
+  const html = UI.summaryDocument('- ```\n  요약\n  ```\n\n다음 작업\n- a\n\n참고 내용\n\n    결정 사항\n\n> 할 일\n> 내용');
+  assert.match(html, /<ul><li><pre><code>요약<\/code><\/pre><\/li><\/ul><h3>다음 작업<\/h3><ul><li>a<\/li><\/ul><p>참고 내용<\/p><pre><code>결정 사항<\/code><\/pre><blockquote><h3>할 일<\/h3><p>내용<\/p><\/blockquote>/);
+  assert.match(UI.summaryDocument('- a\n\n  결정 사항'), /<li><p>a<\/p><p>결정 사항<\/p><\/li>/);
+});
+
+test('citations next to links stay citations, numeric definitions stay links and entities cannot forge placeholders', () => {
+  const html = UI.summaryDocument('https://example.test/doc[3] 그리고 **https://example.test/a**[2]');
+  assert.match(html, /href="https:\/\/example\.test\/doc"/);
+  assert.match(html, /href="https:\/\/example\.test\/a"/);
+  assert.match(html, /<strong><a [^>]*>https:\/\/example\.test\/a<\/a><\/strong>/);
+  assert.equal((html.match(/<button/g) || []).length, 2);
+  const defined = UI.summaryDocument('[문서][3] 그리고 [3]\n\n[3]: https://example.test/first\n[3]: https://example.test/second');
+  assert.doesNotMatch(defined, /<button|second/);
+  assert.equal((defined.match(/href="https:\/\/example\.test\/first"/g) || []).length, 2);
+  const forged = UI.summaryDocument('근거 [1] 위조 &#xE000;00&#xE001; &#xE000;abcdefgh0&#xE001;');
+  assert.equal((forged.match(/<button/g) || []).length, 1);
 });

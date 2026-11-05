@@ -79,6 +79,7 @@ struct Inner {
     stored_token: Option<(bool, StoredToken)>,
     pending_token: Option<(bool, StoredToken, Access)>,
     needs_sync: bool,
+    rejections: u64,
     last_attempt: Option<u64>,
     last_tick: Option<u64>,
     error: Option<String>,
@@ -180,6 +181,7 @@ impl CalendarService {
                 stored_token: None,
                 pending_token: None,
                 needs_sync: true,
+                rejections: 0,
                 last_attempt: None,
                 last_tick: None,
                 error: None,
@@ -546,7 +548,41 @@ impl CalendarService {
             inner.error = Some(error.message());
             inner.state.revision += 1;
         }
+        if matches!(error, google::Failure::Unauthorized)
+            && context.generation == self.generation.load(Ordering::Acquire)
+            && inner
+                .access
+                .as_ref()
+                .is_some_and(|access| access.token == context.token)
+        {
+            inner.access = None;
+            inner.rejections += 1;
+            inner.needs_sync = true;
+        }
         error.message()
+    }
+    fn rejections(&self) -> u64 {
+        self.inner.lock().unwrap().rejections
+    }
+    // A rejected access token gets one retry, which refreshes it. A token that is rejected
+    // again right after a successful refresh will not recover by itself, so the user is
+    // asked to reconnect instead of seeing the same retry message forever.
+    async fn with_token_retry<T, F, Fut>(&self, generation: u64, attempt: F) -> Result<T, String>
+    where
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = Result<T, String>>,
+    {
+        let before = self.rejections();
+        let result = attempt().await;
+        if result.is_ok() || self.rejections() == before {
+            return result;
+        }
+        let retried = self.rejections();
+        let result = attempt().await;
+        if result.is_err() && self.rejections() != retried {
+            return Err(self.sync_error(generation, google::Failure::Reconnect));
+        }
+        result
     }
     fn credential_error(&self, generation: u64, error: crate::secret_store::Error) -> String {
         let message = "저장된 Google 연결에 접근할 수 없습니다. 다시 연결해 주세요.".to_string();
@@ -742,6 +778,11 @@ impl CalendarService {
     }
 
     async fn synchronize(&self, generation: u64) -> Result<(), String> {
+        self.with_token_retry(generation, || self.synchronize_once(generation))
+            .await
+    }
+
+    async fn synchronize_once(&self, generation: u64) -> Result<(), String> {
         self.inner.lock().unwrap().last_attempt = Some(now_ms());
         let context = self.query_context(generation).await?;
         let (calendars, choices) = self.query_calendars(&context).await?;
@@ -783,6 +824,20 @@ impl CalendarService {
         time_zone: String,
         expected_scope: Option<u64>,
     ) -> Result<MeetingBrowse, String> {
+        let generation = self.generation.load(Ordering::Acquire);
+        self.with_token_retry(generation, || {
+            self.browse_day_once(&day, &time_zone, expected_scope)
+        })
+        .await
+    }
+
+    async fn browse_day_once(
+        &self,
+        day: &str,
+        time_zone: &str,
+        expected_scope: Option<u64>,
+    ) -> Result<MeetingBrowse, String> {
+        let (day, time_zone) = (day.to_owned(), time_zone.to_owned());
         let (start_at, end_at) = day_bounds(&day, &time_zone)?;
         let generation = self.generation.load(Ordering::Acquire);
         if expected_scope.is_some_and(|expected| expected != generation) {
@@ -1983,5 +2038,71 @@ mod tests {
         });
         assert!(service.snapshot().connected);
         assert!(service.snapshot().error.is_none());
+    }
+
+    #[test]
+    fn a_rejected_access_token_is_dropped_for_one_refresh_without_asking_to_reconnect() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = reminder_service(temp.path());
+        let context = browse_context(&service);
+        service.inner.lock().unwrap().access = Some(Access {
+            token: context.token.clone(),
+            expires_at: u64::MAX,
+        });
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        runtime.block_on(service.query_error(&context, google::Failure::Unauthorized));
+        {
+            let inner = service.inner.lock().unwrap();
+            assert!(inner.access.is_none());
+            assert!(inner.credential_blocked.is_none());
+            assert!(inner.auth_ready);
+            assert!(inner.needs_sync);
+        }
+        assert!(service.snapshot().connected);
+        assert_eq!(service.rejections(), 1);
+    }
+
+    #[test]
+    fn one_rejection_retries_while_a_repeated_rejection_asks_to_reconnect() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = reminder_service(temp.path());
+        let generation = service.generation.load(Ordering::Acquire);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let calls = std::cell::Cell::new(0);
+        let reject = || service.inner.lock().unwrap().rejections += 1;
+        let once = runtime.block_on(service.with_token_retry(generation, || {
+            calls.set(calls.get() + 1);
+            let first = calls.get() == 1;
+            if first {
+                reject();
+            }
+            async move {
+                if first {
+                    Err("rejected".to_string())
+                } else {
+                    Ok(())
+                }
+            }
+        }));
+        assert_eq!(once, Ok(()));
+        assert_eq!(calls.get(), 2);
+        assert!(service.snapshot().connected);
+        let plain = runtime.block_on(
+            service.with_token_retry(generation, || async { Err::<(), _>("other".to_string()) }),
+        );
+        assert_eq!(plain.unwrap_err(), "other");
+        calls.set(0);
+        let always = runtime.block_on(service.with_token_retry(generation, || {
+            calls.set(calls.get() + 1);
+            reject();
+            async { Err::<(), _>("rejected".to_string()) }
+        }));
+        assert_eq!(calls.get(), 2);
+        assert!(always.unwrap_err().contains("다시 연결"));
+        assert!(!service.snapshot().connected);
     }
 }

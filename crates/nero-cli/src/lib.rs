@@ -15,7 +15,7 @@ use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 
 pub use nero_core::identity::APP_IDENTIFIER;
-pub const METHODS: [&str; 30] = [
+pub const METHODS: [&str; 33] = [
     "app_update",
     "jobs_list",
     "job_cancel",
@@ -43,9 +43,12 @@ pub const METHODS: [&str; 30] = [
     "meetings_move",
     "meetings_trash",
     "meetings_restore",
+    "meeting_import",
     "folder_create",
     "folder_rename",
     "folder_delete",
+    "speech_engine_set",
+    "speech_switch_cancel",
 ];
 
 pub fn is_read_only(method: &str) -> bool {
@@ -83,7 +86,14 @@ pub fn is_destructive(method: &str) -> bool {
             | "meetings_trash"
             | "folder_rename"
             | "folder_delete"
+            | "speech_switch_cancel"
     )
+}
+
+// Tools that may reach services outside this device: the public update channel and
+// speech model downloads.
+pub fn is_open_world(method: &str) -> bool {
+    matches!(method, "app_update" | "speech_engine_set")
 }
 
 #[derive(Debug)]
@@ -122,6 +132,7 @@ pub fn dispatch(root: &Path, method: &str, params: Value) -> Result<Value, Query
     }
     if nero_core::agent_control::METHODS.contains(&method)
         || nero_core::agent_control::JOB_METHODS.contains(&method)
+        || nero_core::agent_control::PROCESSING_METHODS.contains(&method)
     {
         return mutations::dispatch(root, method, params);
     }
@@ -136,8 +147,9 @@ pub fn dispatch(root: &Path, method: &str, params: Value) -> Result<Value, Query
     let mut result = reader.query(method, params).map_err(query_error)?;
     if method == "status" {
         result["versions"] = versions::status(root);
+        result["speech"] = mutations::speech_status(root);
         result["readOnly"] = json!(false);
-        result["capabilities"] = json!({"queriesReadOnly":true,"templateWrites":true,"meetingWritesRequireApp":true,"summaryImportsRequireApp":true,"jobQueriesRequireApp":true,"jobCancellationRequireApp":true,"appUpdatesRequireApp":true});
+        result["capabilities"] = json!({"queriesReadOnly":true,"templateWrites":true,"meetingWritesRequireApp":true,"summaryImportsRequireApp":true,"jobQueriesRequireApp":true,"jobCancellationRequireApp":true,"appUpdatesRequireApp":true,"meetingImportsRequireApp":true,"speechSettingsRequireApp":true});
     }
     Ok(result)
 }
@@ -294,6 +306,7 @@ pub fn input_schema(method: &str) -> Map<String, Value> {
     }
     if nero_core::agent_control::METHODS.contains(&method)
         || nero_core::agent_control::JOB_METHODS.contains(&method)
+        || nero_core::agent_control::PROCESSING_METHODS.contains(&method)
     {
         return mutations::schema(method);
     }
@@ -636,6 +649,93 @@ mod tests {
         assert!(is_read_only("summary_context"));
         assert!(!is_read_only("summary_import"));
         assert!(is_destructive("summary_import"));
+    }
+
+    #[test]
+    fn processing_schemas_require_explicit_targets_and_stay_out_of_reads() {
+        let import = Value::Object(input_schema("meeting_import"));
+        assert_eq!(import["required"], json!(["path"]));
+        assert_eq!(import["additionalProperties"], false);
+        assert_eq!(
+            import["properties"]["meetingId"]["pattern"],
+            id_schema()["pattern"]
+        );
+        assert_eq!(
+            import["properties"]["expectedVersion"]["pattern"],
+            "^sha256:[0-9a-f]{64}$"
+        );
+        assert_eq!(
+            import["dependentRequired"],
+            json!({"meetingId":["expectedVersion"],"expectedVersion":["meetingId"]})
+        );
+        let description = import["properties"]["path"]["description"]
+            .as_str()
+            .unwrap();
+        for extension in nero_core::AUDIO_IMPORT_EXTENSIONS {
+            assert!(description.contains(extension));
+        }
+        assert!(import["properties"].get("transcribe").is_none());
+        let engine = Value::Object(input_schema("speech_engine_set"));
+        assert_eq!(engine["required"], json!(["engine"]));
+        assert_eq!(
+            engine["properties"]["engine"]["pattern"],
+            "^[A-Za-z0-9]{1,64}$"
+        );
+        assert_eq!(
+            engine["properties"]["acknowledgeMemoryWarning"]["default"],
+            false
+        );
+        assert_eq!(engine["additionalProperties"], false);
+        let cancel = Value::Object(input_schema("speech_switch_cancel"));
+        assert_eq!(cancel["required"], json!(["target"]));
+        assert_eq!(cancel["additionalProperties"], false);
+        for method in [
+            "meeting_import",
+            "speech_engine_set",
+            "speech_switch_cancel",
+        ] {
+            assert!(METHODS.contains(&method));
+            assert!(!is_read_only(method));
+        }
+        assert!(!is_destructive("meeting_import"));
+        assert!(!is_destructive("speech_engine_set"));
+        assert!(is_destructive("speech_switch_cancel"));
+        assert!(is_open_world("speech_engine_set"));
+        assert!(!is_open_world("meeting_import"));
+        assert!(!METHODS.contains(&"speech_status"));
+    }
+
+    #[test]
+    fn processing_requests_without_an_app_never_initialize_a_library() {
+        let temporary = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let missing = temporary.path().join("missing");
+        let audio = temporary.path().join("synthetic.wav");
+        for (method, params) in [
+            ("meeting_import", json!({"path":audio.to_str().unwrap()})),
+            ("speech_engine_set", json!({"engine":"nemotron"})),
+            ("speech_switch_cancel", json!({"target":"qwenKo"})),
+        ] {
+            assert_ne!(
+                dispatch(&missing, method, params).unwrap_err().code,
+                "invalid_input"
+            );
+        }
+        assert_eq!(
+            dispatch(&missing, "meeting_import", json!({"path":"relative.wav"}))
+                .unwrap_err()
+                .code,
+            "invalid_input"
+        );
+        assert_eq!(
+            dispatch(&missing, "speech_status", json!({}))
+                .unwrap_err()
+                .code,
+            "unsupported_method"
+        );
+        let status = dispatch(&missing, "status", json!({})).unwrap();
+        assert_eq!(status["speech"]["state"], "unavailable");
+        assert_eq!(status["capabilities"]["speechSettingsRequireApp"], true);
+        assert!(!missing.exists());
     }
 
     #[test]
