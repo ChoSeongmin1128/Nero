@@ -6,9 +6,11 @@ const deferred = () => { let resolve, reject; const promise = new Promise((a, b)
 const readyAccount = { id: 'account', provider: 'chatgpt', state: 'ready', configured: true, label: 'Example' };
 const exampleMeetings = [{ id: 'meeting-a', title: 'Example meeting' }, { id: 'meeting-b', title: 'Another meeting' }];
 async function harness(overrides = {}, options = {}) {
-  const calls = [], events = [], store = new Map([['conversation', { id: 'conversation', title: 'Existing conversation', messages: [], activeRequestId: null }]]);
+  // The seeded conversation is about the first example meeting, as the native list reports.
+  const calls = [], events = [], store = new Map([['conversation', { id: 'conversation', title: 'Existing conversation', messages: [], activeRequestId: null, meetingIds: ['meeting-a'] }]]);
   let count = 0, conversationCount = 1;
-  const summary = value => ({ id: value.id, title: value.title, messageCount: value.messages.length, activeRequestId: value.activeRequestId });
+  const meetingIds = value => [...new Set([...(value.meetingIds || []), ...value.messages.filter(message => message.role === 'user').flatMap(message => message.attachments || []).filter(item => item.kind === 'meeting').map(item => item.meetingId)])];
+  const summary = value => ({ id: value.id, title: value.title, messageCount: value.messages.length, activeRequestId: value.activeRequestId, meetingIds: meetingIds(value) });
   const bridge = {
     accounts: async () => ({ accounts: [readyAccount, { id: 'claude', provider: 'claude', state: 'unavailable', configured: false }] }),
     models: async () => ({ models: [{ id: 'model', label: 'Model' }], defaultModelId: 'model' }),
@@ -146,23 +148,30 @@ test('opening from a meeting does not attach it to an existing conversation', as
   app.flow.dispose();
 });
 
-test('meeting and library navigation preserve the same draft attachments and response stream', async () => {
+test('the panel follows the meeting on screen while other answers keep streaming in their own chat', async () => {
   const app = await harness(); app.flow.edit('Question'); await app.flow.send();
-  app.flow.edit('Next question'); app.flow.setMeeting(exampleMeetings[1]); app.flow.setMeeting(null);
+  app.flow.edit('Next question'); app.flow.setMeeting(exampleMeetings[1]); await tick(); await tick();
+  assert.equal(app.state().conversation.id, null);
+  assert.deepEqual(app.state().conversation.meetings.map(item => item.id), ['meeting-b']);
+  app.flow.setMeeting(null); await tick();
+  assert.deepEqual(app.state().conversation.meetings.map(item => item.id), ['meeting-b']);
   app.emit({ type: 'completed', messageId: 'answer', text: 'Still here' });
+  app.flow.setMeeting(exampleMeetings[0]); await tick(); await tick(); await tick();
   assert.equal(app.state().conversation.id, 'conversation'); assert.equal(app.state().conversation.draft, 'Next question');
   assert.equal(app.state().conversation.messages.at(-1).text, 'Still here');
-  assert.deepEqual(app.state().conversation.meetings.map(item => item.id), ['meeting-a']);
   app.flow.dispose();
 });
 
-test('opening AI from another meeting preserves the draft and attachments', async () => {
-  const app = await harness(); app.flow.edit('Draft'); app.flow.setMeeting(exampleMeetings[1]);
-  await app.flow.open(exampleMeetings[1]);
+test('a new meeting opens a new chat and an unsent draft waits for its meeting', async () => {
+  const app = await harness(); app.flow.edit('Draft'); app.flow.setMeeting(exampleMeetings[1]); await tick(); await tick();
+  assert.equal(app.state().conversation.id, null); assert.equal(app.state().conversation.draft, '');
+  app.flow.edit('Meeting B draft');
+  app.flow.setMeeting(exampleMeetings[0]); await tick(); await tick(); await tick();
   assert.equal(app.state().conversation.id, 'conversation'); assert.equal(app.state().conversation.draft, 'Draft');
-  assert.deepEqual(app.state().conversation.meetings.map(item => item.id), ['meeting-a']);
-  app.flow.attachMeeting(exampleMeetings[1]); assert.equal(app.state().conversation.meetings.length, 2);
-  app.flow.removeMeeting('meeting-a'); await app.flow.send(); assert.deepEqual(app.calls[0][1].meetingIds, ['meeting-b']); app.flow.dispose();
+  app.flow.setMeeting(exampleMeetings[1]); await tick(); await tick();
+  assert.equal(app.state().conversation.id, null); assert.equal(app.state().conversation.draft, 'Meeting B draft');
+  assert.deepEqual(app.state().conversation.meetings.map(item => item.id), ['meeting-b']);
+  await app.flow.send(); assert.deepEqual(app.calls.find(call => call[0] === 'send')[1].meetingIds, ['meeting-b']); app.flow.dispose();
 });
 
 test('new conversations and history switching keep independent streams and drafts', async () => {
@@ -178,11 +187,15 @@ test('new conversations and history switching keep independent streams and draft
   app.flow.edit('Another draft'); await app.flow.selectConversation('conversation'); await app.flow.selectConversation(second); assert.equal(app.state().conversation.draft, 'Another draft'); app.flow.dispose();
 });
 
-test('Notion loading follows a conversation across meeting navigation', async () => {
-  const pending = deferred(), app = await harness({ fetchSources: () => pending.promise });
-  const load = app.flow.addSource('https://notion.so/example'); app.flow.setMeeting(exampleMeetings[1]); app.flow.setMeeting(null);
+test('Notion loading survives library navigation and stops when another meeting takes the panel', async () => {
+  let fetches = 0;
+  const pending = deferred(), late = deferred(), app = await harness({ fetchSources: () => (++fetches === 1 ? pending.promise : late.promise) });
+  const load = app.flow.addSource('https://notion.so/example'); app.flow.setMeeting(null); await tick();
   pending.resolve({ sources: [{ sourceId: 'notion:snapshot', title: 'Selected page' }] }); assert.equal(await load, true);
-  assert.equal(app.state().conversation.sources[0].sourceId, 'notion:snapshot'); assert.equal(app.calls.length, 0); app.flow.dispose();
+  assert.equal(app.state().conversation.sources[0].sourceId, 'notion:snapshot'); assert.equal(app.calls.length, 0);
+  const next = app.flow.addSource('https://notion.so/other'); app.flow.setMeeting(exampleMeetings[1]); await tick(); await tick();
+  late.resolve({ sources: [{ sourceId: 'notion:late' }] }); assert.equal(await next, false);
+  assert.equal(app.calls.at(-1)[0], 'cancelSource'); app.flow.dispose();
 });
 
 test('switching conversations cancels source loading and discards its late result', async () => {
@@ -603,7 +616,7 @@ test('a failed screen refresh after persistence does not report the successful w
 
 test('native history refresh updates the active title without replacing its draft or messages', async () => {
   let title = 'Initial';
-  const app = await harness({ list: async () => [{ id: 'conversation', title }] });
+  const app = await harness({ list: async () => [{ id: 'conversation', title, meetingIds: ['meeting-a'] }] });
   app.flow.edit('Draft'); title = 'Question title'; await app.flow.loadList(true);
   assert.equal(app.state().conversation.title, 'Question title'); assert.equal(app.state().conversation.draft, 'Draft'); app.flow.dispose();
 });
@@ -748,5 +761,47 @@ test('the model menu checks each usable account once per session and retries onl
   assert.deepEqual(app.flow.modelsFor('chatgpt').models.map(model => model.id), ['model']);
   app.flow.ensureModels(); await tick(); await tick();
   assert.equal(calls, 2);
+  app.flow.dispose();
+});
+
+test('a refused edit returns the window to the stored version and keeps the earlier answer', async () => {
+  let refuse = false;
+  const app = await harness({ send: async request => { if (refuse) throw Error('진행 중인 답변이 끝난 뒤 다시 시도해 주세요.'); app.calls.push(['send', request]); return { conversationId: request.conversationId, requestId: request.requestId, questionId: `stored-${request.requestId}` }; } });
+  app.flow.edit('Question'); await app.flow.send();
+  app.emit({ type: 'completed', messageId: 'answer', text: 'Answer' });
+  const question = app.state().conversation.messages.find(item => item.role === 'user').id;
+  assert.equal(question.startsWith('stored-'), true);
+  refuse = true;
+  assert.equal(await app.flow.editQuestion(question, 'Edited'), false);
+  const shown = app.state().conversation;
+  assert.deepEqual(shown.messages.map(item => item.text), ['Question', 'Answer']);
+  assert.deepEqual(shown.versions || {}, {});
+  assert.match(shown.error, /진행 중인 답변/);
+  refuse = false;
+  assert.equal(await app.flow.editQuestion(question, 'Edited'), true);
+  const request = app.calls.filter(call => call[0] === 'send').at(-1)[1];
+  assert.equal(request.editOf, question); assert.equal(request.parentId, 'root');
+  app.flow.dispose();
+});
+
+test('drafts survive meeting moves through the library and never absorb a draft being sent', async () => {
+  const created = deferred();
+  const app = await harness({ create: () => created.promise });
+  const c = { id: 'meeting-c', title: 'C' }, d = { id: 'meeting-d', title: 'D' };
+  app.flow.setMeeting(c); await tick(); await tick();
+  app.flow.edit('C draft');
+  app.flow.setMeeting(null); await tick();
+  app.flow.setMeeting(d); await tick(); await tick();
+  assert.equal(app.state().conversation.draft, '');
+  app.flow.setMeeting(null); app.flow.setMeeting(c); await tick(); await tick();
+  assert.equal(app.state().conversation.draft, 'C draft');
+  const sending = app.flow.send();
+  app.flow.setMeeting(d); await tick();
+  created.resolve({ id: 'conversation-c', title: '새 대화', messages: [], activeRequestId: null });
+  await sending; await tick(); await tick(); await tick();
+  assert.equal(app.state().meeting.id, 'meeting-d');
+  assert.equal(app.state().conversation.id, null);
+  assert.deepEqual(app.state().conversation.meetings.map(item => item.id), ['meeting-d']);
+  assert.equal(app.state().conversation.draft, '');
   app.flow.dispose();
 });

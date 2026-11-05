@@ -346,21 +346,21 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     const folders = snapshot.folders || [];
     let counts;
     const countInView = filter => (counts ||= countLibraryMeetings(snapshot.meetings)).get(filter) || 0;
-    if (!['all', 'unfiled', 'trash'].includes(state().libraryFilter) && !folders.some(folder => folder.id === state().libraryFilter)) state().libraryFilter = 'unfiled';
+    if (!['all', 'unfiled', 'trash', 'ai'].includes(state().libraryFilter) && !folders.some(folder => folder.id === state().libraryFilter)) state().libraryFilter = 'unfiled';
     const visible = visibleMeetings();
     const visibleIds = new Set(visible.map(meeting => meeting.id));
     for (const id of selection()) if (!visibleIds.has(id)) selection().delete(id);
     if (!selection().size || !visibleIds.has(selectionAnchor)) selectionAnchor = null;
     const filter = state().libraryFilter;
     const disabled = Boolean(state().libraryBusy || !state().connected);
-    const navigation = [{ id: 'all', name: '전체 목록', icon: 'list' }, { id: 'unfiled', name: '미분류', icon: 'inbox' }, ...folders.map(folder => ({ ...folder, icon: 'folder' })), { id: 'trash', name: '휴지통', icon: 'trash-2' }];
+    const navigation = [{ id: 'all', name: '전체 목록', icon: 'list' }, { id: 'unfiled', name: '미분류', icon: 'inbox' }, { id: 'ai', name: 'AI 대화', icon: 'messages-square' }, ...folders.map(folder => ({ ...folder, icon: 'folder' })), { id: 'trash', name: '휴지통', icon: 'trash-2' }];
     const key = JSON.stringify([filter, state().libraryOpen, folders, disabled, snapshot.meetings.map(meeting => [meeting.id, meeting.folderId, meeting.deletedAt])]);
     if (key !== folderKey) {
       clearDropTarget();
       folderKey = key;
       const focused = dialog.ownerDocument?.activeElement?.dataset?.libraryFilter;
-      const renderNavigation = items => items.map(item => `<div class="library-folder-item"><button type="button" class="quiet library-folder-link" data-library-filter="${escape(item.id)}" aria-label="${escape(item.name)}" title="${escape(item.name)}"${state().libraryOpen && filter === item.id ? ' aria-current="page"' : ''}${disabled ? ' disabled' : ''}>${icon(item.icon)}<span class="library-folder-name" title="${escape(item.name)}">${escape(item.name)}</span><span class="library-folder-count">${countInView(item.id)}</span></button>${folders.some(folder => folder.id === item.id) ? `<details class="library-folder-menu"><summary aria-label="${escape(item.name)} 폴더 메뉴">${icon('ellipsis')}</summary><div class="action-menu"><button type="button" data-folder-rename="${escape(item.id)}"${disabled ? ' disabled' : ''}>이름 변경</button><button type="button" class="danger" data-folder-delete="${escape(item.id)}"${disabled ? ' disabled' : ''}>폴더 삭제</button></div></details>` : ''}</div>`).join('');
-      byId('library-system-views').innerHTML = renderNavigation(navigation.filter(item => ['all', 'unfiled'].includes(item.id)));
+      const renderNavigation = items => items.map(item => `<div class="library-folder-item"><button type="button" class="quiet library-folder-link" data-library-filter="${escape(item.id)}" aria-label="${escape(item.name)}" title="${escape(item.name)}"${state().libraryOpen && filter === item.id ? ' aria-current="page"' : ''}${disabled ? ' disabled' : ''}>${icon(item.icon)}<span class="library-folder-name" title="${escape(item.name)}">${escape(item.name)}</span><span class="library-folder-count">${item.id === 'ai' ? '' : countInView(item.id)}</span></button>${folders.some(folder => folder.id === item.id) ? `<details class="library-folder-menu"><summary aria-label="${escape(item.name)} 폴더 메뉴">${icon('ellipsis')}</summary><div class="action-menu"><button type="button" data-folder-rename="${escape(item.id)}"${disabled ? ' disabled' : ''}>이름 변경</button><button type="button" class="danger" data-folder-delete="${escape(item.id)}"${disabled ? ' disabled' : ''}>폴더 삭제</button></div></details>` : ''}</div>`).join('');
+      byId('library-system-views').innerHTML = renderNavigation(navigation.filter(item => ['all', 'unfiled', 'ai'].includes(item.id)));
       byId('library-user-folders').innerHTML = renderNavigation(navigation.filter(item => folders.some(folder => folder.id === item.id)));
       byId('library-trash-view').innerHTML = renderNavigation(navigation.filter(item => item.id === 'trash'));
       if (focused) [...byId('folder-list').querySelectorAll('[data-library-filter]')].find(node => node.dataset.libraryFilter === focused)?.focus({ preventScroll: true });

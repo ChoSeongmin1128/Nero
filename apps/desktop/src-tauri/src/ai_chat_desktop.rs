@@ -342,13 +342,14 @@ pub async fn ai_chat_list(
     window: WebviewWindow,
     app: AppHandle,
     state: State<'_, AiDesktop>,
+    trash: Option<bool>,
 ) -> Result<Vec<ai_chat::ConversationSummary>, String> {
     require_main(&window)?;
     let transition = app.state::<DesktopState>().lifecycle.begin_transition()?;
     let chat = state.chat()?;
     tauri::async_runtime::spawn_blocking(move || {
         let _transition = transition;
-        chat.list()
+        chat.list(trash.unwrap_or(false))
     })
     .await
     .map_err(|_| "대화 목록을 불러오지 못했습니다.".to_string())?
@@ -386,6 +387,81 @@ pub async fn ai_chat_delete(
     .await
     .map_err(|_| "대화를 삭제하지 못했습니다.".to_string())?
 }
+#[derive(Clone, Copy)]
+enum TrashAction {
+    Trash,
+    Restore,
+    Purge,
+}
+async fn trash_action(
+    window: WebviewWindow,
+    app: AppHandle,
+    state: State<'_, AiDesktop>,
+    conversation_ids: Vec<String>,
+    action: TrashAction,
+) -> Result<Vec<String>, String> {
+    require_main(&window)?;
+    if conversation_ids.is_empty() || conversation_ids.len() > 10_000 {
+        return Err("정리할 대화를 선택해 주세요.".into());
+    }
+    let transition = app.state::<DesktopState>().lifecycle.begin_transition()?;
+    let chat = state.chat()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _transition = transition;
+        match action {
+            TrashAction::Trash => chat.trash(&conversation_ids, true),
+            TrashAction::Restore => chat.restore(&conversation_ids).map(|()| conversation_ids),
+            TrashAction::Purge => chat.purge(&conversation_ids).map(|()| conversation_ids),
+        }
+    })
+    .await
+    .map_err(|_| "대화를 정리하지 못했습니다.".to_string())?
+}
+#[tauri::command]
+pub async fn ai_chat_trash(
+    window: WebviewWindow,
+    app: AppHandle,
+    state: State<'_, AiDesktop>,
+    conversation_ids: Vec<String>,
+) -> Result<Vec<String>, String> {
+    trash_action(window, app, state, conversation_ids, TrashAction::Trash).await
+}
+#[tauri::command]
+pub async fn ai_chat_restore(
+    window: WebviewWindow,
+    app: AppHandle,
+    state: State<'_, AiDesktop>,
+    conversation_ids: Vec<String>,
+) -> Result<Vec<String>, String> {
+    trash_action(window, app, state, conversation_ids, TrashAction::Restore).await
+}
+#[tauri::command]
+pub async fn ai_chat_purge(
+    window: WebviewWindow,
+    app: AppHandle,
+    state: State<'_, AiDesktop>,
+    conversation_ids: Vec<String>,
+) -> Result<Vec<String>, String> {
+    trash_action(window, app, state, conversation_ids, TrashAction::Purge).await
+}
+#[tauri::command]
+pub async fn ai_chat_select_version(
+    window: WebviewWindow,
+    app: AppHandle,
+    state: State<'_, AiDesktop>,
+    conversation_id: String,
+    message_id: String,
+) -> Result<ai_chat::Conversation, String> {
+    require_main(&window)?;
+    let transition = app.state::<DesktopState>().lifecycle.begin_transition()?;
+    let chat = state.chat()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _transition = transition;
+        chat.select_version(&conversation_id, &message_id)
+    })
+    .await
+    .map_err(|_| "질문 버전을 바꾸지 못했습니다.".to_string())?
+}
 #[tauri::command]
 pub async fn ai_chat_read(
     window: WebviewWindow,
@@ -420,6 +496,8 @@ pub async fn ai_chat_send(
     template_id: Option<String>,
     skill_id: Option<String>,
     summary_target_id: Option<String>,
+    edit_of: Option<String>,
+    parent_id: Option<String>,
 ) -> Result<ai_chat::Started, String> {
     require_main(&window)?;
     let transition = app.state::<DesktopState>().lifecycle.begin_transition()?;
@@ -437,6 +515,8 @@ pub async fn ai_chat_send(
         template_id,
         skill_id,
         summary_target_id,
+        edit_of,
+        parent_id,
     };
     tauri::async_runtime::spawn_blocking(move || {
         let _transition = transition;

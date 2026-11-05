@@ -89,6 +89,10 @@ pub fn now() -> u64 {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Message {
+    // The message this one follows. Editing a question adds a sibling under the same
+    // parent; `ROOT` marks the first turn. Older files had a single line of messages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
     #[serde(default)]
@@ -149,7 +153,13 @@ pub struct Conversation {
     pub messages: Vec<Message>,
     #[serde(default)]
     pub active_request_id: Option<String>,
+    // The question version shown at each fork, keyed by the shared parent.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub versions: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<u64>,
 }
+pub const ROOT: &str = "root";
 impl Conversation {
     pub fn empty(conversation_id: &str) -> Self {
         Self {
@@ -163,7 +173,55 @@ impl Conversation {
             model_id: None,
             messages: vec![],
             active_request_id: None,
+            versions: BTreeMap::new(),
+            deleted_at: None,
         }
+    }
+    pub fn normalize_parents(&mut self) {
+        for index in 0..self.messages.len() {
+            if self.messages[index].parent_id.is_none() {
+                let parent = if index == 0 {
+                    ROOT.into()
+                } else {
+                    self.messages[index - 1].id.clone()
+                };
+                self.messages[index].parent_id = Some(parent);
+            }
+        }
+    }
+    fn parent_key(&self, index: usize) -> &str {
+        match &self.messages[index].parent_id {
+            Some(parent) => parent,
+            None if index == 0 => ROOT,
+            None => &self.messages[index - 1].id,
+        }
+    }
+    // The shown line of messages: from the root, the selected child at each fork, or the
+    // newest child when nothing was selected.
+    pub fn path(&self) -> Vec<usize> {
+        let mut path = Vec::new();
+        let mut key = ROOT.to_string();
+        loop {
+            let children = (0..self.messages.len())
+                .filter(|&index| self.parent_key(index) == key)
+                .collect::<Vec<_>>();
+            let Some(&newest) = children.last() else {
+                break;
+            };
+            let chosen = self
+                .versions
+                .get(&key)
+                .and_then(|id| {
+                    children
+                        .iter()
+                        .copied()
+                        .find(|&index| &self.messages[index].id == id)
+                })
+                .unwrap_or(newest);
+            path.push(chosen);
+            key = self.messages[chosen].id.clone();
+        }
+        path
     }
     pub fn restore_sources(&mut self) {
         let request_sources = self
@@ -192,6 +250,34 @@ impl Conversation {
         }
     }
     fn validate(&self, id_value: &str) -> Result<(), String> {
+        let positions = self
+            .messages
+            .iter()
+            .enumerate()
+            .map(|(index, message)| (message.id.as_str(), index))
+            .collect::<HashMap<_, _>>();
+        let parent_known = |index: usize| {
+            let parent = self.parent_key(index);
+            parent == ROOT
+                || positions
+                    .get(parent)
+                    .is_some_and(|&position| position < index)
+        };
+        let version_known = |key: &String, child: &String| {
+            (key == ROOT || positions.contains_key(key.as_str()))
+                && positions.get(child.as_str()).is_some_and(|&index| {
+                    self.messages[index].role == "user" && self.parent_key(index) == key
+                })
+        };
+        if positions.len() != self.messages.len()
+            || !(0..self.messages.len()).all(parent_known)
+            || !self
+                .versions
+                .iter()
+                .all(|(key, child)| version_known(key, child))
+        {
+            return Err(invalid());
+        }
         if self.format_version != 2
             || self.id.as_deref() != Some(id_value)
             || self.messages.len() > 400
@@ -222,6 +308,8 @@ pub struct ConversationSummary {
     pub message_count: usize,
     pub active_request_id: Option<String>,
     pub meeting_ids: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<u64>,
 }
 pub struct Store {
     root: PathBuf,
@@ -258,11 +346,13 @@ impl Store {
         if let Some(value) = self.recovered.lock().unwrap().get(conversation_id) {
             return Ok(value.clone());
         }
-        let value: Conversation = read_json(&directory.join(format!("{conversation_id}.json")))?;
+        let mut value: Conversation =
+            read_json(&directory.join(format!("{conversation_id}.json")))?;
         value.validate(conversation_id)?;
+        value.normalize_parents();
         Ok(value)
     }
-    pub fn list(&self) -> Result<Vec<ConversationSummary>, String> {
+    pub fn list(&self, trash: bool) -> Result<Vec<ConversationSummary>, String> {
         let Some(directory) = self.directory(false)? else {
             return Ok(vec![]);
         };
@@ -276,9 +366,13 @@ impl Store {
                 continue;
             }
             let conversation = self.read(value)?;
-            let meeting_ids = conversation
-                .messages
+            if conversation.deleted_at.is_some() != trash {
+                continue;
+            }
+            let shown = conversation.path();
+            let meeting_ids = shown
                 .iter()
+                .map(|&index| &conversation.messages[index])
                 .filter(|message| message.role == "user")
                 .flat_map(|message| &message.attachments)
                 .filter(|attachment| attachment.kind == "meeting")
@@ -293,9 +387,10 @@ impl Store {
                 updated_at: conversation.updated_at,
                 provider: conversation.provider,
                 model_id: conversation.model_id,
-                message_count: conversation.messages.len(),
+                message_count: shown.len(),
                 active_request_id: conversation.active_request_id,
                 meeting_ids,
+                deleted_at: conversation.deleted_at,
             });
         }
         result.sort_by(|a, b| {
@@ -337,6 +432,28 @@ impl Store {
                 .insert(id.clone(), value.clone());
             let _ = self.write(value);
         }
+    }
+    pub fn trash(&self, conversation_id: &str) -> Result<(), String> {
+        let mut value = self.read(conversation_id)?;
+        if value.deleted_at.is_none() {
+            value.deleted_at = Some(now());
+            self.write(&value)?;
+        }
+        Ok(())
+    }
+    pub fn restore(&self, conversation_id: &str) -> Result<(), String> {
+        let mut value = self.read(conversation_id)?;
+        if value.deleted_at.take().is_some() {
+            self.write(&value)?;
+        }
+        Ok(())
+    }
+    // Only conversations already in the trash are removed for good.
+    pub fn purge(&self, conversation_id: &str) -> Result<(), String> {
+        if self.read(conversation_id)?.deleted_at.is_none() {
+            return Err("휴지통에 있는 대화만 완전히 삭제할 수 있습니다.".into());
+        }
+        self.remove(conversation_id)
     }
     pub fn remove(&self, conversation_id: &str) -> Result<(), String> {
         id(conversation_id)?;
@@ -447,7 +564,7 @@ mod tests {
     fn reads_do_not_initialize_and_global_conversations_do_not_create_meetings() {
         let root = tempfile::tempdir().unwrap();
         let store = Store::new(root.path().into());
-        assert!(store.list().unwrap().is_empty());
+        assert!(store.list(false).unwrap().is_empty());
         assert!(!root.path().join("ai-conversations").exists());
         let value = store.create().unwrap();
         assert!(store.read(value.id.as_deref().unwrap()).is_ok());
@@ -477,7 +594,7 @@ mod tests {
         store.write(&value).unwrap();
         let mut expected = vec![meeting_a, meeting_b];
         expected.sort();
-        assert_eq!(store.list().unwrap()[0].meeting_ids, expected);
+        assert_eq!(store.list(false).unwrap()[0].meeting_ids, expected);
     }
     #[test]
     fn deleted_conversation_is_not_recreated_by_late_write() {
@@ -547,11 +664,11 @@ mod migration_tests {
             store.read(&conversation).unwrap().messages[0].text,
             "보존할 이전 답변"
         );
-        assert_eq!(store.list().unwrap().len(), 1);
+        assert_eq!(store.list(false).unwrap().len(), 1);
         store.remove(&conversation).unwrap();
         let restarted = Store::new(root.path().into());
         restarted.import_legacy().unwrap();
-        assert!(restarted.list().unwrap().is_empty());
+        assert!(restarted.list(false).unwrap().is_empty());
         assert_eq!(std::fs::read(path).unwrap(), raw);
     }
     #[test]

@@ -106,23 +106,23 @@ test('the global AI sidebar and meeting notes stay independently open and preser
   assert.equal(app.node('meeting-notes').value, '보존할 메모 초안');
 });
 
-test('navigating meetings preserves the chat draft without attaching the new meeting', async t => {
+test('navigating to another meeting shows its own new chat and coming back restores the draft', async t => {
   const app = await fixture(t);
-  app.ui.flow.edit('두 회의를 비교할 질문');
+  const textarea = () => app.node('ai-chat-inspector').querySelector('textarea');
+  app.ui.flow.edit('첫 회의 질문');
   const next = { id: 'example-meeting-2', title: '다음 회의' };
   app.ui.setMeeting(next);
   app.detail.update({ id: next.id, showSummary: true, hasTranscript: true, summaryLoaded: true, transcriptLoaded: true });
-  await wait(() => app.node('ai-chat-inspector').querySelector('textarea').value === '두 회의를 비교할 질문');
-  assert.equal(app.ui.flow.getSnapshot().conversation.meetings.length, 1);
-  assert.ok(app.button('예시 회의 제외'));
-  assert.equal(app.button('다음 회의 제외'), undefined);
-  app.ui.open(next);
-  await wait(() => app.ui.flow.getSnapshot().meeting.id === next.id);
-  assert.equal(app.button('다음 회의 제외'), undefined);
-  assert.equal(app.node('ai-chat-inspector').querySelector('textarea').value, '두 회의를 비교할 질문');
+  await wait(() => app.button('다음 회의 제외') && textarea().value === '');
+  assert.equal(app.button('예시 회의 제외'), undefined);
+  app.ui.flow.edit('다음 회의 질문');
+  app.ui.setMeeting({ id: 'example-meeting', title: '예시 회의' });
+  await wait(() => textarea().value === '첫 회의 질문' && app.button('예시 회의 제외'));
+  app.ui.setMeeting(next);
+  await wait(() => textarea().value === '다음 회의 질문' && app.button('다음 회의 제외'));
   app.node('ai-chat-inspector').querySelector('[aria-label="질문 보내기"]').click();
   await wait(() => app.calls.some(call => call[0] === 'send'));
-  assert.deepEqual(Array.from(app.calls.find(call => call[0] === 'send')[1].meetingIds), ['example-meeting']);
+  assert.deepEqual(Array.from(app.calls.find(call => call[0] === 'send')[1].meetingIds), ['example-meeting-2']);
 });
 
 test('new chat and history navigate independent conversations without changing meeting notes', async t => {
@@ -471,4 +471,31 @@ test('meeting history filters saved question attachments without switching the a
   [...menu().querySelectorAll('.ai-history-row > button:first-child')].find(button => button.textContent.includes('첫 회의 질문')).click();
   await wait(() => app.ui.flow.getSnapshot().conversation.id === first);
   assert.deepEqual(Array.from(app.ui.flow.getSnapshot().conversation.meetings, meeting => meeting.id), ['example-meeting']);
+});
+
+test('a sent question is recalled with the arrow keys and edited into a new version', async t => {
+  const app = await fixture(t);
+  const inspector = () => app.node('ai-chat-inspector');
+  const composer = () => inspector().querySelector('textarea[aria-label="AI에게 질문"]');
+  const press = (node, key) => node.dispatchEvent(new app.window.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+  const type = (node, value) => { Object.getOwnPropertyDescriptor(app.window.HTMLTextAreaElement.prototype, 'value').set.call(node, value); node.dispatchEvent(new app.window.Event('input', { bubbles: true })); };
+  app.ui.flow.edit('첫 질문'); await app.ui.flow.send();
+  await wait(() => app.button('AI 답변 복사'));
+  press(composer(), 'ArrowUp'); await wait(() => composer().value === '첫 질문');
+  press(composer(), 'ArrowDown'); await wait(() => composer().value === '');
+  app.button('질문 수정').click();
+  await wait(() => inspector().querySelector('textarea[aria-label="질문 수정"]'));
+  type(inspector().querySelector('textarea[aria-label="질문 수정"]'), '고친 질문');
+  await wait(() => app.button('다시 보내기') && !app.button('다시 보내기').disabled);
+  app.button('다시 보내기').click();
+  await wait(() => app.calls.filter(call => call[0] === 'send').length === 2);
+  assert.match(app.calls.filter(call => call[0] === 'send')[1][1].editOf, /^question-/);
+  await wait(() => inspector().querySelector('[aria-label="질문 버전"]')?.textContent.includes('2/2'));
+  await wait(() => !app.ui.flow.getSnapshot().conversation.activeRequestId);
+  assert.match(inspector().querySelector('[aria-label="AI 대화"]').textContent, /고친 질문/);
+  assert.doesNotMatch(inspector().querySelector('[aria-label="AI 대화"]').textContent, /첫 질문/);
+  app.button('이전 버전').click();
+  await wait(() => inspector().querySelector('[aria-label="질문 버전"]')?.textContent.includes('1/2'));
+  assert.match(inspector().querySelector('[aria-label="AI 대화"]').textContent, /첫 질문/);
+  assert.ok(app.calls.some(call => call[0] === 'selectVersion'));
 });

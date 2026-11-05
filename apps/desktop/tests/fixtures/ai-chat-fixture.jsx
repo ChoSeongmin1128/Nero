@@ -1,3 +1,4 @@
+import { conversationPath, parentOf } from '../../src/ai-chat-versions.js';
 import { mountAiChat } from '../../src/ai-chat-ui.jsx';
 import { mountMeetingContext } from '../../src/meeting-context-ui.jsx';
 import { mountActionMenus } from '../../../../design-system/action-menu.mjs';
@@ -41,7 +42,9 @@ export function mountAiChatFixture({ document, scenario = 'ready', delay = 20 })
       const conversation = conversations.get(value.conversationId);
       const attachments = [...value.meetingIds.map(meetingId => ({ kind: 'meeting', meetingId, title: meetings.find(meeting => meeting.id === meetingId)?.title || '예시 회의' })), ...value.sourceIds.map(sourceId => ({ kind: 'notion', sourceId, title: '예시 자료' }))];
       const saveTargets = attachments.filter(item => item.kind === 'meeting').map(item => ({ meetingId: item.meetingId, title: item.title, canSaveSummary: true }));
-      conversation.messages.push({ id: `question-${value.requestId}`, role: 'user', status: 'completed', text: value.message, attachments }, { id: `answer-${value.requestId}`, requestId: value.requestId, role: 'assistant', status: 'streaming', text: '', attachments, saveTargets, sequence: 0 });
+      const parentId = value.editOf ? parentOf(conversation, value.editOf) : conversationPath(conversation).at(-1)?.id || 'root';
+      if (value.editOf) conversation.versions = { ...(conversation.versions || {}), [parentId]: `question-${value.requestId}` };
+      conversation.messages.push({ id: `question-${value.requestId}`, parentId, requestId: value.requestId, role: 'user', status: 'completed', text: value.message, attachments }, { id: `answer-${value.requestId}`, parentId: `question-${value.requestId}`, requestId: value.requestId, role: 'assistant', status: 'streaming', text: '', attachments, saveTargets, sequence: 0 });
       conversation.activeRequestId = value.requestId;
       conversation.title = value.message.slice(0, 36);
       const event = body => {
@@ -55,8 +58,9 @@ export function mountAiChatFixture({ document, scenario = 'ready', delay = 20 })
       };
       if (scenario === 'failed') later(() => { if (requests.has(value.requestId)) event({ type: 'failed', error: '예시 연결 오류입니다.' }); });
       else later(() => { if (!requests.has(value.requestId)) return; event({ type: 'delta', text: '## 결정 사항\n- 다음 회의에서 일정을 확인합니다. [1]\n' }); later(() => { if (!requests.has(value.requestId)) return; event({ type: 'completed', messageId: `answer-${value.requestId}`, citations: [{ reference: 1, kind: 'meeting', label: '일정 확인', meetingId: 'example-meeting', segmentId: 'example-segment' }] }); }); });
-      return { conversationId: value.conversationId, requestId: value.requestId };
+      return { conversationId: value.conversationId, requestId: value.requestId, questionId: `question-${value.requestId}` };
     },
+    selectVersion: async (conversationId, messageId) => { calls.push(['selectVersion', messageId]); const conversation = conversations.get(conversationId); conversation.versions = { ...(conversation.versions || {}), [parentOf(conversation, messageId)]: messageId }; return structuredClone(conversation); },
     cancel: async requestId => { calls.push(['cancel', requestId]); const previous = requests.get(requestId); requests.delete(requestId); if (!previous) return; const conversation = conversations.get(previous.conversationId); const message = conversation.messages.at(-1); message.status = 'cancelled'; message.sequence += 1; conversation.activeRequestId = null; later(() => receiver?.({ requestId, conversationId: previous.conversationId, type: 'cancelled', sequence: message.sequence, text: message.text })); },
     exportAnswer: async value => { calls.push(['exportAnswer', value]); return { text: value.format === 'md' ? '## 결정 사항\n- 예시 답변' : '결정 사항\n예시 답변', format: value.format }; },
     saveSummary: async value => { calls.push(['summary', value]); return { summaryId: 'example-summary' }; },

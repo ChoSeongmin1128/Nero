@@ -34,6 +34,7 @@ import { liveTranscriptRows } from './live-transcript.js';
 import { meetingResultPreview } from './meeting-result-preview.js';
 import { mountMeetingDetail } from './meeting-detail-ui.js';
 import { mountAiChat } from './ai-chat-ui.jsx';
+import { mountAiChatLibrary } from './ai-chat-library.jsx';
 import { mountMeetingContext } from './meeting-context-ui.jsx';
 import * as aiChatBridge from './ai-chat-bridge.js';
 import { mountSummaryEvidence } from './summary-evidence.js';
@@ -135,7 +136,7 @@ let selectionRequest = 0;
 function beginNavigation(history = false) { if (!history) viewHistory?.cancel(); const request = ++selectionRequest; return () => request === selectionRequest; }
 let speakerReplay = null;
 let summaryEvidence = null;
-let aiChat = null, meetingContext = null;
+let aiChat = null, aiLibrary = null, meetingContext = null;
 let lastLiveTranscript = null;
 const processingActions = new Map();
 const processingErrors = new Map();
@@ -436,8 +437,11 @@ function render() {
   setHTML('meeting-attendees', `${icon('users')}<span>참석자${meeting?.attendees?.length ? ` ${meeting.attendees.length}명` : ''}</span>`);
   byId('create-calendar-meeting').hidden = !meeting || Boolean(meeting.audio || meeting.calendarReference || activeSession()?.meetingId === meeting.id);
   byId('import-audio').hidden = !meeting || Boolean(meeting.audio || activeSession()?.meetingId === meeting.id);
-  byId('library-screen').hidden = setupVisible || !state.connected || (!state.libraryOpen && !modelsReady() && !state.snapshot.meetings.length) || (!state.libraryOpen && Boolean(meeting));
-  byId('welcome').hidden = !byId('library-screen').hidden || setupVisible || Boolean(meeting);
+  const aiLibraryOpen = state.libraryOpen && state.libraryFilter === 'ai' && state.connected && !setupVisible;
+  byId('ai-library-screen').hidden = !aiLibraryOpen;
+  if (aiLibraryOpen) aiLibrary?.mount();
+  byId('library-screen').hidden = aiLibraryOpen || setupVisible || !state.connected || (!state.libraryOpen && !modelsReady() && !state.snapshot.meetings.length) || (!state.libraryOpen && Boolean(meeting));
+  byId('welcome').hidden = aiLibraryOpen || !byId('library-screen').hidden || setupVisible || Boolean(meeting);
   byId('meeting-detail').hidden = setupVisible || state.libraryOpen || !meeting;
   if (state.connected && !setupVisible) viewHistory?.visit(state.libraryOpen || !meeting ? { kind: 'library', filter: state.libraryFilter, view: state.libraryView, query: byId('search').value } : { kind: 'meeting', id: meeting.id });
   if (!meeting) { detail.update({ id: null }); summaryEvidence?.reset(); return; }
@@ -1674,6 +1678,7 @@ aiChat = mountAiChat({
     });
   },
 });
+aiLibrary = mountAiChatLibrary({ node: byId('ai-library-screen'), flow: aiChat.flow, getMeetings: () => state.snapshot.meetings, onOpen: () => aiChat.open(null), container: document.body });
 summaryEvidence = mountSummaryEvidence({
   container: byId('summary-content'), panel: byId('summary-evidence'),
   onOpen: () => detail.select('transcript'),
@@ -1722,7 +1727,7 @@ const transcriptActions = mountTranscriptActions({ byId, bridge, finishEditing, 
     acceptSnapshot(await bridge.readSnapshot()); refreshMeetingSearch();
   },
 });
-const library = mountLibrary({ bridge, getState: () => state, byId, finishEditing, acceptSnapshot, selectMeeting, render, showError, escape, icon, meetingTimestamp, recordingStatus, duration, beginNavigation, onViewChanged() { meetingSearch.update(byId('search').value, state.libraryFilter === 'trash'); } });
+const library = mountLibrary({ bridge, getState: () => state, byId, finishEditing, acceptSnapshot, selectMeeting, render, showError, escape, icon, meetingTimestamp, recordingStatus, duration, beginNavigation, onViewChanged() { meetingSearch.update(byId('search').value, state.libraryFilter === 'trash'); if (state.libraryFilter === 'ai') { aiLibrary?.show(); aiChat?.open(null); } } });
 const notificationAction = action => async id => { await action(id); const error = processingErrors.get(id); if (error) throw new Error(error); };
 const notificationCenter = mountNotificationCenter({ container: byId('notification-center'), bridge, onOpenMeeting: id => selectMeeting(id), onRetry: notificationAction(retryProcessing), onCancel: notificationAction(cancelProcessing), onAcknowledge: notificationAction(acknowledgeProcessing), showError, icon, onNoticeAction: service => service === 'app-update' ? appUpdateView.perform() : undefined, onOpenIntegration: async service => {
   await openSettings('agent', 'notifications-open');

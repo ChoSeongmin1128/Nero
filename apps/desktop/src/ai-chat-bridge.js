@@ -12,7 +12,11 @@ export const finishConnect = attemptId => call('ai_chat_finish_connect', { attem
 export const cancelConnect = attemptId => call('ai_chat_cancel_connect', { attemptId });
 export const disconnect = accountId => call('ai_chat_disconnect', { accountId });
 export const models = (accountId, refresh = true) => call('ai_chat_models', { accountId, refresh });
-export const list = () => call('ai_chat_list');
+export const list = (trash = false) => call('ai_chat_list', { trash });
+export const trash = conversationIds => call('ai_chat_trash', { conversationIds });
+export const restore = conversationIds => call('ai_chat_restore', { conversationIds });
+export const purge = conversationIds => call('ai_chat_purge', { conversationIds });
+export const selectVersion = (conversationId, messageId) => call('ai_chat_select_version', { conversationId, messageId });
 export const create = () => call('ai_chat_create');
 export const read = conversationId => call('ai_chat_read', { conversationId });
 export const remove = conversationId => call('ai_chat_delete', { conversationId });

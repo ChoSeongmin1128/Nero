@@ -31,6 +31,13 @@
 .ai-chat-message--user { align-self: flex-end; max-width: 90%; padding: 10px 14px; background: var(--hover); border-radius: 16px 16px 4px 16px; }
 .ai-chat-message--assistant { align-self: stretch; }
 .ai-chat-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--text-label-size); line-height: var(--leading-reading); user-select: text; }
+.ai-question-actions { display: flex; justify-content: flex-end; align-items: center; gap: 2px; margin: 4px -8px -6px 0; color: var(--text-secondary); font-size: var(--text-caption-size); opacity: 0; transition: opacity 120ms ease; }
+.ai-chat-message--user:is(:hover, :focus-within) .ai-question-actions, .ai-question-actions:has(.ai-question-versions) { opacity: 1; }
+.ai-question-versions { display: inline-flex; align-items: center; gap: 2px; font-variant-numeric: tabular-nums; }
+.ai-question-edit { display: grid; gap: 8px; min-width: min(420px, 70vw); }
+.ai-question-edit > .text-input { width: 100%; resize: vertical; font-size: var(--text-label-size); line-height: var(--leading-reading); }
+.ai-question-edit-actions { display: flex; justify-content: flex-end; gap: 6px; }
+@media (hover: none) { .ai-question-actions { opacity: 1; } }
 .ai-chat-markdown .summary-document { font-size: var(--text-label-size); line-height: var(--leading-reading); overflow-wrap: anywhere; user-select: text; }
 .ai-chat-markdown .summary-document h3, .ai-chat-markdown .summary-document h4 { font-size: var(--text-body-size); }
 .ai-chat-markdown .summary-document > :first-child { margin-top: 0; }

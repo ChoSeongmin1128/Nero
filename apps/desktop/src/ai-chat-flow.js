@@ -1,4 +1,6 @@
+import { conversationPath, parentOf, questionVersions, ROOT } from './ai-chat-versions.js';
 const DRAFT = 'draft';
+const temporary = id => /^(?:user|assistant):/.test(String(id || ''));
 const emptyConversation = id => ({ id: id || null, key: id || DRAFT, title: '새 대화', messages: [], activeRequestId: null, draft: '', templateId: null, skillId: null, summaryTargetId: null, meetings: [], sources: [], excludedSourceKeys: [], contextBusy: false, compositionInitialized: false, error: '', feedback: '', action: null, loading: false, loaded: !id });
 const errorMessage = (error, fallback) => error?.message || fallback;
 const terminal = new Set(['completed', 'failed', 'cancelled']);
@@ -19,7 +21,7 @@ export function selectAiAccount(accounts, provider, { selectedId = null, activeA
 }
 
 export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved = async () => {}, getTemplate = async () => null, getMeetings = () => [], writeClipboard = text => navigator.clipboard.writeText(text), createId = () => crypto.randomUUID() }) {
-  let state = { meeting: null, conversation: emptyConversation(), conversationList: [], listBusy: false, listLoaded: false, listError: '', provider: 'chatgpt', accountId: null, activeAccountId: null, modelId: null, effort: null, models: [], accounts: [], accountsLoaded: false, accountsBusy: false, accountsError: '', catalog: { skills: [], templates: [] }, catalogError: '', modelGroups: {}, modelsBusy: false, modelError: '', attempts: {}, connectionPhases: {}, notion: null, notionBusy: false, notionAttempt: null, notionError: '', fetching: false, sourceError: '', active: false, settingsActive: false };
+  let state = { meeting: null, conversation: emptyConversation(), conversationList: [], trashList: [], trashLoaded: false, trashError: '', listBusy: false, listLoaded: false, listError: '', provider: 'chatgpt', accountId: null, activeAccountId: null, modelId: null, effort: null, models: [], accounts: [], accountsLoaded: false, accountsBusy: false, accountsError: '', catalog: { skills: [], templates: [] }, catalogError: '', modelGroups: {}, modelsBusy: false, modelError: '', attempts: {}, connectionPhases: {}, notion: null, notionBusy: false, notionAttempt: null, notionError: '', fetching: false, sourceError: '', active: false, settingsActive: false };
   let subscriptionReady = false, selectionInitialized = false, contextEpoch = 0, openEpoch = 0;
   let disposed = false, accountsPromise = null, listPromise = null, modelEpoch = 0, listEpoch = 0, sourceRequest = null, unsubscribe = null;
   const conversations = new Map([[DRAFT, state.conversation]]), loads = new Map(), listeners = new Set(), connections = new Map(), eventBuffers = new Map(), pendingStarts = new Map(), contextLoads = new Map(), modelCache = new Map(), modelGenerations = new Map(), refreshedModels = new Set();
@@ -251,6 +253,38 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
       } else updateConversation(id, { error: '선택한 회의에 요약을 저장할 수 없습니다.' });
     }
   };
+  // The panel follows the meeting on screen: its latest conversation, or a new one with the
+  // meeting attached. An unsent draft waits for its meeting to come back.
+  const meetingDrafts = new Map();
+  let followEpoch = 0;
+  async function followMeeting(meeting) {
+    const epoch = ++followEpoch;
+    const about = id => state.conversationList.find(item => item.id === id)?.meetingIds?.includes(meeting.id);
+    if (state.conversation.meetings.some(item => item.id === meeting.id) || about(state.conversation.id)) return;
+    // A draft being sent becomes its own conversation first; following waits for that.
+    await pendingStarts.get(DRAFT)?.done;
+    if (!state.listLoaded) await flow.loadList();
+    if (disposed || epoch !== followEpoch || state.meeting?.id !== meeting.id) return;
+    const match = state.conversationList.find(item => item.meetingIds?.includes(meeting.id));
+    if (match) { await flow.selectConversation(match.id); return; }
+    const waiting = conversations.get(DRAFT);
+    const restored = waiting && !waiting.action && (waiting.homeMeetingId ?? waiting.meetings?.[0]?.id) === meeting.id ? waiting : meetingDrafts.get(meeting.id);
+    meetingDrafts.delete(meeting.id);
+    openEpoch += 1; contextEpoch += 1;
+    if (sourceRequest) void flow.cancelSource();
+    const conversation = restored || { ...emptyConversation(), compositionInitialized: true, homeMeetingId: meeting.id };
+    replaceDraft(conversation);
+    publish({ conversation, sourceError: '', listError: '' });
+    if (!restored) flow.attachMeeting(meeting);
+  }
+  // An unsent draft is kept for the meeting it was started from before another takes its place.
+  const unsent = conversation => Boolean(conversation?.draft?.trim() || conversation?.sources?.length || conversation?.meetings?.length > 1);
+  function replaceDraft(next) {
+    const current = conversations.get(DRAFT);
+    const home = current?.homeMeetingId ?? current?.meetings?.[0]?.id;
+    if (current && current !== next && !current.action && home && unsent(current)) meetingDrafts.set(home, current);
+    conversations.set(DRAFT, next);
+  }
   async function ensureConversation(force = false, epoch = openEpoch) {
     if (selectionInitialized) { const id = state.conversation.id; if (id) await flow.loadConversation(force); return id; }
     await flow.loadList();
@@ -258,7 +292,7 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
     if (disposed || epoch !== openEpoch || !state.active) return null;
     if (!state.listLoaded || state.listError) return null;
     if (selectionInitialized) return state.conversation.id;
-    const id = state.conversationList[0]?.id;
+    const id = state.meeting ? state.conversationList.find(item => item.meetingIds?.includes(state.meeting.id))?.id : state.conversationList[0]?.id;
     if (id) { await flow.selectConversation(id, { fromOpen: true }); return id; }
     await flow.newConversation({ attachCurrent: true, fromOpen: true });
     return null;
@@ -271,9 +305,10 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
     availableMeetings,
     canSend: () => canStart(state.conversation.draft),
     setMeeting(meeting) {
-      const next = meetingChoice(meeting);
-      if (next?.id === state.meeting?.id && next?.title === state.meeting?.title) return;
+      const next = meetingChoice(meeting), previous = state.meeting;
+      if (next?.id === previous?.id && next?.title === previous?.title) return;
       publish({ meeting: next });
+      if (next && next.id !== previous?.id && selectionInitialized) void followMeeting(next);
     },
     async open(meeting = state.meeting) {
       const epoch = ++openEpoch;
@@ -338,6 +373,41 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
       await flow.loadConversation(true);
       return state.conversation.id === id;
     },
+    async loadTrash() {
+      try { const result = await bridge.list(true); publish({ trashList: Array.isArray(result) ? result : [], trashLoaded: true, trashError: '' }); }
+      catch (error) { publish({ trashError: errorMessage(error, '휴지통을 불러오지 못했습니다.') }); }
+    },
+    async trashConversations(ids) {
+      const targets = [...new Set(ids)].filter(id => id && id !== DRAFT);
+      if (!targets.length || targets.some(id => conversations.get(id)?.action)) return false;
+      if (targets.includes(sourceRequest?.conversationId)) void flow.cancelSource();
+      let trashed;
+      try { await Promise.all(targets.map(id => pendingStarts.get(id)?.done)); trashed = await bridge.trash(targets); }
+      catch (error) { publish({ listError: errorMessage(error, '대화를 정리하지 못했습니다.') }); void flow.loadList(true); void flow.loadTrash(); return false; }
+      const removed = Array.isArray(trashed) ? trashed : targets;
+      for (const id of removed) { loads.delete(id); eventBuffers.delete(id); contextLoads.delete(id); conversations.delete(id); }
+      listEpoch += 1; listPromise = null;
+      const conversationList = state.conversationList.filter(item => !removed.includes(item.id));
+      if (removed.includes(state.conversation.id)) {
+        contextEpoch += 1;
+        const conversation = conversations.get(DRAFT) || { ...emptyConversation(), compositionInitialized: true };
+        conversations.set(DRAFT, conversation);
+        publish({ conversation, conversationList });
+        if (state.meeting) flow.attachMeeting(state.meeting);
+      } else publish({ conversationList });
+      void flow.loadTrash();
+      return true;
+    },
+    async restoreConversations(ids) {
+      try { await bridge.restore(ids); } catch (error) { publish({ trashError: errorMessage(error, '대화를 복원하지 못했습니다.') }); void flow.loadList(true); void flow.loadTrash(); return false; }
+      await Promise.all([flow.loadList(true), flow.loadTrash()]);
+      return true;
+    },
+    async purgeConversations(ids) {
+      try { await bridge.purge(ids); } catch (error) { publish({ trashError: errorMessage(error, '대화를 완전히 삭제하지 못했습니다.') }); void flow.loadTrash(); return false; }
+      await flow.loadTrash();
+      return true;
+    },
     async removeConversation(id) {
       const conversation = conversations.get(id);
       if (!id || id === DRAFT || conversation?.action) return false;
@@ -349,7 +419,7 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
         listEpoch += 1; listPromise = null;
         loads.delete(id); eventBuffers.delete(id); contextLoads.delete(id); conversations.delete(id);
         const conversationList = state.conversationList.filter(item => item.id !== id);
-        if (state.conversation.id === id) { contextEpoch += 1; contextLoads.delete(DRAFT); publish({ conversation: emptyConversation(), conversationList }); conversations.set(DRAFT, state.conversation); if (conversationList[0]) await flow.selectConversation(conversationList[0].id); }
+        if (state.conversation.id === id) { contextEpoch += 1; const draft = conversations.get(DRAFT) || emptyConversation(); if (!conversations.has(DRAFT)) contextLoads.delete(DRAFT); publish({ conversation: draft, conversationList }); conversations.set(DRAFT, state.conversation); if (conversationList[0]) await flow.selectConversation(conversationList[0].id); }
         else publish({ conversationList });
         return true;
       } catch (error) { updateConversation(id, { action: null, error: errorMessage(error, '대화를 삭제하지 못했습니다.') }); return false; }
@@ -368,7 +438,7 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
         if (disposed || loads.get(id) !== epoch) return;
         if (result.id !== id) throw new Error('대화를 확인하지 못했습니다.');
         const current = conversations.get(id);
-        const latestPrompt = [...(result.messages || [])].reverse().find(message => message.role === 'user');
+        const latestPrompt = [...conversationPath(result)].reverse().find(message => message.role === 'user');
         const composition = current.compositionInitialized ? {} : attachmentSelection(latestPrompt?.attachments);
         updateConversation(id, { ...result, ...composition, messages: result.messages || [], activeRequestId: result.activeRequestId || null, loaded: true, loading: false, error: '', draft: current.draft });
       } catch (error) { if (!disposed && loads.get(id) === epoch) updateConversation(id, { loading: false, error: errorMessage(error, '대화를 불러오지 못했습니다.') }); }
@@ -412,11 +482,12 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
       updateConversation(id, { sources: current.sources.filter(item => item.sourceId !== sourceId), excludedSourceKeys: removed ? [...new Set([...(current.excludedSourceKeys || []), sourceKey(removed)])] : current.excludedSourceKeys, compositionInitialized: true });
     },
     async send(text = state.conversation.draft, options = {}) {
-      const context = { ...state.conversation, meetings: options.meetings || state.conversation.meetings, sources: options.sources || state.conversation.sources, skillId: options.skillId ?? state.conversation.skillId, templateId: options.templateId ?? state.conversation.templateId, summaryTargetId: options.summaryTargetId ?? state.conversation.summaryTargetId };
+      const context = { ...state.conversation, ...(options.editOf ? { useTemplate: false } : {}), meetings: options.meetings || state.conversation.meetings, sources: options.sources || state.conversation.sources, skillId: options.skillId ?? state.conversation.skillId, templateId: options.templateId ?? state.conversation.templateId, summaryTargetId: options.summaryTargetId ?? state.conversation.summaryTargetId };
       if (!canStart(text, context)) return false;
       selectionInitialized = true;
       let id = state.conversation.key;
       const requestId = createId(), accountId = state.accountId, modelId = state.modelId;
+      const editOf = options.editOf || null, questionKey = `user:${requestId}`, previousVersions = context.versions || {};
       const requestedEffort = Object.hasOwn(options, 'effort') ? options.effort : state.effort;
       const effort = allowedEffort(state.models, modelId, requestedEffort);
       if (requestedEffort && !effort) { updateConversation(id, { error: '이 모델에서 이전 추론 수준을 사용할 수 없습니다. 모델을 확인해 주세요.' }); return false; }
@@ -443,16 +514,29 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
           void flow.loadList(true);
         }
         const attachments = attachmentsFor(context), saveTargets = context.meetings.map(meeting => ({ meetingId: meeting.id, title: meeting.title, canSaveSummary: false }));
-        const messages = [...context.messages, { id: `user:${requestId}`, role: 'user', text: text.trim() || '첨부한 회의를 요약해 주세요.', status: 'completed', effort, templateId, skillId, summaryTargetId: context.summaryTargetId, attachments }, { id: `assistant:${requestId}`, requestId, role: 'assistant', text: '', status: 'streaming', modelId, provider: state.provider, effort, skillId, summaryTargetId: context.summaryTargetId, citations: [], attachments, saveTargets }];
-        updateConversation(id, { messages, draft: '', useTemplate: false, templateId: null, skillId: null, summaryTargetId: null, action: null, activeRequestId: requestId });
-        const receipt = await bridge.send({ requestId, conversationId: id, meetingIds: context.meetings.map(meeting => meeting.id), accountId, modelId, ...(effort ? { effort } : {}), message: text.trim() || '첨부한 회의를 요약해 주세요.', sourceIds: context.sources.map(item => item.sourceId), sourceOrigins: Object.fromEntries(context.sources.filter(item => !item.unknownOrigin).map(item => [item.sourceId, { directSourceId: item.directSource?.sourceId || null, meetingSources: Object.fromEntries(Object.entries(item.meetingSources || {}).map(([meetingId, source]) => [meetingId, source.sourceId])) }])), ...(templateId ? { templateId } : {}), ...(skillId ? { skillId, summaryTargetId: context.summaryTargetId } : {}) });
+        // Messages only this window shows (a failed start) never reach the store, so the
+        // store's parent is the last stored message on the shown path.
+        const shownStored = conversationPath(context).filter(item => !temporary(item.id));
+        const parentId = editOf ? parentOf(context, editOf) : shownStored.at(-1)?.id || ROOT;
+        const versions = editOf ? { ...previousVersions, [parentId]: questionKey } : context.versions;
+        const messages = [...context.messages, { id: questionKey, parentId, role: 'user', text: text.trim() || '첨부한 회의를 요약해 주세요.', status: 'completed', effort, templateId, skillId, summaryTargetId: context.summaryTargetId, attachments }, { id: `assistant:${requestId}`, parentId: questionKey, requestId, role: 'assistant', text: '', status: 'streaming', modelId, provider: state.provider, effort, skillId, summaryTargetId: context.summaryTargetId, citations: [], attachments, saveTargets }];
+        updateConversation(id, { messages, versions, ...(editOf ? {} : { draft: '', useTemplate: false, templateId: null, skillId: null, summaryTargetId: null }), action: null, activeRequestId: requestId });
+        const receipt = await bridge.send({ requestId, conversationId: id, meetingIds: context.meetings.map(meeting => meeting.id), accountId, modelId, ...(effort ? { effort } : {}), message: text.trim() || '첨부한 회의를 요약해 주세요.', sourceIds: context.sources.map(item => item.sourceId), sourceOrigins: Object.fromEntries(context.sources.filter(item => !item.unknownOrigin).map(item => [item.sourceId, { directSourceId: item.directSource?.sourceId || null, meetingSources: Object.fromEntries(Object.entries(item.meetingSources || {}).map(([meetingId, source]) => [meetingId, source.sourceId])) }])), ...(templateId ? { templateId } : {}), ...(skillId ? { skillId, summaryTargetId: context.summaryTargetId } : {}), ...(editOf ? { editOf } : {}), parentId });
         if (receipt.conversationId !== id) throw new Error('대화 응답을 확인하지 못했습니다.');
+        // The shown question keeps its temporary id until the store's id arrives, so it can
+        // be edited right after the answer without reloading the conversation.
+        if (receipt.questionId) {
+          const current = conversations.get(id), swap = value => value === questionKey ? receipt.questionId : value;
+          if (current) updateConversation(id, { messages: current.messages.map(item => ({ ...item, id: swap(item.id), ...(item.parentId ? { parentId: swap(item.parentId) } : {}) })), versions: Object.fromEntries(Object.entries(current.versions || {}).map(([key, value]) => [key, swap(value)])) });
+        }
         void flow.loadList(true);
         return true;
       } catch (error) {
         const current = conversations.get(id);
         if (!current || current.messages.some(item => item.requestId === requestId && terminal.has(item.status))) return false;
         const message = errorMessage(error, '전송하지 못했습니다. 다시 시도해 주세요.');
+        // A refused edit leaves the store on the earlier version, so the window returns to it.
+        if (editOf) { updateConversation(id, { activeRequestId: null, action: null, error: message, versions: previousVersions, messages: current.messages.filter(item => item.requestId !== requestId && item.id !== questionKey) }); return false; }
         updateConversation(id, { activeRequestId: null, action: null, error: message, messages: current.messages.map(item => item.requestId === requestId && item.role === 'assistant' ? { ...item, status: 'failed', error: message } : item) });
         return false;
       } finally {
@@ -460,8 +544,34 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
         finishStart();
       }
     },
+    editQuestion(messageId, text) {
+      const conversation = state.conversation;
+      if (conversation.activeRequestId || conversation.action || !String(text || '').trim()) return false;
+      const prompt = conversationPath(conversation).find(item => item.id === messageId && item.role === 'user');
+      if (!prompt || temporary(prompt.id)) return false;
+      const selection = attachmentSelection(prompt.attachments);
+      if ((prompt.attachments || []).filter(item => item.kind === 'meeting').length !== selection.meetings.length) { updateConversation(conversation.key, { error: '삭제된 회의를 제외하고 다시 질문해 주세요.' }); return false; }
+      return flow.send(text, { editOf: messageId, templateId: prompt.templateId || prompt.template?.id || '', skillId: prompt.skillId || '', summaryTargetId: prompt.summaryTargetId || '', ...selection });
+    },
+    async selectVersion(messageId) {
+      const conversation = state.conversation, id = conversation.id;
+      if (!id || conversation.activeRequestId || conversation.action || questionVersions(conversation, messageId).siblings.length < 2) return false;
+      const parent = parentOf(conversation, messageId), before = (conversation.versions || {})[parent];
+      updateConversation(id, { versions: { ...(conversation.versions || {}), [parent]: messageId }, action: 'version', error: '' });
+      try {
+        const result = await bridge.selectVersion(id, messageId);
+        if (conversations.has(id)) updateConversation(id, { versions: result?.versions || {}, action: null });
+        return true;
+      } catch (error) {
+        if (!conversations.has(id)) return false;
+        const versions = { ...(conversations.get(id).versions || {}) };
+        if (before === undefined) delete versions[parent]; else versions[parent] = before;
+        updateConversation(id, { versions, action: null, error: errorMessage(error, '질문 버전을 바꾸지 못했습니다.') });
+        return false;
+      }
+    },
     retry(messageId) {
-      const messages = state.conversation.messages;
+      const messages = conversationPath(state.conversation);
       const index = messages.findIndex(item => item.id === messageId && item.role === 'assistant' && ['failed', 'cancelled', 'interrupted'].includes(item.status));
       if (index < 1) return false;
       const prompt = messages.slice(0, index).reverse().find(item => item.role === 'user');

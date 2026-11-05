@@ -173,6 +173,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     ${librarySource.slice(0, librarySource.indexOf('export function mountLibrary')).replace(/^import .*;\r?\n/gm, '').replace(/^export \{.*\}.*;\r?\n/gm, '').replace(/^export /gm, '')}
     let summaryEvidenceOptions, aiChatOptions;
     const aiChatBridge = testAiBridge;
+    const mountAiChatLibrary = () => ({ mount() {}, show() {}, dispose() {} });
     const mountAiChat = options => {
       aiChatOptions = options;
       return {

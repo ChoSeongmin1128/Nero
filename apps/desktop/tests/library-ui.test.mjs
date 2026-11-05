@@ -939,8 +939,9 @@ test('recent duration updates after finalization without navigation or title cha
 
 test('navigation and folder card counts refresh after moving, trashing and restoring meetings', () => {
   const app = harness();
-  const counts = () => Object.fromEntries([...app.byId('folder-list').innerHTML.matchAll(/data-library-filter="([^"]+)"[^>]*>[\s\S]*?class="library-folder-count">(\d+)</g)].map(match => [match[1], Number(match[2])]));
+  const counts = () => Object.fromEntries([...app.byId('folder-list').innerHTML.matchAll(/data-library-filter="([^"]+)"[^>]*>(?:(?!<\/button>)[\s\S])*?class="library-folder-count">(\d+)</g)].map(match => [match[1], Number(match[2])]));
   assert.deepEqual(counts(), { all: 2, unfiled: 1, project: 1, trash: 1 });
+  assert.match(app.byId('folder-list').innerHTML, /data-library-filter="ai"[^>]*>(?:(?!<\/button>)[\s\S])*?class="library-folder-count"><\/span>/);
   app.state.snapshot.meetings[1].folderId = 'project';
   app.byId('search').value = 'no match';
   app.controller.render();

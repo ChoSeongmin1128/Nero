@@ -1,0 +1,13 @@
+.ai-library-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.ai-library-period { display: inline-flex; align-items: center; gap: 6px; }
+.ai-library-period .nero-select-trigger { width: auto; min-height: 28px; }
+.ai-library-list { display: grid; }
+.ai-library-row { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 10px; padding: 0 12px; border-bottom: 1px solid var(--border); }
+.ai-library-row[aria-current="true"] { background: var(--accent-subtle); }
+.ai-library-row > input { margin: 0; }
+.ai-library-open { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; min-width: 0; padding: 10px 0; text-align: start; border: 0; background: transparent; }
+.ai-library-open:disabled { cursor: default; opacity: 1; }
+.ai-library-copy { display: grid; gap: 2px; min-width: 0; }
+.ai-library-title, .ai-library-copy > .type-caption { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-library-meta { white-space: nowrap; }
+@media (max-width: 520px) { .ai-library-open { grid-template-columns: auto minmax(0, 1fr); } .ai-library-meta { grid-column: 2; } }
