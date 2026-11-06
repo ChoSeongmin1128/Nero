@@ -10,6 +10,13 @@ const html = await readFile(new URL('../src/index.html', import.meta.url), 'utf8
 const shared = await buildMarkdownSource() + '\n' + await readFile(new URL('../../../design-system/components.js', import.meta.url), 'utf8');
 const bundle = await build({ entryPoints: [root + 'tests/fixtures/ai-chat-fixture.jsx'], bundle: true, write: false, format: 'iife', globalName: 'AiFixture', jsx: 'automatic', nodePaths: [root + 'node_modules'], define: { 'process.env.NODE_ENV': '"production"' } });
 const wait = async predicate => { for (let i = 0; i < 120; i++) { if (predicate()) return; await new Promise(resolve => setTimeout(resolve, 5)); } assert.fail('AI UI did not settle'); };
+const menuButtons = window => [...window.document.querySelectorAll('.ai-model-popover button')];
+const menuButton = (window, text) => menuButtons(window).find(button => button.textContent.trim() === text);
+const openProvider = async (window, provider) => {
+  await wait(() => window.document.querySelector(`.ai-model-popover [data-provider="${provider}"]`));
+  window.document.querySelector(`.ai-model-popover [data-provider="${provider}"]`).click();
+  await wait(() => window.document.querySelector('.ai-model-back'));
+};
 async function fixture(t, options = {}) {
   const window = new Window({ settings: { enableJavaScriptEvaluation: true, suppressInsecureJavaScriptEnvironmentWarning: true, disableJavaScriptFileLoading: true, disableCSSFileLoading: true } });
   window.structuredClone = structuredClone;
@@ -24,27 +31,74 @@ async function fixture(t, options = {}) {
   if (options.prepareModels !== false && state.accounts.some(account => account.id === state.accountId && account.state === 'ready')) {
     node('ai-chat-inspector').querySelector('[aria-label="AI 모델 선택"]').click();
     await wait(() => window.document.querySelector('.ai-model-popover'));
-    [...window.document.querySelectorAll('.ai-model-popover section')][0].querySelector('button').click();
-    await wait(() => [...window.document.querySelectorAll('.ai-model-popover button')].some(button => button.textContent.trim() === '예시 모델'));
-    [...window.document.querySelectorAll('.ai-model-popover button')].find(button => button.textContent.trim() === '예시 모델').click();
+    await openProvider(window, state.provider);
+    await wait(() => menuButton(window, '예시 모델'));
+    menuButton(window, '예시 모델').click();
     await wait(() => !window.document.querySelector('.ai-model-popover'));
   }
-  if (app.ui.flow.getSnapshot().modelId) await wait(() => node('ai-chat-inspector').querySelector('[aria-label="AI 모델 선택"]')?.textContent.includes('예시 모델'));
+  const chosen = app.ui.flow.getSnapshot(), chosenLabel = chosen.models.find(model => model.id === chosen.modelId)?.label;
+  if (chosenLabel) await wait(() => node('ai-chat-inspector').querySelector('[aria-label="AI 모델 선택"]')?.textContent.includes(chosenLabel));
   await window.happyDOM.whenAsyncComplete();
   return { ...app, window, node, button: text => { const buttons = [...node('ai-chat-inspector').querySelectorAll('button')]; return buttons.find(button => button.getAttribute('aria-label') === text) || buttons.find(button => button.textContent.trim() === text); } };
 }
 
-test('model picker shows both providers without changing selection while browsing', async t => {
+test('model picker lists connected providers and browses them without changing the selection', async t => {
   const app = await fixture(t);
-  const trigger = app.button('AI 모델 선택'); trigger.click();
+  const trigger = app.button('AI 모델 선택');
+  assert.ok(trigger.querySelector('img[src*="chatgpt"]')); assert.equal(trigger.querySelector('svg.lucide-bot'), null);
+  trigger.click();
   await wait(() => app.window.document.querySelector('.ai-model-popover'));
   const menu = app.window.document.querySelector('.ai-model-popover');
-  assert.match(menu.textContent, /ChatGPT/); assert.match(menu.textContent, /Claude/);
+  assert.ok(menu.querySelector('[data-provider="chatgpt"] img[src*="chatgpt"]'));
+  assert.equal(menu.querySelector('[data-provider="claude"]'), null);
+  assert.ok(menuButton(app.window, '계정 설정'));
+  await openProvider(app.window, 'chatgpt');
+  assert.equal(menuButton(app.window, '예시 모델').getAttribute('aria-pressed'), 'true');
+  menuButton(app.window, 'ChatGPT').click();
+  await wait(() => menu.querySelector('[data-provider="chatgpt"]'));
   assert.equal(app.ui.flow.getSnapshot().provider, 'chatgpt');
   assert.equal(app.ui.flow.getSnapshot().modelId, 'example-model');
-  assert.ok(menu.querySelector('img[src*="chatgpt"]')); assert.ok(menu.querySelector('img[src*="claude"]'));
   app.window.document.activeElement.dispatchEvent(new app.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
   await wait(() => !app.window.document.querySelector('.ai-model-popover'));
+});
+
+test('a provider placeholder without an account is neither listed nor probed', async t => {
+  const app = await fixture(t, { scenario: 'placeholder', prepareModels: false });
+  await wait(() => app.ui.flow.getSnapshot().provider === 'claude');
+  app.button('AI 모델 선택').click();
+  await wait(() => app.window.document.querySelector('.ai-model-popover [data-provider="claude"]'));
+  assert.equal(app.window.document.querySelector('.ai-model-popover [data-provider="chatgpt"]'), null);
+  await app.window.happyDOM.whenAsyncComplete();
+  assert.equal(app.calls.some(call => call[0] === 'models' && call[1] === ''), false);
+  assert.equal(app.node('ai-chat-inspector').textContent.includes('AI 계정에 로그인해 주세요.'), false);
+});
+
+test('Claude models keep earlier releases folded, search across providers and show the documented effort', async t => {
+  const app = await fixture(t, { scenario: 'claude-catalog', prepareModels: false });
+  await wait(() => app.ui.flow.getSnapshot().provider === 'claude');
+  const trigger = app.button('AI 모델 선택'); trigger.click();
+  await openProvider(app.window, 'claude');
+  await wait(() => menuButton(app.window, 'Opus 5.5'));
+  assert.equal(menuButton(app.window, 'Opus 4.7'), undefined);
+  menuButton(app.window, '이전 모델').click();
+  await wait(() => menuButton(app.window, 'Opus 4.7'));
+  const search = app.window.document.querySelector('.ai-model-search input');
+  Object.getOwnPropertyDescriptor(app.window.HTMLInputElement.prototype, 'value').set.call(search, '4.7');
+  search.dispatchEvent(new app.window.Event('input', { bubbles: true }));
+  await wait(() => app.window.document.querySelector('.ai-model-popover .ai-model-back') === null && menuButton(app.window, 'Opus 4.7'));
+  assert.ok(menuButton(app.window, 'Opus 4.7').querySelector('img[src*="claude"]'));
+  assert.equal(menuButton(app.window, 'Sonnet 5.5'), undefined);
+  menuButton(app.window, 'Opus 4.7').click();
+  await wait(() => !app.window.document.querySelector('.ai-model-popover'));
+  assert.match(trigger.textContent, /Opus 4\.7/); assert.ok(trigger.querySelector('img[src*="claude"]'));
+  const effort = app.node('ai-chat-inspector').querySelector('.ai-effort-trigger');
+  assert.match(effort.textContent, /Extra High/); assert.equal(effort.textContent.includes('기본값'), false);
+  effort.click();
+  await wait(() => app.window.document.querySelector('.ai-effort-popover'));
+  assert.deepEqual([...app.window.document.querySelectorAll('.ai-effort-popover button')].map(button => button.textContent.trim()), ['Low', 'Medium', 'High', 'Extra High', 'Max']);
+  [...app.window.document.querySelectorAll('.ai-effort-popover button')].find(button => button.textContent.trim() === 'Max').click();
+  await wait(() => app.ui.flow.getSnapshot().effort === 'max');
+  assert.match(effort.textContent, /Max/);
 });
 
 for (const [runtime, label] of [['missing', '설치하고 로그인'], ['present', '로그인 확인']]) {
@@ -221,11 +275,12 @@ test('saved account loads models when the model menu opens, without a refresh bu
   const trigger = app.button('AI 모델 선택');
   assert.match(trigger.textContent, /모델 선택/);
   trigger.click();
+  await openProvider(app.window, 'chatgpt');
   await wait(() => app.window.document.querySelector('.ai-model-popover')?.textContent.includes('예시 모델'));
   assert.equal(app.window.document.querySelector('.ai-model-popover').textContent.includes('새로고침'), false);
   const loaded = app.calls.filter(call => call[0] === 'models').length;
   assert.ok(loaded >= 1);
-  [...app.window.document.querySelectorAll('.ai-model-popover button')].find(node => node.textContent.trim() === '예시 모델').click();
+  menuButton(app.window, '예시 모델').click();
   assert.equal(app.node('ai-chat-inspector').textContent.includes('AI 계정에 로그인해 주세요.'), false);
   app.ui.flow.edit('Question');
   await wait(() => !app.node('ai-chat-inspector').querySelector('[aria-label="질문 보내기"]').disabled);
@@ -371,13 +426,43 @@ test('slash chooser selects a skill without sending and requires a meeting targe
   await wait(() => app.node('ai-chat-inspector').querySelector('[role="listbox"]'));
   input.dispatchEvent(new app.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
   await wait(() => app.ui.flow.getSnapshot().conversation.skillId === 'meeting-summary');
-  assert.match(app.node('ai-chat-inspector').textContent, /요약할 템플릿을 선택해 주세요/);
   assert.equal(app.calls.some(call => call[0] === 'send'), false);
   assert.equal(app.ui.flow.getSnapshot().conversation.summaryTargetId, 'example-meeting');
   assert.equal(app.node('ai-chat-inspector').querySelector('[aria-label="요약할 회의"]'), null);
+  await wait(() => app.ui.flow.getSnapshot().conversation.templateId === 'example-template');
+  const chip = app.node('ai-chat-inspector').querySelector('.ai-skill-chip');
+  assert.match(chip.textContent, /회의 요약/); assert.match(chip.textContent, /기본 요약/);
+  assert.equal(app.node('ai-chat-inspector').querySelector('[role="listbox"]'), null);
+  chip.querySelector('.ai-skill-template').click();
   await wait(() => [...app.node('ai-chat-inspector').querySelectorAll('[role=option]')].some(item => item.textContent.includes('기본 요약')));
+  assert.equal([...app.node('ai-chat-inspector').querySelectorAll('[role=option]')].some(item => item.textContent.includes('회의 요약')), false);
   [...app.node('ai-chat-inspector').querySelectorAll('[role=option]')].find(item => item.textContent.includes('기본 요약')).click();
   await wait(() => !app.node('ai-chat-inspector').querySelector('[aria-label="질문 보내기"]').disabled);
+  app.node('ai-chat-inspector').querySelector('[aria-label="질문 보내기"]').click();
+  await wait(() => app.calls.some(call => call[0] === 'send'));
+  assert.equal(app.calls.find(call => call[0] === 'send')[1].message, '');
+  const bubble = () => app.node('ai-chat-inspector').querySelector('.ai-message-skill');
+  await wait(() => bubble());
+  assert.match(bubble().textContent, /회의 요약/); assert.match(bubble().textContent, /기본 요약/);
+  assert.equal(app.node('ai-chat-inspector').textContent.includes('첨부한 회의를 요약해 주세요'), false);
+  assert.equal(app.node('ai-chat-inspector').textContent.includes('템플릿:'), false);
+  app.node('ai-chat-inspector').querySelector('.ai-message-meeting').click();
+  await wait(() => app.calls.some(call => call[0] === 'openMeeting' && call[1] === 'example-meeting'));
+});
+
+test('templates are reached only through the summary skill', async t => {
+  const app = await fixture(t);
+  app.button('자료 추가').click();
+  await wait(() => app.window.document.querySelector('.ai-source-popover'));
+  const kinds = [...app.window.document.querySelectorAll('.ai-source-popover .ai-source-kinds button')].map(button => button.textContent.trim());
+  assert.deepEqual(kinds, ['회의', '스킬', 'Notion 링크']);
+  [...app.window.document.querySelectorAll('.ai-source-popover .ai-source-kinds button')].find(button => button.textContent.trim() === '스킬').click();
+  await wait(() => [...app.window.document.querySelectorAll('.ai-source-popover .ai-attachment-option')].length);
+  assert.deepEqual([...app.window.document.querySelectorAll('.ai-source-popover .ai-attachment-option')].map(button => button.textContent.trim()), ['회의 요약']);
+  const input = app.node('ai-chat-inspector').querySelector('textarea');
+  Object.getOwnPropertyDescriptor(app.window.HTMLTextAreaElement.prototype, 'value').set.call(input, '/기본'); input.dispatchEvent(new app.window.Event('input', { bubbles: true }));
+  await app.window.happyDOM.whenAsyncComplete();
+  assert.equal(app.node('ai-chat-inspector').querySelector('[role="listbox"]'), null);
 });
 
 
@@ -395,8 +480,8 @@ test('IME Enter does not select a slash option or send', async t => {
 test('reopening model picker never probes models', async t => {
   const app = await fixture(t); const trigger = app.button('AI 모델 선택');
   const before = app.calls.filter(call => call[0] === 'models').length;
-  trigger.click(); await wait(() => app.window.document.querySelector('.ai-model-popover'));
-  [...app.window.document.querySelectorAll('.ai-model-popover button')].find(item => item.textContent.trim() === '예시 모델').click();
+  trigger.click(); await openProvider(app.window, 'chatgpt');
+  menuButton(app.window, '예시 모델').click();
   await wait(() => !app.window.document.querySelector('.ai-model-popover'));
   await app.window.happyDOM.whenAsyncComplete();
   trigger.click(); await wait(() => app.window.document.querySelector('.ai-model-popover'));
@@ -412,8 +497,8 @@ test('Claude reconnect clears cached model without probing when the picker opens
   void app.ui.flow.connect('claude');
   await wait(() => app.ui.flow.getSnapshot().connectionPhases.claude === 'waiting');
   assert.equal(app.ui.flow.getSnapshot().modelId, null);
-  app.button('AI 모델 선택').click(); await wait(() => app.window.document.querySelector('.ai-model-popover'));
-  const group = [...app.window.document.querySelectorAll('.ai-model-popover section')].find(item => item.textContent.includes('Claude'));
+  app.button('AI 모델 선택').click(); await openProvider(app.window, 'claude');
+  const group = app.window.document.querySelector('.ai-model-popover');
   assert.match(group.textContent, /연결을 마치면 모델 목록을 불러옵니다/);
   assert.equal(group.textContent.includes('새로고침'), false);
   assert.equal(claudeModels(), before);

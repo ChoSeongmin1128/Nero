@@ -337,11 +337,11 @@ for (const cancellation of ['pointercancel', 'lostpointercapture', 'blur', 'hidd
 }
 
 
-test('compact navigation owns four categories while the toolbar and utility slots keep singleton controls', async t => {
+test('compact navigation owns five categories while the toolbar and utility slots keep singleton controls', async t => {
   const { document } = await setup(t);
   const rail = document.querySelector('.navigation-rail'), aside = document.getElementById('navigation-sidebar');
   assert.equal(aside.inert, true);
-  assert.deepEqual([...rail.querySelectorAll('[data-navigation-preview]')].map(button => button.dataset.navigationPreview), ['all', 'folders', 'trash', 'recent']);
+  assert.deepEqual([...rail.querySelectorAll('[data-navigation-preview]')].map(button => button.dataset.navigationPreview), ['all', 'folders', 'ai', 'trash', 'recent']);
   const toolbar = document.querySelector('.application-toolbar');
   for (const id of ['navigation-back', 'navigation-forward', 'navigation-toggle', 'create-meeting']) {
     assert.equal(document.querySelectorAll(`#${id}`).length, 1);

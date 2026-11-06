@@ -14,6 +14,8 @@ export function mountAiChatFixture({ document, scenario = 'ready', delay = 20 })
   const accounts = { accounts: [{ id: 'example-chatgpt', provider: 'chatgpt', state: scenario === 'unavailable' ? 'unavailable' : scenario === 'oauth' ? 'signed_out' : 'ready', configured: scenario !== 'unavailable', label: '예시 계정' }, { id: 'example-claude', provider: 'claude', state: 'unavailable', configured: false }] };
   if (scenario === 'unknown') accounts.accounts[0].state = 'unknown';
   if (scenario.startsWith('claude-runtime-')) Object.assign(accounts.accounts[1], { id: 'claude-code', configured: true, state: 'unknown', runtimeState: scenario.slice('claude-runtime-'.length), disconnectable: false });
+  if (scenario === 'placeholder' || scenario === 'claude-catalog') { accounts.accounts[0] = { id: '', provider: 'chatgpt', state: 'unknown', configured: true, label: 'ChatGPT' }; Object.assign(accounts.accounts[1], { id: 'claude-code', configured: true, state: 'ready', runtimeState: 'present', disconnectable: false }); }
+  const claudeCatalog = [{ id: 'opus', label: 'Opus 5.5', effort: { supported: true, levels: ['low', 'medium', 'high', 'xhigh', 'max'], default: 'medium' } }, { id: 'sonnet', label: 'Sonnet 5.5', effort: { supported: true, levels: ['low', 'medium', 'high', 'xhigh', 'max'], default: 'medium' } }, { id: 'claude-opus-4-7', label: 'Opus 4.7', previous: true, effort: { supported: true, levels: ['low', 'medium', 'high', 'xhigh', 'max'], default: 'xhigh' } }];
   if (scenario === 'plan-disabled-multi') { accounts.accounts[0].state = 'signed_out'; accounts.accounts.push({ id: 'active-plan-account', provider: 'chatgpt', state: 'plan_disabled', configured: true, label: '활성 계정', detail: '활성 계정의 구독 권한을 확인해 주세요.' }); accounts.activeAccountId = 'active-plan-account'; }
   const accountSnapshot = () => ({ checked: scenario !== 'unknown', activeAccountId: accounts.activeAccountId || null, accounts: accounts.accounts.map(account => ({ ...account })) });
   let meetingSources = scenario === 'meeting-sources' ? [{ sourceId: 'notion:example:revision', pageId: 'example', title: '제품 기획 문서', url: 'https://www.notion.so/12345678123412341234123456789012' }] : [];
@@ -31,7 +33,7 @@ export function mountAiChatFixture({ document, scenario = 'ready', delay = 20 })
     notionConnect: async () => ({ attemptId: 'notion-attempt' }),
     notionFinish: async () => new Promise(resolve => { finishNotion = resolve; }),
     notionCancel: async () => ({ connected: false }),
-    models: async accountId => { calls.push(['models', accountId]); return { models: [{ id: 'example-model', label: '예시 모델' }], defaultModelId: 'example-model' }; },
+    models: async accountId => { calls.push(['models', accountId]); return scenario === 'claude-catalog' ? { models: structuredClone(claudeCatalog), defaultModelId: 'sonnet' } : { models: [{ id: 'example-model', label: '예시 모델' }], defaultModelId: 'example-model' }; },
     list: async () => [...conversations.values()].map(value => ({ id: value.id, title: value.title, messageCount: value.messages.length, activeRequestId: value.activeRequestId, meetingIds: [...new Set(value.messages.filter(message => message.role === 'user').flatMap(message => (message.attachments || []).filter(item => item.kind === 'meeting').map(item => item.meetingId)))] })),
     create: async () => { const id = ++conversationCount === 1 ? 'example-conversation' : `example-conversation-${conversationCount}`; const value = { id, title: '새 대화', messages: [], activeRequestId: null }; conversations.set(id, value); return structuredClone(value); },
     read: async id => { if (!conversations.has(id)) throw Error('예시 대화를 찾지 못했습니다.'); return structuredClone(conversations.get(id)); },
@@ -76,6 +78,7 @@ export function mountAiChatFixture({ document, scenario = 'ready', delay = 20 })
     onSettings: () => { for (const panel of byId('settings-dialog').querySelectorAll('[role=tabpanel]')) panel.hidden = panel.id !== 'settings-agent-panel'; byId('settings-dialog').showModal(); ui.setSettingsActive(true); }, getTemplate: async () => 'example-template',
     writeClipboard: async text => { calls.push(['clipboard', text]); if (scenario === 'clipboard-failed') throw Error('클립보드에 복사하지 못했습니다.'); },
     onCitation: async citation => { calls.push(['citation', citation]); },
+    onOpenMeeting: async meetingId => { calls.push(['openMeeting', meetingId]); },
   });
   document.querySelector('.navigation-shell')?.classList.add('collapsed');
   byId('meeting-detail').hidden = false;

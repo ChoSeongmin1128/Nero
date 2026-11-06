@@ -5,9 +5,10 @@ const emptyConversation = id => ({ id: id || null, key: id || DRAFT, title: '새
 const errorMessage = (error, fallback) => error?.message || fallback;
 const terminal = new Set(['completed', 'failed', 'cancelled']);
 const reconnectable = new Set(['signed_out', 'plan_disabled', 'unknown']);
-const usableAccount = account => ['ready', 'unknown'].includes(account?.state);
-const cleanModel = item => ({ id: item.id, label: item.label, ...(item.effort && typeof item.effort === 'object' ? { effort: { supported: typeof item.effort.supported === 'boolean' ? item.effort.supported : null, levels: Array.isArray(item.effort.levels) ? item.effort.levels.filter(level => typeof level === 'string') : [], default: typeof item.effort.default === 'string' ? item.effort.default : null } } : {}) });
+export const usableAccount = account => Boolean(account?.id) && ['ready', 'unknown'].includes(account.state);
+const cleanModel = item => ({ id: item.id, label: item.label, ...(item.previous === true ? { previous: true } : {}), ...(item.effort && typeof item.effort === 'object' ? { effort: { supported: typeof item.effort.supported === 'boolean' ? item.effort.supported : null, levels: Array.isArray(item.effort.levels) ? item.effort.levels.filter(level => typeof level === 'string') : [], default: typeof item.effort.default === 'string' ? item.effort.default : null } } : {}) });
 const allowedEffort = (models, modelId, effort) => effort && models.find(item => item.id === modelId)?.effort?.supported === true && models.find(item => item.id === modelId).effort.levels.includes(effort) ? effort : null;
+export const effectiveEffort = (models, modelId, effort) => allowedEffort(models, modelId, effort) || allowedEffort(models, modelId, models.find(item => item.id === modelId)?.effort?.default);
 
 export function selectAiAccount(accounts, provider, { selectedId = null, activeAccountId = null } = {}) {
   const candidates = accounts.filter(account => account.provider === provider);
@@ -24,7 +25,7 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
   let state = { meeting: null, conversation: emptyConversation(), conversationList: [], trashList: [], trashLoaded: false, trashError: '', listBusy: false, listLoaded: false, listError: '', provider: 'chatgpt', accountId: null, activeAccountId: null, modelId: null, effort: null, models: [], accounts: [], accountsLoaded: false, accountsBusy: false, accountsError: '', catalog: { skills: [], templates: [] }, catalogError: '', modelGroups: {}, modelsBusy: false, modelError: '', attempts: {}, connectionPhases: {}, notion: null, notionBusy: false, notionAttempt: null, notionError: '', fetching: false, sourceError: '', active: false, settingsActive: false };
   let subscriptionReady = false, selectionInitialized = false, contextEpoch = 0, openEpoch = 0;
   let disposed = false, accountsPromise = null, listPromise = null, modelEpoch = 0, listEpoch = 0, sourceRequest = null, unsubscribe = null;
-  const conversations = new Map([[DRAFT, state.conversation]]), loads = new Map(), listeners = new Set(), connections = new Map(), eventBuffers = new Map(), pendingStarts = new Map(), contextLoads = new Map(), modelCache = new Map(), modelGenerations = new Map(), refreshedModels = new Set();
+  const conversations = new Map([[DRAFT, state.conversation]]), loads = new Map(), listeners = new Set(), connections = new Map(), eventBuffers = new Map(), pendingStarts = new Map(), contextLoads = new Map(), modelCache = new Map(), modelGenerations = new Map(), refreshedModels = new Set(), passiveModels = new Set();
   try {
     const saved = JSON.parse(globalThis.localStorage?.getItem('nero.ai.models.v1') || '{}');
     for (const [id, value] of Object.entries(saved.accounts || {})) if (Array.isArray(value.models)) modelCache.set(id, { models: value.models.filter(item => typeof item.id === 'string' && typeof item.label === 'string').map(cleanModel), defaultModelId: value.defaultModelId });
@@ -37,6 +38,7 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
     modelGenerations.set(accountId, (modelGenerations.get(accountId) || 0) + 1);
     modelCache.delete(accountId);
     refreshedModels.delete(accountId);
+    passiveModels.delete(accountId);
     const modelGroups = { ...state.modelGroups };
     delete modelGroups[accountId];
     const patch = { modelGroups, ...(state.provider === 'claude' && state.accountId === accountId ? { modelId: null, models: [], modelsBusy: false, modelError: '' } : {}) };
@@ -111,18 +113,22 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
   const acceptAccounts = result => {
     const accounts = result.accounts || [];
     const activeAccountId = result.activeAccountId || null;
-    const selected = selectAiAccount(accounts, state.provider, { selectedId: state.accountId, activeAccountId });
+    const usableProvider = provider => usableAccount(selectAiAccount(accounts, provider, { selectedId: provider === state.provider ? state.accountId : null, activeAccountId }));
+    const provider = usableProvider(state.provider) ? state.provider : ['chatgpt', 'claude'].find(usableProvider) || state.provider;
+    const selected = selectAiAccount(accounts, provider, { selectedId: provider === state.provider ? state.accountId : null, activeAccountId });
     const accountId = selected?.id || null;
     const changed = accountId !== state.accountId || !usableAccount(selected);
     if (changed) modelEpoch += 1;
     const cached = usableAccount(selected) && modelCache.get(accountId);
     const models = cached?.models || [];
     const modelId = accountId === state.accountId && state.modelId ? state.modelId : cached?.defaultModelId || models[0]?.id || null;
-    publish({ accounts, accountsLoaded: true, accountId, activeAccountId, models, modelId, effort: changed ? null : allowedEffort(models, modelId, state.effort), ...(changed ? { modelsBusy: false, modelError: '' } : {}) });
-    for (const item of accounts.filter(item => item.provider === 'claude' && usableAccount(item) && !modelCache.has(item.id))) {
+    publish({ accounts, accountsLoaded: true, provider, accountId, activeAccountId, models, modelId, effort: changed ? null : allowedEffort(models, modelId, state.effort), ...(changed ? { modelsBusy: false, modelError: '' } : {}) });
+    // Claude rows come from the app's own cache, so a passive read also replaces labels saved by an earlier version.
+    for (const item of accounts.filter(item => item.provider === 'claude' && usableAccount(item) && !refreshedModels.has(item.id) && !passiveModels.has(item.id))) {
       const generation = modelGenerations.get(item.id) || 0;
+      passiveModels.add(item.id);
       void bridge.models(item.id, false).then(result => {
-        if (disposed || generation !== (modelGenerations.get(item.id) || 0) || modelCache.has(item.id) || !state.accounts.some(account => account.id === item.id && usableAccount(account))) return;
+        if (disposed || generation !== (modelGenerations.get(item.id) || 0) || refreshedModels.has(item.id) || !state.accounts.some(account => account.id === item.id && usableAccount(account))) return;
         const models = (result.models || []).map(cleanModel);
         if (!models.length) return;
         modelCache.set(item.id, { models, defaultModelId: result.defaultModelId });
@@ -451,7 +457,20 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
       catch (error) { publish({ catalogError: errorMessage(error, '목록을 불러오지 못했습니다.') }); }
     },
     selectTemplate(templateId) { const meetings = state.conversation.meetings; updateConversation(state.conversation.key, { templateId, useTemplate: false, ...(templateId ? { skillId: 'meeting-summary', summaryTargetId: meetings.length === 1 ? meetings[0].id : null } : {}) }); },
-    selectSkill(skillId) { const meetings = state.conversation.meetings; updateConversation(state.conversation.key, { skillId, summaryTargetId: skillId && meetings.length === 1 ? meetings[0].id : null, ...(!skillId ? { templateId: null } : {}) }); },
+    selectSkill(skillId) { const meetings = state.conversation.meetings; updateConversation(state.conversation.key, { skillId, summaryTargetId: skillId && meetings.length === 1 ? meetings[0].id : null, ...(!skillId ? { templateId: null } : {}) }); if (skillId) void flow.ensureSkillTemplate(); },
+    // A summary skill starts with the default template; the chip changes it.
+    async ensureSkillTemplate() {
+      const key = state.conversation.key;
+      if (!state.conversation.skillId || state.conversation.templateId) return;
+      // The template chosen for meeting summaries comes first, then the catalog default.
+      let preferred = null;
+      try { preferred = await getTemplate(); } catch {}
+      if (!state.catalog.templates?.length) await flow.loadCatalog();
+      const templates = state.catalog.templates || [];
+      const templateId = templates.some(item => item.id === preferred) ? preferred : state.catalog.defaultTemplateId || templates.find(item => item.isDefault)?.id || null;
+      const current = conversations.get(key);
+      if (current?.skillId && !current.templateId && templateId) updateConversation(key, { templateId });
+    },
     selectSummaryTarget(summaryTargetId) { if (state.conversation.meetings.length === 1 && state.conversation.meetings[0].id === summaryTargetId) updateConversation(state.conversation.key, { summaryTargetId }); },
     summaryPrompt() { selectionInitialized = true; const id = state.conversation.key; if (id) updateConversation(id, { draft: '첨부한 회의의 결정 사항과 할 일을 정리해 주세요.', useTemplate: true }); },
     attachMeeting(meeting) {
@@ -489,7 +508,7 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
       const requestId = createId(), accountId = state.accountId, modelId = state.modelId;
       const editOf = options.editOf || null, questionKey = `user:${requestId}`, previousVersions = context.versions || {};
       const requestedEffort = Object.hasOwn(options, 'effort') ? options.effort : state.effort;
-      const effort = allowedEffort(state.models, modelId, requestedEffort);
+      const effort = requestedEffort ? allowedEffort(state.models, modelId, requestedEffort) : effectiveEffort(state.models, modelId, null);
       if (requestedEffort && !effort) { updateConversation(id, { error: '이 모델에서 이전 추론 수준을 사용할 수 없습니다. 모델을 확인해 주세요.' }); return false; }
       let finishStart;
       const starting = { requestId, done: new Promise(resolve => { finishStart = resolve; }) };
@@ -519,9 +538,9 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
         const shownStored = conversationPath(context).filter(item => !temporary(item.id));
         const parentId = editOf ? parentOf(context, editOf) : shownStored.at(-1)?.id || ROOT;
         const versions = editOf ? { ...previousVersions, [parentId]: questionKey } : context.versions;
-        const messages = [...context.messages, { id: questionKey, parentId, role: 'user', text: text.trim() || '첨부한 회의를 요약해 주세요.', status: 'completed', effort, templateId, skillId, summaryTargetId: context.summaryTargetId, attachments }, { id: `assistant:${requestId}`, parentId: questionKey, requestId, role: 'assistant', text: '', status: 'streaming', modelId, provider: state.provider, effort, skillId, summaryTargetId: context.summaryTargetId, citations: [], attachments, saveTargets }];
+        const messages = [...context.messages, { id: questionKey, parentId, role: 'user', text: text.trim(), status: 'completed', effort, templateId, skillId, summaryTargetId: context.summaryTargetId, attachments }, { id: `assistant:${requestId}`, parentId: questionKey, requestId, role: 'assistant', text: '', status: 'streaming', modelId, provider: state.provider, effort, skillId, summaryTargetId: context.summaryTargetId, citations: [], attachments, saveTargets }];
         updateConversation(id, { messages, versions, ...(editOf ? {} : { draft: '', useTemplate: false, templateId: null, skillId: null, summaryTargetId: null }), action: null, activeRequestId: requestId });
-        const receipt = await bridge.send({ requestId, conversationId: id, meetingIds: context.meetings.map(meeting => meeting.id), accountId, modelId, ...(effort ? { effort } : {}), message: text.trim() || '첨부한 회의를 요약해 주세요.', sourceIds: context.sources.map(item => item.sourceId), sourceOrigins: Object.fromEntries(context.sources.filter(item => !item.unknownOrigin).map(item => [item.sourceId, { directSourceId: item.directSource?.sourceId || null, meetingSources: Object.fromEntries(Object.entries(item.meetingSources || {}).map(([meetingId, source]) => [meetingId, source.sourceId])) }])), ...(templateId ? { templateId } : {}), ...(skillId ? { skillId, summaryTargetId: context.summaryTargetId } : {}), ...(editOf ? { editOf } : {}), parentId });
+        const receipt = await bridge.send({ requestId, conversationId: id, meetingIds: context.meetings.map(meeting => meeting.id), accountId, modelId, ...(effort ? { effort } : {}), message: text.trim(), sourceIds: context.sources.map(item => item.sourceId), sourceOrigins: Object.fromEntries(context.sources.filter(item => !item.unknownOrigin).map(item => [item.sourceId, { directSourceId: item.directSource?.sourceId || null, meetingSources: Object.fromEntries(Object.entries(item.meetingSources || {}).map(([meetingId, source]) => [meetingId, source.sourceId])) }])), ...(templateId ? { templateId } : {}), ...(skillId ? { skillId, summaryTargetId: context.summaryTargetId } : {}), ...(editOf ? { editOf } : {}), parentId });
         if (receipt.conversationId !== id) throw new Error('대화 응답을 확인하지 못했습니다.');
         // The shown question keeps its temporary id until the store's id arrives, so it can
         // be edited right after the answer without reloading the conversation.
@@ -669,7 +688,7 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
     },
     modelsFor(provider) {
       const target = selectAiAccount(state.accounts, provider, { selectedId: state.provider === provider ? state.accountId : null, activeAccountId: state.activeAccountId });
-      return { account: target, models: modelCache.get(target?.id)?.models || [], ...(state.modelGroups[target?.id] || {}) };
+      return { account: target, available: usableAccount(target) || Boolean(state.connectionPhases[provider]), models: modelCache.get(target?.id)?.models || [], ...(state.modelGroups[target?.id] || {}) };
     },
     chooseModel(provider, accountId, modelId) {
       if (state.conversation.activeRequestId || !modelCache.get(accountId)?.models.some(item => item.id === modelId)) return;

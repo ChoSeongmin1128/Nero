@@ -11,3 +11,13 @@
 .ai-library-title, .ai-library-copy > .type-caption { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ai-library-meta { white-space: nowrap; }
 @media (max-width: 520px) { .ai-library-open { grid-template-columns: auto minmax(0, 1fr); } .ai-library-meta { grid-column: 2; } }
+.sidebar-ai-list { display: flex; flex-direction: column; gap: 1px; }
+.sidebar-ai-row { flex-direction: column; align-items: stretch; }
+.sidebar-ai-row > .recent-meeting { min-height: 0; padding-bottom: 2px; }
+.sidebar-ai-row .recent-meeting-timestamp { flex: none; color: var(--text-secondary); font-size: var(--text-caption-size); font-variant-numeric: tabular-nums; }
+.sidebar-ai-meeting, .sidebar-ai-note { display: inline-flex; align-self: flex-start; align-items: center; gap: 4px; max-width: calc(100% - 12px); min-height: 0; margin: 0 0 6px 4px; padding: 1px 4px; border-radius: 4px; color: var(--text-secondary); font-size: var(--text-caption-size); }
+.sidebar-ai-meeting > svg { flex: none; }
+.sidebar-ai-meeting > span:first-of-type { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sidebar-ai-meeting:hover { color: var(--text); background: var(--surface); }
+.sidebar-ai-more { flex: none; }
+.sidebar-ai-note { padding-inline: 4px; }

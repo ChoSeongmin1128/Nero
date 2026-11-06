@@ -174,6 +174,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     let summaryEvidenceOptions, aiChatOptions;
     const aiChatBridge = testAiBridge;
     const mountAiChatLibrary = () => ({ mount() {}, show() {}, dispose() {} });
+    const mountAiChatSidebar = () => ({ show() {}, dispose() {} });
     const mountAiChat = options => {
       aiChatOptions = options;
       return {

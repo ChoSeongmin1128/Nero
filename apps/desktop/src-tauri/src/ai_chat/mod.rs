@@ -1,3 +1,4 @@
+mod claude_models;
 mod context;
 mod provider;
 mod skills;
@@ -528,29 +529,7 @@ impl AiChat {
     }
     pub async fn models(&self, id: &str) -> Result<Models, String> {
         if id == crate::claude_connection::ACCOUNT_ID {
-            let models = self
-                .claude
-                .models()
-                .into_iter()
-                .map(|model| {
-                    let label = match model.resolved_model.as_deref() {
-                        Some(resolved) if resolved != model.display_name => {
-                            format!("{} ({})", model.display_name, resolved)
-                        }
-                        _ => model.display_name,
-                    };
-                    provider::ChatModel {
-                        id: model.value,
-                        label,
-                        effort: provider::EffortCapability {
-                            supported: model.supports_effort,
-                            levels: model.supported_effort_levels,
-                            default: None,
-                        },
-                        max_output_tokens: None,
-                    }
-                })
-                .collect::<Vec<_>>();
+            let models = claude_models::chat_models(self.claude.models());
             let default_model_id = models
                 .iter()
                 .find(|m| m.id == "sonnet")
@@ -588,7 +567,7 @@ impl AiChat {
         for id in &request.meeting_ids {
             store::id(id)?;
         }
-        if request.message.trim().is_empty()
+        if skills::model_question(request.skill_id.as_deref(), &request.message).is_none()
             || request.message.len() > 32 * 1024
             || request.source_ids.len() > 16
             || request.meeting_ids.len() > 16
@@ -735,8 +714,13 @@ impl AiChat {
             .map(|&index| &conversation.messages[index])
             .filter(|message| message.status == "completed")
             .map(|message| {
+                let source = if message.role == "user" {
+                    skills::model_question(message.skill_id.as_deref(), &message.text)
+                } else {
+                    None
+                };
                 let text = nero_core::presentation::format_summary(
-                    &message.text,
+                    source.as_deref().unwrap_or(&message.text),
                     nero_core::DocumentFormat::Md,
                     false,
                     false,
@@ -751,7 +735,9 @@ impl AiChat {
                 json!({"role":message.role,"content":text})
             })
             .collect::<Vec<Value>>();
-        history.push(json!({"role":"user","content":format!("{}\n\n참고 자료(JSON 데이터):\n{}",request.message,prepared.input)}));
+        let question = skills::model_question(request.skill_id.as_deref(), &request.message)
+            .ok_or("질문과 선택한 자료를 확인해 주세요.")?;
+        history.push(json!({"role":"user","content":format!("{}\n\n참고 자료(JSON 데이터):\n{}",question,prepared.input)}));
         if serde_json::to_vec(&history)
             .map_err(|_| "대화를 준비하지 못했습니다.")?
             .len()
@@ -760,7 +746,12 @@ impl AiChat {
             return Err("대화와 자료가 너무 많습니다. 선택한 자료를 줄여 주세요.".into());
         }
         if conversation.messages.is_empty() {
-            conversation.title = request.message.trim().chars().take(60).collect();
+            conversation.title = match request.message.trim() {
+                "" => skills::name(request.skill_id.as_deref())
+                    .unwrap_or_default()
+                    .into(),
+                typed => typed.chars().take(60).collect(),
+            };
         }
         conversation.updated_at = store::now();
         conversation.provider = Some(provider_id(selected_provider).into());
@@ -1221,6 +1212,7 @@ mod tests {
                     effort: Default::default(),
                     id: "model".into(),
                     label: "공개 모델 이름".into(),
+                    previous: false,
                     max_output_tokens: None,
                 }],
                 default_model_id: Some("model".into()),

@@ -360,8 +360,9 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
       folderKey = key;
       const focused = dialog.ownerDocument?.activeElement?.dataset?.libraryFilter;
       const renderNavigation = items => items.map(item => `<div class="library-folder-item"><button type="button" class="quiet library-folder-link" data-library-filter="${escape(item.id)}" aria-label="${escape(item.name)}" title="${escape(item.name)}"${state().libraryOpen && filter === item.id ? ' aria-current="page"' : ''}${disabled ? ' disabled' : ''}>${icon(item.icon)}<span class="library-folder-name" title="${escape(item.name)}">${escape(item.name)}</span><span class="library-folder-count">${item.id === 'ai' ? '' : countInView(item.id)}</span></button>${folders.some(folder => folder.id === item.id) ? `<details class="library-folder-menu"><summary aria-label="${escape(item.name)} 폴더 메뉴">${icon('ellipsis')}</summary><div class="action-menu"><button type="button" data-folder-rename="${escape(item.id)}"${disabled ? ' disabled' : ''}>이름 변경</button><button type="button" class="danger" data-folder-delete="${escape(item.id)}"${disabled ? ' disabled' : ''}>폴더 삭제</button></div></details>` : ''}</div>`).join('');
-      byId('library-system-views').innerHTML = renderNavigation(navigation.filter(item => ['all', 'unfiled', 'ai'].includes(item.id)));
+      byId('library-system-views').innerHTML = renderNavigation(navigation.filter(item => ['all', 'unfiled'].includes(item.id)));
       byId('library-user-folders').innerHTML = renderNavigation(navigation.filter(item => folders.some(folder => folder.id === item.id)));
+      byId('library-ai-view').innerHTML = renderNavigation(navigation.filter(item => item.id === 'ai'));
       byId('library-trash-view').innerHTML = renderNavigation(navigation.filter(item => item.id === 'trash'));
       if (focused) [...byId('folder-list').querySelectorAll('[data-library-filter]')].find(node => node.dataset.libraryFilter === focused)?.focus({ preventScroll: true });
     }

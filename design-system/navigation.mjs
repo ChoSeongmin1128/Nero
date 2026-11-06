@@ -103,7 +103,7 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
     return true;
   }
   function firstPreviewTarget() {
-    return [...aside.querySelectorAll('[data-recent-meeting],[data-library-filter]')].find(availablePreviewTarget)
+    return [...aside.querySelectorAll('[data-recent-meeting],[data-library-filter],[data-navigation-item]')].find(availablePreviewTarget)
       || [...aside.querySelectorAll('input[type="search"],#search')].find(availablePreviewTarget);
   }
   function firstPreviewBoundary() {
@@ -178,7 +178,8 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
       if (!['ArrowRight', 'Enter'].includes(event.key) || event.defaultPrevented || event.isComposing || event.keyCode === 229 || event.altKey || event.metaKey || event.ctrlKey || event.shiftKey || pinned || unavailable() || openPopups().length) return;
       event.preventDefault();
       openPreview(button);
-      firstPreviewTarget()?.focus({ preventScroll: true });
+      // An empty preview list still lets the keyboard reach the view's own actions.
+      (firstPreviewTarget() || firstPreviewBoundary())?.focus({ preventScroll: true });
     });
   }
   trigger.addEventListener('click', () => {

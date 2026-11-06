@@ -35,6 +35,7 @@ import { meetingResultPreview } from './meeting-result-preview.js';
 import { mountMeetingDetail } from './meeting-detail-ui.js';
 import { mountAiChat } from './ai-chat-ui.jsx';
 import { mountAiChatLibrary } from './ai-chat-library.jsx';
+import { mountAiChatSidebar } from './ai-chat-sidebar.jsx';
 import { mountMeetingContext } from './meeting-context-ui.jsx';
 import * as aiChatBridge from './ai-chat-bridge.js';
 import { mountSummaryEvidence } from './summary-evidence.js';
@@ -136,7 +137,7 @@ let selectionRequest = 0;
 function beginNavigation(history = false) { if (!history) viewHistory?.cancel(); const request = ++selectionRequest; return () => request === selectionRequest; }
 let speakerReplay = null;
 let summaryEvidence = null;
-let aiChat = null, aiLibrary = null, meetingContext = null;
+let aiChat = null, aiLibrary = null, aiSidebar = null, meetingContext = null;
 let lastLiveTranscript = null;
 const processingActions = new Map();
 const processingErrors = new Map();
@@ -420,7 +421,7 @@ function render() {
   sidebarViews?.updateCounts(notificationCenter.counts());
   if (setupVisible && !state.setupWasVisible) sidebarViews?.close({ focus: false });
   state.setupWasVisible = setupVisible;
-  for (const button of document.querySelectorAll('[data-navigation-preview]')) { const category = state.libraryFilter === 'trash' ? 'trash' : !['all', 'unfiled'].includes(state.libraryFilter) ? 'folders' : 'all'; button.setAttribute('aria-current', state.libraryOpen && category === button.dataset.navigationPreview ? 'page' : 'false'); }
+  for (const button of document.querySelectorAll('[data-navigation-preview]')) { const category = ['trash', 'ai'].includes(state.libraryFilter) ? state.libraryFilter : !['all', 'unfiled'].includes(state.libraryFilter) ? 'folders' : 'all'; button.setAttribute('aria-current', state.libraryOpen && category === button.dataset.navigationPreview ? 'page' : 'false'); }
   library.render();
   renderList();
   speakers.render();
@@ -1642,6 +1643,12 @@ const detail = mountMeetingDetail({ byId, finishEditing, onError: showError, onR
   globalThis.NeroControls.close?.();
 } });
 meetingContext = mountMeetingContext({ node: byId('meeting-context-control'), bridge: aiChatBridge, getMeeting: () => state.libraryOpen ? null : currentMeeting(), onSettings: () => { void openSettings('agent', 'meeting-context-control').catch(showError); } });
+// Opening a conversation keeps the shown meeting; its meeting link moves the main view.
+async function openAiConversation(id) { await aiChat.flow.selectConversation(id); aiChat.open(); }
+async function openAiMeeting(meetingId) {
+  if (!state.snapshot.meetings.some(meeting => meeting.id === meetingId && !meeting.deletedAt)) throw new Error('이 회의를 열 수 없습니다.');
+  if (state.selectedId !== meetingId || state.libraryOpen) await selectMeeting(meetingId);
+}
 aiChat = mountAiChat({
   node: byId('ai-chat-inspector'), settingsNode: byId('ai-account-settings'), trigger: byId('ai-chat-open'), layoutRoot: byId('app-body'), resizeHandle: byId('ai-chat-resize'),
   bridge: { ...aiChatBridge,
@@ -1658,6 +1665,7 @@ aiChat = mountAiChat({
   writeClipboard: bridge.writeClipboardText,
   getTemplate: async () => (await summaryTemplatePicker.selected()).id,
   getMeetings: () => state.snapshot.meetings.filter(meeting => !meeting.deletedAt),
+  onOpenMeeting: meetingId => openAiMeeting(meetingId),
   onSettings: () => { void openSettings('agent', 'ai-chat-open').catch(showError); },
   onSaved: async (kind, meetingId) => { if (state.selectedId === meetingId) { if (kind === 'summary') await loadSummary(meetingId); render(); } },
   async onCitation(citation) {
@@ -1678,6 +1686,8 @@ aiChat = mountAiChat({
     });
   },
 });
+aiSidebar = mountAiChatSidebar({ node: byId('sidebar-ai-preview'), flow: aiChat.flow, getMeetings: () => state.snapshot.meetings, onOpenConversation: openAiConversation, async onOpenMeeting(meetingId, conversationId) { await openAiConversation(conversationId); await openAiMeeting(meetingId); } });
+byId('sidebar-ai-new').addEventListener('click', async () => { await aiChat.flow.newConversation({ attachCurrent: true }); aiChat.open(); });
 aiLibrary = mountAiChatLibrary({ node: byId('ai-library-screen'), flow: aiChat.flow, getMeetings: () => state.snapshot.meetings, onOpen: () => aiChat.open(null), container: document.body });
 summaryEvidence = mountSummaryEvidence({
   container: byId('summary-content'), panel: byId('summary-evidence'),
@@ -1734,8 +1744,8 @@ const notificationCenter = mountNotificationCenter({ container: byId('notificati
   const target = service === 'google-calendar' ? byId('calendar-settings').querySelector('.calendar-settings-account button:not(:disabled)') : byId(`settings-${service}-connect`);
   target?.scrollIntoView?.({ block: 'nearest' });
 }, onChanged: () => render() });
-sidebarViews = mountSidebarViews({ aside: byId('navigation-sidebar'), navigation: byId('sidebar-navigation-view'), notifications: byId('notification-center'), trigger: byId('notifications-open'), badge: byId('notification-count'), onPreview: view => library.preview(view) });
-byId('sidebar-preview-open').addEventListener('click', () => { const filter = byId('sidebar-preview-open').dataset.sidebarFilter; void library.show(filter === 'trash' ? 'trash' : 'all'); });
+sidebarViews = mountSidebarViews({ aside: byId('navigation-sidebar'), navigation: byId('sidebar-navigation-view'), notifications: byId('notification-center'), trigger: byId('notifications-open'), badge: byId('notification-count'), onPreview: view => { library.preview(view); if (view === 'ai') aiSidebar?.show(); } });
+byId('sidebar-preview-open').addEventListener('click', () => { const filter = byId('sidebar-preview-open').dataset.sidebarFilter; void library.show(['trash', 'ai'].includes(filter) ? filter : 'all'); });
 viewHistory = createViewHistory({
   canVisit: route => route.kind === 'meeting' ? state.snapshot.meetings.some(meeting => meeting.id === route.id && !meeting.deletedAt) : ['all', 'unfiled', 'trash'].includes(route.filter) || state.snapshot.folders.some(folder => folder.id === route.filter),
   async navigate(route, { isCurrent }) {

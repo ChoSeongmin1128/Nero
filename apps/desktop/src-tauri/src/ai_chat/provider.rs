@@ -21,6 +21,8 @@ pub struct ChatModel {
     pub label: String,
     #[serde(default)]
     pub effort: EffortCapability,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub previous: bool,
     #[serde(skip)]
     pub(super) max_output_tokens: Option<u64>,
 }
@@ -289,6 +291,7 @@ fn model_rows(value: &Value) -> Result<Vec<ChatModel>, String> {
             id: id.into(),
             label: label.into(),
             effort: catalog_effort(row),
+            previous: false,
             max_output_tokens: row["max_tokens"].as_u64().filter(|v| *v > 0),
         });
     }
@@ -307,6 +310,7 @@ fn claude_models() -> Models {
         id: id.into(),
         label: label.into(),
         effort: EffortCapability::default(),
+        previous: false,
         max_output_tokens: Some(128000),
     })
     .collect::<Vec<_>>();
@@ -1069,7 +1073,7 @@ mod live_probe {
             let session=accounts.subscription_session(&account.id).await?;
             let access=ProviderAccess{provider:provider.clone(),access_token:session.access_token().into()};
             let selected_model=if let Ok(model)=std::env::var("NERO_AI_PROBE_MODEL"){
-                ChatModel{id:model.clone(),label:model,effort:EffortCapability::default(),max_output_tokens:Some(128)}
+                ChatModel{id:model.clone(),label:model,effort:EffortCapability::default(),previous:false,max_output_tokens:Some(128)}
             }else{
                 let catalog=models(&access).await?;
                 catalog.models.into_iter().next().ok_or("이 계정에서 사용할 모델을 찾지 못했습니다.")?

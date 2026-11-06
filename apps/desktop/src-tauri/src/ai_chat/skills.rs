@@ -3,6 +3,8 @@ use serde_json::{json, Value};
 use std::path::Path;
 
 pub const MEETING_SUMMARY: &str = "meeting-summary";
+const MEETING_SUMMARY_NAME: &str = "회의 요약 및 저장";
+const MEETING_SUMMARY_REQUEST: &str = "첨부한 회의를 요약해 주세요.";
 pub const WRITING_RULES: &str = include_str!("../../../agent/meeting-summary/writing-rules.md");
 
 pub fn catalog(root: &Path) -> Result<Value, String> {
@@ -14,10 +16,25 @@ pub fn catalog(root: &Path) -> Result<Value, String> {
         .find(|item| item.id == "meeting")
         .or(templates.first());
     Ok(json!({
-        "skills": [{"id": MEETING_SUMMARY, "name": "회의 요약 및 저장", "description": "첨부한 회의를 요약해 저장합니다.", "aliases": ["회의요약", "meeting-summary"], "requiresMeeting": true}],
+        "skills": [{"id": MEETING_SUMMARY, "name": MEETING_SUMMARY_NAME, "description": "첨부한 회의를 요약해 저장합니다.", "aliases": ["회의요약", "meeting-summary"], "requiresMeeting": true}],
         "defaultTemplateId": default.map(|item| &item.id),
         "templates": templates.iter().map(|item| json!({"id":item.id,"name":item.name,"description":item.description,"revision":item.revision,"isDefault":item.built_in})).collect::<Vec<_>>()
     }))
+}
+
+// The question keeps only what the user typed. A skill sent without typed text asks
+// the model with the skill's own request.
+pub fn model_question<'a>(
+    skill: Option<&str>,
+    typed: &'a str,
+) -> Option<std::borrow::Cow<'a, str>> {
+    if !typed.trim().is_empty() {
+        return Some(std::borrow::Cow::Borrowed(typed));
+    }
+    (skill == Some(MEETING_SUMMARY)).then_some(std::borrow::Cow::Borrowed(MEETING_SUMMARY_REQUEST))
+}
+pub fn name(skill: Option<&str>) -> Option<&'static str> {
+    (skill == Some(MEETING_SUMMARY)).then_some(MEETING_SUMMARY_NAME)
 }
 
 pub fn validate(
@@ -47,6 +64,21 @@ pub fn validate(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_summary_without_typed_text_asks_with_the_skill_request() {
+        assert_eq!(model_question(None, "  ").as_deref(), None);
+        assert_eq!(
+            model_question(Some(MEETING_SUMMARY), " ").as_deref(),
+            Some(MEETING_SUMMARY_REQUEST)
+        );
+        assert_eq!(
+            model_question(Some(MEETING_SUMMARY), "결정만").as_deref(),
+            Some("결정만")
+        );
+        assert_eq!(name(Some(MEETING_SUMMARY)), Some(MEETING_SUMMARY_NAME));
+        assert_eq!(name(None), None);
+    }
 
     #[test]
     fn summary_requires_one_explicit_matching_meeting() {
