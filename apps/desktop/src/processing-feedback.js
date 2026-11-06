@@ -65,7 +65,7 @@ function failureDiagnostics(job) {
   return rows;
 }
 
-export function processingFeedback(job = {}, { cancelling = false } = {}) {
+export function processingFeedback(job = {}, { cancelling = false, waitingForModel = false } = {}) {
   const active = Boolean(job.id) && ['running', 'cancelling'].includes(job.status);
   const queued = Boolean(job.id) && job.status === 'queued';
   const committing = active && (job.committing === true
@@ -85,7 +85,8 @@ export function processingFeedback(job = {}, { cancelling = false } = {}) {
   else if (speakerPhase && !cancelRequested) heading = committing || job.phase === 'saving' ? '저장 중' : job.phase === 'preparing' ? '화자 구분 준비 중' : '화자 구분 중';
   let message = String(job.message || '').trim();
   if (job.status === 'cancelled' && ['취소했습니다.', '취소됨'].includes(message)) message = '';
-  if (job.status === 'queued') message = message || '앞선 작업이나 녹음이 끝나면 실행합니다.';
+  // Native reports every queued job as '대기 중', which only repeats the heading.
+  if (job.status === 'queued') message = waitingForModel ? '모델 다운로드가 끝나면 시작합니다.' : message && message !== '대기 중' ? message : '앞선 작업이나 녹음이 끝나면 실행합니다.';
   if (job.status === 'interrupted') message = message || '기존 녹음과 결과는 유지됩니다.';
   if (job.status === 'needsReview' && !['mossPartial', 'mossTimingContext'].includes(job.phase)) message = '회의를 열어 저장된 결과를 확인해 주세요.';
   if (speakerPhase) message = '';

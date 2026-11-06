@@ -1,4 +1,4 @@
-import { processingJobs, latestMeetingProcessing } from './processing-state.js';
+import { processingJobs, latestMeetingProcessing, queuedBehindModel } from './processing-state.js';
 import { processingFeedback, canRetryProcessing, canDismissProcessing } from './processing-feedback.js';
 
 const activeStatuses = new Set(['queued', 'running', 'cancelling']);
@@ -25,8 +25,9 @@ export function notificationProjection({ processing = {}, meetings = [], selecte
       || (b.createdAt || 0) - (a.createdAt || 0) || a.id.localeCompare(b.id))
     .map(job => {
       const current = processing.id === job.id && processing.status === job.status ? { ...processing, ...job } : job;
-      const feedback = processingFeedback(current);
-      return { ...current, feedback, title: available.get(job.meetingId)?.title || feedback.title,
+      const waitingForModel = queuedBehindModel(processing, job);
+      const feedback = processingFeedback(current, { waitingForModel });
+      return { ...current, feedback, waitingForModel, title: available.get(job.meetingId)?.title || feedback.title,
         hasMeeting: available.has(job.meetingId), selected: Boolean(job.meetingId && job.meetingId === selectedMeetingId),
         active: activeStatuses.has(job.status), unread: true };
     });
@@ -88,7 +89,7 @@ export function mountNotificationCenter({ container, onOpenMeeting, onProcessing
     container.innerHTML = `<header class="notification-heading"><button type="button" class="quiet small icon" data-notification-action="back" aria-label="회의 탐색으로 돌아가기" title="회의 탐색으로 돌아가기">${icon('arrow-left')}</button><h2 class="notification-heading-title" tabindex="-1" data-notification-heading>알림</h2><button type="button" class="quiet small" data-notification-action="ack-all"${jobs.some(job => canAcknowledge(job) && canAct(job)) && !confirming ? '' : ' disabled'}>${confirming ? '확인 중' : '모두 확인'}</button><span class="sr-only" role="status">${active ? '작업 진행 중' : ''}${unread ? ' 읽지 않은 알림 있음' : ''}</span></header><div class="notification-list">${jobs.map(job => {
       if (['integration', 'notice'].includes(job.category)) return `<article class="notification-item" data-notification-id="${escape(job.id)}" data-unread="${job.unread}" aria-busy="${actionPending(job.id)}"><div class="notification-copy"><strong class="notification-title">${escape(job.title)}</strong><p>${escape(job.message)}</p>${errors.has(job.id) ? `<p class="field-error" role="alert">${escape(errors.get(job.id))}</p>` : ''}</div><div class="notification-actions">${button(job, job.category === 'integration' ? 'settings' : 'notice', escape(job.category === 'integration' ? '설정' : job.actionLabel || '열기'), false, job.actionDisabled)}${job.unread ? button(job, 'ack', '확인') : ''}</div></article>`;
       const cancelling = snapshot.actions?.get(job.id) === 'cancel';
-      const feedback = processingFeedback(job, { cancelling });
+      const feedback = processingFeedback(job, { cancelling, waitingForModel: job.waitingForModel });
       const status = feedback.title;
       const title = job.hasMeeting ? `<button type="button" class="quiet notification-title" data-notification-job="${escape(job.id)}" data-notification-action="open"${snapshot.connected === false || actionPending(job.id) ? ' disabled' : ''}>${escape(job.title)}</button>` : `<strong class="notification-title">${escape(job.title)}</strong>`;
       const controls = `${feedback.cancelVisible ? button(job, 'cancel', feedback.cancelLabel, true, feedback.cancelDisabled) : ''}${canRetryProcessing(job) ? button(job, 'retry', '다시 시도', false) : ''}${canAcknowledge(job) ? button(job, 'ack', '확인') : ''}`;

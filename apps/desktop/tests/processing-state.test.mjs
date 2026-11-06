@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { processingJobs, pendingJob, processingResults, latestMeetingProcessing, processingNotices } from '../src/processing-state.js';
+import { processingJobs, pendingJob, processingResults, latestMeetingProcessing, processingNotices, queuedBehindModel } from '../src/processing-state.js';
 
 test('pending ownership follows the meeting and model kind rather than the foreground download', () => {
   const progress = { id: 'download', kind: 'summary-model', status: 'running', jobs: [
@@ -94,4 +94,15 @@ test('missing or tied creation evidence does not guess a historical outcome and 
     progress.jobs.push(noticeJob('running', undefined, 'cancelling'));
     assert.equal(processingNotices(progress, 'a').primary.id, 'running');
   }
+});
+
+test('a queued job waits for a model download that runs or was queued before it', () => {
+  const transcribe = { id: 'transcribe', kind: 'transcribe', meetingId: 'a', status: 'queued', createdAt: 20 };
+  const behind = other => queuedBehindModel({ jobs: [transcribe, other] }, transcribe);
+  assert.equal(behind({ id: 'download', kind: 'setup', status: 'running', createdAt: 30 }), true);
+  assert.equal(behind({ id: 'download', kind: 'summary-model', status: 'queued', createdAt: 10 }), true);
+  assert.equal(behind({ id: 'download', kind: 'setup', status: 'queued', createdAt: 30 }), false);
+  assert.equal(behind({ id: 'download', kind: 'setup', status: 'completed', createdAt: 10 }), false);
+  assert.equal(behind({ id: 'summary', kind: 'summary', status: 'running', createdAt: 10 }), false);
+  assert.equal(queuedBehindModel({ jobs: [{ id: 'download', kind: 'setup', status: 'running' }] }, { id: 'later', kind: 'setup', status: 'queued' }), false);
 });

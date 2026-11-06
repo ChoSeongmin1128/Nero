@@ -300,3 +300,10 @@ test('unclassified speaker failures do not infer a cause from raw messages or me
     assert.doesNotMatch(feedback.detail, /private|메모리|bad_alloc/);
   }
 });
+
+test('a queued job explains what it waits for instead of repeating its heading', () => {
+  const job = { id: 'waiting', kind: 'transcribe', status: 'queued', message: '대기 중' };
+  assert.equal(processingFeedback(job).title, '음성 기록 변환 대기 중');
+  assert.equal(processingFeedback(job).detail, '앞선 작업이나 녹음이 끝나면 실행합니다.');
+  assert.equal(processingFeedback(job, { waitingForModel: true }).detail, '모델 다운로드가 끝나면 시작합니다.');
+});

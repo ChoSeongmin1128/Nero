@@ -457,6 +457,25 @@ pub(super) fn plain_file(path: &Path) -> Result<File, String> {
     }
     File::open(path).map_err(message)
 }
+fn plain_length(path: &Path) -> Option<u64> {
+    fs::symlink_metadata(path)
+        .ok()
+        .filter(|meta| meta.is_file() && !meta.file_type().is_symlink())
+        .map(|meta| meta.len())
+}
+// A `.part` no longer than the file resumes the download, so it counts as received.
+fn partial_bytes(target: &Path, item: &ModelFile) -> u64 {
+    plain_length(&target.join(format!("{}.part", item.name)))
+        .filter(|bytes| *bytes <= item.bytes)
+        .unwrap_or(0)
+}
+fn present_bytes(target: &Path, item: &ModelFile) -> u64 {
+    if plain_length(&target.join(&item.name)) == Some(item.bytes) {
+        item.bytes
+    } else {
+        partial_bytes(target, item)
+    }
+}
 pub(super) fn matches_file(path: &Path, item: &ModelFile, cancel: &AtomicBool) -> bool {
     let Ok(mut file) = plain_file(path) else {
         return false;
@@ -2574,18 +2593,10 @@ impl Processing {
         {
             return Err("이 환경에서는 음성 인식과 회의 요약을 아직 사용할 수 없습니다.".into());
         }
-        let required = self.remaining_speech_bytes(engine)?
-            + if speaker_enabled && crate::diarization::availability(self).0 {
-                self.remaining_model_bytes(crate::diarization::SPEAKER_MODEL)?
-            } else {
-                0
-            }
-            + if include_summary {
-                self.remaining_model_bytes(crate::summary::SUMMARY_MODEL)?
-            } else {
-                0
-            };
-        crate::storage_space::check(&self.root, required)?;
+        crate::storage_space::check(
+            &self.root,
+            self.setup_remaining_bytes(engine, speaker_enabled, include_summary)?,
+        )?;
         self.start_job(
             JobSpec {
                 kind: "setup",
@@ -2597,18 +2608,8 @@ impl Processing {
                 ..JobSpec::default()
             },
             move |this, cancel, path| {
-                let progress = this.snapshot();
-                let total = Self::speech_bytes(engine)
-                    + if speaker_enabled && crate::diarization::availability(&this).0 {
-                        crate::diarization::model().bytes()
-                    } else {
-                        0
-                    }
-                    + if include_summary {
-                        progress.summary_bytes
-                    } else {
-                        0
-                    };
+                let mut total =
+                    this.setup_remaining_bytes(engine, speaker_enabled, include_summary)?;
                 let mut first = if engine == SpeechEngine::AppleSpeech {
                     this.update(|p| {
                         p.phase = Some("preparing".into());
@@ -2628,8 +2629,12 @@ impl Processing {
                 } else {
                     let mut done = 0;
                     for engine in engine.requirements() {
-                        done +=
-                            this.prepare_files(ModelSpec::speech(engine), &cancel, done, total)?;
+                        done += this.prepare_files(
+                            ModelSpec::speech(engine),
+                            &cancel,
+                            done,
+                            &mut total,
+                        )?;
                     }
                     done
                 };
@@ -2638,11 +2643,11 @@ impl Processing {
                         crate::diarization::SPEAKER_MODEL,
                         &cancel,
                         first,
-                        total,
+                        &mut total,
                     )?;
                 }
                 if include_summary {
-                    this.prepare_files(crate::summary::SUMMARY_MODEL, &cancel, first, total)?;
+                    this.prepare_files(crate::summary::SUMMARY_MODEL, &cancel, first, &mut total)?;
                 }
                 Ok(None)
             },
@@ -2673,7 +2678,8 @@ impl Processing {
                 ..JobSpec::default()
             },
             move |this, cancel, _path| {
-                this.prepare_files(spec, &cancel, 0, spec.model().bytes())?;
+                let mut total = this.remaining_model_bytes(spec)?;
+                this.prepare_files(spec, &cancel, 0, &mut total)?;
                 Ok(None)
             },
         )
@@ -2684,46 +2690,52 @@ impl Processing {
         }
         let model = spec.model();
         let target = self.root.join(spec.relative_dir());
-        let length = |path: PathBuf| {
-            fs::symlink_metadata(path)
-                .ok()
-                .filter(|meta| meta.is_file() && !meta.file_type().is_symlink())
-                .map(|meta| meta.len())
-        };
         Ok(model
             .files
             .iter()
-            .map(|file| {
-                if length(target.join(&file.name)) == Some(file.bytes) {
-                    return 0;
-                }
-                let partial = length(target.join(format!("{}.part", file.name)))
-                    .filter(|bytes| *bytes <= file.bytes)
-                    .unwrap_or(0);
-                file.bytes - partial
-            })
+            .map(|file| file.bytes - present_bytes(&target, file))
             .sum())
+    }
+    // What a setup job still has to download; the offer, the space check and the
+    // progress bar all use this one number.
+    fn setup_remaining_bytes(
+        &self,
+        engine: SpeechEngine,
+        speaker_enabled: bool,
+        include_summary: bool,
+    ) -> Result<u64, String> {
+        Ok(self.remaining_speech_bytes(engine)?
+            + if speaker_enabled && crate::diarization::availability(self).0 {
+                self.remaining_model_bytes(crate::diarization::SPEAKER_MODEL)?
+            } else {
+                0
+            }
+            + if include_summary {
+                self.remaining_model_bytes(crate::summary::SUMMARY_MODEL)?
+            } else {
+                0
+            })
     }
     fn prepare_files(
         &self,
         spec: ModelSpec,
         cancel: &AtomicBool,
         offset: u64,
-        total: u64,
+        total: &mut u64,
     ) -> Result<u64, String> {
         let model = spec.model();
         let input = self.read_model_dir(spec)?;
         if !input.starts_with(&self.root) {
             self.verified_model_dir(spec, cancel)
                 .map_err(|e| e.message)?;
-            return Ok(model.bytes());
+            return Ok(0);
         }
         let target = self.model_dir_of(spec)?;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(message)?;
-        runtime.block_on(async {
+        let done = runtime.block_on(async {
             let client = reqwest::Client::builder()
                 .connect_timeout(Duration::from_secs(20))
                 .read_timeout(Duration::from_secs(30))
@@ -2737,26 +2749,32 @@ impl Processing {
                     p.model_stage = Some(spec.stage.id().into());
                     p.message = format!("{} 확인 중", spec.stage.title());
                     p.bytes = offset + done;
-                    p.total_bytes = total;
+                    p.total_bytes = *total;
                 });
+                let present = present_bytes(&target, item);
                 let destination = target.join(&item.name);
                 let matches = matches_file(&destination, item, cancel);
                 cancelled(cancel)?;
                 if !matches {
-                    self.update(|p| p.message = format!("{} 다운로드 중", spec.stage.title()));
+                    let skip = partial_bytes(&target, item);
+                    *total += present.saturating_sub(skip);
+                    self.update(|p| {
+                        p.total_bytes = *total;
+                        p.message = format!("{} 다운로드 중", spec.stage.title());
+                    });
                     let url = format!(
                         "https://huggingface.co/{}/resolve/{}/{}",
                         model.repository, model.revision, item.name
                     );
                     crate::downloads::item(&client, &url, &target, item, cancel, |bytes| {
-                        self.update(|p| p.bytes = offset + done + bytes)
+                        self.update(|p| p.bytes = offset + done + bytes.saturating_sub(skip))
                     })
                     .await?;
+                    done += item.bytes - skip;
                 }
-                done += item.bytes;
                 self.update(|p| p.bytes = offset + done);
             }
-            Ok::<(), String>(())
+            Ok::<u64, String>(done)
         })?;
         cancelled(cancel)?;
         let marker = target.join(format!(".verified-{}", Uuid::new_v4()));
@@ -2780,7 +2798,7 @@ impl Processing {
                 }
             }
         }
-        Ok(model.bytes())
+        Ok(done)
     }
     pub fn recording_start<T>(
         &self,
@@ -4018,6 +4036,52 @@ mod tests {
         crate::speech_choice::save(&root, SpeechEngine::Nemotron, true, None).unwrap();
         let process = Processing::new(root.clone(), root.clone());
         (temporary, process)
+    }
+
+    #[test]
+    fn model_progress_counts_only_bytes_this_job_downloads() {
+        let (_temporary, process) = setup();
+        let whole = b"whole".as_slice();
+        let manifest = serde_json::json!({
+            "repository": "synthetic/unused",
+            "revision": "r1",
+            "files": [
+                { "name": "whole.bin", "bytes": 5, "sha256": format!("{:x}", Sha256::digest(whole)) },
+                { "name": "resumed.bin", "bytes": 10, "sha256": "0".repeat(64) },
+            ],
+        })
+        .to_string();
+        let spec = ModelSpec {
+            manifest: Box::leak(manifest.into_boxed_str()),
+            label: "Synthetic",
+            stage: ModelStage::Speech,
+        };
+        let target = process.root.join("models/Synthetic-r1");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("whole.bin"), whole).unwrap();
+        fs::write(target.join("resumed.bin.part"), b"abc").unwrap();
+        // The finished file and the resumable part are not counted as still to download.
+        assert_eq!(process.remaining_model_bytes(spec).unwrap(), 7);
+
+        let present = serde_json::json!({
+            "repository": "synthetic/unused",
+            "revision": "r1",
+            "files": [{ "name": "whole.bin", "bytes": 5, "sha256": format!("{:x}", Sha256::digest(whole)) }],
+        })
+        .to_string();
+        let spec = ModelSpec {
+            manifest: Box::leak(present.into_boxed_str()),
+            label: "Synthetic",
+            stage: ModelStage::Speech,
+        };
+        let mut total = process.remaining_model_bytes(spec).unwrap();
+        assert_eq!(total, 0);
+        let counted = process
+            .prepare_files(spec, &AtomicBool::new(false), 40, &mut total)
+            .unwrap();
+        assert_eq!(counted, 0, "a verified file adds nothing to the progress");
+        let progress = process.snapshot();
+        assert_eq!((progress.bytes, progress.total_bytes), (40, 0));
     }
 
     mod speech_switch_tests {
@@ -5647,7 +5711,7 @@ mod tests {
         }
         fs::write(directory.join("unrelated.invalid-4"), b"kept").unwrap();
         process
-            .prepare_files(spec, &AtomicBool::new(false), 0, 5)
+            .prepare_files(spec, &AtomicBool::new(false), 0, &mut 0)
             .unwrap();
         assert!(process.model_ready(spec));
         for name in set_aside {

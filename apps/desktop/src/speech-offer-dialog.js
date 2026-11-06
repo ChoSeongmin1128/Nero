@@ -24,6 +24,7 @@ export function mountSpeechOfferDialog({ dialog, onAccept, onDecline }) {
   memory.append(memoryText, memoryChoice);
   const error = element('p', 'notice type-caption');
   error.setAttribute('role', 'alert');
+  error.hidden = true;
   const keep = element('button', 'quiet', '지금은 유지');
   keep.type = 'button'; keep.dataset.action = 'decline-speech-offer';
   const accept = element('button', 'primary', '다운로드 후 전환');

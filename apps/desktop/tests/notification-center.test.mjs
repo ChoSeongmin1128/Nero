@@ -289,3 +289,12 @@ test('running jobs do not inflate the unread result count', t => {
   app.update([job('running', 'a', 'running')]);
   assert.deepEqual(app.controller.counts(), { active: 1, unread: 0, total: 1 });
 });
+
+test('work queued behind a model download says so in the notification list', t => {
+  const h = harness(t);
+  h.update([{ id: 'download', kind: 'setup', status: 'running', createdAt: 10 }, job('waiting', 'a', 'queued', 20, { message: '대기 중' })]);
+  const row = h.container.querySelector('[data-notification-id="waiting"]');
+  assert.match(row.textContent, /음성 기록 변환 대기 중/);
+  assert.match(row.textContent, /모델 다운로드가 끝나면 시작합니다\./);
+  assert.doesNotMatch(row.textContent, /대기 중대기 중/);
+});

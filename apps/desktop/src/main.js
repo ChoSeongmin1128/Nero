@@ -26,7 +26,8 @@ import '../../../design-system/react-controls.jsx';
 import * as bridge from './bridge.js';
 import { ui, icon, escape, button, duration, recordingStatus, statusMarkup, sessionControls, applySystemAppearance } from './ui.js';
 import { processingFeedback, canRetryProcessing, canDismissProcessing } from './processing-feedback.js';
-import { processingJobs, pendingJob, processingResults, latestMeetingProcessing, processingNotices, modelPreparation, memoryBlocked, speakerNeedsPreparation, speechModelKinds, summaryModelKinds } from './processing-state.js';
+import { processingJobs, pendingJob, processingResults, latestMeetingProcessing, processingNotices, modelPreparation, memoryBlocked, speakerNeedsPreparation, speechModelKinds, summaryModelKinds, queuedBehindModel } from './processing-state.js';
+import { mountModelDownloadStatus } from './model-download-status.js';
 import { mountLibrary, fullDate, meetingDay } from './library-ui.js';
 import { mountSpeakers } from './speakers-ui.js';
 import { createMeetingSearch, mountDocumentSearch } from './meeting-search.js';
@@ -117,6 +118,10 @@ const setupProgress = bindPreparationProgress({ region: byId('setup-progress-reg
 const summaryProgress = bindPreparationProgress({ region: byId('settings-summary-progress'), bar: byId('settings-feature-progress'),
   stage: byId('settings-feature-stage'), size: byId('settings-feature-size'), cancel: byId('settings-feature-cancel') });
 let speechSelectionError = '', speechNotice = '';
+const modelDownloadStatus = mountModelDownloadStatus({ button: byId('sidebar-model-download'), onOpen: async panel => {
+  await openSettings(panel, 'sidebar-model-download');
+  byId(panel === 'transcription' ? 'settings-speech-picker' : 'settings-summary-progress')?.scrollIntoView?.({ block: 'nearest' });
+} });
 const appUpdateRecovery = mountAppUpdateRecovery({ document, quit: () => appUpdateView.quitForRecovery() });
 const appUpdateView = mountAppUpdateView({ container: byId('app-update'), bridge,
   onRecovery: status => appUpdateRecovery.update(status),
@@ -326,8 +331,9 @@ async function openSetup(fromSettings = false, returnId = document.activeElement
 
 function renderSpeechModels() {
   const modelJob = pendingJob(state.processing, { models: true });
-  const otherJob = processingJobs(state.processing).find(job => ['queued', 'running', 'cancelling'].includes(job.status) && job.id !== modelJob?.id);
-  // Downloads stay cancellable in place; other work and recording lock the whole picker.
+  // Downloads stay cancellable in place, also with work waiting behind them; other work
+  // and recording lock the whole picker.
+  const otherJob = !modelJob && processingJobs(state.processing).find(job => ['queued', 'running', 'cancelling'].includes(job.status));
   const disabled = !state.connected || state.busy || Boolean(activeSession()) || Boolean(otherJob);
   const message = activeSession() ? '녹음을 마친 뒤 모델을 변경할 수 있습니다.'
     : otherJob ? '현재 처리가 끝난 뒤 모델을 변경할 수 있습니다.' : speechNotice;
@@ -374,6 +380,7 @@ function prepareSpeechModels() {
 }
 function render() {
   renderSpeechModels();
+  modelDownloadStatus.update({ speech: preparationView(speechModelKinds), summary: preparationView(summaryModelKinds) });
   byId('create-meeting').disabled = !state.connected || state.busy || !modelsReady();
   byId('create-calendar-meeting').disabled = !state.connected || state.busy;
   byId('welcome-create').disabled = !state.connected || state.busy;
@@ -1002,7 +1009,7 @@ function renderProcessing() {
   rememberProcessingFocus();
   const notices = processingNotices(state.processing, !state.libraryOpen && !state.setupRequested ? currentMeeting()?.id : undefined);
   const progress = notices.primary ? { ...(state.processing.id === notices.primary.id ? state.processing : {}), ...notices.primary } : {};
-  const feedback = processingFeedback(progress, { cancelling: state.processingCancellingId === progress.id || processingActions.get(progress.id) === 'cancel' });
+  const feedback = processingFeedback(progress, { cancelling: state.processingCancellingId === progress.id || processingActions.get(progress.id) === 'cancel', waitingForModel: queuedBehindModel(state.processing, progress) });
   byId('import-audio').disabled = !state.connected || state.busy || Boolean(pendingJob(state.processing, { kind: 'import' })) || Boolean(activeSession());
   byId('processing').hidden = !feedback.visible || progress.kind === 'setup';
   byId('processing').dataset.state = feedback.state;

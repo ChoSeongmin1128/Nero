@@ -282,6 +282,7 @@ test('existing users get the switch offer once and only the buttons record a dec
   const f=await fixture(t,{speech:{speechOffer:offer}});
   const dialog=f.get('speech-offer-dialog');
   await wait(()=>dialog.open);
+  assert.equal(dialog.querySelector('[role="alert"]').hidden,true);
   assert.match(dialog.textContent,/약 4\.40 GB/);
   assert.match(dialog.textContent,/기존 회의의 음성 기록은 바뀌지 않습니다/);
   assert.match(dialog.textContent,/CPU\/GPU와 메모리/);
@@ -390,4 +391,29 @@ test('Qwen resource details appear for a staged or switching selection without e
   await wait(() => !notice('settings').hidden && !notice('setup').hidden);
   assert.equal(f.radio('settings', 'nemotron').closest('label').querySelector('.speech-model-metadata').parentElement,
     f.radio('settings', 'nemotron').closest('label'));
+});
+
+test('work queued behind a switch download keeps the download cancellable and visible from the sidebar',async t=>{
+  const qwen={id:'qwenKo',label:'Qwen3-ASR 한국어',modelBytes:4_400_000_000,ready:false,supported:true};
+  const f=await fixture(t,{speech:{speechChoices:[...choices,qwen],speechSwitch:{target:'qwenKo',preparing:true},
+    id:'download',kind:'setup',status:'running',message:'음성 인식 모델 다운로드 중',bytes:960_000_000,totalBytes:3_790_000_000,
+    jobs:[{id:'download',kind:'setup',status:'running',speechEngine:'qwenKo',createdAt:1},
+      {id:'waiting',kind:'transcribe',status:'queued',meetingId:'one',message:'대기 중',createdAt:2}]}});
+  const picker=f.get('settings-speech-picker');
+  assert.equal(picker.querySelector('fieldset').disabled,false);
+  assert.doesNotMatch(picker.textContent,/현재 처리가 끝난 뒤/);
+  assert.equal(f.radio('settings','whisperTurbo').disabled,true);
+  const sidebar=f.get('sidebar-model-download');
+  assert.equal(sidebar.hidden,false);
+  assert.equal(sidebar.querySelector('[data-model-download-label]').textContent,'모델 다운로드 25%');
+  assert.equal(sidebar.querySelector('[data-model-download-progress]').value,25);
+  sidebar.click();
+  await wait(()=>f.get('settings-dialog').open&&!f.get('settings-transcription-panel').hidden);
+  f.get('settings-speech-picker-cancel').click();
+  await wait(()=>f.calls.some(call=>call.name==='cancelSpeechSwitch'));
+});
+
+test('the sidebar download entry stays hidden without a model download',async t=>{
+  const f=await fixture(t);
+  assert.equal(f.get('sidebar-model-download').hidden,true);
 });

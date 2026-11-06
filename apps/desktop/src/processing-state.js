@@ -54,6 +54,13 @@ export function processingNotices(progress = {}, meetingId) {
   return { primary, background };
 }
 
+// A queued job runs after everything ahead of it; name the model download when that is it.
+export function queuedBehindModel(progress, job) {
+  if (job?.status !== 'queued' || modelKinds.has(job.kind)) return false;
+  return processingJobs(progress).some(other => other.id !== job.id && modelKinds.has(other.kind)
+    && (['running', 'cancelling'].includes(other.status) || (other.status === 'queued' && (other.createdAt || 0) < (job.createdAt || 0))));
+}
+
 export const speechModelKinds = Object.freeze(['setup', 'model', 'speaker-model']);
 export const summaryModelKinds = Object.freeze(['summary-model']);
 const endedStatuses = new Set(['failed', 'cancelled', 'interrupted']);

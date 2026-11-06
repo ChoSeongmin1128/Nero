@@ -34,3 +34,8 @@
 .speech-offer-facts li + li { margin-top: 4px; }
 .speech-offer-dialog .notice { margin-top: 12px; }
 .speech-offer-dialog .notice[hidden], .speech-offer-dialog .speech-memory-warning[hidden] { display: none; }
+
+#sidebar-model-download { position: relative; min-width: 0; }
+#sidebar-model-download[hidden], #sidebar-model-download [data-model-download-progress][hidden] { display: none; }
+#sidebar-model-download [data-model-download-label] { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#sidebar-model-download [data-model-download-progress] { position: absolute; inset: auto 8px 1px; width: calc(100% - 16px); height: 2px; margin: 0; }

@@ -202,6 +202,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     const mountSpeechModelPicker = options => { speechPickerOptions.push(options); return {update(){}}; };
     const speechTitle = choice => choice?.label || '';
     const mountSpeechOfferDialog = () => ({update(){}});
+    const mountModelDownloadStatus = () => ({update(){}});
     const mountDropImport = () => {};
     const uploadDroppedFile = async () => null;
     const mountPeopleSettings = () => ({show(){},hide(){},beforeLeave:async()=>true,isConfirming:()=>false});
