@@ -320,6 +320,8 @@ html.recorder-document { background: transparent; }
 .detail-library-actions button { min-height: 28px; padding: 4px 6px; font-size: var(--text-caption-size); }
 .detail-library-actions button:not(.danger):not(.danger-text):not([aria-expanded="true"]) { color: var(--text-secondary); }
 .detail-library-actions button:not(.danger):not(.danger-text):hover:not(:disabled) { color: var(--text); }
+.detail-sections { display: flex; flex: none; gap: 2px; padding: 2px; background: var(--surface-secondary); border: 1px solid var(--border); border-radius: var(--control-radius); }
+.detail-library-actions .detail-sections button[aria-pressed="true"]:not(.danger) { background: var(--surface-tint-strong); color: var(--text); }
 .detail-more { position: relative; }
 .detail-more > summary { display: grid; place-items: center; width: 28px; height: 28px; padding: 4px; border-radius: var(--control-radius); color: var(--text-secondary); list-style: none; cursor: pointer; }
 .detail-more > summary::-webkit-details-marker { display: none; }

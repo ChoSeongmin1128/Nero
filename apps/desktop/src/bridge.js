@@ -42,6 +42,7 @@ export const openMeeting = (meetingId, error = null) => call('open_meeting', { m
 export const requestQuit = (sessionId = null) => call('request_quit', { sessionId });
 export const audioUrl = async (meetingId) => convertFileSrc(await call('audio_file', { meetingId }));
 export const revealRecordingFile = (meetingId) => call('reveal_recording_file', { meetingId });
+export const exportRecordingFile = (meetingId) => call('export_recording_file', { meetingId });
 export const exportText = (suggestedName, contents) => call('export_text', { suggestedName, contents });
 export const writeClipboardText = contents => call('write_clipboard_text', { contents });
 export const exportDocument = (meetingId, kind, format, includeCitations = false) => call('export_document', { meetingId, kind, format, includeCitations });

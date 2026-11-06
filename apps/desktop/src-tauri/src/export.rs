@@ -24,7 +24,15 @@ pub fn suggested_name(value: &str) -> Result<String, String> {
     if !allowed_extension(extension) {
         return Err("TXT 또는 Markdown 형식을 선택해 주세요.".into());
     }
-    let extension = extension.to_ascii_lowercase();
+    Ok(portable_name(stem, &extension.to_ascii_lowercase()))
+}
+
+// Path separators become `_`, so a title never names a folder.
+pub fn file_name(stem: &str, extension: &str) -> String {
+    portable_name(&stem.replace(['/', '\\'], "_"), extension)
+}
+
+fn portable_name(stem: &str, extension: &str) -> String {
     let budget = MAX_FILENAME_BYTES - extension.len() - 2;
     let mut clean = String::new();
     for character in stem.chars() {
@@ -49,20 +57,17 @@ pub fn suggested_name(value: &str) -> Result<String, String> {
         || (reserved.len() == 4
             && (reserved.starts_with("COM") || reserved.starts_with("LPT"))
             && matches!(reserved.as_bytes()[3], b'1'..=b'9'));
-    Ok(format!(
-        "{}{stem}.{extension}",
-        if reserved { "_" } else { "" }
-    ))
+    format!("{}{stem}.{extension}", if reserved { "_" } else { "" })
 }
 
-fn validate_destination(path: &Path) -> Result<(), String> {
+fn validate_destination(path: &Path, allowed: impl Fn(&str) -> bool) -> Result<(), String> {
     if !path.is_absolute()
         || !path
             .extension()
             .and_then(|value| value.to_str())
-            .is_some_and(allowed_extension)
+            .is_some_and(allowed)
     {
-        return Err("TXT 또는 Markdown 파일 경로를 선택해 주세요.".into());
+        return Err("저장할 파일 이름과 형식을 확인해 주세요.".into());
     }
     match fs::symlink_metadata(path) {
         Ok(metadata) if !metadata.is_file() || metadata.file_type().is_symlink() => {
@@ -77,9 +82,10 @@ fn validate_destination(path: &Path) -> Result<(), String> {
 
 fn persist_with(
     path: &Path,
+    allowed: impl Fn(&str) -> bool + Copy,
     write: impl FnOnce(&mut File) -> io::Result<()>,
 ) -> Result<(), String> {
-    validate_destination(path)?;
+    validate_destination(path, allowed)?;
     let parent = path.parent().ok_or("저장 폴더를 선택해 주세요.")?;
     let mut temporary = tempfile::NamedTempFile::new_in(parent)
         .map_err(|_| "저장 폴더에 파일을 만들지 못했습니다.")?;
@@ -89,7 +95,7 @@ fn persist_with(
         .as_file()
         .sync_all()
         .map_err(|_| "파일 저장을 확인하지 못했습니다. 기존 파일은 변경하지 않았습니다.")?;
-    validate_destination(path)?;
+    validate_destination(path, allowed)?;
     temporary
         .persist(path)
         .map_err(|_| "파일을 교체하지 못했습니다. 기존 파일은 변경하지 않았습니다.")?;
@@ -98,7 +104,22 @@ fn persist_with(
 
 pub fn write_text(path: &Path, contents: &str) -> Result<(), String> {
     validate_contents(contents)?;
-    persist_with(path, |file| file.write_all(contents.as_bytes()))
+    persist_with(path, allowed_extension, |file| {
+        file.write_all(contents.as_bytes())
+    })
+}
+
+pub fn copy_file(source: &Path, path: &Path) -> Result<(), String> {
+    let extension = source
+        .extension()
+        .and_then(|value| value.to_str())
+        .ok_or("원본 파일 형식을 확인하지 못했습니다.")?;
+    let mut input = File::open(source).map_err(|_| "원본 파일을 열지 못했습니다.")?;
+    persist_with(
+        path,
+        |chosen| chosen.eq_ignore_ascii_case(extension),
+        |file| io::copy(&mut input, file).map(|_| ()),
+    )
 }
 
 #[cfg(test)]
@@ -145,7 +166,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let target = directory.path().join("meeting.txt");
         fs::write(&target, "previous").unwrap();
-        assert!(persist_with(&target, |file| {
+        assert!(persist_with(&target, allowed_extension, |file| {
             file.write_all(b"partial")?;
             Err(io::Error::other("injected disk failure"))
         })
@@ -154,6 +175,21 @@ mod tests {
         assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
         assert!(write_text(&directory.path().join("meeting.html"), "rejected").is_err());
         assert!(write_text(Path::new("meeting.txt"), "rejected").is_err());
+    }
+
+    #[test]
+    fn recording_copy_keeps_the_source_format_and_a_title_never_names_a_folder() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("audio.wav");
+        fs::write(&source, b"RIFF audio").unwrap();
+        let target = directory
+            .path()
+            .join(file_name("주간/회의: 1차 2026-11-05", "wav"));
+        assert_eq!(target.file_name().unwrap(), "주간_회의_ 1차 2026-11-05.wav");
+        copy_file(&source, &target).unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"RIFF audio");
+        assert!(copy_file(&source, &directory.path().join("recording.m4a")).is_err());
+        assert_eq!(fs::read(&source).unwrap(), b"RIFF audio");
     }
 
     #[cfg(unix)]

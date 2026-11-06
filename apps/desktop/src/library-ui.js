@@ -353,7 +353,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     if (!selection().size || !visibleIds.has(selectionAnchor)) selectionAnchor = null;
     const filter = state().libraryFilter;
     const disabled = Boolean(state().libraryBusy || !state().connected);
-    const navigation = [{ id: 'all', name: '전체 목록', icon: 'list' }, { id: 'unfiled', name: '미분류', icon: 'inbox' }, { id: 'ai', name: 'AI 대화', icon: 'messages-square' }, ...folders.map(folder => ({ ...folder, icon: 'folder' })), { id: 'trash', name: '휴지통', icon: 'trash-2' }];
+    const navigation = [{ id: 'all', name: '전체 목록', icon: 'list' }, { id: 'unfiled', name: '미분류', icon: 'inbox' }, { id: 'ai', name: 'AI 대화', icon: 'sparkles' }, ...folders.map(folder => ({ ...folder, icon: 'folder' })), { id: 'trash', name: '휴지통', icon: 'trash-2' }];
     const key = JSON.stringify([filter, state().libraryOpen, folders, disabled, snapshot.meetings.map(meeting => [meeting.id, meeting.folderId, meeting.deletedAt])]);
     if (key !== folderKey) {
       clearDropTarget();
@@ -436,7 +436,8 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
   }
   function updateReveal() {
     const meeting = current(state().selectedId);
-    byId('meeting-reveal').disabled = !state().connected || state().libraryBusy || !meeting || meeting.deletedAt != null || !meeting.audio || Boolean(runningRecording([meeting.id])) || state().audioKey !== `${meeting.id}:${meeting.audio?.relativePath}:${meeting.audio?.frames}` || byId('audio-message').dataset.state !== 'ready';
+    const unavailable = !state().connected || state().libraryBusy || !meeting || meeting.deletedAt != null || !meeting.audio || Boolean(runningRecording([meeting.id])) || state().audioKey !== `${meeting.id}:${meeting.audio?.relativePath}:${meeting.audio?.frames}` || byId('audio-message').dataset.state !== 'ready';
+    for (const id of ['meeting-export-audio', 'meeting-reveal']) byId(id).disabled = unavailable;
   }
   function actionFor(action, ids) {
     if (!ids.length || state().libraryBusy) return;
@@ -514,6 +515,11 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     const id = state().selectedId;
     closeMenu(menus.active, true);
     if (id) void bridge.revealRecordingFile(id).catch(showError);
+  });
+  byId('meeting-export-audio').addEventListener('click', () => {
+    const id = state().selectedId;
+    closeMenu(menus.active, true);
+    if (id) void bridge.exportRecordingFile(id).catch(showError);
   });
   byId('meeting-reveal').closest?.('details')?.addEventListener('toggle', updateReveal);
   for (const action of ['move', 'trash']) byId(`meeting-${action}`).addEventListener('click', () => { closeMenu(menus.active, true); actionFor(action, [state().selectedId].filter(Boolean)); });

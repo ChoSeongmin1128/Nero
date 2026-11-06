@@ -1930,6 +1930,7 @@ fn main() {
     let app = builder
         .invoke_handler(tauri::generate_handler![
             recording_files::reveal_recording_file,
+            recording_files::export_recording_file,
             domain_glossary::domain_glossary_view,
             domain_glossary::domain_glossary_save,
             write_clipboard_text,
