@@ -85,7 +85,7 @@ def verify_staged(root, target=None, execute_runtime=False):
         for item in SPEC["assets"][receipt["target"]]:
             binary = root / item["backend"] / "bin" / ("nemo-speech.exe" if receipt["target"].startswith("windows") else "nemo-speech")
             result = subprocess.run([str(binary), "--version"], capture_output=True, text=True, timeout=15, check=True)
-            if result.stdout.strip() != "nemo-speech 0.2.0":
+            if result.stdout.strip() != "nemo-speech " + SPEC["version"].removeprefix("v"):
                 raise ValueError("Unexpected speech runtime version")
     return receipt
 

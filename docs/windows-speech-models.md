@@ -27,18 +27,18 @@ Previously downloaded valid weights are reused. Existing meetings, canonical
 transcripts, corrections, speaker history and source identities are not rewritten
 or automatically retranscribed.
 
-The Windows CPU package builds the existing upstream base with the pinned PR47
-mmap backport and a separate Windows scheduler-storage patch. File-backed weights
+The Windows CPU package builds the pinned upstream release, which includes the mmap
+weight loader, with a separate Windows scheduler-storage patch. File-backed weights
 avoid a private staging copy where supported. Scheduler graph-copy allocation
 starts at 2048 nodes, grows geometrically with headroom, and retains the original
 65536-node maximum and explicit oversized-graph failure. Growth synchronizes the
 backend and invalidates cached placements, retaining model and live-stream state.
-The source archives, both patches, per-file hashes, compiler flags and composite
+The source archives, the patch, per-file hashes, compiler flags and composite
 package identity are owned by `scripts/native-diarization/runtime.json`.
 
 Vulkan retains the separately hash-verified official base executable/libraries.
-The composite Windows identity does not claim that Vulkan received either patch.
-macOS retains its existing PR47-only recipe. Stored base artifacts and both target
+The composite Windows identity does not claim that Vulkan received the patch.
+macOS builds the same release without patches. Earlier base artifacts and target
 identities remain readable without changing their historical provenance.
 
 Nemotron GPU preference and error handling are unchanged. A confirmed unavailable GPU

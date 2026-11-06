@@ -33,7 +33,7 @@ before native compaction using the existing geometry and final onset attribution
 After 60 seconds of newly processed audio, punctuation or 750 ms of quiet samples
 can publish a replacement interim hypothesis. Publication is forced at 180 seconds
 when a hypothesis exists. These intervals measure processed audio, not wall-clock
-latency. Quiet samples still reach both models. The pinned 0.2.0 C ABI supplies
+latency. Quiet samples still reach both models. The pinned C ABI supplies
 interim text without word offsets, so previews have no invented times or speaker
 labels. They are read-only and bound to the meeting and capture session. A new
 hypothesis replaces its predecessor; interim text and boundaries can change.
