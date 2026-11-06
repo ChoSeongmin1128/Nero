@@ -5,7 +5,7 @@ import { googleRows, googleTargetFor } from '../src/google-attendee-draft.js';
 
 const clone = value => JSON.parse(JSON.stringify(value));
 const source = (key, fields = {}) => ({ sourceKey: key, origin: 'meetParticipant', kind: 'signedInPersonOrRoom', displayName: 'Same name', email: null, googleUserId: `users/${key}`, responseStatus: null, ...fields });
-const initial = () => ({ editVersion: 'roster:1', meeting: { id: 'meeting', notes: 'Saved notes', attendees: [{ id: 'manual', name: 'Manual name' }] }, sources: [], identityLinks: [], catalog: { editVersion: 'catalog:1', people: [{ id: 'person', name: 'Saved person' }], groups: [] } });
+const initial = () => ({ editVersion: 'roster:1', meeting: { id: 'meeting', notes: 'Saved notes', calendarReference: { occurrenceKey: 'synthetic-event' }, attendees: [{ id: 'manual', name: 'Manual name' }] }, sources: [], identityLinks: [], catalog: { editVersion: 'catalog:1', people: [{ id: 'person', name: 'Saved person' }], groups: [] } });
 
 function fixture(overrides = {}, original = initial()) {
   let stored = clone(original), sequence = 0, changed = 0;

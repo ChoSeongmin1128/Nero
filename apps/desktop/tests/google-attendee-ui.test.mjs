@@ -16,7 +16,7 @@ const sources = [
 async function fixture(t, overrides = {}, roster = {}) {
   const window = new Window({ url: 'http://nero.test', settings: { enableJavaScriptEvaluation: true, suppressInsecureJavaScriptEnvironmentWarning: true } });
   window.document.body.innerHTML = '<button id="origin">참석자 열기</button>'; window.eval(bundle.outputFiles[0].text);
-  let stored = { editVersion: 'roster:1', meeting: { id: 'meeting', attendees: [{ id: 'manual', name: '기존 임시' }] }, sources: [], identityLinks: [], catalog: { editVersion: 'catalog:1', people: [{ id: 'person', name: '저장된 사람' }], groups: [] }, ...roster };
+  let stored = { editVersion: 'roster:1', meeting: { id: 'meeting', calendarReference: { occurrenceKey: 'synthetic-event' }, attendees: [{ id: 'manual', name: '기존 임시' }] }, sources: [], identityLinks: [], catalog: { editVersion: 'catalog:1', people: [{ id: 'person', name: '저장된 사람' }], groups: [] }, ...roster };
   const writes = [], reads = [], cancelled = [];
   const bridge = {
     readGoogleAttendeeRoster: async () => clone(stored),
@@ -27,6 +27,7 @@ async function fixture(t, overrides = {}, roster = {}) {
       return clone(stored);
     },
     cancelCalendarConnect: async id => cancelled.push(id),
+    readCalendarSettings: async () => ({ connected: true }),
     ...overrides,
   };
   const editor = window.PeopleUI.mountMeetingAttendees({ container: window.document.body, bridge });
@@ -157,4 +158,29 @@ test('a unique saved name is suggested, while homonyms stay distinguishable and 
   const labels = [...f.window.document.querySelectorAll('[data-slot="select-content"]:not([data-closed]) [role="option"]')].map(node => node.textContent);
   assert.ok(labels.includes('홍길동 (개발팀)'));
   assert.ok(labels.includes('홍길동 (2번째)'));
+});
+
+test('Google import appears only for a linked event on a connected account', async t => {
+  const unlinked = await fixture(t, {}, { meeting: { id: 'meeting', attendees: [{ id: 'manual', name: '기존 임시' }] } });
+  assert.equal(unlinked.buttons('Google에서 추가').length, 0);
+  assert.doesNotMatch(unlinked.window.document.body.textContent, /Google 캘린더 연결이 끊겨/);
+  const disconnected = await fixture(t, { readCalendarSettings: async () => ({ connected: false }) });
+  assert.equal(disconnected.buttons('Google에서 추가').length, 0);
+  assert.match(disconnected.window.document.body.textContent, /Google 캘린더 연결이 끊겨 연결한 일정의 참석자를 불러올 수 없습니다/);
+});
+
+test('a fetch that ends the Google connection offers reconnecting instead of retrying', async t => {
+  let connected = true;
+  const f = await fixture(t, { readCalendarSettings: async () => ({ connected }), fetchGoogleAttendees: async () => { connected = false; throw Error('Google 연결이 만료되었거나 권한이 해제되었습니다. 다시 연결해 주세요.'); } });
+  f.button('Google에서 추가').click();
+  await wait(() => f.window.document.body.textContent.includes('Google 캘린더 연결이 끊겨'));
+  assert.equal(f.buttons('다시 시도').length, 0);
+  assert.equal(f.buttons('Google에서 추가').length, 0);
+  assert.equal(f.window.document.querySelector('.google-attendee-picker'), null);
+});
+
+test('a transient Google failure keeps the retry', async t => {
+  const f = await fixture(t, { fetchGoogleAttendees: async () => { throw Error('일정을 새로고침하지 못했습니다. 네트워크 상태를 확인해 주세요.'); } });
+  f.button('Google에서 추가').click();
+  await wait(() => f.buttons('다시 시도').length === 1);
 });
