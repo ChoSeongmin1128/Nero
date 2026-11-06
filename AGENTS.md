@@ -219,6 +219,11 @@ behavior. Separate implemented behavior, proposals and unverified platform suppo
   from `apps/desktop/agent/release.json`; change it when the actual CLI/MCP/skill or
   integration package changes, not merely to match the product version. Keep an
   unchanged generation only after verifying reused integration bytes and metadata.
+  The integration version stays `0.3.0-nero.<N>` (see `docs/versioning.md`): a public
+  release that changes the package takes the last public N plus one, unpublished
+  changes share one N, and an N already installed in a host for testing is not reused
+  for different contents. Raising its MINOR or MAJOR needs the same user approval as
+  the product version.
   Undistributed development binaries follow the bounded retention rules below.
 - Published release tags, assets and public release notes identify distributed source.
   A dirty build must not be attributed to its HEAD alone. Distribution bundles require

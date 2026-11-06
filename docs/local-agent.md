@@ -422,8 +422,8 @@ portable `mcp.json`의 `./server/nero.exe`는 패키지 형식이므로 해당 �
 `prepare:agent`는 대상 OS의 실행 파일과 `agent/integrations` 템플릿을 함께 준비한다.
 공통 템플릿에는 사용자 경로, 인증 정보와 회의 데이터가 없다. Nero가 연결 버튼을 처리할 때
 실제 데이터 경로와 연결 상태 정보를 넣어 설치 패키지를 만든다.
-연결 패키지 버전은 앱의 `0.0.1`과 별도로 `0.0.1-nero.<release>`를 사용한다. CLI,
-프로토콜과 템플릿/스킬이 바뀔 때 연동 버전을 올린다. UI만 바뀌는 앱 빌드는 검증된 서명
+연결 패키지 버전은 제품 버전과 별도로 `0.3.0-nero.<N>`을 사용하며, 형식과 증가 규칙은
+[연동 패키지 번호](versioning.md#연동-패키지-번호)를 따른다. UI만 바뀌는 앱 빌드는 검증된 서명
 CLI와 템플릿을 재사용할 수 있으며 클라이언트 업데이트를 요구하지 않는다.
 
 - Claude MCPB: manifest 0.3의 `server.type=binary`, 대상 OS만의 compatibility, 실행 파일,
