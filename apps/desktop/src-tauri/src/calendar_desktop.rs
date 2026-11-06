@@ -152,8 +152,9 @@ fn sync_windows(app: &tauri::AppHandle, service: &CalendarService) {
         if let Some(monitor) = &monitor {
             let area = monitor.work_area();
             let scale = monitor.scale_factor();
-            let x = (f64::from(area.position.x) + f64::from(area.size.width)) / scale - 456.0;
-            let y = f64::from(area.position.y) / scale + 16.0;
+            // Top center, under the menu bar and the camera notch, like system meeting alerts.
+            let x = (f64::from(area.position.x) + f64::from(area.size.width) / 2.0) / scale - 220.0;
+            let y = f64::from(area.position.y) / scale + 8.0;
             builder = builder.position(x, y);
         }
         if let Ok(window) = builder.build() {

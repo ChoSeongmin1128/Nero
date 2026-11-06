@@ -84,7 +84,7 @@ function CalendarSettings({ flow }) {
   const { connecting } = view;
   return <section className="calendar-settings" data-nero-ui-owned="" aria-label="Google Calendar" aria-busy={state.busy}>
     <h4 className="settings-subtitle">Google Calendar</h4>
-    <p className="calendar-settings-description">시작 5분 전에 알림</p>
+    <p className="calendar-settings-description">시작 5분 전부터 시작 후 5분까지 알림</p>
     <div className="settings-group"><div className="calendar-settings-account">
       <div className="calendar-settings-identity"><BrandIcon name="calendar" /><div><strong>{view.label}</strong>{snapshot.connected && <p>읽기 전용</p>}</div></div>
       <div className="calendar-settings-actions">

@@ -1024,14 +1024,9 @@ fn current_reminder<'a>(inner: &'a Inner, key: &str, now: u64) -> Result<&'a Occ
         .state
         .events
         .iter()
-        .find(|event| {
-            event.key == key
-                && event.start_at > now
-                && event.end_at > event.start_at
-                && now >= event.start_at.saturating_sub(schedule::LEAD_MS)
-        })
+        .find(|event| event.key == key && schedule::reminder_window(event, now))
         .ok_or_else(|| {
-            "일정이 변경되었거나 시작 시간이 지났습니다. 현재 일정을 확인해 주세요.".into()
+            "일정이 변경되었거나 알림 시간이 지났습니다. 현재 일정을 확인해 주세요.".into()
         })
 }
 
