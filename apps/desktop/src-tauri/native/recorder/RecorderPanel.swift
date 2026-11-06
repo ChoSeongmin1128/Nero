@@ -58,40 +58,38 @@ struct RecorderUpdate: Decodable {
     override func accessibilityPerformPress() -> Bool { presenter?.toggleControls(); return true }
 
     override func draw(_ dirtyRect: NSRect) {
-        guard let presenter, let state = presenter.state else { return }
+        guard let presenter, let state = presenter.state, let display = presenter.display else { return }
         let floating = presenter.placement.floating
+        let radius: CGFloat = floating ? bounds.height / 2 : presenter.expanded ? 18 : 12
         (floating ? RecorderTokens.surface : NSColor.black).setFill()
-        NSBezierPath(roundedRect: bounds, xRadius: floating ? 21 : 12, yRadius: floating ? 21 : 12).fill()
+        NSBezierPath(roundedRect: bounds, xRadius: radius, yRadius: radius).fill()
         if !floating {
-            NSRect(x: 0, y: 0, width: bounds.width, height: 12).fill()
+            NSRect(x: 0, y: 0, width: bounds.width, height: radius).fill()
         } else {
             RecorderTokens.edge.setStroke()
-            NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 21, yRadius: 21).stroke()
+            NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: radius - 0.5, yRadius: radius - 0.5).stroke()
         }
-        let header = floating ? 44 : presenter.display?.headerHeight ?? 30
-        let centerY = header / 2
-        let markX: CGFloat = floating ? 24 : presenter.display?.notch == nil ? 17 : 20
+        let mark = display.markFrame(floating: floating)
         if presenter.failure != nil || state.warning != nil {
             NSImage(systemSymbolName: "exclamationmark.triangle", accessibilityDescription: "녹음 확인 필요")?
                 .withSymbolConfiguration(.init(paletteColors: [RecorderTokens.warning]))?
-                .draw(in: NSRect(x: markX - 7, y: centerY - 7, width: 14, height: 14))
+                .draw(in: NSRect(x: mark.midX - 7, y: mark.midY - 7, width: 14, height: 14))
         } else {
-            (state.phase == "paused" ? RecorderTokens.warning : RecorderTokens.recording).setFill()
-            NSBezierPath(ovalIn: NSRect(x: markX - 3, y: centerY - 3, width: 6, height: 6)).fill()
+            let paused = state.phase == "paused"
+            (paused ? RecorderTokens.warning : RecorderTokens.recording).withAlphaComponent(paused ? 1 : presenter.pulse).setFill()
+            NSBezierPath(ovalIn: mark).fill()
         }
         let seconds = state.elapsedMS / 1000
-        let time = seconds >= 3600 ? String(format: "%llu:%02llu:%02llu", seconds / 3600, seconds / 60 % 60, seconds % 60)
-                                  : String(format: "%02llu:%02llu", seconds / 60, seconds % 60)
-        let text = presenter.failure != nil ? "오류 확인" : time
-        (text as NSString).draw(in: presenter.display?.timeFrame(in: presenter.panel.frame, floating: floating) ?? .zero,
-                               withAttributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: RecorderTokens.caption, weight: .semibold), .foregroundColor: RecorderTokens.text])
+        let text = presenter.failure != nil ? "오류 확인" : RecorderMetrics.clock(seconds)
+        // A paused clock dims so the stopped time reads differently from a running one.
+        let color = state.phase == "paused" && presenter.failure == nil ? RecorderTokens.muted : RecorderTokens.text
+        (text as NSString).draw(in: display.timeFrame(text: presenter.textWidth, floating: floating),
+                               withAttributes: [.font: RecorderMetrics.font, .foregroundColor: color])
         if !floating && presenter.expanded {
-            RecorderTokens.muted.setFill()
-            for x in [CGFloat(20), 24] {
-                for y in [header + 14, header + 19, header + 24] {
-                    NSBezierPath(ovalIn: NSRect(x: x, y: y, width: 1.5, height: 1.5)).fill()
-                }
-            }
+            let style = NSMutableParagraphStyle(); style.lineBreakMode = .byTruncatingTail
+            (state.meetingTitle as NSString).draw(in: display.titleFrame(controls: 2, in: bounds),
+                                                  withAttributes: [.font: NSFont.systemFont(ofSize: RecorderTokens.caption, weight: .medium),
+                                                                   .foregroundColor: RecorderTokens.muted, .paragraphStyle: style])
         }
     }
 }
@@ -117,6 +115,10 @@ struct RecorderUpdate: Decodable {
     private var buttons: [NSButton] = []
     private var lastControls = ""
     var failure: String? { actionError ?? state?.error }
+    var textWidth: CGFloat { RecorderMetrics.textWidth(seconds: (state?.elapsedMS ?? 0) / 1000, failure: failure != nil) }
+    var floatingSize: NSSize { NSSize(width: RecorderMetrics.floatingWidth(textWidth), height: RecorderMetrics.floatingHeight) }
+    private(set) var pulse: CGFloat = 1
+    private var pulseTimer: Timer?
 
     init(callback: @escaping RecorderCallback, defaults: UserDefaults? = .standard) {
         self.callback = callback; self.defaults = defaults
@@ -155,7 +157,7 @@ struct RecorderUpdate: Decodable {
         refreshEnvironment()
     }
 
-    func hide() { shown = false; collapse?.cancel(); expanded = false; explicitExpansion = false; panel.orderOut(nil) }
+    func hide() { shown = false; collapse?.cancel(); expanded = false; explicitExpansion = false; updatePulse(); panel.orderOut(nil) }
 
     func hide(generation next: UInt64) {
         guard next >= generation else { return }
@@ -167,7 +169,7 @@ struct RecorderUpdate: Decodable {
         let displays = NSScreen.screens.map(RecorderDisplay.init)
         let preferredScreen = NSApp.windows.first { !($0 is NSPanel) && $0.isVisible }?.screen ?? NSScreen.main
         let preferred = preferredScreen.map { RecorderDisplay(screen: $0).id } ?? state?.preferredDisplay ?? 0
-        guard let resolved = placement.resolve(displays: displays, preferred: preferred) else { return }
+        guard let resolved = placement.resolve(displays: displays, preferred: preferred, floatingSize: floatingSize) else { return }
         display = resolved
         layout(animated: false)
         panel.orderFrontRegardless()
@@ -175,8 +177,8 @@ struct RecorderUpdate: Decodable {
 
     private func layout(animated: Bool) {
         guard let display else { return }
-        let target = placement.floating ? NSRect(x: placement.x, y: placement.y, width: 276, height: 44)
-                                        : display.docked(expanded: expanded)
+        let target = placement.floating ? NSRect(origin: NSPoint(x: placement.x, y: placement.y), size: floatingSize)
+                                        : display.docked(expanded: expanded, text: textWidth)
         let animate = animated && panel.isVisible && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         if panel.frame != target { panel.setFrame(target, display: true, animate: animate) }
         let controlsKey = "\(placement.floating):\(expanded):\(target.width):\(display.headerHeight):\(state?.phase ?? ""):\(pendingSession != nil)"
@@ -190,22 +192,21 @@ struct RecorderUpdate: Decodable {
             let auxiliary: [(String, String, String)] = [("open", "arrow.up.right.square", "회의 열기")]
                 + (placement.floating ? [("dock", "arrow.up.to.line", "상단에 붙이기")] : [])
                 + [("hide", "xmark", "녹음 표시 숨기기")]
-            let actions = placement.floating ? [auxiliary[0]] + primary + Array(auxiliary.dropFirst())
-                                             : primary + (expanded ? auxiliary : [])
+            let actions = primary + (placement.floating || expanded ? auxiliary : [])
             for (index, action) in actions.enumerated() {
                 let button = NSButton(image: NSImage(systemSymbolName: action.1, accessibilityDescription: action.2)!, target: self, action: #selector(pressed(_:)))
                 button.identifier = NSUserInterfaceItemIdentifier(action.0)
                 button.image = button.image?.withSymbolConfiguration(.init(pointSize: RecorderTokens.caption, weight: .medium))
-                button.isBordered = false; button.contentTintColor = action.0 == "stop" ? RecorderTokens.recording : RecorderTokens.text
+                button.isBordered = false
+                button.contentTintColor = action.0 == "stop" ? RecorderTokens.recording : index < primary.count ? RecorderTokens.text : RecorderTokens.muted
                 button.setAccessibilityLabel(action.2); button.toolTip = action.2
                 button.isEnabled = action.0 == "hide" || action.0 == "dock" || (pendingSession == nil && (action.0 == "open" || state?.phase != "finalizing"))
                 if placement.floating {
-                    button.frame = NSRect(x: 112 + CGFloat(index) * 32, y: 8, width: 28, height: 28)
+                    button.frame = RecorderDisplay.floatingControlFrame(index: index, width: target.width)
                 } else if index < primary.count {
                     button.frame = display.primaryControlFrame(index: index, in: target)
                 } else {
-                    button.frame = NSRect(x: target.width - CGFloat(auxiliary.count) * 32 - 10 + CGFloat(index - primary.count) * 32,
-                                          y: display.headerHeight + 6, width: 28, height: 28)
+                    button.frame = display.detailControlFrame(index: index - primary.count, count: auxiliary.count, in: target)
                 }
                 surface.addSubview(button); buttons.append(button)
             }
@@ -213,7 +214,24 @@ struct RecorderUpdate: Decodable {
         surface.toolTip = [state?.meetingTitle, actionError ?? state?.error ?? state?.warning].compactMap { $0 }.joined(separator: "\n")
         surface.setAccessibilityRole(placement.floating ? .group : .button)
         surface.setAccessibilityLabel("\(state?.meetingTitle ?? "회의"), \(state?.phase == "paused" ? "일시정지" : "녹음 중"), 녹음 제어" + (placement.floating ? "" : explicitExpansion ? " 접기" : " 펼치기"))
+        updatePulse()
         surface.needsDisplay = true
+    }
+
+    // The recording mark breathes slowly while recording; Reduce Motion keeps it still.
+    private func updatePulse() {
+        let active = shown && state?.phase == "recording" && failure == nil && state?.warning == nil
+            && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        guard active else { pulseTimer?.invalidate(); pulseTimer = nil; pulse = 1; return }
+        guard pulseTimer == nil else { return }
+        let started = Date()
+        pulseTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 15, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.pulse = 0.675 + 0.325 * cos(Date().timeIntervalSince(started) * .pi)
+                if let display = self.display { self.surface.setNeedsDisplay(display.markFrame(floating: self.placement.floating).insetBy(dx: -2, dy: -2)) }
+            }
+        }
     }
 
     func hover(_ inside: Bool) {
@@ -238,7 +256,7 @@ struct RecorderUpdate: Decodable {
     func beginDrag(at pointer: NSPoint) {
         guard display != nil else { return }
         collapse?.cancel(); dragging = true; expanded = false; explicitExpansion = false
-        dragOffset = NSPoint(x: min(max(pointer.x - panel.frame.minX, 12), 264), y: min(max(pointer.y - panel.frame.minY, 8), 36))
+        dragOffset = NSPoint(x: min(max(pointer.x - panel.frame.minX, 12), floatingSize.width - 12), y: min(max(pointer.y - panel.frame.minY, 8), floatingSize.height - 8))
         placement.floating = true
         moveDrag(to: pointer)
     }
