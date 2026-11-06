@@ -64,3 +64,29 @@ test('narrow notes layout keeps body present and transcript maintenance is secon
   assert.equal(app.node('detail-primary')?.hidden ?? false, false);
   assert.equal(app.node('notes-section').parentElement, app.node('detail-inspector'));
 });
+function geometry(app) {
+  const body = app.node('detail-body-scroll'); let transcriptTop = 0;
+  Object.defineProperty(body, 'clientHeight', { configurable: true, value: 600 });
+  Object.defineProperty(body, 'scrollHeight', { configurable: true, value: 3000 });
+  body.getBoundingClientRect = () => ({ top: 0, bottom: 600 });
+  app.node('transcript-section').getBoundingClientRect = () => ({ top: transcriptTop, bottom: transcriptTop + 1500 });
+  const pressed = view => app.node(`detail-${view}-open`).getAttribute('aria-pressed');
+  return { pressed, scrollTo(scrollTop, top) { body.scrollTop = scrollTop; transcriptTop = top; body.dispatchEvent(new app.window.Event('scroll')); } };
+}
+test('section buttons follow the part of the shared body being read', t => {
+  const app = page(t); app.update(); const { scrollTo, pressed } = geometry(app);
+  scrollTo(500, 150); assert.equal(app.controller.active(), 'transcript'); assert.equal(pressed('transcript'), 'true'); assert.equal(pressed('summary'), 'false');
+  scrollTo(300, 350); assert.equal(app.controller.active(), 'summary'); assert.equal(pressed('summary'), 'true'); assert.equal(pressed('transcript'), 'false');
+  scrollTo(2400, 450); assert.equal(app.controller.active(), 'transcript', 'a short transcript is current at the end of the body');
+  scrollTo(0, 100); assert.equal(app.controller.active(), 'summary', 'a short summary is current at the start of the body');
+  app.update({ showSummary: false }); scrollTo(300, 350); assert.equal(app.controller.active(), 'transcript');
+});
+test('a section chosen from its button stays pressed while the body scrolls to it', async t => {
+  const app = page(t); app.update(); const { scrollTo, pressed } = geometry(app);
+  await app.controller.select('transcript'); scrollTo(200, 400);
+  assert.equal(app.controller.active(), 'transcript'); assert.equal(pressed('transcript'), 'true');
+  await new Promise(resolve => setTimeout(resolve, 200)); scrollTo(100, 500);
+  assert.equal(app.controller.active(), 'summary');
+  await app.controller.select('transcript'); app.node('detail-body-scroll').dispatchEvent(new app.window.Event('wheel')); scrollTo(200, 400);
+  assert.equal(app.controller.active(), 'summary', 'scrolling by hand ends the jump at once');
+});
