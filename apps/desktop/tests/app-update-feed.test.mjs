@@ -59,7 +59,12 @@ test('feed binds both clean platform packages to their packaging receipts and au
   }
   await assert.rejects(createUpdateFeed({ ...options, verify: async () => { throw Error('invalid signature'); } }), /invalid signature/);
   await assert.rejects(createUpdateFeed({ ...options, verify: async () => '0'.repeat(64) }), /changed during/);
-  await assert.rejects(createUpdateFeed({ ...options, artifacts: options.artifacts.slice(0, 1) }), /Both/);
+  const single = await createUpdateFeed({ ...options, artifacts: options.artifacts.slice(0, 1) });
+  assert.deepEqual(Object.keys(single.manifest.platforms), ['darwin-aarch64']);
+  assert.deepEqual(single.receipt.artifacts.map(value => value.platform), ['darwin-aarch64']);
+  for (const artifacts of [[], [options.artifacts[0], options.artifacts[0]], [{ ...options.artifacts[0], platform: 'linux-x86_64' }]]) {
+    await assert.rejects(createUpdateFeed({ ...options, artifacts }), /One artifact per included supported platform/);
+  }
 });
 
 test('a different package cannot borrow matching clean build provenance', async t => {
@@ -133,4 +138,20 @@ test('CLI requires both packaging receipt options before verifying or writing a 
   assert.match(result.stderr, /Required:.*--mac-receipt.*--windows-receipt/);
   await assert.rejects(readFile(path.join(directory, 'latest.json')), { code: 'ENOENT' });
   await assert.rejects(readFile(path.join(directory, 'latest.json.receipt.json')), { code: 'ENOENT' });
+});
+
+test('CLI accepts one complete platform and still rejects a partial one', async t => {
+  const { options, directory } = await fixture(t);
+  const [mac] = options.artifacts;
+  const run = extra => spawnSync(process.execPath, [fileURLToPath(new URL('../scripts/app-update-feed.mjs', import.meta.url)),
+    '--version', options.version, '--build', options.build, '--tag', options.tag, '--verifier', process.execPath, ...extra,
+    '--out', path.join(directory, 'latest.json')], { encoding: 'utf8', timeout: 10_000 });
+  const partial = run(['--mac', mac.file, '--mac-provenance', mac.provenance]);
+  assert.equal(partial.status, 1);
+  assert.match(partial.stderr, /Required:.*--mac-receipt/);
+  // Node is not the native verifier, so a complete Mac-only request reaches verification and stops there.
+  const complete = run(['--mac', mac.file, '--mac-provenance', mac.provenance, '--mac-receipt', mac.receipt]);
+  assert.equal(complete.status, 1);
+  assert.match(complete.stderr, /Native signature\/build verification failed/);
+  await assert.rejects(readFile(path.join(directory, 'latest.json')), { code: 'ENOENT' });
 });

@@ -25,8 +25,8 @@ export async function createUpdateFeed({ version, build, tag, artifacts, verify 
   const wire = releaseIdentity(version, build);
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(tag || '')) throw Error('Invalid release tag');
   if (typeof verify !== 'function') throw Error('Signature verifier is required');
-  const expected = Object.keys(TARGETS);
-  if (artifacts.length !== 2 || expected.some(platform => artifacts.filter(a => a.platform === platform).length !== 1)) throw Error('Both macOS arm64 and Windows x64 artifacts are required');
+  // Each platform has its own feed, so one platform can be published alone.
+  if (!Array.isArray(artifacts) || !artifacts.length || artifacts.some(a => !Object.hasOwn(TARGETS, a?.platform)) || new Set(artifacts.map(a => a.platform)).size !== artifacts.length) throw Error('One artifact per included supported platform is required');
   const platforms = {}, evidence = [];
   let sourceCommit, sourceTree;
   for (const artifact of [...artifacts].sort((a, b) => a.platform.localeCompare(b.platform))) {
@@ -60,18 +60,24 @@ export async function createUpdateFeed({ version, build, tag, artifacts, verify 
   return { manifest: { version: wire, platforms }, receipt: { version, build, sourceCommit, sourceTree, tag, artifacts: evidence, published: false } };
 }
 
+const PLATFORM_OPTIONS = { 'darwin-aarch64': ['mac', 'mac-provenance', 'mac-receipt'], 'windows-x86_64': ['windows', 'windows-provenance', 'windows-receipt'] };
+
 async function main(args) {
-  const names = ['version', 'build', 'tag', 'verifier', 'mac', 'mac-provenance', 'mac-receipt', 'windows', 'windows-provenance', 'windows-receipt', 'out'];
+  const required = ['version', 'build', 'tag', 'verifier', 'out'];
+  const names = [...required, ...Object.values(PLATFORM_OPTIONS).flat()];
   const options = {};
   for (let index = 0; index < args.length; index += 2) {
     const name = args[index]?.replace(/^--/, '');
     if (!args[index]?.startsWith('--') || !names.includes(name) || options[name] || !args[index + 1]) throw Error('Invalid or duplicate option');
     options[name] = args[index + 1];
   }
-  if (names.some(name => !options[name])) throw Error(`Required: ${names.map(name => `--${name}`).join(' ')}`);
+  const included = Object.entries(PLATFORM_OPTIONS).filter(([, group]) => group.some(name => options[name]));
+  if (required.some(name => !options[name]) || !included.length || included.some(([, group]) => group.some(name => !options[name]))) {
+    throw Error(`Required: ${required.map(name => `--${name}`).join(' ')}, and every option of each included platform: ${Object.values(PLATFORM_OPTIONS).map(group => group.map(name => `--${name}`).join(' ')).join(' / ')}`);
+  }
   const verifier = path.resolve(options.verifier);
   const { manifest, receipt } = await createUpdateFeed({ version: options.version, build: options.build, tag: options.tag,
-    artifacts: [{ platform: 'darwin-aarch64', file: options.mac, signature: `${options.mac}.sig`, provenance: options['mac-provenance'], receipt: options['mac-receipt'] }, { platform: 'windows-x86_64', file: options.windows, signature: `${options.windows}.sig`, provenance: options['windows-provenance'], receipt: options['windows-receipt'] }],
+    artifacts: included.map(([platform, [file, provenance, packaging]]) => ({ platform, file: options[file], signature: `${options[file]}.sig`, provenance: options[provenance], receipt: options[packaging] })),
     verify: (file, signature, wire) => verifyNative(verifier, file, signature, wire) });
   await writeFile(`${options.out}.receipt.json`, JSON.stringify(receipt, null, 2) + '\n', { flag: 'wx' });
   await writeFile(options.out, JSON.stringify(manifest, null, 2) + '\n', { flag: 'wx' });

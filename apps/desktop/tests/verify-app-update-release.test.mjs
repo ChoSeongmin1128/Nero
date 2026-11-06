@@ -4,7 +4,7 @@ import { mkdtemp, writeFile, readFile, rm, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { verifyAppUpdateRelease, downloadPublicFile } from '../scripts/verify-app-update-release.mjs';
+import { verifyAppUpdateRelease, downloadPublicFile, PLATFORM_FEEDS } from '../scripts/verify-app-update-release.mjs';
 
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const repo = 'https://github.com/ChoSeongmin1128/Nero';
@@ -104,4 +104,29 @@ test('missing or tampered public signature fails before native verification', as
   f.objects.set(signatureURL, Buffer.from('different signature'));
   await assert.rejects(verifyAppUpdateRelease(f.options), /Published signature differs/);
   assert.equal(f.verified.length, 0);
+});
+
+test('a single-platform feed verifies at its release, latest and own platform feed URLs', async t => {
+  const f = await fixture(t, ({ receipt, manifest }) => {
+    receipt.artifacts = receipt.artifacts.filter(artifact => artifact.platform === 'darwin-aarch64');
+    delete manifest.platforms['windows-x86_64'];
+  });
+  const platformURL = `${PLATFORM_FEEDS}/darwin-aarch64.json`;
+  assert.equal(platformURL, 'https://choseongmin1128.github.io/Nero/updates/darwin-aarch64.json');
+  f.objects.set(platformURL, await readFile(f.options.feed));
+  for (const feedUrl of [f.options.feedUrl, `${repo}/releases/latest/download/latest.json`, platformURL]) {
+    const receipt = await verifyAppUpdateRelease({ ...f.options, feedUrl });
+    assert.equal(receipt.publicURL, feedUrl);
+    assert.deepEqual(receipt.artifacts.map(artifact => artifact.platform), ['darwin-aarch64']);
+  }
+  assert.equal(f.verified.length, 3);
+  const requests = f.requested.length;
+  await assert.rejects(verifyAppUpdateRelease({ ...f.options, feedUrl: `${PLATFORM_FEEDS}/windows-x86_64.json` }), /Feed URL/);
+  assert.equal(f.requested.length, requests);
+});
+
+test('a feed for both platforms is not accepted at one platform feed URL', async t => {
+  const f = await fixture(t);
+  await assert.rejects(verifyAppUpdateRelease({ ...f.options, feedUrl: `${PLATFORM_FEEDS}/darwin-aarch64.json` }), /Feed URL/);
+  assert.equal(f.requested.length, 0);
 });

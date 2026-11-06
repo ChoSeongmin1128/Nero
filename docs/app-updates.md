@@ -31,8 +31,14 @@ is independent of this signature and is not configured by this change.
   the entire literal version, including build metadata. An unsigned manifest
   cannot relabel a valid old package as a newer build. Missing signed versions,
   malformed builds and payload tampering are rejected.
-- The feed is pinned to the existing public Nero GitHub repository's
-  `releases/latest/download/latest.json`. Initial artifact URLs must be HTTPS assets
+- From 0.0.2 each platform has its own pinned feed,
+  `https://choseongmin1128.github.io/Nero/updates/{{target}}-{{arch}}.json`
+  (`darwin-aarch64.json`, `windows-x86_64.json`), served by GitHub Pages from
+  `docs/updates` on `main`, so macOS and Windows are published independently.
+  Build62 and earlier read the combined `releases/latest/download/latest.json` of
+  the latest release instead. A feed whose version is newer but which has no entry
+  for the running platform makes that check fail and retry; it is not an update.
+  Initial artifact URLs must be HTTPS assets
   under that repository's `releases/download/`, without credentials/query strings.
   Downloads follow bounded HTTPS redirects, have a 15-minute timeout and a 512 MiB
   cap. The public key is embedded; private keys and passwords never enter Git or
@@ -195,14 +201,16 @@ alongside the other commands. Do not route that action through normal `request_q
    On macOS use the executable inside `Nero.app/Contents/MacOS/`. Success prints
    the authenticated payload SHA256 and exits zero. This mode opens no library,
    models, window or network connection. It uses the production embedded key.
-4. Generate a local combined feed with
+4. Generate a local feed with
    `node apps/desktop/scripts/app-update-feed.mjs --version <product> --build <build>
    --tag <release-tag> --verifier <native-executable> --mac <app.tar.gz>
    --mac-provenance <mac-build-info.json> --mac-receipt <mac-package.receipt.json>
    --windows <setup.exe> --windows-provenance <windows-build-info.json>
    --windows-receipt <windows-package.receipt.json> --out <new-folder/latest.json>`.
-   Each signature must be beside its package as `<package>.sig`. The tool requires
-   both supported platforms, matching clean commit/tree/target provenance and
+   Give the three options of each platform being published; a single platform is
+   allowed. Each signature must be beside its package as `<package>.sig`. The tool
+   requires matching clean commit/tree/target provenance across the included
+   platforms and
    package receipts tied to the actual filename, size and SHA256. The native
    verifier must return that same authenticated hash. It creates the feed plus a local provenance receipt and
    refuses overwrites. It does not upload anything or include local paths/tokens
@@ -219,27 +227,35 @@ alongside the other commands. Do not route that action through normal `request_q
 Publication requires explicit authorization. Keep the actual tag/source immutable
 once public, and keep publishing ownership separate from platform packaging.
 
-1. Upload the final Mac archive, Windows NSIS, both `.sig` files, `latest.json`,
-   and the manual DMG to a release whose tag matches the prepared feed. Use a
-   prerelease with latest disabled until remote verification is complete. Do not
-   mark an unverified release latest or replace an already public asset in place.
+1. Upload the packages and `.sig` files of the platforms being published, the
+   manual DMG or NSIS, and `latest.json` (the prepared feed, kept for build62 and
+   earlier) to a release whose tag matches the prepared feed. Use a prerelease with
+   latest disabled until remote verification is complete. Do not mark an
+   unverified release latest or replace an already public asset in place.
 2. Run `node apps/desktop/scripts/verify-app-update-release.mjs --feed <latest.json>
    --receipt <latest.json.receipt.json> --feed-url
    https://github.com/ChoSeongmin1128/Nero/releases/download/<tag>/latest.json
    --verifier <native-executable> --out <new-delivery-receipt.json>`.
-   This downloads the public feed, both packages and signatures into an
+   This downloads the public feed, its packages and signatures into an
    automatically cleaned temporary directory. It compares the exact prepared
    feed, package sizes/hashes and signatures, then uses the production headless
    verifier for the signed version/build. Redirects remain HTTPS-only and bounded;
    short-lived CDN query strings are never retained in receipts.
-3. Only after verification succeeds, promote that same release to stable/latest.
+3. Commit the same prepared feed bytes as `docs/updates/<platform>.json` on `main`
+   for each published platform. After GitHub Pages deploys it (responses are cached
+   for up to 10 minutes), verify again with `--feed-url
+   https://choseongmin1128.github.io/Nero/updates/<platform>.json` and a new receipt.
+   This channel is what 0.0.2 and later installations read.
+4. Only after verification succeeds, promote that same release to stable/latest.
    GitHub documents that prereleases cannot be latest; the latest-release choice
    is separate from uploading assets. See the [GitHub release API](https://docs.github.com/en/rest/releases/releases#create-a-release).
-4. Run the same verification with the pinned feed URL
+5. Run the same verification with the build62 feed URL
    `https://github.com/ChoSeongmin1128/Nero/releases/latest/download/latest.json`
    and a separate new receipt. A successful tag-specific URL does not prove that
-   installed applications see the correct latest channel.
-5. On each OS, use the existing older installed build to check/download/verify
+   installed applications see the correct latest channel. The macOS-only 0.0.2
+   release carries a macOS-only `latest.json`, so Windows build62 reports a failed
+   check until a Windows release adds its entry.
+6. On each OS, use the existing older installed build to check/download/verify
    and explicitly install the update. Confirm the old process exits normally,
    the new process reports the exact target source/build, and the window returns.
    Compare existing meeting/audio/edited transcript/summary hashes and model
