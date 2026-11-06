@@ -132,12 +132,20 @@
       // A numeric label with a definition is a link reference, not a citation.
       const defined = new Set([...text.matchAll(/^[ \t]{0,3}\[([0-9, \t-]+)\]:/gm)].map(match => match[1].replace(/\s+/g, " ").trim()));
       let out = "";
-      for (const token of references(text, defined)) {
-        if (!token.references) { out += token.text; continue; }
+      const tokens = references(text, defined);
+      tokens.forEach((token, index) => {
+        if (!token.references) { out += token.text; return; }
+        // Sentence punctuation written after a citation belongs to the sentence: "\uD588\uC2B5\uB2C8\uB2E4 [3]." reads "\uD588\uC2B5\uB2C8\uB2E4.[3]".
+        const next = tokens[index + 1], mark = next && !next.references ? next.text.match(/^[.!?,;:\u3002\u3001\uFF01\uFF1F\u2026]+/)?.[0] : "";
+        if (mark && /\S$/.test(out.replace(/[ \t]+$/, ""))) {
+          out = out.replace(/[ \t]+$/, "");
+          if (!out.endsWith(mark)) out += mark;
+          next.text = next.text.slice(mark.length);
+        }
         // GFM autolinks run until whitespace, so a citation right after a URL would join it.
         if (/(?:https?:\/\/|www\.)\S*$/i.test(out)) out += " ";
         out += `\uE000${nonce}${(citations.push(token) - 1).toString(36)}\uE001`;
-      }
+      });
       return out;
     };
     const restore = text => String(text ?? "").replace(placeholder, (_, index) => citations[parseInt(index, 36)]?.text ?? "");

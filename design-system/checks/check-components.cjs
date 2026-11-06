@@ -131,6 +131,15 @@ test('summary groups adjacent comma and bounded range citations without altering
   assert.doesNotMatch(UI.summaryDocument('`[1]` \\[2] [3](url) ![4](url) [5][name]'), /<button/);
 });
 
+test('sentence punctuation after a citation moves in front of it', () => {
+  const html = UI.summaryDocument('유지합니다 [1]. 다음 [2], 끝 [3] [4]?');
+  assert.match(html, /유지합니다\.<button[^>]*data-summary-citations="1"/);
+  assert.match(html, /다음,<button[^>]*data-summary-citations="2"/);
+  assert.match(html, /끝\?<button[^>]*data-summary-citations="3,4"[\s\S]*?<\/button><\/p>/);
+  assert.match(UI.summaryDocument('유지합니다. [1].'), /유지합니다\.<button[\s\S]*?<\/button><\/p>/);
+  assert.match(UI.summaryDocument('[1]. 시작'), /<p><button[\s\S]*?<\/button>\. 시작<\/p>/);
+});
+
 test('search highlighting leaves summary source controls and editable transcript fields intact', () => {
   const summary = UI.summaryDocument('요약\nAlpha [1] alpha', { sources: ['원문 Alpha'], searchQuery: 'alpha' });
   assert.equal((summary.match(/<mark class="search-match" /g) || []).length, 2);
