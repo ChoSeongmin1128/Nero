@@ -1,0 +1,9 @@
+{
+  "version": "0.0.2+63",
+  "platforms": {
+    "darwin-aarch64": {
+      "url": "https://github.com/ChoSeongmin1128/Nero/releases/download/v0.0.2/Nero-0.0.2.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUQXp2bmUvYXgwNmdCS3ZhVXJtcGlnV1ZlNzVkYlNnK3BHVklnWnhnU08xRDRWcTdJaG1YL0lQSy8yNU9hUStOSi9XSlI0Q3FnK0N1K1FJWkFUczFwcDgxdjB1WDMyQWdjPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzOTQyNjgyCWZpbGU6TmVyby0wLjAuMi5hcHAudGFyLmd6CXZlcnNpb246MC4wLjIrNjMKL3c5dmkzVVk1YkEvUVRFRHVBYWh5TEhjWk1pa0tzamhFWERMbG0wZ083dDYwcUdNZVZpdXdjK2xCeDhwUEFZdWZDR3ZxZDkveThVbHZFODJzVEFQQ0E9PQo="
+    }
+  }
+}
