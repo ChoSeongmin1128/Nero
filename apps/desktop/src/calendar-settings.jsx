@@ -84,7 +84,7 @@ function CalendarSettings({ flow }) {
   const { connecting } = view;
   return <section className="calendar-settings" data-nero-ui-owned="" aria-label="Google Calendar" aria-busy={state.busy}>
     <h4 className="settings-subtitle">Google Calendar</h4>
-    <p className="calendar-settings-description">시작 5분 전에 알림</p>
+    <p className="calendar-settings-description">시작 5분 전부터 시작 후 5분까지 알림</p>
     <div className="settings-group"><div className="calendar-settings-account">
       <div className="calendar-settings-identity"><BrandIcon name="calendar" /><div><strong>{view.label}</strong>{snapshot.connected && <p>읽기 전용</p>}</div></div>
       <div className="calendar-settings-actions">
@@ -97,10 +97,10 @@ function CalendarSettings({ flow }) {
       <h4 className="calendar-settings-subtitle">알림을 받을 캘린더</h4>
       <CalendarList calendars={snapshot.calendars} selected={snapshot.selectedCalendars} busy={state.busy} connecting={snapshot.connecting} onSelect={(id, checked) => flow.select(id, checked)} />
       {!snapshot.selectedCalendars.length && <p className="calendar-settings-description">캘린더를 선택하면 일정 알림을 받습니다.</p>}
-      <div className="calendar-settings-actions"><button type="button" className="small" disabled={state.busy || snapshot.connecting} onClick={() => { void flow.refresh(); }}>새로고침</button>{snapshot.lastSyncedAt && <span className="calendar-settings-synced">{new Date(snapshot.lastSyncedAt).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })} 확인</span>}</div>
+      {snapshot.lastSyncedAt && <div className="calendar-settings-actions"><span className="calendar-settings-synced">{new Date(snapshot.lastSyncedAt).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })} 확인</span></div>}
     </>}
     {!snapshot.configured && !snapshot.error && state.snapshot.revision >= 0 && <p className="notice" role="status">이 버전에는 Google Calendar 연결 정보가 없습니다.</p>}
-    {view.error && <p className="notice" role="alert">{view.error}</p>}
+    {view.error && <p className="notice" role="alert">{view.error}{snapshot.connected && !connecting && <> <button type="button" className="small quiet" disabled={state.busy} onClick={() => { void flow.refresh(); }}>다시 시도</button></>}</p>}
   </section>;
 }
 

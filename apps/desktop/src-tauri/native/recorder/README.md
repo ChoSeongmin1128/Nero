@@ -13,12 +13,15 @@ capture identity so an old panel cannot modify or dismiss a later recording.
 `RecorderPlacement` uses AppKit global points. The dock attaches to the hardware
 notch from `safeAreaInsets` and the auxiliary top areas. Without a notch it sits
 at the top center of the visible work area. The recording mark and clock stay left of the notch; pause/resume and stop
-are always visible on the right. Both wings reserve the measured clock width,
-including hour-long values. Floating placement is clamped when a
+are always visible on the right. `RecorderMetrics` gives every state one outer margin: the mark starts and the last
+button ends the same distance from the edges. Both wings take the wider of the shown clock (`00:00`, `0:00:00` or
+`00:00:00`, or the failure label) and the two buttons, so the dock stays centered and widens only when an hour passes.
+The floating panel keeps pause and stop apart from open, dock and hide. Floating placement is clamped when a
 monitor disappears. Only the placement is saved in `nero.recorderPlacement.v1`.
 
-Hover reveals only auxiliary actions (open meeting and hide); clicking the
-status also keeps those actions available for accessibility. Dragging detaches the panel, and dropping near the top
+The mark breathes slowly while recording (still under Reduce Motion); a paused clock dims. Hover adds a detail row
+with the meeting title and the auxiliary actions (open meeting and hide), right-aligned under pause and stop; clicking
+the status also keeps that row available for accessibility. Dragging works from anywhere on the panel and detaches it, and dropping near the top
 center or choosing "상단에 붙이기" docks it again. Hiding the panel does not stop
 recording; the existing main-window recording action can show it again.
 

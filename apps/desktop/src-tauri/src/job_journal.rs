@@ -36,6 +36,8 @@ pub(super) enum JobStatus {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct JobRecord {
     #[serde(default)]
+    pub glossary_snapshot_required: bool,
+    #[serde(default)]
     pub speech_engine: crate::speech_choice::SpeechEngine,
     #[serde(default = "crate::speech_choice::enabled")]
     pub speaker_enabled: bool,
@@ -485,8 +487,12 @@ mod tests {
         let original = record(JobStatus::Queued);
         let mut raw = serde_json::to_value(&original).unwrap();
         raw.as_object_mut().unwrap().remove("speakerEnabled");
+        raw.as_object_mut()
+            .unwrap()
+            .remove("glossarySnapshotRequired");
         let recovered: JobRecord = serde_json::from_value(raw.clone()).unwrap();
         assert!(recovered.speaker_enabled);
+        assert!(!recovered.glossary_snapshot_required);
         raw["speakerEnabled"] = serde_json::json!(false);
         raw["speechEngine"] = serde_json::json!("appleSpeech");
         raw["appleSpeechVariant"] = serde_json::json!("dictationTranscriber");
@@ -502,8 +508,43 @@ mod tests {
         );
     }
 
+    // A record exactly as build62 (0.0.1 public) wrote it, before the glossary requirement
+    // existed. Users who skip updates arrive with these.
+    #[test]
+    fn build62_records_are_read_and_keep_the_glossary_requirement_once_written() {
+        let temporary = tempfile::tempdir().unwrap();
+        let journal = Journal::new(temporary.path().into());
+        let old = record(JobStatus::Queued);
+        let states = states(temporary.path(), &old);
+        fs::create_dir_all(&states).unwrap();
+        let build62 = serde_json::json!({
+            "speechEngine": "nemotron", "speakerEnabled": true, "schemaVersion": 1,
+            "id": old.id, "kind": "transcribe", "meetingId": old.meeting_id,
+            "sourceFingerprint": old.source_fingerprint, "includeSummary": false,
+            "status": "queued", "phase": "recognizing", "message": "변환 중",
+            "createdAt": 1, "updatedAt": 2
+        });
+        fs::write(
+            states.join(format!("{:020}.json", 1)),
+            format!("{build62}\n"),
+        )
+        .unwrap();
+        let read = journal.records().unwrap().pop().unwrap();
+        assert_eq!(read.id, old.id);
+        assert!(!read.glossary_snapshot_required);
+        assert!(read.speaker_enabled);
+        let mut required = read.clone();
+        required.glossary_snapshot_required = true;
+        required.status = JobStatus::Completed;
+        journal.write(&required).unwrap();
+        let saved = journal.records().unwrap().pop().unwrap();
+        assert_eq!(saved.status, JobStatus::Completed);
+        assert!(saved.glossary_snapshot_required);
+    }
+
     fn record(status: JobStatus) -> JobRecord {
         JobRecord {
+            glossary_snapshot_required: false,
             speech_engine: crate::speech_choice::SpeechEngine::default(),
             speaker_enabled: true,
             apple_speech_variant: None,

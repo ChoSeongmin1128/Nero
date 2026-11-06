@@ -25,6 +25,12 @@ export async function prepareAgentPackages({ source, destination, icon, version,
     }
     await writeFile(join(destination, `${name}.json`), JSON.stringify(value, null, 2) + '\n');
   }
-  await copyFile(join(source, 'meeting-summary/SKILL.md'), join(destination, 'meeting-summary/SKILL.md'));
+  let skill = await readFile(join(source, 'meeting-summary/SKILL.md'), 'utf8');
+  const marker = '<!-- nero-summary-writing-rules -->';
+  if (skill.includes(marker)) {
+    if (skill.split(marker).length !== 2) throw Error('Summary rules marker must occur once.');
+    skill = skill.replace(marker, (await readFile(join(source, 'meeting-summary/writing-rules.md'), 'utf8')).trim());
+  }
+  await writeFile(join(destination, 'meeting-summary/SKILL.md'), skill);
   await copyFile(icon, join(destination, 'icon.png'));
 }

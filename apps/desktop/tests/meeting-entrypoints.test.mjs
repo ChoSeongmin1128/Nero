@@ -4,6 +4,8 @@ import { readFile } from 'node:fs/promises';
 import { build } from 'esbuild';
 import { Window } from 'happy-dom';
 import { fileURLToPath } from 'node:url';
+import { markdownSource } from '../scripts/build-markdown.mjs';
+const markdownBundle = await markdownSource();
 
 const app = new URL('../', import.meta.url);
 const html = await readFile(new URL('src/index.html', app), 'utf8');
@@ -25,6 +27,7 @@ async function fixture(t, { devices = [{ id: 'mic', name: 'Microphone', isDefaul
   const window = new Window({ url: 'http://nero.test', settings: { enableJavaScriptEvaluation: true, suppressInsecureJavaScriptEnvironmentWarning: true, disableCSSFileLoading: true, disableJavaScriptFileLoading: true } });
   t.after(() => window.happyDOM.abort());
   window.document.write(html);
+  window.eval(markdownBundle);
   for (const name of ['appearance', 'icons', 'components']) window.eval(await readFile(new URL(`../../design-system/${name}.js`, app), 'utf8'));
   let snapshot = { revision: 1, session, meetings: session ? [{ id: 'active', title: '기존 회의', notes: '', createdAt: 1, status: session.state }] : [], folders: folder ? [{ id: 'folder', name: '업무' }] : [] };
   const calls = [], subscriptions = {};

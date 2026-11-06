@@ -54,6 +54,7 @@ impl Session {
         work: &Path,
         cancel: &AtomicBool,
         inherited_tree: bool,
+        prompt: &str,
     ) -> Result<Run, String> {
         self.verify()?;
         if let Some(probe) = &self.runtime.probe {
@@ -79,6 +80,7 @@ impl Session {
                 backend,
                 selection.physical_device,
                 inherited_tree,
+                prompt,
             )?;
             // A capable probe followed by silent CPU initialization is an error,
             // never a second CPU attempt. This also preserves OOM and driver failures.
@@ -110,6 +112,7 @@ impl Session {
             Backend::Metal,
             None,
             inherited_tree,
+            prompt,
         )?
         .state;
         if state == BackendState::Unavailable {
@@ -127,6 +130,7 @@ impl Session {
                 Backend::Cpu,
                 None,
                 inherited_tree,
+                prompt,
             )?;
             Ok(Run {
                 native: cpu_prefix.with_extension("json"),
@@ -155,6 +159,7 @@ fn run_attempt(
     backend: Backend,
     physical_device: Option<u32>,
     inherited_tree: bool,
+    prompt: &str,
 ) -> Result<Attempt, String> {
     cancelled(cancel)?;
     let log_path = prefix.with_extension(backend.log_extension());
@@ -189,6 +194,9 @@ fn run_attempt(
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(log));
+    if !prompt.is_empty() {
+        command.arg("--prompt").arg(prompt);
+    }
     if backend == Backend::Cpu {
         command.arg("-ng");
     }

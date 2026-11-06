@@ -1,8 +1,11 @@
 [package]
 name = "nero-desktop"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2021"
 publish = false
+
+[features]
+development = ["nero-core/development"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -15,6 +18,8 @@ libloading = "=0.7.4"
 tauri = { version = "2", features = ["protocol-asset", "macos-private-api"] }
 tauri-plugin-single-instance = "2"
 tauri-plugin-dialog = "2"
+tauri-plugin-clipboard-manager = "=2.5.0"
+tauri-plugin-opener = "2"
 tauri-plugin-updater = { version = "=2.14.1", default-features = false, features = ["rustls-tls", "system-proxy"] }
 minisign-verify = "0.3"
 semver = "1"
@@ -32,7 +37,7 @@ serde = { version = "1", features = ["derive"] }
 tempfile = "3"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_System_SystemInformation"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "=0.10.1"

@@ -368,7 +368,7 @@ fn posterior(
         || receipt["speakerSlots"] != 8
         || receipt["secondsPerFrame"].as_f64() != Some(f64::from(0.01_f32))
         || receipt["probabilityBytes"].as_u64() != Some(expected_bytes)
-        || receipt["runtimeVersionString"] != "nemo-speech-asr 0.2.0"
+        || receipt["runtimeVersionString"] != nero_core::speech_runtime::asr_version()
         || receipt["runtimePin"] != nero_core::speech_runtime::pin()
         || receipt["inputAndWeightsAndLibraryUnchanged"] != true
         || receipt["postprocessingPolicy"] != "nemotron-v3-contiguous-threshold-0.5-v1"
@@ -1047,7 +1047,7 @@ mod tests {
         let valid = json!({"nativeStreamFinished":true,"sourceFramesFed":16000,
             "nativeFrames":101,"expectedNativeFrames":101,"speakerSlots":8,"backend":"cpu",
             "secondsPerFrame":f64::from(0.01_f32),"probabilityBytes":data.len(),
-            "runtimeVersionString":"nemo-speech-asr 0.2.0",
+            "runtimeVersionString":nero_core::speech_runtime::asr_version(),
             "runtimePin":nero_core::speech_runtime::pin(),
             "inputAndWeightsAndLibraryUnchanged":true,
             "postprocessingPolicy":"nemotron-v3-contiguous-threshold-0.5-v1",

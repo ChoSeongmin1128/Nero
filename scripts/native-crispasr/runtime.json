@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "repository": "CrispStrobe/CrispASR",
+  "version": "v0.8.50",
+  "commit": "5c96e5521c6ab40ab53b91eeec54ced9c30562b5",
+  "identity": "crispasr-v0.8.50@5c96e5521c6ab40ab53b91eeec54ced9c30562b5",
+  "source": {
+    "repository": "CrispStrobe/CrispASR",
+    "commit": "5c96e5521c6ab40ab53b91eeec54ced9c30562b5",
+    "bytes": 32972125,
+    "sha256": "3af55f3fea8390efbb120265c565ba2a7cbee20de35bfc3a6115783c98db03f0"
+  },
+  "ggml": {
+    "repository": "CrispStrobe/ggml",
+    "commit": "1b972bb754aa5f83e2d872ccf37a335717f6658d",
+    "bytes": 4263339,
+    "sha256": "25a2c41e2a050eb81ba511e49c227de8fb3d59ba1e864cc352f3c5891dcdd846"
+  },
+  "c2paAudio": {
+    "repository": "CrispStrobe/c2pa-audio",
+    "commit": "e40329b83f16f67bb5ddc7bb13ae18de0a9376fc",
+    "bytes": 256595,
+    "sha256": "6387e20dbbc34f46645f98a7b25d39ca7caf8aa44e8d0b7df5c6105194b1f952"
+  },
+  "targets": {
+    "macos-arm64": {
+      "backend": "metal",
+      "cmakeFlags": [
+        "-G",
+        "Unix Makefiles",
+        "-DCMAKE_BUILD_TYPE=Release",
+        "-DCMAKE_OSX_ARCHITECTURES=arm64",
+        "-DCMAKE_OSX_DEPLOYMENT_TARGET:STRING=13.0",
+        "-DBUILD_SHARED_LIBS:BOOL=OFF",
+        "-DGGML_NATIVE:BOOL=OFF",
+        "-DGGML_CPU_ARM_ARCH:STRING=armv8.2-a+dotprod+fp16",
+        "-DGGML_METAL:BOOL=ON",
+        "-DGGML_METAL_EMBED_LIBRARY:BOOL=ON",
+        "-DGGML_BLAS:BOOL=ON",
+        "-DGGML_BLAS_VENDOR:STRING=Apple",
+        "-DCRISPASR_BUILD_TESTS:BOOL=OFF",
+        "-DCRISPASR_BUILD_SERVER:BOOL=OFF",
+        "-DCRISPASR_C2PA_FETCH:BOOL=OFF",
+        "-DCRISPASR_CURL:BOOL=OFF",
+        "-DCRISPASR_FFMPEG:BOOL=OFF",
+        "-DCRISPASR_COREML:BOOL=OFF"
+      ]
+    }
+  }
+}

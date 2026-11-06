@@ -1,12 +1,15 @@
 [package]
 name = "nero-cli"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2021"
 publish = false
 
 [[bin]]
 name = "nero"
 path = "src/main.rs"
+
+[features]
+development = ["nero-core/development"]
 
 [dependencies]
 fs2 = "0.4.3"

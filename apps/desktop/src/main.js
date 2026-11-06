@@ -25,7 +25,7 @@ import '../../../design-system/react-controls.jsx';
 import * as bridge from './bridge.js';
 import { ui, icon, escape, button, duration, recordingStatus, statusMarkup, sessionControls, applySystemAppearance } from './ui.js';
 import { processingFeedback, canRetryProcessing, canDismissProcessing } from './processing-feedback.js';
-import { processingJobs, pendingJob, processingResults, latestMeetingProcessing, processingNotices } from './processing-state.js';
+import { processingJobs, pendingJob, processingResults, latestMeetingProcessing, processingNotices, modelPreparation, memoryWarningFor, speechModelKinds, summaryModelKinds } from './processing-state.js';
 import { mountLibrary, filterLibraryMeetings, renderMeetingMenu } from './library-ui.js';
 import { mountSpeakers } from './speakers-ui.js';
 import { createMeetingSearch, mountDocumentSearch } from './meeting-search.js';
@@ -34,12 +34,17 @@ import { liveTranscriptRows } from './live-transcript.js';
 import { meetingResultPreview } from './meeting-result-preview.js';
 import { mountMeetingDetail } from './meeting-detail-ui.js';
 import { mountAiChat } from './ai-chat-ui.jsx';
+import { mountAiChatLibrary } from './ai-chat-library.jsx';
+import { mountAiChatSidebar } from './ai-chat-sidebar.jsx';
 import { mountMeetingContext } from './meeting-context-ui.jsx';
 import * as aiChatBridge from './ai-chat-bridge.js';
 import { mountSummaryEvidence } from './summary-evidence.js';
 import { mountAgentConnectionDialog } from './agent-connection-dialog.jsx';
 import { mountTemplateSettings } from './template-settings.jsx';
-import { mountSpeechModelPicker } from './speech-model-picker.js';
+import { mountSpeechModelPicker, speechTitle } from './speech-model-picker.js';
+import { bindPreparationProgress } from './model-preparation-progress.js';
+import { mountSpeechOfferDialog } from './speech-offer-dialog.js';
+import { mountDropImport, uploadDroppedFile } from './drop-import.js';
 import './speech-model-picker.css';
 
 mountBrandIcons(document);
@@ -83,11 +88,33 @@ function readMicrophonePreference() {
 const microphonePreference = readMicrophonePreference();
 let sidebarViews = null, viewHistory = null;
 const state = { snapshot: { meetings: [], folders: [], session: null }, libraryOpen: false, libraryFilter: 'all', librarySelection: new Set(), libraryBusy: false, librarySearchIds: null, librarySearchHits: [], pendingSearchIntent: null, setupReturnId: null, librarySearchPending: false, librarySearchUnavailable: 0, selectedId: null, devices: [], devicesLoaded: false, deviceId: microphonePreference.id, deviceName: microphonePreference.name, settingsPanel: 'appearance', summaryFeatureError: '', settingsKey: '', settingsError: '', settingsReturnId: 'settings', setupFromSettings: false, autoRecorder: readAutoRecorder(), recorderSettingBusy: false, snapshotSignatures: null, processingKey: '', processingCancellingId: null, transcriptEditing: null, audioRequest: 0, audioLoading: null, dateSaving: null, dateKey: '', dateError: null, lastError: null, errorIsSave: false, connected: false, busy: false, composing: false, transcriptComposing: false, editLocks: 0, draft: null, saveTimer: null, saveQueue: Promise.resolve(), listKey: '', controlsKey: '', audioKey: '', processing: { status: 'idle', supported: false, modelReady: false, localSummaryEnabled: false }, transcriptDraft: null, transcriptKey: '', transcriptLoadId: 0, transcriptSaveQueue: Promise.resolve(), summary: null, summaryKey: '', summaryLoadId: 0, summaryLoaded: false, transcriptLoaded: false, summaryLoadError: false, transcriptLoadError: false, setupRequested: false };
+// Low-memory model preparation needs an explicit acknowledgement; it is not persisted.
+const speechMemoryAcknowledged = new Set();
+function acknowledgeSpeechMemory(engine, checked) {
+  if (checked) speechMemoryAcknowledged.add(engine); else speechMemoryAcknowledged.delete(engine);
+  render();
+}
+function speechMemoryBlocked() {
+  const selected = state.processing.speechChoices?.find(choice => choice.id === state.processing.speechEngine);
+  return Boolean(memoryWarningFor(selected)) && !speechMemoryAcknowledged.has(selected.id);
+}
+// A locally requested cancel shows as cancelling before the native job reports it.
+function preparationView(kinds) {
+  const view = modelPreparation(state.processing, kinds);
+  const requested = view.jobId && (state.processingCancellingId === view.jobId || processingActions.get(view.jobId) === 'cancel');
+  return requested && ['queued', 'running'].includes(view.state) ? { ...view, state: 'cancelling', stage: '취소 중', cancellable: false } : view;
+}
+const pickerOptions = { onSelect: selectSpeechEngine, onSpeakerChange: selectSpeakerEnabled, onAcknowledge: acknowledgeSpeechMemory,
+  onCancelJob: id => { if (id) void cancelProcessing(id); }, onCancelSwitch: cancelSpeechSwitch };
 const speechPickers = [
-  mountSpeechModelPicker({ node: byId('setup-speech-picker'), onSelect: selectSpeechEngine, onSpeakerChange: selectSpeakerEnabled }),
-  mountSpeechModelPicker({ node: byId('settings-speech-picker'), onSelect: selectSpeechEngine, onPrepare: prepareSpeechModels, onSpeakerChange: selectSpeakerEnabled }),
+  mountSpeechModelPicker({ node: byId('setup-speech-picker'), ...pickerOptions }),
+  mountSpeechModelPicker({ node: byId('settings-speech-picker'), onPrepare: prepareSpeechModels, ...pickerOptions }),
 ];
-let speechSelectionError = '';
+const setupProgress = bindPreparationProgress({ region: byId('setup-progress-region'), bar: byId('setup-progress'), spinner: byId('setup-spinner'),
+  stage: byId('setup-progress-stage'), size: byId('setup-progress-bytes'), cancel: byId('setup-cancel') });
+const summaryProgress = bindPreparationProgress({ region: byId('settings-summary-progress'), bar: byId('settings-feature-progress'),
+  stage: byId('settings-feature-stage'), size: byId('settings-feature-size'), cancel: byId('settings-feature-cancel') });
+let speechSelectionError = '', speechNotice = '';
 const appUpdateRecovery = mountAppUpdateRecovery({ document, quit: () => appUpdateView.quitForRecovery() });
 const appUpdateView = mountAppUpdateView({ container: byId('app-update'), bridge,
   onRecovery: status => appUpdateRecovery.update(status),
@@ -110,7 +137,7 @@ let selectionRequest = 0;
 function beginNavigation(history = false) { if (!history) viewHistory?.cancel(); const request = ++selectionRequest; return () => request === selectionRequest; }
 let speakerReplay = null;
 let summaryEvidence = null;
-let aiChat = null, meetingContext = null;
+let aiChat = null, aiLibrary = null, aiSidebar = null, meetingContext = null;
 let lastLiveTranscript = null;
 const processingActions = new Map();
 const processingErrors = new Map();
@@ -209,7 +236,7 @@ function renderRecording(meeting) {
   const importing = Boolean(pendingJob(state.processing, { kind: 'import' }));
   const ownSession = session?.meetingId === meeting.id ? session : null;
   const phase = stateFor(meeting);
-  setHTML('meeting-status', statusMarkup(phase));
+  setHTML('meeting-status', statusMarkup(phase, { imported: Boolean(meeting.audio) && meeting.recordedAt == null }));
   byId('recording-time').hidden = !ownSession;
   setText('recording-time', duration(ownSession?.elapsedMs));
   const key = JSON.stringify([meeting.id, Boolean(meeting.audio), session?.id, session?.state, session?.meetingId, state.devicesLoaded, hasMicrophone, importing, Boolean(modelsReady())]);
@@ -300,36 +327,32 @@ function renderSetup() {
   const ready = modelsReady();
   const preparation = pendingJob(state.processing, { models: true });
   const job = preparation && preparation.kind !== 'speaker-model' ? { ...state.processing, ...preparation } : state.processing;
-  const running = ['queued', 'running'].includes(job.status) && ['setup','model','summary-model'].includes(job.kind);
+  const setupView = preparationView(['setup', 'model', 'summary-model']);
+  const running = ['queued', 'running', 'cancelling'].includes(setupView.state);
   const visible = state.connected && !activeSession() && (state.setupRequested || (!state.libraryOpen && !state.selectedId && (!ready || (running && job.kind === 'setup'))));
-  byId('setup-screen').hidden = !visible;
-  byId('setup-title').textContent = state.setupFromSettings ? '추가 기능' : ready && state.selectedId ? '회의 요약' : '초기 설정';
-  document.querySelector('.workspace').dataset.onboarding = String(visible && state.snapshot.meetings.length === 0);
-  byId('setup-speech-state').textContent = !state.connected ? '확인 중' : job.modelReady ? '준비됨' : !job.supported ? '지원되지 않음' : running && job.modelStage === 'speech' ? '준비 중' : '';
-  byId('setup-summary-state').textContent = !localSummaryEnabled() ? localSummaryMessage() : job.summaryReady ? '준비됨' : !job.summarySupported && state.connected ? '지원되지 않음' : running && job.modelStage === 'summary' ? '준비 중' : '';
+  const screen = byId('setup-screen');
+  if (screen.hidden !== !visible) screen.hidden = !visible;
+  setText('setup-title', state.setupFromSettings ? '추가 기능' : ready && state.selectedId ? '회의 요약' : ready ? '모델 준비' : '초기 설정');
+  const onboarding = String(visible && state.snapshot.meetings.length === 0), workspace = document.querySelector('.workspace');
+  if (workspace.dataset.onboarding !== onboarding) workspace.dataset.onboarding = onboarding;
+  setText('setup-speech-state', !state.connected ? '확인 중' : job.modelReady ? '준비됨' : !job.supported ? '지원되지 않음' : running && job.modelStage === 'speech' ? '받는 중' : '');
+  setText('setup-summary-state', !localSummaryEnabled() ? localSummaryMessage() : job.summaryReady ? '준비됨' : !job.summarySupported && state.connected ? '지원되지 않음' : running && job.modelStage === 'summary' ? '받는 중' : '');
   byId('setup-summary-choice').hidden = !localSummaryEnabled() || ready || job.summaryReady || !job.summarySupported || !job.supported;
   byId('setup-summary-option').disabled = !localSummaryEnabled() || !state.connected || state.busy || Boolean(pendingJob(state.processing, { models: true }));
   byId('setup-download-summary').hidden = !localSummaryEnabled() || !ready || job.summaryReady || !job.summarySupported || running;
   byId('setup-download-summary').disabled = state.busy || Boolean(pendingJob(state.processing, { models: true }));
-  byId('setup-progress-region').hidden = !running;
-  const feedback = processingFeedback(job, { cancelling: state.processingCancellingId === job.id || processingActions.get(job.id) === 'cancel' });
-  byId('setup-spinner').hidden = !feedback.active;
-  byId('setup-progress').hidden = !feedback.progress;
-  if (feedback.progress) { byId('setup-progress').max = feedback.progress.max; byId('setup-progress').value = feedback.progress.value; }
-  byId('setup-progress-stage').textContent = feedback.detail || feedback.title;
-  byId('setup-progress-bytes').textContent = feedback.progress ? `${feedback.progress.percent}%` : '';
+  setupProgress.update(setupView);
   const unsupported = state.connected && !job.supported;
-  const failed = ['setup','model','summary-model'].includes(job.kind) && ['failed','cancelled'].includes(job.status);
-  byId('setup-message').textContent = !state.connected ? '준비 상태 확인 중' : unsupported ? '현재 음성 인식은 지원되는 음성 인식 실행 환경에서 사용할 수 있습니다.' : running ? '' : failed ? job.message : '';
-  byId('setup-message').hidden = !byId('setup-message').textContent;
-  byId('setup-message').dataset.state = failed ? job.status : '';
+  const failed = ['failed', 'cancelled'].includes(setupView.state);
+  setText('setup-message', !state.connected ? '준비 상태 확인 중' : unsupported ? '현재 음성 인식은 지원되는 음성 인식 실행 환경에서 사용할 수 있습니다.' : running ? '' : failed ? setupView.message : speechNotice);
+  if (byId('setup-message').hidden !== !byId('setup-message').textContent) byId('setup-message').hidden = !byId('setup-message').textContent;
+  const messageState = failed ? setupView.state : '';
+  if (byId('setup-message').dataset.state !== messageState) byId('setup-message').dataset.state = messageState;
   const speakerNeedsPreparation = job.speakerEnabled !== false && job.speakerSupported === true && job.speakerReady === false;
   byId('setup-download').hidden = (ready && !speakerNeedsPreparation) || unsupported || running;
-  byId('setup-download').disabled = !state.connected || state.busy || Boolean(pendingJob(state.processing, { models: true }));
-  byId('setup-download').textContent = failed ? '다시 시도' : job.speechEngine === 'appleSpeech' ? '준비' : '다운로드';
-  byId('setup-cancel').hidden = !running;
-  byId('setup-cancel').disabled = feedback.cancelDisabled || state.busy;
-  byId('setup-cancel').textContent = feedback.cancelLabel;
+  byId('setup-download').disabled = !state.connected || state.busy || Boolean(pendingJob(state.processing, { models: true })) || speechMemoryBlocked();
+  setText('setup-download', failed ? '다시 시도' : job.speechEngine === 'appleSpeech' ? '준비' : '다운로드');
+  if (state.busy) byId('setup-cancel').disabled = true;
   byId('setup-start').hidden = !ready || running || state.setupFromSettings || Boolean(state.selectedId);
   byId('setup-start').disabled = state.busy;
   byId('setup-back').hidden = !state.selectedId && !state.setupFromSettings;
@@ -342,21 +365,27 @@ async function openSetup(fromSettings = false, returnId = document.activeElement
 }
 
 function renderSpeechModels() {
-  const pending = pendingJob(state.processing);
-  const disabled = !state.connected || state.busy || Boolean(activeSession()) || Boolean(pending);
   const modelJob = pendingJob(state.processing, { models: true });
-  const feedback = modelJob ? processingFeedback(modelJob) : null;
+  const otherJob = processingJobs(state.processing).find(job => ['queued', 'running', 'cancelling'].includes(job.status) && job.id !== modelJob?.id);
+  // Downloads stay cancellable in place; other work and recording lock the whole picker.
+  const disabled = !state.connected || state.busy || Boolean(activeSession()) || Boolean(otherJob);
   const message = activeSession() ? '녹음을 마친 뒤 모델을 변경할 수 있습니다.'
-    : feedback ? '모델을 준비하고 있습니다.'
-      : pending ? '현재 처리가 끝난 뒤 모델을 변경할 수 있습니다.' : '';
-  for (const picker of speechPickers) picker.update({ progress: state.processing, disabled, message, error: speechSelectionError });
+    : otherJob ? '현재 처리가 끝난 뒤 모델을 변경할 수 있습니다.' : speechNotice;
+  for (const picker of speechPickers) picker.update({ progress: state.processing, disabled, locked: Boolean(modelJob), message, error: speechSelectionError, acknowledged: speechMemoryAcknowledged });
 }
 function selectSpeechEngine(engine) {
   return run(async () => {
-    speechSelectionError = '';
+    speechSelectionError = ''; speechNotice = '';
     renderSpeechModels();
-    try { await acceptProcessing(await bridge.setSpeechEngine(engine)); }
+    try { await acceptProcessing(await bridge.requestSpeechEngine(engine)); }
     catch (error) { speechSelectionError = error.message || '음성 인식 모델을 변경하지 못했습니다.'; }
+  });
+}
+function cancelSpeechSwitch() {
+  return run(async () => {
+    speechSelectionError = '';
+    try { await acceptProcessing(await bridge.cancelSpeechSwitch()); }
+    catch (error) { speechSelectionError = error.message || '전환을 취소하지 못했습니다.'; }
   });
 }
 function selectSpeakerEnabled(enabled) {
@@ -371,6 +400,7 @@ function prepareSpeechModels() {
   return run(async () => {
     speechSelectionError = '';
     renderSpeechModels();
+    if (speechMemoryBlocked()) return;
     try { await acceptProcessing(await bridge.prepareMeetingModels(false)); }
     catch (error) { speechSelectionError = error.message || '음성 인식 모델을 준비하지 못했습니다.'; }
   });
@@ -382,11 +412,16 @@ function render() {
   byId('welcome-create').disabled = !state.connected || state.busy;
   for (const id of ['library-create', 'library-record']) byId(id).disabled = !state.connected || state.busy || state.libraryBusy;
   setHTML('library-record', `${icon(activeSession() ? 'audio-lines' : 'mic')}<span>${activeSession() ? '녹음으로 돌아가기' : '녹음 시작'}</span>`);
+  // Progress ticks re-render this screen; keep the reader's scroll position.
+  const setupScroll = byId('setup-screen').scrollTop;
   const setupVisible = renderSetup();
+  if (setupVisible && byId('setup-screen').scrollTop !== setupScroll) byId('setup-screen').scrollTop = setupScroll;
+  speechOffer.update(state.processing.speechOffer, { blocked: !state.connected || Boolean(activeSession()) || setupVisible || Boolean(byId('settings-dialog').open) || Boolean(byId('quit-dialog').open) });
   notificationCenter.update({ processing: displayProcessing(), meetings: state.snapshot.meetings, selectedMeetingId: state.selectedId, connected: state.connected, actions: processingActions, integrations: integrationNotices, notices: appUpdateNotices });
   sidebarViews?.updateCounts(notificationCenter.counts());
-  if (setupVisible) sidebarViews?.close({ focus: false });
-  for (const button of document.querySelectorAll('[data-navigation-preview]')) { const category = state.libraryFilter === 'trash' ? 'trash' : !['all', 'unfiled'].includes(state.libraryFilter) ? 'folders' : 'all'; button.setAttribute('aria-current', state.libraryOpen && category === button.dataset.navigationPreview ? 'page' : 'false'); }
+  if (setupVisible && !state.setupWasVisible) sidebarViews?.close({ focus: false });
+  state.setupWasVisible = setupVisible;
+  for (const button of document.querySelectorAll('[data-navigation-preview]')) { const category = ['trash', 'ai'].includes(state.libraryFilter) ? state.libraryFilter : !['all', 'unfiled'].includes(state.libraryFilter) ? 'folders' : 'all'; button.setAttribute('aria-current', state.libraryOpen && category === button.dataset.navigationPreview ? 'page' : 'false'); }
   library.render();
   renderList();
   speakers.render();
@@ -403,8 +438,11 @@ function render() {
   setHTML('meeting-attendees', `${icon('users')}<span>참석자${meeting?.attendees?.length ? ` ${meeting.attendees.length}명` : ''}</span>`);
   byId('create-calendar-meeting').hidden = !meeting || Boolean(meeting.audio || meeting.calendarReference || activeSession()?.meetingId === meeting.id);
   byId('import-audio').hidden = !meeting || Boolean(meeting.audio || activeSession()?.meetingId === meeting.id);
-  byId('library-screen').hidden = setupVisible || !state.connected || (!state.libraryOpen && !modelsReady() && !state.snapshot.meetings.length) || (!state.libraryOpen && Boolean(meeting));
-  byId('welcome').hidden = !byId('library-screen').hidden || setupVisible || Boolean(meeting);
+  const aiLibraryOpen = state.libraryOpen && state.libraryFilter === 'ai' && state.connected && !setupVisible;
+  byId('ai-library-screen').hidden = !aiLibraryOpen;
+  if (aiLibraryOpen) aiLibrary?.mount();
+  byId('library-screen').hidden = aiLibraryOpen || setupVisible || !state.connected || (!state.libraryOpen && !modelsReady() && !state.snapshot.meetings.length) || (!state.libraryOpen && Boolean(meeting));
+  byId('welcome').hidden = aiLibraryOpen || !byId('library-screen').hidden || setupVisible || Boolean(meeting);
   byId('meeting-detail').hidden = setupVisible || state.libraryOpen || !meeting;
   if (state.connected && !setupVisible) viewHistory?.visit(state.libraryOpen || !meeting ? { kind: 'library', filter: state.libraryFilter, view: state.libraryView, query: byId('search').value } : { kind: 'meeting', id: meeting.id });
   if (!meeting) { detail.update({ id: null }); summaryEvidence?.reset(); return; }
@@ -639,7 +677,7 @@ function renderAgentConnection() {
   const { info, error } = agentConnection;
   agentConnectionDialog.update(info);
   const available = Boolean(info?.available && info.executablePath && info.config);
-  const message = error || (info && !available ? '연결 도구가 포함되지 않은 빌드입니다.' : '');
+  const message = error || (info && !available ? info.unavailableReason || '연결 도구가 포함되지 않은 빌드입니다.' : '');
   byId('settings-agent-status').textContent = message;
   byId('settings-agent-status').hidden = !message;
   for (const client of ['claude', 'codex']) {
@@ -789,18 +827,7 @@ function renderSettings() {
   byId('settings-summary-state').textContent = !localSummaryEnabled() ? localSummaryMessage() : !state.connected ? '확인 중' : !job.summarySupported ? '지원되지 않음' : job.summaryReady ? '추가됨' : featureJob ? '다운로드 중' : '';
   byId('models').hidden = !localSummaryEnabled() || job.summaryReady || !job.summarySupported || Boolean(featureJob);
   byId('models').disabled = !state.connected || state.busy || Boolean(pendingJob(job, { models: true }));
-  byId('settings-summary-progress').hidden = !localSummaryEnabled() || !featureJob;
-  if (featureJob) {
-    const total = featureJob.totalBytes, completed = featureJob.bytes;
-    const meter = byId('settings-feature-progress');
-    if (total > 0 && Number.isFinite(completed)) { meter.max = total; meter.value = completed; }
-    else meter.removeAttribute('value');
-    byId('settings-feature-stage').textContent = total > 0 && Number.isFinite(completed) ? `${Math.min(100, Math.floor(completed / total * 100))}%` : '준비 중';
-    const feedback = processingFeedback(featureJob, { cancelling: state.processingCancellingId === featureJob.id || processingActions.get(featureJob.id) === 'cancel' });
-    byId('settings-feature-cancel').disabled = feedback.cancelDisabled;
-    byId('settings-feature-cancel').textContent = feedback.cancelDisabled ? '취소 중' : '취소';
-    if (feedback.cancelDisabled) { meter.removeAttribute('value'); byId('settings-feature-stage').textContent = '취소 중'; }
-  }
+  summaryProgress.update(localSummaryEnabled() ? preparationView(summaryModelKinds) : { state: 'idle' });
   const message = recording ? terminologySettings.error || state.settingsError || (!activeSession() && state.devicesLoaded ? microphoneIssue() : '') : '';
   byId('settings-message').textContent = message;
   byId('settings-message').hidden = !message;
@@ -995,9 +1022,9 @@ byId('models').addEventListener('click', () => run(async () => {
 }));
 byId('settings-feature-cancel').addEventListener('click', () => { const job = pendingJob(state.processing, { kind: 'summary-model' }); if (job?.id) void cancelProcessing(job.id); });
 byId('setup-back').addEventListener('click', () => { const settings = state.setupFromSettings, returnId = state.setupReturnId; state.setupRequested = false; state.setupFromSettings = false; render(); if (settings) void openSettings('appearance'); else { const origin = byId(returnId || 'settings'); const fallback = !byId('summarize').hidden && !byId('summarize').disabled ? byId('summarize') : byId('detail-transcript-open'); (origin && !origin.hidden && !origin.disabled ? origin : fallback)?.focus({ preventScroll: true }); } });
-byId('setup-download').addEventListener('click', () => run(async () => { state.setupRequested = true; await acceptProcessing(await bridge.prepareMeetingModels(localSummaryEnabled() && Boolean(byId('setup-summary-option').checked) && !state.processing.summaryReady)); }));
+byId('setup-download').addEventListener('click', () => run(async () => { if (speechMemoryBlocked()) return; state.setupRequested = true; await acceptProcessing(await bridge.prepareMeetingModels(localSummaryEnabled() && Boolean(byId('setup-summary-option').checked) && !state.processing.summaryReady)); }));
 byId('setup-download-summary').addEventListener('click', () => run(async () => { if (!localSummaryEnabled()) return; state.setupRequested = true; await acceptProcessing(await bridge.prepareSummaryModel()); }));
-byId('setup-cancel').addEventListener('click', () => { void cancelProcessing(pendingJob(state.processing, { models: true })?.id); });
+byId('setup-cancel').addEventListener('click', () => { const id = byId('setup-cancel').dataset.jobId; if (id) void cancelProcessing(id); });
 byId('retry-save').addEventListener('click', () => saveDraft().catch(() => {}));
 byId('dismiss-error').addEventListener('click', () => clearError());
 byId('recording-controls').addEventListener('click', (event) => {
@@ -1034,6 +1061,13 @@ byId('auto-recorder').addEventListener('change', async () => {
 byId('create-calendar-meeting').addEventListener('click', event => { const trigger = event.currentTarget; void run(() => finishEditing(async () => { if (!modelsReady()) return openSetup(); const target = await bridge.draftAttachmentTarget(state.selectedId); calendarPicker.open(trigger, target); })); });
 byId('retry-audio').addEventListener('click', () => { const meeting = currentMeeting(); if (meeting) void prepareAudio(meeting, Boolean(activeSession()?.meetingId === meeting.id), true); });
 byId('audio-player').addEventListener('error', () => { if (byId('audio-player').getAttribute('src')) { byId('audio-message').dataset.state = 'error'; byId('audio-message').textContent = '음성을 재생할 수 없습니다. 녹음 파일을 다시 열어 주세요.'; byId('retry-audio').hidden = false; } });
+// Links rendered from summaries and AI answers open in the browser, never in this window.
+for (const type of ['click', 'auxclick', 'contextmenu', 'dragstart']) document.addEventListener(type, event => {
+  const link = event.target?.closest?.('a[data-summary-link]');
+  if (!link) return;
+  event.preventDefault();
+  if (type === 'click') void bridge.openDocumentLink(link.getAttribute('href')).catch(showError);
+}, true);
 document.addEventListener('keydown', (event) => {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') { event.preventDefault(); void finishEditing(() => {}).catch(() => {}); }
 });
@@ -1075,6 +1109,12 @@ async function prepareAppLeave(action) {
   }
   globalThis.NeroControls.close?.();
   return finishEditing(action);
+}
+
+function onAgentChanged(change) {
+  if (change.area === 'aiChat') aiChat?.flow.externalChange(change.conversationIds || []);
+  else if (change.area === 'meetingSources' || change.area === 'terminology') void meetingContext?.reload();
+  else if (change.area === 'settings') void loadTerminologySettings();
 }
 
 async function onAgentWriteRequest({ requestId, kind } = {}) {
@@ -1232,12 +1272,20 @@ function renderTranscript(meeting) {
   const ownJob = Boolean(pendingJob(job, { meetingId: meeting.id }));
   const draft = state.transcriptDraft;
   const liveRows = !draft?.doc ? resultPreview(meeting).rows : [];
+  const loaded = state.transcriptLoaded && !state.transcriptLoadError;
+  const recognizable = Boolean(meeting.audio) && job.supported && job.modelReady && !ownJob && !state.busy;
+  const failedHere = ['failed', 'cancelled'].includes(job.status) && job.kind === 'transcribe' && job.meetingId === meeting.id;
+  byId('transcribe').hidden = Boolean(draft?.doc) || ownJob || !loaded;
+  byId('transcribe').disabled = !recognizable;
+  setText('transcribe', failedHere ? '다시 시도' : '텍스트로 변환');
+  byId('retranscribe').hidden = !draft?.doc || ownJob || !loaded;
+  byId('retranscribe').disabled = !recognizable;
   byId('transcript-history').hidden = !draft?.doc;
   byId('transcript-history').disabled = state.busy;
-  byId('transcribe').hidden = ownJob || !state.transcriptLoaded || Boolean(state.transcriptLoadError);
+  const menu = byId('transcript-menu');
+  menu.hidden = byId('retranscribe').hidden && byId('transcript-history').hidden;
+  if (menu.hidden && menu.open) menu.open = false;
   byId('retry-transcript-load').hidden = !state.transcriptLoadError;
-  byId('transcribe').disabled = !meeting.audio || !job.supported || !job.modelReady || ownJob || state.busy;
-  byId('transcribe').innerHTML = `${icon('refresh-cw')}<span>${draft?.doc ? '다시 변환' : ['failed', 'cancelled'].includes(job.status) && job.kind === 'transcribe' && job.meetingId === meeting.id ? '다시 시도' : '텍스트로 변환'}</span>`;
   byId('save-transcript').disabled = !draft?.dirty || draft.saving || ownJob;
   documentActions.transcript.update({ id: meeting.id, available: Boolean(draft?.doc?.segments?.length), busy: state.busy || ownJob });
   let message = '';
@@ -1254,8 +1302,6 @@ function renderTranscript(meeting) {
   else setText('transcript-message', message);
 
   byId('save-transcript').hidden = !draft?.dirty || state.transcriptEditing != null;
-  byId('transcribe').classList?.toggle('primary', !draft?.doc);
-  byId('transcribe').classList?.toggle('quiet', Boolean(draft?.doc));
   byId('transcript-section').setAttribute('aria-busy', String(ownJob || !state.transcriptLoaded));
   const key = `${transcriptRenderKey()}:${liveRows.length ? JSON.stringify(liveRows) : ''}`;
   if (key !== state.transcriptKey) {
@@ -1323,6 +1369,10 @@ async function acceptProcessing(progress) {
   if (state.processingKey === key) return;
   state.processingKey = key;
   if (progress.liveTranscript) lastLiveTranscript = progress.liveTranscript;
+  const switched = previous.speechSwitch?.target;
+  if (switched && !progress.speechSwitch && progress.speechEngine === switched) {
+    speechNotice = `${speechTitle(progress.speechChoices?.find(choice => choice.id === switched))} 모델로 전환했습니다. 새 녹음과 가져오기부터 적용됩니다.`;
+  }
   state.processing = progress;
   for (const [id, action] of processingActions) {
     const job = processingJobs(progress).find(item => item.id === id);
@@ -1422,7 +1472,7 @@ async function exportDocument(kind, format, copy = false, includeCitations = fal
     if (!meeting || meeting.id !== expectedId) throw new Error('회의가 바뀌었습니다. 내용을 다시 확인해 주세요.');
     const result = await bridge.exportDocument(meeting.id, kind, format, includeCitations);
     if (copy) {
-      await navigator.clipboard.writeText(result.text);
+      await bridge.writeClipboardText(result.text);
       byId('copy-feedback').textContent = `${kind === 'summary' ? '요약' : '전체 음성 기록'}을 복사했습니다.`;
       return true;
     }
@@ -1462,8 +1512,14 @@ byId('open-processing-meeting').addEventListener('click', () => {
   const job = processingJobs(state.processing).find(item => item.id === byId('open-processing-meeting').dataset.jobId);
   if (job?.meetingId) void run(() => selectMeeting(job.meetingId));
 });
+function closeTranscriptMenu() {
+  const menu = byId('transcript-menu');
+  menu.open = false;
+  menu.querySelector('summary')?.focus({ preventScroll: true });
+}
 byId('transcribe').addEventListener('click', () => { void transcriptActions.rebuild(); });
-byId('transcript-history').addEventListener('click', () => { void transcriptActions.openHistory(); });
+byId('retranscribe').addEventListener('click', () => { closeTranscriptMenu(); void transcriptActions.rebuild(); });
+byId('transcript-history').addEventListener('click', () => { closeTranscriptMenu(); void transcriptActions.openHistory(); });
 byId('save-transcript').addEventListener('click', () => finishEditing(() => {}).catch(() => {}));
 function onTranscriptEdit(event) {
   const index = event.target?.dataset.segment;
@@ -1566,6 +1622,25 @@ byId('quit-dialog').addEventListener('click', (event) => {
   }
 });
 byId('quit-dialog').addEventListener('close', () => { pendingQuitSessionId = null; });
+const dropConfirmation = mountConfirmDialog({ container: byId('drop-dialog') });
+mountDropImport({ window: globalThis, overlay: byId('drop-overlay'), message: byId('drop-overlay-message'),
+  onDrop: (files, onProgress) => run(() => finishEditing(async () => {
+    if (files.length !== 1) { showError('음성 파일은 한 번에 하나씩 끌어 놓아 주세요.'); return; }
+    if (activeSession()) { showError('녹음을 마친 뒤 음성을 가져와 주세요.'); return; }
+    if (!modelsReady()) { await openSetup(); return; }
+    const meeting = state.libraryOpen ? null : currentMeeting();
+    // An empty draft takes the file; a meeting with audio keeps it and the file starts a new one.
+    let target = null;
+    if (meeting && !meeting.audio) target = await bridge.draftAttachmentTarget(meeting.id).catch(() => null);
+    if (meeting && !target && !await dropConfirmation.confirm({ title: '새 회의로 가져올까요?',
+      description: meeting.audio ? '이 회의에는 이미 음성이 있습니다. 끌어 놓은 파일로 새 회의를 만들고, 지금 회의의 음성과 기록은 그대로 둡니다.'
+        : '이 회의에는 음성을 연결할 수 없습니다. 끌어 놓은 파일로 새 회의를 만듭니다.',
+      action: '새 회의로 가져오기' })) return;
+    await acceptProcessing(await uploadDroppedFile(bridge, files[0], target, onProgress));
+  })) });
+const speechOffer = mountSpeechOfferDialog({ dialog: byId('speech-offer-dialog'),
+  onAccept: async () => { speechNotice = ''; await acceptProcessing(await bridge.respondSpeechOffer(true)); },
+  onDecline: async () => { await acceptProcessing(await bridge.respondSpeechOffer(false)); } });
 
 const detail = mountMeetingDetail({ byId, finishEditing, onError: showError, onReveal(view) {
   if (view !== 'transcript') summaryEvidence?.reset();
@@ -1574,6 +1649,12 @@ const detail = mountMeetingDetail({ byId, finishEditing, onError: showError, onR
   globalThis.NeroControls.close?.();
 } });
 meetingContext = mountMeetingContext({ node: byId('meeting-context-control'), bridge: aiChatBridge, getMeeting: () => state.libraryOpen ? null : currentMeeting(), onSettings: () => { void openSettings('agent', 'meeting-context-control').catch(showError); } });
+// Opening a conversation keeps the shown meeting; its meeting link moves the main view.
+async function openAiConversation(id) { await aiChat.flow.selectConversation(id); aiChat.open(); }
+async function openAiMeeting(meetingId) {
+  if (!state.snapshot.meetings.some(meeting => meeting.id === meetingId && !meeting.deletedAt)) throw new Error('이 회의를 열 수 없습니다.');
+  if (state.selectedId !== meetingId || state.libraryOpen) await selectMeeting(meetingId);
+}
 aiChat = mountAiChat({
   node: byId('ai-chat-inspector'), settingsNode: byId('ai-account-settings'), trigger: byId('ai-chat-open'), layoutRoot: byId('app-body'), resizeHandle: byId('ai-chat-resize'),
   bridge: { ...aiChatBridge,
@@ -1587,8 +1668,10 @@ aiChat = mountAiChat({
     }),
   },
   beforeWrite: () => finishEditing(() => true),
+  writeClipboard: bridge.writeClipboardText,
   getTemplate: async () => (await summaryTemplatePicker.selected()).id,
   getMeetings: () => state.snapshot.meetings.filter(meeting => !meeting.deletedAt),
+  onOpenMeeting: meetingId => openAiMeeting(meetingId),
   onSettings: () => { void openSettings('agent', 'ai-chat-open').catch(showError); },
   onSaved: async (kind, meetingId) => { if (state.selectedId === meetingId) { if (kind === 'summary') await loadSummary(meetingId); render(); } },
   async onCitation(citation) {
@@ -1609,6 +1692,9 @@ aiChat = mountAiChat({
     });
   },
 });
+aiSidebar = mountAiChatSidebar({ node: byId('sidebar-ai-preview'), flow: aiChat.flow, getMeetings: () => state.snapshot.meetings, onOpenConversation: openAiConversation, async onOpenMeeting(meetingId, conversationId) { await openAiConversation(conversationId); await openAiMeeting(meetingId); } });
+byId('sidebar-ai-new').addEventListener('click', async () => { await aiChat.flow.newConversation({ attachCurrent: true }); aiChat.open(); });
+aiLibrary = mountAiChatLibrary({ node: byId('ai-library-screen'), flow: aiChat.flow, getMeetings: () => state.snapshot.meetings, onOpen: () => aiChat.open(null), container: document.body });
 summaryEvidence = mountSummaryEvidence({
   container: byId('summary-content'), panel: byId('summary-evidence'),
   onOpen: () => detail.select('transcript'),
@@ -1657,15 +1743,15 @@ const transcriptActions = mountTranscriptActions({ byId, bridge, finishEditing, 
     acceptSnapshot(await bridge.readSnapshot()); refreshMeetingSearch();
   },
 });
-const library = mountLibrary({ bridge, getState: () => state, byId, finishEditing, acceptSnapshot, selectMeeting, render, showError, escape, icon, meetingTimestamp, recordingStatus, duration, beginNavigation, onViewChanged() { meetingSearch.update(byId('search').value, state.libraryFilter === 'trash'); } });
+const library = mountLibrary({ bridge, getState: () => state, byId, finishEditing, acceptSnapshot, selectMeeting, render, showError, escape, icon, meetingTimestamp, recordingStatus, duration, beginNavigation, onViewChanged() { meetingSearch.update(byId('search').value, state.libraryFilter === 'trash'); if (state.libraryFilter === 'ai') { aiLibrary?.show(); aiChat?.open(null); } } });
 const notificationAction = action => async id => { await action(id); const error = processingErrors.get(id); if (error) throw new Error(error); };
 const notificationCenter = mountNotificationCenter({ container: byId('notification-center'), bridge, onOpenMeeting: id => selectMeeting(id), onRetry: notificationAction(retryProcessing), onCancel: notificationAction(cancelProcessing), onAcknowledge: notificationAction(acknowledgeProcessing), showError, icon, onNoticeAction: service => service === 'app-update' ? appUpdateView.perform() : undefined, onOpenIntegration: async service => {
   await openSettings('agent', 'notifications-open');
   const target = service === 'google-calendar' ? byId('calendar-settings').querySelector('.calendar-settings-account button:not(:disabled)') : byId(`settings-${service}-connect`);
   target?.scrollIntoView?.({ block: 'nearest' });
 }, onChanged: () => render() });
-sidebarViews = mountSidebarViews({ aside: byId('navigation-sidebar'), navigation: byId('sidebar-navigation-view'), notifications: byId('notification-center'), trigger: byId('notifications-open'), badge: byId('notification-count'), onPreview: view => library.preview(view) });
-byId('sidebar-preview-open').addEventListener('click', () => { const filter = byId('sidebar-preview-open').dataset.sidebarFilter; void library.show(filter === 'trash' ? 'trash' : 'all'); });
+sidebarViews = mountSidebarViews({ aside: byId('navigation-sidebar'), navigation: byId('sidebar-navigation-view'), notifications: byId('notification-center'), trigger: byId('notifications-open'), badge: byId('notification-count'), onPreview: view => { library.preview(view); if (view === 'ai') aiSidebar?.show(); } });
+byId('sidebar-preview-open').addEventListener('click', () => { const filter = byId('sidebar-preview-open').dataset.sidebarFilter; void library.show(['trash', 'ai'].includes(filter) ? filter : 'all'); });
 viewHistory = createViewHistory({
   canVisit: route => route.kind === 'meeting' ? state.snapshot.meetings.some(meeting => meeting.id === route.id && !meeting.deletedAt) : ['all', 'unfiled', 'trash'].includes(route.filter) || state.snapshot.folders.some(folder => folder.id === route.filter),
   async navigate(route, { isCurrent }) {
@@ -1711,6 +1797,7 @@ byId('audio-player').addEventListener('timeupdate', () => {
 try {
   await bridge.subscribeSnapshots(acceptSnapshot);
   await bridge.subscribeAgentWriteRequest?.(onAgentWriteRequest);
+  await bridge.subscribeAgentChanged?.(onAgentChanged);
   await bridge.subscribeProcessingError(({ message }) => showError(message));
   await bridge.subscribeProcessing((progress) => { void acceptProcessing(progress).catch(showError); });
   await bridge.setAutoRecorder(state.autoRecorder);

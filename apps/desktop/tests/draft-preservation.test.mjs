@@ -1,4 +1,5 @@
 import { mountBrandIcons } from '../src/brand-icons.js';
+import { markdownSource as buildMarkdownSource } from '../scripts/build-markdown.mjs';
 import { requestAudioPlayback } from '../src/audio-playback.js';
 import { snapshotSignatures, compareSnapshotSignatures } from '../src/snapshot-update.js';
 import { createIntegrationMonitor } from '../src/integration-notifications.js';
@@ -23,7 +24,9 @@ const detailSource = await readFile(new URL('../src/meeting-detail-ui.js', impor
 const actionsSource = await readFile(new URL('../src/transcript-actions.js', import.meta.url), 'utf8');
 const feedbackSource = await readFile(new URL('../src/processing-feedback.js', import.meta.url), 'utf8');
 const processingStateSource = await readFile(new URL('../src/processing-state.js', import.meta.url), 'utf8');
+const preparationProgressSource = await readFile(new URL('../src/model-preparation-progress.js', import.meta.url), 'utf8');
 const componentsSource = await readFile(new URL('../../../design-system/components.js', import.meta.url), 'utf8');
+const markdownSource = await buildMarkdownSource();
 const markup = new Window();
 markup.document.body.innerHTML = await readFile(new URL('../src/index.html', import.meta.url), 'utf8');
 const settingsTabAttributes = [...markup.document.querySelectorAll('#settings-dialog .app-settings-tabs [role="tab"]')].map(tab => Object.fromEntries([...tab.attributes].map(attribute => [attribute.name, attribute.value])));
@@ -87,7 +90,8 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
   };
   const document = {
     documentElement: element('html'), body: element('body'), activeElement: null, getElementById: element,
-    querySelector: element, querySelectorAll: () => [], addEventListener() {},
+    querySelector: element, querySelectorAll: () => [], listeners: new Map(),
+    addEventListener(type, callback) { if (!this.listeners.has(type)) this.listeners.set(type, []); this.listeners.get(type).push(callback); },
   };
   document.activeElement = document.body;
   const settingsTabs = settingsTabAttributes.map(attributes => {
@@ -135,6 +139,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     hideMain() { const pending = deferred(); exits.push({ type: 'close', pending }); return pending.promise; },
   };
   const copied = [], agentDialogCalls = [], aiLifecycle = [];
+  bridge.writeClipboardText = async text => { copied.push(text); };
   const aiBridge = { appendNote: async () => {}, saveSummary: async () => {}, openSource: async () => {} };
   const templateSettings = { setActive() {}, beforeLeave: async () => true, isConfirming: () => false, hide() {} };
   const context = vm.createContext({ mountBrandIcons, snapshotSignatures, compareSnapshotSignatures, requestAudioPlayback, createIntegrationMonitor, liveTranscriptRows, meetingResultPreview, renderMeetingMenu, testMountNotificationCenter: mountNotificationCenter,
@@ -143,6 +148,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     NeroControls: { enhanceAll() {} },
     setTimeout: () => 1, clearTimeout() {}, requestAnimationFrame: (callback) => callback(),
   });
+  vm.runInContext(markdownSource, context);
   vm.runInContext(componentsSource, context);
   context.testUI = vm.runInContext(`(() => {
     ${uiSource.replace(/^export /gm, '')}
@@ -158,6 +164,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     ${detailSource.replace(/^import .*;\r?\n/gm, '').replace(/^export /gm, '')}
     ${feedbackSource.replace(/^export /gm, '')}
     ${processingStateSource.replace(/^export /gm, '')}
+    ${preparationProgressSource.replace(/^export /gm, '')}
     ${searchSource.replace(/^export /gm, '')}
     ${actionsSource.replace(/^import .*;\r?\n/gm, '').replace(/^export /gm, '')}
     let restoreForTest;
@@ -166,6 +173,8 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     ${librarySource.slice(0, librarySource.indexOf('export function mountLibrary')).replace(/^import .*;\r?\n/gm, '').replace(/^export \{.*\}.*;\r?\n/gm, '').replace(/^export /gm, '')}
     let summaryEvidenceOptions, aiChatOptions;
     const aiChatBridge = testAiBridge;
+    const mountAiChatLibrary = () => ({ mount() {}, show() {}, dispose() {} });
+    const mountAiChatSidebar = () => ({ show() {}, dispose() {} });
     const mountAiChat = options => {
       aiChatOptions = options;
       return {
@@ -181,6 +190,10 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     const mountAppUpdateRecovery = () => ({ update() {} });
     const mountAppUpdateView = () => ({ start: async () => {}, perform: async () => false });
     const mountSpeechModelPicker = () => ({update(){}});
+    const speechTitle = choice => choice?.label || '';
+    const mountSpeechOfferDialog = () => ({update(){}});
+    const mountDropImport = () => {};
+    const uploadDroppedFile = async () => null;
     const mountPeopleSettings = () => ({show(){},hide(){},beforeLeave:async()=>true,isConfirming:()=>false});
     const mountMeetingAttendees = () => ({open:async()=>{},beforeLeave:async()=>true,dispose(){}});
     const mountMeetingContext = () => ({setMeeting(){},close(){},dispose(){}});
@@ -207,7 +220,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
   })()`, context);
   await tick();
   return {
-    app, element, updates, exits, bridge, aiBridge, aiLifecycle, copied, agentDialogCalls, templateSettings, settingsTabs, transcriptUpdates, savedTranscript: () => transcript,
+    app, element, document, updates, exits, bridge, aiBridge, aiLifecycle, copied, agentDialogCalls, templateSettings, settingsTabs, transcriptUpdates, savedTranscript: () => transcript,
     focused: () => document.activeElement?.id,
     editTranscript(text) {
       const target = element('transcript-rows').querySelector('[data-segment="0"]') || { dataset: { segment: '0' } };
@@ -941,7 +954,8 @@ test('settings flush edits and prepare optional summaries inline without replaci
   assert.equal(page.element('settings-dialog').open, true);
   assert.equal(page.element('setup-screen').hidden, true);
   assert.equal(page.element('settings-feature-progress').value, 50);
-  assert.equal(page.element('settings-feature-stage').textContent, '50%');
+  assert.match(page.element('settings-feature-size').textContent, /^50%/);
+  assert.doesNotMatch(page.element('settings-feature-stage').textContent, /%/);
   page.element('settings-close').listeners.get('click')(); await tick();
   assert.equal(page.element('settings-dialog').open, false);
 });
@@ -1652,6 +1666,15 @@ test('transcript copy and TXT/Markdown export include the whole saved document d
   }
 });
 
+test('meeting and AI copies use the native clipboard bridge and propagate failures', async () => {
+  const page = await openApp(transcriptDocument());
+  assert.equal(page.app.aiChatOptions.writeClipboard, page.bridge.writeClipboardText);
+  await page.app.aiChatOptions.writeClipboard('합성 AI 답변');
+  assert.deepEqual(page.copied, ['합성 AI 답변']);
+  page.bridge.writeClipboardText = async () => { throw new Error('클립보드 실패'); };
+  await assert.rejects(page.app.exportDocument('transcript', 'txt', true), /클립보드 실패/);
+});
+
 
 test('agent writes flush pending edits and reconcile focused metadata before unlocking', async () => {
   const page = await openApp();
@@ -1915,4 +1938,46 @@ test('AI note append flushes the latest draft and holds the existing editor lock
   assert.equal(calls.length, 1); assert.equal(page.element('meeting-notes').readOnly, true);
   native.resolve(); await append;
   assert.equal(page.element('meeting-notes').readOnly, false);
+});
+
+test('the first transcription is a direct action and the more menu only holds actions on an existing transcript', async () => {
+  const page = await openApp();
+  page.app.acceptSnapshot({ revision: 2, session: null, meetings: [{ ...page.saved(), id: 'a', status: 'completed', audio: {} }] });
+  await page.app.selectMeeting('a');
+  assert.match(page.element('meeting-status').innerHTML, /가져온 음성/);
+  await page.app.loadTranscript('a');
+  assert.equal(page.element('transcribe').hidden, false);
+  assert.equal(page.element('transcribe').disabled, false);
+  assert.equal(page.element('transcribe').textContent, '텍스트로 변환');
+  assert.equal(page.element('transcript-menu').hidden, true);
+  page.element('transcript-menu').open = true;
+  await page.app.acceptProcessing({ ...page.app.state.processing, revision: 3, jobs: [{ id: 'run', kind: 'transcribe', meetingId: 'a', status: 'running', createdAt: 1 }] });
+  assert.equal(page.element('transcribe').hidden, true);
+  assert.equal(page.element('transcript-menu').hidden, true);
+  assert.equal(page.element('transcript-menu').open, false);
+  await page.app.acceptProcessing({ ...page.app.state.processing, revision: 4, id: 'run', kind: 'transcribe', meetingId: 'a', status: 'failed', jobs: [{ id: 'run', kind: 'transcribe', meetingId: 'a', status: 'failed', createdAt: 1 }] });
+  assert.equal(page.element('transcribe').textContent, '다시 시도');
+  page.bridge.readTranscript = async () => transcriptDocument();
+  page.app.state.transcriptDraft = null;
+  await page.app.loadTranscript('a');
+  assert.equal(page.element('transcribe').hidden, true);
+  assert.equal(page.element('retranscribe').hidden, false);
+  assert.equal(page.element('transcript-history').hidden, false);
+  assert.equal(page.element('transcript-menu').hidden, false);
+});
+
+test('summary and answer links open through the app, never inside the window', async () => {
+  const page = await openApp();
+  const opened = [];
+  page.bridge.openDocumentLink = async url => { opened.push(url); };
+  const dispatch = (type, target) => { const event = { type, target, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } }; for (const listener of page.document.listeners.get(type) || []) listener(event); return event; };
+  const link = { getAttribute: name => name === 'href' ? 'https://example.test/doc' : null, closest: selector => selector === 'a[data-summary-link]' ? link : null };
+  const plain = { closest: () => null };
+  assert.equal(dispatch('click', link).defaultPrevented, true);
+  assert.equal(dispatch('auxclick', link).defaultPrevented, true);
+  assert.equal(dispatch('contextmenu', link).defaultPrevented, true);
+  assert.equal(dispatch('dragstart', link).defaultPrevented, true);
+  assert.equal(dispatch('click', plain).defaultPrevented, false);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(opened, ['https://example.test/doc']);
 });

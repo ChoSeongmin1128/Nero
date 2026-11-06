@@ -2,6 +2,15 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 pub const LEAD_MS: u64 = 5 * 60 * 1000;
+// A reminder stays up for a while after the start, since meetings rarely begin on time.
+pub const GRACE_MS: u64 = 5 * 60 * 1000;
+
+// From five minutes before the start until five minutes after it, or the end if sooner.
+pub fn reminder_window(event: &Occurrence, now: u64) -> bool {
+    event.end_at > event.start_at
+        && now >= event.start_at.saturating_sub(LEAD_MS)
+        && now < event.start_at.saturating_add(GRACE_MS).min(event.end_at)
+}
 const RETAIN_MS: u64 = 24 * 60 * 60 * 1000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,13 +57,7 @@ impl Scheduler {
         self.notices.retain(|_, notice| notice.retain_until > now);
         let candidates = events
             .iter()
-            .filter(|event| {
-                fresh
-                    && !recording
-                    && event.start_at > now
-                    && event.end_at > event.start_at
-                    && now >= event.start_at.saturating_sub(LEAD_MS)
-            })
+            .filter(|event| fresh && !recording && reminder_window(event, now))
             .map(|event| (event.key.clone(), event.clone()))
             .collect::<BTreeMap<_, _>>();
         let mut changes = Vec::new();
@@ -135,7 +138,7 @@ mod tests {
         }
     }
     #[test]
-    fn alerts_once_in_five_minute_window_and_never_after_start_or_when_stale() {
+    fn alerts_from_five_minutes_before_until_five_minutes_after_start_and_never_when_stale() {
         let item = event("first", 900_000);
         let mut scheduler = Scheduler::default();
         assert!(scheduler
@@ -154,14 +157,33 @@ mod tests {
         assert!(scheduler
             .tick(&[item.clone()], 600_001, true, false)
             .is_empty());
+        assert!(scheduler
+            .tick(&[item.clone()], 900_000, true, false)
+            .is_empty());
+        assert!(scheduler
+            .tick(&[item.clone()], 1_199_999, true, false)
+            .is_empty());
         assert_eq!(
-            scheduler.tick(&[item.clone()], 900_000, true, false)[0].kind,
+            scheduler.tick(&[item.clone()], 1_200_000, true, false)[0].kind,
             "hide"
         );
-        assert!(scheduler.tick(&[item], 900_001, true, false).is_empty());
+        assert!(scheduler.tick(&[item], 1_200_001, true, false).is_empty());
         assert!(scheduler
-            .tick(&[event("missed", 700_000)], 900_001, true, false)
+            .tick(&[event("missed", 500_000)], 900_001, true, false)
             .is_empty());
+        let late = event("opened-late", 800_000);
+        assert_eq!(
+            Scheduler::default().tick(&[late], 900_001, true, false)[0].kind,
+            "show"
+        );
+        let mut short = event("short", 900_000);
+        short.end_at = 1_000_000;
+        let mut scheduler = Scheduler::default();
+        scheduler.tick(&[short.clone()], 950_000, true, false);
+        assert_eq!(
+            scheduler.tick(&[short], 1_000_000, true, false)[0].kind,
+            "hide"
+        );
     }
     #[test]
     fn changed_cancelled_dismissed_and_restarted_occurrences_do_not_duplicate() {

@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { BrandIcon } from './brand-icon.jsx';
 import { createRoot } from 'react-dom/client';
-import { createAiChatFlow, selectAiAccount } from './ai-chat-flow.js';
+import { createAiChatFlow, selectAiAccount, usableAccount } from './ai-chat-flow.js';
 import { GlobalAiChat } from './ai-chat-shell.jsx';
 import { mountAiChatLayout } from './ai-chat-layout.js';
 import { claudeAccountStatus } from './claude-account-status.js';
@@ -24,7 +24,7 @@ export function AiAccounts({ flow }) {
           <div className="settings-client-controls"><span className="settings-client-status" role="status">{phase === 'cancelling' ? '취소 중' : phase === 'starting' ? claude?.status || '로그인 중' : phase === 'waiting' ? (account?.runtimeState === 'missing' ? claude?.status : '로그인 대기') : state.accountsBusy ? '확인 중' : claude?.status || accountLabel[account?.state] || '사용할 수 없음'}</span>
             {phase ? <>{phase === 'failed' && <button type="button" className="small" onClick={() => { void flow.retryConnect(provider.value); }}>다시 시도</button>}<button type="button" className="quiet small" disabled={phase === 'cancelling'} onClick={() => { void flow.cancelConnect(provider.value); }}>취소</button></> : account?.state === 'ready' ? account.disconnectable === false ? null : <button type="button" className="small" disabled={state.accountsBusy || Boolean(state.conversation.activeRequestId)} onClick={() => { void flow.disconnect(account.id); }}>로그아웃</button> : <button type="button" className="small" disabled={state.accountsBusy || !account?.configured || !['signed_out', 'plan_disabled', 'unknown'].includes(account.state)} onClick={() => { void flow.connect(provider.value); }}>{claude?.action || '로그인'}</button>}
           </div>
-          {account?.label && ['ready', 'unknown'].includes(account.state) && <p className="ai-account-label">{account.label}</p>}
+          {account?.label && usableAccount(account) && <p className="ai-account-label">{account.label}</p>}
           {account?.state === 'plan_disabled' && account.detail && <p className="ai-account-label" role="status">{account.detail}</p>}
           {claude?.detail && <p className="ai-account-label" role="status">{claude.detail}</p>}
         </div>;
@@ -41,7 +41,7 @@ export function AiAccounts({ flow }) {
   </div>;
 }
 
-export function mountAiChat({ node, settingsNode, trigger, layoutRoot, resizeHandle, bridge, onSettings, onCitation, beforeWrite, onSaved, getTemplate, getMeetings = () => [], writeClipboard }) {
+export function mountAiChat({ node, settingsNode, trigger, layoutRoot, resizeHandle, bridge, onSettings, onCitation, onOpenMeeting = null, beforeWrite, onSaved, getTemplate, getMeetings = () => [], writeClipboard }) {
   const flow = createAiChatFlow({ bridge, beforeWrite, onSaved, getTemplate, getMeetings, writeClipboard });
   const root = createRoot(node), settingsRoot = createRoot(settingsNode);
   const layout = mountAiChatLayout({ root: layoutRoot, handle: resizeHandle, panel: node.parentElement, trigger });
@@ -54,7 +54,7 @@ export function mountAiChat({ node, settingsNode, trigger, layoutRoot, resizeHan
     event.preventDefault(); close();
   };
   node.addEventListener('keydown', escape);
-  root.render(<GlobalAiChat flow={flow} onSettings={onSettings} onCitation={onCitation} onClose={close} getMeetings={getMeetings} />);
+  root.render(<GlobalAiChat flow={flow} onSettings={onSettings} onCitation={onCitation} onClose={close} getMeetings={getMeetings} onOpenMeeting={onOpenMeeting} />);
   settingsRoot.render(<AiAccounts flow={flow} />);
   return { flow, open, close, setMeeting: meeting => flow.setMeeting(meeting), setSettingsActive: active => flow.setSettingsActive(active), dispose() { trigger?.removeEventListener('click', toggle); node.removeEventListener('keydown', escape); layout.destroy(); flow.dispose(); root.unmount(); settingsRoot.unmount(); } };
 }

@@ -3,16 +3,20 @@
 ## 범위
 
 Nero에 동봉된 `nero` 실행 파일은 로컬 CLI와 `nero mcp`를 제공한다. 클라우드 DB,
-계정 서버나 외부 공개 수신 포트는 사용하지 않는다. 회의 수정과 작업 상태 조회/취소는 앱이 실행 중인
-동안 인증된 IPv4 루프백 임시 포트를 사용하며, MCP는 클라이언트가 실행하는 stdio
+계정 서버나 외부 공개 수신 포트는 사용하지 않는다. 회의 수정, 작업 상태 조회/취소, 음성 파일 가져오기와
+음성 인식 엔진 선택은 앱이 실행 중인 동안 인증된 IPv4 루프백 임시 포트를 사용하며, MCP는 클라이언트가 실행하는 stdio
 프로세스이며 공식 Rust SDK를 사용한다. Nero의 연결 버튼이나 수동 연결 프롬프트로 등록한다.
 
-조회, 외부 에이전트 요약 저장, 로컬 요약 템플릿 관리, 회의 메타데이터 편집과 처리 작업 취소를 제공한다. 회의 변경은 실행 중인
+조회, 외부 에이전트 요약 저장, 로컬 요약 템플릿 관리, 회의 메타데이터 편집, 처리 작업 취소,
+로컬 음성 파일 가져오기와 음성 인식 엔진 선택을 제공한다. 실행 중인 앱의 기능으로 빈 회의 만들기,
+녹음, 음성 인식과 화자 분석 실행, 음성 기록과 화자 수정, 앱 안 AI 대화, 회의의 Notion 자료,
+캘린더, 용어집과 설정도 제공한다([앱 기능 도구](#앱-기능-도구)). 회의 변경은 실행 중인
 Nero의 저장 흐름에 요청하며 저장 파일을 직접 고치지 않는다. 템플릿은 앱과 같은 로컬
 정본을 사용한다. 생성/수정/삭제는 사용자의 명시적 요청에만 수행하며 MCP 클라이언트의
 도구 승인 설정을 따른다.
 
-회의 생성, 녹음, 모델 실행, 음성 기록 수정과 영구 삭제는 제공하지 않는다.
+영구 삭제, 계정 로그인/연결과 해제, 녹음 제어창 자동 표시와 마이크 기본 선택(화면 저장소에만
+있는 설정)은 제공하지 않는다.
 기본 조회는 휴지통을 제외한다. 명시적인 휴지통 목록은 복원에 필요한 메타데이터와
 수정본만 반환한다. 원음, 모델 원출력, 인증 정보와 일반 파일 시스템 도구는 노출하지 않는다.
 
@@ -56,6 +60,8 @@ Claude Desktop 일반 채팅용 MCPB와 Codex 플러그인은 별개 패키지�
 회의 요약 스킬을 포함한다. 새 요약 요청은 원문/메모 전체를 읽고 로컬 템플릿을 선택해
 생성한 결과를 Nero에도 저장한다. 사용자가 채팅에만 작성하도록 요청하면 저장하지 않는다.
 저장된 요약을 보여 달라는 요청은 조회로 처리한다. 성공 응답 전에는 앱 갱신을 알리지 않는다.
+앱 내 회의 요약과 외부 스킬은 같은 작성 원칙 원본을 사용한다. 외부 패키지를 만들 때
+`writing-rules.md` 내용을 스킬 본문에 포함하므로 설치된 스킬은 별도 원본 파일을 필요로 하지 않는다.
 
 ## 버전 확인
 
@@ -64,7 +70,9 @@ MCP 초기화 응답의 `serverInfo.version`은 실행 중인 연동의 버전�
 `versions.running`은 실행 중인 CLI/MCP의 제품/연동/API 버전,
 `versions.app`은 인증된 현재 Nero 프로세스의 제품/빌드/동봉 연동 버전이다.
 `matchesAppBundle`은 연동 버전의 일치 여부이며 앱 미실행, 구버전 앱이나 동봉 정보가
-없는 경우 `null`이다. 조회는 앱을 실행하거나 모델을 읽지 않고 설치/설정을 변경하지 않는다.
+없는 경우 `null`이다. `speech`는 실행 중인 Nero의 음성 인식 설정이며 아래
+[음성 가져오기와 음성 인식 엔진](#음성-가져오기와-음성-인식-엔진)에서 설명한다.
+조회는 앱을 실행하거나 모델을 읽지 않고 설치/설정을 변경하지 않는다.
 
 버전이 다르면 Nero의 `설정 > 연동`에서 설치 상태를 확인한다. 조회 결과나 초기화 지침은
 설치를 허가하지 않는다. 공개 업데이트 서명에는 제품/빌드만 있고 연동 세대가 없으므로
@@ -110,6 +118,11 @@ nero meetings move --file move.json --json
 nero meetings trash --file targets.json --json
 nero meetings restore --file targets.json --json
 nero folders create "제품팀" --expected-version HASH --json
+nero meetings import /absolute/path/meeting.m4a --json
+nero meetings import /absolute/path/meeting.m4a --meeting-id MEETING_ID --expected-version HASH --json
+nero speech set qwenKo --json
+nero speech set qwenKo --acknowledge-memory-warning --json
+nero speech cancel-switch --target qwenKo --json
 nero mcp
 ```
 
@@ -206,7 +219,7 @@ SHA-256이다. 원문, 메모, 참석 명단 또는 기존 요약이 바뀌면 `
 | `people_update` | 관리 인원/그룹 전체를 현재 카탈로그 editVersion으로 교체 |
 | `meeting_attendees_set` | 현재 회의 editVersion으로 참석 명단 교체 |
 | `meeting_attendee_promote` | 회의 전용 참석자를 관리 인원으로 저장하고 같은 원자 저장에서 연결 |
-| `status` | 조회/편집 기능과 저장소 존재 여부 |
+| `status` | 조회/편집 기능, 저장소 존재 여부와 실행 중인 Nero의 음성 인식 설정(`speech`) |
 | `app_update` | `action:status/check/download/install`로 실행 중인 Nero의 공식 앱 업데이트 관리 |
 | `jobs_list` | 실행 중인 Nero의 처리 작업 상태. 선택적 meetingId, offset/limit |
 | `job_cancel` | 명시적으로 요청한 작업을 editVersion 검사 후 취소 |
@@ -216,6 +229,9 @@ SHA-256이다. 원문, 메모, 참석 명단 또는 기존 요약이 바뀌면 `
 | `meeting_update`, `meeting_date_set` | 회의 제목/메모와 별도 회의 날짜 편집 |
 | `meetings_move`, `meetings_trash`, `meetings_restore` | 폴더 이동과 휴지통/복원 |
 | `folder_create`, `folder_rename`, `folder_delete` | 폴더 관리 |
+| `meeting_import` | 로컬 음성 파일을 새 회의로 가져오거나 음성 없는 빈 회의에 붙임. 가져오기 작업 반환 |
+| `speech_engine_set` | 이후 녹음/가져오기의 음성 인식 엔진 선택. 준비되지 않은 엔진은 수 GB 다운로드 후 전환 |
+| `speech_switch_cancel` | 대기 중인 엔진 전환과 그 다운로드 취소 |
 
 인원/그룹 카탈로그와 회의별 참석 명단은 별개다. 사람 이름 변경/삭제는 기존 회의의 선택 당시 이름을 바꾸지 않는다. 삭제한 사람은 그룹에서도 제거한 전체 카탈로그를 제출한다. 동명이인은 별도 ID로 허용하며 같은 관리 인원을 한 명단에 중복 연결하지 않는다. 참석 명단 편집은 녹음 전/중/후에 가능하며 원음/전사와 화자 이름을 바꾸거나 분석을 시작하지 않는다. 명단 순서가 바뀌어도 참석자 ID는 유지한다.
 
@@ -258,7 +274,11 @@ MCP 결과는 compact JSON 텍스트 한 벌로 반환하며 같은 본문을 st
 목록은 본문을 포함하지 않으며, 메모/요약/음성 기록은 요청한 페이지만 반환한다.
 조회 도구에는 readOnlyHint=true, 변경 도구에는 false를 지정한다. 변경 도구는
 idempotentHint=false이며 기존 내용을 바꾸거나 삭제하는 도구에는 destructiveHint=true를
-지정한다. 영구 삭제 도구는 없다. status 조회 자체는 읽기 전용이며 capabilities가
+지정한다. 처리 중인 작업을 멈추는 `job_cancel`, `speech_switch_cancel`도 destructiveHint=true다.
+새 회의를 만들거나 빈 회의에 음성을 붙이는 `meeting_import`와 이후 작업의 설정만 바꾸는
+`speech_engine_set`은 destructiveHint=false다. 외부 서비스에 접속할 수 있는 `app_update`와
+모델을 내려받을 수 있는 `speech_engine_set`, 그리고 앱 기능 도구 중 AI 공급자, Notion, Google에 접속하거나
+모델을 내려받는 도구가 openWorldHint=true다. 영구 삭제 도구는 없다. status 조회 자체는 읽기 전용이며 capabilities가
 서비스 전체의 쓰기 지원 범위를 구분한다.
 
 작업 조회는 실행 중인 앱의 메모리 상태만 읽으며 모델 준비/실행이나 저장을 수행하지 않는다.
@@ -268,6 +288,99 @@ idempotentHint=false이며 기존 내용을 바꾸거나 삭제하는 도구에�
 `jobs cancel ID --expected-version HASH`는 사용자가 요청한 작업만 취소한다.
 대기/실행 상태 변경 시 충돌로 거부하며 저장 중인 결과는 중단하지 않는다.
 `applied:true`는 취소 요청 수락이며 종료 완료는 `jobs_list`로 확인한다.
+
+## 앱 기능 도구
+
+실행 중인 Nero의 각 화면이 쓰는 기능을 같은 경로로 수행한다. CLI/MCP는 요청 형식만 검사해 형식이 틀린 요청은 보내지 않으며,
+대상, 수정본과 상태는 앱이 확인한다. 앱이 거절하면 `request_rejected`와 앱의 설명을 그대로 돌려준다.
+이 기능 이전의 앱은 `app_feature_unsupported`를 반환한다. 열린 화면은 에이전트의 변경을 바로 다시 읽는다.
+녹음, 음성 인식 실행, AI 질문, 음성 기록/화자/용어집 수정, 설정 변경, 모델 다운로드는 사용자의 명시적인 현재 요청에만 사용한다.
+
+| 영역 | 도구 | CLI |
+|---|---|---|
+| AI 대화 | `ai_chats_list`, `ai_chat_get`, `ai_models_list` | `ai chats`, `ai chat ID`, `ai models` |
+| | `ai_chat_send`, `ai_chat_cancel`, `ai_chat_version_select` | `ai send`, `ai cancel ID`, `ai version ID` |
+| | `ai_answer_save`, `ai_chats_trash`, `ai_chats_restore` | `ai save-answer ID`, `ai trash`, `ai restore` |
+| 회의 자료 | `notion_status`, `meeting_sources_list` | `notion status`, `sources list ID` |
+| | `meeting_source_add`, `meeting_source_refresh`, `meeting_source_remove` | `sources add/refresh/remove ID` |
+| 캘린더 | `calendar_status`, `calendar_events`, `calendar_attendees` | `calendar status/events`, `calendar attendees ID` |
+| | `calendars_select`, `calendar_sync`, `meeting_from_calendar` | `calendar select/sync/create-meeting` |
+| 용어집과 설정 | `terminology_get`, `glossary_save`, `settings_get`, `settings_set` | `terminology get`, `glossary save ID`, `settings get/set` |
+| 녹음 | `recording_devices`, `recording_control` | `recording devices`, `recording start/pause/resume/stop` |
+| 회의와 처리 | `meeting_create`, `meeting_notes_append`, `transcription_start`, `speakers_analyze`, `models_prepare` | `meetings new`, `meetings notes-append ID`, `transcript start ID`, `speakers analyze ID`, `models prepare` |
+| 음성 기록 | `transcript_history`, `transcript_save`, `transcript_restore`, `speakers_save` | `transcript history/save/restore ID`, `speakers save ID` |
+| 작업 | `job_retry`, `job_acknowledge` | `jobs retry/acknowledge ID` |
+
+- CLI 옵션은 도구 입력 이름을 그대로 쓴다. 불리언은 `--이름`/`--no-이름`, 목록은 단수형 옵션을 반복하며(`--meeting-id`), `--file JSON_PATH`는 나머지 필드를 한 객체로 준다. 결과는 JSON이다.
+- `ai_chat_send`는 사용자의 구독 계정으로 앱의 AI에 질문하고 바로 `conversationId`, `requestId`를 돌려준다. 답변은 `ai_chat_get`의 상태가 완료/실패/취소가 될 때까지 읽는다. `conversationId`가 없으면 새 대화를 만든다. 요약 스킬은 회의 하나와 템플릿이 필요하며 질문 없이 보낼 수 있다. 추론 수준을 생략하면 모델의 기본 수준을 쓴다.
+- `ai_chats_trash`는 고른 대화 또는 마지막 활동이 지정한 일수보다 오래된 대화를 휴지통으로 옮기며 답변 중인 대화는 건너뛴다. 대화 영구 삭제는 없다.
+- `recording_control`의 `start`는 빈 회의나 새 회의(`title`)에 지정한 입력 장치 또는 기본 장치로 녹음한다. 앱 화면처럼 진행 중인 처리 작업을 멈추고 시작하며, 필요하면 macOS가 마이크 권한을 묻는다. `stop`은 앱 화면과 같이 녹음 후 처리를 이어서 시작한다.
+- `transcript_save`는 `transcript_get`의 `version`을 받고 바꾼 구간만 ID로 보낸다. `speakers_save`는 바뀐 뒤의 전체 화자 목록과 화자가 바뀌는 구간만 보낸다. 이전 기록은 `transcript_history`에 남는다.
+- 회의 자료 추가는 사용자가 준 Notion 페이지 링크만 Nero의 Notion 연결로 읽는다. 캘린더 일정은 하루와 명시한 시간대로 조회하며, 일정으로 회의를 만들 때는 그 조회의 `occurrenceKey`와 `scopeRevision`을 쓴다.
+- 회의를 읽거나 바꾸는 쓰기는 다른 회의 변경과 같이 열린 편집을 먼저 저장한다.
+
+## 음성 가져오기와 음성 인식 엔진
+
+세 변경 도구는 사용자의 명시적인 현재 요청에만 사용하며 실행 중인 Nero의 처리 서비스가
+앱 화면과 같은 경로로 수행한다. CLI/MCP는 요청 형식만 검사하고 파일, 모델, 녹음 상태와
+회의 수정본은 앱이 확인한다. 이 기능 이전의 앱은 `app_feature_unsupported`를 반환한다.
+
+`meeting_import`(CLI `meetings import PATH`)는 절대 경로의 로컬 음성 파일을 가져온다.
+`.`/`..` 경로 구간은 허용하지 않으며 확장자는 WAV, M4A, MP3, AAC, AIFF/AIF, CAF, FLAC,
+OGG다. 대상은 존재하는 일반 파일이어야 하며 심볼릭 링크와 폴더는 `audio_file_unavailable`로
+거부한다. Nero는 원본을 복사해 준비하며 원본 파일을 옮기거나 바꾸지 않는다.
+
+- `meetingId`가 없으면 앱의 `음성 가져오기`와 같이 파일에서 새 회의를 만든다.
+- `meetingId`와 `meeting_get`의 `editVersion`(`expectedVersion`)을 함께 보내면 음성과 음성
+  기록이 없는 빈 회의에만 붙인다. 열린 편집기를 먼저 저장한 뒤 수정본을 검사하며,
+  변경되었으면 `edit_conflict`, 빈 회의가 아니면 `invalid_state`다. 둘 중 하나만 보내면 거부한다.
+- 녹음 중이면 `recording_active`, 음성 인식이 준비되지 않았으면 `speech_not_ready`다.
+- 성공 결과 `{"applied":true,"meetingId":...,"job":{...}}`의 `job`은 `jobs_list`와 같은
+  형식의 가져오기 작업이다. 진행과 완료는 `jobs_list`로 확인하고 `job_cancel`로 취소할 수 있다.
+  `applied:true`는 작업이 대기열에 들어갔다는 뜻이며 가져오기 완료가 아니다.
+- 이 도구는 음성 인식을 따로 시작하지 않는다. 가져온 뒤의 음성 인식 여부는 앱의 현재 가져오기
+  동작을 따른다.
+
+`status.speech`는 실행 중인 Nero의 메모리 상태만 읽는다. 앱이 없으면 `state:"unavailable"`,
+이 기능 이전의 앱이면 `state:"unsupported"`이며 `status` 조회 자체는 실패하지 않는다.
+
+| 필드 | 의미 |
+|---|---|
+| `engine` | 현재 엔진 ID. 설정 파일을 읽지 못하면 `null` |
+| `speakerEnabled` | 화자 구분 사용 여부 |
+| `supported`, `ready` | 현재 엔진의 실행 지원 여부와 모델 준비 여부 |
+| `choices[]` | `id`, `title`, `supported`, `ready`, `recommended`, `memoryWarning`, `modelBytes` |
+| `switch` | 대기 중인 전환의 `target`, 다운로드 진행 여부 `preparing`, 다운로드 작업 `jobId`. 없으면 `null` |
+
+`modelBytes`는 선택한 엔진에 필요한 음성 모델 전체 크기다(Qwen은 녹음 중 미리 보기용 Nemotron
+포함). 이미 받은 부분을 빼지 않으며 화자 분석 모델은 포함하지 않는다. `recommended`는 기기 사양에 따른 제안이며 엔진 변경이나 다운로드 권한이 아니다.
+
+`speech_engine_set`(CLI `speech set ENGINE`)은 `Processing::request_speech_engine`과 같은
+동작이다. 결과의 `outcome`은 다음 중 하나이며 `speech`에 변경 후 상태를 함께 반환한다.
+
+| outcome | 의미 |
+|---|---|
+| `active` | 선택한 엔진이 현재 엔진이며 모델이 준비됨. 대기 중인 전환 없이 이미 사용 중이면 아무것도 바꾸지 않음 |
+| `selected` | 처음 설정이라 선택만 기록함. 모델 준비는 Nero 화면에서 명시적으로 시작 |
+| `downloading` | 현재 엔진을 유지한 채 선택한 엔진의 모델을 내려받고, 준비되면 전환 |
+| `unconfirmed` | 요청은 수락됐지만 전환 상태를 확인하지 못함. `status`로 확인 |
+
+- 준비되지 않은 엔진은 수 GB 다운로드를 시작할 수 있다. 호출 전에 사용자에게 크기를 알린다.
+- 준비되지 않았고 `memoryWarning`이 있는 엔진은 경고를 사용자에게 보여 주고 명시적으로 확인받은
+  경우에만 `acknowledgeMemoryWarning:true`(CLI `--acknowledge-memory-warning`)로 보낸다.
+  없으면 `memory_warning_unacknowledged`다. 설정 화면의 확인과 같으며 확인 여부는 저장하지 않는다.
+- 녹음 중이면 `recording_active`, 처리/다운로드 작업이 대기 또는 실행 중이면 `processing_busy`다.
+  같은 엔진으로 다운로드 중인 전환이 있으면 다시 요청하지 않고 현재 상태를 반환한다.
+- 지원하지 않는 엔진은 `speech_engine_unsupported`, 앱이 모르는 ID는 `speech_engine_unknown`이다.
+- 선택은 이후 녹음과 가져오기에 적용되며 기존 회의를 다시 처리하지 않는다. 실행 실패 시 다른
+  엔진으로 자동 전환하지 않는다.
+- 설정 화면과 같이 Qwen이 아닌 엔진을 선택하면 앱의 1회성 Qwen 전환 안내도 거절로 기록된다.
+
+`speech_switch_cancel`(CLI `speech cancel-switch --target ENGINE`)은
+`Processing::cancel_speech_switch`와 같이 대기 중인 전환과 그 다운로드를 취소하며 현재 엔진은
+바꾸지 않는다. `target`은 `status.speech.switch.target`과 같아야 하며 다르면 `edit_conflict`,
+대기 중인 전환이 없으면 `speech_switch_not_found`다. 다운로드 종료는 `status`나 `jobs_list`로 확인한다.
+충돌이나 결과 미확인 응답은 자동으로 반복하지 않는다.
 
 ## 저장소 접근
 
@@ -309,8 +422,8 @@ portable `mcp.json`의 `./server/nero.exe`는 패키지 형식이므로 해당 �
 `prepare:agent`는 대상 OS의 실행 파일과 `agent/integrations` 템플릿을 함께 준비한다.
 공통 템플릿에는 사용자 경로, 인증 정보와 회의 데이터가 없다. Nero가 연결 버튼을 처리할 때
 실제 데이터 경로와 연결 상태 정보를 넣어 설치 패키지를 만든다.
-연결 패키지 버전은 앱의 `0.0.1`과 별도로 `0.0.1-nero.<release>`를 사용한다. CLI,
-프로토콜과 템플릿/스킬이 바뀔 때 연동 버전을 올린다. UI만 바뀌는 앱 빌드는 검증된 서명
+연결 패키지 버전은 제품 버전과 별도로 `0.3.0-nero.<N>`을 사용하며, 형식과 증가 규칙은
+[연동 패키지 번호](versioning.md#연동-패키지-번호)를 따른다. UI만 바뀌는 앱 빌드는 검증된 서명
 CLI와 템플릿을 재사용할 수 있으며 클라이언트 업데이트를 요구하지 않는다.
 
 - Claude MCPB: manifest 0.3의 `server.type=binary`, 대상 OS만의 compatibility, 실행 파일,

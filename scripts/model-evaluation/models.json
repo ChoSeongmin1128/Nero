@@ -1,0 +1,252 @@
+{
+  "schema_version": 1,
+  "models": [
+    {
+      "id": "nemotron-mini-64e-fused-w4a16",
+      "adapter": "nemotron",
+      "format": "safetensors",
+      "variant": "fused-64e-w4a16-g64",
+      "source": {
+        "repository": "akhaliq/nemotron-3.5-transcribe-mini-64e",
+        "revision": "0a47983108d65c81b36b9c7b7c993bbd126cfd64",
+        "subfolder": "fused-64e-w4a16-g64",
+        "url": "https://huggingface.co/akhaliq/nemotron-3.5-transcribe-mini-64e",
+        "license": "openmdw-1.1",
+        "revision_url": "https://huggingface.co/akhaliq/nemotron-3.5-transcribe-mini-64e/commit/0a47983108d65c81b36b9c7b7c993bbd126cfd64"
+      },
+      "capabilities": {
+        "transcribe": {
+          "status": "claimed",
+          "note": "모델 카드의 fused 음성 인식"
+        },
+        "integrated_diarization": {
+          "status": "claimed",
+          "note": "모델 카드 주장, 이 평가 경로 미검증"
+        },
+        "timestamps": {
+          "status": "claimed",
+          "note": "모델 카드의 CTC head 주장, 이 평가 경로 미검증"
+        },
+        "context": {
+          "status": "claimed",
+          "note": "모델 카드의 contextual biasing 주장, 이 평가 경로 미검증"
+        },
+        "postprocess": {
+          "status": "unverified",
+          "note": "이 평가 경로에서 확인되지 않음"
+        }
+      },
+      "prerequisites": [
+        "CUDA GPU와 vLLM compressed-tensors Marlin 경로가 필요하며 Mac 실행은 검증되지 않음",
+        "로컬 실행 경로 구현됨, 실제 모델 실행 미검증",
+        "backbone-64e-w4a16-g64는 오디오 인코더가 없는 text-only 모델이므로 거부",
+        "10GB는 모델 카드의 가중치 크기이며 최대 RAM/VRAM 측정값이 아님"
+      ]
+    },
+    {
+      "id": "moss-transcribe-diarize",
+      "adapter": "moss",
+      "format": "safetensors",
+      "variant": "native-harness",
+      "source": {
+        "repository": "OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        "revision": "704aa4a9c304e8520be88901e0d1960158ef5b15",
+        "manifest": "crates/nero-core/resources/models/moss.json",
+        "url": "https://huggingface.co/OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        "license": "apache-2.0"
+      },
+      "capabilities": {
+        "transcribe": {
+          "status": "documented",
+          "note": "기존 native harness 경로"
+        },
+        "integrated_diarization": {
+          "status": "documented",
+          "note": "단일 녹음 범위 speaker 출력"
+        },
+        "timestamps": {
+          "status": "documented",
+          "note": "native segment 출력"
+        },
+        "context": {
+          "status": "unverified",
+          "note": "이 평가 경로에서 확인되지 않음"
+        },
+        "postprocess": {
+          "status": "unverified",
+          "note": "이 평가 경로에서 확인되지 않음"
+        }
+      },
+      "prerequisites": [
+        "Apple silicon 및 기존 MLX native harness 실행 파일",
+        "mono 16 kHz WAV",
+        "완전 입력 및 EOS 증거 검증 필요"
+      ]
+    },
+    {
+      "id": "qwen3-asr-1.7b-ko",
+      "adapter": "qwen",
+      "format": "safetensors",
+      "variant": "1.7b-ko",
+      "source": {
+        "repository": "TeamUNIVA/qwen3_asr_1.7b_ko",
+        "revision": "ac8f5e5185a66a5caedb229ef435affdbacccf3c",
+        "url": "https://huggingface.co/TeamUNIVA/qwen3_asr_1.7b_ko",
+        "license": "apache-2.0"
+      },
+      "capabilities": {
+        "transcribe": {
+          "status": "documented",
+          "note": "한국어 ASR 모델 카드 및 qwen-asr API"
+        },
+        "integrated_diarization": {
+          "status": "unverified",
+          "note": "이 평가 경로에서 확인되지 않음"
+        },
+        "timestamps": {
+          "status": "unverified",
+          "note": "이 평가 경로에서 확인되지 않음"
+        },
+        "context": {
+          "status": "documented",
+          "note": "qwen-asr transcribe context 인자, 효과 미검증"
+        },
+        "postprocess": {
+          "status": "unverified",
+          "note": "이 평가 경로에서 확인되지 않음"
+        }
+      },
+      "prerequisites": [
+        "별도로 준비된 로컬 qwen-asr와 모델",
+        "이 평가 어댑터는 타임스탬프 및 화자 출력 미제공"
+      ]
+    },
+    {
+      "id": "gemma-4-e4b-q4",
+      "adapter": "correction",
+      "format": "gguf",
+      "variant": "E4B Q4_0",
+      "source": {
+        "repository": "google/gemma-4-E4B-it-qat-q4_0-gguf",
+        "revision": "4b4a2c1d584be7264f87aac328a1bc739ce81b6c",
+        "file": "gemma-4-E4B_q4_0-it.gguf",
+        "sha256": "676c35070db6dbe52f93e9c864ee0fba4eddea94b9c875d9cb10daff453fbaee",
+        "manifest": "apps/desktop/models/summary.json",
+        "url": "https://huggingface.co/google/gemma-4-E4B-it-qat-q4_0-gguf",
+        "license": "apache-2.0"
+      },
+      "capabilities": {
+        "transcribe": {
+          "status": "unverified",
+          "note": "이 평가 경로에서 확인되지 않음"
+        },
+        "integrated_diarization": {
+          "status": "unverified",
+          "note": "이 평가 경로에서 확인되지 않음"
+        },
+        "timestamps": {
+          "status": "unverified",
+          "note": "이 평가 경로에서 확인되지 않음"
+        },
+        "context": {
+          "status": "unverified",
+          "note": "이 평가 경로에서 확인되지 않음"
+        },
+        "postprocess": {
+          "status": "documented",
+          "note": "후보 단위 accept/keep/uncertain 평가 경로, 품질 미검증"
+        }
+      },
+      "prerequisites": [
+        "로컬 llama-server 및 GGUF 파일",
+        "크기와 정밀도가 다른 Gemma는 별도 사용자 프로필로 지정"
+      ]
+    },
+    {
+      "id": "qwen3.5-4b-gguf",
+      "adapter": "correction",
+      "format": "gguf",
+      "variant": "4B user-selected GGUF",
+      "source": {
+        "base_repository": "Qwen/Qwen3.5-4B",
+        "conversion_repository": null,
+        "revision": null,
+        "file": null,
+        "sha256": null,
+        "url": "https://huggingface.co/Qwen/Qwen3.5-4B",
+        "base_revision": "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a",
+        "base_license": "apache-2.0",
+        "conversion_license": null
+      },
+      "capabilities": {
+        "transcribe": {
+          "status": "unverified",
+          "note": "이 평가 경로에서 확인되지 않음"
+        },
+        "integrated_diarization": {
+          "status": "unverified",
+          "note": "이 평가 경로에서 확인되지 않음"
+        },
+        "timestamps": {
+          "status": "unverified",
+          "note": "이 평가 경로에서 확인되지 않음"
+        },
+        "context": {
+          "status": "unverified",
+          "note": "이 평가 경로에서 확인되지 않음"
+        },
+        "postprocess": {
+          "status": "documented",
+          "note": "후보 단위 accept/keep/uncertain 평가 경로, 품질 미검증"
+        }
+      },
+      "prerequisites": [
+        "실제 GGUF 변환 저장소, 불변 revision, 파일명과 SHA-256을 사용자가 지정",
+        "로컬 llama-server와 선택한 GGUF의 호환성 미검증"
+      ]
+    },
+    {
+      "id": "qwen3.5-9b-gguf",
+      "adapter": "correction",
+      "format": "gguf",
+      "variant": "9B user-selected GGUF",
+      "source": {
+        "base_repository": "Qwen/Qwen3.5-9B",
+        "conversion_repository": null,
+        "revision": null,
+        "file": null,
+        "sha256": null,
+        "url": "https://huggingface.co/Qwen/Qwen3.5-9B",
+        "base_revision": "c202236235762e1c871ad0ccb60c8ee5ba337b9a",
+        "base_license": "apache-2.0",
+        "conversion_license": null
+      },
+      "capabilities": {
+        "transcribe": {
+          "status": "unverified",
+          "note": "이 평가 경로에서 확인되지 않음"
+        },
+        "integrated_diarization": {
+          "status": "unverified",
+          "note": "이 평가 경로에서 확인되지 않음"
+        },
+        "timestamps": {
+          "status": "unverified",
+          "note": "이 평가 경로에서 확인되지 않음"
+        },
+        "context": {
+          "status": "unverified",
+          "note": "이 평가 경로에서 확인되지 않음"
+        },
+        "postprocess": {
+          "status": "documented",
+          "note": "후보 단위 accept/keep/uncertain 평가 경로, 품질 미검증"
+        }
+      },
+      "prerequisites": [
+        "실제 GGUF 변환 저장소, 불변 revision, 파일명과 SHA-256을 사용자가 지정",
+        "로컬 llama-server와 선택한 GGUF의 호환성 미검증"
+      ]
+    }
+  ]
+}

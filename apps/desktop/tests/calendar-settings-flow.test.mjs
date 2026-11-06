@@ -70,7 +70,9 @@ test('unconfigured builds do not start authorization', async () => {
 test('countdown handles five-minute, second, expired, and invalid values', () => {
   assert.equal(reminderCountdown(300_000, 0), '5분 후');
   assert.equal(reminderCountdown(59_001, 0), '60초 후');
-  assert.equal(reminderCountdown(1, 2), '시작 시간');
+  assert.equal(reminderCountdown(1, 2), '지금 시작');
+  assert.equal(reminderCountdown(0, 60_000), '1분 지남');
+  assert.equal(reminderCountdown(0, 299_999), '4분 지남');
   assert.equal(reminderCountdown(NaN, 0), '시작 시간');
 });
 

@@ -2,7 +2,7 @@ use super::{Error, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-const SERVICE: &str = "io.github.choseongmin1128.nero.desktop.notion-context";
+const SERVICE: &str = nero_core::environment::CURRENT.notion_credentials_service;
 const CHUNK_BYTES: usize = 1024;
 const MAX_BYTES: usize = 512 * 1024;
 pub(super) trait Vault {

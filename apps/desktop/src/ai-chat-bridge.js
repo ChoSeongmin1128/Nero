@@ -5,13 +5,18 @@ function call(command, args = {}) {
   if (!isTauri()) return Promise.reject(new Error('Nero 앱에서 열어 주세요.'));
   return invoke(command, args).catch(error => { throw new Error(typeof error === 'string' ? error : '요청을 처리하지 못했습니다. 다시 시도해 주세요.'); });
 }
+export const composerCatalog = () => call('ai_chat_composer_catalog');
 export const accounts = () => call('ai_chat_accounts');
 export const connect = (provider, accountId = null) => call('ai_chat_connect', { provider, accountId });
 export const finishConnect = attemptId => call('ai_chat_finish_connect', { attemptId });
 export const cancelConnect = attemptId => call('ai_chat_cancel_connect', { attemptId });
 export const disconnect = accountId => call('ai_chat_disconnect', { accountId });
-export const models = accountId => call('ai_chat_models', { accountId });
-export const list = () => call('ai_chat_list');
+export const models = (accountId, refresh = true) => call('ai_chat_models', { accountId, refresh });
+export const list = (trash = false) => call('ai_chat_list', { trash });
+export const trash = conversationIds => call('ai_chat_trash', { conversationIds });
+export const restore = conversationIds => call('ai_chat_restore', { conversationIds });
+export const purge = conversationIds => call('ai_chat_purge', { conversationIds });
+export const selectVersion = (conversationId, messageId) => call('ai_chat_select_version', { conversationId, messageId });
 export const create = () => call('ai_chat_create');
 export const read = conversationId => call('ai_chat_read', { conversationId });
 export const remove = conversationId => call('ai_chat_delete', { conversationId });
@@ -34,3 +39,5 @@ export const meetingSources = meetingId => call('meeting_context_sources', { mee
 export const meetingAddSource = request => call('meeting_context_add', request);
 export const meetingRemoveSource = request => call('meeting_context_remove', request);
 export const meetingRefreshSource = request => call('meeting_context_refresh', request);
+export const domainGlossaryView = meetingId => call('domain_glossary_view', { meetingId });
+export const domainGlossarySave = request => call('domain_glossary_save', request);

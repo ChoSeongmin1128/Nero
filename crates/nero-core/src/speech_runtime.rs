@@ -15,6 +15,18 @@ static BASE: LazyLock<String> = LazyLock::new(|| {
     )
 });
 
+static ASR_VERSION: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "nemo-speech-asr {}",
+        SPEC["version"].as_str().unwrap().trim_start_matches('v')
+    )
+});
+
+/// The C ABI version string the bundled runtime reports.
+pub fn asr_version() -> &'static str {
+    ASR_VERSION.as_str()
+}
+
 pub fn current() -> &'static str {
     for_target(if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         "macos-arm64"
@@ -70,7 +82,9 @@ mod tests {
                 identity.split_once('@').unwrap().1,
                 recipe["pin"].as_str().unwrap()
             );
-            assert!(identity.contains(recipe["patch"]["sha256"].as_str().unwrap()));
+            if let Some(hash) = recipe["patch"]["sha256"].as_str() {
+                assert!(identity.contains(hash));
+            }
             if let Some(hash) = recipe["windowsPatch"]["sha256"].as_str() {
                 assert!(identity.ends_with(hash));
             }
@@ -85,5 +99,23 @@ mod tests {
         assert!(!known(&format!("{previous}-changed")));
         assert!(known(&BASE));
         assert!(!known("nemo-speech-0.2.0@unverified"));
+        for target in ["macos-arm64", "windows-x64"] {
+            for previous in SPEC["sourceBuilds"][target]["readableIdentities"]
+                .as_array()
+                .unwrap()
+            {
+                assert!(known(previous.as_str().unwrap()));
+            }
+        }
+        assert_eq!(
+            asr_version(),
+            format!(
+                "nemo-speech-asr {}",
+                BASE.split_once('@')
+                    .unwrap()
+                    .0
+                    .trim_start_matches("nemo-speech-")
+            )
+        );
     }
 }

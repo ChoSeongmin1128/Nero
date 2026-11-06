@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { build } from 'esbuild';
 import { Window } from 'happy-dom';
+import { markdownSource } from '../scripts/build-markdown.mjs';
+const markdownBundle = await markdownSource();
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const html = await readFile(new URL('../src/index.html', import.meta.url), 'utf8');
@@ -27,6 +29,7 @@ test('one transcript panel stays in the body through processing and summary comp
   const window = new Window({ url: 'http://nero.test', settings: { enableJavaScriptEvaluation: true, suppressInsecureJavaScriptEnvironmentWarning: true, disableCSSFileLoading: true, disableJavaScriptFileLoading: true } });
   t.after(() => window.happyDOM.abort());
   window.document.write(html);
+  window.eval(markdownBundle);
   for (const name of ['appearance', 'icons', 'components']) window.eval(await readFile(new URL(`../../../design-system/${name}.js`, import.meta.url), 'utf8'));
   const errors = [];
   window.addEventListener('error', event => errors.push(event.error || event.message));
@@ -131,6 +134,7 @@ test('the real application HTML boots and opens all settings tabs without stale 
   const errors = [];
   window.addEventListener('error', event => errors.push(event.error || event.message));
   window.document.write(html);
+  window.eval(markdownBundle);
   for (const name of ['appearance', 'icons', 'components']) window.eval(await readFile(new URL(`../../../design-system/${name}.js`, import.meta.url), 'utf8'));
   const calls = [];
   const subscriptions = {};
@@ -227,6 +231,7 @@ test('the real application HTML boots and opens all settings tabs without stale 
 test('startup integration alerts appear without visiting settings and route to the matching connection', async t => {
   const window = new Window({ url: 'http://nero.test', settings: { enableJavaScriptEvaluation: true, suppressInsecureJavaScriptEnvironmentWarning: true, disableCSSFileLoading: true, disableJavaScriptFileLoading: true } });
   t.after(() => window.happyDOM.abort()); window.document.write(html);
+  window.eval(markdownBundle);
   for (const name of ['appearance', 'icons', 'components']) window.eval(await readFile(new URL(`../../../design-system/${name}.js`, import.meta.url), 'utf8'));
   let connects = 0;
   const stubs = {
@@ -262,6 +267,7 @@ test('settings dismiss gestures preserve edits, nested controls, composition and
   const window = new Window({ url: 'http://nero.test', settings: { enableJavaScriptEvaluation: true, suppressInsecureJavaScriptEnvironmentWarning: true, disableCSSFileLoading: true, disableJavaScriptFileLoading: true } });
   t.after(() => window.happyDOM.abort());
   window.document.write(html);
+  window.eval(markdownBundle);
   for (const name of ['appearance', 'icons', 'components']) window.eval(await readFile(new URL(`../../../design-system/${name}.js`, import.meta.url), 'utf8'));
   window.document.dispatchEvent(new window.Event('DOMContentLoaded'));
   const stubs = {

@@ -107,7 +107,7 @@ fn verified(
 pub fn discover_prepared(root: &Path) -> Result<Runner, String> {
     discover_prepared_with_cancel(root, None)
 }
-fn discover_prepared_with_cancel(
+pub(super) fn discover_prepared_with_cancel(
     root: &Path,
     cancel: Option<&AtomicBool>,
 ) -> Result<Runner, String> {

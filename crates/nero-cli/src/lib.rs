@@ -1,3 +1,4 @@
+mod app_tools;
 pub mod cli;
 mod connection;
 mod dates;
@@ -15,7 +16,7 @@ use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 
 pub use nero_core::identity::APP_IDENTIFIER;
-pub const METHODS: [&str; 30] = [
+pub const METHODS: [&str; 70] = [
     "app_update",
     "jobs_list",
     "job_cancel",
@@ -43,12 +44,55 @@ pub const METHODS: [&str; 30] = [
     "meetings_move",
     "meetings_trash",
     "meetings_restore",
+    "meeting_import",
     "folder_create",
     "folder_rename",
     "folder_delete",
+    "speech_engine_set",
+    "speech_switch_cancel",
+    "ai_chats_list",
+    "ai_chat_get",
+    "ai_models_list",
+    "ai_chat_send",
+    "ai_chat_cancel",
+    "ai_chat_version_select",
+    "ai_answer_save",
+    "ai_chats_trash",
+    "ai_chats_restore",
+    "notion_status",
+    "meeting_sources_list",
+    "meeting_source_add",
+    "meeting_source_refresh",
+    "meeting_source_remove",
+    "calendar_status",
+    "calendar_events",
+    "calendars_select",
+    "calendar_sync",
+    "calendar_attendees",
+    "meeting_from_calendar",
+    "terminology_get",
+    "glossary_save",
+    "settings_get",
+    "settings_set",
+    "recording_devices",
+    "recording_control",
+    "meeting_create",
+    "meeting_notes_append",
+    "transcription_start",
+    "speakers_analyze",
+    "models_prepare",
+    "transcript_history",
+    "transcript_save",
+    "transcript_restore",
+    "speakers_save",
+    "job_retry",
+    "job_acknowledge",
 ];
 
 pub fn is_read_only(method: &str) -> bool {
+    if let Some(tool) = app_tools::find(method) {
+        return tool.read_only;
+    }
     matches!(
         method,
         "jobs_list"
@@ -67,6 +111,9 @@ pub fn is_read_only(method: &str) -> bool {
 }
 
 pub fn is_destructive(method: &str) -> bool {
+    if let Some(tool) = app_tools::find(method) {
+        return tool.destructive;
+    }
     matches!(
         method,
         "app_update"
@@ -83,20 +130,32 @@ pub fn is_destructive(method: &str) -> bool {
             | "meetings_trash"
             | "folder_rename"
             | "folder_delete"
+            | "speech_switch_cancel"
+    )
+}
+
+// Tools that may reach services outside this device: the public update channel and
+// speech model downloads.
+pub fn is_open_world(method: &str) -> bool {
+    app_tools::find(method).map_or_else(
+        || matches!(method, "app_update" | "speech_engine_set"),
+        |tool| tool.open_world,
     )
 }
 
 #[derive(Debug)]
 pub struct QueryError {
     pub code: &'static str,
-    pub message: &'static str,
+    pub message: std::borrow::Cow<'static, str>,
 }
 
 impl QueryError {
     pub fn invalid() -> Self {
         Self {
             code: "invalid_input",
-            message: "입력값이 올바르지 않습니다. 도움말의 형식과 조회 범위를 확인해 주세요.",
+            message: std::borrow::Cow::Borrowed(
+                "입력값이 올바르지 않습니다. 도움말의 형식과 조회 범위를 확인해 주세요.",
+            ),
         }
     }
 
@@ -109,7 +168,7 @@ pub fn dispatch(root: &Path, method: &str, params: Value) -> Result<Value, Query
     if !METHODS.contains(&method) {
         return Err(QueryError {
             code: "unsupported_method",
-            message: "지원하지 않는 Nero 명령입니다.",
+            message: std::borrow::Cow::Borrowed("지원하지 않는 Nero 명령입니다."),
         });
     }
     let root = canonical_data_dir(root)?;
@@ -117,18 +176,22 @@ pub fn dispatch(root: &Path, method: &str, params: Value) -> Result<Value, Query
     if method == "app_update" {
         return updates::dispatch(root, params);
     }
+    if app_tools::find(method).is_some() {
+        return app_tools::dispatch(root, method, params);
+    }
     if method.starts_with("template") {
         return templates::dispatch(root, method, params);
     }
     if nero_core::agent_control::METHODS.contains(&method)
         || nero_core::agent_control::JOB_METHODS.contains(&method)
+        || nero_core::agent_control::PROCESSING_METHODS.contains(&method)
     {
         return mutations::dispatch(root, method, params);
     }
     if method != "status" && !root.exists() {
         return Err(QueryError {
             code: "library_not_found",
-            message: "Nero 데이터 폴더가 없습니다. 앱에서 저장한 뒤 다시 시도하거나 --data-dir을 지정해 주세요.",
+            message: std::borrow::Cow::Borrowed("Nero 데이터 폴더가 없습니다. 앱에서 저장한 뒤 다시 시도하거나 --data-dir을 지정해 주세요."),
         });
     }
     let params = dates::normalize(method, params)?;
@@ -136,8 +199,9 @@ pub fn dispatch(root: &Path, method: &str, params: Value) -> Result<Value, Query
     let mut result = reader.query(method, params).map_err(query_error)?;
     if method == "status" {
         result["versions"] = versions::status(root);
+        result["speech"] = mutations::speech_status(root);
         result["readOnly"] = json!(false);
-        result["capabilities"] = json!({"queriesReadOnly":true,"templateWrites":true,"meetingWritesRequireApp":true,"summaryImportsRequireApp":true,"jobQueriesRequireApp":true,"jobCancellationRequireApp":true,"appUpdatesRequireApp":true});
+        result["capabilities"] = json!({"appServicesRequireApp":true,"queriesReadOnly":true,"templateWrites":true,"meetingWritesRequireApp":true,"summaryImportsRequireApp":true,"jobQueriesRequireApp":true,"jobCancellationRequireApp":true,"appUpdatesRequireApp":true,"meetingImportsRequireApp":true,"speechSettingsRequireApp":true});
     }
     Ok(result)
 }
@@ -150,16 +214,64 @@ pub fn canonical_data_dir(root: &Path) -> Result<PathBuf, QueryError> {
             .map_err(|_| QueryError::invalid())?
             .join(root)
     };
+    if nero_core::environment::CURRENT.development {
+        reject_production_data_path(&root)?;
+    }
     if let Some(destination) = nero_core::identity::migrated_data_dir(&root) {
         return Ok(destination);
     }
     if nero_core::identity::legacy_path(&root) && !root.exists() {
         return Err(QueryError {
             code: "library_not_found",
-            message: "이전 데이터 경로의 이전 완료를 확인할 수 없습니다. Nero 앱에서 데이터 이전 상태를 확인해 주세요.",
+            message: std::borrow::Cow::Borrowed("이전 데이터 경로의 이전 완료를 확인할 수 없습니다. Nero 앱에서 데이터 이전 상태를 확인해 주세요."),
         });
     }
     Ok(root)
+}
+
+fn reject_production_data_path(root: &Path) -> Result<(), QueryError> {
+    let denied = || {
+        QueryError {
+        code: "unsafe_data_dir",
+        message: std::borrow::Cow::Borrowed("개발 CLI에서는 운영 또는 이전 데이터 경로를 사용할 수 없습니다. 운영 CLI를 사용해 주세요."),
+    }
+    };
+    let protected = |path: &Path| {
+        path.components().any(|component| {
+            component.as_os_str().to_str().is_some_and(|name| {
+                name.eq_ignore_ascii_case(nero_core::identity::APP_IDENTIFIER)
+                    || name.eq_ignore_ascii_case("io.github.choseongmin1128.grove.desktop")
+            })
+        })
+    };
+    if !root.is_absolute() || protected(root) {
+        return Err(denied());
+    }
+    // Resolve every existing prefix so a symlink followed by a missing fixture path
+    // or by `..` cannot conceal a protected directory.
+    let mut resolved = PathBuf::new();
+    for component in root.components() {
+        resolved.push(component.as_os_str());
+        // A Windows drive prefix is not rooted until its following RootDir.
+        if matches!(component, std::path::Component::Prefix(_)) {
+            continue;
+        }
+        match std::fs::canonicalize(&resolved) {
+            Ok(path) => resolved = path,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                match std::fs::symlink_metadata(&resolved) {
+                    Ok(_) => return Err(denied()),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(_) => return Err(denied()),
+                }
+            }
+            Err(_) => return Err(denied()),
+        }
+        if protected(&resolved) {
+            return Err(denied());
+        }
+    }
+    Ok(())
 }
 
 fn query_error(error: CoreError) -> QueryError {
@@ -195,17 +307,17 @@ fn query_error(error: CoreError) -> QueryError {
                     "데이터 경로에 연결된 파일/폴더 또는 일반 폴더가 아닌 항목이 있습니다. 실제 Nero 데이터 폴더를 지정해 주세요.",
                 ),
             };
-            QueryError { code, message }
+            QueryError { code, message: message.into() }
         }
         CoreError::InvalidInput(_) => QueryError::invalid(),
-        CoreError::EditConflict => QueryError { code:"edit_conflict",message:"다른 변경이 저장되었습니다. 최신 정보를 읽고 다시 시도해 주세요." },
+        CoreError::EditConflict => QueryError { code:"edit_conflict",message:std::borrow::Cow::Borrowed("다른 변경이 저장되었습니다. 최신 정보를 읽고 다시 시도해 주세요.") },
         CoreError::MeetingNotFound => QueryError {
             code: "meeting_not_found",
-            message: "회의를 찾을 수 없습니다.",
+            message: std::borrow::Cow::Borrowed("회의를 찾을 수 없습니다."),
         },
         _ => QueryError {
             code: "library_unavailable",
-            message: "Nero 저장 정보를 읽을 수 없습니다. 데이터 폴더와 접근 권한을 확인하고 잠시 후 다시 조회해 주세요.",
+            message: std::borrow::Cow::Borrowed("Nero 저장 정보를 읽을 수 없습니다. 데이터 폴더와 접근 권한을 확인하고 잠시 후 다시 조회해 주세요."),
         },
     }
 }
@@ -213,7 +325,9 @@ fn query_error(error: CoreError) -> QueryError {
 pub fn default_data_dir() -> Result<PathBuf, QueryError> {
     data_dir_for(|name| std::env::var_os(name), std::env::consts::OS).ok_or(QueryError {
         code: "data_dir_unavailable",
-        message: "Nero 데이터 경로를 확인할 수 없습니다. --data-dir을 지정해 주세요.",
+        message: std::borrow::Cow::Borrowed(
+            "Nero 데이터 경로를 확인할 수 없습니다. --data-dir을 지정해 주세요.",
+        ),
     })
 }
 
@@ -234,18 +348,22 @@ fn data_dir_for(
             .filter(|value| value.is_absolute())
             .or_else(|| home().map(|value| value.join(".local/share")))?,
     };
-    Some(base.join(APP_IDENTIFIER))
+    Some(base.join(nero_core::environment::CURRENT.identifier))
 }
 
 pub fn input_schema(method: &str) -> Map<String, Value> {
     if method == "app_update" {
         return updates::schema();
     }
+    if let Some(tool) = app_tools::find(method) {
+        return app_tools::schema(tool);
+    }
     if method.starts_with("template") {
         return templates::schema(method);
     }
     if nero_core::agent_control::METHODS.contains(&method)
         || nero_core::agent_control::JOB_METHODS.contains(&method)
+        || nero_core::agent_control::PROCESSING_METHODS.contains(&method)
     {
         return mutations::schema(method);
     }
@@ -339,6 +457,7 @@ mod tests {
     use super::*;
     use std::ffi::OsString;
 
+    #[cfg(all(not(debug_assertions), not(feature = "development")))]
     #[test]
     fn incomplete_identity_migration_cannot_initialize_the_missing_source() {
         let temporary = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
@@ -384,6 +503,80 @@ mod tests {
     }
 
     #[test]
+    fn development_path_guard_rejects_protected_paths_and_allows_fixtures() {
+        let temp = tempfile::tempdir().unwrap();
+        let fixture = temp.path().join("fixture").join("missing");
+        assert!(reject_production_data_path(&fixture).is_ok());
+        for identifier in [APP_IDENTIFIER, "io.github.choseongmin1128.grove.desktop"] {
+            let protected = temp.path().join(identifier);
+            assert_eq!(
+                reject_production_data_path(&protected.join("missing"))
+                    .unwrap_err()
+                    .code,
+                "unsafe_data_dir"
+            );
+            assert_eq!(
+                reject_production_data_path(&protected.join("..").join("other"))
+                    .unwrap_err()
+                    .code,
+                "unsafe_data_dir"
+            );
+        }
+        if nero_core::environment::CURRENT.development {
+            let protected = temp.path().join(APP_IDENTIFIER);
+            for method in ["status", "app_update", "template_create", "meeting_update"] {
+                assert_eq!(
+                    dispatch(&protected, method, json!({})).unwrap_err().code,
+                    "unsafe_data_dir"
+                );
+            }
+            assert!(!protected.exists());
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn canonical_windows_prefix_allows_missing_fixtures_but_keeps_production_blocked() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let missing = root.join("missing");
+        assert!(reject_production_data_path(&missing).is_ok());
+        assert!(!missing.exists());
+        for identifier in [APP_IDENTIFIER, "io.github.choseongmin1128.grove.desktop"] {
+            let protected = root.join(identifier);
+            assert_eq!(
+                reject_production_data_path(&protected).unwrap_err().code,
+                "unsafe_data_dir"
+            );
+            assert!(!protected.exists());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn development_path_guard_rejects_symlinks_to_protected_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let protected = temp.path().join(APP_IDENTIFIER);
+        std::fs::create_dir(&protected).unwrap();
+        let alias = temp.path().join("alias");
+        std::os::unix::fs::symlink(&protected, &alias).unwrap();
+        assert_eq!(
+            reject_production_data_path(&alias.join("missing"))
+                .unwrap_err()
+                .code,
+            "unsafe_data_dir"
+        );
+        let dangling = temp.path().join("dangling");
+        std::os::unix::fs::symlink(temp.path().join("missing"), &dangling).unwrap();
+        assert_eq!(
+            reject_production_data_path(&dangling.join("child"))
+                .unwrap_err()
+                .code,
+            "unsafe_data_dir"
+        );
+    }
+
+    #[test]
     fn platform_paths_use_the_native_identifier_without_legacy_fallback() {
         let xdg = if cfg!(windows) {
             "C:/custom/data"
@@ -398,15 +591,26 @@ mod tests {
         };
         assert_eq!(
             data_dir_for(env, "macos").unwrap(),
-            PathBuf::from("/home/example/Library/Application Support").join(APP_IDENTIFIER)
+            PathBuf::from("/home/example/Library/Application Support")
+                .join(nero_core::environment::CURRENT.identifier)
         );
         assert_eq!(
             data_dir_for(env, "windows").unwrap(),
-            PathBuf::from("C:/Users/example/AppData/Roaming").join(APP_IDENTIFIER)
+            PathBuf::from("C:/Users/example/AppData/Roaming")
+                .join(nero_core::environment::CURRENT.identifier)
         );
         assert_eq!(
             data_dir_for(env, "linux").unwrap(),
-            PathBuf::from(xdg).join(APP_IDENTIFIER)
+            PathBuf::from(xdg).join(nero_core::environment::CURRENT.identifier)
+        );
+        let expected_identifier = if nero_core::environment::CURRENT.development {
+            "io.github.choseongmin1128.nero.desktop.dev"
+        } else {
+            "io.github.choseongmin1128.nero.desktop"
+        };
+        assert_eq!(
+            data_dir_for(env, "macos").unwrap().file_name().unwrap(),
+            expected_identifier
         );
         assert!(data_dir_for(|_| None, "macos").is_none());
     }
@@ -439,6 +643,7 @@ mod tests {
             is_read_only(method)
                 && !matches!(*method, "status" | "jobs_list")
                 && !method.starts_with("template")
+                && app_tools::find(method).is_none()
         }) {
             let schema = Value::Object(input_schema(method));
             assert_eq!(
@@ -502,6 +707,93 @@ mod tests {
         assert!(is_read_only("summary_context"));
         assert!(!is_read_only("summary_import"));
         assert!(is_destructive("summary_import"));
+    }
+
+    #[test]
+    fn processing_schemas_require_explicit_targets_and_stay_out_of_reads() {
+        let import = Value::Object(input_schema("meeting_import"));
+        assert_eq!(import["required"], json!(["path"]));
+        assert_eq!(import["additionalProperties"], false);
+        assert_eq!(
+            import["properties"]["meetingId"]["pattern"],
+            id_schema()["pattern"]
+        );
+        assert_eq!(
+            import["properties"]["expectedVersion"]["pattern"],
+            "^sha256:[0-9a-f]{64}$"
+        );
+        assert_eq!(
+            import["dependentRequired"],
+            json!({"meetingId":["expectedVersion"],"expectedVersion":["meetingId"]})
+        );
+        let description = import["properties"]["path"]["description"]
+            .as_str()
+            .unwrap();
+        for extension in nero_core::AUDIO_IMPORT_EXTENSIONS {
+            assert!(description.contains(extension));
+        }
+        assert!(import["properties"].get("transcribe").is_none());
+        let engine = Value::Object(input_schema("speech_engine_set"));
+        assert_eq!(engine["required"], json!(["engine"]));
+        assert_eq!(
+            engine["properties"]["engine"]["pattern"],
+            "^[A-Za-z0-9]{1,64}$"
+        );
+        assert_eq!(
+            engine["properties"]["acknowledgeMemoryWarning"]["default"],
+            false
+        );
+        assert_eq!(engine["additionalProperties"], false);
+        let cancel = Value::Object(input_schema("speech_switch_cancel"));
+        assert_eq!(cancel["required"], json!(["target"]));
+        assert_eq!(cancel["additionalProperties"], false);
+        for method in [
+            "meeting_import",
+            "speech_engine_set",
+            "speech_switch_cancel",
+        ] {
+            assert!(METHODS.contains(&method));
+            assert!(!is_read_only(method));
+        }
+        assert!(!is_destructive("meeting_import"));
+        assert!(!is_destructive("speech_engine_set"));
+        assert!(is_destructive("speech_switch_cancel"));
+        assert!(is_open_world("speech_engine_set"));
+        assert!(!is_open_world("meeting_import"));
+        assert!(!METHODS.contains(&"speech_status"));
+    }
+
+    #[test]
+    fn processing_requests_without_an_app_never_initialize_a_library() {
+        let temporary = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let missing = temporary.path().join("missing");
+        let audio = temporary.path().join("synthetic.wav");
+        for (method, params) in [
+            ("meeting_import", json!({"path":audio.to_str().unwrap()})),
+            ("speech_engine_set", json!({"engine":"nemotron"})),
+            ("speech_switch_cancel", json!({"target":"qwenKo"})),
+        ] {
+            assert_ne!(
+                dispatch(&missing, method, params).unwrap_err().code,
+                "invalid_input"
+            );
+        }
+        assert_eq!(
+            dispatch(&missing, "meeting_import", json!({"path":"relative.wav"}))
+                .unwrap_err()
+                .code,
+            "invalid_input"
+        );
+        assert_eq!(
+            dispatch(&missing, "speech_status", json!({}))
+                .unwrap_err()
+                .code,
+            "unsupported_method"
+        );
+        let status = dispatch(&missing, "status", json!({})).unwrap();
+        assert_eq!(status["speech"]["state"], "unavailable");
+        assert_eq!(status["capabilities"]["speechSettingsRequireApp"], true);
+        assert!(!missing.exists());
     }
 
     #[test]

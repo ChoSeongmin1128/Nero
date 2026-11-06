@@ -29,6 +29,7 @@ pub fn verify_release_file(package: &Path, signature: &Path, wire: &str) -> Resu
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {
+    enabled: bool,
     phase: String,
     current_version: String,
     // Strings preserve the exact integer across the JavaScript bridge.
@@ -192,6 +193,13 @@ impl Drop for IdleFence {
 
 impl AppUpdates {
     pub fn new(cache: PathBuf) -> Result<Self, String> {
+        Self::for_profile(cache, nero_core::environment::CURRENT)
+    }
+
+    fn for_profile(
+        cache: PathBuf,
+        profile: nero_core::environment::Profile,
+    ) -> Result<Self, String> {
         // This file is embedded in the executable, never read from a writable feed.
         let config: serde_json::Value = serde_json::from_str(include_str!("../../tauri.conf.json"))
             .map_err(|_| "앱 버전을 확인하지 못했습니다.")?;
@@ -201,18 +209,22 @@ impl AppUpdates {
                 .as_str()
                 .unwrap_or(""),
         )?;
-        let previous_recovery = read_limited(&cache.join("recovery.json"), MAX_METADATA)
-            .ok()
+        let enabled = !profile.development;
+        let previous_recovery = enabled
+            .then(|| read_limited(&cache.join("recovery.json"), MAX_METADATA))
+            .and_then(Result::ok)
             .and_then(|bytes| serde_json::from_slice::<RecoveryRecord>(&bytes).ok());
-        let pending_message = read_limited(&cache.join("pending.json"), MAX_METADATA)
-            .ok()
+        let pending_message = enabled
+            .then(|| read_limited(&cache.join("pending.json"), MAX_METADATA))
+            .and_then(Result::ok)
             .and_then(|bytes| serde_json::from_slice::<PendingInstall>(&bytes).ok())
             .and_then(|pending| pending.message(&current));
         // A newly launched app may have been manually repaired. Preserve the
         // historical warning/path without claiming the prior restore succeeded.
         let recovery_message = previous_recovery.as_ref().map(|_| "이전 업데이트에서 앱 복원에 실패했습니다. 이전 앱의 보관 위치와 설치 상태를 확인해 주세요.".to_string()).or(pending_message);
         let status = Status {
-            phase: "idle".into(),
+            enabled,
+            phase: if enabled { "idle" } else { "disabled" }.into(),
             current_version: current.version.clone(),
             current_build: current.build.to_string(),
             available_version: None,
@@ -220,7 +232,11 @@ impl AppUpdates {
             downloaded_bytes: 0,
             total_bytes: None,
             download_ready: false,
-            message: String::new(),
+            message: if enabled {
+                String::new()
+            } else {
+                "개발 앱에서는 자동 업데이트를 사용할 수 없습니다.".into()
+            },
             recovery_message,
             recovery_required: false,
             previous_app_path: previous_recovery
@@ -254,6 +270,13 @@ impl AppUpdates {
 
     fn view(&self) -> Status {
         self.status.lock().unwrap().clone()
+    }
+    fn require_enabled(&self) -> Result<(), String> {
+        if self.view().enabled {
+            Ok(())
+        } else {
+            Err("개발 앱에서는 자동 업데이트를 사용할 수 없습니다.".into())
+        }
     }
     fn restore_cached(&self, app: &tauri::AppHandle) {
         if self.view().phase != "idle" {
@@ -324,6 +347,7 @@ impl AppUpdates {
         status.clone()
     }
     fn updater(&self, app: &tauri::AppHandle) -> Result<tauri_plugin_updater::Updater, String> {
+        self.require_enabled()?;
         let current = self.current.clone();
         app.updater_builder()
             .timeout(Duration::from_secs(30))
@@ -449,6 +473,7 @@ pub async fn app_update_check(
 
 pub(crate) async fn check(app: &tauri::AppHandle) -> Result<Status, String> {
     let state = app.state::<AppUpdates>();
+    state.require_enabled()?;
     let _operation = state
         .operation
         .try_lock()
@@ -512,6 +537,7 @@ fn prepare_download(
     app: &tauri::AppHandle,
 ) -> Result<(Update, tokio::sync::OwnedMutexGuard<()>), String> {
     let state = app.state::<AppUpdates>();
+    state.require_enabled()?;
     let operation = state
         .operation
         .clone()
@@ -549,6 +575,7 @@ async fn download(
     _operation: tokio::sync::OwnedMutexGuard<()>,
 ) -> Result<Status, String> {
     let state = app.state::<AppUpdates>();
+    state.require_enabled()?;
     let result = async {
         validate_url(&update.download_url)?;
         // The official plugin verifies downloads, but its buffer is unbounded.
@@ -644,6 +671,7 @@ pub async fn app_update_install(
 }
 
 pub(crate) async fn prepare_install(app: tauri::AppHandle) -> Result<InstallPlan, String> {
+    app.state::<AppUpdates>().require_enabled()?;
     let state = app.state::<AppUpdates>();
     let desktop = app.state::<crate::DesktopState>();
     if state.view().recovery_required {
@@ -763,6 +791,7 @@ pub fn app_update_recovery_quit(
     desktop: tauri::State<'_, crate::DesktopState>,
 ) -> Result<(), String> {
     require_window(&window)?;
+    state.require_enabled()?;
     if !state.view().recovery_required || !desktop.lifecycle.is_closing() {
         return Err("앱 복구가 필요한 상태에서만 실행할 수 있습니다.".into());
     }
@@ -775,6 +804,30 @@ pub fn app_update_recovery_quit(
 
 #[cfg(test)]
 mod tests {
+    fn production_updates(cache: std::path::PathBuf) -> Result<super::AppUpdates, String> {
+        super::AppUpdates::for_profile(cache, nero_core::environment::PRODUCTION)
+    }
+
+    #[test]
+    fn development_updates_never_replay_cached_production_recovery() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("recovery.json"),
+            br#"{"previousAppPath":"/production"}"#,
+        )
+        .unwrap();
+        let state =
+            super::AppUpdates::for_profile(temp.path().into(), nero_core::environment::DEVELOPMENT)
+                .unwrap();
+        assert!(!state.view().enabled);
+        assert_eq!(state.view().phase, "disabled");
+        assert!(state.view().recovery_message.is_none());
+        assert!(state.require_enabled().is_err());
+        let production = production_updates(temp.path().into()).unwrap();
+        assert!(production.view().enabled);
+        assert!(production.require_enabled().is_ok());
+    }
+
     use super::*;
     fn prepared_fixture(
         root: &Path,
@@ -800,7 +853,7 @@ mod tests {
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path().canonicalize().unwrap();
         let (core, processing, lifecycle, fence) = prepared_fixture(&root.join("library"));
-        let state = AppUpdates::new(root.join("cache")).unwrap();
+        let state = production_updates(root.join("cache")).unwrap();
         let operation = state.operation.clone().try_lock_owned().unwrap();
         let (release, released) = std::sync::mpsc::channel();
         let plan = InstallPlan {
@@ -853,7 +906,7 @@ mod tests {
             std::fs::read(backup.join("marker")).unwrap(),
             b"preserved previous application"
         );
-        let state = AppUpdates::new(cache.clone()).unwrap();
+        let state = production_updates(cache.clone()).unwrap();
         let status = state.latch_recovery(record, receipt_saved);
         let json = serde_json::to_value(status).unwrap();
         assert_eq!(json["phase"], "recoveryRequired");
@@ -867,7 +920,7 @@ mod tests {
             assert_eq!(late.previous_app_path.as_deref(), backup.to_str());
             assert!(!late.message.contains("late ordinary status"));
         }
-        let relaunched = AppUpdates::new(cache).unwrap().view();
+        let relaunched = production_updates(cache).unwrap().view();
         assert_eq!(
             relaunched.previous_app_path.as_deref(),
             Some(backup.to_str().unwrap())
@@ -895,7 +948,7 @@ mod tests {
             panic!("recovery failure must remain latched");
         };
         assert!(!receipt_saved);
-        let state = AppUpdates::new(root.join("status-cache")).unwrap();
+        let state = production_updates(root.join("status-cache")).unwrap();
         let status = state.latch_recovery(record, receipt_saved);
         assert_eq!(status.previous_app_path.as_deref(), backup.to_str());
         assert!(status.message.contains("저장하지 못했습니다"));
@@ -983,7 +1036,7 @@ mod tests {
     #[test]
     fn superseded_pending_does_not_clear_a_real_restore_failure_or_rewrite_journals() {
         let temp = tempfile::tempdir().unwrap();
-        let state = AppUpdates::new(temp.path().into()).unwrap();
+        let state = production_updates(temp.path().into()).unwrap();
         let pending = serde_json::to_vec(&PendingInstall {
             from: ReleaseIdentity::new(
                 &state.current.version,
@@ -1003,7 +1056,7 @@ mod tests {
         .unwrap();
         write_atomic(&temp.path().join("pending.json"), &pending).unwrap();
         write_atomic(&temp.path().join("recovery.json"), &recovery).unwrap();
-        let relaunched = AppUpdates::new(temp.path().into()).unwrap().view();
+        let relaunched = production_updates(temp.path().into()).unwrap().view();
         assert!(relaunched.recovery_message.unwrap().contains("복원에 실패"));
         assert_eq!(
             relaunched.previous_app_path.as_deref(),
@@ -1022,7 +1075,7 @@ mod tests {
     #[test]
     fn metadata_reports_only_this_apps_bundled_integration_without_initializing_paths() {
         let temp = tempfile::tempdir().unwrap();
-        let state = AppUpdates::new(temp.path().join("cache")).unwrap();
+        let state = production_updates(temp.path().join("cache")).unwrap();
         let resources = temp.path().join("resources");
         assert!(state
             .agent_metadata(Some(&resources))
@@ -1069,7 +1122,7 @@ mod tests {
     #[test]
     fn cache_reads_are_bounded_and_pending_install_survives_restart() {
         let tmp = tempfile::tempdir().unwrap();
-        let initial = AppUpdates::new(tmp.path().into()).unwrap();
+        let initial = production_updates(tmp.path().into()).unwrap();
         let pending = PendingInstall {
             from: initial.current.clone(),
             target: ReleaseIdentity::new(
@@ -1083,7 +1136,7 @@ mod tests {
             &serde_json::to_vec(&pending).unwrap(),
         )
         .unwrap();
-        let state = AppUpdates::new(tmp.path().into()).unwrap();
+        let state = production_updates(tmp.path().into()).unwrap();
         assert!(state
             .view()
             .recovery_message
@@ -1102,7 +1155,7 @@ mod tests {
             &serde_json::to_vec(&completed).unwrap(),
         )
         .unwrap();
-        let completed_state = AppUpdates::new(tmp.path().into()).unwrap();
+        let completed_state = production_updates(tmp.path().into()).unwrap();
         assert!(completed_state.view().recovery_message.is_none());
         assert!(completed_state.view().message.is_empty());
         assert!(read_limited(&tmp.path().join("pending.json"), 2).is_err());

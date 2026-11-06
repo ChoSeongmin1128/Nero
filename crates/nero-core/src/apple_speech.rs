@@ -12,6 +12,8 @@ pub(crate) const PROJECTOR: &str = "apple-native-results-v1";
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Output {
+    #[serde(default, rename = "glossaryContext")]
+    _glossary_context: Option<serde_json::Value>,
     schema_version: u32,
     model: String,
     model_revision: String,

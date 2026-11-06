@@ -1,7 +1,9 @@
 # Local terminology correction
 
 Terminology correction follows ordinary recognition. The recognizer receives no global
-dictionary prompt. A run first saves its raw output and initial transcript, then may
+correction profile. Whisper can separately receive a bounded prompt from the meeting's
+explicitly approved glossary; see [speech model selection](speech-model-selection.md).
+Nemotron and system transcription do not receive that unsupported prompt. A run first saves its raw output and initial transcript, then may
 create a separate correction revision. Existing recordings are not processed on startup.
 
 ## Local profile

@@ -1,5 +1,8 @@
+mod claude_models;
 mod context;
 mod provider;
+mod skills;
+pub use skills::catalog as composer_catalog;
 mod store;
 use crate::ai_accounts::{AiAccounts, Provider};
 use crate::notion_context::NotionContextService;
@@ -29,12 +32,26 @@ pub struct SendRequest {
     pub meeting_ids: Vec<String>,
     pub account_id: String,
     pub model_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
     pub message: String,
     #[serde(default)]
     pub source_ids: Vec<String>,
     #[serde(default)]
     pub source_origins: Option<std::collections::BTreeMap<String, context::SourceOrigin>>,
     pub template_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skill_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_target_id: Option<String>,
+    // A shown question to replace: the new question follows the same parent, so later
+    // turns stay with the earlier version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edit_of: Option<String>,
+    // The message the client shows the new question under. A different parent here means
+    // the client is looking at another branch, so the question is refused, not misplaced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
 }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -53,12 +70,21 @@ pub struct ChatEvent {
     pub attachments: Option<Vec<context::Attachment>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub save_targets: Option<Vec<context::SaveTarget>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub template: Option<context::TemplateSelection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skill_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary_target_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actual_model_id: Option<String>,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Started {
     pub conversation_id: String,
     pub request_id: String,
+    pub question_id: Option<String>,
 }
 #[derive(Clone)]
 struct Partial {
@@ -84,12 +110,49 @@ pub struct AiChat {
     pub notion: Option<Arc<NotionContextService>>,
     store: Mutex<store::Store>,
     running: Mutex<HashMap<String, Active>>,
+    model_catalogs: Mutex<HashMap<String, Models>>,
 }
 fn provider_id(provider: Provider) -> &'static str {
     match provider {
         Provider::ChatGpt => "chatgpt",
         Provider::Claude => "claude",
     }
+}
+fn each(ids: &[String], mut action: impl FnMut(&str) -> Result<(), String>) -> Result<(), String> {
+    let mut failure = None;
+    for id in ids {
+        if let Err(error) = action(id) {
+            failure.get_or_insert(error);
+        }
+    }
+    failure.map_or(Ok(()), Err)
+}
+// Where a new question attaches and which shown messages it may see. An edited question
+// sees only the turns before the version it replaces.
+fn question_context(
+    conversation: &Conversation,
+    edit_of: Option<&str>,
+) -> Result<(String, Vec<usize>), String> {
+    let shown = conversation.path();
+    let Some(edited) = edit_of else {
+        let parent = shown
+            .last()
+            .map(|&index| conversation.messages[index].id.clone())
+            .unwrap_or_else(|| store::ROOT.into());
+        return Ok((parent, shown));
+    };
+    let position = shown
+        .iter()
+        .position(|&index| {
+            let message = &conversation.messages[index];
+            message.id == edited && message.role == "user"
+        })
+        .ok_or("수정할 질문을 찾을 수 없습니다.")?;
+    let parent = conversation.messages[shown[position]]
+        .parent_id
+        .clone()
+        .unwrap_or_else(|| store::ROOT.into());
+    Ok((parent, shown[..position].to_vec()))
 }
 fn request_fingerprint(request: &SendRequest) -> Result<String, String> {
     let bytes = serde_json::to_vec(request).map_err(|_| "대화 요청을 확인하지 못했습니다.")?;
@@ -101,15 +164,28 @@ fn existing_request(
     request: &SendRequest,
     fingerprint: &str,
 ) -> Result<Option<Started>, String> {
+    let question = |conversation: &Conversation| {
+        conversation
+            .messages
+            .iter()
+            .find(|message| message.role == "user" && message.request_id == request.request_id)
+            .map(|message| message.id.clone())
+    };
     if let Some(active) = running.get(&request.request_id) {
         if active.conversation_id != request.conversation_id
             || active.request_fingerprint != fingerprint
         {
             return Err("같은 요청의 대화 또는 자료가 변경되었습니다.".into());
         }
+        let question_id = store
+            .read(&active.conversation_id)
+            .ok()
+            .as_ref()
+            .and_then(question);
         return Ok(Some(Started {
             conversation_id: active.conversation_id.clone(),
             request_id: request.request_id.clone(),
+            question_id,
         }));
     }
     let conversation = store.read(&request.conversation_id)?;
@@ -122,7 +198,11 @@ fn existing_request(
             return Err("같은 요청의 대화 또는 자료가 변경되었습니다.".into());
         }
         return Ok(Some(Started {
-            conversation_id: conversation.id.ok_or("대화를 확인하지 못했습니다.")?,
+            question_id: Some(message.id.clone()),
+            conversation_id: conversation
+                .id
+                .clone()
+                .ok_or("대화를 확인하지 못했습니다.")?,
             request_id: request.request_id.clone(),
         }));
     }
@@ -145,6 +225,7 @@ impl AiChat {
             accounts,
             notion,
             running: Mutex::new(HashMap::new()),
+            model_catalogs: Mutex::new(HashMap::new()),
         }
     }
     pub fn is_busy(&self) -> bool {
@@ -226,10 +307,10 @@ impl AiChat {
         store.import_legacy()?;
         action()
     }
-    pub fn list(&self) -> Result<Vec<ConversationSummary>, String> {
+    pub fn list(&self, trash: bool) -> Result<Vec<ConversationSummary>, String> {
         let store = self.store.lock().unwrap();
         store.import_legacy()?;
-        let mut summaries = store.list()?;
+        let mut summaries = store.list(trash)?;
         let running = self.running.lock().unwrap();
         for summary in &mut summaries {
             summary.active_request_id = running
@@ -280,6 +361,10 @@ impl AiChat {
                     sequence: message.sequence,
                     attachments: Some(message.attachments.clone()),
                     save_targets: Some(message.save_targets.clone()),
+                    template: message.template.clone(),
+                    skill_id: message.skill_id.clone(),
+                    summary_target_id: message.summary_target_id.clone(),
+                    actual_model_id: message.actual_model_id.clone(),
                 };
                 conversation.active_request_id = None;
                 conversation.updated_at = store::now();
@@ -287,12 +372,81 @@ impl AiChat {
                 running.remove(&request_id);
                 events.push((active.emit, event));
             }
-            store.remove(conversation_id)
+            store.trash(conversation_id)
         })();
         for (emit, event) in events {
             emit(event);
         }
         result
+    }
+    // Bulk cleanup leaves answers in progress alone, judged when it runs rather than when
+    // the list was shown. Every id is attempted; the first failure is reported afterwards.
+    pub fn trash(
+        &self,
+        conversation_ids: &[String],
+        keep_running: bool,
+    ) -> Result<Vec<String>, String> {
+        let mut trashed = Vec::new();
+        let mut failure = None;
+        for id in conversation_ids {
+            let running = self
+                .running
+                .lock()
+                .unwrap()
+                .values()
+                .any(|active| &active.conversation_id == id);
+            if keep_running && running {
+                continue;
+            }
+            match self.delete(id) {
+                Ok(()) => trashed.push(id.clone()),
+                Err(error) => {
+                    failure.get_or_insert(error);
+                }
+            }
+        }
+        failure.map_or(Ok(trashed), Err)
+    }
+    pub fn restore(&self, conversation_ids: &[String]) -> Result<(), String> {
+        let store = self.store.lock().unwrap();
+        each(conversation_ids, |id| store.restore(id))
+    }
+    pub fn purge(&self, conversation_ids: &[String]) -> Result<(), String> {
+        let store = self.store.lock().unwrap();
+        each(conversation_ids, |id| store.purge(id))
+    }
+    pub fn select_version(
+        &self,
+        conversation_id: &str,
+        message_id: &str,
+    ) -> Result<Conversation, String> {
+        store::id(conversation_id)?;
+        store::id(message_id)?;
+        {
+            let store = self.store.lock().unwrap();
+            if self
+                .running
+                .lock()
+                .unwrap()
+                .values()
+                .any(|active| active.conversation_id == conversation_id)
+            {
+                return Err("답변이 끝난 뒤 다른 버전을 볼 수 있습니다.".into());
+            }
+            let mut conversation = store.read(conversation_id)?;
+            let message = conversation
+                .messages
+                .iter()
+                .find(|message| message.id == message_id && message.role == "user")
+                .ok_or("질문을 찾을 수 없습니다.")?;
+            let parent = message
+                .parent_id
+                .clone()
+                .ok_or("질문을 찾을 수 없습니다.")?;
+            conversation.versions.insert(parent, message_id.into());
+            store.write(&conversation)?;
+        }
+        self.read(conversation_id)
     }
     pub fn cancel_account(&self, id: &str) {
         for active in self
@@ -350,46 +504,70 @@ impl AiChat {
             Err("회의를 찾을 수 없습니다.".into())
         }
     }
+    pub async fn models_refresh(&self, id: &str) -> Result<Models, String> {
+        if id == crate::claude_connection::ACCOUNT_ID {
+            let claude = self.claude.clone();
+            tauri::async_runtime::spawn_blocking(move || claude.refresh_models())
+                .await
+                .map_err(|_| "Claude 모델 목록을 새로고침하지 못했습니다.".to_string())??;
+        } else {
+            let session = self.accounts.subscription_session(id).await?;
+            if session.provider != Provider::ChatGpt {
+                return Err("AI 계정 연결을 확인해 주세요.".into());
+            }
+            let catalog = provider::models(&provider::ProviderAccess {
+                provider: provider_id(session.provider).into(),
+                access_token: session.access_token().into(),
+            })
+            .await?;
+            self.model_catalogs
+                .lock()
+                .unwrap()
+                .insert(id.into(), catalog);
+        }
+        self.models(id).await
+    }
     pub async fn models(&self, id: &str) -> Result<Models, String> {
         if id == crate::claude_connection::ACCOUNT_ID {
+            let models = claude_models::chat_models(self.claude.models());
+            let default_model_id = models
+                .iter()
+                .find(|m| m.id == "sonnet")
+                .or_else(|| models.first())
+                .map(|m| m.id.clone());
             return Ok(Models {
-                models: ["sonnet", "opus", "haiku"]
-                    .into_iter()
-                    .map(|id| provider::ChatModel {
-                        id: id.into(),
-                        label: match id {
-                            "sonnet" => "Sonnet",
-                            "opus" => "Opus",
-                            _ => "Haiku",
-                        }
-                        .into(),
-                        max_output_tokens: None,
-                    })
-                    .collect(),
-                default_model_id: Some("sonnet".into()),
+                models,
+                default_model_id,
             });
         }
-        let session = self.accounts.subscription_session(id).await?;
-        if session.provider != Provider::ChatGpt {
-            return Err("Claude 계정 연결을 확인해 주세요.".into());
-        }
-        provider::models(&provider::ProviderAccess {
-            provider: provider_id(session.provider).into(),
-            access_token: session.access_token().into(),
-        })
-        .await
+        Ok(self
+            .model_catalogs
+            .lock()
+            .unwrap()
+            .get(id)
+            .cloned()
+            .unwrap_or(Models {
+                models: vec![],
+                default_model_id: None,
+            }))
     }
     pub fn start(
         self: &Arc<Self>,
         request: SendRequest,
         emit: Arc<dyn Fn(ChatEvent) + Send + Sync>,
     ) -> Result<Started, String> {
+        skills::validate(
+            request.skill_id.as_deref(),
+            request.summary_target_id.as_deref(),
+            &request.meeting_ids,
+            request.template_id.as_deref(),
+        )?;
         store::id(&request.request_id)?;
         store::id(&request.conversation_id)?;
         for id in &request.meeting_ids {
             store::id(id)?;
         }
-        if request.message.trim().is_empty()
+        if skills::model_question(request.skill_id.as_deref(), &request.message).is_none()
             || request.message.len() > 32 * 1024
             || request.source_ids.len() > 16
             || request.meeting_ids.len() > 16
@@ -450,6 +628,18 @@ impl AiChat {
             documents,
             request.template_id.as_deref(),
         )?;
+        if request.skill_id.as_deref() == Some(skills::MEETING_SUMMARY) {
+            if prepared
+                .binding
+                .targets()
+                .iter()
+                .all(|target| target.summary_context.is_none())
+            {
+                return Err("음성 기록이 준비된 회의를 선택해 주세요.".into());
+            }
+            prepared.instructions.push_str("\n첨부한 회의의 요약 본문을 작성합니다. 저장은 Nero가 처리하므로 저장을 완료했다고 답하지 않습니다.\n");
+            prepared.instructions.push_str(skills::WRITING_RULES);
+        }
         if let Some(origins) = &request.source_origins {
             let notion = self
                 .notion
@@ -494,6 +684,9 @@ impl AiChat {
         if conversation.id.as_deref() != Some(request.conversation_id.as_str()) {
             return Err("대화가 변경되었습니다. 다시 열어 주세요.".into());
         }
+        if conversation.deleted_at.is_some() {
+            return Err("휴지통에 있는 대화입니다. 복원한 뒤 이어가 주세요.".into());
+        }
         for message in &mut conversation.messages {
             if message.status == "streaming" {
                 message.status = "interrupted".into();
@@ -504,13 +697,30 @@ impl AiChat {
             .get_or_insert_with(|| uuid::Uuid::new_v4().to_string())
             .clone();
         let message_id = uuid::Uuid::new_v4().to_string();
-        let mut history = conversation
-            .messages
+        let question_id = uuid::Uuid::new_v4().to_string();
+        let (parent, earlier) = question_context(&conversation, request.edit_of.as_deref())?;
+        if request
+            .parent_id
+            .as_ref()
+            .is_some_and(|expected| expected != &parent)
+        {
+            return Err("대화가 다른 곳에서 바뀌었습니다. 대화를 다시 열어 주세요.".into());
+        }
+        if conversation.messages.len() + 2 > 400 {
+            return Err("이 대화는 저장 한도에 도달했습니다. 새 대화에서 이어가 주세요.".into());
+        }
+        let mut history = earlier
             .iter()
+            .map(|&index| &conversation.messages[index])
             .filter(|message| message.status == "completed")
             .map(|message| {
+                let source = if message.role == "user" {
+                    skills::model_question(message.skill_id.as_deref(), &message.text)
+                } else {
+                    None
+                };
                 let text = nero_core::presentation::format_summary(
-                    &message.text,
+                    source.as_deref().unwrap_or(&message.text),
                     nero_core::DocumentFormat::Md,
                     false,
                     false,
@@ -525,7 +735,9 @@ impl AiChat {
                 json!({"role":message.role,"content":text})
             })
             .collect::<Vec<Value>>();
-        history.push(json!({"role":"user","content":format!("{}\n\n참고 자료(JSON 데이터):\n{}",request.message,prepared.input)}));
+        let question = skills::model_question(request.skill_id.as_deref(), &request.message)
+            .ok_or("질문과 선택한 자료를 확인해 주세요.")?;
+        history.push(json!({"role":"user","content":format!("{}\n\n참고 자료(JSON 데이터):\n{}",question,prepared.input)}));
         if serde_json::to_vec(&history)
             .map_err(|_| "대화를 준비하지 못했습니다.")?
             .len()
@@ -534,16 +746,28 @@ impl AiChat {
             return Err("대화와 자료가 너무 많습니다. 선택한 자료를 줄여 주세요.".into());
         }
         if conversation.messages.is_empty() {
-            conversation.title = request.message.trim().chars().take(60).collect();
+            conversation.title = match request.message.trim() {
+                "" => skills::name(request.skill_id.as_deref())
+                    .unwrap_or_default()
+                    .into(),
+                typed => typed.chars().take(60).collect(),
+            };
         }
         conversation.updated_at = store::now();
         conversation.provider = Some(provider_id(selected_provider).into());
         conversation.model_id = Some(request.model_id.clone());
         conversation.active_request_id = Some(request.request_id.clone());
+        if request.edit_of.is_some() {
+            conversation
+                .versions
+                .insert(parent.clone(), question_id.clone());
+        }
         conversation.messages.push(Message {
+            parent_id: Some(parent),
+            effort: request.effort.clone(),
             request_fingerprint: Some(fingerprint.clone()),
             sequence: 0,
-            id: uuid::Uuid::new_v4().to_string(),
+            id: question_id.clone(),
             request_id: request.request_id.clone(),
             role: "user".into(),
             text: request.message.clone(),
@@ -552,6 +776,10 @@ impl AiChat {
             error: None,
             provider: None,
             model_id: None,
+            actual_model_id: None,
+            template: prepared.binding.template_selection.clone(),
+            skill_id: request.skill_id.clone(),
+            summary_target_id: request.summary_target_id.clone(),
             binding: None,
             saved_summary_id: None,
             note_saved: false,
@@ -561,6 +789,8 @@ impl AiChat {
             note_receipts: Default::default(),
         });
         conversation.messages.push(Message {
+            parent_id: Some(question_id.clone()),
+            effort: request.effort.clone(),
             request_fingerprint: Some(fingerprint.clone()),
             sequence: 0,
             id: message_id.clone(),
@@ -572,6 +802,10 @@ impl AiChat {
             error: None,
             provider: Some(provider_id(selected_provider).into()),
             model_id: Some(request.model_id.clone()),
+            actual_model_id: None,
+            template: prepared.binding.template_selection.clone(),
+            skill_id: request.skill_id.clone(),
+            summary_target_id: request.summary_target_id.clone(),
             binding: Some(prepared.binding.clone()),
             saved_summary_id: None,
             note_saved: false,
@@ -604,12 +838,14 @@ impl AiChat {
         let started = Started {
             conversation_id: conversation_id.clone(),
             request_id: request.request_id.clone(),
+            question_id: Some(question_id),
         };
         let this = self.clone();
         tauri::async_runtime::spawn_blocking(move || {
             tauri::async_runtime::block_on(async move {
                 let mut sequence = 0;
                 let mut persistence_error = false;
+                let mut actual_model_id = None;
                 let result = async {
                     let mut deliver = |delta: &str| {
                         if cancel.load(Ordering::Acquire) {
@@ -640,6 +876,10 @@ impl AiChat {
                             sequence,
                             attachments: None,
                             save_targets: None,
+                            template: None,
+                            skill_id: None,
+                            summary_target_id: None,
+                            actual_model_id: None,
                         });
                     };
                     if selected_provider == Provider::Claude {
@@ -649,12 +889,15 @@ impl AiChat {
                             serde_json::to_string(&history)
                                 .map_err(|_| "대화를 준비하지 못했습니다.")?
                         );
-                        return this.claude.reply(
+                        let reply = this.claude.reply(
                             &request.model_id,
                             &prompt,
+                            request.effort.as_deref(),
                             cancel.clone(),
                             &mut deliver,
-                        );
+                        )?;
+                        actual_model_id = reply.actual_model_id;
+                        return Ok(reply.text);
                     }
                     let session = this
                         .accounts
@@ -673,11 +916,15 @@ impl AiChat {
                         .iter()
                         .find(|model| model.id == request.model_id)
                         .ok_or("이 AI 계정에서 선택한 모델을 사용할 수 없습니다.")?;
+                    if let Some(effort) = request.effort.as_deref() {
+                        if !selected.effort.allows(effort) { return Err("선택한 추론 수준을 사용할 수 없습니다. 모델 목록을 새로고침해 주세요.".into()); }
+                    }
                     provider::reply(
                         &access,
                         selected,
                         &prepared.instructions,
                         history,
+                        request.effort.as_deref(),
                         cancel.clone(),
                         &mut deliver,
                     )
@@ -693,6 +940,7 @@ impl AiChat {
                     },
                     persistence_error,
                     sequence + 1,
+                    actual_model_id,
                 );
                 if let Ok(Some(event)) = event {
                     emit(event);
@@ -711,6 +959,10 @@ impl AiChat {
                         sequence: sequence + 1,
                         attachments: Some(prepared.binding.attachments()),
                         save_targets: Some(prepared.binding.save_targets()),
+                        template: prepared.binding.template_selection.clone(),
+                        skill_id: request.skill_id.clone(),
+                        summary_target_id: request.summary_target_id.clone(),
+                        actual_model_id: None,
                     });
                 }
             })
@@ -723,6 +975,7 @@ impl AiChat {
         result: Result<String, String>,
         persistence_error: bool,
         sequence: u64,
+        actual_model_id: Option<String>,
     ) -> Result<Option<ChatEvent>, String> {
         let store = self.store.lock().unwrap();
         let mut running = self.running.lock().unwrap();
@@ -754,6 +1007,7 @@ impl AiChat {
         }) {
             Ok((text, citations)) => {
                 message.text = text;
+                message.actual_model_id = actual_model_id;
                 message.citations = citations;
                 message.status = "completed".into();
                 message.error = None;
@@ -783,6 +1037,10 @@ impl AiChat {
             sequence,
             attachments: Some(message.attachments.clone()),
             save_targets: Some(message.save_targets.clone()),
+            template: message.template.clone(),
+            skill_id: message.skill_id.clone(),
+            summary_target_id: message.summary_target_id.clone(),
+            actual_model_id: message.actual_model_id.clone(),
         };
         store.write(&conversation)?;
         Ok(Some(event))
@@ -892,7 +1150,11 @@ impl AiChat {
                     text,
                     context::producer(
                         message.provider.as_deref().unwrap_or("AI"),
-                        message.model_id.as_deref().unwrap_or("unknown"),
+                        message
+                            .actual_model_id
+                            .as_deref()
+                            .or(message.model_id.as_deref())
+                            .unwrap_or("unknown"),
                         binding.template,
                     ),
                 )
@@ -934,6 +1196,33 @@ impl AiChat {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn passive_models_do_not_require_an_account_session() {
+        let (_root, chat) = service();
+        assert!(chat
+            .models("missing-account")
+            .await
+            .unwrap()
+            .models
+            .is_empty());
+        chat.model_catalogs.lock().unwrap().insert(
+            "cached-account".into(),
+            Models {
+                models: vec![provider::ChatModel {
+                    effort: Default::default(),
+                    id: "model".into(),
+                    label: "공개 모델 이름".into(),
+                    previous: false,
+                    max_output_tokens: None,
+                }],
+                default_model_id: Some("model".into()),
+            },
+        );
+        assert_eq!(
+            chat.models("cached-account").await.unwrap().models[0].id,
+            "model"
+        );
+    }
     fn service() -> (tempfile::TempDir, Arc<AiChat>) {
         let root = tempfile::tempdir().unwrap();
         let core = CoreHandle::open(root.path().canonicalize().unwrap()).unwrap();
@@ -944,6 +1233,8 @@ mod tests {
     }
     fn message(id: &str, request: &str, binding: Binding, status: &str) -> Message {
         Message {
+            parent_id: None,
+            effort: None,
             request_fingerprint: Some("fingerprint".into()),
             sequence: 0,
             id: id.into(),
@@ -955,6 +1246,10 @@ mod tests {
             error: None,
             provider: Some("chatgpt".into()),
             model_id: Some("synthetic".into()),
+            actual_model_id: None,
+            template: binding.template_selection.clone(),
+            skill_id: None,
+            summary_target_id: None,
             attachments: binding.attachments(),
             save_targets: binding.save_targets(),
             binding: Some(binding),
@@ -1005,7 +1300,7 @@ mod tests {
         let conversation = chat.create().unwrap();
         let id = conversation.id.clone().unwrap();
         assert!(chat.core.list_meetings().unwrap().is_empty());
-        assert_eq!(chat.list().unwrap()[0].id, id);
+        assert_eq!(chat.list(false).unwrap()[0].id, id);
         assert_eq!(chat.read(&id).unwrap().id, Some(id.clone()));
         assert_eq!(
             store::Store::new(root.path().into()).read(&id).unwrap().id,
@@ -1031,7 +1326,13 @@ mod tests {
         .unwrap();
         assert!(chat.is_busy());
         let event = chat
-            .finish(&request, Ok("답변 완료".into()), false, 2)
+            .finish(
+                &request,
+                Ok("답변 완료".into()),
+                false,
+                2,
+                Some("claude-sonnet-5-5".into()),
+            )
             .unwrap()
             .unwrap();
         assert_eq!(event.kind, "completed");
@@ -1043,6 +1344,14 @@ mod tests {
         let conversation = chat.read(&id).unwrap();
         assert_eq!(conversation.messages[0].id, answer);
         assert_eq!(conversation.messages[0].text, "답변 완료");
+        assert_eq!(
+            conversation.messages[0].model_id.as_deref(),
+            Some("synthetic")
+        );
+        assert_eq!(
+            conversation.messages[0].actual_model_id.as_deref(),
+            Some("claude-sonnet-5-5")
+        );
         assert_eq!(
             conversation.messages[0]
                 .binding
@@ -1069,9 +1378,19 @@ mod tests {
         chat.delete(&first).unwrap();
         assert!(cancel.load(Ordering::Acquire));
         assert!(chat
-            .finish(&request, Ok("늦은 답변".into()), false, 2)
+            .finish(&request, Ok("늦은 답변".into()), false, 2, None)
             .unwrap()
             .is_none());
+        let trashed = chat.read(&first).unwrap();
+        assert!(trashed.deleted_at.is_some());
+        assert_eq!(trashed.messages[0].status, "cancelled");
+        assert_ne!(trashed.messages[0].text, "늦은 답변");
+        assert!(chat
+            .list(false)
+            .unwrap()
+            .iter()
+            .all(|item| item.id != first));
+        chat.purge(&[first.clone()]).unwrap();
         assert!(chat.read(&first).is_err());
         assert_eq!(
             chat.read(&second).unwrap().active_request_id,
@@ -1086,7 +1405,7 @@ mod tests {
         let worker = chat.clone();
         let request_copy = request.clone();
         let done = std::thread::spawn(move || {
-            worker.finish(&request_copy, Ok("완료 경쟁".into()), false, 2)
+            worker.finish(&request_copy, Ok("완료 경쟁".into()), false, 2, None)
         });
         chat.cancel(&request).unwrap();
         drop(held);
@@ -1104,7 +1423,7 @@ mod tests {
         assert_eq!(stored.messages[0].sequence, 1);
         chat.cancel(&request).unwrap();
         let event = chat
-            .finish(&request, Err("취소".into()), false, 2)
+            .finish(&request, Err("취소".into()), false, 2, None)
             .unwrap()
             .unwrap();
         assert_eq!(event.kind, "cancelled");
@@ -1186,7 +1505,9 @@ mod tests {
             .join(format!("{id}.json"));
         std::fs::rename(&path, root.path().join("preserved.json")).unwrap();
         std::fs::create_dir(&path).unwrap();
-        assert!(chat.finish(&request, Ok("완료".into()), false, 2).is_err());
+        assert!(chat
+            .finish(&request, Ok("완료".into()), false, 2, None)
+            .is_err());
         assert!(!chat.is_busy());
     }
     #[test]
@@ -1195,6 +1516,7 @@ mod tests {
         let (id, request, _) = seed(&chat, &[], "streaming");
         let second = chat.create().unwrap().id.unwrap();
         let make = |conversation_id: String| SendRequest {
+            effort: None,
             request_id: request.clone(),
             conversation_id,
             meeting_ids: vec![],
@@ -1204,6 +1526,10 @@ mod tests {
             source_ids: vec![],
             source_origins: None,
             template_id: None,
+            skill_id: None,
+            summary_target_id: None,
+            edit_of: None,
+            parent_id: None,
         };
         let store = chat.store.lock().unwrap();
         let running = chat.running.lock().unwrap();
@@ -1211,5 +1537,122 @@ mod tests {
         assert!(existing_request(&store, &running, &request, "fingerprint").is_err());
         let request = make(id);
         assert!(existing_request(&store, &running, &request, "changed").is_err());
+    }
+
+    fn turn(
+        chat: &AiChat,
+        conversation: &mut Conversation,
+        parent: Option<&str>,
+        role: &str,
+        text: &str,
+    ) -> String {
+        let id = uuid::Uuid::new_v4().to_string();
+        let binding = context::prepare(&chat.core, &chat.root, &[], vec![], None)
+            .unwrap()
+            .binding;
+        let mut item = message(&id, &uuid::Uuid::new_v4().to_string(), binding, "completed");
+        item.role = role.into();
+        item.text = text.into();
+        item.parent_id = parent.map(str::to_owned);
+        conversation.messages.push(item);
+        id
+    }
+    #[test]
+    fn older_single_line_conversations_read_as_one_path_and_edits_branch_without_later_turns() {
+        let (_root, chat) = service();
+        let mut conversation = chat.create().unwrap();
+        let id = conversation.id.clone().unwrap();
+        let first = turn(&chat, &mut conversation, None, "user", "첫 질문");
+        turn(&chat, &mut conversation, None, "assistant", "첫 답변");
+        let second = turn(&chat, &mut conversation, None, "user", "둘째 질문");
+        turn(&chat, &mut conversation, None, "assistant", "둘째 답변");
+        chat.store.lock().unwrap().write(&conversation).unwrap();
+        let read = chat.read(&id).unwrap();
+        assert_eq!(read.path(), vec![0, 1, 2, 3]);
+        assert_eq!(read.messages[0].parent_id.as_deref(), Some(store::ROOT));
+        assert_eq!(
+            read.messages[2].parent_id.as_deref(),
+            Some(read.messages[1].id.as_str())
+        );
+        let (parent, earlier) = question_context(&read, Some(&second)).unwrap();
+        assert_eq!(parent, read.messages[1].id);
+        assert_eq!(earlier, vec![0, 1]);
+        let (root, none) = question_context(&read, Some(&first)).unwrap();
+        assert_eq!((root.as_str(), none.len()), (store::ROOT, 0));
+        let (tail, all) = question_context(&read, None).unwrap();
+        assert_eq!((tail, all.len()), (read.messages[3].id.clone(), 4));
+        assert!(question_context(&read, Some(&read.messages[1].id)).is_err());
+
+        let mut branched = read.clone();
+        let edited = turn(&chat, &mut branched, Some(&parent), "user", "고친 질문");
+        turn(&chat, &mut branched, Some(&edited), "assistant", "새 답변");
+        branched.versions.insert(parent.clone(), edited.clone());
+        chat.store.lock().unwrap().write(&branched).unwrap();
+        let shown = chat.read(&id).unwrap();
+        assert_eq!(
+            shown
+                .path()
+                .iter()
+                .map(|&index| shown.messages[index].text.as_str())
+                .collect::<Vec<_>>(),
+            ["첫 질문", "첫 답변", "고친 질문", "새 답변"]
+        );
+        let earlier = chat.select_version(&id, &second).unwrap();
+        assert_eq!(
+            earlier
+                .path()
+                .iter()
+                .map(|&index| earlier.messages[index].text.as_str())
+                .collect::<Vec<_>>(),
+            ["첫 질문", "첫 답변", "둘째 질문", "둘째 답변"]
+        );
+        assert_eq!(chat.list(false).unwrap()[0].message_count, 4);
+        let mut broken = earlier.clone();
+        broken.messages[1].parent_id = Some(uuid::Uuid::new_v4().to_string());
+        assert!(chat.store.lock().unwrap().write(&broken).is_err());
+    }
+    #[test]
+    fn deleted_conversations_wait_in_the_trash_until_purged() {
+        let (_root, chat) = service();
+        let kept = chat.create().unwrap().id.unwrap();
+        let trashed = chat.create().unwrap().id.unwrap();
+        assert!(chat.purge(&[trashed.clone()]).is_err());
+        chat.trash(&[trashed.clone()], false).unwrap();
+        assert_eq!(
+            chat.list(false)
+                .unwrap()
+                .iter()
+                .map(|item| item.id.clone())
+                .collect::<Vec<_>>(),
+            vec![kept.clone()]
+        );
+        let trash = chat.list(true).unwrap();
+        assert_eq!(trash.len(), 1);
+        assert!(trash[0].deleted_at.is_some());
+        chat.restore(&[trashed.clone()]).unwrap();
+        assert_eq!(chat.list(false).unwrap().len(), 2);
+        chat.trash(&[trashed.clone(), kept.clone()], false).unwrap();
+        chat.purge(&[trashed.clone()]).unwrap();
+        assert!(chat.read(&trashed).is_err());
+        assert_eq!(chat.list(true).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn bulk_cleanup_skips_answers_in_progress_while_an_explicit_delete_stops_them() {
+        let (_root, chat) = service();
+        let (running, _, _) = seed(&chat, &[], "streaming");
+        let idle = chat.create().unwrap().id.unwrap();
+        let trashed = chat.trash(&[running.clone(), idle.clone()], true).unwrap();
+        assert_eq!(trashed, vec![idle.clone()]);
+        assert!(chat.read(&running).unwrap().deleted_at.is_none());
+        assert_eq!(
+            chat.trash(&[running.clone()], false).unwrap(),
+            vec![running.clone()]
+        );
+        assert!(chat.read(&running).unwrap().deleted_at.is_some());
+        assert!(chat
+            .restore(&[uuid::Uuid::new_v4().to_string(), idle.clone()])
+            .is_err());
+        assert!(chat.read(&idle).unwrap().deleted_at.is_none());
     }
 }

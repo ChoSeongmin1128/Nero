@@ -103,3 +103,25 @@ test('calendar join links open externally and keep an accessible icon copy actio
   await wait(() => window.document.querySelector('[role="status"]').textContent.includes('열지 못했습니다'));
   assert.equal(link.href, url); assert.equal(window.location.href, 'http://nero.test/');
 });
+
+test('calendar picker loads on open and offers retry only after a failed read', async t => {
+  const app = fileURLToPath(new URL('../', import.meta.url));
+  const bundle = await build({ entryPoints: [app + 'src/calendar-meeting-picker.jsx'], nodePaths: [app + 'node_modules'], bundle: true, write: false, format: 'iife', globalName: 'CalendarMeetingUI', loader: { '.css': 'empty' }, define: { 'process.env.NODE_ENV': '"production"' } });
+  const window = new Window({ url: 'http://nero.test', settings: { enableJavaScriptEvaluation: true, suppressInsecureJavaScriptEnvironmentWarning: true } });
+  t.after(() => window.happyDOM.abort());
+  window.document.body.innerHTML = '<button id="trigger">일정에서 준비</button>';
+  window.eval(bundle.outputFiles[0].text);
+  let reads = 0;
+  const event = { key: 'one', title: 'Provider title', startAt: 1_000_000, endAt: 2_000_000, calendarName: 'Synthetic', joinUrls: [] };
+  const picker = window.CalendarMeetingUI.mountCalendarMeetingPicker({ container: window.document.body, bridge: { readCalendarMeetingOccurrences: async query => { reads += 1; if (reads === 1) throw Error('잠시 후 다시 시도해 주세요.'); return { calendar: { connected: true, selectedCalendars: ['one'] }, occurrences: [event], ...query, scopeRevision: 1 }; } }, onPrepared() {}, onConfigure() {} });
+  t.after(() => picker.dispose());
+  const wait = async predicate => { for (let i = 0; i < 100; i++) { if (predicate()) return; await new Promise(resolve => setTimeout(resolve, 5)); } assert.fail('Expected calendar picker state'); };
+  const button = text => [...window.document.querySelectorAll('button')].find(node => node.textContent === text);
+  picker.open(window.document.getElementById('trigger'));
+  await wait(() => window.document.querySelector('[role="alert"]'));
+  assert.equal(button('새로고침'), undefined);
+  button('다시 시도').click();
+  await wait(() => window.document.querySelector('input[type="radio"]'));
+  assert.equal(reads, 2);
+  assert.equal(button('다시 시도'), undefined);
+});

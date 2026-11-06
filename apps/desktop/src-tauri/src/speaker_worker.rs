@@ -743,7 +743,7 @@ fn process(request: &Request, input: &Prepared, started: Instant) -> Result<()> 
     let mut progress = BufWriter::new(new_file(&request.output.join("progress.jsonl"))?);
     let api = Api::load(&request.library, request.backend)?;
     let version = api.text(api.version)?;
-    if version != "nemo-speech-asr 0.2.0" {
+    if version != nero_core::speech_runtime::asr_version() {
         return Err(WorkerError::new(
             WorkerFailureKind::Protocol,
             format!("Unexpected runtime version: {version}"),

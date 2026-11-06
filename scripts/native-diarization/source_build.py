@@ -94,7 +94,7 @@ def build(profile, cache, destination, cmake, package_path):
     if profile.get("sourceBackends") == ["cpu"]:
         return build_windows_cpu(profile, cache, destination, cmake, package_path)
     if platform.system() != "Darwin" or platform.machine() != "arm64":
-        raise ValueError("The patched source runtime is qualified only for native macOS arm64")
+        raise ValueError("The source runtime is qualified only for native macOS arm64")
     settings = macos_settings(profile)
     dependency_settings = {key: settings[key] for key in
                            ("CMAKE_OSX_ARCHITECTURES:STRING", "CMAKE_OSX_DEPLOYMENT_TARGET:STRING")}
@@ -105,7 +105,8 @@ def build(profile, cache, destination, cmake, package_path):
         env = dict(os.environ, GIT_CEILING_DIRECTORIES=str(work), CMAKE_BUILD_PARALLEL_LEVEL="2",
                    GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="core.autocrlf", GIT_CONFIG_VALUE_0="false")
         source, llama, sentencepiece = [unpack(path, work / str(index)) for index, path in enumerate(archives)]
-        patch_source(source, profile, Path(__file__).resolve().parent, env)
+        if profile.get("patch"):
+            patch_source(source, profile, Path(__file__).resolve().parent, env)
         (source / "llama.cpp").rmdir()
         llama.rename(source / "llama.cpp")
         dependency = work / "dependency-build"
@@ -153,7 +154,7 @@ def build(profile, cache, destination, cmake, package_path):
 
 
 def build_windows_cpu(profile, cache, destination, cmake, package_path):
-    """Pinned CPU mmap build; the separate Vulkan backend retains its official archive."""
+    """Pinned CPU build with the scheduler patch; the separate Vulkan backend retains its official archive."""
     if platform.system() != "Windows" or platform.machine().lower() not in ("amd64", "x86_64"):
         raise ValueError("The CPU source runtime requires native Windows x64")
     cache.mkdir(parents=True, exist_ok=True)
@@ -163,7 +164,8 @@ def build_windows_cpu(profile, cache, destination, cmake, package_path):
         env = dict(os.environ, GIT_CEILING_DIRECTORIES=str(work), CMAKE_BUILD_PARALLEL_LEVEL="2",
                    GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="core.autocrlf", GIT_CONFIG_VALUE_0="false")
         source, llama, sentencepiece = [unpack(path, work / str(index)) for index, path in enumerate(archives)]
-        patch_source(source, profile, Path(__file__).resolve().parent, env)
+        if profile.get("patch"):
+            patch_source(source, profile, Path(__file__).resolve().parent, env)
         patch_source(source, {"patch": profile["windowsPatch"]}, Path(__file__).resolve().parent, env)
         (source / "llama.cpp").rmdir()
         llama.rename(source / "llama.cpp")

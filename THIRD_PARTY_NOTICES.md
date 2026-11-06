@@ -31,7 +31,7 @@ Symphonia의 수정된 AAC 소스는 `vendor/symphonia-codec-aac/`에 보존합�
 
 ## 음성 처리와 요약 실행기
 
-- Nemotron 음성 인식과 화자 구분은 NVIDIA NeMo-Speech.cpp 0.2.0 기반 실행기를 공유합니다.
+- Nemotron 음성 인식과 화자 구분은 NVIDIA NeMo-Speech.cpp 0.3.0 기반 실행기를 공유합니다.
   플랫폼별 수정 소스, runtime identity와 archive pin은 `scripts/native-diarization/runtime.json`이 정본입니다.
   라이선스와 NOTICE는 `native/diarization/<backend>/share/licenses/`에 포함합니다.
   출처: https://github.com/NVIDIA/NeMo-Speech.cpp

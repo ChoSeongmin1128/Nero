@@ -11,10 +11,38 @@ mod installation;
 
 const CLIENTS: [(&str, &str); 2] = [("claude", "Claude"), ("codex", "ChatGPT")];
 
+pub fn development_info(root: &Path) -> ConnectionInfo {
+    ConnectionInfo {
+        available: false,
+        unavailable_reason: Some("개발 앱에서는 외부 MCP 연결을 등록하지 않습니다.".into()),
+        executable_path: None,
+        data_dir: root.to_string_lossy().into_owned(),
+        config: Value::Null,
+        cli_example: String::new(),
+        clients: CLIENTS
+            .iter()
+            .map(|(id, name)| ClientInfo {
+                id: (*id).into(),
+                name: (*name).into(),
+                state: "unavailable".into(),
+                detail: Some("개발 앱에서는 외부 MCP 연결을 등록하지 않습니다.".into()),
+                installation_state: "unavailable".into(),
+                session_state: "unavailable".into(),
+                action: "none".into(),
+                package_version: None,
+                installed_version: None,
+            })
+            .collect(),
+        claude_extension_path: None,
+    }
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectionInfo {
     available: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    unavailable_reason: Option<String>,
     executable_path: Option<String>,
     data_dir: String,
     config: Value,
@@ -209,6 +237,7 @@ fn connection_info_with_installations(
         .collect();
     ConnectionInfo {
         available,
+        unavailable_reason: None,
         executable_path: available.then_some(path),
         data_dir,
         config,
@@ -897,6 +926,22 @@ pub fn resource_agent_path(resources: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn development_info_never_offers_an_external_package_or_command() {
+        let info = super::development_info(std::path::Path::new("/synthetic-dev"));
+        let value = serde_json::to_value(info).unwrap();
+        assert_eq!(value["available"], false);
+        assert!(value["executablePath"].is_null());
+        assert!(value["config"].is_null());
+        assert_eq!(value["cliExample"], "");
+        assert!(value["unavailableReason"].as_str().is_some());
+        assert!(value["clients"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|client| client["state"] == "unavailable" && client["action"] == "none"));
+    }
+
     use super::*;
 
     fn initialized_receipt(

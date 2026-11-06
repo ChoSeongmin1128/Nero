@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 fn invalid_date() -> QueryError {
     QueryError {
         code: "invalid_input",
-        message: "날짜는 YYYY-MM-DD와 timezone(IANA)을 함께 지정하세요. on과 from/to는 함께 사용할 수 없으며 from 포함, to 미포함입니다.",
+        message: std::borrow::Cow::Borrowed("날짜는 YYYY-MM-DD와 timezone(IANA)을 함께 지정하세요. on과 from/to는 함께 사용할 수 없으며 from 포함, to 미포함입니다."),
     }
 }
 

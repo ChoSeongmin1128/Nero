@@ -63,7 +63,27 @@ fn within(offset: &Offset, frames: u64) -> bool {
             .is_some_and(|value| value <= frames)
 }
 
-pub(super) fn native_words(raw: &[u8], frames: u64, start: u64) -> Result<Vec<Value>, String> {
+#[cfg(test)]
+fn native_words(raw: &[u8], frames: u64, start: u64) -> Result<Vec<Value>, String> {
+    native_words_for_engine(
+        raw,
+        frames,
+        start,
+        crate::speech_choice::SpeechEngine::WhisperTurbo,
+    )
+}
+
+pub(super) fn native_words_for_engine(
+    raw: &[u8],
+    frames: u64,
+    start: u64,
+    engine: crate::speech_choice::SpeechEngine,
+) -> Result<Vec<Value>, String> {
+    let layers = match engine {
+        crate::speech_choice::SpeechEngine::WhisperTurbo => 4,
+        crate::speech_choice::SpeechEngine::WhisperLargeV3 => 32,
+        _ => return Err(failure()),
+    };
     if raw.len() > 16 * 1024 * 1024 {
         return Err(failure());
     }
@@ -72,7 +92,7 @@ pub(super) fn native_words(raw: &[u8], frames: u64, start: u64) -> Result<Vec<Va
         || native.params["translate"] != false
         || native.model["multilingual"] != true
         || native.model["mels"] != 128
-        || native.model["text"]["layer"] != 4
+        || native.model["text"]["layer"] != layers
         || native.model["ftype"] != 8
     {
         return Err(failure());
@@ -350,5 +370,17 @@ mod tests {
         .is_err());
         let broken = &[0xeb, 0xb7];
         assert!(native_words(&native(broken, &[(broken, 0, 1000)]), 15999, 0).is_err());
+    }
+    #[test]
+    fn native_layers_follow_the_selected_whisper_model() {
+        use crate::speech_choice::SpeechEngine;
+        let turbo = native(b"hello", &[(b"hello", 0, 1000)]);
+        let mut full: Value = serde_json::from_slice(&turbo).unwrap();
+        full["model"]["text"]["layer"] = 32.into();
+        let full = serde_json::to_vec(&full).unwrap();
+        assert!(native_words_for_engine(&turbo, 16000, 0, SpeechEngine::WhisperTurbo).is_ok());
+        assert!(native_words_for_engine(&full, 16000, 0, SpeechEngine::WhisperLargeV3).is_ok());
+        assert!(native_words_for_engine(&full, 16000, 0, SpeechEngine::WhisperTurbo).is_err());
+        assert!(native_words_for_engine(&turbo, 16000, 0, SpeechEngine::WhisperLargeV3).is_err());
     }
 }

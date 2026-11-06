@@ -1,0 +1,161 @@
+{
+  "schema_version": 1,
+  "output_root": "/absolute/private/.work/model-evaluation",
+  "timeout_seconds": 600,
+  "models": {
+    "moss-transcribe-diarize": {
+      "path": "/absolute/private/model-cache/moss",
+      "runtime": {
+        "python": "/absolute/private/runtime/python3",
+        "executable": "/absolute/private/runtime/moss-harness"
+      },
+      "format": "safetensors",
+      "variant": "native-harness",
+      "decoding": {}
+    },
+    "qwen3-asr-1.7b-ko": {
+      "path": "/absolute/private/model-cache/qwen3-asr-ko",
+      "runtime": {
+        "python": "/absolute/private/runtime/python3"
+      },
+      "format": "safetensors",
+      "variant": "1.7b-ko",
+      "decoding": {}
+    },
+    "nemotron-mini-64e-fused-w4a16": {
+      "path": "/absolute/private/model-cache/fused-64e-w4a16-g64",
+      "runtime": {
+        "python": "/absolute/private/runtime/python3",
+        "executable": "/absolute/private/runtime/vllm"
+      },
+      "format": "safetensors",
+      "variant": "fused-64e-w4a16-g64",
+      "decoding": {}
+    },
+    "gemma-4-e4b-q4": {
+      "path": "/absolute/private/model-cache/gemma.gguf",
+      "runtime": {
+        "python": "/absolute/private/runtime/python3",
+        "executable": "/absolute/private/runtime/llama-server"
+      },
+      "format": "gguf",
+      "variant": "E4B Q4_0",
+      "decoding": {}
+    },
+    "custom-qwen3.5-4b": {
+      "path": "/absolute/private/model-cache/qwen3.5-4b.gguf",
+      "runtime": {
+        "python": "/absolute/private/runtime/python3",
+        "executable": "/absolute/private/runtime/llama-server"
+      },
+      "format": "gguf",
+      "variant": "user-selected GGUF",
+      "decoding": {},
+      "extends": "qwen3.5-4b-gguf",
+      "source": {
+        "conversion_repository": "REPLACE_WITH_CONVERSION_REPOSITORY",
+        "revision": "REPLACE_WITH_COMMIT_SHA",
+        "file": "REPLACE_WITH_GGUF_FILENAME",
+        "sha256": "REPLACE_WITH_FILE_SHA256",
+        "conversion_license": null
+      }
+    },
+    "custom-qwen3.5-9b": {
+      "path": "/absolute/private/model-cache/qwen3.5-9b.gguf",
+      "runtime": {
+        "python": "/absolute/private/runtime/python3",
+        "executable": "/absolute/private/runtime/llama-server"
+      },
+      "format": "gguf",
+      "variant": "user-selected GGUF",
+      "decoding": {},
+      "extends": "qwen3.5-9b-gguf",
+      "source": {
+        "conversion_repository": "REPLACE_WITH_CONVERSION_REPOSITORY",
+        "revision": "REPLACE_WITH_COMMIT_SHA",
+        "file": "REPLACE_WITH_GGUF_FILENAME",
+        "sha256": "REPLACE_WITH_FILE_SHA256",
+        "conversion_license": null
+      }
+    },
+    "custom-gemma": {
+      "extends": "gemma-4-e4b-q4",
+      "path": "/absolute/private/model-cache/custom-gemma.gguf",
+      "runtime": {
+        "python": "/absolute/private/runtime/python3",
+        "executable": "/absolute/private/runtime/llama-server"
+      },
+      "format": "gguf",
+      "variant": "REPLACE_WITH_SIZE_AND_PRECISION",
+      "source": {
+        "repository": "REPLACE_WITH_MODEL_REPOSITORY",
+        "revision": "REPLACE_WITH_COMMIT_SHA",
+        "file": "REPLACE_WITH_GGUF_FILENAME",
+        "sha256": "REPLACE_WITH_FILE_SHA256",
+        "manifest": null,
+        "url": null,
+        "license": null
+      },
+      "decoding": {}
+    }
+  },
+  "cases": [
+    {
+      "id": "private-case-1",
+      "audio": "/absolute/private/dataset/audio.wav",
+      "reference": "/absolute/private/dataset/reference.json",
+      "context": "/absolute/private/dataset/context.json"
+    }
+  ],
+  "experiments": [
+    {
+      "id": "moss-baseline",
+      "model": "moss-transcribe-diarize",
+      "track": "asr",
+      "context": "none"
+    },
+    {
+      "id": "qwen-baseline",
+      "model": "qwen3-asr-1.7b-ko",
+      "track": "asr",
+      "context": "none"
+    },
+    {
+      "id": "qwen-context",
+      "model": "qwen3-asr-1.7b-ko",
+      "track": "asr",
+      "context": "dictionary"
+    },
+    {
+      "id": "mini-baseline",
+      "model": "nemotron-mini-64e-fused-w4a16",
+      "track": "asr",
+      "context": "none"
+    },
+    {
+      "id": "gemma-correction",
+      "model": "gemma-4-e4b-q4",
+      "track": "postprocess",
+      "context": "dictionary",
+      "baseline": "qwen-baseline"
+    },
+    {
+      "id": "qwen4b-correction",
+      "model": "custom-qwen3.5-4b",
+      "track": "postprocess",
+      "context": "dictionary",
+      "baseline": "qwen-baseline"
+    },
+    {
+      "id": "qwen9b-correction",
+      "model": "custom-qwen3.5-9b",
+      "track": "postprocess",
+      "context": "dictionary",
+      "baseline": "qwen-baseline"
+    }
+  ],
+  "metrics": {
+    "collar": 0,
+    "overlap_policy": "include"
+  }
+}

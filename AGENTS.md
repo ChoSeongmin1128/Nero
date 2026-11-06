@@ -7,7 +7,13 @@ This file applies to the entire repository.
 - `apps/desktop/` is the new Nero application. `crates/nero-core/` owns its
   platform-independent storage and recording state; CPAL provides native microphone
   input on macOS and Windows. Browser prototypes do not establish native support.
-- The current identity is `io.github.choseongmin1128.nero.desktop`. Identity changes require the explicit installer migration and strict completed receipt. Ordinary reads must not migrate or initialize a library. Never open the separately archived original Swift library implicitly. The old installed app and data are archived
+- The production identity is `io.github.choseongmin1128.nero.desktop`. Debug builds
+  and explicit `development` builds use `Nero Dev` and the `.desktop.dev` identity.
+  `nero_core::environment` owns profile storage/credential names. Validate the
+  compiled profile against Tauri configuration before initializing plugins/windows.
+  Development never consumes the production updater or registers external Nero MCP
+  packages. Use `npm run tauri -- dev`; see `docs/development.md`. Do not copy models
+  or production credentials into development. Production identity changes require the explicit installer migration and strict completed receipt. Ordinary reads must not migrate or initialize a library. Never open the separately archived original Swift library implicitly. The old installed app and data are archived
   outside active application locations; do not launch the archive during validation.
 - New capture preserves native PCM and creates a separate float32 WAV for playback
   when its native geometry fits RIFF. Larger captures use a separately identified
@@ -45,6 +51,22 @@ This file applies to the entire repository.
   never pass it off as word timing or relax arbitrary input bounds. Selection
   applies to future work, is frozen per job/session and never silently switches
   models or reprocesses old meetings. See `docs/windows-speech-models.md`.
+- Apple Silicon also supports Qwen3-ASR-ko through the separately pinned CrispASR CLI
+  (`scripts/native-crispasr`). Recording previews stay on the Nemotron stream; the
+  saved transcript is recognized after recording from the same analysis WAV, and the
+  live speaker stream is reused. Keep the pause-chunk, gain and aligner-unit rules in
+  `docs/live-speech.md`; never commit Nemotron preview text for a Qwen session or
+  interpolate aligner times. Memory warnings are advisory and need explicit user
+  acknowledgement before preparation.
+- Apple Silicon also supports separately pinned Whisper large-v3 Q5. Keep the full
+  model's hash/revision and native 32-layer validation distinct from Turbo's 4-layer
+  output. Hardware recommendations are suggestions, not automatic downloads or
+  preference changes. See `docs/speech-model-selection.md`.
+- Notion-derived glossary terms require explicit user review. Freeze approved
+  terms and source revisions per capture/job; Whisper may use the bounded prompt,
+  while unsupported engines must report it unused. Reuse across meetings requires
+  explicit selection and a matching connected Notion page. Preserve prior job
+  snapshots and do not create correction rules or speaker identities implicitly.
 - During new recording, a background saved-PCM reader may feed one persistent ASR
   stream and an independent speaker stream. Publish provisional replacements at
   60–180 seconds without resetting models, finish only after successful capture EOF,
@@ -104,8 +126,11 @@ This file applies to the entire repository.
   points. Explicit meeting mutations use the running app's authenticated local writer
   bridge and edit-version checks; template mutations use the template catalog lock
   and revision checks. Host clients own tool approval policy. Meeting deletion means
-  recoverable trash; no permanent purge tool is exposed. See `docs/local-agent.md`;
-  do not edit another AI client's settings implicitly.
+  recoverable trash; no permanent purge tool is exposed. App feature tools
+  (`nero_core::agent_app`, CLI `app_tools.rs`, desktop `agent_app.rs`) call the same
+  shared operations as the screens, never a command body copied for the agent; their
+  handlers never answer `invalid_input`, which marks an app that predates the request.
+  See `docs/local-agent.md`; do not edit another AI client's settings implicitly.
 - In-app AI chat owns global conversations, independent of meetings and notes. Send
   only explicitly selected meeting and Notion snapshots; retain immutable per-request
   citations and source origins. Claude subscription chat uses an unmodified,
@@ -167,20 +192,38 @@ behavior. Separate implemented behavior, proposals and unverified platform suppo
 ## Native installation and artifacts
 
 - Nero release versions follow `docs/versioning.md`; keep version mirrors consistent
-  with `node apps/desktop/scripts/version.mjs check`. Product numbering restarts at `0.0.1`, while build numbers continue increasing. The first external-user
+  with `node apps/desktop/scripts/version.mjs check`. During the current `0.0.x`
+  phase, every new public binary release increments PATCH by exactly one from the
+  verified latest public product version, regardless of first-user sharing status.
+  Internal test builds may retain the product version and only increase the global
+  build number; documentation-only changes do not create a release or bump either.
+  Every MINOR or MAJOR increase requires the user's review decision or approval
+  after presenting the reason, scope and compatibility impact. Do not apply the
+  version change or publish its tag/release before that response is confirmed.
+  A general implementation or deployment request does not authorize such a bump.
+  Update the increment policy when a stage change such as `0.1.0` or `1.0.0` is agreed.
+  The first external-user
   compatibility baseline must be recorded when users actually receive a build,
   using that product version, build number and source commit.
   Existing private meeting data, audio, models, integrations, identifiers and keys
   remain preserved before and after that baseline. Do not initialize or discard
   them implicitly; use an explicit migration or separate archival when needed.
-- A one-time pre-sharing release-record reset is authorized: reset GitHub release
-  entries, their release tags and public release documentation for the new
-  `0.0.1` baseline. Preserve Git commits and unique private build/signing
-  evidence. This exception does not authorize another reset or rewriting releases
-  shared with external users. Normal version, updater and NSIS downgrade guards
-  remain active; existing build49 installations need an explicit manual transition.
-- Product and integration versions are independent. The next integration generation
-  is `0.3.0-nero.39`; do not lower a host package to match product `0.0.1`.
+- New public tags use `v<version>`, release titles use `Nero <version>`, and files
+  use the exact names in `docs/versioning.md`. Do not create more same-version
+  public build releases or concatenate build numbers into product versions. Before
+  publishing, compare the actual latest public release/feed, not only local files.
+  Existing historical tags, assets and signed feed identities stay unchanged.
+  The earlier one-time release-record reset is finished and must not be repeated.
+  Normal version, updater and NSIS downgrade guards remain active.
+- Product and integration versions are independent. Read the integration generation
+  from `apps/desktop/agent/release.json`; change it when the actual CLI/MCP/skill or
+  integration package changes, not merely to match the product version. Keep an
+  unchanged generation only after verifying reused integration bytes and metadata.
+  The integration version stays `0.3.0-nero.<N>` (see `docs/versioning.md`): a public
+  release that changes the package takes the last public N plus one, unpublished
+  changes share one N, and an N already installed in a host for testing is not reused
+  for different contents. Raising its MINOR or MAJOR needs the same user approval as
+  the product version.
   Undistributed development binaries follow the bounded retention rules below.
 - Published release tags, assets and public release notes identify distributed source.
   A dirty build must not be attributed to its HEAD alone. Distribution bundles require

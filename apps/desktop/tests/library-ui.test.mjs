@@ -49,7 +49,7 @@ function harness(overrides = {}, options = {}) {
         this.checkedRadio = /<input[^>]*name="library-destination"[^>]*value="([^"]*)"[^>]* checked/.exec(value)?.[1];
       }
     }
-    get innerHTML() { return this.id === 'folder-list' ? ['library-system-views', 'library-user-folders', 'library-trash-view'].map(id => byId(id).innerHTML).join('') : this.html || ''; }
+    get innerHTML() { return this.id === 'folder-list' ? ['library-system-views', 'library-user-folders', 'library-ai-view', 'library-trash-view'].map(id => byId(id).innerHTML).join('') : this.html || ''; }
     querySelector(selector) {
       if (selector === '[autofocus]') return this.autofocus || null;
       if (selector === '[data-library-confirm]') return byId('confirm');
@@ -931,6 +931,8 @@ test('recent duration updates after finalization without navigation or title cha
   assert.match(folders, /data-library-filter="project"/);
   assert.doesNotMatch(folders, /data-library-filter="all"|data-library-filter="trash"/);
   assert.match(trash, /data-library-filter="trash"/);
+  assert.doesNotMatch(views, /data-library-filter="ai"/);
+  assert.match(app.byId('library-ai-view').innerHTML, /data-library-filter="ai"/);
   app.state.snapshot.folders = [];
   app.controller.render();
   assert.equal(app.byId('library-user-folders').innerHTML, '');
@@ -939,8 +941,9 @@ test('recent duration updates after finalization without navigation or title cha
 
 test('navigation and folder card counts refresh after moving, trashing and restoring meetings', () => {
   const app = harness();
-  const counts = () => Object.fromEntries([...app.byId('folder-list').innerHTML.matchAll(/data-library-filter="([^"]+)"[^>]*>[\s\S]*?class="library-folder-count">(\d+)</g)].map(match => [match[1], Number(match[2])]));
+  const counts = () => Object.fromEntries([...app.byId('folder-list').innerHTML.matchAll(/data-library-filter="([^"]+)"[^>]*>(?:(?!<\/button>)[\s\S])*?class="library-folder-count">(\d+)</g)].map(match => [match[1], Number(match[2])]));
   assert.deepEqual(counts(), { all: 2, unfiled: 1, project: 1, trash: 1 });
+  assert.match(app.byId('folder-list').innerHTML, /data-library-filter="ai"[^>]*>(?:(?!<\/button>)[\s\S])*?class="library-folder-count"><\/span>/);
   app.state.snapshot.meetings[1].folderId = 'project';
   app.byId('search').value = 'no match';
   app.controller.render();

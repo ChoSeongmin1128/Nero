@@ -1,10 +1,15 @@
 //! Claude Code subprocess transport. Credentials remain owned by Claude Code.
 mod installation;
+mod model_cache;
+pub use model_cache::ModelCache;
 mod prepare;
 #[cfg(windows)]
 mod windows_signature;
 pub use installation::installation_state;
 pub use prepare::{discover_prepared, prepare};
+pub fn discover_prepared_cancelled(root: &Path, cancel: &AtomicBool) -> Result<Runner, String> {
+    prepare::discover_prepared_with_cancel(root, Some(cancel))
+}
 use serde_json::Value;
 use std::{
     io::{Read, Write},
@@ -223,6 +228,47 @@ mod tests {
         cmd
     }
     #[test]
+    fn parses_only_matching_supported_model_metadata() {
+        let output = br#"{"type":"control_response","response":{"subtype":"success","request_id":"models","response":{"account":{"email":"private"},"models":[{"value":"sonnet","displayName":"Sonnet","resolvedModel":"claude-sonnet-5-5","supportsEffort":true,"supportedEffortLevels":["low","high"]},{"value":"claude-opus-5-5","displayName":"Opus 5.5"},{"value":"--bad","displayName":"bad"}]}}}
+"#;
+        let models = parse_supported_models(output).unwrap();
+        assert_eq!(models[0].supports_effort, Some(true));
+        assert_eq!(models[0].supported_effort_levels, vec!["low", "high"]);
+        assert_eq!(models[0].value, "sonnet");
+        assert_eq!(
+            models[0].resolved_model.as_deref(),
+            Some("claude-sonnet-5-5")
+        );
+        assert_eq!(models[1].value, "claude-opus-5-5");
+        assert_eq!(models[1].resolved_model, None);
+        assert!(parse_supported_models(
+            br#"{"type":"control_response","response":{"subtype":"error","request_id":"models"}}"#
+        )
+        .is_err());
+    }
+    #[test]
+    fn actual_model_is_only_recorded_when_stream_unambiguous() {
+        let mut stream = ReplyStream::default();
+        stream.feed(br#"{"type":"stream_event","event":{"type":"message_start","message":{"model":"claude-sonnet-5-5"}}}
+"#, &mut |_| {}).unwrap();
+        assert_eq!(stream.actual_model().as_deref(), Some("claude-sonnet-5-5"));
+        stream.feed(br#"{"type":"stream_event","event":{"type":"message_start","message":{"model":"claude-opus-5-5"}}}
+"#, &mut |_| {}).unwrap();
+        assert_eq!(stream.actual_model(), None);
+    }
+    #[test]
+    fn reply_command_includes_only_the_selected_effort() {
+        let cmd = reply_command(Path::new("claude"), Path::new("."), "sonnet", Some("high"));
+        let args = cmd
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(args.windows(2).any(|pair| pair == ["--model", "sonnet"]));
+        assert!(args.windows(2).any(|pair| pair == ["--effort", "high"]));
+        let default = reply_command(Path::new("claude"), Path::new("."), "sonnet", None);
+        assert!(!default.get_args().any(|arg| arg == "--effort"));
+    }
+    #[test]
     fn captures_success_and_rejects_failure() {
         let cancel = AtomicBool::new(false);
         assert_eq!(
@@ -363,19 +409,32 @@ impl Runner {
         }
         Ok(())
     }
-    pub fn reply(
-        &self,
-        model: &str,
-        prompt: &str,
-        cancel: Arc<AtomicBool>,
-        mut delta: impl FnMut(&str),
-    ) -> Result<String, String> {
-        if !matches!(model, "sonnet" | "opus" | "haiku") {
-            return Err("Claude 모델을 확인해 주세요.".into());
+    pub fn identity(&self, cancel: &AtomicBool) -> Result<String, String> {
+        use sha2::{Digest, Sha256};
+        let mut file = std::fs::File::open(&self.binary).map_err(|_| ERROR)?;
+        let mut hash = Sha256::new();
+        let mut total = 0u64;
+        let mut buffer = [0u8; 65536];
+        loop {
+            if cancel.load(Ordering::Acquire) {
+                return Err("취소했습니다.".into());
+            }
+            let n = file.read(&mut buffer).map_err(|_| ERROR)?;
+            if n == 0 {
+                break;
+            }
+            total += n as u64;
+            if total > 512 * 1024 * 1024 {
+                return Err(ERROR.into());
+            }
+            hash.update(&buffer[..n]);
         }
-        if !self.auth_status(&cancel)? {
-            return Err("Claude Code에서 구독 계정으로 로그인해 주세요.".into());
+        if total == 0 {
+            return Err(ERROR.into());
         }
+        Ok(format!("{:x}", hash.finalize()))
+    }
+    pub fn supported_models(&self, cancel: &AtomicBool) -> Result<Vec<SupportedModel>, String> {
         let work = tempfile::tempdir().map_err(|_| ERROR)?;
         let mut cmd = command(&self.binary);
         cmd.current_dir(work.path()).args([
@@ -391,21 +450,166 @@ impl Runner {
             "{\"mcpServers\":{}}",
             "--settings",
             "{}",
+            "--setting-sources",
+            "",
+            "--disable-slash-commands",
             "--no-session-persistence",
             "--no-chrome",
-            "--model",
-            model,
-            "--include-partial-messages",
+            "--input-format",
+            "stream-json",
             "--output-format",
             "stream-json",
             "--verbose",
         ]);
+        let input = b"{\"type\":\"control_request\",\"request_id\":\"models\",\"request\":{\"subtype\":\"initialize\"}}\n".to_vec();
+        let output = capture(cmd, input, Duration::from_secs(30), cancel)?;
+        parse_supported_models(&output)
+    }
+    pub fn reply(
+        &self,
+        model: &str,
+        prompt: &str,
+        effort: Option<&str>,
+        cancel: Arc<AtomicBool>,
+        mut delta: impl FnMut(&str),
+    ) -> Result<Reply, String> {
+        if !valid_model(model) {
+            return Err("Claude 모델을 확인해 주세요.".into());
+        }
+        if !self.auth_status(&cancel)? {
+            return Err("Claude Code에서 구독 계정으로 로그인해 주세요.".into());
+        }
+        let work = tempfile::tempdir().map_err(|_| ERROR)?;
+        let cmd = reply_command(&self.binary, work.path(), model, effort);
         let mut stream = ReplyStream::default();
         run(cmd, prompt.as_bytes().to_vec(), TIMEOUT, &cancel, |chunk| {
             stream.feed(chunk, &mut delta)
         })?;
-        stream.finish(&mut delta)
+        let text = stream.finish(&mut delta)?;
+        Ok(Reply {
+            text,
+            actual_model_id: stream.actual_model(),
+        })
     }
+}
+
+fn reply_command(binary: &Path, work: &Path, model: &str, effort: Option<&str>) -> Command {
+    let mut cmd = command(binary);
+    cmd.current_dir(work).args([
+        "--print",
+        "--safe-mode",
+        "--restricted",
+        "--tools",
+        "",
+        "--disallowedTools",
+        "mcp__*",
+        "--strict-mcp-config",
+        "--mcp-config",
+        "{\"mcpServers\":{}}",
+        "--settings",
+        "{}",
+        "--no-session-persistence",
+        "--no-chrome",
+        "--model",
+        model,
+        "--include-partial-messages",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+    ]);
+    if let Some(effort) = effort {
+        cmd.args(["--effort", effort]);
+    }
+    cmd
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SupportedModel {
+    pub value: String,
+    pub display_name: String,
+    pub resolved_model: Option<String>,
+    #[serde(default)]
+    pub supports_effort: Option<bool>,
+    #[serde(default)]
+    pub supported_effort_levels: Vec<String>,
+}
+
+pub(crate) fn valid_model(value: &str) -> bool {
+    value
+        .as_bytes()
+        .first()
+        .is_some_and(u8::is_ascii_alphanumeric)
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b'.' | b'[' | b']'))
+}
+
+fn parse_supported_models(output: &[u8]) -> Result<Vec<SupportedModel>, String> {
+    for line in output
+        .split(|b| *b == b'\n')
+        .filter(|line| !line.is_empty())
+    {
+        let frame: Value = serde_json::from_slice(line).map_err(|_| ERROR)?;
+        if frame["type"] != "control_response" || frame["response"]["request_id"] != "models" {
+            continue;
+        }
+        if frame["response"]["subtype"] != "success" {
+            return Err(ERROR.into());
+        }
+        let rows = frame["response"]["response"]["models"]
+            .as_array()
+            .ok_or(ERROR)?;
+        let mut result = Vec::new();
+        for row in rows {
+            let Some(value) = row["value"].as_str().filter(|v| valid_model(v)) else {
+                continue;
+            };
+            let Some(name) = row["displayName"]
+                .as_str()
+                .filter(|v| !v.is_empty() && v.len() <= 256 && !v.chars().any(char::is_control))
+            else {
+                continue;
+            };
+            if result.iter().any(|m: &SupportedModel| m.value == value) {
+                continue;
+            }
+            result.push(SupportedModel {
+                value: value.into(),
+                display_name: name.into(),
+                resolved_model: row["resolvedModel"]
+                    .as_str()
+                    .filter(|v| valid_model(v))
+                    .map(str::to_owned),
+                supports_effort: row["supportsEffort"].as_bool(),
+                supported_effort_levels: row["supportedEffortLevels"]
+                    .as_array()
+                    .map(|levels| {
+                        levels
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .filter(|level| {
+                                matches!(*level, "low" | "medium" | "high" | "xhigh" | "max")
+                            })
+                            .map(str::to_owned)
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            });
+        }
+        if !result.is_empty() {
+            return Ok(result);
+        }
+        return Err(ERROR.into());
+    }
+    Err(ERROR.into())
+}
+
+#[derive(Debug)]
+pub struct Reply {
+    pub text: String,
+    pub actual_model_id: Option<String>,
 }
 
 #[derive(Default)]
@@ -415,6 +619,7 @@ struct ReplyStream {
     result: Option<String>,
     stop: Option<String>,
     saw_partial: bool,
+    actual_models: std::collections::BTreeSet<String>,
 }
 impl ReplyStream {
     fn feed(&mut self, chunk: &[u8], delta: &mut impl FnMut(&str)) -> Result<(), String> {
@@ -429,6 +634,14 @@ impl ReplyStream {
                 Some("stream_event") => {
                     self.saw_partial = true;
                     let event = &v["event"];
+                    if event["type"] == "message_start" {
+                        if let Some(model) = event["message"]["model"]
+                            .as_str()
+                            .filter(|v| valid_model(v))
+                        {
+                            self.actual_models.insert(model.to_owned());
+                        }
+                    }
                     if event["type"] == "content_block_delta"
                         && event["delta"]["type"] == "text_delta"
                     {
@@ -457,7 +670,14 @@ impl ReplyStream {
         }
         Ok(())
     }
-    fn finish(mut self, delta: &mut impl FnMut(&str)) -> Result<String, String> {
+    fn actual_model(&self) -> Option<String> {
+        if self.actual_models.len() == 1 {
+            self.actual_models.iter().next().cloned()
+        } else {
+            None
+        }
+    }
+    fn finish(&mut self, delta: &mut impl FnMut(&str)) -> Result<String, String> {
         if !self.pending.is_empty() {
             self.feed(b"\n", delta)?;
         }
@@ -466,7 +686,7 @@ impl ReplyStream {
         {
             return Err("Claude 답변이 완성되지 않았습니다. 다시 시도해 주세요.".into());
         }
-        let result = self.result.ok_or(ERROR)?;
+        let result = self.result.take().ok_or(ERROR)?;
         if self.streamed.is_empty() {
             delta(&result);
         } else if self.streamed != result {

@@ -2,6 +2,7 @@ import { build } from 'esbuild';
 import { mkdir, readFile, writeFile, cp } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { buildMarkdown } from './build-markdown.mjs';
 const desktop = fileURLToPath(new URL('../', import.meta.url));
 const repository = path.resolve(desktop, '../..');
 const output = path.join(repository, '.work/ai-chat-preview');
@@ -28,6 +29,7 @@ for (const name of ['style.css', 'sidebar-views.css', 'agent-connections.css', '
   await writeFile(path.join(output, name), content);
 }
 await cp(path.join(repository, 'design-system/navigation.css'), path.join(output, 'shared/navigation.css'));
+await buildMarkdown(path.join(output, 'shared/markdown.js'));
 await cp(path.join(repository, 'design-system/vendor'), path.join(output, 'shared/vendor'), { recursive: true });
 await cp(path.join(desktop, 'brand/logo'), path.join(output, 'brand/logo'), { recursive: true });
 console.log(output);

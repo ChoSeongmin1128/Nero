@@ -2,13 +2,16 @@
 
 This build-only preparation stages the shared NVIDIA NeMo-Speech.cpp runtime for
 Nemotron ASR and speaker analysis. Windows uses a composite package: the official
-v0.2.0 Vulkan archive and a pinned CPU source build with the nine-file PR47 mmap
-backport plus `windows-scheduler.patch`. The Windows patch starts scheduler
-storage at 2048 graph nodes and grows to the original 65536-node limit when
-needed, synchronizing and invalidating cached placements without resetting model
-or stream state. It changes storage capacity, not recognition parameters.
-macOS arm64 retains only the nine-file PR47 mmap backport. Neither target includes
-the rest of that upstream merge's changes.
+Vulkan archive and a pinned CPU source build with `windows-scheduler.patch`. The
+Windows patch starts scheduler storage at 2048 graph nodes and grows to the
+original 65536-node limit when needed, synchronizing and invalidating cached
+placements without resetting model or stream state. It changes storage capacity,
+not recognition parameters. macOS arm64 builds the pinned release source without
+patches; the mmap weight loader (upstream #47) is part of that release.
+The pinned release bounds word times to the input audio (upstream #87). Nero keeps
+rejecting a recognition whose word ends after the input instead of clamping it.
+Earlier runtime identities stay listed in `readableIdentities` so recognitions
+recorded before an update remain readable.
 `runtime.json` owns the base commit, target identities, source/archive hashes,
 patch hash, exact patched file identities and compiler flags. It never downloads model weights or reads a user library.
 
@@ -108,5 +111,5 @@ optimization and fixes the standalone runtime deployment target to macOS 13.0,
 consistent with the standalone Whisper runtime. The sentencepiece dependency uses the same architecture/deployment settings.
 Preparation checks the actual CMake cache before compilation. Full speech features
 still have their separate macOS 26 converter requirement. The new runtime identity
-is used for execution; the earlier PR47 identity remains accepted only for reading
-stored provenance and does not authorize using its old executable as a fallback.
+is used for execution; earlier identities remain accepted only for reading
+stored provenance and do not authorize using an old executable as a fallback.

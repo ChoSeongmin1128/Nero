@@ -182,3 +182,22 @@ test('recovery exit does not wait for a pending installation IPC response', asyn
   await installing;
   updater.dispose();
 });
+
+test('disabled updater never schedules, checks, downloads, installs or saves', async () => {
+  const calls = [], scheduled = [];
+  let saves = 0;
+  const updater = createAppUpdater({
+    invoke: async command => { calls.push(command); return { enabled: false, phase: 'disabled' }; },
+    listen: async () => () => {}, saveEdits: async () => { saves++; },
+    schedule: (...args) => { scheduled.push(args); },
+  });
+  await updater.start();
+  assert.equal(await updater.check(), false);
+  assert.equal(await updater.download(), false);
+  assert.equal(await updater.install(), false);
+  assert.deepEqual(calls, ['app_update_status']);
+  assert.equal(saves, 0);
+  assert.deepEqual(scheduled, []);
+  assert.equal(appUpdateAction(updater.getSnapshot()).action, null);
+  updater.dispose();
+});

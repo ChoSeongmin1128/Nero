@@ -3,39 +3,51 @@ export function mountSidebarViews({ aside, navigation, notifications, trigger, b
   const find = id => aside.querySelector(`#${id}`);
   const heading = find('sidebar-preview-heading'), title = find('sidebar-preview-title'), openView = find('sidebar-preview-open');
   const library = find('sidebar-library-navigation'), meetings = find('sidebar-meeting-list');
-  const emptyTrash = find('sidebar-empty-trash');
+  const emptyTrash = find('sidebar-empty-trash'), newChat = find('sidebar-ai-new'), aiPreview = find('sidebar-ai-preview'), search = aside.querySelector('.search-field');
   const recentPreview = find('sidebar-recent-preview'), recentSection = find('recent-section'), recentList = find('recent-meetings');
   const compact = aside.parentElement.querySelector('[data-navigation-compact]');
-  const labels = { all: '전체 목록', folders: '폴더', trash: '휴지통', recent: '최근 회의' };
+  // Each sidebar view names what it shows; previews are the views with a label.
+  const views = {
+    navigation: { library: true, search: true },
+    folders: { label: '폴더', library: true, search: true, foldersOnly: true },
+    all: { label: '전체 목록', heading: true, search: true, meetings: true, open: 'all' },
+    ai: { label: 'AI 대화', heading: true, ai: true, open: 'ai', newChat: true },
+    trash: { label: '휴지통', heading: true, search: true, meetings: true, open: 'trash', emptyTrash: true, noCreate: true },
+    recent: { label: '최근 회의', heading: true, search: true, recent: true },
+    notifications: {},
+  };
   let view = 'navigation', returnView = 'navigation', unread = 0, active = 0, disposed = false;
   function paint() {
-    const opened = view === 'notifications', scoped = Boolean(labels[view]);
+    const opened = view === 'notifications', config = views[view] || {}, scoped = Boolean(config.label);
     aside.dataset.sidebarView = view;
     aside.dataset.preview = String(scoped);
     navigation.hidden = opened;
     notifications.hidden = !opened;
-    if (library) library.hidden = opened || ['all', 'trash', 'recent'].includes(view);
-    if (meetings) meetings.hidden = !['all', 'trash'].includes(view);
-    if (recentPreview) recentPreview.hidden = view !== 'recent';
+    if (library) library.hidden = !config.library;
+    if (aiPreview) aiPreview.hidden = !config.ai;
+    if (search) search.hidden = !config.search;
+    if (meetings) meetings.hidden = !config.meetings;
+    if (recentPreview) recentPreview.hidden = !config.recent;
     if (recentList && recentSection && recentPreview) {
-      const parent = view === 'recent' ? recentPreview : recentSection;
+      const parent = config.recent ? recentPreview : recentSection;
       if (recentList.parentElement !== parent) parent.append(recentList);
       recentSection.hidden = scoped || recentSection.dataset.hasItems === 'false';
     }
-    if (heading) heading.hidden = !['all', 'trash', 'recent'].includes(view);
-    if (title) title.textContent = labels[view] || '';
-    if (emptyTrash) emptyTrash.hidden = view !== 'trash';
+    if (heading) heading.hidden = !config.heading;
+    if (title) title.textContent = config.label || '';
+    if (emptyTrash) emptyTrash.hidden = !config.emptyTrash;
+    if (newChat) newChat.hidden = !config.newChat;
     if (openView) {
-      openView.hidden = view === 'recent';
-      openView.dataset.sidebarFilter = view === 'trash' ? 'trash' : 'all';
-      openView.setAttribute('aria-label', `${labels[view] || '전체 목록'} 열기`);
+      openView.hidden = !config.open;
+      openView.dataset.sidebarFilter = config.open || 'all';
+      openView.setAttribute('aria-label', `${config.label || '전체 목록'} 열기`);
       openView.title = openView.getAttribute('aria-label');
       const accessibleLabel = openView.querySelector('.sr-only');
       if (accessibleLabel) accessibleLabel.textContent = openView.getAttribute('aria-label');
     }
-    for (const row of aside.querySelectorAll('#library-system-views .library-folder-item')) row.hidden = view === 'folders' && Boolean(row.querySelector('[data-library-filter="all"]'));
-    const trash = find('library-trash-view'); if (trash) trash.hidden = view === 'folders';
-    const create = find('create-meeting'); if (create) create.hidden = opened || view === 'trash';
+    for (const row of aside.querySelectorAll('#library-system-views .library-folder-item')) row.hidden = Boolean(config.foldersOnly) && Boolean(row.querySelector('[data-library-filter="all"]'));
+    for (const id of ['library-ai-view', 'library-trash-view']) { const section = find(id); if (section) section.hidden = Boolean(config.foldersOnly); }
+    const create = find('create-meeting'); if (create) create.hidden = opened || Boolean(config.noCreate);
     trigger.setAttribute('aria-controls', notifications.id);
     trigger.setAttribute('aria-expanded', String(opened));
     trigger.setAttribute('aria-pressed', String(opened));
@@ -66,7 +78,7 @@ export function mountSidebarViews({ aside, navigation, notifications, trigger, b
     if (focus) notifications.querySelector('[data-notification-heading]')?.focus({ preventScroll: true });
   }
   function preview(name) {
-    if (!labels[name] || disposed) return;
+    if (!views[name]?.label || disposed) return;
     if (notifications.contains(document.activeElement)) document.activeElement.blur();
     view = returnView = name;
     onPreview(name);

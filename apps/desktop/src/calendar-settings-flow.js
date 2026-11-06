@@ -117,7 +117,8 @@ export function createCalendarSettingsFlow({ bridge }) {
 
 export function reminderCountdown(startAt, now = Date.now()) {
   const milliseconds = Number(startAt) - Number(now);
-  if (!Number.isFinite(milliseconds) || milliseconds <= 0) return '시작 시간';
+  if (!Number.isFinite(milliseconds)) return '시작 시간';
+  if (milliseconds <= 0) return -milliseconds < 60_000 ? '지금 시작' : `${Math.floor(-milliseconds / 60_000)}분 지남`;
   if (milliseconds < 60_000) return `${Math.ceil(milliseconds / 1000)}초 후`;
   return `${Math.ceil(milliseconds / 60_000)}분 후`;
 }

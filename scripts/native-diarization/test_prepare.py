@@ -141,7 +141,7 @@ class PackagingTests(unittest.TestCase):
             root = Path(temporary)
             self.fixture(root)
             with patch.object(build.subprocess, "run") as run:
-                run.return_value.stdout = "nemo-speech 0.2.0\n"
+                run.return_value.stdout = "nemo-speech 0.3.0\n"
                 build.verify_staged(root, execute_runtime=True)
             self.assertEqual(run.call_args.args[0], [str(root / "gpu/bin/nemo-speech"), "--version"])
             self.assertEqual(run.call_args.kwargs["timeout"], 15)

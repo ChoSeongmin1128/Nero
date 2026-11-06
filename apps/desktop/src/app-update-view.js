@@ -1,7 +1,7 @@
 import { createAppUpdater, appUpdateAction } from './app-updater.js';
 
 export function appUpdateNotices(status) {
-  if (!status) return [];
+  if (!status || status.enabled === false) return [];
   if (!['waiting', 'error', 'recoveryRequired'].includes(status.phase) && !status.recoveryMessage) return [];
   if (!status.message && !status.recoveryMessage) return [];
   const action = appUpdateAction(status);
@@ -35,6 +35,7 @@ export function mountAppUpdateView({ container, sidebarAction, bridge, saveEdits
     get('message').textContent = message;
     get('message').hidden = !message;
     const checkingBlocked = ['checking', 'downloading', 'ready', 'waiting', 'installing', 'recoveryRequired'].includes(status.phase) || status.downloadReady || status.recoveryRequired;
+    get('action').hidden = status.enabled === false;
     get('action').textContent = sidebar && status.phase !== 'checking' ? '업데이트 확인' : action.label;
     get('action').disabled = busy || (sidebar ? Boolean(checkingBlocked) : action.disabled);
     get('recovery').hidden = !status.recoveryMessage;
@@ -50,7 +51,7 @@ export function mountAppUpdateView({ container, sidebarAction, bridge, saveEdits
       const label = recovery ? '업데이트 복구' : downloading ? `다운로드${percent === null ? '' : ` ${percent}%`}` : action.label;
       const keepVisible = ['checking', 'available'].includes(status.phase) && (busy || !sidebar.hidden);
       const canAct = recovery || (action.action === 'install' && Boolean(status.downloadReady));
-      sidebar.hidden = !keepVisible && !canAct && !['downloading', 'installing'].includes(status.phase);
+      sidebar.hidden = status.enabled === false || !keepVisible && !canAct && !['downloading', 'installing'].includes(status.phase);
       sidebar.disabled = busy || action.disabled || !canAct;
       sidebar.dataset.updatePhase = status.phase;
       sidebar.setAttribute('aria-label', downloading ? `업데이트 ${label}` : label);

@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { releaseIdentity, verifyNative } from './app-update-feed.mjs';
 
 const REPOSITORY = 'https://github.com/ChoSeongmin1128/Nero';
+// Installed apps from 0.0.2 read one feed per platform from GitHub Pages (docs/updates on main).
+export const PLATFORM_FEEDS = 'https://choseongmin1128.github.io/Nero/updates';
 const PLATFORMS = ['darwin-aarch64', 'windows-x86_64'];
 const MAX_FEED = 64 * 1024;
 const MAX_PACKAGE = 512 * 1024 * 1024;
@@ -69,13 +71,15 @@ export async function verifyAppUpdateRelease({ feed, receipt, feedUrl, verifier,
   const expected = JSON.parse(receiptBytes), manifest = JSON.parse(local);
   const wire = releaseIdentity(expected.version, expected.build);
   if (!HASH.test(expected.sourceCommit || '') || !HASH.test(expected.sourceTree || '') || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(expected.tag || '') || expected.published !== false) throw Error('Invalid local feed provenance');
-  if (manifest.version !== wire || !manifest.platforms || Object.keys(manifest.platforms).sort().join() !== [...PLATFORMS].sort().join()) throw Error('Feed must contain both supported platforms and the exact version');
-  if (!Array.isArray(expected.artifacts) || expected.artifacts.length !== 2 || PLATFORMS.some(platform => expected.artifacts.filter(item => item.platform === platform).length !== 1)) throw Error('Receipt must contain both supported platforms');
+  const platforms = Array.isArray(expected.artifacts) ? expected.artifacts.map(item => item?.platform) : [];
+  if (!platforms.length || platforms.some(platform => !PLATFORMS.includes(platform)) || new Set(platforms).size !== platforms.length) throw Error('Receipt must list each included supported platform once');
+  if (manifest.version !== wire || !manifest.platforms || Object.keys(manifest.platforms).sort().join() !== [...platforms].sort().join()) throw Error('Feed must contain exactly the receipt platforms and the exact version');
   const tagURL = `${REPOSITORY}/releases/download/${expected.tag}/latest.json`;
   const latestURL = `${REPOSITORY}/releases/latest/download/latest.json`;
-  if (feedUrl !== tagURL && feedUrl !== latestURL) throw Error('Feed URL must select the prepared release or the latest endpoint');
+  const platformURL = platforms.length === 1 ? `${PLATFORM_FEEDS}/${platforms[0]}.json` : null;
+  if (![tagURL, latestURL, platformURL].includes(feedUrl)) throw Error('Feed URL must select the prepared release, the latest endpoint or the platform feed');
   validatePublicURL(feedUrl, feedUrl);
-  for (const platform of PLATFORMS) {
+  for (const platform of platforms) {
     const artifact = expected.artifacts.find(item => item.platform === platform);
     const entry = manifest.platforms[platform];
     if (!NAME.test(artifact.filename || '') || !(platform === 'darwin-aarch64' ? artifact.filename.endsWith('.app.tar.gz') : artifact.filename.endsWith('-setup.exe')) || !Number.isSafeInteger(artifact.bytes) || artifact.bytes <= 0 || artifact.bytes > MAX_PACKAGE || !SHA.test(artifact.sha256 || '')) throw Error('Invalid artifact receipt');
@@ -88,7 +92,7 @@ export async function verifyAppUpdateRelease({ feed, receipt, feedUrl, verifier,
     await downloadPublicFile({ url: feedUrl, destination: downloadedFeed, maxBytes: MAX_FEED, fetchImpl });
     if (!(await readFile(downloadedFeed)).equals(local)) throw Error('Published feed bytes differ from the prepared feed');
     const artifacts = [];
-    for (const platform of PLATFORMS) {
+    for (const platform of platforms) {
       const artifact = expected.artifacts.find(item => item.platform === platform), entry = manifest.platforms[platform];
       const file = path.join(temporary, artifact.filename), signature = `${file}.sig`;
       const downloaded = await downloadPublicFile({ url: entry.url, destination: file, maxBytes: MAX_PACKAGE, fetchImpl });

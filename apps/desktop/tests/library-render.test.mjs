@@ -61,6 +61,10 @@ test('other list states and the shared completed status remain visible', () => {
   const detail = document.createElement('div');
   detail.innerHTML = vm.runInContext("statusMarkup('completed')", context);
   assert.equal(detail.querySelector('.status-chip.finished').textContent, '녹음 완료');
+  detail.innerHTML = vm.runInContext("statusMarkup('completed', { imported: true })", context);
+  assert.equal(detail.querySelector('.status-chip.finished').textContent, '가져온 음성');
+  detail.innerHTML = vm.runInContext("statusMarkup('finalizing', { imported: true })", context);
+  assert.equal(detail.querySelector('.status-chip.finished').textContent, '저장 중');
   window.happyDOM.abort();
 });
 

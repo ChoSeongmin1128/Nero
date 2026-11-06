@@ -152,8 +152,9 @@ fn sync_windows(app: &tauri::AppHandle, service: &CalendarService) {
         if let Some(monitor) = &monitor {
             let area = monitor.work_area();
             let scale = monitor.scale_factor();
-            let x = (f64::from(area.position.x) + f64::from(area.size.width)) / scale - 456.0;
-            let y = f64::from(area.position.y) / scale + 16.0;
+            // Top center, under the menu bar and the camera notch, like system meeting alerts.
+            let x = (f64::from(area.position.x) + f64::from(area.size.width) / 2.0) / scale - 220.0;
+            let y = f64::from(area.position.y) / scale + 8.0;
             builder = builder.position(x, y);
         }
         if let Ok(window) = builder.build() {
@@ -187,13 +188,115 @@ pub fn handle_window_event(window: &tauri::Window, event: &tauri::WindowEvent) -
     true
 }
 
+// Settings, browsing and meeting creation shared by the calendar screens and agent requests.
+pub(crate) fn settings(app: &tauri::AppHandle) -> CalendarSnapshot {
+    app.state::<CalendarDesktop>().snapshot()
+}
+pub(crate) fn select(app: &tauri::AppHandle, ids: Vec<String>) -> Result<CalendarSnapshot, String> {
+    let service = app.state::<CalendarDesktop>().service()?;
+    let snapshot = service.set_calendars(ids)?;
+    let _ = service.tick(calendar::now_ms(), false);
+    sync_windows(app, &service);
+    publish(app);
+    Ok(snapshot)
+}
+pub(crate) async fn sync(app: &tauri::AppHandle) -> Result<CalendarSnapshot, String> {
+    let result = app
+        .state::<CalendarDesktop>()
+        .service()?
+        .sync_explicit()
+        .await;
+    publish(app);
+    result
+}
+pub(crate) async fn attendees(
+    app: &tauri::AppHandle,
+    meeting_id: String,
+    include_meet: bool,
+) -> Result<calendar::GoogleAttendeeFetch, String> {
+    let core = app.state::<DesktopState>().core.clone();
+    let reference = crate::on_core(core, move |core| {
+        core.list_meetings()?
+            .into_iter()
+            .find(|meeting| meeting.id == meeting_id && meeting.deleted_at.is_none())
+            .ok_or(nero_core::CoreError::MeetingNotFound)?
+            .calendar_reference
+            .ok_or_else(|| nero_core::CoreError::InvalidInput("연결한 일정이 없습니다.".into()))
+    })
+    .await?;
+    app.state::<CalendarDesktop>()
+        .service()?
+        .google_attendees(&reference, include_meet)
+        .await
+}
+pub(crate) async fn occurrences(
+    app: &tauri::AppHandle,
+    day: String,
+    time_zone: String,
+) -> Result<MeetingOccurrences, String> {
+    calendar::day_bounds(&day, &time_zone)?;
+    let state = app.state::<CalendarDesktop>();
+    let calendar = state.snapshot();
+    if !calendar.connected {
+        return Ok(MeetingOccurrences {
+            calendar,
+            occurrences: vec![],
+            day,
+            time_zone,
+            scope_revision: 0,
+        });
+    }
+    let service = state.service()?;
+    let result = service.browse_day(day, time_zone, None).await;
+    publish(app);
+    result.map(Into::into)
+}
+pub(crate) async fn create_meeting(
+    app: &tauri::AppHandle,
+    occurrence_key: String,
+    day: String,
+    time_zone: String,
+    scope_revision: u64,
+    target: Option<nero_core::DraftAttachmentTarget>,
+) -> Result<Meeting, String> {
+    let state = app.state::<DesktopState>();
+    state.processing.require_meeting_models()?;
+    if let Some(target) = target.clone() {
+        crate::on_core(state.core.clone(), move |core| {
+            core.validate_draft_attachment(target)
+        })
+        .await?;
+    }
+    let service = app.state::<CalendarDesktop>().service()?;
+    let result = service
+        .browse_day(day, time_zone, Some(scope_revision))
+        .await;
+    publish(app);
+    let browse = result?;
+    let zone = jiff::tz::TimeZone::get(&browse.time_zone)
+        .map_err(|_| "일정 시간대를 확인하지 못했습니다.".to_string())?;
+    let core = state.core.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        service.with_browsed_occurrence(&browse, &occurrence_key, |event| {
+            let reference = calendar_reference(event, zone.clone())?;
+            match target {
+                Some(target) => core.attach_calendar_to_draft(target, reference),
+                None => core.create_meeting_from_calendar(reference),
+            }
+            .map_err(|error| error.to_string())
+        })
+    })
+    .await
+    .map_err(|_| "회의를 준비하지 못했습니다.".to_string())?
+}
+
 #[tauri::command]
 pub fn read_calendar_settings(
+    app: tauri::AppHandle,
     window: WebviewWindow,
-    state: tauri::State<'_, CalendarDesktop>,
 ) -> Result<CalendarSnapshot, String> {
     crate::require_main(&window)?;
-    Ok(state.snapshot())
+    Ok(settings(&app))
 }
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -248,21 +351,13 @@ async fn open_connect_request(
 
 #[tauri::command]
 pub async fn fetch_google_attendees(
+    app: tauri::AppHandle,
     window: WebviewWindow,
-    state: tauri::State<'_, DesktopState>,
-    calendar: tauri::State<'_, CalendarDesktop>,
     id: String,
     include_meet: bool,
 ) -> Result<calendar::GoogleAttendeeFetch, String> {
     crate::require_main(&window)?;
-    let reference = crate::on_core(state.core.clone(), move |core| {
-        core.list_meetings()?.into_iter()
-            .find(|meeting| meeting.id == id && meeting.deleted_at.is_none())
-            .ok_or(nero_core::CoreError::MeetingNotFound)?
-            .calendar_reference
-            .ok_or_else(|| nero_core::CoreError::InvalidInput("연결한 일정이 없습니다.".into()))
-    }).await?;
-    calendar.service()?.google_attendees(&reference, include_meet).await
+    attendees(&app, id, include_meet).await
 }
 
 #[tauri::command]
@@ -326,27 +421,18 @@ pub async fn disconnect_calendar(
 pub fn select_calendars(
     app: tauri::AppHandle,
     window: WebviewWindow,
-    state: tauri::State<'_, CalendarDesktop>,
     ids: Vec<String>,
 ) -> Result<CalendarSnapshot, String> {
     crate::require_main(&window)?;
-    let service = state.service()?;
-    let snapshot = service.set_calendars(ids)?;
-    let _ = service.tick(calendar::now_ms(), false);
-    sync_windows(&app, &service);
-    publish(&app);
-    Ok(snapshot)
+    select(&app, ids)
 }
 #[tauri::command]
 pub async fn sync_calendar(
     app: tauri::AppHandle,
     window: WebviewWindow,
-    state: tauri::State<'_, CalendarDesktop>,
 ) -> Result<CalendarSnapshot, String> {
     crate::require_main(&window)?;
-    let result = state.service()?.sync_explicit().await;
-    publish(&app);
-    result
+    sync(&app).await
 }
 #[tauri::command]
 pub fn read_calendar_reminder(
@@ -402,34 +488,17 @@ fn calendar_reference(
 pub async fn read_calendar_meeting_occurrences(
     app: tauri::AppHandle,
     window: WebviewWindow,
-    state: tauri::State<'_, CalendarDesktop>,
     day: String,
     time_zone: String,
 ) -> Result<MeetingOccurrences, String> {
     crate::require_main(&window)?;
-    calendar::day_bounds(&day, &time_zone)?;
-    let calendar = state.snapshot();
-    if !calendar.connected {
-        return Ok(MeetingOccurrences {
-            calendar,
-            occurrences: vec![],
-            day,
-            time_zone,
-            scope_revision: 0,
-        });
-    }
-    let service = state.service()?;
-    let result = service.browse_day(day, time_zone, None).await;
-    publish(&app);
-    result.map(Into::into)
+    occurrences(&app, day, time_zone).await
 }
 
 #[tauri::command]
 pub async fn create_meeting_from_calendar(
     app: tauri::AppHandle,
     window: WebviewWindow,
-    calendar: tauri::State<'_, CalendarDesktop>,
-    state: tauri::State<'_, DesktopState>,
     occurrence_key: String,
     day: String,
     time_zone: String,
@@ -437,34 +506,7 @@ pub async fn create_meeting_from_calendar(
     target: Option<nero_core::DraftAttachmentTarget>,
 ) -> Result<Meeting, String> {
     crate::require_main(&window)?;
-    state.processing.require_meeting_models()?;
-    if let Some(target) = target.clone() {
-        crate::on_core(state.core.clone(), move |core| {
-            core.validate_draft_attachment(target)
-        })
-        .await?;
-    }
-    let service = calendar.service()?;
-    let result = service
-        .browse_day(day, time_zone, Some(scope_revision))
-        .await;
-    publish(&app);
-    let browse = result?;
-    let zone = jiff::tz::TimeZone::get(&browse.time_zone)
-        .map_err(|_| "일정 시간대를 확인하지 못했습니다.".to_string())?;
-    let core = state.core.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        service.with_browsed_occurrence(&browse, &occurrence_key, |event| {
-            let reference = calendar_reference(event, zone.clone())?;
-            match target {
-                Some(target) => core.attach_calendar_to_draft(target, reference),
-                None => core.create_meeting_from_calendar(reference),
-            }
-            .map_err(|error| error.to_string())
-        })
-    })
-    .await
-    .map_err(|_| "회의를 준비하지 못했습니다.".to_string())?
+    create_meeting(&app, occurrence_key, day, time_zone, scope_revision, target).await
 }
 #[tauri::command]
 pub fn calendar_reminder_ready(

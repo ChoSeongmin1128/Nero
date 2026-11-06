@@ -106,5 +106,64 @@
         "sha256": "b5d65a59060e68c4ff940e1eddfa6f94b2d68fdf58ed7f4dd57721c997e35e9d"
       }
     ]
+  },
+  {
+    "manifest": "config/models/whisper-large-v3.json",
+    "model": {
+      "repository": "ggerganov/whisper.cpp",
+      "revision": "fb5ed9369c26eaf08392504d8446da431e0fffb9",
+      "files": [
+        {
+          "name": "ggml-large-v3-q5_0.bin",
+          "bytes": 1081140203,
+          "sha256": "d75795ecff3f83b5faa89d1900604ad8c780abd5739fae406de19f23ecd98ad1"
+        }
+      ]
+    },
+    "license": "MIT",
+    "declaration": {
+      "source": "https://huggingface.co/ggerganov/whisper.cpp/raw/5359861c739e955e79d9a303bcbc70fb988958b1/README.md",
+      "sha256": "21fd967098804f33fc84e803fb0e5ab7666d71801f4027cf28a65e7af09c1758",
+      "licenseMetadata": "license: mit"
+    },
+    "notices": [
+      {
+        "path": "Whisper-MIT.txt",
+        "source": "https://raw.githubusercontent.com/openai/whisper/6e3be77e1a105e59086e3e21ff5f609fd6fa89a5/LICENSE",
+        "sha256": "b5d65a59060e68c4ff940e1eddfa6f94b2d68fdf58ed7f4dd57721c997e35e9d"
+      }
+    ]
+  },
+  {
+    "manifest": "config/models/qwen3-asr-ko.json",
+    "model": {
+      "repository": "seongmin0127/nero-qwen3-asr-ko-gguf",
+      "revision": "0bfb7be553a0c2fedbe3a0801d9996137101682a",
+      "files": [
+        {
+          "name": "qwen3-asr-1.7b-ko-q8-audiof16.gguf",
+          "bytes": 2800109184,
+          "sha256": "e401fc3718c3802f5e20eb9c6502d407e932bc9001bb33247e08454bd01b6bd4"
+        },
+        {
+          "name": "qwen3-forced-aligner-0.6b-q8_0.gguf",
+          "bytes": 985594624,
+          "sha256": "2efc3eb0db6eddb875e468e67dbc5a9ebcc840b94a583d1c336d0694cbeb7321"
+        }
+      ]
+    },
+    "license": "Apache-2.0",
+    "declaration": {
+      "source": "https://huggingface.co/seongmin0127/nero-qwen3-asr-ko-gguf/raw/0bfb7be553a0c2fedbe3a0801d9996137101682a/README.md",
+      "sha256": "c3bcf4e2f0d2f9265df5db33e3f019494e11016015cf24a719e33d79da11b3b9",
+      "licenseMetadata": "license: apache-2.0"
+    },
+    "notices": [
+      {
+        "path": "Apache-2.0.txt",
+        "source": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+        "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+      }
+    ]
   }
 ]

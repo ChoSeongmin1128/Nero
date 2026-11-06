@@ -16,6 +16,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
 pub(super) const MANIFEST: &str = include_str!("../../../../config/models/whisper-turbo.json");
+pub(super) const LARGE_MANIFEST: &str =
+    include_str!("../../../../config/models/whisper-large-v3.json");
 const RUNTIME: &str = include_str!("../../../../scripts/native-whisper/runtime.json");
 const RATE: u64 = 16000;
 const CONTEXT: u64 = 3 * RATE;
@@ -81,13 +83,17 @@ pub(super) fn recognize(
     work: &Path,
     cancel: &AtomicBool,
     model_dir: &Path,
+    engine: crate::speech_choice::SpeechEngine,
+    prompt: &str,
 ) -> Result<Vec<u8>, String> {
-    let model: Value = serde_json::from_str(MANIFEST).map_err(|_| failure())?;
+    let model: Value = serde_json::from_str(engine.manifest()).map_err(|_| failure())?;
     let mut buffered = Buffered::new(
         executable(resources),
         model_dir.join(model["files"][0]["name"].as_str().ok_or_else(failure)?),
         work.to_path_buf(),
         false,
+        engine,
+        prompt.to_owned(),
     )?;
     let mut wav = hound::WavReader::new(plain_file(audio)?).map_err(|_| failure())?;
     if wav.spec().channels != 1

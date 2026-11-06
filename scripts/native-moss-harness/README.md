@@ -1,6 +1,9 @@
 # Native MOSS worker
 
-This is the headless worker used by Grove's post-recording/import transcription route.
+This is the standalone headless MOSS worker retained for historical output validation
+and explicit research/evaluation. The current Nero product uses its shared native
+speech package; this harness is not an automatic ASR fallback and does not authorize
+launching the retired Swift app. See [model evaluation](../model-evaluation/README.md).
 It loads explicitly supplied local weights, does not download models or upload recordings,
 and keeps machine output separate from human corrections.
 
@@ -121,7 +124,8 @@ not silently normalize resource layouts or remove an input resource.
 The desktop preparation/build paths use the same staged-package verifier. Static
 verification does not execute the worker, so a build host does not need to run the
 macOS 26 worker just to compare package inputs. A present partial, stale or modified
-package fails; an absent optional package leaves recognition unavailable. Windows
+package fails; an absent optional package leaves this MOSS route unavailable without
+changing the product's independent Nemotron/Whisper/system choices. Windows
 builds do not require this macOS-only runtime.
 
 ```bash

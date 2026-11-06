@@ -337,11 +337,11 @@ for (const cancellation of ['pointercancel', 'lostpointercapture', 'blur', 'hidd
 }
 
 
-test('compact navigation owns four categories while the toolbar and utility slots keep singleton controls', async t => {
+test('compact navigation owns five categories while the toolbar and utility slots keep singleton controls', async t => {
   const { document } = await setup(t);
   const rail = document.querySelector('.navigation-rail'), aside = document.getElementById('navigation-sidebar');
   assert.equal(aside.inert, true);
-  assert.deepEqual([...rail.querySelectorAll('[data-navigation-preview]')].map(button => button.dataset.navigationPreview), ['all', 'folders', 'trash', 'recent']);
+  assert.deepEqual([...rail.querySelectorAll('[data-navigation-preview]')].map(button => button.dataset.navigationPreview), ['all', 'folders', 'ai', 'trash', 'recent']);
   const toolbar = document.querySelector('.application-toolbar');
   for (const id of ['navigation-back', 'navigation-forward', 'navigation-toggle', 'create-meeting']) {
     assert.equal(document.querySelectorAll(`#${id}`).length, 1);
@@ -491,4 +491,40 @@ test('all meetings use the same list icon in expanded and compact navigation, di
   assert.equal(expanded, 'list');
   assert.equal(compact, expanded);
   assert.notEqual(create, expanded);
+});
+
+test('recording export and location actions require validated playback and send only the meeting id', async t => {
+  const { window, document, state, library, bridge } = await setup(t);
+  const calls = [];
+  bridge.revealRecordingFile = async id => calls.push(['reveal', id]);
+  bridge.exportRecordingFile = async id => calls.push(['export', id]);
+  const buttons = ['meeting-export-audio', 'meeting-reveal'].map(id => document.getElementById(id));
+  const menu = buttons[0].closest('details');
+  assert.equal(buttons[1].closest('details'), menu);
+  state.selectedId = 'filed';
+  library.render();
+  assert.deepEqual(buttons.map(button => button.disabled), [true, true]);
+  state.audioKey = 'filed:undefined:96000';
+  document.getElementById('audio-message').dataset.state = 'ready';
+  menu.dispatchEvent(new window.Event('toggle'));
+  assert.deepEqual(buttons.map(button => button.disabled), [false, false]);
+  for (const button of buttons) button.click();
+  await settle();
+  assert.deepEqual(calls, [['export', 'filed'], ['reveal', 'filed']]);
+  state.snapshot.session = { state: 'recording', meetingId: 'filed' };
+  menu.dispatchEvent(new window.Event('toggle'));
+  assert.deepEqual(buttons.map(button => button.disabled), [true, true]);
+  state.snapshot.session = null;
+  document.getElementById('audio-message').dataset.state = 'error';
+  menu.dispatchEvent(new window.Event('toggle'));
+  assert.deepEqual(buttons.map(button => button.disabled), [true, true]);
+});
+
+test('meeting header separates the summary/transcript sections from notes and keeps summary actions in the summary panel', async t => {
+  const { document } = await setup(t);
+  const sections = document.querySelector('.detail-sections');
+  assert.deepEqual([...sections.querySelectorAll('button')].map(button => button.id), ['detail-summary-open', 'detail-transcript-open']);
+  assert.equal(sections.contains(document.getElementById('detail-notes-open')), false);
+  assert.equal(document.getElementById('summary-document-actions').closest('section').id, 'summary-section');
+  assert.equal(document.querySelector('#ai-chat-open [data-ui-icon]').dataset.uiIcon, 'sparkles');
 });

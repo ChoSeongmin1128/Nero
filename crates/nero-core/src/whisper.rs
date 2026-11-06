@@ -12,6 +12,8 @@ const SAMPLE_RATE: u64 = 16000;
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Output {
+    #[serde(default, rename = "glossaryContext")]
+    _glossary_context: Option<serde_json::Value>,
     schema_version: u32,
     model: String,
     model_revision: String,
@@ -79,6 +81,15 @@ pub(crate) fn decode_asr(raw: &[u8], duration: f64, session: &str, id: &str) -> 
     let model: serde_json::Value =
         serde_json::from_str(include_str!("../../../config/models/whisper-turbo.json"))
             .map_err(|_| invalid())?;
+    let large: serde_json::Value =
+        serde_json::from_str(include_str!("../../../config/models/whisper-large-v3.json"))
+            .map_err(|_| invalid())?;
+    let pin_matches = |pin: &serde_json::Value| {
+        Some(output.model_revision.as_str()) == pin["revision"].as_str()
+            && Some(output.model_sha256.as_str()) == pin["files"][0]["sha256"].as_str()
+    };
+    let model_valid =
+        pin_matches(&model) || (output.target == "macos-arm64" && pin_matches(&large));
     let runtime: serde_json::Value =
         serde_json::from_str(include_str!("../../../scripts/native-whisper/runtime.json"))
             .map_err(|_| invalid())?;
@@ -86,8 +97,7 @@ pub(crate) fn decode_asr(raw: &[u8], duration: f64, session: &str, id: &str) -> 
     if !matches!(output.schema_version, 1 | 2)
         || output.schema_version == 2 && output.target != "windows-x64"
         || output.model != MODEL
-        || Some(output.model_revision.as_str()) != model["revision"].as_str()
-        || Some(output.model_sha256.as_str()) != model["files"][0]["sha256"].as_str()
+        || !model_valid
         || Some(output.runtime.as_str()) != runtime["identity"].as_str()
         || !matches!(output.target.as_str(), "windows-x64" | "macos-arm64")
         || output.processing_policy != POLICY
@@ -555,5 +565,32 @@ pub(crate) mod tests {
         assert!(decode_asr(&serde_json::to_vec(&v).unwrap(), 2.0, "session", "id").is_ok());
         v["windows"][1]["ownedStartFrame"] = 15999.into();
         assert!(decode_asr(&serde_json::to_vec(&v).unwrap(), 2.0, "session", "id").is_err());
+    }
+    #[test]
+    fn full_whisper_pin_requires_matching_revision_hash_and_macos_target() {
+        let mut v = value();
+        let full: Value =
+            serde_json::from_str(include_str!("../../../config/models/whisper-large-v3.json"))
+                .unwrap();
+        v["modelRevision"] = full["revision"].clone();
+        v["modelSha256"] = full["files"][0]["sha256"].clone();
+        v["target"] = "macos-arm64".into();
+        v["windows"][0]["actualBackend"] = "metal".into();
+        v["windows"][0]["backendEvidence"] = "metal-backend-initialized".into();
+        let decode = |v: &Value| decode_asr(&serde_json::to_vec(v).unwrap(), 2.0, "session", "id");
+        let transcript = decode(&v).unwrap();
+        assert_eq!(
+            transcript.model_revision,
+            full["revision"].as_str().unwrap()
+        );
+        let mut mismatched = v.clone();
+        mismatched["modelSha256"] = value()["modelSha256"].clone();
+        assert!(decode(&mismatched).is_err());
+        mismatched = v.clone();
+        mismatched["modelRevision"] = value()["modelRevision"].clone();
+        assert!(decode(&mismatched).is_err());
+        mismatched = v;
+        mismatched["target"] = "windows-x64".into();
+        assert!(decode(&mismatched).is_err());
     }
 }

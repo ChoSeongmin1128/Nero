@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createAttendeeFlow } from '../src/people-flow.js';
-import { googleTargetFor } from '../src/google-attendee-draft.js';
+import { googleRows, googleTargetFor } from '../src/google-attendee-draft.js';
 
 const clone = value => JSON.parse(JSON.stringify(value));
 const source = (key, fields = {}) => ({ sourceKey: key, origin: 'meetParticipant', kind: 'signedInPersonOrRoom', displayName: 'Same name', email: null, googleUserId: `users/${key}`, responseStatus: null, ...fields });
-const initial = () => ({ editVersion: 'roster:1', meeting: { id: 'meeting', notes: 'Saved notes', attendees: [{ id: 'manual', name: 'Manual name' }] }, sources: [], identityLinks: [], catalog: { editVersion: 'catalog:1', people: [{ id: 'person', name: 'Saved person' }], groups: [] } });
+const initial = () => ({ editVersion: 'roster:1', meeting: { id: 'meeting', notes: 'Saved notes', calendarReference: { occurrenceKey: 'synthetic-event' }, attendees: [{ id: 'manual', name: 'Manual name' }] }, sources: [], identityLinks: [], catalog: { editVersion: 'catalog:1', people: [{ id: 'person', name: 'Saved person' }], groups: [] } });
 
 function fixture(overrides = {}, original = initial()) {
   let stored = clone(original), sequence = 0, changed = 0;
@@ -158,4 +158,27 @@ test('switching a staged promotion to an existing person removes the uncommitted
   assert.equal(await f.flow.save(), true);
   assert.equal(f.writes[0].draft.promotions.length, 0);
   assert.equal(f.writes[0].draft.attendees.find(attendee => attendee.id === 'new-1').personId, 'person');
+});
+
+test('people sharing a name are never merged or linked by that name alone', () => {
+  const invite = { sourceKey: 'invite', origin: 'calendarInvitation', kind: 'person', displayName: 'Same name', email: 'one@example.test', googleUserId: null, responseStatus: 'accepted' };
+  const rows = googleRows({ sources: [invite, source('100'), source('200')] }, { attendees: [], sources: [] }, { people: [{ id: 'saved', name: 'Same name' }], groups: [] }, []);
+  assert.deepEqual(rows.map(row => row.sources.length), [1, 1, 1]);
+  assert.deepEqual(rows.map(row => [row.suggestion, row.sharedName]), [['new', true], ['new', true], ['new', true]]);
+  const staged = { attendees: [{ id: 'from-google', name: 'Other' }], sources: [{ attendeeId: 'from-google', source: source('300', { displayName: 'Other' }) }] };
+  const other = googleRows({ sources: [source('400', { displayName: 'Other' })] }, staged, { people: [], groups: [] }, []);
+  assert.equal(other[0].suggestion, 'new');
+});
+
+test('a linked participant keeps its row and a same-name stranger or a second account is never attached by name', () => {
+  const links = [{ personId: 'p', emails: ['kim@example.test'], googleUserIds: ['users/9'] }];
+  const invite = { sourceKey: 'invite', origin: 'calendarInvitation', kind: 'person', displayName: '김철수', email: 'kim@example.test', googleUserId: null, responseStatus: 'accepted' };
+  const rows = googleRows({ sources: [invite, source('stranger', { displayName: '김철수' }), source('real', { displayName: 'Chulsoo Kim', googleUserId: 'users/9' })] }, { attendees: [], sources: [] }, { people: [{ id: 'p', name: '김철수' }], groups: [] }, links);
+  const byKey = Object.fromEntries(rows.map(row => [row.key, row]));
+  assert.deepEqual(byKey.invite.sources.map(item => item.sourceKey), ['invite', 'real']);
+  assert.equal(byKey.invite.reason, 'linked');
+  assert.ok(byKey.stranger);
+  const withAccount = { attendees: [{ id: 'x', personId: 'p', name: '김철수' }], sources: [{ attendeeId: 'x', source: invite }] };
+  const second = googleRows({ sources: [{ ...invite, sourceKey: 'invite-2', email: 'kim2@example.test' }] }, withAccount, { people: [{ id: 'p', name: '김철수' }], groups: [] }, []);
+  assert.equal(second[0].suggestion, 'new');
 });

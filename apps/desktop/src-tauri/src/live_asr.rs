@@ -54,6 +54,7 @@ struct Config {
     post: *const c_void,
     diar: *const c_void,
     batching: *const Batching,
+    salm: *const c_void,
 }
 #[repr(C)]
 struct Options {
@@ -130,7 +131,7 @@ impl Asr {
                 };
             }
             let version = get!("nemo_speech_asr_version", Text);
-            if text(version())? != "nemo-speech-asr 0.2.0" {
+            if text(version())? != nero_core::speech_runtime::asr_version() {
                 return Err("Unexpected speech runtime".into());
             }
             let create = get!("nemo_speech_asr_create", Create);
@@ -204,6 +205,7 @@ impl Asr {
                 vad: std::ptr::null(),
                 post: std::ptr::null(),
                 diar: std::ptr::null(),
+                salm: std::ptr::null(),
             };
             let status = create(&config, &mut this.recognizer);
             this.check(status)?;
@@ -315,7 +317,7 @@ mod tests {
         assert_eq!(std::mem::size_of::<Streaming>(), 24);
         assert_eq!(std::mem::size_of::<Endpoint>(), 16);
         assert_eq!(std::mem::size_of::<Batching>(), 32);
-        assert_eq!(std::mem::size_of::<Config>(), 80);
+        assert_eq!(std::mem::size_of::<Config>(), 88);
         assert_eq!(std::mem::size_of::<Options>(), 72);
     }
 }

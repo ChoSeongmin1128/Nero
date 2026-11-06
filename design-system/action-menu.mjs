@@ -49,7 +49,7 @@ export function mountActionMenus({ owner, onEscape }) {
     const menu = event.target.closest?.('[data-meeting-menu],.library-folder-menu,.transcript-maintenance');
     if (!menu || !['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
     if (menu.querySelector('summary')?.getAttribute?.('aria-disabled') === 'true') return;
-    const buttons = [...menu.querySelectorAll('button:not(:disabled)')];
+    const buttons = [...menu.querySelectorAll('button:not(:disabled):not([hidden])')];
     if (!buttons.length) return;
     event.preventDefault();
     menu.open = true; positionMenu(menu);

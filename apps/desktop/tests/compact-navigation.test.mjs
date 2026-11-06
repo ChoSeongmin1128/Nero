@@ -245,7 +245,8 @@ test('keyboard enters and returns from each product preview without advancing th
   t.after(() => views.destroy());
   const notes = el('meeting-notes'); notes.value = '저장 전 메모';
   const key = (node, value, options = {}) => { const event = new window.KeyboardEvent('keydown', { key: value, bubbles: true, cancelable: true, ...options }); node.dispatchEvent(event); return event; };
-  const targets = { all: '#sidebar-meeting-list [data-recent-meeting="unfiled"]', folders: '#library-system-views [data-library-filter="unfiled"]', trash: '#sidebar-meeting-list [data-recent-meeting="deleted"]', recent: '#recent-meetings [data-recent-meeting="unfiled"]' };
+  el('sidebar-ai-preview').innerHTML = '<nav><article><button type="button" data-navigation-item="">주간 회의 정리</button></article></nav>';
+  const targets = { all: '#sidebar-meeting-list [data-recent-meeting="unfiled"]', folders: '#library-system-views [data-library-filter="unfiled"]', ai: '#sidebar-ai-preview [data-navigation-item]', trash: '#sidebar-meeting-list [data-recent-meeting="deleted"]', recent: '#recent-meetings [data-recent-meeting="unfiled"]' };
   const buttons = [...document.querySelectorAll('[data-navigation-preview]')];
   for (let index = 0; index < buttons.length; index++) {
     const button = buttons[index], view = button.dataset.navigationPreview;
@@ -255,10 +256,10 @@ test('keyboard enters and returns from each product preview without advancing th
     const target = document.querySelector(targets[view]);
     assert.equal(document.activeElement, target);
     assert.equal(views.activeView(), view);
-    const hasHeaderActions = ['all', 'trash'].includes(view);
+    const hasHeaderActions = ['all', 'ai', 'trash'].includes(view);
     assert.equal(key(target, 'Tab', { shiftKey: true }).defaultPrevented, !hasHeaderActions);
     if (hasHeaderActions) {
-      const action = el(view === 'trash' ? 'sidebar-empty-trash' : 'sidebar-preview-open');
+      const action = el({ trash: 'sidebar-empty-trash', ai: 'sidebar-ai-new' }[view] || 'sidebar-preview-open');
       action.focus();
       assert.equal(key(action, 'Tab', { shiftKey: true }).defaultPrevented, true);
     }

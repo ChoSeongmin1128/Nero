@@ -16,16 +16,70 @@ struct Login {
     result: Mutex<Option<Result<(), String>>>,
     done: Notify,
 }
+struct Refresh {
+    cancel: AtomicBool,
+    completed: AtomicBool,
+    done: Notify,
+}
+struct RefreshGuard(Arc<Refresh>);
+impl Drop for RefreshGuard {
+    fn drop(&mut self) {
+        self.0.completed.store(true, Ordering::Release);
+        self.0.done.notify_waiters();
+    }
+}
+#[derive(Default)]
+struct RefreshState {
+    stopping: bool,
+    active: Option<Arc<Refresh>>,
+}
+fn lock_operation<'a>(
+    lock: &'a Mutex<()>,
+    cancel: &AtomicBool,
+) -> Result<std::sync::MutexGuard<'a, ()>, String> {
+    loop {
+        if cancel.load(Ordering::Acquire) {
+            return Err("취소했습니다.".into());
+        }
+        match lock.try_lock() {
+            Ok(guard) => return Ok(guard),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                std::thread::sleep(Duration::from_millis(20))
+            }
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                return Err("Claude 연결을 준비하지 못했습니다.".into())
+            }
+        }
+    }
+}
+pub struct ShutdownGuard {
+    connection: Arc<ClaudeConnection>,
+}
+impl Drop for ShutdownGuard {
+    fn drop(&mut self) {
+        self.connection.refresh.lock().unwrap().stopping = false;
+    }
+}
 pub struct ClaudeConnection {
     root: PathBuf,
     cached: Mutex<Option<Value>>,
+    models: Mutex<Vec<claude_runner::SupportedModel>>,
+    model_cache: claude_runner::ModelCache,
+    model_operation: Mutex<()>,
+    refresh: Mutex<RefreshState>,
     login: Mutex<Option<Arc<Login>>>,
 }
 impl ClaudeConnection {
     pub fn new(root: PathBuf) -> Self {
+        let model_cache = claude_runner::ModelCache::new(&root);
+        let models = model_cache.read();
         Self {
             root: root.join("ai-runtime/claude-code"),
             cached: Mutex::new(None),
+            models: Mutex::new(models),
+            model_cache,
+            model_operation: Mutex::new(()),
+            refresh: Mutex::new(RefreshState::default()),
             login: Mutex::new(None),
         }
     }
@@ -57,6 +111,10 @@ impl ClaudeConnection {
     }
 
     pub fn begin(self: &Arc<Self>) -> Result<String, String> {
+        let refresh_state = self.refresh.lock().unwrap();
+        if refresh_state.stopping {
+            return Err("Claude 연결을 종료하고 있습니다.".into());
+        }
         let mut pending = self.login.lock().unwrap();
         if pending
             .as_ref()
@@ -71,6 +129,7 @@ impl ClaudeConnection {
             done: Notify::new(),
         });
         *pending = Some(run.clone());
+        drop(refresh_state);
         let this = self.clone();
         let id = run.id.clone();
         tauri::async_runtime::spawn(async move {
@@ -80,11 +139,17 @@ impl ClaudeConnection {
                     Err(_) => claude_runner::prepare(&this.root, run.cancel.clone()).await?,
                 };
                 let cancel = run.cancel.clone();
+                let connection = this.clone();
                 tauri::async_runtime::spawn_blocking(move || {
-                    if runner.auth_status(&cancel)? {
-                        return Ok(());
+                    let _operation = lock_operation(&connection.model_operation, &cancel)?;
+                    connection.invalidate_models()?;
+                    if cancel.load(Ordering::Acquire) {
+                        return Err("취소했습니다.".into());
                     }
-                    runner.login(&cancel)
+                    if !runner.auth_status(&cancel)? {
+                        runner.login(&cancel)?;
+                    }
+                    Ok(())
                 })
                 .await
                 .map_err(|_| "Claude 로그인을 완료하지 못했습니다.".to_string())?
@@ -146,27 +211,125 @@ impl ClaudeConnection {
             .ok();
         Ok(())
     }
-    pub async fn drain(&self) -> Result<(), String> {
-        let pending = self.login.lock().unwrap().clone();
-        if let Some(run) = pending {
-            run.cancel.store(true, Ordering::Release);
-            tokio::time::timeout(Duration::from_secs(5), Self::wait_for(&run))
-                .await
-                .map_err(|_| {
-                    "Claude 로그인을 정리 중입니다. 잠시 후 다시 시도해 주세요.".to_string()
-                })?
-                .ok();
+    async fn wait_refresh(run: &Refresh) {
+        loop {
+            let notified = run.done.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if run.completed.load(Ordering::Acquire) {
+                return;
+            }
+            notified.await;
         }
+    }
+    pub async fn prepare_shutdown(self: &Arc<Self>) -> Result<ShutdownGuard, String> {
+        let refresh = {
+            let mut state = self.refresh.lock().unwrap();
+            if state.stopping {
+                return Err("Claude 연결을 이미 정리 중입니다.".into());
+            }
+            state.stopping = true;
+            let active = state.active.clone();
+            if let Some(run) = &active {
+                run.cancel.store(true, Ordering::Release);
+            }
+            active
+        };
+        let guard = ShutdownGuard {
+            connection: self.clone(),
+        };
+        let login = self.login.lock().unwrap().clone();
+        if let Some(run) = &login {
+            run.cancel.store(true, Ordering::Release);
+        }
+        tokio::time::timeout(Duration::from_secs(5), async {
+            if let Some(run) = login {
+                let _ = Self::wait_for(&run).await;
+            }
+            if let Some(run) = refresh {
+                Self::wait_refresh(&run).await;
+            }
+        })
+        .await
+        .map_err(|_| "Claude 연결을 정리 중입니다. 잠시 후 다시 시도해 주세요.".to_string())?;
+        Ok(guard)
+    }
+    fn invalidate_models(&self) -> Result<(), String> {
+        self.model_cache.write(&[], None)?;
+        self.models.lock().unwrap().clear();
         Ok(())
+    }
+    pub fn models(&self) -> Vec<claude_runner::SupportedModel> {
+        self.models.lock().unwrap().clone()
+    }
+    pub fn refresh_models(&self) -> Result<Vec<claude_runner::SupportedModel>, String> {
+        let run = Arc::new(Refresh {
+            cancel: AtomicBool::new(false),
+            completed: AtomicBool::new(false),
+            done: Notify::new(),
+        });
+        {
+            let mut state = self.refresh.lock().unwrap();
+            if state.stopping
+                || state
+                    .active
+                    .as_ref()
+                    .is_some_and(|active| !active.completed.load(Ordering::Acquire))
+            {
+                return Err("Claude 모델 목록을 이미 갱신 중이거나 종료하고 있습니다.".into());
+            }
+            state.active = Some(run.clone());
+        }
+        let _guard = RefreshGuard(run.clone());
+        let _operation = lock_operation(&self.model_operation, &run.cancel)?;
+        let runner =
+            claude_runner::discover_prepared_cancelled(&self.root, &run.cancel).or_else(|_| {
+                if run.cancel.load(Ordering::Acquire) {
+                    Err("취소했습니다.".into())
+                } else {
+                    claude_runner::discover()
+                }
+            })?;
+        let identity = runner.identity(&run.cancel)?;
+        let models = runner.supported_models(&run.cancel)?;
+        if runner.identity(&run.cancel)? != identity {
+            return Err("Claude 실행 파일이 변경되어 모델 목록을 저장하지 못했습니다.".into());
+        }
+        if run.cancel.load(Ordering::Acquire) {
+            return Err("취소했습니다.".into());
+        }
+        self.model_cache.write(&models, Some(&identity))?;
+        *self.models.lock().unwrap() = models.clone();
+        Ok(models)
     }
     pub fn reply(
         &self,
         model: &str,
         prompt: &str,
+        effort: Option<&str>,
         cancel: Arc<AtomicBool>,
         delta: impl FnMut(&str),
-    ) -> Result<String, String> {
-        let result = self.resolve()?.reply(model, prompt, cancel, delta);
+    ) -> Result<claude_runner::Reply, String> {
+        let operation = lock_operation(&self.model_operation, &cancel)?;
+        let runner = self.resolve()?;
+        let identity = runner.identity(&cancel)?;
+        let models = self.model_cache.read_for_runtime(&identity).map_err(|_| "Claude 실행 파일이 바뀌었거나 모델 목록을 확인할 수 없습니다. 모델 목록을 새로고침해 주세요.".to_string())?;
+        if !models.iter().any(|entry| {
+            entry.value == model
+                && effort.map_or(true, |value| {
+                    entry.supports_effort == Some(true)
+                        && entry
+                            .supported_effort_levels
+                            .iter()
+                            .any(|level| level == value)
+                })
+        }) {
+            return Err(
+                "선택한 Claude 모델을 확인하지 못했습니다. 모델 목록을 새로고침해 주세요.".into(),
+            );
+        }
+        drop(operation);
+        let result = runner.reply(model, prompt, effort, cancel, delta);
         if result.is_ok() {
             *self.cached.lock().unwrap() = Some(Self::row(true));
         } else {
@@ -189,6 +352,98 @@ mod tests {
         });
         *connection.login.lock().unwrap() = Some(run.clone());
         run
+    }
+
+    #[test]
+    fn operation_wait_can_be_cancelled_while_refresh_holds_lock() {
+        let connection = Arc::new(ClaudeConnection::new(PathBuf::from("unused")));
+        let held = connection.model_operation.lock().unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let worker_connection = connection.clone();
+        let worker_cancel = cancel.clone();
+        let worker = std::thread::spawn(move || {
+            lock_operation(&worker_connection.model_operation, &worker_cancel).is_err()
+        });
+        cancel.store(true, Ordering::Release);
+        assert!(worker.join().unwrap());
+        drop(held);
+    }
+
+    #[test]
+    fn connection_invalidation_persists_without_account_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let cache = claude_runner::ModelCache::new(&root);
+        let model = claude_runner::SupportedModel {
+            value: "sonnet".into(),
+            display_name: "Sonnet".into(),
+            resolved_model: None,
+            supports_effort: None,
+            supported_effort_levels: vec![],
+        };
+        cache.write(&[model], Some(&"a".repeat(64))).unwrap();
+        let connection = ClaudeConnection::new(root.clone());
+        assert_eq!(connection.models().len(), 1);
+        connection.invalidate_models().unwrap();
+        assert!(connection.models().is_empty());
+        assert!(ClaudeConnection::new(root).models().is_empty());
+    }
+
+    #[tokio::test]
+    async fn shutdown_guard_cancels_refresh_and_reopens_on_drop() {
+        let connection = Arc::new(ClaudeConnection::new(PathBuf::from("unused")));
+        let run = Arc::new(Refresh {
+            cancel: AtomicBool::new(false),
+            completed: AtomicBool::new(false),
+            done: Notify::new(),
+        });
+        connection.refresh.lock().unwrap().active = Some(run.clone());
+        let pending = connection.clone();
+        let task = tokio::spawn(async move { pending.prepare_shutdown().await });
+        tokio::task::yield_now().await;
+        assert!(run.cancel.load(Ordering::Acquire));
+        assert!(!task.is_finished());
+        drop(RefreshGuard(run));
+        let guard = task.await.unwrap().unwrap();
+        assert!(connection.refresh.lock().unwrap().stopping);
+        assert!(connection.refresh_models().is_err());
+        drop(guard);
+        assert!(!connection.refresh.lock().unwrap().stopping);
+    }
+
+    #[tokio::test]
+    async fn interrupted_shutdown_releases_guard_while_refresh_finishes() {
+        let connection = Arc::new(ClaudeConnection::new(PathBuf::from("unused")));
+        let run = Arc::new(Refresh {
+            cancel: AtomicBool::new(false),
+            completed: AtomicBool::new(false),
+            done: Notify::new(),
+        });
+        connection.refresh.lock().unwrap().active = Some(run.clone());
+        let pending = connection.clone();
+        let task = tokio::spawn(async move { pending.prepare_shutdown().await });
+        tokio::task::yield_now().await;
+        assert!(connection.refresh.lock().unwrap().stopping);
+        task.abort();
+        let _ = task.await;
+        assert!(!connection.refresh.lock().unwrap().stopping);
+        assert!(connection.refresh_models().is_err());
+        drop(RefreshGuard(run));
+    }
+
+    #[test]
+    fn model_cache_is_passive_and_rejects_unadvertised_selection() {
+        let connection = ClaudeConnection::new(PathBuf::from("unused"));
+        assert!(connection.models().is_empty());
+        let result = connection.reply(
+            "claude-unknown",
+            "prompt",
+            None,
+            Arc::new(AtomicBool::new(false)),
+            |_| {},
+        );
+        assert!(result.is_err());
+        assert!(connection.models().is_empty());
     }
 
     #[test]

@@ -67,7 +67,7 @@ class DistributionNoticeTests(unittest.TestCase):
         license_bytes = b'Synthetic model license text\n'
         (model_folder / 'LICENSE').write_bytes(license_bytes)
         entries = []
-        for name in ['config/models/nemotron-asr.json', 'config/models/whisper-turbo.json',
+        for name in ['config/models/nemotron-asr.json', 'config/models/whisper-turbo.json', 'config/models/whisper-large-v3.json',
                      'apps/desktop/models/diarization.json', 'apps/desktop/models/summary.json']:
             model = {'repository': name, 'revision': 'a' * 40,
                      'files': [{'name': 'model.bin', 'bytes': 5, 'sha256': 'b' * 64}]}

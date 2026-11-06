@@ -1,5 +1,10 @@
 # Windows speech model selection
 
+This document describes the application source contract. New source features require
+their own Windows package and runtime acceptance; installed build metadata and release
+receipts identify the behavior actually delivered. Development isolation and installer
+verification are described in [development](development.md#windows-검증).
+
 Setup and Settings share the same selector. Nemotron 3.5 streaming ASR 0.6B Q8
 is the default. Whisper large-v3-turbo Q5 is an explicit alternative using the
 packaged whisper.cpp CLI with Vulkan preference and a separate CPU runtime on
@@ -22,18 +27,18 @@ Previously downloaded valid weights are reused. Existing meetings, canonical
 transcripts, corrections, speaker history and source identities are not rewritten
 or automatically retranscribed.
 
-The Windows CPU package builds the existing upstream base with the pinned PR47
-mmap backport and a separate Windows scheduler-storage patch. File-backed weights
+The Windows CPU package builds the pinned upstream release, which includes the mmap
+weight loader, with a separate Windows scheduler-storage patch. File-backed weights
 avoid a private staging copy where supported. Scheduler graph-copy allocation
 starts at 2048 nodes, grows geometrically with headroom, and retains the original
 65536-node maximum and explicit oversized-graph failure. Growth synchronizes the
 backend and invalidates cached placements, retaining model and live-stream state.
-The source archives, both patches, per-file hashes, compiler flags and composite
+The source archives, the patch, per-file hashes, compiler flags and composite
 package identity are owned by `scripts/native-diarization/runtime.json`.
 
 Vulkan retains the separately hash-verified official base executable/libraries.
-The composite Windows identity does not claim that Vulkan received either patch.
-macOS retains its existing PR47-only recipe. Stored base artifacts and both target
+The composite Windows identity does not claim that Vulkan received the patch.
+macOS builds the same release without patches. Earlier base artifacts and target
 identities remain readable without changing their historical provenance.
 
 Nemotron GPU preference and error handling are unchanged. A confirmed unavailable GPU
@@ -76,3 +81,10 @@ Memory optimization does not establish acceptance on every 8 GB or low-power
 notebook, long microphone recording, battery life, Korean meeting accuracy or
 speaker accuracy. Those limits must remain separate from native file-fed runtime
 and persistence checks. Private device/evaluation receipts stay outside product Git.
+
+The separate [model-evaluation tooling](../scripts/model-evaluation/README.md) currently
+uses a POSIX process-group runner. Its Linux/CUDA Mini adapter is not a native Windows
+application engine, and WSL execution does not qualify the Windows installer or app.
+The optional full Whisper large-v3 Q5 application choice is Apple Silicon-only;
+Windows retains Nemotron and Whisper Turbo choices. Model recommendations do not
+download weights or change the selected engine automatically.

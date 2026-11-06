@@ -1,6 +1,6 @@
 //! Exact PCM ownership, context windows and EOF receipts.
 use super::backend::Session;
-use super::native::native_words;
+use super::native::native_words_for_engine;
 use super::*;
 use std::collections::VecDeque;
 
@@ -8,6 +8,7 @@ pub(crate) struct Buffered {
     runtime: Session,
     model: PathBuf,
     model_sha: String,
+    engine: crate::speech_choice::SpeechEngine,
     work: PathBuf,
     samples: VecDeque<i16>,
     base: u64,
@@ -18,6 +19,7 @@ pub(crate) struct Buffered {
     windows: Vec<Value>,
     pub(crate) generation: u64,
     inherited_tree: bool,
+    prompt: String,
 }
 
 impl Buffered {
@@ -30,8 +32,17 @@ impl Buffered {
         model: PathBuf,
         work: PathBuf,
         inherited_tree: bool,
+        engine: crate::speech_choice::SpeechEngine,
+        prompt: String,
     ) -> Result<Self, String> {
-        let manifest: Value = serde_json::from_str(MANIFEST).map_err(|_| failure())?;
+        if !matches!(
+            engine,
+            crate::speech_choice::SpeechEngine::WhisperTurbo
+                | crate::speech_choice::SpeechEngine::WhisperLargeV3
+        ) {
+            return Err(failure());
+        }
+        let manifest: Value = serde_json::from_str(engine.manifest()).map_err(|_| failure())?;
         let model_sha = file_hash(&model)?;
         if Some(model_sha.as_str()) != manifest["files"][0]["sha256"].as_str()
             || plain_file(&model)?
@@ -47,6 +58,7 @@ impl Buffered {
             runtime,
             model,
             model_sha,
+            engine,
             work,
             samples: VecDeque::new(),
             base: 0,
@@ -57,6 +69,7 @@ impl Buffered {
             windows: Vec::new(),
             generation: 0,
             inherited_tree,
+            prompt,
         })
     }
 
@@ -148,9 +161,11 @@ impl Buffered {
             &self.work,
             cancel,
             self.inherited_tree,
+            &self.prompt,
         )?;
         let raw = read(&run.native, 16 * 1024 * 1024)?;
-        let projected = native_words(&raw, input_end - input_start, input_start)?;
+        let projected =
+            native_words_for_engine(&raw, input_end - input_start, input_start, self.engine)?;
         let begin = self.words.len();
         let mut terminal_contexts = Vec::new();
         for word in projected {
@@ -217,7 +232,7 @@ impl Buffered {
         if self.owned < self.received {
             self.window(self.received, self.received, cancel)?;
         }
-        let model: Value = serde_json::from_str(MANIFEST).map_err(|_| failure())?;
+        let model: Value = serde_json::from_str(self.engine.manifest()).map_err(|_| failure())?;
         let runtime: Value = serde_json::from_str(RUNTIME).map_err(|_| failure())?;
         Ok(
             json!({"schemaVersion":if cfg!(windows){2}else{1},"model":model["repository"],"modelRevision":model["revision"],"modelSha256":self.model_sha,

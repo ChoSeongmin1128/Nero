@@ -8,7 +8,7 @@ pub(crate) fn dispatch(root: &Path, params: Value) -> Result<Value, QueryError> 
     if !root.exists() {
         return Err(QueryError {
             code: "app_not_running",
-            message: "Nero 앱을 실행한 뒤 다시 시도해 주세요.",
+            message: std::borrow::Cow::Borrowed("Nero 앱을 실행한 뒤 다시 시도해 주세요."),
         });
     }
     agent_control::request(root, "app_update", params).map_err(|error| {
@@ -21,7 +21,7 @@ pub(crate) fn dispatch(root: &Path, params: Value) -> Result<Value, QueryError> 
             "unsafe_control_path" => "Nero 연결 파일의 권한을 확인해 주세요.",
             _ => "Nero와 연결할 수 없습니다. 앱을 실행한 뒤 다시 시도해 주세요.",
         };
-        QueryError { code: error.code, message }
+        QueryError { code: error.code, message: message.into() }
     })
 }
 

@@ -1,3 +1,4 @@
+pub mod agent_app;
 pub mod agent_control;
 mod apple_speech;
 pub mod audio_normalize;
@@ -5,11 +6,13 @@ mod audio_playback;
 mod capture;
 mod diarization;
 mod engine;
+pub mod environment;
 pub mod identity;
 mod library;
 mod nemotron;
 pub mod people;
 pub mod presentation;
+mod qwen;
 pub use people::{MeetingAttendee, PeopleCatalog, Person, PersonGroup, PromotedAttendee};
 pub mod reader;
 pub mod speech_runtime;
@@ -460,6 +463,16 @@ impl CoreHandle {
     ) -> Result<Transcript> {
         let id = id.to_string();
         self.call(move |engine| engine.commit_whisper_transcript(&id, expected, raw))
+    }
+
+    pub fn commit_qwen_transcript(
+        &self,
+        id: &str,
+        expected: Option<TranscriptVersion>,
+        raw: Vec<u8>,
+    ) -> Result<Transcript> {
+        let id = id.to_owned();
+        self.call(move |engine| engine.commit_qwen_transcript(&id, expected, raw))
     }
 
     pub fn commit_apple_transcript(
