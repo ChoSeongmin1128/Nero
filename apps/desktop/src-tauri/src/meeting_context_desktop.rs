@@ -6,7 +6,7 @@ use crate::{
 };
 use serde::Serialize;
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Manager, State, WebviewWindow};
+use tauri::{AppHandle, Manager, WebviewWindow};
 
 pub struct MeetingContexts {
     store: MeetingContextStore,
@@ -151,91 +151,116 @@ pub fn removal<T>(
     }
     result
 }
+pub(crate) enum SourceChange {
+    Add(String),
+    Refresh(String),
+    Remove(String),
+}
+// The context panel and agent requests share these; they block, so screens run them off
+// the async runtime.
+pub(crate) fn sources(app: &AppHandle, meeting_id: &str) -> Result<SourcesView, String> {
+    let _lease = app.state::<DesktopState>().lifecycle.begin_transition()?;
+    let store = service(app)?;
+    let notion = app.state::<AiDesktop>().notion()?;
+    let _guard = store
+        .gate
+        .lock()
+        .map_err(|_| "회의 자료를 확인하지 못했습니다.")?;
+    store.require_meeting(meeting_id)?;
+    store.view(store.store.list(meeting_id)?, &notion)
+}
+pub(crate) fn change_sources(
+    app: &AppHandle,
+    meeting_id: &str,
+    expected_revision: u64,
+    change: SourceChange,
+) -> Result<SourcesView, String> {
+    let _lease = app.state::<DesktopState>().lifecycle.begin_transition()?;
+    let store = service(app)?;
+    let notion = app.state::<AiDesktop>().notion()?;
+    let _guard = store
+        .gate
+        .lock()
+        .map_err(|_| "회의 자료를 확인하지 못했습니다.")?;
+    store.require_meeting(meeting_id)?;
+    let read = |source_id: String| -> Result<NotionSource, String> {
+        notion
+            .read_sources(vec![source_id])
+            .map_err(|e| e.to_string())?
+            .sources
+            .pop()
+            .ok_or("자료를 찾을 수 없습니다.".into())
+    };
+    let context = match change {
+        SourceChange::Add(source_id) => {
+            store
+                .store
+                .add(meeting_id, expected_revision, &read(source_id)?)?
+        }
+        SourceChange::Refresh(source_id) => {
+            store
+                .store
+                .replace(meeting_id, expected_revision, &read(source_id)?)?
+        }
+        SourceChange::Remove(page_id) => {
+            store
+                .store
+                .remove(meeting_id, expected_revision, &page_id)?
+        }
+    };
+    store.view(context, &notion)
+}
+impl SourcesView {
+    pub(crate) fn revision(&self) -> u64 {
+        self.revision
+    }
+    pub(crate) fn url_of(&self, page_id: &str) -> Option<&str> {
+        self.sources
+            .iter()
+            .find(|source| source.page_id == page_id)
+            .map(|source| source.url.as_str())
+    }
+}
+async fn blocking<T: Send + 'static>(
+    action: impl FnOnce() -> Result<T, String> + Send + 'static,
+    failure: &str,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(action)
+        .await
+        .map_err(|_| failure.to_string())?
+}
 #[tauri::command]
 pub async fn meeting_context_sources(
     window: WebviewWindow,
     app: AppHandle,
-    ai: State<'_, AiDesktop>,
     meeting_id: String,
 ) -> Result<SourcesView, String> {
     require_main(&window)?;
-    let lease = app.state::<DesktopState>().lifecycle.begin_transition()?;
-    let store = service(&app)?;
-    let notion = ai.notion()?;
-    tauri::async_runtime::spawn_blocking(move || {
-        let _lease = lease;
-        let _guard = store
-            .gate
-            .lock()
-            .map_err(|_| "회의 자료를 확인하지 못했습니다.")?;
-        store.require_meeting(&meeting_id)?;
-        store.view(store.store.list(&meeting_id)?, &notion)
-    })
+    blocking(
+        move || sources(&app, &meeting_id),
+        "회의 자료를 불러오지 못했습니다.",
+    )
     .await
-    .map_err(|_| "회의 자료를 불러오지 못했습니다.".to_string())?
-}
-async fn change(
-    app: AppHandle,
-    ai: State<'_, AiDesktop>,
-    meeting_id: String,
-    expected_revision: u64,
-    source_id: Option<String>,
-    page_id: Option<String>,
-    refresh: bool,
-) -> Result<SourcesView, String> {
-    let lease = app.state::<DesktopState>().lifecycle.begin_transition()?;
-    let store = service(&app)?;
-    let notion = ai.notion()?;
-    tauri::async_runtime::spawn_blocking(move || {
-        let _lease = lease;
-        let _guard = store
-            .gate
-            .lock()
-            .map_err(|_| "회의 자료를 확인하지 못했습니다.")?;
-        store.require_meeting(&meeting_id)?;
-        let context = if let Some(source_id) = source_id {
-            let mut sources = notion
-                .read_sources(vec![source_id])
-                .map_err(|e| e.to_string())?
-                .sources;
-            let source = sources.pop().ok_or("자료를 찾을 수 없습니다.")?;
-            if refresh {
-                store
-                    .store
-                    .replace(&meeting_id, expected_revision, &source)?
-            } else {
-                store.store.add(&meeting_id, expected_revision, &source)?
-            }
-        } else {
-            store.store.remove(
-                &meeting_id,
-                expected_revision,
-                &page_id.ok_or("자료를 확인해 주세요.")?,
-            )?
-        };
-        store.view(context, &notion)
-    })
-    .await
-    .map_err(|_| "회의 자료를 저장하지 못했습니다.".to_string())?
 }
 #[tauri::command]
 pub async fn meeting_context_add(
     window: WebviewWindow,
     app: AppHandle,
-    ai: State<'_, AiDesktop>,
     meeting_id: String,
     expected_revision: u64,
     source_id: String,
 ) -> Result<SourcesView, String> {
     require_main(&window)?;
-    change(
-        app,
-        ai,
-        meeting_id,
-        expected_revision,
-        Some(source_id),
-        None,
-        false,
+    blocking(
+        move || {
+            change_sources(
+                &app,
+                &meeting_id,
+                expected_revision,
+                SourceChange::Add(source_id),
+            )
+        },
+        "회의 자료를 저장하지 못했습니다.",
     )
     .await
 }
@@ -243,42 +268,43 @@ pub async fn meeting_context_add(
 pub async fn meeting_context_remove(
     window: WebviewWindow,
     app: AppHandle,
-    ai: State<'_, AiDesktop>,
     meeting_id: String,
     expected_revision: u64,
     page_id: String,
 ) -> Result<SourcesView, String> {
     require_main(&window)?;
-    change(
-        app,
-        ai,
-        meeting_id,
-        expected_revision,
-        None,
-        Some(page_id),
-        false,
+    blocking(
+        move || {
+            change_sources(
+                &app,
+                &meeting_id,
+                expected_revision,
+                SourceChange::Remove(page_id),
+            )
+        },
+        "회의 자료를 저장하지 못했습니다.",
     )
     .await
 }
-
 #[tauri::command]
 pub async fn meeting_context_refresh(
     window: WebviewWindow,
     app: AppHandle,
-    ai: State<'_, AiDesktop>,
     meeting_id: String,
     expected_revision: u64,
     source_id: String,
 ) -> Result<SourcesView, String> {
     require_main(&window)?;
-    change(
-        app,
-        ai,
-        meeting_id,
-        expected_revision,
-        Some(source_id),
-        None,
-        true,
+    blocking(
+        move || {
+            change_sources(
+                &app,
+                &meeting_id,
+                expected_revision,
+                SourceChange::Refresh(source_id),
+            )
+        },
+        "회의 자료를 저장하지 못했습니다.",
     )
     .await
 }

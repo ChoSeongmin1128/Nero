@@ -1162,6 +1162,18 @@ fn stdio_initialization_tools_errors_and_framing_use_the_sdk() {
         "status",
         "templates_list",
         "template_get",
+        "ai_chats_list",
+        "ai_chat_get",
+        "ai_models_list",
+        "notion_status",
+        "meeting_sources_list",
+        "calendar_status",
+        "calendar_events",
+        "calendar_attendees",
+        "terminology_get",
+        "settings_get",
+        "recording_devices",
+        "transcript_history",
     ];
     for tool in tools {
         let name = tool["name"].as_str().unwrap();
@@ -1179,6 +1191,13 @@ fn stdio_initialization_tools_errors_and_framing_use_the_sdk() {
                 | "meetings_trash"
                 | "folder_delete"
                 | "speech_switch_cancel"
+                | "ai_answer_save"
+                | "ai_chats_trash"
+                | "meeting_source_remove"
+                | "glossary_save"
+                | "transcript_save"
+                | "transcript_restore"
+                | "speakers_save"
         ) {
             assert_eq!(tool["annotations"]["destructiveHint"], true);
         }
@@ -1187,7 +1206,21 @@ fn stdio_initialization_tools_errors_and_framing_use_the_sdk() {
         }
         assert_eq!(
             tool["annotations"]["openWorldHint"],
-            matches!(name, "app_update" | "speech_engine_set")
+            matches!(
+                name,
+                "app_update"
+                    | "speech_engine_set"
+                    | "ai_models_list"
+                    | "ai_chat_send"
+                    | "meeting_source_add"
+                    | "meeting_source_refresh"
+                    | "calendar_events"
+                    | "calendars_select"
+                    | "calendar_sync"
+                    | "calendar_attendees"
+                    | "meeting_from_calendar"
+                    | "models_prepare"
+            )
         );
     }
 
@@ -1525,4 +1558,102 @@ fn people_and_roster_reads_share_cli_mcp_contract_without_opening_a_writer() {
     assert!(!text.contains("Catalog name"));
     assert_eq!(fs::read(path).unwrap(), before);
     assert!(!root.path().join("store.lock").exists());
+}
+
+#[test]
+fn app_service_tools_forward_checked_requests_and_keep_the_app_explanation() {
+    use nero_core::agent_app::AppRequest;
+    use nero_core::agent_control::{ControlError, Handlers, Server};
+    use std::sync::{Arc, Mutex};
+    let root = temporary_root();
+    let core = nero_core::CoreHandle::open(root.path()).unwrap();
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let requests = received.clone();
+    let server = Server::serve(
+        root.path(),
+        core.clone(),
+        Handlers::new(|_| panic!("app requests must not reach the core writer")).app(
+            move |request| {
+                requests.lock().unwrap().push(request.clone());
+                match request {
+                    AppRequest::AiChatsList { .. } => {
+                        Ok(json!({"conversations":[{"id":MEETING_ID,"title":"합성 대화"}]}))
+                    }
+                    AppRequest::TranscriptSave { .. } => Err(ControlError::new(
+                        "edit_conflict",
+                        "음성 기록이 바뀌었습니다.",
+                    )),
+                    AppRequest::SettingsSet { .. } => {
+                        Err(ControlError::new("request_rejected", "합성 거절 사유"))
+                    }
+                    _ => Err(ControlError::new("unexpected_code", "합성 설명")),
+                }
+            },
+        ),
+    )
+    .unwrap();
+    let output = command(root.path())
+        .args(["ai", "chats", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let listed: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(listed["conversations"][0]["title"], "합성 대화");
+    let mut process = McpProcess::start(root.path());
+    process.initialize();
+    process.send(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"ai_chats_list","arguments":{}}}));
+    assert_eq!(tool_data(&process.result(2)), listed);
+    process.send(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"settings_set","arguments":{"terminology":true}}}));
+    let refused = tool_data(&process.result(3));
+    assert_eq!(refused["error"]["code"], "request_rejected");
+    assert_eq!(refused["error"]["message"], "합성 거절 사유");
+    process.send(json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"transcript_save","arguments":{"meetingId":MEETING_ID,"expectedVersion":{"id":TRANSCRIPT_ID,"revision":1},"segments":[{"id":SESSION_ID,"text":"고친 문장"}]}}}));
+    assert_eq!(
+        tool_data(&process.result(4))["error"]["code"],
+        "edit_conflict"
+    );
+    process.send(json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"notion_status","arguments":{}}}));
+    assert_eq!(
+        tool_data(&process.result(5))["error"]["code"],
+        "request_failed"
+    );
+    let before = received.lock().unwrap().len();
+    for (id, name, arguments) in [
+        (6, "settings_set", json!({})),
+        (
+            7,
+            "ai_chats_trash",
+            json!({"conversationIds":[MEETING_ID],"olderThanDays":3}),
+        ),
+        (8, "recording_control", json!({"action":"stop","title":"x"})),
+    ] {
+        process.send(json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":name,"arguments":arguments}}));
+        assert_eq!(
+            tool_data(&process.result(id))["error"]["code"],
+            "invalid_input",
+            "{name}"
+        );
+    }
+    assert_eq!(received.lock().unwrap().len(), before);
+    drop(process);
+    drop(server);
+
+    // An app that predates these requests answers their shape as invalid input.
+    let _older = Server::serve(
+        root.path(),
+        core,
+        Handlers::new(|_| panic!("not a meeting change")),
+    )
+    .unwrap();
+    let output = command(root.path())
+        .args(["settings", "get", "--json"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "app_feature_unsupported");
 }

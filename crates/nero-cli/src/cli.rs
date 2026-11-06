@@ -86,10 +86,20 @@ meetings import는 실행 중인 Nero가 원본을 복사해 가져오며 원본
 --meeting-id는 음성이 없는 빈 회의에만 붙이며 meetings get의 editVersion이 필요합니다.
 가져오기 작업 ID를 반환하며 jobs list로 진행을 확인합니다. 녹음 중이거나 음성 인식 준비 전에는 거부합니다.
 doctor의 speech는 현재 음성 인식 엔진, 화자 구분 설정, 선택지와 대기 중인 전환을 보여 줍니다.
+ai/sources/calendar/terminology/glossary/settings/recording/speakers/models 명령과 meetings new,
+meetings notes-append, transcript start/history/save/restore, jobs retry/acknowledge는 실행 중인
+Nero의 기능을 그대로 사용합니다. 불리언은 --이름 또는 --no-이름, 여러 값은 같은 옵션을 반복하며,
+--file JSON_PATH는 나머지 필드를 한 객체로 줍니다. 결과는 JSON입니다. 영구 삭제와 로그인은 없습니다.
 speech set은 준비된 엔진이면 바로 전환하고, 아니면 현재 엔진을 유지한 채 수 GB의 모델을
 내려받은 뒤 전환할 수 있습니다. 메모리 경고가 있으면 사용자 확인 후에만
 --acknowledge-memory-warning을 사용합니다. speech cancel-switch는 대기 중인 전환과 다운로드를 취소합니다.
 ";
+
+// The app-service commands come from one table and sit with the other running-app requests.
+pub fn help() -> String {
+    let anchor = "  update status|check|download|install\n";
+    HELP.replacen(anchor, &format!("{}{anchor}", crate::app_tools::help()), 1)
+}
 
 #[derive(Debug, PartialEq)]
 enum Action {
@@ -118,6 +128,7 @@ enum FileContent {
     PeopleUpdate,
     AttendeesSet,
     AttendeePromote,
+    AppParams,
 }
 
 #[derive(Debug)]
@@ -160,6 +171,25 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Options, QueryError
         }
     }
     let strings: Vec<&str> = arguments.iter().map(String::as_str).collect();
+    if let Some(parsed) = crate::app_tools::parse_cli(&strings) {
+        let action = if strings
+            .iter()
+            .any(|value| matches!(*value, "--help" | "-h"))
+        {
+            Action::Help
+        } else {
+            match parsed? {
+                (method, params, None) => Action::Request { method, params },
+                (method, params, Some(path)) => Action::FileRequest {
+                    method,
+                    params,
+                    path: PathBuf::from(path),
+                    content: FileContent::AppParams,
+                },
+            }
+        };
+        return Ok(Options { root, json, action });
+    }
     let action = match strings.as_slice() {
         [] | ["--help" | "-h" | "help"] => Action::Help,
         ["--version" | "-V"] => Action::Version,
@@ -697,7 +727,9 @@ fn read_content_file(
 ) -> Result<Value, QueryError> {
     let error = || QueryError {
         code: "invalid_input",
-        message: "요청 파일의 JSON 필드와 1MiB 이하 크기를 확인해 주세요.",
+        message: std::borrow::Cow::Borrowed(
+            "요청 파일의 JSON 필드와 1MiB 이하 크기를 확인해 주세요.",
+        ),
     };
     let mut bytes = Vec::new();
     let mut input: Box<dyn Read> = if path == std::path::Path::new("-") {
@@ -714,6 +746,9 @@ fn read_content_file(
         return Err(error());
     }
     let content: Value = serde_json::from_slice(&bytes).map_err(|_| error())?;
+    if kind == FileContent::AppParams {
+        return crate::app_tools::merge_file(params, content).map_err(|_| error());
+    }
     let content = content.as_object().ok_or_else(error)?;
     let valid = match kind {
         FileContent::Template => {
@@ -758,6 +793,7 @@ fn read_content_file(
                     .iter()
                     .all(|key| content.get(*key).is_some_and(Value::is_string))
         }
+        FileContent::AppParams => unreachable!(),
         FileContent::SummaryImport => {
             content.len() == 3
                 && content.get("context").is_some_and(Value::is_object)
@@ -800,7 +836,7 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> i32 {
         Err(error) => return write_error(&error, requested_json),
     };
     match options.action {
-        Action::Help => return write_stdout(HELP),
+        Action::Help => return write_stdout(&help()),
         Action::Version => {
             return write_stdout(&format!(
                 "nero {} (integration {}; API 1)\n",
@@ -830,7 +866,7 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> i32 {
                     Err(()) => write_error(
                         &QueryError {
                             code: "mcp_transport",
-                            message: "MCP 연결을 처리할 수 없습니다.",
+                            message: std::borrow::Cow::Borrowed("MCP 연결을 처리할 수 없습니다."),
                         },
                         options.json,
                     ),
@@ -838,7 +874,7 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> i32 {
                 Err(_) => write_error(
                     &QueryError {
                         code: "mcp_runtime",
-                        message: "MCP 실행 환경을 시작할 수 없습니다.",
+                        message: std::borrow::Cow::Borrowed("MCP 실행 환경을 시작할 수 없습니다."),
                     },
                     options.json,
                 ),
@@ -870,7 +906,7 @@ fn write_error(error: &QueryError, json: bool) -> i32 {
     let output = if json {
         error.as_json().to_string()
     } else {
-        error.message.into()
+        error.message.to_string()
     };
     let _ = writeln!(io::stderr().lock(), "{output}");
     if matches!(error.code, "invalid_input" | "unsupported_method") {
@@ -881,6 +917,12 @@ fn write_error(error: &QueryError, json: bool) -> i32 {
 }
 
 fn render(method: &str, value: &Value, timezone: &TimeZone) -> String {
+    if crate::app_tools::find(method).is_some() {
+        return format!(
+            "{}\n",
+            serde_json::to_string_pretty(value).unwrap_or_default()
+        );
+    }
     let mut output = String::new();
     match method {
         "jobs_list" => {

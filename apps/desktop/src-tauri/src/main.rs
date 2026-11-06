@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod agent_app;
 mod agent_connection;
 mod agent_mutations;
 mod ai_accounts;
@@ -1056,11 +1057,20 @@ async fn list_devices(
 async fn start_recording(
     app: tauri::AppHandle,
     window: WebviewWindow,
-    state: tauri::State<'_, DesktopState>,
     meeting_id: String,
     device_id: Option<String>,
 ) -> Result<Snapshot, String> {
     require_main(&window)?;
+    begin_recording(app, meeting_id, device_id).await
+}
+
+// The recording screen and agent requests start capture through the same checks.
+pub(crate) async fn begin_recording(
+    app: tauri::AppHandle,
+    meeting_id: String,
+    device_id: Option<String>,
+) -> Result<Snapshot, String> {
+    let state = app.state::<DesktopState>();
     state.processing.require_meeting_models()?;
     microphone_permission::ensure_authorized(&app).await?;
     let transition = state.lifecycle.begin_transition()?;

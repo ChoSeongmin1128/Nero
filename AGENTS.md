@@ -126,8 +126,11 @@ This file applies to the entire repository.
   points. Explicit meeting mutations use the running app's authenticated local writer
   bridge and edit-version checks; template mutations use the template catalog lock
   and revision checks. Host clients own tool approval policy. Meeting deletion means
-  recoverable trash; no permanent purge tool is exposed. See `docs/local-agent.md`;
-  do not edit another AI client's settings implicitly.
+  recoverable trash; no permanent purge tool is exposed. App feature tools
+  (`nero_core::agent_app`, CLI `app_tools.rs`, desktop `agent_app.rs`) call the same
+  shared operations as the screens, never a command body copied for the agent; their
+  handlers never answer `invalid_input`, which marks an app that predates the request.
+  See `docs/local-agent.md`; do not edit another AI client's settings implicitly.
 - In-app AI chat owns global conversations, independent of meetings and notes. Send
   only explicitly selected meeting and Notion snapshots; retain immutable per-request
   citations and source origins. Claude subscription chat uses an unmodified,

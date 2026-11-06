@@ -1,3 +1,4 @@
+mod app_tools;
 pub mod cli;
 mod connection;
 mod dates;
@@ -15,7 +16,7 @@ use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 
 pub use nero_core::identity::APP_IDENTIFIER;
-pub const METHODS: [&str; 33] = [
+pub const METHODS: [&str; 70] = [
     "app_update",
     "jobs_list",
     "job_cancel",
@@ -49,9 +50,49 @@ pub const METHODS: [&str; 33] = [
     "folder_delete",
     "speech_engine_set",
     "speech_switch_cancel",
+    "ai_chats_list",
+    "ai_chat_get",
+    "ai_models_list",
+    "ai_chat_send",
+    "ai_chat_cancel",
+    "ai_chat_version_select",
+    "ai_answer_save",
+    "ai_chats_trash",
+    "ai_chats_restore",
+    "notion_status",
+    "meeting_sources_list",
+    "meeting_source_add",
+    "meeting_source_refresh",
+    "meeting_source_remove",
+    "calendar_status",
+    "calendar_events",
+    "calendars_select",
+    "calendar_sync",
+    "calendar_attendees",
+    "meeting_from_calendar",
+    "terminology_get",
+    "glossary_save",
+    "settings_get",
+    "settings_set",
+    "recording_devices",
+    "recording_control",
+    "meeting_create",
+    "meeting_notes_append",
+    "transcription_start",
+    "speakers_analyze",
+    "models_prepare",
+    "transcript_history",
+    "transcript_save",
+    "transcript_restore",
+    "speakers_save",
+    "job_retry",
+    "job_acknowledge",
 ];
 
 pub fn is_read_only(method: &str) -> bool {
+    if let Some(tool) = app_tools::find(method) {
+        return tool.read_only;
+    }
     matches!(
         method,
         "jobs_list"
@@ -70,6 +111,9 @@ pub fn is_read_only(method: &str) -> bool {
 }
 
 pub fn is_destructive(method: &str) -> bool {
+    if let Some(tool) = app_tools::find(method) {
+        return tool.destructive;
+    }
     matches!(
         method,
         "app_update"
@@ -93,20 +137,25 @@ pub fn is_destructive(method: &str) -> bool {
 // Tools that may reach services outside this device: the public update channel and
 // speech model downloads.
 pub fn is_open_world(method: &str) -> bool {
-    matches!(method, "app_update" | "speech_engine_set")
+    app_tools::find(method).map_or_else(
+        || matches!(method, "app_update" | "speech_engine_set"),
+        |tool| tool.open_world,
+    )
 }
 
 #[derive(Debug)]
 pub struct QueryError {
     pub code: &'static str,
-    pub message: &'static str,
+    pub message: std::borrow::Cow<'static, str>,
 }
 
 impl QueryError {
     pub fn invalid() -> Self {
         Self {
             code: "invalid_input",
-            message: "입력값이 올바르지 않습니다. 도움말의 형식과 조회 범위를 확인해 주세요.",
+            message: std::borrow::Cow::Borrowed(
+                "입력값이 올바르지 않습니다. 도움말의 형식과 조회 범위를 확인해 주세요.",
+            ),
         }
     }
 
@@ -119,13 +168,16 @@ pub fn dispatch(root: &Path, method: &str, params: Value) -> Result<Value, Query
     if !METHODS.contains(&method) {
         return Err(QueryError {
             code: "unsupported_method",
-            message: "지원하지 않는 Nero 명령입니다.",
+            message: std::borrow::Cow::Borrowed("지원하지 않는 Nero 명령입니다."),
         });
     }
     let root = canonical_data_dir(root)?;
     let root = root.as_path();
     if method == "app_update" {
         return updates::dispatch(root, params);
+    }
+    if app_tools::find(method).is_some() {
+        return app_tools::dispatch(root, method, params);
     }
     if method.starts_with("template") {
         return templates::dispatch(root, method, params);
@@ -139,7 +191,7 @@ pub fn dispatch(root: &Path, method: &str, params: Value) -> Result<Value, Query
     if method != "status" && !root.exists() {
         return Err(QueryError {
             code: "library_not_found",
-            message: "Nero 데이터 폴더가 없습니다. 앱에서 저장한 뒤 다시 시도하거나 --data-dir을 지정해 주세요.",
+            message: std::borrow::Cow::Borrowed("Nero 데이터 폴더가 없습니다. 앱에서 저장한 뒤 다시 시도하거나 --data-dir을 지정해 주세요."),
         });
     }
     let params = dates::normalize(method, params)?;
@@ -149,7 +201,7 @@ pub fn dispatch(root: &Path, method: &str, params: Value) -> Result<Value, Query
         result["versions"] = versions::status(root);
         result["speech"] = mutations::speech_status(root);
         result["readOnly"] = json!(false);
-        result["capabilities"] = json!({"queriesReadOnly":true,"templateWrites":true,"meetingWritesRequireApp":true,"summaryImportsRequireApp":true,"jobQueriesRequireApp":true,"jobCancellationRequireApp":true,"appUpdatesRequireApp":true,"meetingImportsRequireApp":true,"speechSettingsRequireApp":true});
+        result["capabilities"] = json!({"appServicesRequireApp":true,"queriesReadOnly":true,"templateWrites":true,"meetingWritesRequireApp":true,"summaryImportsRequireApp":true,"jobQueriesRequireApp":true,"jobCancellationRequireApp":true,"appUpdatesRequireApp":true,"meetingImportsRequireApp":true,"speechSettingsRequireApp":true});
     }
     Ok(result)
 }
@@ -171,7 +223,7 @@ pub fn canonical_data_dir(root: &Path) -> Result<PathBuf, QueryError> {
     if nero_core::identity::legacy_path(&root) && !root.exists() {
         return Err(QueryError {
             code: "library_not_found",
-            message: "이전 데이터 경로의 이전 완료를 확인할 수 없습니다. Nero 앱에서 데이터 이전 상태를 확인해 주세요.",
+            message: std::borrow::Cow::Borrowed("이전 데이터 경로의 이전 완료를 확인할 수 없습니다. Nero 앱에서 데이터 이전 상태를 확인해 주세요."),
         });
     }
     Ok(root)
@@ -181,7 +233,7 @@ fn reject_production_data_path(root: &Path) -> Result<(), QueryError> {
     let denied = || {
         QueryError {
         code: "unsafe_data_dir",
-        message: "개발 CLI에서는 운영 또는 이전 데이터 경로를 사용할 수 없습니다. 운영 CLI를 사용해 주세요.",
+        message: std::borrow::Cow::Borrowed("개발 CLI에서는 운영 또는 이전 데이터 경로를 사용할 수 없습니다. 운영 CLI를 사용해 주세요."),
     }
     };
     let protected = |path: &Path| {
@@ -255,17 +307,17 @@ fn query_error(error: CoreError) -> QueryError {
                     "데이터 경로에 연결된 파일/폴더 또는 일반 폴더가 아닌 항목이 있습니다. 실제 Nero 데이터 폴더를 지정해 주세요.",
                 ),
             };
-            QueryError { code, message }
+            QueryError { code, message: message.into() }
         }
         CoreError::InvalidInput(_) => QueryError::invalid(),
-        CoreError::EditConflict => QueryError { code:"edit_conflict",message:"다른 변경이 저장되었습니다. 최신 정보를 읽고 다시 시도해 주세요." },
+        CoreError::EditConflict => QueryError { code:"edit_conflict",message:std::borrow::Cow::Borrowed("다른 변경이 저장되었습니다. 최신 정보를 읽고 다시 시도해 주세요.") },
         CoreError::MeetingNotFound => QueryError {
             code: "meeting_not_found",
-            message: "회의를 찾을 수 없습니다.",
+            message: std::borrow::Cow::Borrowed("회의를 찾을 수 없습니다."),
         },
         _ => QueryError {
             code: "library_unavailable",
-            message: "Nero 저장 정보를 읽을 수 없습니다. 데이터 폴더와 접근 권한을 확인하고 잠시 후 다시 조회해 주세요.",
+            message: std::borrow::Cow::Borrowed("Nero 저장 정보를 읽을 수 없습니다. 데이터 폴더와 접근 권한을 확인하고 잠시 후 다시 조회해 주세요."),
         },
     }
 }
@@ -273,7 +325,9 @@ fn query_error(error: CoreError) -> QueryError {
 pub fn default_data_dir() -> Result<PathBuf, QueryError> {
     data_dir_for(|name| std::env::var_os(name), std::env::consts::OS).ok_or(QueryError {
         code: "data_dir_unavailable",
-        message: "Nero 데이터 경로를 확인할 수 없습니다. --data-dir을 지정해 주세요.",
+        message: std::borrow::Cow::Borrowed(
+            "Nero 데이터 경로를 확인할 수 없습니다. --data-dir을 지정해 주세요.",
+        ),
     })
 }
 
@@ -300,6 +354,9 @@ fn data_dir_for(
 pub fn input_schema(method: &str) -> Map<String, Value> {
     if method == "app_update" {
         return updates::schema();
+    }
+    if let Some(tool) = app_tools::find(method) {
+        return app_tools::schema(tool);
     }
     if method.starts_with("template") {
         return templates::schema(method);
@@ -586,6 +643,7 @@ mod tests {
             is_read_only(method)
                 && !matches!(*method, "status" | "jobs_list")
                 && !method.starts_with("template")
+                && app_tools::find(method).is_none()
         }) {
             let schema = Value::Object(input_schema(method));
             assert_eq!(

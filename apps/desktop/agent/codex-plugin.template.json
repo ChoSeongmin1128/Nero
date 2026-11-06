@@ -2,7 +2,7 @@
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "nero",
   "version": "0.0.1",
-  "description": "Nero 회의 검색, 음성 기록과 요약 조회, 새 요약 저장, 처리 작업 조회와 취소, 음성 파일 가져오기와 음성 인식 엔진 선택",
+  "description": "Nero 회의 검색, 음성 기록과 요약 조회와 수정, 새 요약 저장, 녹음과 음성 인식 실행, 처리 작업 관리, 음성 파일 가져오기, AI 대화, Notion 자료, 캘린더, 용어집과 설정",
   "author": { "name": "Nero" },
   "extensions": {
     "com.openai": {

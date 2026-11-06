@@ -33,5 +33,5 @@ export function mountMeetingContext({ node, bridge, getMeeting, onSettings, onCh
   const root = createRoot(node);
   const flow = createMeetingContextFlow({ bridge, getMeeting, onChanged });
   root.render(<MeetingContext flow={flow} onSettings={onSettings} bridge={bridge} />);
-  return { setMeeting: meeting => flow.setMeeting(meeting), close: () => flow.close(), dispose() { flow.dispose(); root.unmount(); } };
+  return { setMeeting: meeting => flow.setMeeting(meeting), reload: () => flow.reload(), close: () => flow.close(), dispose() { flow.dispose(); root.unmount(); } };
 }

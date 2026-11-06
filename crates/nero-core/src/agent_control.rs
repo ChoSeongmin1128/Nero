@@ -1,3 +1,4 @@
+use crate::agent_app::{self, AppRequest};
 use crate::engine::Engine;
 use crate::library::Library;
 use crate::{
@@ -391,6 +392,7 @@ enum ControlRequest {
     Mutation(Mutation),
     Job(JobRequest),
     Processing(ProcessingRequest),
+    App(AppRequest),
 }
 impl ControlRequest {
     fn parse(method: &str, params: Value) -> std::result::Result<Self, ControlError> {
@@ -406,6 +408,8 @@ impl ControlRequest {
             JobRequest::parse(method, params).map(Self::Job)
         } else if PROCESSING_METHODS.contains(&method) {
             ProcessingRequest::parse(method, params).map(Self::Processing)
+        } else if agent_app::METHODS.contains(&method) {
+            AppRequest::parse(method, params).map(Self::App)
         } else {
             Mutation::parse(method, params).map(Self::Mutation)
         }
@@ -908,6 +912,9 @@ pub fn request(
     let value: Value =
         serde_json::from_slice(&bytes).map_err(|_| ControlError::unknown_result())?;
     if let Some(error) = value.get("error") {
+        if agent_app::METHODS.contains(&method) {
+            return Err(app_error(error));
+        }
         let (code, message) = match error["code"].as_str().unwrap_or("") {
             "edit_conflict" => (
                 "edit_conflict",
@@ -1006,6 +1013,26 @@ pub fn request(
         .ok_or_else(ControlError::unknown_result)
 }
 
+// The CLI checks an app request before sending it, so an app rejecting its shape predates
+// it. Other codes come from the app's own services and keep the app's explanation.
+fn app_error(error: &Value) -> ControlError {
+    let code = error["code"].as_str().unwrap_or("");
+    if matches!(code, "invalid_input" | "app_feature_unsupported") {
+        return ControlError::new(
+            "app_feature_unsupported",
+            "실행 중인 Nero는 이 요청을 지원하지 않습니다. Nero를 업데이트한 뒤 다시 시도해 주세요.",
+        );
+    }
+    let message = error["message"]
+        .as_str()
+        .filter(|message| !message.trim().is_empty() && message.len() <= 1024)
+        .unwrap_or("요청을 완료하지 못했습니다. Nero에서 현재 상태를 확인해 주세요.");
+    match agent_app::ERRORS.iter().find(|known| **known == code) {
+        Some(known) => ControlError::new(known, message),
+        None => ControlError::new("request_failed", message),
+    }
+}
+
 struct TemporaryDescriptor(PathBuf);
 impl Drop for TemporaryDescriptor {
     fn drop(&mut self) {
@@ -1037,13 +1064,98 @@ pub struct Server {
     _writer: CoreHandle,
 }
 
+type Handler<T, R> = Box<dyn Fn(T) -> std::result::Result<R, ControlError> + Send>;
+
+// What the running app answers for each request family. A family left at its default
+// answers like an app that predates it.
+pub struct Handlers {
+    mutation: Handler<Mutation, Value>,
+    jobs: Handler<JobRequest, Value>,
+    metadata: Box<dyn Fn() -> std::result::Result<AppMetadata, ControlError> + Send>,
+    updates: Handler<AppUpdateAction, ControlReply>,
+    processing: Handler<ProcessingRequest, Value>,
+    app: Handler<AppRequest, Value>,
+}
+impl Handlers {
+    pub fn new(
+        mutation: impl Fn(Mutation) -> std::result::Result<Value, ControlError> + Send + 'static,
+    ) -> Self {
+        Self {
+            mutation: Box::new(mutation),
+            jobs: Box::new(|_| Err(ControlError::invalid())),
+            metadata: Box::new(|| Err(ControlError::unavailable())),
+            updates: Box::new(|_| {
+                Err(ControlError::new(
+                    "app_update_unsupported",
+                    "이 앱은 에이전트 업데이트를 지원하지 않습니다.",
+                ))
+            }),
+            processing: Box::new(|_| Err(ControlError::invalid())),
+            app: Box::new(|_| Err(ControlError::invalid())),
+        }
+    }
+    pub fn jobs(
+        mut self,
+        jobs: impl Fn(JobRequest) -> std::result::Result<Value, ControlError> + Send + 'static,
+    ) -> Self {
+        self.jobs = Box::new(jobs);
+        self
+    }
+    pub fn metadata(
+        mut self,
+        metadata: impl Fn() -> std::result::Result<AppMetadata, ControlError> + Send + 'static,
+    ) -> Self {
+        self.metadata = Box::new(metadata);
+        self
+    }
+    pub fn updates(
+        mut self,
+        updates: impl Fn(AppUpdateAction) -> std::result::Result<ControlReply, ControlError>
+            + Send
+            + 'static,
+    ) -> Self {
+        self.updates = Box::new(updates);
+        self
+    }
+    pub fn processing(
+        mut self,
+        processing: impl Fn(ProcessingRequest) -> std::result::Result<Value, ControlError>
+            + Send
+            + 'static,
+    ) -> Self {
+        self.processing = Box::new(processing);
+        self
+    }
+    pub fn app(
+        mut self,
+        app: impl Fn(AppRequest) -> std::result::Result<Value, ControlError> + Send + 'static,
+    ) -> Self {
+        self.app = Box::new(app);
+        self
+    }
+    fn answer(&self, request: ControlRequest) -> std::result::Result<ControlReply, ControlError> {
+        match request {
+            ControlRequest::Metadata => (self.metadata)()
+                .and_then(|value| serde_json::to_value(value).map_err(|_| ControlError::invalid()))
+                .map(ControlReply::new),
+            ControlRequest::AppUpdate(action) => (self.updates)(action),
+            ControlRequest::Mutation(request) => (self.mutation)(request).map(ControlReply::new),
+            ControlRequest::Job(request) => (self.jobs)(request).map(ControlReply::new),
+            ControlRequest::Processing(request) => {
+                (self.processing)(request).map(ControlReply::new)
+            }
+            ControlRequest::App(request) => (self.app)(request).map(ControlReply::new),
+        }
+    }
+}
+
 impl Server {
     pub fn start(
         root: &Path,
         core: CoreHandle,
         handler: impl Fn(Mutation) -> std::result::Result<Value, ControlError> + Send + 'static,
     ) -> std::result::Result<Self, ControlError> {
-        Self::start_with_jobs(root, core, handler, |_| Err(ControlError::invalid()))
+        Self::serve(root, core, Handlers::new(handler))
     }
 
     pub fn start_with_jobs(
@@ -1052,9 +1164,7 @@ impl Server {
         handler: impl Fn(Mutation) -> std::result::Result<Value, ControlError> + Send + 'static,
         jobs: impl Fn(JobRequest) -> std::result::Result<Value, ControlError> + Send + 'static,
     ) -> std::result::Result<Self, ControlError> {
-        Self::start_with_metadata(root, core, handler, jobs, || {
-            Err(ControlError::unavailable())
-        })
+        Self::serve(root, core, Handlers::new(handler).jobs(jobs))
     }
 
     pub fn start_with_metadata(
@@ -1064,12 +1174,11 @@ impl Server {
         jobs: impl Fn(JobRequest) -> std::result::Result<Value, ControlError> + Send + 'static,
         metadata: impl Fn() -> std::result::Result<AppMetadata, ControlError> + Send + 'static,
     ) -> std::result::Result<Self, ControlError> {
-        Self::start_with_updates(root, core, handler, jobs, metadata, |_| {
-            Err(ControlError::new(
-                "app_update_unsupported",
-                "이 앱은 에이전트 업데이트를 지원하지 않습니다.",
-            ))
-        })
+        Self::serve(
+            root,
+            core,
+            Handlers::new(handler).jobs(jobs).metadata(metadata),
+        )
     }
 
     pub fn start_with_updates(
@@ -1082,10 +1191,14 @@ impl Server {
             + Send
             + 'static,
     ) -> std::result::Result<Self, ControlError> {
-        // An app without a processing handler answers like one that predates it.
-        Self::start_with_processing(root, core, handler, jobs, metadata, updates, |_| {
-            Err(ControlError::invalid())
-        })
+        Self::serve(
+            root,
+            core,
+            Handlers::new(handler)
+                .jobs(jobs)
+                .metadata(metadata)
+                .updates(updates),
+        )
     }
 
     pub fn start_with_processing(
@@ -1100,6 +1213,22 @@ impl Server {
         processing: impl Fn(ProcessingRequest) -> std::result::Result<Value, ControlError>
             + Send
             + 'static,
+    ) -> std::result::Result<Self, ControlError> {
+        Self::serve(
+            root,
+            core,
+            Handlers::new(handler)
+                .jobs(jobs)
+                .metadata(metadata)
+                .updates(updates)
+                .processing(processing),
+        )
+    }
+
+    pub fn serve(
+        root: &Path,
+        core: CoreHandle,
+        handlers: Handlers,
     ) -> std::result::Result<Self, ControlError> {
         let path = descriptor_path(root)?;
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
@@ -1176,24 +1305,7 @@ impl Server {
                                 .and_then(|value| {
                                     ControlRequest::parse(&value.method, value.params)
                                 })
-                                .and_then(|request| match request {
-                                    ControlRequest::Metadata => metadata()
-                                        .and_then(|value| {
-                                            serde_json::to_value(value)
-                                                .map_err(|_| ControlError::invalid())
-                                        })
-                                        .map(ControlReply::new),
-                                    ControlRequest::AppUpdate(action) => updates(action),
-                                    ControlRequest::Mutation(request) => {
-                                        handler(request).map(ControlReply::new)
-                                    }
-                                    ControlRequest::Job(request) => {
-                                        jobs(request).map(ControlReply::new)
-                                    }
-                                    ControlRequest::Processing(request) => {
-                                        processing(request).map(ControlReply::new)
-                                    }
-                                });
+                                .and_then(|request| handlers.answer(request));
                             let (response, after_response) = match result {
                                 Ok(reply) => (json!({"result":reply.result}), reply.after_response),
                                 Err(error) => (json!({"error":error}), None),

@@ -1111,6 +1111,12 @@ async function prepareAppLeave(action) {
   return finishEditing(action);
 }
 
+function onAgentChanged(change) {
+  if (change.area === 'aiChat') aiChat?.flow.externalChange(change.conversationIds || []);
+  else if (change.area === 'meetingSources' || change.area === 'terminology') void meetingContext?.reload();
+  else if (change.area === 'settings') void loadTerminologySettings();
+}
+
 async function onAgentWriteRequest({ requestId, kind } = {}) {
   if (typeof requestId !== 'string' || !/^[a-f0-9-]{36}$/.test(requestId)) return;
   let ready = false;
@@ -1791,6 +1797,7 @@ byId('audio-player').addEventListener('timeupdate', () => {
 try {
   await bridge.subscribeSnapshots(acceptSnapshot);
   await bridge.subscribeAgentWriteRequest?.(onAgentWriteRequest);
+  await bridge.subscribeAgentChanged?.(onAgentChanged);
   await bridge.subscribeProcessingError(({ message }) => showError(message));
   await bridge.subscribeProcessing((progress) => { void acceptProcessing(progress).catch(showError); });
   await bridge.setAutoRecorder(state.autoRecorder);

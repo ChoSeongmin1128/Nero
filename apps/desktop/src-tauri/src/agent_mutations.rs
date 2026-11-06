@@ -2,7 +2,8 @@ use crate::processing::{Processing, Progress};
 use crate::publish;
 use crate::speech_choice::SpeechEngine;
 use nero_core::agent_control::{
-    AppUpdateAction, ControlError, ControlReply, JobRequest, Mutation, ProcessingRequest, Server,
+    AppUpdateAction, ControlError, ControlReply, Handlers, JobRequest, Mutation, ProcessingRequest,
+    Server,
 };
 use nero_core::{CoreError, CoreHandle, DraftAttachmentTarget, SessionState};
 use serde_json::{json, Value};
@@ -157,53 +158,64 @@ impl AgentMutations {
         let processing_state = weak.clone();
         let processing_core = core.clone();
         let processing_service = processing.clone();
-        let server = Server::start_with_processing(
-            root,
-            core,
-            move |request| {
-                let state = weak.upgrade().ok_or_else(ControlError::unavailable)?;
-                state.execute(&app, &worker_core, &processing, request)
-            },
-            move |request| {
-                let state = job_state.upgrade().ok_or_else(ControlError::unavailable)?;
-                if state.gate.closing.load(Ordering::Acquire) {
-                    return Err(ControlError::new("app_not_ready", "Nero가 종료 중입니다."));
-                }
-                match request {
-                    JobRequest::List {
-                        meeting_id,
-                        offset,
-                        limit,
-                    } => job_processing.agent_jobs(meeting_id.as_deref(), offset, limit),
-                    JobRequest::Cancel {
-                        job_id,
-                        expected_version,
-                    } => job_processing.agent_cancel(&job_id, &expected_version),
-                }
-            },
-            move || {
-                Ok(metadata_app
-                    .state::<crate::app_updater::AppUpdates>()
-                    .agent_metadata(metadata_app.path().resource_dir().ok().as_deref()))
-            },
-            move |action| {
-                update_state
-                    .upgrade()
-                    .ok_or_else(ControlError::unavailable)?
-                    .execute_update(&update_app, action)
-            },
-            move |request| {
-                processing_state
-                    .upgrade()
-                    .ok_or_else(ControlError::unavailable)?
-                    .execute_processing(
-                        &processing_app,
-                        &processing_core,
-                        &processing_service,
-                        request,
-                    )
-            },
-        );
+        let app_handle = app.clone();
+        let app_state = weak.clone();
+        let handlers = Handlers::new(move |request| {
+            let state = weak.upgrade().ok_or_else(ControlError::unavailable)?;
+            state.execute(&app, &worker_core, &processing, request)
+        })
+        .jobs(move |request| {
+            let state = job_state.upgrade().ok_or_else(ControlError::unavailable)?;
+            if state.gate.closing.load(Ordering::Acquire) {
+                return Err(ControlError::new("app_not_ready", "Nero가 종료 중입니다."));
+            }
+            match request {
+                JobRequest::List {
+                    meeting_id,
+                    offset,
+                    limit,
+                } => job_processing.agent_jobs(meeting_id.as_deref(), offset, limit),
+                JobRequest::Cancel {
+                    job_id,
+                    expected_version,
+                } => job_processing.agent_cancel(&job_id, &expected_version),
+            }
+        })
+        .metadata(move || {
+            Ok(metadata_app
+                .state::<crate::app_updater::AppUpdates>()
+                .agent_metadata(metadata_app.path().resource_dir().ok().as_deref()))
+        })
+        .updates(move |action| {
+            update_state
+                .upgrade()
+                .ok_or_else(ControlError::unavailable)?
+                .execute_update(&update_app, action)
+        })
+        .processing(move |request| {
+            processing_state
+                .upgrade()
+                .ok_or_else(ControlError::unavailable)?
+                .execute_processing(
+                    &processing_app,
+                    &processing_core,
+                    &processing_service,
+                    request,
+                )
+        })
+        .app(move |request| {
+            let state = app_state.upgrade().ok_or_else(ControlError::unavailable)?;
+            if state.gate.closing.load(Ordering::Acquire) {
+                return Err(ControlError::new("app_not_ready", "Nero가 종료 중입니다."));
+            }
+            let save_edits = || state.save_edits(&app_handle, "meetingMutation");
+            crate::agent_app::AgentApp {
+                app: &app_handle,
+                save_edits: &save_edits,
+            }
+            .handle(request)
+        });
+        let server = Server::serve(root, core, handlers);
         match server {
             Ok(server) => *state.server.lock().unwrap() = Some(server),
             Err(_) => eprintln!("Nero 에이전트 수정 연결을 열지 못했습니다."),

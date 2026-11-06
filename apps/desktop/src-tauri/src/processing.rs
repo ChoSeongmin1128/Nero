@@ -1138,6 +1138,22 @@ impl Processing {
         self.cancel_checked(id, None).map_err(|error| error.message)
     }
 
+    // An agent names the job state it saw; retry and acknowledge still check the state.
+    pub fn agent_check_job(
+        &self,
+        id: &str,
+        expected_version: &str,
+    ) -> Result<(), nero_core::agent_control::ControlError> {
+        let records = self.records.lock().unwrap();
+        let record = records
+            .iter()
+            .find(|record| record.id == id)
+            .ok_or_else(|| {
+                nero_core::agent_control::ControlError::new("not_found", "작업을 찾을 수 없습니다.")
+            })?;
+        check_agent_job_version(record, Some(expected_version))
+    }
+
     fn cancel_checked(
         &self,
         id: &str,

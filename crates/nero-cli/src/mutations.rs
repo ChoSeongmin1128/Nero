@@ -32,7 +32,7 @@ pub(crate) fn dispatch(root: &Path, method: &str, params: Value) -> Result<Value
             "processing_rejected" => "Nero가 요청을 처리하지 못했습니다. jobs_list와 status로 현재 상태를 확인하세요. 같은 요청을 자동 반복하지 마세요.",
             _ => "Nero와 연결할 수 없습니다. 앱을 실행한 뒤 다시 시도해 주세요.",
         };
-        QueryError { code:error.code,message }
+        QueryError { code:error.code,message: message.into() }
     })
 }
 

@@ -115,7 +115,10 @@ fn error(error: TemplateError) -> QueryError {
             "템플릿을 읽거나 저장하지 못했습니다. 경로와 접근 권한을 확인해 주세요.",
         ),
     };
-    QueryError { code, message }
+    QueryError {
+        code,
+        message: message.into(),
+    }
 }
 
 pub(crate) fn schema(method: &str) -> Map<String, Value> {

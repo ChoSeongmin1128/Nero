@@ -8,13 +8,15 @@ Nero에 동봉된 `nero` 실행 파일은 로컬 CLI와 `nero mcp`를 제공한�
 프로세스이며 공식 Rust SDK를 사용한다. Nero의 연결 버튼이나 수동 연결 프롬프트로 등록한다.
 
 조회, 외부 에이전트 요약 저장, 로컬 요약 템플릿 관리, 회의 메타데이터 편집, 처리 작업 취소,
-로컬 음성 파일 가져오기와 음성 인식 엔진 선택을 제공한다. 회의 변경은 실행 중인
+로컬 음성 파일 가져오기와 음성 인식 엔진 선택을 제공한다. 실행 중인 앱의 기능으로 빈 회의 만들기,
+녹음, 음성 인식과 화자 분석 실행, 음성 기록과 화자 수정, 앱 안 AI 대화, 회의의 Notion 자료,
+캘린더, 용어집과 설정도 제공한다([앱 기능 도구](#앱-기능-도구)). 회의 변경은 실행 중인
 Nero의 저장 흐름에 요청하며 저장 파일을 직접 고치지 않는다. 템플릿은 앱과 같은 로컬
 정본을 사용한다. 생성/수정/삭제는 사용자의 명시적 요청에만 수행하며 MCP 클라이언트의
 도구 승인 설정을 따른다.
 
-음성 파일 없이 빈 회의를 만드는 기능, 녹음, 음성 인식/요약 실행, 음성 기록 수정과 영구 삭제는
-제공하지 않는다.
+영구 삭제, 계정 로그인/연결과 해제, 녹음 제어창 자동 표시와 마이크 기본 선택(화면 저장소에만
+있는 설정)은 제공하지 않는다.
 기본 조회는 휴지통을 제외한다. 명시적인 휴지통 목록은 복원에 필요한 메타데이터와
 수정본만 반환한다. 원음, 모델 원출력, 인증 정보와 일반 파일 시스템 도구는 노출하지 않는다.
 
@@ -275,7 +277,8 @@ idempotentHint=false이며 기존 내용을 바꾸거나 삭제하는 도구에�
 지정한다. 처리 중인 작업을 멈추는 `job_cancel`, `speech_switch_cancel`도 destructiveHint=true다.
 새 회의를 만들거나 빈 회의에 음성을 붙이는 `meeting_import`와 이후 작업의 설정만 바꾸는
 `speech_engine_set`은 destructiveHint=false다. 외부 서비스에 접속할 수 있는 `app_update`와
-모델을 내려받을 수 있는 `speech_engine_set`만 openWorldHint=true다. 영구 삭제 도구는 없다. status 조회 자체는 읽기 전용이며 capabilities가
+모델을 내려받을 수 있는 `speech_engine_set`, 그리고 앱 기능 도구 중 AI 공급자, Notion, Google에 접속하거나
+모델을 내려받는 도구가 openWorldHint=true다. 영구 삭제 도구는 없다. status 조회 자체는 읽기 전용이며 capabilities가
 서비스 전체의 쓰기 지원 범위를 구분한다.
 
 작업 조회는 실행 중인 앱의 메모리 상태만 읽으며 모델 준비/실행이나 저장을 수행하지 않는다.
@@ -285,6 +288,36 @@ idempotentHint=false이며 기존 내용을 바꾸거나 삭제하는 도구에�
 `jobs cancel ID --expected-version HASH`는 사용자가 요청한 작업만 취소한다.
 대기/실행 상태 변경 시 충돌로 거부하며 저장 중인 결과는 중단하지 않는다.
 `applied:true`는 취소 요청 수락이며 종료 완료는 `jobs_list`로 확인한다.
+
+## 앱 기능 도구
+
+실행 중인 Nero의 각 화면이 쓰는 기능을 같은 경로로 수행한다. CLI/MCP는 요청 형식만 검사해 형식이 틀린 요청은 보내지 않으며,
+대상, 수정본과 상태는 앱이 확인한다. 앱이 거절하면 `request_rejected`와 앱의 설명을 그대로 돌려준다.
+이 기능 이전의 앱은 `app_feature_unsupported`를 반환한다. 열린 화면은 에이전트의 변경을 바로 다시 읽는다.
+녹음, 음성 인식 실행, AI 질문, 음성 기록/화자/용어집 수정, 설정 변경, 모델 다운로드는 사용자의 명시적인 현재 요청에만 사용한다.
+
+| 영역 | 도구 | CLI |
+|---|---|---|
+| AI 대화 | `ai_chats_list`, `ai_chat_get`, `ai_models_list` | `ai chats`, `ai chat ID`, `ai models` |
+| | `ai_chat_send`, `ai_chat_cancel`, `ai_chat_version_select` | `ai send`, `ai cancel ID`, `ai version ID` |
+| | `ai_answer_save`, `ai_chats_trash`, `ai_chats_restore` | `ai save-answer ID`, `ai trash`, `ai restore` |
+| 회의 자료 | `notion_status`, `meeting_sources_list` | `notion status`, `sources list ID` |
+| | `meeting_source_add`, `meeting_source_refresh`, `meeting_source_remove` | `sources add/refresh/remove ID` |
+| 캘린더 | `calendar_status`, `calendar_events`, `calendar_attendees` | `calendar status/events`, `calendar attendees ID` |
+| | `calendars_select`, `calendar_sync`, `meeting_from_calendar` | `calendar select/sync/create-meeting` |
+| 용어집과 설정 | `terminology_get`, `glossary_save`, `settings_get`, `settings_set` | `terminology get`, `glossary save ID`, `settings get/set` |
+| 녹음 | `recording_devices`, `recording_control` | `recording devices`, `recording start/pause/resume/stop` |
+| 회의와 처리 | `meeting_create`, `meeting_notes_append`, `transcription_start`, `speakers_analyze`, `models_prepare` | `meetings new`, `meetings notes-append ID`, `transcript start ID`, `speakers analyze ID`, `models prepare` |
+| 음성 기록 | `transcript_history`, `transcript_save`, `transcript_restore`, `speakers_save` | `transcript history/save/restore ID`, `speakers save ID` |
+| 작업 | `job_retry`, `job_acknowledge` | `jobs retry/acknowledge ID` |
+
+- CLI 옵션은 도구 입력 이름을 그대로 쓴다. 불리언은 `--이름`/`--no-이름`, 목록은 단수형 옵션을 반복하며(`--meeting-id`), `--file JSON_PATH`는 나머지 필드를 한 객체로 준다. 결과는 JSON이다.
+- `ai_chat_send`는 사용자의 구독 계정으로 앱의 AI에 질문하고 바로 `conversationId`, `requestId`를 돌려준다. 답변은 `ai_chat_get`의 상태가 완료/실패/취소가 될 때까지 읽는다. `conversationId`가 없으면 새 대화를 만든다. 요약 스킬은 회의 하나와 템플릿이 필요하며 질문 없이 보낼 수 있다. 추론 수준을 생략하면 모델의 기본 수준을 쓴다.
+- `ai_chats_trash`는 고른 대화 또는 마지막 활동이 지정한 일수보다 오래된 대화를 휴지통으로 옮기며 답변 중인 대화는 건너뛴다. 대화 영구 삭제는 없다.
+- `recording_control`의 `start`는 빈 회의나 새 회의(`title`)에 지정한 입력 장치 또는 기본 장치로 녹음한다. 앱 화면처럼 진행 중인 처리 작업을 멈추고 시작하며, 필요하면 macOS가 마이크 권한을 묻는다. `stop`은 앱 화면과 같이 녹음 후 처리를 이어서 시작한다.
+- `transcript_save`는 `transcript_get`의 `version`을 받고 바꾼 구간만 ID로 보낸다. `speakers_save`는 바뀐 뒤의 전체 화자 목록과 화자가 바뀌는 구간만 보낸다. 이전 기록은 `transcript_history`에 남는다.
+- 회의 자료 추가는 사용자가 준 Notion 페이지 링크만 Nero의 Notion 연결로 읽는다. 캘린더 일정은 하루와 명시한 시간대로 조회하며, 일정으로 회의를 만들 때는 그 조회의 `occurrenceKey`와 `scopeRevision`을 쓴다.
+- 회의를 읽거나 바꾸는 쓰기는 다른 회의 변경과 같이 열린 편집을 먼저 저장한다.
 
 ## 음성 가져오기와 음성 인식 엔진
 

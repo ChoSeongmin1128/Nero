@@ -18,14 +18,14 @@ pub struct AiDesktop {
     notion_error: Option<String>,
 }
 impl AiDesktop {
-    fn chat(&self) -> Result<Arc<AiChat>, String> {
+    pub(crate) fn chat(&self) -> Result<Arc<AiChat>, String> {
         self.chat.clone().ok_or_else(|| {
             self.account_error
                 .clone()
                 .unwrap_or("AI 대화를 준비하지 못했습니다.".into())
         })
     }
-    fn accounts(&self) -> Result<Arc<AiAccounts>, String> {
+    pub(crate) fn accounts(&self) -> Result<Arc<AiAccounts>, String> {
         self.accounts.clone().ok_or_else(|| {
             self.account_error
                 .clone()
@@ -124,7 +124,7 @@ fn require_open(app: &AppHandle) -> Result<(), String> {
     }
     Ok(())
 }
-fn account_view(
+pub(crate) fn account_view(
     accounts: &AiAccounts,
     claude: &crate::claude_connection::ClaudeConnection,
 ) -> Result<Value, String> {
@@ -520,12 +520,7 @@ pub async fn ai_chat_send(
     };
     tauri::async_runtime::spawn_blocking(move || {
         let _transition = transition;
-        chat.start(
-            request,
-            Arc::new(move |event| {
-                let _ = app.emit_to("main", "nero://ai-chat", event);
-            }),
-        )
+        chat.start(request, chat_events(&app))
     })
     .await
     .map_err(|_| "대화를 시작하지 못했습니다.".to_string())?
@@ -539,55 +534,68 @@ pub fn ai_chat_cancel(
     require_main(&window)?;
     state.chat()?.cancel(&request_id)
 }
+// Saving an answer to a meeting, for the answer buttons and agent requests. It blocks.
+pub(crate) fn save_answer(
+    app: &AppHandle,
+    conversation_id: &str,
+    message_id: &str,
+    meeting_id: &str,
+    summary: bool,
+) -> Result<Value, String> {
+    let state = app.state::<DesktopState>();
+    let _transition = state.lifecycle.begin_transition()?;
+    let chat = app.state::<AiDesktop>().chat()?;
+    let result = if summary {
+        chat.save_summary(conversation_id, message_id, meeting_id)
+    } else {
+        chat.append_note(conversation_id, message_id, meeting_id)
+    }?;
+    if let Ok(snapshot) = state.core.snapshot() {
+        crate::publish(app, &snapshot);
+    }
+    Ok(result)
+}
 async fn apply_answer(
     app: AppHandle,
-    state: State<'_, AiDesktop>,
     conversation_id: String,
     message_id: String,
     meeting_id: String,
     summary: bool,
 ) -> Result<Value, String> {
-    let transition = app.state::<DesktopState>().lifecycle.begin_transition()?;
-    let chat = state.chat()?;
-    let result = tauri::async_runtime::spawn_blocking(move || {
-        let _transition = transition;
-        if summary {
-            chat.save_summary(&conversation_id, &message_id, &meeting_id)
-        } else {
-            chat.append_note(&conversation_id, &message_id, &meeting_id)
-        }
+    tauri::async_runtime::spawn_blocking(move || {
+        save_answer(&app, &conversation_id, &message_id, &meeting_id, summary)
     })
     .await
-    .map_err(|_| "답변을 저장하지 못했습니다.".to_string())??;
-    let core = app.state::<DesktopState>().core.clone();
-    if let Ok(snapshot) = crate::on_core(core, |core| core.snapshot()).await {
-        crate::publish(&app, &snapshot);
-    }
-    Ok(result)
+    .map_err(|_| "답변을 저장하지 못했습니다.".to_string())?
+}
+// The chat events the AI panel listens to, for requests from the panel or an agent.
+pub(crate) fn chat_events(app: &AppHandle) -> Arc<dyn Fn(ai_chat::ChatEvent) + Send + Sync> {
+    let app = app.clone();
+    Arc::new(move |event| {
+        let _ = app.emit_to("main", "nero://ai-chat", event);
+    })
 }
 #[tauri::command]
 pub async fn ai_chat_save_summary(
     window: WebviewWindow,
     app: AppHandle,
-    state: State<'_, AiDesktop>,
     conversation_id: String,
     message_id: String,
     meeting_id: String,
 ) -> Result<Value, String> {
     require_main(&window)?;
-    apply_answer(app, state, conversation_id, message_id, meeting_id, true).await
+    apply_answer(app, conversation_id, message_id, meeting_id, true).await
 }
 #[tauri::command]
 pub async fn ai_chat_append_note(
     window: WebviewWindow,
     app: AppHandle,
-    state: State<'_, AiDesktop>,
     conversation_id: String,
     message_id: String,
     meeting_id: String,
 ) -> Result<Value, String> {
     require_main(&window)?;
-    apply_answer(app, state, conversation_id, message_id, meeting_id, false).await
+    apply_answer(app, conversation_id, message_id, meeting_id, false).await
 }
 #[tauri::command]
 pub async fn ai_chat_open_source(window: WebviewWindow, url: String) -> Result<(), String> {

@@ -1,3 +1,4 @@
+pub mod agent_app;
 pub mod agent_control;
 mod apple_speech;
 pub mod audio_normalize;

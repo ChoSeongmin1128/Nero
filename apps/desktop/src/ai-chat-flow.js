@@ -330,6 +330,13 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
       contextEpoch += 1; openEpoch += 1;
       publish({ active: false });
     },
+    // A conversation an agent changed: the list refreshes, and the shown conversation is
+    // read again unless this window is streaming its own answer into it.
+    externalChange(conversationIds) {
+      void flow.loadList(true);
+      const id = state.conversation.id;
+      if (id && conversationIds.includes(id) && !state.conversation.activeRequestId && !state.conversation.action) void flow.loadConversation(true);
+    },
     async loadList(force = false) {
       if (listPromise && !force) return listPromise;
       if (state.listLoaded && !force) return;

@@ -11,7 +11,7 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
 };
-use tauri::{AppHandle, Manager, State, WebviewWindow};
+use tauri::{AppHandle, Manager, WebviewWindow};
 
 const MAX_BYTES: u64 = 256 * 1024;
 const MAX_TERMS: usize = 200;
@@ -302,112 +302,117 @@ fn reusable_entries(
     }
     result
 }
+// The glossary screen and agent requests share these; they block, so screens run them
+// off the async runtime.
+pub(crate) fn view(app: &AppHandle, meeting_id: &str) -> Result<View, String> {
+    let state = app.state::<DesktopState>();
+    let _lease = state.lifecycle.begin_transition()?;
+    require_meeting(&state, meeting_id)?;
+    let root = state.processing.root.clone();
+    let meetings = state.core.list_meetings().map_err(|e| e.to_string())?;
+    let notion = app.state::<AiDesktop>().notion()?;
+    let (references, snapshot) =
+        crate::meeting_context_desktop::with_meeting(app, meeting_id, || {
+            Ok((
+                MeetingContextStore::new(root.clone())?.list(meeting_id)?,
+                load_snapshot(&root, meeting_id)?,
+            ))
+        })?;
+    let pages = references
+        .sources
+        .iter()
+        .map(|source| source.page_id.clone())
+        .collect();
+    let reusable = reusable_entries(&root, meeting_id, &meetings, &pages, &notion);
+    let mut all = Vec::new();
+    let mut unavailable_sources = 0;
+    for reference in &references.sources {
+        match notion.read_sources(vec![reference.source_id.clone()]) {
+            Ok(bundle) => {
+                for source in bundle.sources {
+                    all.extend(candidates(&source));
+                }
+            }
+            Err(_) => unavailable_sources += 1,
+        }
+    }
+    let mut seen = BTreeSet::new();
+    all.retain(|candidate| {
+        seen.insert((candidate.source_id.clone(), candidate.term.to_lowercase()))
+    });
+    crate::meeting_context_desktop::with_meeting(app, meeting_id, || {
+        if MeetingContextStore::new(root.clone())?.list(meeting_id)? != references
+            || load_snapshot(&root, meeting_id)? != snapshot
+        {
+            return Err("회의 자료 또는 용어집이 변경되었습니다. 다시 불러와 주세요.".into());
+        }
+        Ok(View {
+            snapshot,
+            candidates: all,
+            unavailable_sources,
+            reusable,
+        })
+    })
+}
+pub(crate) fn save_entries(
+    app: &AppHandle,
+    meeting_id: &str,
+    expected_revision: u64,
+    entries: Vec<Entry>,
+) -> Result<Snapshot, String> {
+    let state = app.state::<DesktopState>();
+    let _lease = state.lifecycle.begin_transition()?;
+    require_meeting(&state, meeting_id)?;
+    let root = state.processing.root.clone();
+    let meetings = state.core.list_meetings().map_err(|e| e.to_string())?;
+    let notion = app.state::<AiDesktop>().notion()?;
+    let references = crate::meeting_context_desktop::with_meeting(app, meeting_id, || {
+        MeetingContextStore::new(root.clone())?.list(meeting_id)
+    })?;
+    let pages = references
+        .sources
+        .iter()
+        .map(|s| s.page_id.clone())
+        .collect();
+    let mut allowed: BTreeSet<_> = references
+        .sources
+        .iter()
+        .map(|s| s.source_id.clone())
+        .collect();
+    allowed.extend(
+        reusable_entries(&root, meeting_id, &meetings, &pages, &notion)
+            .into_iter()
+            .map(|e| e.source_id),
+    );
+    crate::meeting_context_desktop::with_meeting(app, meeting_id, || {
+        if MeetingContextStore::new(root.clone())?.list(meeting_id)? != references {
+            return Err("회의 자료가 변경되었습니다. 다시 불러와 주세요.".into());
+        }
+        save(&root, meeting_id, expected_revision, entries, &allowed)
+    })
+}
 #[tauri::command]
 pub async fn domain_glossary_view(
     window: WebviewWindow,
     app: AppHandle,
-    ai: State<'_, AiDesktop>,
     meeting_id: String,
 ) -> Result<View, String> {
     require_main(&window)?;
-    let state = app.state::<DesktopState>();
-    let lease = state.lifecycle.begin_transition()?;
-    require_meeting(&state, &meeting_id)?;
-    let root = state.processing.root.clone();
-    let meetings = state.core.list_meetings().map_err(|e| e.to_string())?;
-    let notion = ai.notion()?;
-    let app = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let _lease = lease;
-        let (references, snapshot) =
-            crate::meeting_context_desktop::with_meeting(&app, &meeting_id, || {
-                Ok((
-                    MeetingContextStore::new(root.clone())?.list(&meeting_id)?,
-                    load_snapshot(&root, &meeting_id)?,
-                ))
-            })?;
-        let pages = references
-            .sources
-            .iter()
-            .map(|source| source.page_id.clone())
-            .collect();
-        let reusable = reusable_entries(&root, &meeting_id, &meetings, &pages, &notion);
-        let mut all = Vec::new();
-        let mut unavailable_sources = 0;
-        for reference in &references.sources {
-            match notion.read_sources(vec![reference.source_id.clone()]) {
-                Ok(bundle) => {
-                    for source in bundle.sources {
-                        all.extend(candidates(&source));
-                    }
-                }
-                Err(_) => unavailable_sources += 1,
-            }
-        }
-        let mut seen = BTreeSet::new();
-        all.retain(|candidate| {
-            seen.insert((candidate.source_id.clone(), candidate.term.to_lowercase()))
-        });
-        crate::meeting_context_desktop::with_meeting(&app, &meeting_id, || {
-            if MeetingContextStore::new(root.clone())?.list(&meeting_id)? != references
-                || load_snapshot(&root, &meeting_id)? != snapshot
-            {
-                return Err("회의 자료 또는 용어집이 변경되었습니다. 다시 불러와 주세요.".into());
-            }
-            Ok(View {
-                snapshot,
-                candidates: all,
-                unavailable_sources,
-                reusable,
-            })
-        })
-    })
-    .await
-    .map_err(|_| invalid())?
+    tauri::async_runtime::spawn_blocking(move || view(&app, &meeting_id))
+        .await
+        .map_err(|_| invalid())?
 }
 #[tauri::command]
 pub async fn domain_glossary_save(
     window: WebviewWindow,
     app: AppHandle,
-    ai: State<'_, AiDesktop>,
     meeting_id: String,
     expected_revision: u64,
     entries: Vec<Entry>,
 ) -> Result<Snapshot, String> {
     require_main(&window)?;
-    let state = app.state::<DesktopState>();
-    let lease = state.lifecycle.begin_transition()?;
-    require_meeting(&state, &meeting_id)?;
-    let root = state.processing.root.clone();
-    let meetings = state.core.list_meetings().map_err(|e| e.to_string())?;
-    let notion = ai.notion()?;
-    let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let _lease = lease;
-        let references = crate::meeting_context_desktop::with_meeting(&app, &meeting_id, || {
-            MeetingContextStore::new(root.clone())?.list(&meeting_id)
-        })?;
-        let pages = references
-            .sources
-            .iter()
-            .map(|s| s.page_id.clone())
-            .collect();
-        let mut allowed: BTreeSet<_> = references
-            .sources
-            .iter()
-            .map(|s| s.source_id.clone())
-            .collect();
-        allowed.extend(
-            reusable_entries(&root, &meeting_id, &meetings, &pages, &notion)
-                .into_iter()
-                .map(|e| e.source_id),
-        );
-        crate::meeting_context_desktop::with_meeting(&app, &meeting_id, || {
-            if MeetingContextStore::new(root.clone())?.list(&meeting_id)? != references {
-                return Err("회의 자료가 변경되었습니다. 다시 불러와 주세요.".into());
-            }
-            save(&root, &meeting_id, expected_revision, entries, &allowed)
-        })
+        save_entries(&app, &meeting_id, expected_revision, entries)
     })
     .await
     .map_err(|_| invalid())?

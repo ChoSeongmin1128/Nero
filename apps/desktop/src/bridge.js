@@ -136,6 +136,11 @@ export const updateTemplate = (id, expectedRevision, content) => call('update_te
 export const resetTemplate = (id, expectedRevision) => call('reset_template', { id, expectedRevision });
 export const deleteTemplate = (id, expectedRevision) => call('delete_template', { id, expectedRevision });
 export const agentWriteReady = (requestId, error = null) => call('agent_write_ready', { requestId, error });
+// What an external agent changed through the running app, so open screens refresh it.
+export async function subscribeAgentChanged(callback) {
+  if (!isTauri()) return () => {};
+  return listen('nero://agent-changed', event => callback(event.payload || {}));
+}
 export async function subscribeAgentWriteRequest(callback) {
   if (!isTauri()) return () => {};
   return listen('nero://agent-write-requested', event => { void callback(event.payload); });

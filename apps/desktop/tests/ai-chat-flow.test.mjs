@@ -805,3 +805,18 @@ test('drafts survive meeting moves through the library and never absorb a draft 
   assert.equal(app.state().conversation.draft, '');
   app.flow.dispose();
 });
+
+test('an agent change reloads the list and attaches the shown conversation to the answer it started', async () => {
+  const app = await harness();
+  assert.equal(app.state().conversation.id, 'conversation');
+  const conversation = app.store.get('conversation');
+  conversation.messages.push({ id: 'user:agent', role: 'user', status: 'completed', text: '에이전트 질문', attachments: [] }, { id: 'assistant:agent', requestId: 'agent', role: 'assistant', text: '', status: 'streaming', attachments: [] });
+  conversation.activeRequestId = 'agent';
+  app.flow.externalChange(['conversation']);
+  for (let i = 0; i < 10 && app.state().conversation.activeRequestId !== 'agent'; i++) await tick();
+  assert.equal(app.state().conversation.activeRequestId, 'agent');
+  assert.ok(app.state().conversation.messages.some(message => message.text === '에이전트 질문'));
+  app.emit({ requestId: 'agent', type: 'delta', sequence: 1, text: '답변', messageId: 'assistant:agent' });
+  assert.equal(app.state().conversation.messages.find(message => message.id === 'assistant:agent').text, '답변');
+  app.flow.dispose();
+});
