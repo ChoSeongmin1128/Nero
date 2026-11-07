@@ -101,7 +101,10 @@ fn verified(
         return Err(FAILURE.into());
     }
     validate(&binary)?;
-    Ok(Runner { binary })
+    Ok(Runner {
+        binary,
+        checksum: Some(digest),
+    })
 }
 /// Return the newest intact, OS-signed app-owned runtime without network access.
 pub fn discover_prepared(root: &Path) -> Result<Runner, String> {

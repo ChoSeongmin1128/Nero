@@ -37,6 +37,9 @@ const RATE_LIMITED: &str =
 #[derive(Clone, Debug)]
 pub struct Runner {
     binary: PathBuf,
+    // The app-prepared runtime was just hashed against its receipt; its identity is
+    // that checksum, so a request does not hash the same file twice.
+    checksum: Option<String>,
 }
 
 /// Finds the native installer location, not a shell alias or a project-local binary.
@@ -55,7 +58,10 @@ pub fn discover() -> Result<Runner, String> {
         .canonicalize()
         .map_err(|_| "Claude Code를 찾지 못했습니다. 공식 설치가 필요합니다.")?;
     validate(&binary)?;
-    Ok(Runner { binary })
+    Ok(Runner {
+        binary,
+        checksum: None,
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -441,6 +447,9 @@ impl Runner {
     }
     pub fn identity(&self, cancel: &AtomicBool) -> Result<String, String> {
         use sha2::{Digest, Sha256};
+        if let Some(checksum) = &self.checksum {
+            return Ok(checksum.clone());
+        }
         let mut file = std::fs::File::open(&self.binary).map_err(|_| MISSING)?;
         let mut hash = Sha256::new();
         let mut total = 0u64;
