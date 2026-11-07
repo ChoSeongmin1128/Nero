@@ -100,6 +100,8 @@ struct Inner {
     stored_token: Option<(bool, StoredToken)>,
     pending_token: Option<(bool, StoredToken, Access)>,
     needs_sync: bool,
+    // The events predate a sleep or clock jump; reminders wait for a new sync.
+    woke: bool,
     rejections: u64,
     last_attempt: Option<u64>,
     last_tick: Option<u64>,
@@ -202,6 +204,7 @@ impl CalendarService {
                 stored_token: None,
                 pending_token: None,
                 needs_sync: true,
+                woke: false,
                 rejections: 0,
                 last_attempt: None,
                 last_tick: None,
@@ -842,6 +845,7 @@ impl CalendarService {
         inner.state = next;
         inner.auth_ready = true;
         inner.needs_sync = false;
+        inner.woke = false;
         inner.error = None;
         Ok(())
     }
@@ -943,13 +947,14 @@ impl CalendarService {
             .is_some_and(|last| now < last || now.saturating_sub(last) > 10_000)
         {
             inner.needs_sync = true;
+            inner.woke = true;
             inner.last_attempt = None;
         }
         inner.last_tick = Some(now);
+        // A failed sync or a connection in progress leaves recent events usable, so a
+        // reminder on screen stays; age, a wake or a lost credential still hide it.
         let fresh = inner.auth_ready
-            && inner.connecting_id.is_none()
-            && !inner.needs_sync
-            && inner.error.is_none()
+            && !inner.woke
             && inner
                 .state
                 .last_synced_at
@@ -1511,6 +1516,33 @@ mod tests {
         assert!(service.inner.lock().unwrap().needs_sync);
         assert!(service.tick(900_000, false).unwrap().is_empty());
         assert!(service.inner.lock().unwrap().needs_sync);
+    }
+    #[test]
+    fn a_failed_sync_keeps_a_reminder_already_on_screen() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = CalendarService::new(temp.path().into()).unwrap();
+        {
+            let mut inner = service.inner.lock().unwrap();
+            inner.auth_ready = true;
+            inner.needs_sync = false;
+            inner.state.last_synced_at = Some(1_000_000);
+            inner.last_tick = Some(1_000_000);
+            inner.state.events = vec![Occurrence {
+                key: "one".into(),
+                title: "Synthetic".into(),
+                start_at: 1_200_000,
+                end_at: 1_500_000,
+                calendar_name: "Synthetic".into(),
+                join_urls: vec![],
+            }];
+        }
+        assert_eq!(service.tick(1_005_000, false).unwrap()[0].kind, "show");
+        {
+            let mut inner = service.inner.lock().unwrap();
+            inner.error = Some("네트워크".into());
+            inner.needs_sync = true;
+        }
+        assert!(service.tick(1_010_000, false).unwrap().is_empty());
     }
     #[test]
     fn corrupt_calendar_state_is_reported_without_overwriting_it() {
