@@ -388,14 +388,20 @@ impl NotionContextService {
             };
             credentials.save(next.credential_slot, &credential)?;
             cancellation.check()?;
-            let mut inner = inner.lock().unwrap();
-            if generation != current_generation.load(Ordering::Acquire) {
-                return Err(Error::Cancelled);
+            let previous_slot = !next.credential_slot;
+            {
+                let mut inner = inner.lock().unwrap();
+                if generation != current_generation.load(Ordering::Acquire) {
+                    return Err(Error::Cancelled);
+                }
+                storage.save_connection(&next)?;
+                inner.connection = next;
+                inner.error = None;
+                inner.reconnect = false;
             }
-            storage.save_connection(&next)?;
-            inner.connection = next;
-            inner.error = None;
-            inner.reconnect = false;
+            // The previous workspace's token is unused once the new one is saved;
+            // a failure here only leaves it until the next disconnect.
+            let _ = credentials.delete_slot(previous_slot);
             Ok(())
         })
         .await
@@ -415,15 +421,16 @@ impl NotionContextService {
         tokio::task::spawn_blocking(move || {
             let _gate = gate;
             let _operation = operation;
+            // Tokens go first: if removing them fails, the connection still shows as
+            // connected and disconnecting can be tried again.
+            credentials.delete()?;
             let next = Connection::default();
             storage.save_connection(&next)?;
-            {
-                let mut inner = inner.lock().unwrap();
-                inner.connection = next;
-                inner.error = None;
-                inner.reconnect = false;
-            }
-            credentials.delete()
+            let mut inner = inner.lock().unwrap();
+            inner.connection = next;
+            inner.error = None;
+            inner.reconnect = false;
+            Ok(())
         })
         .await
         .map_err(|_| Error::Storage)??;

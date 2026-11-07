@@ -9,7 +9,13 @@ use std::{
 pub(super) trait CredentialStore: Send + Sync {
     fn load(&self, slot: bool) -> Result<Credential>;
     fn save(&self, slot: bool, credential: &Credential) -> Result<()>;
-    fn delete(&self) -> Result<()>;
+    fn delete_slot(&self, slot: bool) -> Result<()>;
+    fn delete(&self) -> Result<()> {
+        for slot in [false, true] {
+            self.delete_slot(slot)?;
+        }
+        Ok(())
+    }
 }
 pub(super) struct SecureCredentials;
 fn account(slot: bool) -> &'static str {
@@ -29,11 +35,8 @@ impl CredentialStore for SecureCredentials {
         let value = serde_json::to_vec(credential).map_err(|_| Error::Credentials)?;
         super::vault::write(&super::vault::SystemVault, account(slot), &value)
     }
-    fn delete(&self) -> Result<()> {
-        for slot in [false, true] {
-            super::vault::delete(&super::vault::SystemVault, account(slot))?;
-        }
-        Ok(())
+    fn delete_slot(&self, slot: bool) -> Result<()> {
+        super::vault::delete(&super::vault::SystemVault, account(slot))
     }
 }
 

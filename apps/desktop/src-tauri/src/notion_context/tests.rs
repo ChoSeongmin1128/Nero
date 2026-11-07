@@ -38,6 +38,7 @@ impl Http for MockHttp {
 struct MemoryCredentials {
     values: Mutex<BTreeMap<bool, Credential>>,
     fail_save: Mutex<bool>,
+    fail_delete: Mutex<bool>,
     deleted: Mutex<bool>,
 }
 impl CredentialStore for MemoryCredentials {
@@ -56,7 +57,14 @@ impl CredentialStore for MemoryCredentials {
         self.values.lock().unwrap().insert(slot, value.clone());
         Ok(())
     }
+    fn delete_slot(&self, slot: bool) -> Result<()> {
+        self.values.lock().unwrap().remove(&slot);
+        Ok(())
+    }
     fn delete(&self) -> Result<()> {
+        if *self.fail_delete.lock().unwrap() {
+            return Err(Error::Credentials);
+        }
         self.values.lock().unwrap().clear();
         *self.deleted.lock().unwrap() = true;
         Ok(())
@@ -349,6 +357,11 @@ async fn refetch_and_disconnect_preserve_immutable_cached_document_snapshots() {
         .remove(0);
     assert_ne!(first.source_id, second.source_id);
     assert_ne!(first.sha256, second.sha256);
+    *credentials.fail_delete.lock().unwrap() = true;
+    assert!(service.disconnect().await.is_err());
+    // A failed token removal leaves the connection to disconnect again.
+    assert!(service.snapshot().connected);
+    *credentials.fail_delete.lock().unwrap() = false;
     service.disconnect().await.unwrap();
     assert!(*credentials.deleted.lock().unwrap());
     assert!(!service.snapshot().connected);
