@@ -66,7 +66,7 @@ impl Engine {
                 .find(|meeting| meeting.id == capture.manifest.meeting_id)
             {
                 meeting.warning = capture.signals.warning();
-                meeting.capture_quality = capture.signals.quality();
+                meeting.capture_quality = capture.signals.live_quality();
             }
         }
         meetings.sort_by(|a, b| {
@@ -907,7 +907,7 @@ impl Drop for Engine {
 fn capture_snapshot(capture: &Capture) -> SessionSnapshot {
     let mut snapshot = session_snapshot(&capture.manifest, capture.frames());
     snapshot.warning = capture.signals.warning();
-    snapshot.capture_quality = capture.signals.quality();
+    snapshot.capture_quality = capture.signals.live_quality();
     snapshot
 }
 
@@ -1390,6 +1390,29 @@ mod tests {
         drop(clone);
         let reopened = CoreHandle::open(&root).unwrap();
         assert_eq!(reopened.list_meetings().unwrap(), vec![changed]);
+    }
+
+    #[test]
+    fn live_snapshots_leave_out_timing_so_a_steady_recording_moves_only_its_clock() {
+        let (_temporary, mut engine) = engine();
+        let meeting = engine.create_meeting("회의".into(), "메모".into()).unwrap();
+        let (_session_id, mut sink) = synthetic(&mut engine, &meeting.id);
+        let stamp = |seconds| cpal::InputStreamTimestamp {
+            callback: cpal::StreamInstant::new(seconds, 0),
+            capture: cpal::StreamInstant::new(seconds, 0),
+        };
+        sink.write_with_timestamp(&[0.25_f32.to_le_bytes(); 10].concat(), Some(stamp(1)));
+        let first = engine.snapshot();
+        sink.write_with_timestamp(&[0.25_f32.to_le_bytes(); 10].concat(), Some(stamp(2)));
+        let second = engine.snapshot();
+        let signals = &engine.capture.as_ref().unwrap().signals;
+        assert!(signals.quality().unwrap().timing.is_some());
+        assert_eq!(first.meetings, second.meetings);
+        assert!(second
+            .session
+            .unwrap()
+            .capture_quality
+            .is_none_or(|quality| quality.timing.is_none()));
     }
 
     #[test]

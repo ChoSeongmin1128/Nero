@@ -334,6 +334,17 @@ impl Signals {
         (quality != CaptureQuality::default()).then_some(quality)
     }
 
+    // Timing counters move on every callback and no screen shows them; leaving them
+    // out of live snapshots lets an otherwise unchanged recording publish only its clock.
+    // Checkpoints still write them to the manifest.
+    pub(crate) fn live_quality(&self) -> Option<CaptureQuality> {
+        let quality = CaptureQuality {
+            timing: None,
+            ..self.quality()?
+        };
+        (quality != CaptureQuality::default()).then_some(quality)
+    }
+
     pub fn warning(&self) -> Option<String> {
         self.quality().as_ref().and_then(CaptureQuality::warning)
     }
@@ -383,7 +394,7 @@ impl CallbackSink {
         self.write_with_timestamp(input, None);
     }
 
-    fn write_with_timestamp(
+    pub(crate) fn write_with_timestamp(
         &mut self,
         input: &[u8],
         timestamp: Option<cpal::InputStreamTimestamp>,
