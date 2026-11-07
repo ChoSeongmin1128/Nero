@@ -2,7 +2,7 @@ use super::*;
 use crate::audio_normalize::{Normalizer, SAMPLE_RATE};
 use crate::engine::Engine;
 use sha2::{Digest, Sha256};
-use std::io::Cursor;
+use std::io::{Cursor, Read};
 
 fn fixture(
     rate: u32,

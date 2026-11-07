@@ -6,7 +6,7 @@ use fs2::FileExt;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufReader, BufWriter, Read, Seek, Write};
+use std::io::{BufReader, BufWriter, Seek, Write};
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;

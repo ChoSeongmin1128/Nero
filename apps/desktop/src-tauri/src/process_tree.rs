@@ -97,6 +97,7 @@ fn spawn_with_scope(command: &mut Command, own_scope: bool) -> Result<TreeChild,
     } else {
         None
     };
+    #[cfg_attr(not(windows), allow(unused_mut))]
     let mut child = command
         .spawn()
         .map_err(|_| "음성 처리를 시작하지 못했습니다.")?;

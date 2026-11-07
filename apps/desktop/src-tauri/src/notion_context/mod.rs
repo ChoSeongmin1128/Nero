@@ -314,16 +314,6 @@ impl NotionContextService {
             }
         }
     }
-    pub fn authorization_url(&self, attempt_id: &str) -> Result<String> {
-        self.inner
-            .lock()
-            .unwrap()
-            .pending
-            .as_ref()
-            .filter(|pending| pending.id == attempt_id)
-            .map(|pending| pending.authorization_url.clone())
-            .ok_or(Error::InvalidRequest)
-    }
     pub fn cancel_connect(&self, attempt_id: Option<&str>) {
         let mut inner = self.inner.lock().unwrap();
         if attempt_id.is_some_and(|id| inner.connecting_id.as_deref() != Some(id)) {

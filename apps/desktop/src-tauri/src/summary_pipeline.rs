@@ -237,6 +237,7 @@ impl SourceBatch {
     }
 }
 
+#[cfg(test)]
 pub(super) async fn run(
     server: &Server,
     source: &Transcript,

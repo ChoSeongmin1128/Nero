@@ -29,6 +29,7 @@ pub struct Snapshot {
     pub entries: Vec<Entry>,
 }
 impl Snapshot {
+    #[cfg(test)]
     pub fn terms(&self) -> Vec<String> {
         self.entries
             .iter()

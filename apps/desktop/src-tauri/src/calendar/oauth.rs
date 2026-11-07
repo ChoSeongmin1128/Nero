@@ -2,7 +2,9 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use reqwest::Url;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::io::{Read, Write};
+use std::io::Read;
+#[cfg(test)]
+use std::io::Write;
 use std::net::{TcpListener, TcpStream};
 use std::sync::{
     atomic::{AtomicBool, Ordering},

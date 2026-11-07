@@ -1303,6 +1303,7 @@ async fn run_summary(
     run_summary_with_notes(process, source, "", weights, path, &cache, cancel).await
 }
 
+#[cfg(test)]
 async fn run_summary_with_notes(
     process: &Processing,
     source: &Transcript,
@@ -1391,13 +1392,6 @@ impl Processing {
     pub fn prepare_summary(self: &Arc<Self>) -> Result<Progress, String> {
         crate::release_capabilities::require_local_summary()?;
         self.prepare_named_model(MANIFEST, "summary-model", "Gemma4-E4B")
-    }
-    pub fn summarize(
-        self: &Arc<Self>,
-        core: CoreHandle,
-        meeting_id: String,
-    ) -> Result<Progress, String> {
-        self.summarize_selected(core, meeting_id, None)
     }
     pub fn summarize_selected(
         self: &Arc<Self>,

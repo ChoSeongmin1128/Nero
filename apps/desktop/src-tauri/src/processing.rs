@@ -5,9 +5,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
     Arc, Mutex, OnceLock,
@@ -17,35 +17,6 @@ use std::time::Duration;
 use uuid::Uuid;
 
 const MODEL_LABEL: &str = crate::asr::LABEL;
-
-fn moss_worker_failure(log: &str) -> Option<(crate::summary_failure::FailureKind, &'static str)> {
-    use crate::summary_failure::FailureKind;
-    for line in log.lines().rev() {
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
-            continue;
-        };
-        if value["worker"] != "moss" {
-            continue;
-        }
-        // Only the worker's fixed kind is trusted. Its message may contain a local path.
-        return match value["kind"].as_str()? {
-            "inputLimit" => Some((FailureKind::InputLimit,
-                "90분을 넘는 녹음은 아직 전체 음성 인식을 지원하지 않습니다. 원음과 기존 음성 기록은 유지했습니다.")),
-            "allocation" => Some((FailureKind::Allocation,
-                "음성 인식에 필요한 메모리를 확보하지 못했습니다. 다른 작업을 마친 뒤 다시 시도해 주세요.")),
-            "input" => Some((FailureKind::Input,
-                "음성 인식에 사용할 녹음 파일을 읽지 못했습니다.")),
-            "output" => Some((FailureKind::Output,
-                "음성 인식 결과가 완성되지 않았습니다. 원음과 기존 음성 기록은 유지했습니다.")),
-            "storage" => Some((FailureKind::Storage,
-                "음성 인식 결과를 저장하지 못했습니다.")),
-            "engineUnavailable" => Some((FailureKind::EngineUnavailable,
-                "음성 인식 실행 중 오류가 발생했습니다. 원음과 기존 음성 기록은 유지했습니다.")),
-            _ => None,
-        };
-    }
-    None
-}
 
 fn platform_supported() -> bool {
     static SUPPORTED: OnceLock<bool> = OnceLock::new();
@@ -472,6 +443,7 @@ impl Processing {
     pub(super) fn apple_speech_variant(&self) -> Option<AppleVariant> {
         *self.apple_speech_variant.lock().unwrap()
     }
+    #[cfg(all(test, windows))]
     pub(super) fn model_dir(&self) -> Result<PathBuf, String> {
         self.model_dir_for(self.speech_engine())
     }
@@ -1844,17 +1816,7 @@ impl Processing {
         self.interrupted_jobs.lock().unwrap().insert(job.id.clone());
         true
     }
-    pub(super) fn start(
-        self: &Arc<Self>,
-        kind: &str,
-        meeting_id: Option<String>,
-        action: impl FnOnce(Arc<Self>, Arc<AtomicBool>, PathBuf) -> Result<Option<String>, String>
-            + Send
-            + 'static,
-    ) -> Result<Progress, String> {
-        self.start_scoped(kind, meeting_id, None, None, false, None, None, action)
-    }
-
+    #[cfg(test)]
     pub(super) fn start_meeting(
         self: &Arc<Self>,
         kind: &str,
@@ -2514,91 +2476,6 @@ impl Processing {
         drop(file);
         fs::rename(marker, target.join("verified.json")).map_err(message)?;
         Ok(model.files.iter().map(|file| file.bytes).sum())
-    }
-    fn run_worker(
-        &self,
-        executable: &Path,
-        args: &[&Path],
-        log: &Path,
-        cancel: &AtomicBool,
-    ) -> Result<(), String> {
-        cancelled(cancel)?;
-        let output = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(log)
-            .map_err(message)?;
-        let mut command = Command::new(executable);
-        command
-            .args(args)
-            .current_dir(log.parent().unwrap())
-            .env("HF_HUB_OFFLINE", "1")
-            .env("TRANSFORMERS_OFFLINE", "1")
-            .stdout(Stdio::from(output.try_clone().map_err(message)?))
-            .stderr(Stdio::from(output));
-        let moss = executable
-            .file_name()
-            .is_some_and(|name| name == "MossHarness");
-        let mut child = Worker(command.spawn().map_err(|_| {
-            if moss {
-                self.update(|progress| {
-                    progress.failure_kind =
-                        Some(crate::summary_failure::FailureKind::EngineUnavailable)
-                });
-            }
-            "음성 인식을 시작하지 못했습니다.".to_string()
-        })?);
-        loop {
-            if cancelled(cancel).is_err() {
-                self.stop_worker(&mut child)?;
-                return Err("처리를 취소했습니다.".into());
-            }
-            match child.0.try_wait() {
-                Ok(Some(status)) if status.success() => return Ok(()),
-                Ok(Some(_)) => return Err(self.worker_failure_message(log, moss)),
-                Ok(None) => thread::sleep(Duration::from_millis(100)),
-                Err(_) => {
-                    self.stop_worker(&mut child)?;
-                    return Err(self.worker_failure_message(log, moss));
-                }
-            }
-        }
-    }
-
-    fn stop_worker(&self, worker: &mut Worker) -> Result<(), String> {
-        worker.stop().map(|_| ()).map_err(|_| {
-            self.cleanup_failed();
-            self.update(|progress| {
-                progress.failure_kind = Some(crate::summary_failure::FailureKind::Cleanup)
-            });
-            "음성 처리 실행기의 종료를 확인하지 못했습니다. 앱을 다시 열어 주세요.".into()
-        })
-    }
-
-    fn worker_failure_message(&self, log: &Path, moss: bool) -> String {
-        if moss {
-            let diagnostic = plain_file(log)
-                .and_then(|mut file| {
-                    let length = file.metadata().map_err(message)?.len();
-                    file.seek(SeekFrom::Start(length.saturating_sub(64 * 1024)))
-                        .map_err(message)?;
-                    let mut bytes = Vec::new();
-                    file.take(64 * 1024)
-                        .read_to_end(&mut bytes)
-                        .map_err(message)?;
-                    Ok(String::from_utf8_lossy(&bytes).into_owned())
-                })
-                .ok()
-                .and_then(|log| moss_worker_failure(&log));
-            if let Some((kind, text)) = diagnostic {
-                self.update(|progress| progress.failure_kind = Some(kind));
-                return text.into();
-            }
-            self.update(|progress| {
-                progress.failure_kind = Some(crate::summary_failure::FailureKind::EngineUnavailable)
-            });
-        }
-        "음성 처리를 완료하지 못했습니다. 원본과 기존 음성 기록은 보관했습니다.".into()
     }
     pub fn recording_start<T>(
         &self,
@@ -5156,157 +5033,6 @@ mod tests {
         assert!(!matches_file(&file, &item, &cancel));
     }
 
-    #[test]
-    fn moss_worker_kinds_are_allowlisted_without_exposing_worker_messages() {
-        use crate::summary_failure::FailureKind;
-        for (name, expected) in [
-            ("inputLimit", FailureKind::InputLimit),
-            ("allocation", FailureKind::Allocation),
-            ("input", FailureKind::Input),
-            ("output", FailureKind::Output),
-            ("storage", FailureKind::Storage),
-            ("engineUnavailable", FailureKind::EngineUnavailable),
-        ] {
-            let log = serde_json::json!({"worker":"moss","kind":name,"message":"/private/recording.wav arbitrary engine text"}).to_string();
-            let (kind, text) = moss_worker_failure(&log).unwrap();
-            assert_eq!(kind, expected);
-            assert!(!text.contains("/private/"));
-            assert!(!text.contains("arbitrary"));
-        }
-        for log in [
-            r#"{"worker":"other","kind":"allocation","message":"anything"}"#,
-            r#"{"worker":"moss","kind":"unknown","message":"out of memory"}"#,
-            "memory warning",
-            "std::bad_alloc",
-        ] {
-            assert!(moss_worker_failure(log).is_none());
-        }
-    }
-
-    #[cfg(unix)]
-    fn shell_worker(path: &Path, body: &str) {
-        use std::os::unix::fs::PermissionsExt;
-        fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
-        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn typed_moss_failure_preserves_the_existing_baseline_and_does_not_change_audio_prepare_errors()
-    {
-        use crate::summary_failure::FailureKind;
-        let (_temporary, process) = setup();
-        let (_core, id, source) = edited_baseline(&process);
-        let current = process
-            .root
-            .join("meetings")
-            .join(&id)
-            .join("transcripts")
-            .join(&source.version.id)
-            .join("current.json");
-        let before = fs::read(&current).unwrap();
-        let worker = process.root.join("MossHarness");
-        let script = "printf '%s\\n' '{\"worker\":\"moss\",\"kind\":\"output\",\"message\":\"/private/recording.wav\"}' >&2\nexit 1";
-        shell_worker(&worker, script);
-        let cancel = AtomicBool::new(false);
-        let error = process
-            .run_worker(
-                &worker,
-                &[],
-                &process.root.join("moss-failure.log"),
-                &cancel,
-            )
-            .unwrap_err();
-        assert_eq!(
-            process.progress.lock().unwrap().failure_kind,
-            Some(FailureKind::Output)
-        );
-        assert!(!error.contains("/private/"));
-        assert!(error.contains("완성되지 않았습니다"));
-        assert_eq!(fs::read(&current).unwrap(), before);
-        let prepare = process.root.join("AudioPrepare");
-        shell_worker(&prepare, script);
-        process.update(|progress| progress.failure_kind = None);
-        assert_eq!(
-            process
-                .run_worker(
-                    &prepare,
-                    &[],
-                    &process.root.join("prepare-failure.log"),
-                    &cancel
-                )
-                .unwrap_err(),
-            "음성 처리를 완료하지 못했습니다. 원본과 기존 음성 기록은 보관했습니다."
-        );
-        assert!(process.progress.lock().unwrap().failure_kind.is_none());
-        assert_eq!(fs::read(current).unwrap(), before);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn cancellation_confirms_worker_pid_is_gone_before_another_capture_can_start() {
-        let (_temporary, process) = setup();
-        let script = process.root.join("mini-worker");
-        shell_worker(&script, "printf '%s' \"$$\" > \"$1\"\nexec /bin/sleep 30");
-        let pid_file = process.root.join("worker.pid");
-        let log = process.root.join("worker.log");
-        let cancel = Arc::new(AtomicBool::new(false));
-        let worker_cancel = cancel.clone();
-        let worker_process = process.clone();
-        let worker_pid_file = pid_file.clone();
-        let handle = thread::spawn(move || {
-            worker_process.run_worker(&script, &[&worker_pid_file], &log, &worker_cancel)
-        });
-        let started = std::time::Instant::now();
-        let pid = loop {
-            if let Some(pid) = fs::read_to_string(&pid_file)
-                .ok()
-                .and_then(|text| text.parse::<u32>().ok())
-                .filter(|pid| *pid > 1)
-            {
-                break pid.to_string();
-            }
-            assert!(started.elapsed() < Duration::from_secs(3));
-            thread::sleep(Duration::from_millis(5));
-        };
-        cancel.store(true, Ordering::Release);
-        assert!(handle.join().unwrap().is_err());
-        let exists = Command::new("/bin/kill")
-            .args(["-0", pid.trim()])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .unwrap()
-            .success();
-        assert!(
-            !exists,
-            "a stopped worker must not remain alive or unreaped"
-        );
-        assert!(process.worker_ready().is_ok());
-        assert!(process.recording_start(|| Ok(())).is_ok());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn cancellation_kills_and_reaps_a_running_worker() {
-        let (temp, process) = setup();
-        let flag = Arc::new(AtomicBool::new(false));
-        let worker_flag = flag.clone();
-        let log = temp.path().join("sleep.log");
-        let now = std::time::Instant::now();
-        let worker = thread::spawn(move || {
-            process.run_worker(
-                Path::new("/bin/sleep"),
-                &[Path::new("30")],
-                &log,
-                &worker_flag,
-            )
-        });
-        thread::sleep(Duration::from_millis(150));
-        flag.store(true, Ordering::Release);
-        assert!(worker.join().unwrap().is_err());
-        assert!(now.elapsed() < Duration::from_secs(3));
-    }
     #[test]
     fn stalled_network_future_can_be_cancelled() {
         let flag = Arc::new(AtomicBool::new(false));

@@ -41,7 +41,6 @@ pub(super) struct Discovery {
     pub resource: String,
 }
 pub(super) struct Pending {
-    pub id: String,
     pub cancelled: Cancellation,
     pub discovery: Discovery,
     pub client_id: String,
@@ -263,7 +262,6 @@ impl Pending {
             let _ = sender.send(result);
         });
         Ok(Self {
-            id,
             cancelled,
             discovery,
             client_id,

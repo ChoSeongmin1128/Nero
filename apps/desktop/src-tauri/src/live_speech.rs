@@ -24,7 +24,6 @@ pub(super) struct Completed {
     pub speaker: PathBuf,
     pub backend: Value,
     pub raw: Vec<u8>,
-    pub session_id: String,
     pub meeting_id: String,
 }
 pub(super) struct LiveJob {
@@ -602,7 +601,6 @@ fn publish_asr(
             speaker: path.join("speaker"),
             backend: backend.clone(),
             raw,
-            session_id: session.into(),
             meeting_id: meeting.into(),
         },
     );
@@ -679,7 +677,6 @@ impl Processing {
                     backend: receipt["backend"].clone(),
                     raw,
                     meeting_id: meeting.into(),
-                    session_id: session.into(),
                 })
             })();
             if let Ok(candidate) = candidate {
@@ -734,7 +731,6 @@ mod tests {
                 speaker: temp.path().join("speaker"),
                 backend: json!("cpu"),
                 raw: vec![1, 2, 3],
-                session_id: "capture-a".into(),
                 meeting_id: "meeting-a".into(),
             },
         );

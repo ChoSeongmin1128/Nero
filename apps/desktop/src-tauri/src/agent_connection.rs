@@ -149,6 +149,7 @@ fn executable_name() -> &'static str {
     }
 }
 
+#[cfg(test)]
 pub fn connection_info(resources: &Path, root: &Path, connections: &Path) -> ConnectionInfo {
     connection_info_with_installations(resources, root, connections, None)
 }
@@ -678,6 +679,7 @@ fn lock_preparation(directory: &Path) -> Result<File, String> {
     Ok(file)
 }
 
+#[cfg(test)]
 fn live_session(directory: &Path, client: &str, token: &str, generation: &str) -> bool {
     live_generations(directory, client, token)
         .iter()

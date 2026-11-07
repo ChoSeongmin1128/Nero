@@ -46,6 +46,7 @@ impl RecorderPolicy {
     pub fn moved(&mut self, now: std::time::Instant) {
         self.last_moved = Some(now);
     }
+    #[cfg(not(target_os = "macos"))]
     pub fn can_reposition(&self, now: std::time::Instant) -> bool {
         self.last_moved.is_none_or(|last| {
             now.saturating_duration_since(last) >= std::time::Duration::from_secs(1)
@@ -72,6 +73,7 @@ impl RecorderPolicy {
         self.failed = false;
     }
 
+    #[cfg(any(not(target_os = "macos"), test))]
     pub fn show_failed(&mut self) {
         self.shown = false;
         self.failed = true;

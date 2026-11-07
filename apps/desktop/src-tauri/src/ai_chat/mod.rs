@@ -6,6 +6,7 @@ pub use skills::catalog as composer_catalog;
 mod store;
 use crate::ai_accounts::{AiAccounts, Provider};
 use crate::notion_context::NotionContextService;
+#[cfg(test)]
 use context::Binding;
 pub use context::SourceOrigin;
 use nero_core::CoreHandle;

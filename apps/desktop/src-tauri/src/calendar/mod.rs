@@ -5,7 +5,7 @@ mod oauth;
 mod schedule;
 mod tokens;
 
-pub use attendees::{GoogleAttendeeFetch, MeetAttendeeStatus};
+pub use attendees::GoogleAttendeeFetch;
 pub use google::CalendarChoice;
 pub use oauth::ConnectRequest;
 use oauth::{Config, Pending};
