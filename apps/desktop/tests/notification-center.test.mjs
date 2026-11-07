@@ -67,12 +67,12 @@ test('global preparation notices keep their own identity and expose only measure
   assert.equal(projected[0].hasMeeting, false);
 });
 
-test('the actual bridge receives the row job ID and opening a notification opens its own meeting', async t => {
+test('a processing action receives the row job ID and opening a notification opens its own meeting', async t => {
   const calls = [];
-  const app = harness(t, { bridge: { retryProcessing: async id => {
-    calls.push(['retry', id]);
-    return { revision: 3, jobs: [job('a'), job('b-next', 'b', 'running', 30), job('b', 'b', 'failed', 20, { retrySuccessorId: 'b-next', acknowledged: true })] };
-  } } });
+  const app = harness(t, { onProcessingAction: async (action, id) => {
+    calls.push([action, id]);
+    app.update([job('a'), job('b-next', 'b', 'running', 30), job('b', 'b', 'failed', 20, { retrySuccessorId: 'b-next', acknowledged: true })], 3);
+  } });
   app.update([job('a'), job('b', 'b', 'failed', 20)], 2, { selectedMeetingId: 'a' });
   await app.click('b', 'open');
   assert.deepEqual(app.calls, [['open', 'b']]);
@@ -85,7 +85,7 @@ test('the actual bridge receives the row job ID and opening a notification opens
 
 test('a detached old button cannot retry an earlier attempt or acknowledge a deleted meeting', async t => {
   const calls = [];
-  const app = harness(t, { onRetry: async id => calls.push(['retry', id]), onAcknowledge: async id => calls.push(['ack', id]) });
+  const app = harness(t, { onProcessingAction: async (action, id) => calls.push([action, id]) });
   app.update([job('old')]);
   const stale = app.button('old', 'retry');
   app.update([job('old', 'a', 'failed', 10, { retrySuccessorId: 'new' }), job('new', 'a', 'running', 20)], 2);
@@ -102,13 +102,13 @@ test('a detached old button cannot retry an earlier attempt or acknowledge a del
   assert.deepEqual(calls, []);
 });
 
-test('acknowledgement stores through the existing bridge and removes only the acknowledged notice', async t => {
+test('acknowledgement goes through the owner and removes only the acknowledged notice', async t => {
   const calls = [];
   const first = job('first'), active = job('active', 'b', 'running', 20);
-  const app = harness(t, { bridge: { acknowledgeProcessing: async id => {
+  const app = harness(t, { onProcessingAction: async (action, id) => {
     calls.push(id);
-    return { revision: 2, jobs: [{ ...first, acknowledged: true }, active] };
-  } } });
+    app.update([{ ...first, acknowledged: true }, active], 2);
+  } });
   app.update([first, active]);
   await app.click('first', 'ack');
   assert.deepEqual(calls, ['first']);
@@ -120,24 +120,25 @@ test('acknowledgement stores through the existing bridge and removes only the ac
   assert.equal(app.controller.counts().total, 1);
 });
 
-test('cancellation remains disabled until the backend reports its result and never stops another row', async t => {
-  const calls = [];
-  const app = harness(t, { bridge: { cancelProcessing: async id => { calls.push(id); } } });
+test('cancellation stays disabled while the owner reports it pending and never stops another row', async t => {
+  const calls = [], actions = new Map();
   const first = job('first', 'a', 'running'), second = job('second', 'b', 'running');
+  const app = harness(t, { onProcessingAction: async (action, id) => { calls.push(id); actions.set(id, action); app.update([first, second], 1, { actions }); } });
   app.update([first, second]);
   await app.click('first', 'cancel');
   assert.equal(app.button('first', 'cancel').disabled, true);
+  assert.equal(app.button('first', 'cancel').textContent, '취소 중');
   assert.equal(app.button('second', 'cancel').disabled, false);
   await app.click('first', 'cancel');
   assert.deepEqual(calls, ['first']);
-  app.update([{ ...first, status: 'cancelled' }, second], 2);
+  actions.delete('first');
+  app.update([{ ...first, status: 'cancelled' }, second], 2, { actions });
   assert.ok(app.button('first', 'retry'));
 });
 
-test('stale snapshots and late retry responses cannot replace newer processing or selection', async t => {
+test('stale snapshots and late action results cannot replace newer processing or selection', async t => {
   let resolve;
-  const accepted = [];
-  const app = harness(t, { onRetry: () => new Promise(done => { resolve = done; }), onAcceptProcessing: value => accepted.push(value) });
+  const app = harness(t, { onProcessingAction: () => new Promise(done => { resolve = done; }) });
   app.update([job('old')], 2);
   app.button('old', 'retry').click();
   app.update([job('new', 'b', 'running', 30)], 4, { selectedMeetingId: 'b' });
@@ -145,13 +146,12 @@ test('stale snapshots and late retry responses cannot replace newer processing o
   await settle();
   assert.ok(app.button('new', 'cancel'));
   assert.equal(app.button('old-next', 'cancel'), undefined);
-  assert.deepEqual(accepted, []);
   app.update([job('older')], 1);
   assert.ok(app.button('new', 'cancel'));
 });
 
 test('retry failure stays on the correct row and a shared action lock blocks duplicate requests', async t => {
-  const app = harness(t, { onRetry: async () => { throw new Error('<실패>'); } });
+  const app = harness(t, { onProcessingAction: async () => { throw new Error('<실패>'); } });
   app.update([job('first'), job('second', 'b')], 1, { actions: new Map([['second', 'retry']]) });
   assert.equal(app.button('second', 'retry').disabled, true);
   await app.click('first', 'retry');
@@ -162,8 +162,7 @@ test('retry failure stays on the correct row and a shared action lock blocks dup
 });
 
 test('focus follows a retry successor and acknowledging the final notice moves focus to the heading', async t => {
-  const app = harness(t, { bridge: { retryProcessing: async () => ({ revision: 2,
-    jobs: [job('old', 'a', 'failed', 10, { retrySuccessorId: 'new' }), job('new', 'a', 'running', 20)] }) } });
+  const app = harness(t, { onProcessingAction: async () => app.update([job('old', 'a', 'failed', 10, { retrySuccessorId: 'new' }), job('new', 'a', 'running', 20)], 2) });
   app.update([job('old')]);
   app.button('old', 'retry').focus();
   await app.click('old', 'retry');
@@ -174,10 +173,10 @@ test('focus follows a retry successor and acknowledging the final notice moves f
 
 test('old completed work is not injected at startup and newly observed completion can be acknowledged', async t => {
   const calls = [];
-  const app = harness(t, { bridge: { acknowledgeProcessing: async id => {
+  const app = harness(t, { onProcessingAction: async (action, id) => {
     calls.push(id);
-    return { revision: 4, jobs: [job('done', 'a', 'completed', 30, { acknowledged: true })] };
-  } } });
+    app.update([job('done', 'a', 'completed', 30, { acknowledged: true })], 4);
+  } });
   app.update([job('old', 'a', 'completed')]);
   assert.equal(app.controller.counts().total, 0);
   app.update([job('old', 'a', 'completed'), job('done', 'a', 'running', 30)], 2);
@@ -201,15 +200,14 @@ test('notification titles and failure details render as text', t => {
 
 test('all confirmation runs serially, retains a failure and rechecks newer attempts before their turn', async t => {
   let release;
-  const calls = [], accepted = [];
+  const calls = [];
   const first = job('first'), second = job('second', 'b', 'failed', 20);
   const model = job('model', null, 'failed', 30, { kind: 'summary-model' });
-  let app;
-  app = harness(t, { bridge: { acknowledgeProcessing: async id => {
+  const app = harness(t, { onProcessingAction: async (action, id) => {
     calls.push(id);
     if (id === 'model') { await new Promise(resolve => { release = resolve; }); throw new Error('확인 실패'); }
-    return { revision: 3, jobs: [{ ...first, acknowledged: true }, second, model, job('successor', 'b', 'running', 40)] };
-  } }, onAcceptProcessing: value => accepted.push(value) });
+    app.update([{ ...first, acknowledged: true }, second, model, job('successor', 'b', 'running', 40)], 3);
+  } });
   app.update([first, second, model]);
   app.container.querySelector('[data-notification-action="ack-all"]').click();
   await settle();
@@ -222,19 +220,23 @@ test('all confirmation runs serially, retains a failure and rechecks newer attem
   assert.ok(app.button('successor', 'cancel'));
   assert.equal(app.button('first', 'ack'), undefined);
   assert.equal(app.errors.length, 1);
-  assert.equal(accepted.length, 1);
 });
 
-test('destroyed notifications ignore pending results and release their event listener', async t => {
-  let resolve;
-  const accepted = [];
-  const app = harness(t, { onRetry: () => new Promise(done => { resolve = done; }), onAcceptProcessing: value => accepted.push(value) });
+test('destroyed notifications ignore pending failures and release their event listener', async t => {
+  let reject;
+  const calls = [];
+  const app = harness(t, { onProcessingAction: (action, id) => { calls.push(id); return new Promise((done, fail) => { reject = fail; }); } });
   app.update([job('old')]);
   app.button('old', 'retry').click();
   app.controller.destroy();
-  resolve({ revision: 2, jobs: [job('new', 'a', 'running')] });
+  const html = app.container.innerHTML;
+  reject(new Error('late failure'));
   await settle();
-  assert.deepEqual(accepted, []);
+  assert.equal(app.container.innerHTML, html);
+  assert.deepEqual(app.errors, []);
+  app.container.querySelector('[data-notification-action="ack"]').click();
+  await settle();
+  assert.deepEqual(calls, ['old']);
 });
 
 test('reading failure details survives another job progress update', t => {
@@ -263,7 +265,7 @@ test('integration notices share the bell count, open their settings and acknowle
 
 test('confirming mixed job and integration notifications cannot cancel or acknowledge an unrelated job', async t => {
   const acknowledged = [];
-  const f = harness(t, { onAcknowledge: async id => { acknowledged.push(id); return { revision: 2, jobs: [job('failed', 'a', 'failed', 10, { acknowledged: true })] }; } });
+  const f = harness(t, { onProcessingAction: async (action, id) => { acknowledged.push(id); f.update([job('failed', 'a', 'failed', 10, { acknowledged: true })], 2, { integrations: [notice] }); } });
   const notice = { id: 'integration:claude:28', service: 'claude', title: 'Claude 연동', message: '업데이트 필요' };
   f.update([job('failed')], 1, { integrations: [notice] });
   f.container.querySelector('[data-notification-action="ack-all"]').click(); await settle(); await settle();

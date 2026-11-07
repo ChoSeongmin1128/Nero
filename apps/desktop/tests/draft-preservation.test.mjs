@@ -218,7 +218,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     const bridge = testBridge;
     const { ui, icon, escape, button, duration, recordingStatus, statusMarkup, sessionControls, applySystemAppearance } = testUI;
     ${executable}
-    return { state, detail, documentSearch, summaryEvidenceOptions, aiChatOptions, appLeaveEditors: [templateSettings, peopleSettings, meetingAttendees, speakers], restoreTranscript: restoreForTest, selectMeeting, saveDraft, finishEditing, onEdit, onQuitRequest, onAgentWriteRequest, refreshDevices, acceptSnapshot, saveTranscript, loadTranscript, acceptProcessing, loadSummary, renderSummary, createMeeting, openSetup, openSettings, changeMicrophone, changeMeetingDate, render, prepareAudio, exportDocument, editTranscriptRow, completeTranscriptRow, cancelTranscriptRow, cancelProcessing, retryProcessing, acknowledgeProcessing };
+    return { state, detail, documentSearch, summaryEvidenceOptions, aiChatOptions, appLeaveEditors: [templateSettings, peopleSettings, meetingAttendees, speakers], restoreTranscript: restoreForTest, selectMeeting, saveDraft, finishEditing, onEdit, onQuitRequest, onAgentWriteRequest, refreshDevices, acceptSnapshot, saveTranscript, loadTranscript, acceptProcessing, loadSummary, renderSummary, createMeeting, openSetup, openSettings, changeMicrophone, changeMeetingDate, render, prepareAudio, exportDocument, editTranscriptRow, completeTranscriptRow, cancelTranscriptRow, processingAction };
   })()`, context);
   await tick();
   return {
@@ -565,7 +565,7 @@ test('queued selected work targets its job while background model work stays com
   assert.match(page.element('notification-center').innerHTML, /data-notification-id="download"/);
   assert.match(page.element('notification-center').innerHTML, /요약 모델 준비 중/);
   assert.equal(page.element('cancel-processing').dataset.jobId, 'waiting');
-  await page.app.cancelProcessing('waiting');
+  await page.app.processingAction('cancel', 'waiting');
   assert.deepEqual(cancelled, ['waiting']);
   assert.equal(page.app.state.processing.id, 'download');
 });
@@ -605,7 +605,7 @@ test('acknowledgement hides the single notice without resurfacing older results 
   page.bridge.acknowledgeProcessing = async id => ({ ...page.app.state.processing, revision: 4,
     jobs: jobs.map(job => job.id === id ? { ...job, acknowledged: true } : job) });
   page.element('dismiss-processing').focus();
-  await page.app.acknowledgeProcessing('latest');
+  await page.app.processingAction('ack', 'latest');
   assert.equal(page.element('processing').hidden, true);
   assert.equal(page.focused(), 'settings');
   assert.equal(page.app.state.processing.jobs.length, 2);
@@ -619,7 +619,7 @@ test('acknowledging a notice does not take focus from a title edited during the 
   const response = deferred();
   page.bridge.acknowledgeProcessing = () => response.promise;
   page.element('dismiss-processing').focus();
-  const request = page.app.acknowledgeProcessing('stopped');
+  const request = page.app.processingAction('ack', 'stopped');
   page.element('meeting-title').focus(); page.element('meeting-title').value = '계속 편집하는 제목'; page.app.onEdit();
   response.resolve({ ...page.app.state.processing, revision: 6, jobs: [{ ...stopped, acknowledged: true }] });
   await request;
@@ -651,7 +651,7 @@ test('a stale-source retry error preserves editing and remains next to the selec
   await page.app.acceptProcessing({ revision: 6, status: 'idle', supported: true, modelReady: true, jobs: [
     { id: 'stopped', kind: 'summary', meetingId: 'a', status: 'interrupted', retryable: true, createdAt: 1 },
   ] });
-  await page.app.retryProcessing('stopped');
+  await assert.rejects(page.app.processingAction('retry', 'stopped'), /회의 내용이 변경/);
   assert.equal(page.app.state.transcriptDraft.doc, before);
   assert.equal(page.element('meeting-notes').value, '저장 전 메모');
   assert.equal(page.app.state.draft.dirty, true);
@@ -763,9 +763,9 @@ test('disabled local summary excludes the model from initial downloads and hides
   assert.match(notices, /data-notification-job="transcribe-failed" data-notification-action="retry"/);
   assert.equal(page.app.state.processing.jobs[0].retryable, true);
   page.bridge.retryProcessing = async id => { retried.push(id); return { ...page.app.state.processing, revision: 4 }; };
-  await page.app.retryProcessing('summary-failed');
-  await page.app.retryProcessing('summary-model-failed');
-  await page.app.retryProcessing('transcribe-failed');
+  await page.app.processingAction('retry', 'summary-failed');
+  await page.app.processingAction('retry', 'summary-model-failed');
+  await page.app.processingAction('retry', 'transcribe-failed');
   assert.deepEqual(retried, ['transcribe-failed']);
 });
 
@@ -872,7 +872,7 @@ test('memory warnings and same-job summary retries preserve readiness, new meeti
   assert.equal(page.element('cancel-processing').disabled, false);
   const cancellations = [];
   page.bridge.cancelProcessing = async id => { cancellations.push(id); };
-  await page.app.cancelProcessing();
+  await page.app.processingAction('cancel');
   assert.deepEqual(cancellations, ['summary-memory']);
   assert.equal(page.element('processing-warning').hidden, true);
   assert.equal(page.element('processing').hidden, true);
@@ -1484,8 +1484,8 @@ test('processing stays visibly active until cancellation actually finishes', asy
   assert.match(page.element('processing-title').textContent, /처리 중/);
   let requests = 0;
   page.bridge.cancelProcessing = async () => { requests++; };
-  await page.app.cancelProcessing();
-  await page.app.cancelProcessing();
+  await page.app.processingAction('cancel');
+  await page.app.processingAction('cancel');
   assert.equal(requests, 1);
   assert.equal(page.element('processing-spinner').hidden, false);
   assert.equal(page.element('cancel-processing').disabled, true);
@@ -1642,7 +1642,7 @@ test('failed summary separates job retry from current-content generation and kee
   await page.app.selectMeeting('a');
   const calls = [];
   page.bridge.retryProcessing = async id => { calls.push(id); return { ...job, id: 'retry', revision: 11, status: 'running', phase: 'preparing', failureDetail: null }; };
-  await page.app.retryProcessing(job.id);
+  await page.app.processingAction('retry', job.id);
   assert.deepEqual(calls, ['summary-failed']);
   assert.equal(page.element('processing-title').textContent, '요약 준비 중');
   assert.equal(page.element('processing-error-info').hidden, true);

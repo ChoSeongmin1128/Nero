@@ -105,7 +105,7 @@ function preparationView(kinds) {
   return requested && ['queued', 'running'].includes(view.state) ? { ...view, state: 'cancelling', stage: '취소 중', cancellable: false } : view;
 }
 const pickerOptions = { onSelect: selectSpeechEngine, onSpeakerChange: selectSpeakerEnabled, onAcknowledge: acknowledgeSpeechMemory,
-  onCancelJob: id => { if (id) void cancelProcessing(id); }, onCancelSwitch: cancelSpeechSwitch };
+  onCancelJob: id => { if (id) processingAction('cancel', id).catch(showError); }, onCancelSwitch: cancelSpeechSwitch };
 const speechPickers = [
   mountSpeechModelPicker({ node: byId('setup-speech-picker'), ...pickerOptions }),
   mountSpeechModelPicker({ node: byId('settings-speech-picker'), onPrepare: prepareSpeechModels, ...pickerOptions }),
@@ -1039,11 +1039,11 @@ byId('models').addEventListener('click', () => run(async () => {
     (pendingJob(state.processing, { kind: 'summary-model' }) ? byId('settings-feature-cancel') : byId('models').hidden ? byId('settings-summary-control') : byId('models')).focus({ preventScroll: true });
   }
 }));
-byId('settings-feature-cancel').addEventListener('click', () => { const job = pendingJob(state.processing, { kind: 'summary-model' }); if (job?.id) void cancelProcessing(job.id); });
+byId('settings-feature-cancel').addEventListener('click', () => { const job = pendingJob(state.processing, { kind: 'summary-model' }); if (job?.id) processingAction('cancel', job.id).catch(showError); });
 byId('setup-back').addEventListener('click', () => { const settings = state.setupFromSettings, returnId = state.setupReturnId; state.setupRequested = false; state.setupFromSettings = false; render(); if (settings) void openSettings('appearance'); else { const origin = byId(returnId || 'settings'); const fallback = !byId('summarize').hidden && !byId('summarize').disabled ? byId('summarize') : byId('detail-transcript-open'); (origin && !origin.hidden && !origin.disabled ? origin : fallback)?.focus({ preventScroll: true }); } });
 byId('setup-download').addEventListener('click', () => run(async () => { if (speechMemoryBlocked()) return; state.setupRequested = true; await acceptProcessing(await bridge.prepareMeetingModels(localSummaryEnabled() && Boolean(byId('setup-summary-option').checked) && !state.processing.summaryReady)); }));
 byId('setup-download-summary').addEventListener('click', () => run(async () => { if (!localSummaryEnabled()) return; state.setupRequested = true; await acceptProcessing(await bridge.prepareSummaryModel()); }));
-byId('setup-cancel').addEventListener('click', () => { const id = byId('setup-cancel').dataset.jobId; if (id) void cancelProcessing(id); });
+byId('setup-cancel').addEventListener('click', () => { const id = byId('setup-cancel').dataset.jobId; if (id) processingAction('cancel', id).catch(showError); });
 byId('retry-save').addEventListener('click', () => saveDraft().catch(() => {}));
 byId('dismiss-error').addEventListener('click', () => clearError());
 byId('recording-controls').addEventListener('click', (event) => {
@@ -1236,44 +1236,34 @@ function restoreProcessingFocus() {
   target?.focus({ preventScroll: true });
 }
 
-async function cancelProcessing(jobId = state.processing.id) {
+const processingCommands = { cancel: 'cancelProcessing', retry: 'retryProcessing', ack: 'acknowledgeProcessing' };
+// Failures throw to the caller, which shows them where the action was asked; the banner also keeps them per job.
+async function processingAction(action, jobId = state.processing.id) {
   const job = processingJobs(state.processing).find(item => item.id === jobId);
-  if (!job || !['queued', 'running'].includes(job.status) || processingActions.has(job.id) || state.processingCancellingId === job.id) return;
-  state.processingCancellingId = job.id;
+  const allowed = action === 'cancel' ? ['queued', 'running'].includes(job?.status) && state.processingCancellingId !== job.id
+    : action === 'retry' ? canRetryProcessing(job) && (localSummaryEnabled() || !localSummaryJob(job))
+      : action === 'ack' && canDismissProcessing(job);
+  if (!allowed || processingActions.has(job.id)) return;
+  if (action === 'cancel') state.processingCancellingId = job.id;
   rememberProcessingFocus();
-  processingActions.set(job.id, 'cancel');
+  processingActions.set(job.id, action);
   processingErrors.delete(job.id);
   render();
-  try { await bridge.cancelProcessing(job.id); }
-  catch (error) {
-    if (state.processingCancellingId === job.id) state.processingCancellingId = null;
-    processingActions.delete(job.id);
+  try {
+    const progress = await bridge[processingCommands[action]](job.id);
+    if (action !== 'cancel') await acceptProcessing(progress);
+  } catch (error) {
+    if (action === 'cancel') {
+      if (state.processingCancellingId === job.id) state.processingCancellingId = null;
+      processingActions.delete(job.id);
+    }
     processingErrors.set(job.id, error instanceof Error ? error.message : String(error));
-    showError(error); render();
+    throw error;
+  } finally {
+    // A requested cancel stays pending until the job reports that it ended.
+    if (action !== 'cancel') processingActions.delete(job.id);
+    render();
   }
-}
-
-async function retryProcessing(jobId = state.processing.id) {
-  const job = processingJobs(state.processing).find(item => item.id === jobId);
-  if (!localSummaryEnabled() && localSummaryJob(job)) return;
-  if (!job || !canRetryProcessing(job) || processingActions.has(job.id)) return;
-  rememberProcessingFocus();
-  processingActions.set(job.id, 'retry');
-  processingErrors.delete(job.id);
-  render();
-  try { await acceptProcessing(await bridge.retryProcessing(job.id)); }
-  catch (error) { processingErrors.set(job.id, error instanceof Error ? error.message : String(error)); showError(error); }
-  finally { processingActions.delete(job.id); render(); }
-}
-
-async function acknowledgeProcessing(jobId = state.processing.id) {
-  const job = processingJobs(state.processing).find(item => item.id === jobId);
-  if (!job || !canDismissProcessing(job) || processingActions.has(job.id)) return;
-  rememberProcessingFocus();
-  processingActions.set(job.id, 'ack'); processingErrors.delete(job.id); render();
-  try { await acceptProcessing(await bridge.acknowledgeProcessing(job.id)); }
-  catch (error) { processingErrors.set(job.id, error instanceof Error ? error.message : String(error)); showError(error); }
-  finally { processingActions.delete(job.id); render(); }
 }
 
 function transcriptRenderKey() {
@@ -1523,9 +1513,7 @@ byId('import-audio').addEventListener('click', () => run(() => finishEditing(asy
   const progress = await bridge.importAudio(target);
   if (progress) await acceptProcessing(progress);
 })));
-byId('cancel-processing').addEventListener('click', () => { void cancelProcessing(byId('cancel-processing').dataset.jobId); });
-byId('retry-processing').addEventListener('click', () => { void retryProcessing(byId('retry-processing').dataset.jobId); });
-byId('dismiss-processing').addEventListener('click', () => { void acknowledgeProcessing(byId('dismiss-processing').dataset.jobId); });
+for (const id of ['cancel-processing', 'retry-processing', 'dismiss-processing']) byId(id).addEventListener('click', () => { processingAction(byId(id).dataset.jobAction, byId(id).dataset.jobId).catch(showError); });
 byId('open-processing-meeting').addEventListener('click', () => {
   const job = processingJobs(state.processing).find(item => item.id === byId('open-processing-meeting').dataset.jobId);
   if (job?.meetingId) void run(() => selectMeeting(job.meetingId));
@@ -1773,8 +1761,7 @@ const transcriptActions = mountTranscriptActions({ byId, bridge, finishEditing, 
   },
 });
 const library = mountLibrary({ bridge, getState: () => state, byId, finishEditing, acceptSnapshot, selectMeeting, render, showError, escape, icon, meetingTimestamp, recordingStatus, duration, beginNavigation, onViewChanged() { meetingSearch.update(byId('search').value, state.libraryFilter === 'trash'); if (state.libraryFilter === 'ai') { aiLibrary?.show(); aiChat?.open(null); } } });
-const notificationAction = action => async id => { await action(id); const error = processingErrors.get(id); if (error) throw new Error(error); };
-const notificationCenter = mountNotificationCenter({ container: byId('notification-center'), bridge, onOpenMeeting: id => selectMeeting(id), onRetry: notificationAction(retryProcessing), onCancel: notificationAction(cancelProcessing), onAcknowledge: notificationAction(acknowledgeProcessing), showError, icon, onNoticeAction: service => service === 'app-update' ? appUpdateView.perform() : undefined, onOpenIntegration: async service => {
+const notificationCenter = mountNotificationCenter({ container: byId('notification-center'), onOpenMeeting: id => selectMeeting(id), onProcessingAction: processingAction, showError, icon, onNoticeAction: service => service === 'app-update' ? appUpdateView.perform() : undefined, onOpenIntegration: async service => {
   await openSettings('agent', 'notifications-open');
   const target = service === 'google-calendar' ? byId('calendar-settings').querySelector('.calendar-settings-account button:not(:disabled)') : byId(`settings-${service}-connect`);
   target?.scrollIntoView?.({ block: 'nearest' });

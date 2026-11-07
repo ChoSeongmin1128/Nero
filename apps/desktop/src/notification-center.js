@@ -32,7 +32,7 @@ export function notificationProjection({ processing = {}, meetings = [], selecte
     });
 }
 
-export function mountNotificationCenter({ container, bridge = {}, onOpenMeeting, onRetry, onCancel, onAcknowledge, onAcceptProcessing, onOpenIntegration, onNoticeAction, onChanged = () => {}, showError = () => {}, icon = () => '' }) {
+export function mountNotificationCenter({ container, onOpenMeeting, onProcessingAction, onOpenIntegration, onNoticeAction, onChanged = () => {}, showError = () => {}, icon = () => '' }) {
   const confirmedNotices = new Set();
   const pending = new Map();
   const errors = new Map();
@@ -45,7 +45,6 @@ export function mountNotificationCenter({ container, bridge = {}, onOpenMeeting,
   const rows = () => [...notificationProjection(snapshot).filter(job => job.status !== 'completed' || observedActive.has(job.id)), ...(snapshot.integrations || []).map(item => ({ ...item, category: 'integration', active: false, unread: !confirmedNotices.has(item.id) })), ...(snapshot.notices || []).map(item => ({ ...item, category: 'notice', active: false, unread: !confirmedNotices.has(item.id) }))];
   const actionPending = id => pending.has(id) || snapshot.actions?.has(id);
   const canAct = job => !disposed && snapshot.connected !== false && !actionPending(job.id);
-  const method = (callback, fallback) => callback || bridge[fallback]?.bind(bridge);
 
   function rememberFocus() {
     const active = container.ownerDocument.activeElement;
@@ -88,7 +87,7 @@ export function mountNotificationCenter({ container, bridge = {}, onOpenMeeting,
     const listScroll = container.querySelector('.notification-list')?.scrollTop || 0;
     container.innerHTML = `<header class="notification-heading"><button type="button" class="quiet small icon" data-notification-action="back" aria-label="회의 탐색으로 돌아가기" title="회의 탐색으로 돌아가기">${icon('arrow-left')}</button><h2 class="notification-heading-title" tabindex="-1" data-notification-heading>알림</h2><button type="button" class="quiet small" data-notification-action="ack-all"${jobs.some(job => canAcknowledge(job) && canAct(job)) && !confirming ? '' : ' disabled'}>${confirming ? '확인 중' : '모두 확인'}</button><span class="sr-only" role="status">${active ? '작업 진행 중' : ''}${unread ? ' 읽지 않은 알림 있음' : ''}</span></header><div class="notification-list">${jobs.map(job => {
       if (['integration', 'notice'].includes(job.category)) return `<article class="notification-item" data-notification-id="${escape(job.id)}" data-unread="${job.unread}" aria-busy="${actionPending(job.id)}"><div class="notification-copy"><strong class="notification-title">${escape(job.title)}</strong><p>${escape(job.message)}</p>${errors.has(job.id) ? `<p class="field-error" role="alert">${escape(errors.get(job.id))}</p>` : ''}</div><div class="notification-actions">${button(job, job.category === 'integration' ? 'settings' : 'notice', escape(job.category === 'integration' ? '설정' : job.actionLabel || '열기'), false, job.actionDisabled)}${job.unread ? button(job, 'ack', '확인') : ''}</div></article>`;
-      const cancelling = pending.get(job.id) === 'cancel' || snapshot.actions?.get(job.id) === 'cancel';
+      const cancelling = snapshot.actions?.get(job.id) === 'cancel';
       const feedback = processingFeedback(job, { cancelling });
       const status = feedback.title;
       const title = job.hasMeeting ? `<button type="button" class="quiet notification-title" data-notification-job="${escape(job.id)}" data-notification-action="open"${snapshot.connected === false || actionPending(job.id) ? ' disabled' : ''}>${escape(job.title)}</button>` : `<strong class="notification-title">${escape(job.title)}</strong>`;
@@ -110,10 +109,6 @@ export function mountNotificationCenter({ container, bridge = {}, onOpenMeeting,
     const noticeIds = new Set([...(snapshot.integrations || []), ...(snapshot.notices || [])].map(item => item.id));
     for (const id of confirmedNotices) if (!noticeIds.has(id)) confirmedNotices.delete(id);
     for (const job of processingJobs(processing)) if (activeStatuses.has(job.status)) observedActive.add(job.id);
-    for (const [id, action] of pending) {
-      const job = processingJobs(processing).find(item => item.id === id);
-      if (action === 'cancel' && (!job || !activeStatuses.has(job.status))) pending.delete(id);
-    }
     return render();
   }
 
@@ -137,26 +132,19 @@ export function mountNotificationCenter({ container, bridge = {}, onOpenMeeting,
     if (action === 'retry' && !canRetryProcessing(job)) return;
     if (action === 'ack' && !canAcknowledge(job)) return;
     if (action === 'cancel' && (!feedback.cancelVisible || feedback.cancelDisabled)) return;
-    const call = { open: onOpenMeeting, retry: method(onRetry, 'retryProcessing'), cancel: method(onCancel, 'cancelProcessing'), ack: method(onAcknowledge, 'acknowledgeProcessing') }[action];
-    if (!call) return;
-    pending.set(job.id, action);
+    if (!['open', 'retry', 'ack', 'cancel'].includes(action)) return;
+    // The owner reports pending job actions through snapshot.actions.
+    if (action === 'open') pending.set(job.id, action);
     errors.delete(job.id);
     render();
-    let succeeded = false;
-    try {
-      const progress = await call(action === 'open' ? job.meetingId : job.id);
-      succeeded = true;
-      if (disposed || !progress || action === 'open') return;
-      if (progress.revision != null && snapshot.processing.revision != null && progress.revision < snapshot.processing.revision) return;
-      await onAcceptProcessing?.(progress);
-      update({ processing: progress });
-    } catch (error) {
+    try { await (action === 'open' ? onOpenMeeting?.(job.meetingId) : onProcessingAction?.(action, job.id)); }
+    catch (error) {
       if (!disposed && rows().some(item => item.id === job.id)) {
         errors.set(job.id, error instanceof Error ? error.message : String(error));
         showError(error);
       }
     } finally {
-      if (action !== 'cancel' || !succeeded) pending.delete(job.id);
+      pending.delete(job.id);
       render(); onChanged();
     }
   }
