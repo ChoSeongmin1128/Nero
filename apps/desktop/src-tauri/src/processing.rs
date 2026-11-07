@@ -197,6 +197,24 @@ struct Pending {
     validate: Option<Box<dyn Fn() -> Result<(), String> + Send>>,
 }
 
+// A new job. Only `kind` is required. `source` binds a meeting job to the meeting's
+// current content; a retry also names the fingerprint its predecessor captured.
+#[derive(Default)]
+pub(super) struct JobSpec {
+    pub(super) kind: &'static str,
+    pub(super) meeting_id: Option<String>,
+    pub(super) source: Option<CoreHandle>,
+    pub(super) required_fingerprint: Option<String>,
+    // An import records the meetings that existed before it.
+    pub(super) importing: Option<CoreHandle>,
+    pub(super) include_summary: bool,
+    pub(super) template: Option<crate::summary_template::TemplateRef>,
+    pub(super) requested_id: Option<String>,
+    pub(super) engine: Option<SpeechEngine>,
+    pub(super) speaker_enabled: Option<bool>,
+    pub(super) apple_variant: Option<AppleVariant>,
+}
+
 fn model_job(kind: &str) -> bool {
     matches!(kind, "setup" | "model" | "summary-model" | "speaker-model")
 }
@@ -1933,133 +1951,40 @@ impl Processing {
         self.interrupted_jobs.lock().unwrap().insert(job.id.clone());
         true
     }
-    #[cfg(test)]
-    pub(super) fn start_meeting(
+    pub(super) fn start_job(
         self: &Arc<Self>,
-        kind: &str,
-        meeting_id: String,
-        core: &CoreHandle,
-        required_fingerprint: Option<String>,
+        spec: JobSpec,
         action: impl FnOnce(Arc<Self>, Arc<AtomicBool>, PathBuf) -> Result<Option<String>, String>
             + Send
             + 'static,
     ) -> Result<Progress, String> {
-        self.start_meeting_with_template(
+        let JobSpec {
             kind,
             meeting_id,
-            core,
+            source,
             required_fingerprint,
-            None,
-            None,
-            action,
-        )
-    }
-
-    pub(super) fn start_meeting_with_template(
-        self: &Arc<Self>,
-        kind: &str,
-        meeting_id: String,
-        core: &CoreHandle,
-        required_fingerprint: Option<String>,
-        template: Option<crate::summary_template::TemplateRef>,
-        requested_id: Option<String>,
-        action: impl FnOnce(Arc<Self>, Arc<AtomicBool>, PathBuf) -> Result<Option<String>, String>
-            + Send
-            + 'static,
-    ) -> Result<Progress, String> {
-        self.start_meeting_with_engine(
-            kind,
-            meeting_id,
-            core,
-            required_fingerprint,
-            template,
-            requested_id,
-            None,
-            None,
-            None,
-            action,
-        )
-    }
-    fn start_meeting_with_engine(
-        self: &Arc<Self>,
-        kind: &str,
-        meeting_id: String,
-        core: &CoreHandle,
-        required_fingerprint: Option<String>,
-        template: Option<crate::summary_template::TemplateRef>,
-        requested_id: Option<String>,
-        engine: Option<SpeechEngine>,
-        speaker_enabled: Option<bool>,
-        apple_variant: Option<AppleVariant>,
-        action: impl FnOnce(Arc<Self>, Arc<AtomicBool>, PathBuf) -> Result<Option<String>, String>
-            + Send
-            + 'static,
-    ) -> Result<Progress, String> {
-        let fingerprint = Self::source_fingerprint(core, &meeting_id, kind)?;
-        if required_fingerprint
-            .as_ref()
-            .is_some_and(|required| required != &fingerprint)
-        {
-            return Err("회의 내용이 변경되어 이전 작업을 다시 실행하지 않았습니다.".into());
-        }
-        self.start_scoped_with_engine(
-            kind,
-            Some(meeting_id),
-            None,
-            Some((core.clone(), fingerprint)),
-            false,
+            importing: importing_core,
+            include_summary,
             template,
             requested_id,
             engine,
             speaker_enabled,
             apple_variant,
-            action,
-        )
-    }
-
-    fn start_scoped(
-        self: &Arc<Self>,
-        kind: &str,
-        meeting_id: Option<String>,
-        importing_core: Option<CoreHandle>,
-        source: Option<(CoreHandle, String)>,
-        include_summary: bool,
-        template: Option<crate::summary_template::TemplateRef>,
-        requested_id: Option<String>,
-        action: impl FnOnce(Arc<Self>, Arc<AtomicBool>, PathBuf) -> Result<Option<String>, String>
-            + Send
-            + 'static,
-    ) -> Result<Progress, String> {
-        self.start_scoped_with_engine(
-            kind,
-            meeting_id,
-            importing_core,
-            source,
-            include_summary,
-            template,
-            requested_id,
-            None,
-            None,
-            None,
-            action,
-        )
-    }
-    fn start_scoped_with_engine(
-        self: &Arc<Self>,
-        kind: &str,
-        meeting_id: Option<String>,
-        importing_core: Option<CoreHandle>,
-        source: Option<(CoreHandle, String)>,
-        include_summary: bool,
-        template: Option<crate::summary_template::TemplateRef>,
-        requested_id: Option<String>,
-        engine: Option<SpeechEngine>,
-        speaker_enabled: Option<bool>,
-        apple_variant: Option<AppleVariant>,
-        action: impl FnOnce(Arc<Self>, Arc<AtomicBool>, PathBuf) -> Result<Option<String>, String>
-            + Send
-            + 'static,
-    ) -> Result<Progress, String> {
+        } = spec;
+        let source = match source {
+            Some(core) => {
+                let meeting = meeting_id.as_deref().ok_or("회의를 찾을 수 없습니다.")?;
+                let fingerprint = Self::source_fingerprint(&core, meeting, kind)?;
+                if required_fingerprint
+                    .as_ref()
+                    .is_some_and(|required| required != &fingerprint)
+                {
+                    return Err("회의 내용이 변경되어 이전 작업을 다시 실행하지 않았습니다.".into());
+                }
+                Some((core, fingerprint))
+            }
+            None => None,
+        };
         let mut running = self.running.lock().unwrap();
         if let Some((core, _)) = &source {
             self.synchronize_recording(core)?;
@@ -2357,17 +2282,16 @@ impl Processing {
                 0
             };
         crate::storage_space::check(&self.root, required)?;
-        self.start_scoped_with_engine(
-            "setup",
-            None,
-            None,
-            None,
-            include_summary,
-            None,
-            requested_id,
-            Some(engine),
-            Some(speaker_enabled),
-            apple_variant,
+        self.start_job(
+            JobSpec {
+                kind: "setup",
+                include_summary,
+                requested_id,
+                engine: Some(engine),
+                speaker_enabled: Some(speaker_enabled),
+                apple_variant,
+                ..JobSpec::default()
+            },
             move |this, cancel, path| {
                 let progress = this.snapshot();
                 let total = Self::speech_bytes(engine)
@@ -2426,7 +2350,7 @@ impl Processing {
     pub(super) fn prepare_named_model(
         self: &Arc<Self>,
         spec: ModelSpec,
-        kind: &str,
+        kind: &'static str,
     ) -> Result<Progress, String> {
         self.prepare_named_model_with_id(spec, kind, None)
     }
@@ -2434,21 +2358,19 @@ impl Processing {
     fn prepare_named_model_with_id(
         self: &Arc<Self>,
         spec: ModelSpec,
-        kind: &str,
+        kind: &'static str,
         requested_id: Option<String>,
     ) -> Result<Progress, String> {
         if kind == "summary-model" {
             crate::release_capabilities::require_local_summary()?;
         }
         crate::storage_space::check(&self.root, self.remaining_model_bytes(spec)?)?;
-        self.start_scoped(
-            kind,
-            None,
-            None,
-            None,
-            false,
-            None,
-            requested_id,
+        self.start_job(
+            JobSpec {
+                kind,
+                requested_id,
+                ..JobSpec::default()
+            },
             move |this, cancel, _path| {
                 this.prepare_files(spec, &cancel, 0, spec.model().bytes())?;
                 Ok(None)
@@ -2804,14 +2726,13 @@ impl Processing {
         target: Option<nero_core::DraftAttachmentTarget>,
         cleanup: Option<crate::drop_import::RemoveOnDrop>,
     ) -> Result<Progress, String> {
-        self.start_scoped(
-            "import",
-            target.as_ref().map(|target| target.meeting_id.clone()),
-            target.is_none().then(|| core.clone()),
-            None,
-            false,
-            None,
-            None,
+        self.start_job(
+            JobSpec {
+                kind: "import",
+                meeting_id: target.as_ref().map(|target| target.meeting_id.clone()),
+                importing: target.is_none().then(|| core.clone()),
+                ..JobSpec::default()
+            },
             move |this, cancel, path| {
                 let _cleanup = cleanup;
                 if let Some(target) = &target {
@@ -2972,17 +2893,18 @@ impl Processing {
             &meeting_id,
             inherited.as_ref(),
         )?;
-        let source_core = core.clone();
-        self.start_meeting_with_engine(
-            "transcribe",
-            meeting_id.clone(),
-            &source_core,
-            required_fingerprint,
-            None,
-            Some(job_id),
-            Some(engine),
-            Some(speaker_enabled),
-            apple_variant,
+        self.start_job(
+            JobSpec {
+                kind: "transcribe",
+                meeting_id: Some(meeting_id.clone()),
+                source: Some(core.clone()),
+                required_fingerprint,
+                requested_id: Some(job_id),
+                engine: Some(engine),
+                speaker_enabled: Some(speaker_enabled),
+                apple_variant,
+                ..JobSpec::default()
+            },
             move |this, cancel, path| {
                 if core.audio_path(&meeting_id).map_err(message)? != audio
                     || core
@@ -3424,17 +3346,12 @@ mod speech_choice_tests {
         let (started, begin) = std::sync::mpsc::channel();
         let (release, wait) = std::sync::mpsc::channel();
         let job = process
-            .start_scoped_with_engine(
-                "transcribe",
-                None,
-                None,
-                None,
-                false,
-                None,
-                None,
-                Some(SpeechEngine::WhisperTurbo),
-                None,
-                None,
+            .start_job(
+                JobSpec {
+                    kind: "transcribe",
+                    engine: Some(SpeechEngine::WhisperTurbo),
+                    ..JobSpec::default()
+                },
                 move |_, _, _| {
                     started.send(()).unwrap();
                     wait.recv_timeout(Duration::from_secs(5)).unwrap();

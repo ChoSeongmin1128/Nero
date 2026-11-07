@@ -674,11 +674,14 @@ fn retry_binding_rejects_changes_between_initial_check_and_new_input_capture() {
             vec!["검사 직후 사용자가 저장한 문장".into()],
         )
         .unwrap();
-    let result = process.start_meeting(
-        "transcribe",
-        id.clone(),
-        &core,
-        Some(original),
+    let result = process.start_job(
+        JobSpec {
+            kind: "transcribe",
+            meeting_id: Some(id.clone()),
+            source: Some(core.clone()),
+            required_fingerprint: Some(original),
+            ..JobSpec::default()
+        },
         |_, _, _| panic!("stale retry must not launch"),
     );
     assert!(result.err().unwrap().contains("회의 내용이 변경"));

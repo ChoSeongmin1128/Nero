@@ -1418,14 +1418,16 @@ impl Processing {
             return Err("요약할 음성 기록이 없습니다.".into());
         }
 
-        let source_core = core.clone();
-        self.start_meeting_with_template(
-            "summary",
-            meeting_id.clone(),
-            &source_core,
-            required_fingerprint,
-            selection.clone(),
-            requested_id,
+        self.start_job(
+            crate::processing::JobSpec {
+                kind: "summary",
+                meeting_id: Some(meeting_id.clone()),
+                source: Some(core.clone()),
+                required_fingerprint,
+                template: selection.clone(),
+                requested_id,
+                ..Default::default()
+            },
             move |process, cancel, path| {
                 let result = (|| -> SummaryResult<Option<String>> {
                     if let Some(value) = &selection {

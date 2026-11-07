@@ -1,8 +1,8 @@
 //! Optional whole-recording speaker analysis. It never treats ASR-local tags as identities.
 use crate::processing::native_speech::{self, executable, library, Backend};
 use crate::processing::{
-    cancelled, directory, plain_file, verify_model_files, Model, ModelSpec, ModelStage, Processing,
-    Progress,
+    cancelled, directory, plain_file, verify_model_files, JobSpec, Model, ModelSpec, ModelStage,
+    Processing, Progress,
 };
 use crate::speech_audio::AnalysisAudio;
 use crate::summary_failure::{Failure, FailureKind};
@@ -452,14 +452,15 @@ impl Processing {
         if !availability(self).1 {
             return Err("먼저 화자 구분 모델을 준비해 주세요.".into());
         }
-        let source_core = core.clone();
-        self.start_meeting_with_template(
-            "diarize",
-            meeting_id.clone(),
-            &source_core,
-            required_fingerprint,
-            None,
-            requested_id,
+        self.start_job(
+            JobSpec {
+                kind: "diarize",
+                meeting_id: Some(meeting_id.clone()),
+                source: Some(core.clone()),
+                required_fingerprint,
+                requested_id,
+                ..JobSpec::default()
+            },
             move |this, cancel, path| {
                 let result = analyze_recording(
                     &this,
