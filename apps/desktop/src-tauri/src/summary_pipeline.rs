@@ -789,20 +789,25 @@ async fn write_template_sections(
     Ok(output)
 }
 fn render_template(sections: &[(String, Vec<TemplatePoint>)]) -> String {
-    let mut headings: Vec<_> = sections
-        .iter()
-        .flat_map(|(_, points)| points.iter().map(|item| (item.order, item.heading.clone())))
+    // Each agenda is written on its own, so the same heading can come back with a
+    // different order; it is one section, placed by its earliest order.
+    let mut first_order = std::collections::BTreeMap::new();
+    for item in sections.iter().flat_map(|(_, points)| points) {
+        let order = first_order
+            .entry(item.heading.clone())
+            .or_insert(item.order);
+        *order = (*order).min(item.order);
+    }
+    let mut headings: Vec<_> = first_order
+        .into_iter()
+        .map(|(heading, order)| (order, heading))
         .collect();
     headings.sort();
-    headings.dedup();
     let mut text = String::new();
-    for (order, heading) in headings {
+    for (_, heading) in headings {
         text.push_str(&format!("## {heading}\n\n"));
         for (title, points) in sections {
-            let selected: Vec<_> = points
-                .iter()
-                .filter(|p| p.order == order && p.heading == heading)
-                .collect();
+            let selected: Vec<_> = points.iter().filter(|p| p.heading == heading).collect();
             if selected.is_empty() {
                 continue;
             }
@@ -1042,5 +1047,17 @@ mod template_contract_tests {
         assert!(output.contains("## 다음 확인"));
         assert_eq!(output.matches("[2]").count(), 2);
         assert!(output.contains("### 안건1") && output.contains("### 안건2"));
+        let again = template_section_from_output(
+            r#"{"1":{"heading":"핵심 발견","order":3,"text":"다른 안건의 발견"}}"#,
+            &facts,
+        )
+        .unwrap();
+        let second = template_section_from_output(
+            r#"{"1":{"heading":"핵심 발견","order":1,"text":"확인한 발견"}}"#,
+            &facts,
+        )
+        .unwrap();
+        let output = render_template(&[("안건1".into(), second), ("안건2".into(), again)]);
+        assert_eq!(output.matches("## 핵심 발견").count(), 1);
     }
 }
