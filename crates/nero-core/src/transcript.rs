@@ -654,6 +654,26 @@ struct TranscriptUpgradeEvidence {
 }
 
 impl Engine {
+    // Raw speaker output, its probabilities when present, then the run record last.
+    fn write_speaker_receipts(
+        &self,
+        directory: &Path,
+        evidence: &crate::diarization::SpeakerAnalysisEvidence,
+        run: serde_json::Value,
+    ) -> Result<()> {
+        let receipts = directory.join("speaker-analysis").join(&evidence.run_id);
+        store::ensure_directory(&store::checked_path(&self.store.root, &receipts)?)?;
+        immutable_bytes(&self.store.root, &receipts.join("raw.json"), &evidence.raw)?;
+        if let Some(posterior) = &evidence.posterior {
+            immutable_bytes(
+                &self.store.root,
+                &receipts.join("posterior.f32le"),
+                posterior,
+            )?;
+        }
+        immutable_json(&self.store.root, &receipts.join("run.json"), &run)
+    }
+
     pub fn import_audio(
         &mut self,
         title: String,
@@ -1514,21 +1534,14 @@ impl Engine {
                 "initial.json".into()
             };
             let evidence = generation.evidence;
-            let receipts = directory.join("speaker-analysis").join(&evidence.run_id);
-            store::ensure_directory(&store::checked_path(&self.store.root, &receipts)?)?;
-            immutable_bytes(&self.store.root, &receipts.join("raw.json"), &evidence.raw)?;
-            immutable_bytes(
-                &self.store.root,
-                &receipts.join("posterior.f32le"),
-                evidence
-                    .posterior
-                    .as_deref()
-                    .ok_or_else(|| CoreError::InvalidState("화자 확률 원본이 없습니다.".into()))?,
-            )?;
-            immutable_json(
-                &self.store.root,
-                &receipts.join("run.json"),
-                &serde_json::json!({
+            if evidence.posterior.is_none() {
+                return Err(CoreError::InvalidState("화자 확률 원본이 없습니다.".into()));
+            }
+            // The meeting pointer is replaced after this, so there is no current hash yet.
+            self.write_speaker_receipts(
+                &directory,
+                &evidence,
+                serde_json::json!({
                     "status":"prepared","beforeVersion":before,"afterVersion":generation.current.version,
                     "afterPath":after_path,"provenance":evidence.document
                 }),
@@ -1722,20 +1735,10 @@ impl Engine {
             )?;
         }
         if let Some(evidence) = speaker_analysis {
-            let receipts = directory.join("speaker-analysis").join(&evidence.run_id);
-            store::ensure_directory(&store::checked_path(&self.store.root, &receipts)?)?;
-            immutable_bytes(&self.store.root, &receipts.join("raw.json"), &evidence.raw)?;
-            if let Some(posterior) = &evidence.posterior {
-                immutable_bytes(
-                    &self.store.root,
-                    &receipts.join("posterior.f32le"),
-                    posterior,
-                )?;
-            }
-            immutable_json(
-                &self.store.root,
-                &receipts.join("run.json"),
-                &serde_json::json!({
+            self.write_speaker_receipts(
+                &directory,
+                &evidence,
+                serde_json::json!({
                     "status":"prepared","beforeVersion":before_version,"afterVersion":doc.version,
                     "afterCurrentSha256":sha256(&after),"afterPath":edit_name,"provenance":evidence.document
                 }),
