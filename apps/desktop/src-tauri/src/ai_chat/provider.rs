@@ -228,6 +228,8 @@ fn stream_failure(provider: &str, event: &Value) -> String {
     let code = safe_code(
         event["error"]["code"]
             .as_str()
+            // A streaming `error` event carries its code at the top level.
+            .or_else(|| event["code"].as_str())
             .or_else(|| event["error"]["type"].as_str())
             .or_else(|| event["response"]["incomplete_details"]["reason"].as_str())
             .or_else(|| event["response"]["error"]["code"].as_str()),
@@ -558,6 +560,14 @@ async fn wait_cancel(cancel: &AtomicBool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_streaming_error_event_is_read_by_its_top_level_code() {
+        let event = serde_json::json!({"type":"error","code":"rate_limit_exceeded","message":"x"});
+        assert_eq!(
+            stream_failure("chatgpt", &event),
+            "AI 서비스가 요청을 제한했습니다. 잠시 후 다시 시도해 주세요."
+        );
+    }
     fn decode(provider: &str, bytes: &[u8]) -> Result<String, String> {
         let mut wire = Wire::default();
         let mut events = Events::default();
