@@ -77,8 +77,9 @@ analysis WAV and ASR hashes as soon as the synchronized ASR artifact is announce
 The ordinary job checkpoints canonical text before waiting for speaker completion,
 then uses the existing terminology and speaker continuation paths. An explicit
 retry after restart can recover a source/session/hash-matched ASR artifact without
-replaying ASR; a different model, changed or unrelated artifacts are not reused. Speaker retry does not
-rerun saved ASR. Final word times and speaker assignments are projected after EOF.
+replaying ASR; a different model, changed or unrelated artifacts are not reused. Once the
+job saves its baseline transcript, no retry needs the live analysis WAV and it is removed
+when the job ends. Speaker retry does not rerun saved ASR. Final word times and speaker assignments are projected after EOF.
 
 Final publication retains source/CAS checks, canonical words, revision history and
 manual corrections. Nemotron live artifacts use `whole-recording-stateful-live-v1` with

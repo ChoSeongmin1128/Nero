@@ -184,6 +184,27 @@ fn recorded_float_audio_is_prepared_once_and_bound_to_its_source() {
     );
 }
 
+#[test]
+fn a_converted_copy_is_removed_with_its_analysis_and_the_source_stays() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let process = Processing::new(root.join("library"), root.join("absent-resources"));
+    let cancel = AtomicBool::new(false);
+    let work = root.join("job");
+    fs::create_dir(&work).unwrap();
+    let recorded = root.join("recorded.wav");
+    wav(&recorded, 48000, true, 480);
+    let converted = AnalysisAudio::prepare(&process, &recorded, &work, &cancel).unwrap();
+    assert!(work.join("analysis.wav").is_file());
+    drop(converted);
+    assert!(!work.join("analysis.wav").exists());
+    assert!(recorded.is_file());
+    let normalized = root.join("normalized.wav");
+    wav(&normalized, 16000, false, 160);
+    drop(AnalysisAudio::prepare(&process, &normalized, &work, &cancel).unwrap());
+    assert!(normalized.is_file());
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn source_changes_and_non_normalized_converter_output_are_rejected() {

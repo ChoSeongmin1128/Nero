@@ -400,6 +400,12 @@ pub(super) fn directory(root: &Path, relative: &str) -> Result<PathBuf, String> 
     }
     Ok(path)
 }
+// A request refused before its first journal record leaves no job folder behind.
+fn discard_unrecorded(job: &Path) {
+    if !job.join("job-state").exists() {
+        let _ = fs::remove_dir_all(job);
+    }
+}
 pub(super) fn plain_file(path: &Path) -> Result<File, String> {
     let meta = fs::symlink_metadata(path).map_err(message)?;
     if !meta.is_file() || meta.file_type().is_symlink() {
@@ -2900,7 +2906,8 @@ impl Processing {
             &job_path,
             &meeting_id,
             inherited.as_ref(),
-        )?;
+        )
+        .inspect_err(|_| discard_unrecorded(&job_path))?;
         self.start_job(
             JobSpec {
                 kind: "transcribe",
@@ -3080,6 +3087,10 @@ impl Processing {
                         }
                     },
                 )?;
+                // Once the baseline is saved, no retry reads the live analysis WAV again.
+                let _live_audio = live
+                    .as_ref()
+                    .and_then(|live| tempfile::TempPath::try_from_path(&live.audio).ok());
                 this.update(|p| p.live_transcript = None);
                 this.wait_live(&meeting_id, &session_id, &cancel)?;
                 crate::terminology::correct(
@@ -3134,6 +3145,7 @@ impl Processing {
                 Ok(Some(meeting_id))
             },
         )
+        .inspect_err(|_| discard_unrecorded(&job_path))
     }
 
     fn bind_speaker_continuation(
@@ -3833,6 +3845,38 @@ mod tests {
             let reopened = Processing::new(process.root.clone(), process.resources.clone());
             *reopened.platform_supported_override.lock().unwrap() = Some(true);
             assert_eq!(reopened.snapshot().speech_offer, None);
+        }
+
+        #[test]
+        fn a_refused_transcription_leaves_no_job_folder() {
+            let (_temporary, process) = qwen_device();
+            if !process.supported_for(SpeechEngine::Nemotron) {
+                return;
+            }
+            ready(&process, SpeechEngine::Nemotron);
+            let core = CoreHandle::open(&process.root).unwrap();
+            let input = process.root.join("synthetic.wav");
+            let spec = hound::WavSpec {
+                channels: 1,
+                sample_rate: 16000,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            };
+            let mut wav = hound::WavWriter::create(&input, spec).unwrap();
+            for _ in 0..1600 {
+                wav.write_sample(0_i16).unwrap();
+            }
+            wav.finalize().unwrap();
+            let meeting = core.import_audio("Synthetic", &input, &input).unwrap();
+            let jobs = || {
+                fs::read_dir(process.root.join("processing"))
+                    .map(|entries| entries.count())
+                    .unwrap_or(0)
+            };
+            let before = jobs();
+            process.shutting_down.store(true, Ordering::Release);
+            assert!(process.transcribe(core.clone(), meeting.id).is_err());
+            assert_eq!(jobs(), before);
         }
     }
 

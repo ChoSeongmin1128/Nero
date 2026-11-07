@@ -54,6 +54,8 @@ pub(super) struct AnalysisAudio {
     path: PathBuf,
     frames: u64,
     sha256: String,
+    // A converted copy is derived from the source and is removed with this value.
+    _converted: Option<tempfile::TempPath>,
 }
 
 impl AnalysisAudio {
@@ -68,6 +70,7 @@ impl AnalysisAudio {
             path: path.to_owned(),
             frames: native_frames(path, cancel)?,
             sha256: digest_cancellable(path, cancel)?,
+            _converted: None,
         };
         prepared.verify(source, cancel)?;
         Ok(prepared)
@@ -80,14 +83,22 @@ impl AnalysisAudio {
     ) -> Result<Self, Failure> {
         check_cancel(cancel)?;
         let source_sha256 = digest_cancellable(source, cancel)?;
-        let (path, frames) = match native_frames(source, cancel) {
-            Ok(frames) => (source.to_path_buf(), frames),
+        let (path, frames, converted) = match native_frames(source, cancel) {
+            Ok(frames) => (source.to_path_buf(), frames, None),
             Err(error) if error.kind == FailureKind::Cancelled => return Err(error),
             Err(_) => {
                 let path = work.join("analysis.wav");
+                if path
+                    .try_exists()
+                    .map_err(|_| failure(FailureKind::Storage))?
+                {
+                    return Err(failure(FailureKind::Storage));
+                }
+                let converted = tempfile::TempPath::try_from_path(&path)
+                    .map_err(|_| failure(FailureKind::Storage))?;
                 platform::prepare(process, source, &path, work, cancel)?;
                 let frames = native_frames(&path, cancel)?;
-                (path, frames)
+                (path, frames, Some(converted))
             }
         };
         let sha256 = digest_cancellable(&path, cancel)?;
@@ -97,6 +108,7 @@ impl AnalysisAudio {
             path,
             frames,
             sha256,
+            _converted: converted,
         };
         prepared.verify(source, cancel)?;
         Ok(prepared)
