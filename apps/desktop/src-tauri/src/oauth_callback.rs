@@ -6,13 +6,16 @@ use std::time::{Duration, Instant};
 // How long a loopback listener waits for the browser once sign-in opens.
 pub const CALLBACK_WINDOW: Duration = Duration::from_secs(180);
 
-// One HTTP request head of at most 8 KiB, read until `deadline` or `cancelled()`.
+// Browsers send every cookie set for the loopback host, so the head can be large.
+const MAX_REQUEST_HEAD: usize = 32 * 1024;
+
+// One HTTP request head of at most 32 KiB, read until `deadline` or `cancelled()`.
 pub fn read_request(
     stream: &mut TcpStream,
     deadline: Instant,
     cancelled: impl Fn() -> bool,
 ) -> Option<String> {
-    let mut buffer = [0u8; 8192];
+    let mut buffer = vec![0u8; MAX_REQUEST_HEAD];
     let mut count = 0;
     while count < buffer.len() {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -48,6 +51,16 @@ pub fn read_request(
                 .map(str::to_owned);
         }
     }
+    // Answer instead of leaving the browser on an empty page until sign-in times out.
+    let _ = stream.write_all(
+        "HTTP/1.1 431 Request Header Fields Too Large\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n브라우저가 보낸 요청이 너무 큽니다. 127.0.0.1 주소의 쿠키를 지운 뒤 Nero에서 다시 로그인해 주세요."
+            .as_bytes(),
+    );
+    // Closing with unread input resets the connection and can discard the answer.
+    let _ = stream.shutdown(std::net::Shutdown::Write);
+    let until = Instant::now() + Duration::from_millis(200);
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(50)));
+    while Instant::now() < until && matches!(stream.read(&mut buffer), Ok(read) if read > 0) {}
     None
 }
 
@@ -219,6 +232,27 @@ mod tests {
         let mut bytes = String::new();
         browser.read_to_string(&mut bytes).unwrap();
         bytes
+    }
+
+    #[test]
+    fn a_large_request_head_is_read_and_an_oversized_one_is_answered() {
+        let (mut browser, mut server) = sockets();
+        let cookie = "a".repeat(9 * 1024);
+        browser
+            .write_all(format!("GET /callback HTTP/1.1\r\nCookie: {cookie}\r\n\r\n").as_bytes())
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        assert!(read_request(&mut server, deadline, || false).is_some());
+        let (mut browser, mut server) = sockets();
+        let cookie = "a".repeat(MAX_REQUEST_HEAD);
+        browser
+            .write_all(format!("GET /callback HTTP/1.1\r\nCookie: {cookie}").as_bytes())
+            .unwrap();
+        assert!(read_request(&mut server, deadline, || false).is_none());
+        drop(server);
+        let mut answer = String::new();
+        browser.read_to_string(&mut answer).unwrap();
+        assert!(answer.starts_with("HTTP/1.1 431"));
     }
 
     #[test]
