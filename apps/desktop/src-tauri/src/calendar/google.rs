@@ -367,7 +367,8 @@ where
     for _ in 0..MAX_PAGES {
         let page = fetch(page_token).await?;
         for raw in items(&page)? {
-            if let Some((updated, event)) = normalize(account, calendar, raw)? {
+            // One malformed event is left out instead of failing every calendar's sync.
+            if let Ok(Some((updated, event))) = normalize(account, calendar, raw) {
                 if event.end_at > start_at && event.start_at < end_at {
                     events.push((updated, event));
                 }
@@ -430,8 +431,12 @@ pub(super) fn normalize(
     if end <= start {
         return Err(invalid());
     }
+    // An all-day series keeps only a date as each instance's original start.
     let original = if raw["recurringEventId"].is_string() {
-        event_time(&raw["originalStartTime"])?.to_string()
+        match raw["originalStartTime"]["date"].as_str() {
+            Some(date) => date.to_owned(),
+            None => event_time(&raw["originalStartTime"])?.to_string(),
+        }
     } else {
         String::new()
     };
@@ -659,6 +664,30 @@ mod tests {
         }));
         assert!(result.is_err());
         assert_eq!(pages, MAX_PAGES);
+    }
+
+    #[test]
+    fn one_malformed_event_is_left_out_instead_of_failing_the_sync() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let mut zero_length = event();
+        zero_length["id"] = json!("zero");
+        zero_length["iCalUID"] = json!("zero-uid");
+        zero_length["end"] = zero_length["start"].clone();
+        let mut all_day_series = event();
+        all_day_series["id"] = json!("series-instance");
+        all_day_series["iCalUID"] = json!("series-uid");
+        all_day_series["recurringEventId"] = json!("series");
+        all_day_series["originalStartTime"] = json!({"date": "2026-11-01"});
+        let page = json!({"items": [zero_length, all_day_series, event()]});
+        let events = runtime
+            .block_on(event_pages("account", &calendar(), 1, u64::MAX, |_| {
+                let page = page.clone();
+                async move { Ok(page) }
+            }))
+            .unwrap();
+        assert_eq!(events.len(), 2);
     }
 
     #[test]

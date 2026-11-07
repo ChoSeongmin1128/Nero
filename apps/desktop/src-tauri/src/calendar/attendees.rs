@@ -286,7 +286,7 @@ async fn calendar_event(
                 .append_pair("fields", CALENDAR_FIELDS);
             let page = google::get(client, token, url).await?;
             for raw in google::items(&page)? {
-                let Some((updated, event)) = google::normalize(account, calendar, raw)? else {
+                let Ok(Some((updated, event))) = google::normalize(account, calendar, raw) else {
                     continue;
                 };
                 if event.key != reference.occurrence_key {
