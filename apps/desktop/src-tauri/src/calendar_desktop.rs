@@ -545,7 +545,7 @@ pub async fn start_calendar_recording(
         return Err("진행 중인 녹음을 마친 뒤 시작해 주세요.".into());
     }
     // A click never acts on cached event text, a cancelled event, or a partial sync.
-    service.sync_now().await?;
+    service.sync_after(calendar::now_ms()).await?;
     service.tick(calendar::now_ms(), false)?;
     let ticket = service.reminder_ticket(&key, calendar::now_ms())?;
     let existing_core = state.core.clone();

@@ -43,6 +43,7 @@ pub struct CalendarSnapshot {
     pub error: Option<String>,
 }
 
+const SYNC_BUSY: &str = "일정을 새로고침하고 있습니다. 잠시 후 다시 시도해 주세요.";
 const KEYCHAIN_BLOCKED: &str =
     "저장된 Google 연결에 접근할 수 없습니다. 다시 시도해 접근을 허용하거나 다시 연결해 주세요.";
 
@@ -535,9 +536,35 @@ impl CalendarService {
                     .last_synced_at
                     .is_none_or(|last| now < last || now.saturating_sub(last) >= SYNC_INTERVAL_MS))
     }
+    /// A sync for an action taken at `since`: waits for a running background sync
+    /// instead of failing, and reuses it when it finished after `since`.
+    pub async fn sync_after(&self, since: u64) -> Result<CalendarSnapshot, String> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        loop {
+            if !self.syncing.load(Ordering::Acquire) {
+                let current = {
+                    let inner = self.inner.lock().unwrap();
+                    inner.error.is_none()
+                        && !inner.needs_sync
+                        && inner.state.last_synced_at.is_some_and(|last| last >= since)
+                };
+                if current {
+                    return Ok(self.snapshot());
+                }
+                match self.sync_now().await {
+                    Err(message) if message == SYNC_BUSY => {}
+                    result => return result,
+                }
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(SYNC_BUSY.into());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
     pub async fn sync_now(&self) -> Result<CalendarSnapshot, String> {
         if self.syncing.swap(true, Ordering::AcqRel) {
-            return Err("일정을 새로고침하고 있습니다. 잠시 후 다시 시도해 주세요.".into());
+            return Err(SYNC_BUSY.into());
         }
         let _guard = SyncGuard(&self.syncing);
         let generation = self.generation.load(Ordering::Acquire);
@@ -1516,6 +1543,32 @@ mod tests {
         assert!(service.inner.lock().unwrap().needs_sync);
         assert!(service.tick(900_000, false).unwrap().is_empty());
         assert!(service.inner.lock().unwrap().needs_sync);
+    }
+    #[test]
+    fn a_click_during_a_background_sync_waits_for_it_and_reuses_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = Arc::new(CalendarService::new(temp.path().into()).unwrap());
+        service.syncing.store(true, Ordering::Release);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let background = service.clone();
+        let result = runtime.block_on(async move {
+            let finish = tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                {
+                    let mut inner = background.inner.lock().unwrap();
+                    inner.needs_sync = false;
+                    inner.state.last_synced_at = Some(2_000);
+                }
+                background.syncing.store(false, Ordering::Release);
+            });
+            let result = service.sync_after(1_000).await;
+            finish.await.unwrap();
+            result
+        });
+        assert!(result.is_ok());
     }
     #[test]
     fn a_failed_sync_keeps_a_reminder_already_on_screen() {
