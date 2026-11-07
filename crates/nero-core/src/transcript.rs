@@ -1375,10 +1375,12 @@ impl Engine {
                 "녹음 전체를 한 번에 처리하는 실행기가 필요합니다. 새 원문 결과는 보관했으며 현재 음성 기록은 변경하지 않았습니다.".into(),
             ));
         }
-        if self.transcript(id)?.map(|d| d.version) != expected {
-            return Err(CoreError::InvalidState("전사가 변경되어 새 결과를 적용하지 않았습니다. 기존 수정과 새 원문 결과는 보관했습니다.".into()));
-        }
+        // Written before the check, so a result refused because the transcript changed
+        // meanwhile is a complete generation in the history and can be restored there.
         store::write_json(&self.store.root, &directory.join("current.json"), &document)?;
+        if self.transcript(id)?.map(|d| d.version) != expected {
+            return Err(CoreError::InvalidState("전사가 변경되어 새 결과를 적용하지 않았습니다. 기존 수정은 그대로 두었고, 새 결과는 이전 기록에서 복원할 수 있습니다.".into()));
+        }
         stored.meeting.transcript_id = Some(transcript_id);
         stored.meeting.updated_at = store::now();
         self.commit_meeting(stored)?;
@@ -2340,12 +2342,18 @@ pub(crate) mod tests {
         let retained_candidate = std::fs::read_dir(parent)
             .unwrap()
             .map(|entry| entry.unwrap().path())
-            .any(|path| {
-                !path.join("current.json").exists()
-                    && path.join("initial.json").is_file()
+            .find(|path| {
+                path.join("initial.json").is_file()
                     && std::fs::read(path.join("raw.json")).unwrap() == candidate_raw
-            });
-        assert!(retained_candidate);
+            })
+            .unwrap();
+        // The refused result is a complete generation the history offers to restore.
+        let candidate_id = retained_candidate.file_name().unwrap().to_str().unwrap();
+        let history = engine.transcript_history(&id).unwrap();
+        assert!(history
+            .entries
+            .iter()
+            .any(|entry| entry.version.id == candidate_id && !entry.current));
     }
     #[test]
     fn incomplete_malformed_and_wrong_audio_outputs_do_not_replace_transcript() {

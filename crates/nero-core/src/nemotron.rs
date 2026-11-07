@@ -1283,7 +1283,10 @@ pub(crate) mod tests {
             .join(&id)
             .join("transcripts");
         assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 3);
-        assert_eq!(engine.transcript_history(&id).unwrap().unavailable, 2);
+        // The stale result is a restorable generation; only the invalid raw is not.
+        let history = engine.transcript_history(&id).unwrap();
+        assert_eq!(history.unavailable, 1);
+        assert_eq!(history.entries.len(), 2);
     }
 
     #[test]
