@@ -325,8 +325,12 @@ fn location(id: &str) -> Result<PathBuf> {
 }
 
 fn validate_import_references(text: &str, count: usize) -> Result<()> {
-    for part in text.split('[').skip(1) {
-        let Some((reference, _)) = part.split_once(']') else {
+    for (at, _) in text.match_indices('[') {
+        // "\[2024]" is literal text, as in the summary renderer.
+        if crate::presentation::escaped(text.as_bytes(), at) {
+            continue;
+        }
+        let Some((reference, _)) = text[at + 1..].split_once(']') else {
             continue;
         };
         if reference.is_empty()
@@ -650,6 +654,14 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn escaped_brackets_in_an_imported_summary_are_not_references() {
+        assert!(validate_import_references(r"연도 \[2024] 근거 [2]", 2).is_ok());
+        assert!(validate_import_references("연도 [2024] 근거 [2]", 2).is_err());
+        assert!(validate_import_references(r"\\[2024]", 2).is_err());
+        assert!(validate_import_references("할 일 [ ] 메모 [a [1]", 1).is_ok());
+    }
     use crate::transcript::tests::{output, setup};
 
     #[test]

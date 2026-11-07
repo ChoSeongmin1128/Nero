@@ -51,7 +51,8 @@
   function minutes(sections) {
     return `<article class="minutes-document">${sections.map(({ title, text, emptyText = "작성된 내용이 없습니다." }) => `<section><h3>${escape(title)}</h3><div class="minutes-text">${String(text || "").trim() ? escape(text) : `<span class="muted">${escape(emptyText)}</span>`}</div></section>`).join("")}</article>`;
   }
-  function summaryDocument(value, { searchQuery = "", streaming = false } = {}) {
+  // `citable`: when given, only groups whose numbers are all in it become citations.
+  function summaryDocument(value, { searchQuery = "", streaming = false, citable = null } = {}) {
     const parser = root.NeroMarkdown;
     if (!parser?.parse) throw new Error("Markdown parser is not loaded.");
     const headings = new Set(["회의 요약", "요약", "주요 내용", "논의 내용", "논의 사항", "결정 사항", "결정사항", "합의 사항", "다음 작업", "후속 작업", "할 일", "할일", "액션 아이템", "미결 사항", "확인 필요", "참고 사항"]);
@@ -77,7 +78,7 @@
           }
           if (!valid) break;
         }
-        if (!valid || !refs.length) continue;
+        if (!valid || !refs.length || (citable && !refs.every(number => citable.includes(number)))) continue;
         const previous = tokens.at(-1), gap = text.slice(cursor, match.index);
         const merged = previous?.references ? [...new Set([...previous.references, ...refs])] : [];
         if (previous?.references && /^[ \t]*$/.test(gap) && merged.length <= 32) {

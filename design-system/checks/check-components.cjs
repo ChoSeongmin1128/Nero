@@ -117,6 +117,14 @@ test('summary evidence preserves frozen references without consulting current so
   assert.doesNotMatch(code, /<button|<h3>/);
 });
 
+test('an AI answer cites only its attached sources and keeps other bracketed numbers as text', () => {
+  const html = UI.summaryDocument('근거 [1] 연도 [2024] 범위 [1-2] 저장 \\[1]', { citable: [1] });
+  assert.equal((html.match(/data-summary-citations=/g) || []).length, 1);
+  assert.match(html, /data-summary-citations="1"/);
+  assert.match(html, /\[2024\]/);
+  assert.match(html, /\[1-2\]/);
+});
+
 test('summary groups adjacent comma and bounded range citations without altering identifiers', () => {
   const html = UI.summaryDocument('내용 [1] [2, 3] [3-5] 뒤 [7]');
   assert.equal((html.match(/<button/g) || []).length, 2);

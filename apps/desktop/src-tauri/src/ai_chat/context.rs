@@ -362,7 +362,11 @@ pub fn prepare(
     })
 }
 
-fn reference_groups(text: &str) -> Result<Vec<(std::ops::Range<usize>, Vec<usize>)>, String> {
+// Bracketed number groups outside code and links, with their references when the
+// group is well formed ([3], [1, 2-4]); None for text such as [ ], [40-80] or [0].
+type ReferenceGroup = (std::ops::Range<usize>, Option<Vec<usize>>);
+
+fn reference_groups(text: &str) -> Vec<ReferenceGroup> {
     let bytes = text.as_bytes();
     let mut code_ranges = Vec::new();
     let mut offset = 0;
@@ -427,86 +431,98 @@ fn reference_groups(text: &str) -> Result<Vec<(std::ops::Range<usize>, Vec<usize
             index = end + 1;
             continue;
         }
-        let mut numbers = Vec::new();
-        for part in text[start + 1..end].split(',') {
-            let values = part.trim().split('-').map(str::trim).collect::<Vec<_>>();
-            if values.is_empty()
-                || values.len() > 2
-                || values.iter().any(|value| {
-                    value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit())
-                })
-            {
-                return Err("AI의 인용 형식을 확인하지 못했습니다.".into());
-            }
-            let first = values[0]
-                .parse::<usize>()
-                .map_err(|_| "AI의 인용을 확인하지 못했습니다.")?;
-            let last = values
-                .last()
-                .unwrap()
-                .parse::<usize>()
-                .map_err(|_| "AI의 인용을 확인하지 못했습니다.")?;
-            if first == 0 || last < first || last - first >= 32 {
-                return Err("AI의 인용 범위를 확인하지 못했습니다.".into());
-            }
-            for number in first..=last {
-                if !numbers.contains(&number) {
-                    numbers.push(number);
-                }
-                if numbers.len() > 32 {
-                    return Err("AI의 인용 범위를 확인하지 못했습니다.".into());
-                }
-            }
-        }
-        groups.push((start..end + 1, numbers));
+        groups.push((start..end + 1, group_references(&text[start + 1..end])));
         index = end + 1;
     }
-    Ok(groups)
+    groups
 }
-pub fn cited(text: &str, allowed: &[Citation]) -> Result<Vec<Citation>, String> {
-    let mut used = std::collections::BTreeSet::new();
-    for (_, numbers) in reference_groups(text)? {
-        for number in numbers {
-            if !allowed.iter().any(|item| item.reference == number) {
-                return Err("AI가 자료에 없는 인용을 만들었습니다. 다시 시도해 주세요.".into());
+
+fn group_references(inner: &str) -> Option<Vec<usize>> {
+    let mut numbers = Vec::new();
+    for part in inner.split(',') {
+        let values = part.trim().split('-').map(str::trim).collect::<Vec<_>>();
+        if values.len() > 2 {
+            return None;
+        }
+        let first = values[0].parse::<usize>().ok()?;
+        let last = values.last()?.parse::<usize>().ok()?;
+        if first == 0 || last < first || last - first >= 32 {
+            return None;
+        }
+        for number in first..=last {
+            if !numbers.contains(&number) {
+                numbers.push(number);
             }
-            used.insert(number);
         }
     }
-    Ok(allowed
+    (numbers.len() <= 32).then_some(numbers)
+}
+
+// A group cites only when every number is a source attached to this answer.
+// Anything else ([2024], [ ], a number the model invented) stays plain text.
+fn citing<'a>(group: &'a ReferenceGroup, allowed: &[Citation]) -> Option<&'a Vec<usize>> {
+    group.1.as_ref().filter(|numbers| {
+        numbers
+            .iter()
+            .all(|number| allowed.iter().any(|item| item.reference == *number))
+    })
+}
+
+pub fn cited(text: &str, allowed: &[Citation]) -> Vec<Citation> {
+    let used = reference_groups(text)
+        .iter()
+        .filter_map(|group| citing(group, allowed))
+        .flatten()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    allowed
         .iter()
         .filter(|item| used.contains(&item.reference))
         .cloned()
-        .collect())
+        .collect()
 }
-pub fn summary_text(text: &str, citations: &[Citation]) -> String {
+
+// Replaces each citation with `render(numbers)` and escapes bracketed numbers that
+// are not citations, so a saved summary or note never reads them as transcript rows.
+fn rewrite_citations(
+    text: &str,
+    citations: &[Citation],
+    render: impl Fn(&[usize]) -> String,
+) -> String {
     let mut result = text.to_owned();
-    if let Ok(groups) = reference_groups(text) {
-        for (range, numbers) in groups.into_iter().rev() {
-            let rendered = numbers
-                .into_iter()
-                .map(|number| {
-                    if let Some(citation) = citations
-                        .iter()
-                        .find(|item| item.reference == number && item.kind == "notion")
-                    {
-                        citation
-                            .url
-                            .as_ref()
-                            .map(|url| {
-                                format!("[{}]({})", citation.label.replace(['[', ']'], ""), url)
-                            })
-                            .unwrap_or_default()
-                    } else {
-                        format!("[{number}]")
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(" ");
-            result.replace_range(range, &rendered);
+    for group in reference_groups(text).iter().rev() {
+        match citing(group, citations) {
+            Some(numbers) => result.replace_range(group.0.clone(), &render(numbers)),
+            None => result.insert(group.0.start, '\\'),
         }
     }
     result
+}
+
+fn notion_link(citation: &Citation) -> String {
+    citation
+        .url
+        .as_ref()
+        .map(|url| format!("[{}]({url})", citation.label.replace(['[', ']'], "")))
+        .unwrap_or_default()
+}
+
+pub fn summary_text(text: &str, citations: &[Citation]) -> String {
+    rewrite_citations(text, citations, |numbers| {
+        numbers
+            .iter()
+            .map(|&number| {
+                match citations
+                    .iter()
+                    .find(|item| item.reference == number && item.kind == "notion")
+                {
+                    Some(citation) => notion_link(citation),
+                    None => format!("[{number}]"),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    })
 }
 pub fn producer(provider: &str, model: &str, template: Option<String>) -> ExternalSummaryProducer {
     ExternalSummaryProducer {
@@ -533,12 +549,10 @@ mod tests {
             url: None,
             source_id: None,
         }];
-        assert_eq!(cited("확인 [1]", &allowed).unwrap().len(), 1);
-        assert!(cited("확인 [2]", &allowed).is_err());
-        assert!(cited("[0]", &allowed).is_err());
-        assert!(cited("[1](https://example.com)", &allowed)
-            .unwrap()
-            .is_empty());
+        assert_eq!(cited("확인 [1]", &allowed).len(), 1);
+        assert!(cited("확인 [2]", &allowed).is_empty());
+        assert!(cited("[0]", &allowed).is_empty());
+        assert!(cited("[1](https://example.com)", &allowed).is_empty());
     }
 }
 
@@ -564,19 +578,28 @@ mod grouped_reference_tests {
             citation(2, "notion"),
             citation(3, "meeting"),
         ];
-        assert_eq!(cited("[1, 2-3]", &allowed).unwrap().len(), 3);
-        for text in ["[1,999]", "[1-4]", "[0,1]", "[3-1]", "[1-100]"] {
-            assert!(cited(text, &allowed).is_err(), "{text}");
+        assert_eq!(cited("[1, 2-3]", &allowed).len(), 3);
+        // Not citations, and never a reason to fail a finished answer.
+        for text in [
+            "[1,999]",
+            "[1-4]",
+            "[0,1]",
+            "[3-1]",
+            "[1-100]",
+            "- [ ] 할 일",
+            "[2024]",
+        ] {
+            assert!(cited(text, &allowed).is_empty(), "{text}");
         }
-        assert!(cited(r"\[999] ![999] [999](https://example.com)", &allowed)
-            .unwrap()
-            .is_empty());
+        assert!(cited(r"\[999] ![999] [999](https://example.com)", &allowed).is_empty());
+        assert_eq!(
+            summary_text("결정 [1] 범위 [40-80] 연도 [2024] 목록 [ ]", &allowed),
+            "결정 [1] 범위 \\[40-80] 연도 \\[2024] 목록 \\[ ]"
+        );
     }
     #[test]
     fn code_literals_are_not_treated_as_citations() {
-        assert!(cited("`[999]`\n```json\n[999,1000]\n```", &[])
-            .unwrap()
-            .is_empty());
+        assert!(cited("`[999]`\n```json\n[999,1000]\n```", &[]).is_empty());
     }
     #[test]
     fn external_references_in_groups_are_not_saved_as_meeting_numbers() {
@@ -593,40 +616,25 @@ pub fn text_for_target(text: &str, citations: &[Citation], meeting_id: &str) -> 
         .iter()
         .filter(|citation| citation.meeting_id.as_deref() == Some(meeting_id))
         .collect::<Vec<_>>();
-    let mut result = text.to_owned();
-    if let Ok(groups) = reference_groups(text) {
-        for (range, numbers) in groups.into_iter().rev() {
-            let rendered = numbers
-                .into_iter()
-                .filter_map(|reference| {
-                    citations
-                        .iter()
-                        .find(|citation| citation.reference == reference)
-                })
-                .map(|citation| {
-                    if let Some(index) = local
-                        .iter()
-                        .position(|item| item.reference == citation.reference)
-                    {
-                        format!("[{}]", index + 1)
-                    } else if citation.kind == "notion" {
-                        citation
-                            .url
-                            .as_ref()
-                            .map(|url| {
-                                format!("[{}]({url})", citation.label.replace(['[', ']'], ""))
-                            })
-                            .unwrap_or_default()
-                    } else {
-                        format!("({})", citation.label)
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(" ");
-            result.replace_range(range, &rendered);
-        }
-    }
-    result
+    rewrite_citations(text, citations, |numbers| {
+        numbers
+            .iter()
+            .filter_map(|&reference| citations.iter().find(|item| item.reference == reference))
+            .map(|citation| {
+                if let Some(index) = local
+                    .iter()
+                    .position(|item| item.reference == citation.reference)
+                {
+                    format!("[{}]", index + 1)
+                } else if citation.kind == "notion" {
+                    notion_link(citation)
+                } else {
+                    format!("({})", citation.label)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    })
 }
 
 #[cfg(test)]

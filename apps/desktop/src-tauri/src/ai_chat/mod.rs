@@ -995,15 +995,12 @@ impl AiChat {
             result
         };
         match result.and_then(|text| {
-            context::cited(
-                &text,
-                &message
-                    .binding
-                    .as_ref()
-                    .ok_or("답변 자료를 확인하지 못했습니다.")?
-                    .citations,
-            )
-            .map(|citations| (text, citations))
+            let binding = message
+                .binding
+                .as_ref()
+                .ok_or("답변 자료를 확인하지 못했습니다.")?;
+            let citations = context::cited(&text, &binding.citations);
+            Ok((text, citations))
         }) {
             Ok((text, citations)) => {
                 message.text = text;

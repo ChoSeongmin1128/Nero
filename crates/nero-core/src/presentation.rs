@@ -272,7 +272,7 @@ fn without_internal_citations(text: &str, reference_count: Option<usize>) -> Str
     output
 }
 
-fn escaped(bytes: &[u8], at: usize) -> bool {
+pub(crate) fn escaped(bytes: &[u8], at: usize) -> bool {
     bytes[..at]
         .iter()
         .rev()
