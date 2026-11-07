@@ -341,7 +341,9 @@ OGG다. 대상은 존재하는 일반 파일이어야 하며 심볼릭 링크와
 - 녹음 중이면 `recording_active`, 음성 인식이 준비되지 않았으면 `speech_not_ready`다.
 - 성공 결과 `{"applied":true,"meetingId":...,"job":{...}}`의 `job`은 `jobs_list`와 같은
   형식의 가져오기 작업이다. 진행과 완료는 `jobs_list`로 확인하고 `job_cancel`로 취소할 수 있다.
-  `applied:true`는 작업이 대기열에 들어갔다는 뜻이며 가져오기 완료가 아니다.
+  `applied:true`는 작업이 대기열에 들어갔다는 뜻이며 가져오기 완료가 아니다. 새 회의로 가져오면
+  회의가 작업이 끝날 때 생기므로 `meetingId`는 `null`이고, 완료 후 `jobs_list`의 `meetingId`로 확인한다.
+  대기열이 거절하면 `processing_rejected`와 그 사유를 반환한다.
 - 이 도구는 음성 인식을 따로 시작하지 않는다. 가져온 뒤의 음성 인식 여부는 앱의 현재 가져오기
   동작을 따른다.
 

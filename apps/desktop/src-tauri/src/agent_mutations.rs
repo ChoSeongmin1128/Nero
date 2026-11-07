@@ -503,7 +503,9 @@ fn meeting_import<G>(
         .map(|job| job.id)
         .collect::<HashSet<_>>();
     let meeting_id = target.as_ref().map(|target| target.meeting_id.clone());
-    port.import(source, target).map_err(|_| rejected())?;
+    // The queue's own reason (the same import already queued, no space) is kept.
+    port.import(source, target)
+        .map_err(|message| ControlError::new("processing_rejected", message))?;
     // The queue admits one import per target, so the new import record is this request's.
     let job = port
         .jobs()
