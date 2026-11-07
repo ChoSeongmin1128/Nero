@@ -10,8 +10,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
-    io::Read,
-    net::{TcpListener, TcpStream},
+    net::TcpListener,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -305,15 +304,21 @@ fn receive_callback(
     cancellation: &Cancellation,
     page: &Arc<Mutex<Option<CallbackPage>>>,
 ) -> Result<String> {
-    loop {
+    // The same window the other sign-ins give the browser; before, it waited forever.
+    let deadline = Instant::now() + crate::oauth_callback::CALLBACK_WINDOW;
+    while Instant::now() < deadline {
         cancellation.check()?;
         match listener.accept() {
             Ok((mut stream, peer)) if peer.ip().is_loopback() => {
                 let _ = stream.set_nonblocking(false);
-                let request = match read_callback_headers(&mut stream, cancellation) {
-                    Ok(value) => value,
-                    Err(Error::Callback) => continue,
-                    Err(error) => return Err(error),
+                let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
+                let connection_deadline = deadline.min(Instant::now() + Duration::from_secs(5));
+                let Some(request) =
+                    crate::oauth_callback::read_request(&mut stream, connection_deadline, || {
+                        cancellation.check().is_err()
+                    })
+                else {
+                    continue;
                 };
                 match parse_callback(&request, host, path, state, metadata) {
                     Ok(code) => {
@@ -344,46 +349,9 @@ fn receive_callback(
             Err(_) => return Err(Error::Callback),
         }
     }
+    Err(Error::Timeout)
 }
 
-fn read_callback_headers(stream: &mut TcpStream, cancellation: &Cancellation) -> Result<String> {
-    let end = Instant::now() + Duration::from_secs(5);
-    let mut bytes = vec![];
-    stream
-        .set_read_timeout(Some(Duration::from_millis(100)))
-        .map_err(|_| Error::Callback)?;
-    stream
-        .set_write_timeout(Some(Duration::from_secs(1)))
-        .map_err(|_| Error::Callback)?;
-    while bytes.len() < 8192 && Instant::now() < end {
-        cancellation.check()?;
-        let mut buffer = [0u8; 1024];
-        match stream.read(&mut buffer) {
-            Ok(0) => break,
-            Ok(count) => {
-                bytes.extend_from_slice(&buffer[..count]);
-                if bytes.len() > 8192 {
-                    return Err(Error::Callback);
-                }
-                if bytes.ends_with(b"\r\n\r\n") {
-                    return String::from_utf8(bytes).map_err(|_| Error::Callback);
-                }
-            }
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::WouldBlock
-                        | std::io::ErrorKind::TimedOut
-                        | std::io::ErrorKind::Interrupted
-                ) =>
-            {
-                ()
-            }
-            Err(_) => break,
-        }
-    }
-    Err(Error::Callback)
-}
 pub(super) fn parse_callback(
     request: &str,
     host: &str,
@@ -391,40 +359,7 @@ pub(super) fn parse_callback(
     state: &str,
     metadata: &Metadata,
 ) -> Result<String> {
-    if !request.ends_with("\r\n\r\n") {
-        return Err(Error::Callback);
-    }
-    let mut lines = request.split("\r\n");
-    let first = lines
-        .next()
-        .unwrap_or_default()
-        .split(' ')
-        .collect::<Vec<_>>();
-    if first.len() != 3 || first[0] != "GET" || first[2] != "HTTP/1.1" || !first[1].starts_with('/')
-    {
-        return Err(Error::Callback);
-    }
-    let hosts = lines
-        .filter_map(|line| line.split_once(':'))
-        .filter(|(name, _)| name.eq_ignore_ascii_case("host"))
-        .map(|(_, value)| value.trim())
-        .collect::<Vec<_>>();
-    if hosts != [host] {
-        return Err(Error::Callback);
-    }
-    let url = Url::parse(&format!("http://{host}{}", first[1])).map_err(|_| Error::Callback)?;
-    if url.path() != path || url.fragment().is_some() {
-        return Err(Error::Callback);
-    }
-    let mut values = BTreeMap::new();
-    for (key, value) in url.query_pairs() {
-        if values
-            .insert(key.into_owned(), value.into_owned())
-            .is_some()
-        {
-            return Err(Error::Callback);
-        }
-    }
+    let mut values = crate::oauth_callback::query(request, host, path).ok_or(Error::Callback)?;
     if values.get("state").map(String::as_str) != Some(state) {
         return Err(Error::Callback);
     }

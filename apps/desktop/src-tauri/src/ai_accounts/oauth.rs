@@ -3,14 +3,14 @@ use crate::oauth_callback::CallbackPage;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use ring::rand::{SecureRandom, SystemRandom};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
-use std::io::Read;
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpListener;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
 };
 use std::time::{Duration, Instant};
+#[cfg(test)]
+use std::{collections::BTreeMap, io::Read, net::TcpStream};
 
 pub(super) struct Pending {
     pub id: String,
@@ -143,7 +143,7 @@ impl Pending {
             .unwrap()
             .authority()
             .to_string();
-        let deadline = self.started + Duration::from_secs(180);
+        let deadline = self.started + crate::oauth_callback::CALLBACK_WINDOW;
         let page = self.page.clone();
         tokio::task::spawn_blocking(move || {
             receive(
@@ -201,7 +201,11 @@ fn receive(
                 }
                 let _ = stream.set_write_timeout(Some(Duration::from_millis(100)));
                 let local_deadline = deadline.min(Instant::now() + Duration::from_secs(5));
-                let Some(request) = read_headers(&mut stream, own, external, local_deadline) else {
+                let Some(request) =
+                    crate::oauth_callback::read_request(&mut stream, local_deadline, || {
+                        cancelled(own, external)
+                    })
+                else {
                     CallbackPage::reject(
                         stream,
                         "연결 요청을 확인하지 못했습니다. Nero에서 다시 연결해 주세요.",
@@ -248,39 +252,6 @@ fn receive(
     }
     Err("AI 로그인 시간이 지났습니다. 다시 시도해 주세요.".into())
 }
-fn read_headers(
-    stream: &mut TcpStream,
-    own: &AtomicBool,
-    external: &AtomicBool,
-    deadline: Instant,
-) -> Option<String> {
-    let mut bytes = [0u8; 8192];
-    let mut length = 0;
-    while length < bytes.len() && Instant::now() < deadline && !cancelled(own, external) {
-        stream
-            .set_read_timeout(Some(Duration::from_millis(100)))
-            .ok()?;
-        match stream.read(&mut bytes[length..]) {
-            Ok(0) => return None,
-            Ok(count) => length += count,
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::WouldBlock
-                        | std::io::ErrorKind::TimedOut
-                        | std::io::ErrorKind::Interrupted
-                ) =>
-            {
-                continue
-            }
-            Err(_) => return None,
-        }
-        if bytes[..length].ends_with(b"\r\n\r\n") {
-            return std::str::from_utf8(&bytes[..length]).ok().map(String::from);
-        }
-    }
-    None
-}
 fn callback_for_path(
     request: &str,
     host: &str,
@@ -288,46 +259,16 @@ fn callback_for_path(
     state: &str,
     selected_client: Option<&str>,
 ) -> Option<Result<Authorization, String>> {
-    if !request.ends_with("\r\n\r\n") {
-        return None;
-    }
-    let mut lines = request.split("\r\n");
-    let words: Vec<_> = lines.next()?.split(' ').collect();
-    if words.len() != 3 || words[0] != "GET" || words[2] != "HTTP/1.1" || !words[1].starts_with('/')
-    {
-        return None;
-    }
-    let hosts: Vec<_> = lines
-        .filter_map(|line| line.split_once(':'))
-        .filter(|(name, _)| name.eq_ignore_ascii_case("host"))
-        .map(|(_, value)| value.trim())
-        .collect();
-    if hosts != [host] {
-        return None;
-    }
-    let url = reqwest::Url::parse(&format!("http://{host}{}", words[1])).ok()?;
-    if url.path() != path || url.fragment().is_some() {
-        return None;
-    }
-    let mut values = BTreeMap::new();
-    for (name, value) in url.query_pairs() {
-        if values
-            .insert(name.into_owned(), value.into_owned())
-            .is_some()
-        {
-            return None;
-        }
-    }
+    let mut values = crate::oauth_callback::query(request, host, path)?;
     if values.get("state").map(String::as_str) != Some(state) {
         return None;
     }
     if values.contains_key("error") {
         return Some(Err("AI 로그인이 허용되지 않았습니다.".into()));
     }
-    let code = values.remove("code")?;
-    if code.is_empty() || code.len() > 4096 || code.chars().any(char::is_control) {
-        return None;
-    }
+    let code = values
+        .remove("code")
+        .filter(|code| crate::oauth_callback::valid_code(code))?;
     let issued = values.remove("client_id");
     let client_id = match (selected_client, issued) {
         (Some(expected), Some(actual)) if expected == actual => actual,

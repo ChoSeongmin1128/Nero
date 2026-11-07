@@ -2,10 +2,11 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use reqwest::Url;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::io::Read;
 #[cfg(test)]
 use std::io::Write;
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpListener;
+#[cfg(test)]
+use std::net::TcpStream;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -143,59 +144,13 @@ impl Pending {
             .authority()
             .to_owned();
         let cancelled = self.cancelled.clone();
-        let deadline = self.started + Duration::from_secs(180);
+        let deadline = self.started + crate::oauth_callback::CALLBACK_WINDOW;
         tokio::task::spawn_blocking(move || {
             receive_blocking(listener, &host, &path, &state, &cancelled, deadline)
         })
         .await
         .map_err(|_| "브라우저 연결을 확인하지 못했습니다.".to_string())?
     }
-}
-
-fn read_headers(
-    stream: &mut TcpStream,
-    cancelled: &AtomicBool,
-    deadline: Instant,
-) -> Option<String> {
-    let mut buffer = [0u8; 8192];
-    let mut count = 0;
-    while count < buffer.len() {
-        if cancelled.load(Ordering::Acquire) || Instant::now() >= deadline {
-            return None;
-        }
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero()
-            || stream
-                .set_read_timeout(Some(remaining.min(Duration::from_millis(100))))
-                .is_err()
-        {
-            return None;
-        }
-        match stream.read(&mut buffer[count..]) {
-            Ok(0) => return None,
-            Ok(read) => count += read,
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::WouldBlock
-                        | std::io::ErrorKind::TimedOut
-                        | std::io::ErrorKind::Interrupted
-                ) =>
-            {
-                continue
-            }
-            Err(_) => return None,
-        }
-        if buffer[..count].ends_with(b"\r\n\r\n") {
-            if cancelled.load(Ordering::Acquire) || Instant::now() >= deadline {
-                return None;
-            }
-            return std::str::from_utf8(&buffer[..count])
-                .ok()
-                .map(str::to_owned);
-        }
-    }
-    None
 }
 
 fn receive_blocking(
@@ -218,7 +173,10 @@ fn receive_blocking(
                 let _ = stream.set_nonblocking(false);
                 let _ = stream.set_write_timeout(Some(Duration::from_millis(100)));
                 let connection_deadline = deadline.min(Instant::now() + Duration::from_secs(5));
-                let Some(request) = read_headers(&mut stream, cancelled, connection_deadline)
+                let Some(request) =
+                    crate::oauth_callback::read_request(&mut stream, connection_deadline, || {
+                        cancelled.load(Ordering::Acquire)
+                    })
                 else {
                     continue;
                 };
@@ -270,42 +228,9 @@ enum Callback {
     Denied,
 }
 fn callback(request: &str, host: &str, path: &str, state: &str) -> Callback {
-    if !request.ends_with("\r\n\r\n") {
-        return Callback::Ignore;
-    }
-    let mut lines = request.split("\r\n");
-    let words = lines
-        .next()
-        .unwrap_or_default()
-        .split(' ')
-        .collect::<Vec<_>>();
-    if words.len() != 3 || words[0] != "GET" || words[2] != "HTTP/1.1" || !words[1].starts_with('/')
-    {
-        return Callback::Ignore;
-    }
-    let hosts = lines
-        .filter_map(|line| line.split_once(':'))
-        .filter(|(name, _)| name.eq_ignore_ascii_case("host"))
-        .map(|(_, value)| value.trim())
-        .collect::<Vec<_>>();
-    if hosts != [host] {
-        return Callback::Ignore;
-    }
-    let Ok(url) = Url::parse(&format!("http://{host}{}", words[1])) else {
+    let Some(mut values) = crate::oauth_callback::query(request, host, path) else {
         return Callback::Ignore;
     };
-    if url.path() != path || url.fragment().is_some() {
-        return Callback::Ignore;
-    }
-    let mut values = std::collections::BTreeMap::new();
-    for (key, value) in url.query_pairs() {
-        if values
-            .insert(key.into_owned(), value.into_owned())
-            .is_some()
-        {
-            return Callback::Ignore;
-        }
-    }
     if values.get("state").map(String::as_str) != Some(state) {
         return Callback::Ignore;
     }
@@ -313,11 +238,7 @@ fn callback(request: &str, host: &str, path: &str, state: &str) -> Callback {
         return Callback::Denied;
     }
     match values.remove("code") {
-        Some(code)
-            if !code.is_empty() && code.len() <= 4096 && !code.chars().any(char::is_control) =>
-        {
-            Callback::Code(code)
-        }
+        Some(code) if crate::oauth_callback::valid_code(&code) => Callback::Code(code),
         _ => Callback::Ignore,
     }
 }
@@ -419,10 +340,10 @@ mod tests {
             }
         });
         let started = Instant::now();
-        assert!(read_headers(
+        assert!(crate::oauth_callback::read_request(
             &mut receiver,
-            &AtomicBool::new(false),
-            started + Duration::from_millis(120)
+            started + Duration::from_millis(120),
+            || false
         )
         .is_none());
         stopped.store(true, Ordering::Release);
@@ -440,9 +361,12 @@ mod tests {
             signal.store(true, Ordering::Release);
         });
         let started = Instant::now();
-        assert!(
-            read_headers(&mut receiver, &cancelled, started + Duration::from_secs(5)).is_none()
-        );
+        assert!(crate::oauth_callback::read_request(
+            &mut receiver,
+            started + Duration::from_secs(5),
+            || cancelled.load(Ordering::Acquire)
+        )
+        .is_none());
         cancellation.join().unwrap();
         assert!(started.elapsed() < Duration::from_secs(2));
     }

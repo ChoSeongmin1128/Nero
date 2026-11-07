@@ -1,6 +1,96 @@
-use std::io::Write;
+use std::collections::BTreeMap;
+use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+// How long a loopback listener waits for the browser once sign-in opens.
+pub const CALLBACK_WINDOW: Duration = Duration::from_secs(180);
+
+// One HTTP request head of at most 8 KiB, read until `deadline` or `cancelled()`.
+pub fn read_request(
+    stream: &mut TcpStream,
+    deadline: Instant,
+    cancelled: impl Fn() -> bool,
+) -> Option<String> {
+    let mut buffer = [0u8; 8192];
+    let mut count = 0;
+    while count < buffer.len() {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if cancelled()
+            || remaining.is_zero()
+            || stream
+                .set_read_timeout(Some(remaining.min(Duration::from_millis(100))))
+                .is_err()
+        {
+            return None;
+        }
+        match stream.read(&mut buffer[count..]) {
+            Ok(0) => return None,
+            Ok(read) => count += read,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock
+                        | std::io::ErrorKind::TimedOut
+                        | std::io::ErrorKind::Interrupted
+                ) =>
+            {
+                continue
+            }
+            Err(_) => return None,
+        }
+        if buffer[..count].ends_with(b"\r\n\r\n") {
+            if cancelled() || Instant::now() >= deadline {
+                return None;
+            }
+            return std::str::from_utf8(&buffer[..count])
+                .ok()
+                .map(str::to_owned);
+        }
+    }
+    None
+}
+
+// The query of a complete `GET <path> HTTP/1.1` request that names exactly `host`,
+// with no fragment and no repeated parameter. Callers check state, errors and code.
+pub fn query(request: &str, host: &str, path: &str) -> Option<BTreeMap<String, String>> {
+    if !request.ends_with("\r\n\r\n") {
+        return None;
+    }
+    let mut lines = request.split("\r\n");
+    let words = lines.next()?.split(' ').collect::<Vec<_>>();
+    if words.len() != 3 || words[0] != "GET" || words[2] != "HTTP/1.1" || !words[1].starts_with('/')
+    {
+        return None;
+    }
+    let hosts = lines
+        .filter_map(|line| line.split_once(':'))
+        .filter(|(name, _)| name.eq_ignore_ascii_case("host"))
+        .map(|(_, value)| value.trim())
+        .collect::<Vec<_>>();
+    if hosts != [host] {
+        return None;
+    }
+    let url = reqwest::Url::parse(&format!("http://{host}{}", words[1])).ok()?;
+    if url.path() != path || url.fragment().is_some() {
+        return None;
+    }
+    let mut values = BTreeMap::new();
+    for (name, value) in url.query_pairs() {
+        if values
+            .insert(name.into_owned(), value.into_owned())
+            .is_some()
+        {
+            return None;
+        }
+    }
+    Some(values)
+}
+
+// An authorization code as accepted from a callback: 1 to 4096 characters, no controls.
+pub fn valid_code(code: &str) -> bool {
+    !code.is_empty() && code.len() <= 4096 && !code.chars().any(char::is_control)
+}
 
 pub struct CallbackPage {
     stream: Option<TcpStream>,
