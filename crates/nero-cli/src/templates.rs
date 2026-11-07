@@ -33,6 +33,16 @@ pub(crate) fn dispatch(root: &Path, method: &str, params: Value) -> Result<Value
             json!({"apiVersion":1,"template":store.get(id.as_deref().unwrap()).map_err(error)?,"outputPolicy":nero_core::presentation::output_policy()}),
         );
     }
+    // Reads fall back to the bundled defaults, but a write into a data folder that does
+    // not exist (a mistyped --data-dir) would create one the app never reads.
+    if !root.exists() {
+        return Err(QueryError {
+            code: "library_not_found",
+            message: std::borrow::Cow::Borrowed(
+                "Nero 데이터 폴더가 없습니다. 앱에서 저장한 뒤 다시 시도하거나 --data-dir을 확인해 주세요.",
+            ),
+        });
+    }
     let summary = match method {
         "template_create" | "template_update" => {
             let content: TemplateContent =

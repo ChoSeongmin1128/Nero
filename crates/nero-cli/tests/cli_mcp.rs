@@ -1687,3 +1687,17 @@ fn app_service_tools_forward_checked_requests_and_keep_the_app_explanation() {
     let error: Value = serde_json::from_slice(&output.stderr).unwrap();
     assert_eq!(error["error"]["code"], "app_feature_unsupported");
 }
+
+#[test]
+fn template_writes_do_not_create_a_missing_data_folder() {
+    let parent = tempfile::tempdir().unwrap();
+    let missing = parent.path().join("typo");
+    let error = nero_cli::dispatch(
+        &missing,
+        "template_create",
+        json!({"name":"Synthetic","description":"Use","prompt":"Synthetic prompt"}),
+    )
+    .unwrap_err();
+    assert_eq!(error.code, "library_not_found");
+    assert!(!missing.exists());
+}
