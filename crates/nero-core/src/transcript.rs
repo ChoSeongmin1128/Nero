@@ -2343,7 +2343,9 @@ pub(crate) mod tests {
             .unwrap()
             .map(|entry| entry.unwrap().path())
             .find(|path| {
-                path.join("initial.json").is_file()
+                // The current generation came from the same raw output.
+                path.file_name().unwrap() != current.version.id.as_str()
+                    && path.join("initial.json").is_file()
                     && std::fs::read(path.join("raw.json")).unwrap() == candidate_raw
             })
             .unwrap();
