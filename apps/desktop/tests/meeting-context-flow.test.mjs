@@ -66,6 +66,18 @@ test('명시적 갱신은 같은 페이지의 새 스냅샷만 교체합니다',
   assert.equal(flow.getSnapshot().sources[0].sourceId, 'new-snapshot');
 });
 
+test('취소한 요청이 끝날 때까지 바쁨 상태를 유지해 바로 다시 추가해도 거절되지 않습니다', async () => {
+  const pending = deferred();
+  const { flow, select } = setup({ fetchSources: () => pending.promise });
+  select({ id: 'one' }); flow.open(); await tick();
+  flow.setLink('https://notion.so/page');
+  const adding = flow.add(); await tick();
+  const cancelling = flow.cancel(); await tick();
+  assert.equal(flow.getSnapshot().busy, true);
+  pending.resolve({ sources: [] }); await cancelling; await adding;
+  assert.equal(flow.getSnapshot().busy, false);
+});
+
 test('갱신 충돌이나 취소 시 기존 참조를 유지합니다', async () => {
   const pending = deferred(); let calls = 0;
   const { flow, source, select } = setup({

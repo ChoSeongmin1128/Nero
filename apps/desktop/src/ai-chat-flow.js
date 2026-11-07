@@ -792,7 +792,9 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
       sourceRequest = current;
       publish({ fetching: true, sourceError: '' });
       try {
-        const result = await bridge.fetchSources({ requestId, links: [link.trim()] });
+        const fetching = bridge.fetchSources({ requestId, links: [link.trim()] });
+        current.settled = fetching.then(() => {}, () => {});
+        const result = await fetching;
         if (disposed || sourceRequest !== current) return false;
         if (!result.sources?.length) throw new Error('자료를 찾지 못했습니다. 링크를 확인해 주세요.');
         const sources = new Map(conversations.get(id).sources.map(item => [item.pageId || item.sourceId, item]));
@@ -806,9 +808,12 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
       const current = sourceRequest;
       if (!current) return;
       sourceRequest = null;
-      publish({ fetching: false });
       try { await bridge.cancelFetch(current.id); }
       catch (error) { if (state.conversation.key === current.conversationId) publish({ sourceError: errorMessage(error, '자료 불러오기 취소를 확인하지 못했습니다.') }); }
+      // The app reads one Notion request at a time; loading ends when the cancelled
+      // one has let go, so adding again right away is not refused as busy.
+      await current.settled;
+      if (!sourceRequest) publish({ fetching: false });
     },
     dispose() { disposed = true; modelEpoch++; listEpoch++; listeners.clear(); eventBuffers.clear(); unsubscribe?.(); if (sourceRequest) void bridge.cancelFetch(sourceRequest.id).catch(() => {}); },
   };

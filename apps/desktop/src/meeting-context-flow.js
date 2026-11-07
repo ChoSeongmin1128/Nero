@@ -1,6 +1,6 @@
 export function createMeetingContextFlow({ bridge, getMeeting, onChanged = () => {} }) {
   let state = { open: false, meetingId: null, loading: false, busy: false, phase: null, revision: 0, sources: [], notion: null, error: '', link: '' };
-  let epoch = 0, request = null, disposed = false;
+  let epoch = 0, request = null, inflight = Promise.resolve(), disposed = false;
   const listeners = new Set();
   const publish = patch => { if (!disposed) { state = { ...state, ...patch }; listeners.forEach(listener => listener()); } };
   const current = (meetingId, token) => !disposed && epoch === token && state.open && getMeeting()?.id === meetingId;
@@ -47,7 +47,9 @@ export function createMeetingContextFlow({ bridge, getMeeting, onChanged = () =>
       const requestId = crypto.randomUUID(); request = requestId;
       publish({ busy: true, phase: 'fetching', error: '' });
       try {
-        const result = await bridge.fetchSources({ requestId, links: [link.trim()] });
+        const fetching = bridge.fetchSources({ requestId, links: [link.trim()] });
+        inflight = fetching.then(() => {}, () => {});
+        const result = await fetching;
         if (!current(meetingId, token) || request !== requestId) return;
         const source = result.sources?.[0];
         if (!source) throw new Error('자료를 찾지 못했습니다. 링크를 확인해 주세요.');
@@ -68,7 +70,9 @@ export function createMeetingContextFlow({ bridge, getMeeting, onChanged = () =>
       const requestId = crypto.randomUUID(); request = requestId;
       publish({ busy: true, phase: 'fetching', error: '' });
       try {
-        const result = await bridge.fetchSources({ requestId, links: [reference.url] });
+        const fetching = bridge.fetchSources({ requestId, links: [reference.url] });
+        inflight = fetching.then(() => {}, () => {});
+        const result = await fetching;
         if (!current(meetingId, token) || request !== requestId) return;
         const source = result.sources?.[0];
         if (!source || source.pageId !== reference.pageId) throw new Error('자료를 확인하지 못했습니다.');
@@ -82,7 +86,14 @@ export function createMeetingContextFlow({ bridge, getMeeting, onChanged = () =>
         if (request === requestId) { request = null; if (current(meetingId, token)) publish({ busy: false, phase: null }); }
       }
     },
-    cancel() { if (state.phase !== 'fetching') return; cancelRequest(); publish({ busy: false, phase: null }); },
+    // Stays busy until the cancelled request has let go of the app's single Notion slot.
+    async cancel() {
+      if (state.phase !== 'fetching') return;
+      const settled = inflight, token = epoch;
+      cancelRequest();
+      await settled;
+      if (epoch === token && !request) publish({ busy: false, phase: null });
+    },
     async remove(pageId) {
       const { meetingId, revision } = state, token = epoch;
       if (!current(meetingId, token) || state.busy || state.loading) return;
