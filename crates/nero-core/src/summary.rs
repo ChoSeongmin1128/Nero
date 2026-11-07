@@ -610,18 +610,7 @@ impl Engine {
             )?),
             provenance: draft.provenance.clone(),
         };
-        let relative = directory.join(&doc.id);
-        store::ensure_directory(&store::checked_path(&self.store.root, &relative)?)?;
-        let mut archive =
-            serde_json::json!({"document":doc,"source":draft.source,"receipt":draft.receipt});
-        if let Some(notes) = &draft.notes {
-            archive["notes"] = serde_json::json!(notes);
-        }
-        archive["attendees"] = serde_json::json!(draft.attendees.as_deref().unwrap_or_default());
-        store::write_new(
-            &store::checked_path(&self.store.root, &relative.join("run.json"))?,
-            &store::json_bytes(&archive)?,
-        )?;
+        // A refused result writes nothing: checking first keeps no orphaned archive.
         let current = self
             .transcript(id)?
             .ok_or_else(|| CoreError::InvalidState("전사가 없습니다.".into()))?;
@@ -636,6 +625,18 @@ impl Engine {
         {
             return Err(CoreError::InvalidState("음성 기록, 메모, 참석자 또는 회의록이 변경되어 새 결과를 적용하지 않았습니다. 기존 내용은 유지했습니다.".into()));
         }
+        let relative = directory.join(&doc.id);
+        store::ensure_directory(&store::checked_path(&self.store.root, &relative)?)?;
+        let mut archive =
+            serde_json::json!({"document":doc,"source":draft.source,"receipt":draft.receipt});
+        if let Some(notes) = &draft.notes {
+            archive["notes"] = serde_json::json!(notes);
+        }
+        archive["attendees"] = serde_json::json!(draft.attendees.as_deref().unwrap_or_default());
+        store::write_new(
+            &store::checked_path(&self.store.root, &relative.join("run.json"))?,
+            &store::json_bytes(&archive)?,
+        )?;
         store::write_json(&self.store.root, &directory.join("current.json"), &doc)?;
         Ok(doc)
     }
@@ -1229,7 +1230,13 @@ mod tests {
             engine.commit_summary(&id, late),
             Err(CoreError::InvalidState(_))
         ));
-        assert_eq!(std::fs::read(current).unwrap(), before);
+        assert_eq!(std::fs::read(&current).unwrap(), before);
+        // A refused result leaves no archive folder behind.
+        let folders = std::fs::read_dir(current.parent().unwrap())
+            .unwrap()
+            .filter(|entry| entry.as_ref().unwrap().path().is_dir())
+            .count();
+        assert_eq!(folders, 1);
         let summary = engine.summary(&id).unwrap().unwrap();
         assert_eq!(summary.document.id, previous.id);
         assert!(summary.stale);
