@@ -913,15 +913,31 @@ impl AiChat {
                         actual_model_id = reply.actual_model_id;
                         return Ok(reply.text);
                     }
+                    let open = |session: &crate::ai_accounts::SubscriptionSession| provider::ProviderAccess {
+                        provider: provider_id(selected_provider).into(),
+                        access_token: session.access_token().into(),
+                    };
                     let session = this
                         .accounts
                         .subscription_session_with_cancel(&request.account_id, cancel.clone())
                         .await?;
-                    let access = provider::ProviderAccess {
-                        provider: provider_id(selected_provider).into(),
-                        access_token: session.access_token().into(),
+                    let mut access = open(&session);
+                    // A token revoked before its expiry is refused here first; refresh it
+                    // once instead of failing every request until it expires.
+                    let models = match provider::models_with_cancel(&access, &cancel).await {
+                        Err(error) if error == provider::SIGN_IN_AGAIN => {
+                            this.accounts
+                                .expire_access(&request.account_id, session.access_token(), cancel.clone())
+                                .await?;
+                            let session = this
+                                .accounts
+                                .subscription_session_with_cancel(&request.account_id, cancel.clone())
+                                .await?;
+                            access = open(&session);
+                            provider::models_with_cancel(&access, &cancel).await?
+                        }
+                        result => result?,
                     };
-                    let models = provider::models_with_cancel(&access, &cancel).await?;
                     let selected = models
                         .models
                         .iter()

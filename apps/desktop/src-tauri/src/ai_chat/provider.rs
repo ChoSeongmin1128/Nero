@@ -117,9 +117,11 @@ fn client() -> Result<reqwest::Client, String> {
 fn authorize(request: reqwest::RequestBuilder, access: &ProviderAccess) -> reqwest::RequestBuilder {
     request.bearer_auth(&access.access_token)
 }
+// The provider refused the access token (HTTP 401 or an authentication code).
+pub(crate) const SIGN_IN_AGAIN: &str = "AI 계정에 다시 로그인해 주세요.";
 fn http_error(status: reqwest::StatusCode) -> String {
     match status.as_u16() {
-        401 => "AI 계정에 다시 로그인해 주세요.",
+        401 => SIGN_IN_AGAIN,
         403 => "이 계정에서 요청한 AI 연결을 허용하지 않았습니다.",
         429 => "AI 서비스가 요청을 제한했습니다. 잠시 후 다시 시도해 주세요.",
         413 => "선택한 자료가 너무 많습니다. 자료를 줄여 다시 시도해 주세요.",
@@ -144,9 +146,7 @@ fn failure_message(status: reqwest::StatusCode, code: Option<&str>) -> String {
         Some("max_tokens" | "max_output_tokens" | "model_context_window_exceeded") => {
             "답변이 출력 한도에 도달했습니다. 질문을 나누어 다시 시도해 주세요.".into()
         }
-        Some("invalid_api_key" | "authentication_error" | "token_expired") => {
-            "AI 계정에 다시 로그인해 주세요.".into()
-        }
+        Some("invalid_api_key" | "authentication_error" | "token_expired") => SIGN_IN_AGAIN.into(),
         Some("rate_limit_error" | "rate_limit_exceeded" | "insufficient_quota") => {
             "AI 서비스가 요청을 제한했습니다. 잠시 후 다시 시도해 주세요.".into()
         }

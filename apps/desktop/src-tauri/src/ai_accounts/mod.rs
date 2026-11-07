@@ -827,6 +827,36 @@ impl AiAccounts {
             revocation_confirmed,
         })
     }
+    /// A token the provider rejected before its expiry is refreshed on next use.
+    /// Only the rejected token is expired, never one another request refreshed since.
+    pub async fn expire_access(
+        &self,
+        account_id: &str,
+        rejected: &str,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<(), String> {
+        self.ensure_open()?;
+        let _operation = with_cancel(self.operation.lock(), &cancel, &cancel).await?;
+        self.ensure_open()?;
+        let _file = self.file_guard()?;
+        let mut state = self.read()?;
+        let selected = if account_id.is_empty() {
+            state.active_account_id.clone().ok_or(SIGN_IN_REQUIRED)?
+        } else {
+            account_id.to_owned()
+        };
+        let Some(tokens) = state
+            .accounts
+            .iter_mut()
+            .find(|account| account.id == selected)
+            .and_then(|account| account.tokens.as_mut())
+            .filter(|tokens| tokens.access_token == rejected)
+        else {
+            return Ok(());
+        };
+        tokens.expires_at = 0;
+        self.save(&state)
+    }
     pub async fn subscription_session(
         &self,
         account_id: &str,
@@ -1433,6 +1463,40 @@ mod tests {
         assert!(!next.plan_enabled());
         assert_eq!(next.refresh_token.as_deref(), Some("new_refresh"));
         assert_eq!(next.id_token, previous.id_token);
+    }
+    #[tokio::test]
+    async fn only_the_rejected_access_token_is_expired() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = AiAccounts::with_store(
+            temp.path().canonicalize().unwrap().join("ai"),
+            Arc::new(Memory::default()),
+        )
+        .unwrap();
+        manager
+            .save(&SavedState {
+                host_id: Some("urn:uuid:fixture".into()),
+                active_account_id: Some("first".into()),
+                accounts: vec![record("first", "oaiapp_fixture")],
+            })
+            .unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let expiry = |manager: &AiAccounts| {
+            manager.read().unwrap().accounts[0]
+                .tokens
+                .as_ref()
+                .unwrap()
+                .expires_at
+        };
+        manager
+            .expire_access("first", "a token refreshed since", cancel.clone())
+            .await
+            .unwrap();
+        assert!(expiry(&manager) > now());
+        manager
+            .expire_access("first", "SYNTHETIC_ACCESS_PRIVATE", cancel)
+            .await
+            .unwrap();
+        assert_eq!(expiry(&manager), 0);
     }
     #[tokio::test]
     async fn cancelled_session_access_does_not_start_network_or_credential_reads() {
