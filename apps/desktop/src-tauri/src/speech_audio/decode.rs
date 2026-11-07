@@ -1,6 +1,6 @@
 use super::{check_cancel, failure, output::PcmOutput};
+use crate::processing::failure::{Failure, FailureKind};
 use crate::processing::plain_file;
-use crate::summary_failure::{Failure, FailureKind};
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use symphonia::core::codecs::audio::well_known::CODEC_ID_AAC;

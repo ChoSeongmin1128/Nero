@@ -1,11 +1,11 @@
 //! Optional whole-recording speaker analysis. It never treats ASR-local tags as identities.
+use crate::processing::failure::{core_failure_kind, Failure, FailureKind};
 use crate::processing::native_speech::{self, executable, library, Backend};
 use crate::processing::{
     cancelled, directory, plain_file, verify_model_files, JobSpec, Model, ModelSpec, ModelStage,
     Processing, Progress,
 };
 use crate::speech_audio::AnalysisAudio;
-use crate::summary_failure::{Failure, FailureKind};
 use nero_core::{
     CoreHandle, SpeakerAnalysisDraft, SpeakerPosterior, Transcript, TranscriptVersion,
 };
@@ -324,12 +324,12 @@ fn directory_for_attempt(path: &Path, attempt: u8) -> Result<PathBuf, Failure> {
     directory(path, &format!("diarization-{attempt}")).map_err(|_| failure(FailureKind::Storage))
 }
 
+fn core_failure(error: &nero_core::CoreError) -> FailureKind {
+    core_failure_kind(error).unwrap_or(FailureKind::Storage)
+}
+
 fn source_failure(error: nero_core::CoreError) -> Failure {
-    failure(match error {
-        nero_core::CoreError::MeetingNotFound => FailureKind::MeetingUnavailable,
-        nero_core::CoreError::InvalidState(_) => FailureKind::SourceChanged,
-        _ => FailureKind::Storage,
-    })
+    failure(core_failure(&error))
 }
 
 fn check_source(
@@ -395,12 +395,7 @@ pub(super) fn analyze_recording(
     process
         .commit_transcript_result(cancel, || {
             core.apply_diarization(meeting_id, draft).map_err(|error| {
-                commit_failure = Some(match error {
-                    nero_core::CoreError::InvalidState(_) => FailureKind::SourceChanged,
-                    nero_core::CoreError::MeetingNotFound => FailureKind::MeetingUnavailable,
-                    nero_core::CoreError::InvalidInput(_) => FailureKind::Output,
-                    _ => FailureKind::Storage,
-                });
+                commit_failure = Some(core_failure(&error));
                 error.to_string()
             })
         })
@@ -472,10 +467,7 @@ impl Processing {
                     &path,
                     &cancel,
                 );
-                if let Err(error) = result {
-                    this.update(|progress| progress.failure_kind = Some(error.kind));
-                    return Err(error.message);
-                }
+                result.map_err(|error| this.report(error))?;
                 Ok(Some(meeting_id))
             },
         )
@@ -891,6 +883,29 @@ mod tests {
             .kind,
             FailureKind::Output
         );
+    }
+
+    #[test]
+    fn source_reads_and_the_speaker_commit_share_the_core_error_mapping() {
+        use nero_core::CoreError;
+        for (error, kind) in [
+            (CoreError::MeetingNotFound, FailureKind::MeetingUnavailable),
+            (
+                CoreError::InvalidState("changed".into()),
+                FailureKind::SourceChanged,
+            ),
+            (
+                CoreError::InvalidInput("rejected".into()),
+                FailureKind::Output,
+            ),
+            (CoreError::RecordingBusy, FailureKind::RecordingActive),
+            (CoreError::Unavailable, FailureKind::EngineUnavailable),
+            (CoreError::Storage("disk".into()), FailureKind::Storage),
+            (CoreError::EditConflict, FailureKind::Storage),
+        ] {
+            assert_eq!(core_failure(&error), kind);
+            assert_eq!(source_failure(error).kind, kind);
+        }
     }
 
     #[test]

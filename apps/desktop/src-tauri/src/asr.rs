@@ -1,6 +1,6 @@
+use crate::processing::failure::{Failure, FailureKind};
 use crate::processing::native_speech::{self, executable, Backend};
 use crate::processing::{cancelled, plain_file, Model, Processing};
-use crate::summary_failure::{Failure, FailureKind};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::fs::OpenOptions;

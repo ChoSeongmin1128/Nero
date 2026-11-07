@@ -1,71 +1,5 @@
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum FailureKind {
-    Cancelled,
-    Allocation,
-    BackendUnavailable,
-    EngineUnavailable,
-    Protocol,
-    Input,
-    InputLimit,
-    ModelNotReady,
-    MeetingUnavailable,
-    RecordingActive,
-    SourceChanged,
-    Output,
-    OutputLimit,
-    Storage,
-    Cleanup,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct FailureDetail {
-    pub stage: String,
-    pub finish_reason: Option<String>,
-    pub input_tokens: Option<u32>,
-    pub output_limit: Option<u32>,
-    pub generated_tokens: Option<u32>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct Failure {
-    pub kind: FailureKind,
-    pub message: String,
-    pub detail: Option<FailureDetail>,
-}
-
-impl Failure {
-    pub fn new(kind: FailureKind, message: impl Into<String>) -> Self {
-        Self {
-            kind,
-            message: message.into(),
-            detail: None,
-        }
-    }
-}
-
-impl std::fmt::Display for Failure {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.message)
-    }
-}
-
-impl std::error::Error for Failure {}
-
-impl From<String> for Failure {
-    fn from(message: String) -> Self {
-        Self::new(FailureKind::Output, message)
-    }
-}
-
-impl From<&str> for Failure {
-    fn from(message: &str) -> Self {
-        Self::new(FailureKind::Output, message)
-    }
-}
+//! Failure classification for the packaged llama.cpp summary worker.
+use crate::processing::failure::FailureKind;
 
 fn number_between(line: &str, prefix: &str, suffix: &str) -> bool {
     let Some(number) = line
@@ -312,6 +246,5 @@ mod tests {
                 assert_eq!(recovery(kind, gpu, true), None);
             }
         }
-        assert_eq!(Failure::from("validation failed").kind, FailureKind::Output);
     }
 }

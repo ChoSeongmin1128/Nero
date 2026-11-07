@@ -1,12 +1,11 @@
 //! On-demand local summary worker. No provider authentication or remote inference.
 use crate::memory::{MemoryMonitor, MemoryState};
+use crate::processing::failure::{core_failure_kind, Failure, FailureDetail, FailureKind};
 use crate::processing::{
     cancelled, directory, interruptible, message, plain_file, Model, ModelSpec, ModelStage,
     Processing, Progress, Worker,
 };
-use crate::summary_failure::{
-    classify_worker_failure, recovery, Failure, FailureDetail, FailureKind,
-};
+use crate::summary_failure::{classify_worker_failure, recovery};
 use nero_core::{CoreHandle, SpeakerNameOrigin, SummaryDraft, SummaryProvenance, Transcript};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -1349,33 +1348,23 @@ async fn run_summary_with_template(
 }
 
 fn preflight_core_failure(error: nero_core::CoreError) -> Failure {
-    let kind = match &error {
-        nero_core::CoreError::MeetingNotFound => FailureKind::MeetingUnavailable,
-        nero_core::CoreError::RecordingBusy => FailureKind::RecordingActive,
-        nero_core::CoreError::Storage(_) => FailureKind::Storage,
-        nero_core::CoreError::Unavailable => FailureKind::EngineUnavailable,
-        _ => FailureKind::Input,
+    // Before the run, an invalid read or state means this meeting cannot be summarized
+    // as requested: an input problem, not changed content or a rejected output.
+    let kind = match core_failure_kind(&error) {
+        Some(FailureKind::SourceChanged | FailureKind::Output) | None => FailureKind::Input,
+        Some(kind) => kind,
     };
     Failure::new(kind, message(error))
 }
 
 fn commit_summary_failure(error: nero_core::CoreError) -> Failure {
-    let kind = match &error {
-        // commit_summary uses InvalidState only for source/current-summary CAS failures.
-        nero_core::CoreError::InvalidState(_) => FailureKind::SourceChanged,
-        nero_core::CoreError::MeetingNotFound => FailureKind::MeetingUnavailable,
-        nero_core::CoreError::Storage(_) => FailureKind::Storage,
-        _ => FailureKind::Input,
+    // commit_summary uses InvalidState only for source/current-summary CAS failures and
+    // InvalidInput for notes or attendees it refuses, which is the summary's input.
+    let kind = match core_failure_kind(&error) {
+        Some(FailureKind::Output) | None => FailureKind::Input,
+        Some(kind) => kind,
     };
     Failure::new(kind, message(error))
-}
-
-fn report_summary_failure(process: &Processing, error: Failure) -> String {
-    process.update(|p| {
-        p.failure_kind = Some(error.kind);
-        p.failure_detail = error.detail.clone();
-    });
-    error.message
 }
 
 impl Processing {
@@ -1556,7 +1545,7 @@ impl Processing {
                     saved.map_err(commit_summary_failure)?;
                     Ok(Some(meeting_id))
                 })();
-                result.map_err(|error| report_summary_failure(&process, error))
+                result.map_err(|error| process.report(error))
             },
         )
     }
@@ -1946,7 +1935,7 @@ mod tests {
             (FailureKind::SourceChanged, "sourceChanged"),
             (FailureKind::InputLimit, "inputLimit"),
         ] {
-            let message = report_summary_failure(&process, Failure::new(kind, "알려진 실패 원인"));
+            let message = process.report(Failure::new(kind, "알려진 실패 원인"));
             assert_eq!(message, "알려진 실패 원인");
             assert_eq!(
                 serde_json::to_value(process.snapshot()).unwrap()["failureKind"],
@@ -1974,6 +1963,26 @@ mod tests {
             commit_summary_failure(nero_core::CoreError::Storage("저장 실패".into())).kind,
             FailureKind::Storage
         );
+        assert_eq!(
+            preflight_core_failure(nero_core::CoreError::InvalidInput("요청 오류".into())).kind,
+            FailureKind::Input
+        );
+        assert_eq!(
+            commit_summary_failure(nero_core::CoreError::Unavailable).kind,
+            FailureKind::EngineUnavailable
+        );
+        process.update(|p| p.failure_detail = None);
+        let detail = FailureDetail {
+            stage: "final".into(),
+            finish_reason: Some("length".into()),
+            input_tokens: Some(1),
+            output_limit: Some(2),
+            generated_tokens: Some(2),
+        };
+        let mut limited = Failure::new(FailureKind::OutputLimit, "출력 한도");
+        limited.detail = Some(detail.clone());
+        assert_eq!(process.report(limited), "출력 한도");
+        assert_eq!(process.snapshot().failure_detail, Some(detail));
     }
 
     #[cfg(unix)]

@@ -1,6 +1,6 @@
 use super::{check_cancel, failure};
+use crate::processing::failure::{Failure, FailureKind};
 use crate::processing::plain_file;
-use crate::summary_failure::{Failure, FailureKind};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::atomic::AtomicBool;

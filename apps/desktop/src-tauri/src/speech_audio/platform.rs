@@ -1,6 +1,6 @@
 use super::{check_cancel, decode, failure, formats, wav};
+use crate::processing::failure::Failure;
 use crate::processing::Processing;
-use crate::summary_failure::Failure;
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 

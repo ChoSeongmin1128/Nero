@@ -1,5 +1,5 @@
 use super::{check_cancel, failure, normalize::Normalizer, SAMPLE_RATE};
-use crate::summary_failure::{Failure, FailureKind};
+use crate::processing::failure::{Failure, FailureKind};
 use hound::{SampleFormat, WavSpec, WavWriter};
 use std::fs::File;
 use std::io::BufWriter;

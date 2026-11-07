@@ -1,6 +1,6 @@
+use crate::processing::failure::FailureKind;
 use crate::processing::{cancelled, directory, message, plain_file, Processing};
 use crate::summary::{run_structured, StructuredRequest};
-use crate::summary_failure::FailureKind;
 use nero_core::{
     discover_candidates, CoreError, CoreHandle, TerminologyCandidate, TerminologyDecision,
     TerminologyDraft, TerminologyKind, TerminologyOutcome, TerminologyProfile, TerminologyRule,
@@ -414,8 +414,7 @@ pub(super) fn correct(
                     if matches!(error.kind, FailureKind::Cancelled | FailureKind::Cleanup) {
                         audit["status"] = "interrupted".into();
                         let _ = write_json(&folder.join("audit.json"), &audit);
-                        process.update(|p| p.failure_kind = Some(error.kind));
-                        return Err(error.message);
+                        return Err(process.report(error));
                     }
                     for index in &contextual {
                         actions[*index].reason = "model_failed_keep_original".into();

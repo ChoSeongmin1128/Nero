@@ -1,5 +1,5 @@
+use crate::processing::failure::{Failure, FailureKind};
 use crate::processing::{cancelled, plain_file, Processing};
-use crate::summary_failure::{Failure, FailureKind};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::io::{BufReader, Read, Seek, SeekFrom};

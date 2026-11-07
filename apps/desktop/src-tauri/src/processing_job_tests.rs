@@ -444,7 +444,7 @@ fn rejected_transcript_output_preserves_its_cause_and_remains_retryable() {
         .contains("일부 발언을 끝까지 읽지 못했습니다"));
     assert_eq!(
         progress.failure_kind,
-        Some(crate::summary_failure::FailureKind::Output)
+        Some(crate::processing::failure::FailureKind::Output)
     );
     assert!(
         progress
@@ -531,7 +531,7 @@ fn transcript_cas_rejection_reports_source_change_without_replacing_the_current_
     assert_eq!(progress.phase.as_deref(), Some("sourceChanged"));
     assert_eq!(
         progress.failure_kind,
-        Some(crate::summary_failure::FailureKind::SourceChanged)
+        Some(crate::processing::failure::FailureKind::SourceChanged)
     );
     assert!(progress
         .message
@@ -558,7 +558,7 @@ fn transcript_cas_rejection_reports_source_change_without_replacing_the_current_
     assert_eq!(job.status, "failed");
     assert_eq!(
         job.failure_kind,
-        Some(crate::summary_failure::FailureKind::SourceChanged)
+        Some(crate::processing::failure::FailureKind::SourceChanged)
     );
 }
 
@@ -584,7 +584,7 @@ fn missing_transcript_meeting_is_a_definite_unavailable_failure() {
     assert_eq!(progress.phase.as_deref(), Some("meetingUnavailable"));
     assert_eq!(
         progress.failure_kind,
-        Some(crate::summary_failure::FailureKind::MeetingUnavailable)
+        Some(crate::processing::failure::FailureKind::MeetingUnavailable)
     );
     assert_eq!(progress.message, "회의를 찾을 수 없습니다.");
     let reopened = Processing::new(process.root.clone(), process.resources.clone());
@@ -725,7 +725,7 @@ fn acknowledging_a_terminal_notice_preserves_outcome_and_history_across_restart(
     let (_temporary, process) = setup();
     let mut saved_record = record("summary");
     saved_record.status = JobStatus::Failed;
-    saved_record.failure_kind = Some(crate::summary_failure::FailureKind::Storage);
+    saved_record.failure_kind = Some(crate::processing::failure::FailureKind::Storage);
     saved_record.message = "저장 실패의 내부 진단".into();
     let id = saved_record.id.clone();
     process.save_job(saved_record.clone()).unwrap();

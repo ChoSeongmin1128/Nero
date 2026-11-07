@@ -1,6 +1,6 @@
+use crate::processing::failure::{Failure, FailureKind};
 use crate::processing::{cancelled, plain_file, Processing};
 use crate::speech_choice::AppleVariant;
-use crate::summary_failure::{Failure, FailureKind};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::io::{Read, Write};

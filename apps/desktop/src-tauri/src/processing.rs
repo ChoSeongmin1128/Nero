@@ -16,6 +16,8 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use uuid::Uuid;
 
+#[path = "failure.rs"]
+pub(crate) mod failure;
 #[path = "native_speech.rs"]
 pub(crate) mod native_speech;
 
@@ -106,8 +108,8 @@ pub(super) fn verify_model_files(
     directory: &Path,
     model: &Model,
     cancel: &AtomicBool,
-) -> Result<(), crate::summary_failure::Failure> {
-    use crate::summary_failure::{Failure, FailureKind};
+) -> Result<(), crate::processing::failure::Failure> {
+    use crate::processing::failure::{Failure, FailureKind};
     let cancelled = |cancel: &AtomicBool| {
         cancelled(cancel).map_err(|message| Failure::new(FailureKind::Cancelled, message))
     };
@@ -156,8 +158,8 @@ pub struct Progress {
     pub model_stage: Option<String>,
     pub memory_state: Option<crate::memory::MemoryState>,
     pub phase: Option<String>,
-    pub failure_kind: Option<crate::summary_failure::FailureKind>,
-    pub failure_detail: Option<crate::summary_failure::FailureDetail>,
+    pub failure_kind: Option<crate::processing::failure::FailureKind>,
+    pub failure_detail: Option<crate::processing::failure::FailureDetail>,
     pub has_previous_summary: bool,
     pub retry_count: u8,
     pub committing: bool,
@@ -184,7 +186,7 @@ pub struct JobView {
     pub acknowledged: bool,
     pub created_at: u64,
     pub retry_successor_id: Option<String>,
-    pub failure_kind: Option<crate::summary_failure::FailureKind>,
+    pub failure_kind: Option<crate::processing::failure::FailureKind>,
 }
 
 type Action = Box<
@@ -213,6 +215,16 @@ pub(super) struct JobSpec {
     pub(super) engine: Option<SpeechEngine>,
     pub(super) speaker_enabled: Option<bool>,
     pub(super) apple_variant: Option<AppleVariant>,
+}
+
+// The job phase recorded when Core refused a result before publishing anything.
+fn rejection_phase(kind: failure::FailureKind) -> Option<&'static str> {
+    match kind {
+        failure::FailureKind::Output => Some("outputRejected"),
+        failure::FailureKind::SourceChanged => Some("sourceChanged"),
+        failure::FailureKind::MeetingUnavailable => Some("meetingUnavailable"),
+        _ => None,
+    }
 }
 
 fn model_job(kind: &str) -> bool {
@@ -594,10 +606,10 @@ impl Processing {
         &self,
         spec: ModelSpec,
         cancel: &AtomicBool,
-    ) -> Result<PathBuf, crate::summary_failure::Failure> {
+    ) -> Result<PathBuf, crate::processing::failure::Failure> {
         let directory = self.model_dir_of(spec).map_err(|message| {
-            crate::summary_failure::Failure::new(
-                crate::summary_failure::FailureKind::Storage,
+            crate::processing::failure::Failure::new(
+                crate::processing::failure::FailureKind::Storage,
                 message,
             )
         })?;
@@ -1060,6 +1072,14 @@ impl Processing {
         }
         Ok(())
     }
+    // Records a failure's kind and detail on the current job and returns its message.
+    pub(super) fn report(&self, error: failure::Failure) -> String {
+        self.update(|progress| {
+            progress.failure_kind = Some(error.kind);
+            progress.failure_detail = error.detail.clone();
+        });
+        error.message
+    }
     pub(super) fn update(&self, action: impl FnOnce(&mut Progress)) {
         let mut progress = self.progress.lock().unwrap();
         action(&mut progress);
@@ -1383,21 +1403,11 @@ impl Processing {
         self.save_phase(&progress, "saving")?;
         progress.phase = Some("saving".into());
         let result = commit();
-        let rejection = match &result {
-            Err(nero_core::CoreError::InvalidInput(_)) => Some((
-                "outputRejected",
-                crate::summary_failure::FailureKind::Output,
-            )),
-            Err(nero_core::CoreError::InvalidState(_)) => Some((
-                "sourceChanged",
-                crate::summary_failure::FailureKind::SourceChanged,
-            )),
-            Err(nero_core::CoreError::MeetingNotFound) => Some((
-                "meetingUnavailable",
-                crate::summary_failure::FailureKind::MeetingUnavailable,
-            )),
-            _ => None,
-        };
+        let rejection = result
+            .as_ref()
+            .err()
+            .and_then(failure::core_failure_kind)
+            .and_then(|kind| Some((rejection_phase(kind)?, kind)));
         if let Ok(value) = &result {
             following(&mut progress, value)?;
             self.save_phase(&progress, "postprocessing")?;
@@ -2318,10 +2328,7 @@ impl Processing {
                     );
                     *this.apple_speech.lock().unwrap() =
                         crate::apple_speech::probe(&this.resources, apple_variant);
-                    let status = result.map_err(|error| {
-                        this.update(|p| p.failure_kind = Some(error.kind));
-                        error.message
-                    })?;
+                    let status = result.map_err(|error| this.report(error))?;
                     *this.apple_speech.lock().unwrap() = status;
                     0
                 } else {
@@ -2744,10 +2751,7 @@ impl Processing {
                 this.update(|p| p.message = "음성을 준비하고 있습니다.".into());
                 let prepared =
                     crate::speech_audio::AnalysisAudio::prepare(&this, &copied, &path, &cancel)
-                        .map_err(|error| {
-                            this.update(|progress| progress.failure_kind = Some(error.kind));
-                            error.message
-                        })?;
+                        .map_err(|error| this.report(error))?;
                 cancelled(&cancel)?;
                 let title = imported.title;
                 let meeting = this.commit_transcript_result(&cancel, || {
@@ -2759,21 +2763,18 @@ impl Processing {
                         None => core.import_audio(&title, &copied, prepared.path()),
                     };
                     let rejection = if attaching {
+                        // A concurrent edit or a recording that took the draft also changed
+                        // the target; an invalid input is not a refused result.
                         match &result {
                             Err(
                                 nero_core::CoreError::EditConflict
-                                | nero_core::CoreError::InvalidState(_)
                                 | nero_core::CoreError::RecordingBusy,
-                            ) => Some((
-                                "sourceChanged",
-                                crate::summary_failure::FailureKind::SourceChanged,
-                            )),
-                            Err(nero_core::CoreError::MeetingNotFound) => Some((
-                                "meetingUnavailable",
-                                crate::summary_failure::FailureKind::MeetingUnavailable,
-                            )),
-                            _ => None,
+                            ) => Some(failure::FailureKind::SourceChanged),
+                            Err(error) => failure::core_failure_kind(error)
+                                .filter(|kind| *kind != failure::FailureKind::Output),
+                            Ok(_) => None,
                         }
+                        .and_then(|kind| Some((rejection_phase(kind)?, kind)))
                     } else {
                         None
                     };
@@ -2972,10 +2973,7 @@ impl Processing {
                         crate::speech_audio::AnalysisAudio::prepare(&this, &audio, &path, &cancel)
                     }
                 }
-                .map_err(|error| {
-                    this.update(|progress| progress.failure_kind = Some(error.kind));
-                    error.message
-                })?;
+                .map_err(|error| this.report(error))?;
                 this.update(|p| {
                     p.phase = Some("recognizing".into());
                     p.message = "텍스트로 변환 중".into();
@@ -3030,8 +3028,7 @@ impl Processing {
                         *this.apple_speech.lock().unwrap() =
                             crate::apple_speech::probe(&this.resources, apple_variant);
                     }
-                    this.update(|progress| progress.failure_kind = Some(error.kind));
-                    error.message
+                    this.report(error)
                 })?;
                 let mut raw_value: serde_json::Value =
                     serde_json::from_slice(&raw).map_err(message)?;
@@ -3125,10 +3122,7 @@ impl Processing {
                         &path,
                         &cancel,
                     )
-                    .map_err(|error| {
-                        this.update(|progress| progress.failure_kind = Some(error.kind));
-                        error.message
-                    })?;
+                    .map_err(|error| this.report(error))?;
                 }
                 Ok(Some(meeting_id))
             },
@@ -5003,7 +4997,7 @@ mod tests {
 
     #[test]
     fn readiness_and_pre_use_verification_follow_one_rule_for_every_model() {
-        use crate::summary_failure::FailureKind;
+        use crate::processing::failure::FailureKind;
         let (_temporary, process) = setup();
         let speaker = crate::diarization::SPEAKER_MODEL;
         let summary = crate::summary::SUMMARY_MODEL;

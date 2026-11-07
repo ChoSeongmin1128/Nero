@@ -1,6 +1,6 @@
 // Qwen3-ASR-ko through the pinned CrispASR CLI: pause chunks, gain, aligner words.
+use crate::processing::failure::Failure;
 use crate::processing::{cancelled, plain_file};
-use crate::summary_failure::Failure;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
