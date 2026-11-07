@@ -579,6 +579,11 @@ async fn search_meetings(
     query: String,
     include_deleted: bool,
 ) -> Result<SearchResults, String> {
+    // The screen shows only its latest search; an earlier one stops reading
+    // transcripts and summaries as soon as a newer one starts.
+    static LATEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let search = LATEST.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1;
+    let superseded = || LATEST.load(std::sync::atomic::Ordering::Acquire) != search;
     require_main(&window)?;
     let query = query.trim().to_lowercase();
     if query.len() > 4096 || query.contains('\0') {
@@ -610,6 +615,9 @@ async fn search_meetings(
                 .push(search_hit(&meeting.id, kind, text, &query));
             result.ids.push(meeting.id);
             continue;
+        }
+        if superseded() {
+            return Ok(result);
         }
         let id = meeting.id.clone();
         let transcript = on_core(state.core.clone(), move |core| core.transcript(&id)).await;
