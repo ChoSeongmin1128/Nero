@@ -152,6 +152,28 @@ fn starting_recording_keeps_a_download_running_and_does_not_cancel_it() {
 }
 
 #[test]
+fn a_completed_preparation_hides_earlier_failures_of_the_same_kind() {
+    let (_temporary, process) = setup();
+    let failed_record = |kind: &str| {
+        let mut failed = record(kind);
+        failed.status = JobStatus::Failed;
+        failed.message = "모델을 준비하지 못했습니다.".into();
+        process.save_job(failed.clone()).unwrap();
+        failed.id
+    };
+    let earlier = failed_record("setup");
+    let other = failed_record("speaker-model");
+    let id = launch(&process, pending(record("setup"), |_, _, _| Ok(None)));
+    finish(&process);
+    assert_eq!(status(&process, &id), JobStatus::Completed);
+    let saved = process.journal.records().unwrap();
+    let find = |id: &str| saved.iter().find(|record| record.id == id).unwrap();
+    assert!(find(&earlier).acknowledged);
+    assert_eq!(find(&earlier).status, JobStatus::Failed);
+    assert!(!find(&other).acknowledged);
+}
+
+#[test]
 fn a_failed_queued_cancel_keeps_the_pending_action_and_latest_bytes() {
     let (_temporary, process) = setup();
     let record = record("transcribe");

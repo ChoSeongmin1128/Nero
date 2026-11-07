@@ -2178,6 +2178,7 @@ impl Processing {
         let flag = cancel.clone();
         let this = self.clone();
         let job_id = id.clone();
+        let preparation = model_job(&job.record.kind);
         let handle = thread::Builder::new()
             .name(format!("nero-job-{id}"))
             .spawn(move || {
@@ -2235,6 +2236,9 @@ impl Processing {
                         };
                     }
                 });
+                if preparation {
+                    this.acknowledge_superseded(&job_id);
+                }
             })
             .map_err(message)?;
         Ok(Running {
@@ -2243,6 +2247,37 @@ impl Processing {
             handle,
             import_existing: job.import_existing,
         })
+    }
+
+    // A completed preparation answers earlier failed attempts of the same kind:
+    // their notices are hidden and their outcomes stay.
+    fn acknowledge_superseded(&self, completed: &str) {
+        let superseded: Vec<JobRecord> = {
+            let records = self.records.lock().unwrap();
+            let Some(done) = records
+                .iter()
+                .find(|record| record.id == completed && record.status == JobStatus::Completed)
+            else {
+                return;
+            };
+            records
+                .iter()
+                .filter(|record| {
+                    record.kind == done.kind
+                        && !record.acknowledged
+                        && matches!(
+                            record.status,
+                            JobStatus::Failed | JobStatus::Cancelled | JobStatus::Interrupted
+                        )
+                })
+                .cloned()
+                .collect()
+        };
+        for mut record in superseded {
+            record.acknowledged = true;
+            record.updated_at = now().max(record.updated_at);
+            let _ = self.save_job(record);
+        }
     }
 
     fn launch_checked(self: &Arc<Self>, job: Pending) -> Result<Running, String> {

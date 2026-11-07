@@ -55,6 +55,8 @@ it does not restore an in-memory decoder. Downloads reuse existing Range/hash ve
   before applying effects. Cancellation is rejected during final publication.
 - Unconfirmed worker termination blocks new capture/inference. Typed failure feedback is
   preserved; acknowledging an alert neither erases the outcome nor retries its operation.
+  A completed model preparation acknowledges earlier failed, cancelled or interrupted
+  preparations of the same kind, so their alerts no longer show; their outcomes remain.
 
 Core output validation, source-version conflicts and missing meetings reject publication
 with their typed cause. They are failed jobs, not uncertain saves. Storage errors and
