@@ -291,14 +291,24 @@ impl ClaudeConnection {
                 }
             })?;
         let identity = runner.identity(&run.cancel)?;
-        let models = runner.supported_models(&run.cancel)?;
-        if runner.identity(&run.cancel)? != identity {
+        self.reload_models(&runner, &identity, &run.cancel)
+    }
+    // Reads the model list from this exact executable and caches it under its identity.
+    // The caller holds `model_operation`.
+    fn reload_models(
+        &self,
+        runner: &claude_runner::Runner,
+        identity: &str,
+        cancel: &AtomicBool,
+    ) -> Result<Vec<claude_runner::SupportedModel>, String> {
+        let models = runner.supported_models(cancel)?;
+        if runner.identity(cancel)? != identity {
             return Err("Claude 실행 파일이 변경되어 모델 목록을 저장하지 못했습니다.".into());
         }
-        if run.cancel.load(Ordering::Acquire) {
+        if cancel.load(Ordering::Acquire) {
             return Err("취소했습니다.".into());
         }
-        self.model_cache.write(&models, Some(&identity))?;
+        self.model_cache.write(&models, Some(identity))?;
         *self.models.lock().unwrap() = models.clone();
         Ok(models)
     }
@@ -313,7 +323,12 @@ impl ClaudeConnection {
         let operation = lock_operation(&self.model_operation, &cancel)?;
         let runner = self.resolve()?;
         let identity = runner.identity(&cancel)?;
-        let models = self.model_cache.read_for_runtime(&identity).map_err(|_| "Claude 실행 파일이 바뀌었거나 모델 목록을 확인할 수 없습니다. 모델 목록을 새로고침해 주세요.".to_string())?;
+        // Claude Code updates itself; a new executable reads its own model list here
+        // instead of failing every request until the app restarts.
+        let models = match self.model_cache.read_for_runtime(&identity) {
+            Ok(models) => models,
+            Err(_) => self.reload_models(&runner, &identity, &cancel)?,
+        };
         if !models.iter().any(|entry| {
             entry.value == model
                 && effort.map_or(true, |value| {
