@@ -390,7 +390,16 @@ pub(super) async fn run_with_template(
             ))
         };
         match result {
-            Ok(value) => {
+            Ok(mut value) => {
+                // Later stages reserve brackets for source numbers and refuse them in text;
+                // a model that copied "[12]" into a fact would fail the whole summary.
+                for fact in value
+                    .topics
+                    .iter_mut()
+                    .flat_map(|topic| topic.facts.iter_mut())
+                {
+                    fact.text = fact.text.replace('[', "(").replace(']', ")");
+                }
                 topics.extend(value.topics);
                 ranges.push((first + 1, last));
                 pieces.push(json!({"first":first+1,"last":last,"bytes":batch.bytes}));
