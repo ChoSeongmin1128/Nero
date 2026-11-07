@@ -698,16 +698,37 @@ pub(crate) async fn prepare_install(app: tauri::AppHandle) -> Result<InstallPlan
         .map_err(|_| "업데이트 작업이 진행 중입니다.")?;
     // Restore using the running app's trusted config. Cached metadata cannot
     // select its own public key, executable path or comparator.
-    let metadata = read_limited(&state.cache.join("manifest.json"), MAX_METADATA)?;
-    let manifest =
-        serde_json::from_slice(&metadata).map_err(|_| "업데이트 정보를 읽지 못했습니다.")?;
-    let update = state
-        .updater(&app)?
-        .restore_update(manifest)
-        .map_err(|_| "업데이트 정보를 확인하지 못했습니다.")?
-        .ok_or("현재보다 새로운 빌드만 설치할 수 있습니다.")?;
-    let bytes = read_limited(&state.cache.join("package"), MAX_PACKAGE)?;
-    let identity = state.verify(&update, &bytes)?;
+    let updater = state.updater(&app)?;
+    let cached = (|| -> Result<_, String> {
+        let metadata = read_limited(&state.cache.join("manifest.json"), MAX_METADATA)?;
+        let manifest =
+            serde_json::from_slice(&metadata).map_err(|_| "업데이트 정보를 읽지 못했습니다.")?;
+        let update = updater
+            .restore_update(manifest)
+            .map_err(|_| "업데이트 정보를 확인하지 못했습니다.")?
+            .ok_or("현재보다 새로운 빌드만 설치할 수 있습니다.")?;
+        let bytes = read_limited(&state.cache.join("package"), MAX_PACKAGE)?;
+        let identity = state.verify(&update, &bytes)?;
+        Ok((update, bytes, identity))
+    })();
+    let (update, bytes, identity) = match cached {
+        Ok(cached) => cached,
+        // A missing or damaged package cannot be retried as it is; forgetting it lets
+        // the next check download the update again instead of offering only "retry".
+        Err(error) => {
+            state.discard_cached_package();
+            state.status.lock().unwrap().download_ready = false;
+            *state.candidate.lock().unwrap() = None;
+            return Ok(InstallPlan {
+                status: state.publish(
+                    &app,
+                    "error",
+                    &format!("{error} 업데이트를 다시 확인해 다운로드해 주세요."),
+                ),
+                task: None,
+            });
+        }
+    };
     if desktop.lifecycle.exiting() {
         return Err("앱을 종료하고 있습니다.".into());
     }
