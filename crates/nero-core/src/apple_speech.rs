@@ -118,10 +118,12 @@ pub(crate) fn decode(raw: &[u8], duration: f64, session: &str, id: &str) -> Resu
         }
         previous_start = segment.start;
         previous_end = segment.end;
+        // The analysis WAV may run up to one 16 kHz frame past the recording; speaker
+        // projection measures against the recording, so times stop at its length.
         segments.push(TranscriptSegment {
             id: Uuid::new_v4().to_string(),
-            start: segment.start,
-            end: segment.end,
+            start: segment.start.min(duration),
+            end: segment.end.min(duration),
             original_text: segment.text.clone(),
             text: segment.text,
             speaker_id: None,
