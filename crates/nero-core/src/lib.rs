@@ -280,9 +280,13 @@ impl CoreHandle {
         let worker = thread::Builder::new()
             .name("nero-core".into())
             .spawn(move || {
-                let mut engine = match Engine::open(root) {
-                    Ok(engine) => {
+                // Ready before interrupted recordings' playback files are written: that
+                // reads whole recordings, and the app's window should not wait on it.
+                // Requests sent meanwhile run once it finishes.
+                let mut engine = match Engine::open_without_playback(root) {
+                    Ok(mut engine) => {
                         let _ = ready_tx.send(Ok(()));
+                        engine.repair_pending_playback();
                         engine
                     }
                     Err(error) => {

@@ -65,6 +65,8 @@ same requirement for the frames saved so far and stops the capture as interrupte
 with its saved audio and playback WAV, before the disk fills. Creating a playback WAV
 checks the same reserve first. A half-written playback file is removed on failure and
 on the next attempt; an interrupted recording without playback retries at launch.
+At launch the meeting states settle first and the app becomes ready; writing a recovered
+recording's playback file reads the whole PCM, so it runs right after, before other requests.
 
 ## Unreadable meetings
 

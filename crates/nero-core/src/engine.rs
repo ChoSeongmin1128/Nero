@@ -18,17 +18,28 @@ pub(crate) struct Engine {
     last_session: Option<SessionSnapshot>,
     revision: u64,
     pub(crate) quitting: bool,
+    // Interrupted recordings whose playback file is still to be written.
+    pending_playback: Vec<String>,
 }
 
 impl Engine {
+    #[cfg(test)]
     pub fn open(root: PathBuf) -> Result<Self> {
+        let mut engine = Self::open_without_playback(root)?;
+        engine.repair_pending_playback();
+        Ok(engine)
+    }
+
+    /// Opens with every meeting's state settled but interrupted recordings' playback
+    /// files not yet written, so a caller can become ready first.
+    pub fn open_without_playback(root: PathBuf) -> Result<Self> {
         let store = Store::open(root)?;
         let library = store.load_library()?;
         let store::LoadedMeetings {
             mut meetings,
             unreadable,
         } = store.load_meetings(&library)?;
-        store.recover(&mut meetings)?;
+        let pending_playback = store.recover(&mut meetings)?;
         Ok(Self {
             store,
             meetings,
@@ -39,7 +50,26 @@ impl Engine {
             last_session: None,
             revision: 0,
             quitting: false,
+            pending_playback,
         })
+    }
+
+    pub fn repair_pending_playback(&mut self) {
+        for id in std::mem::take(&mut self.pending_playback) {
+            let Some(mut stored) = self.meetings.get(&id).cloned() else {
+                continue;
+            };
+            let before = stored.meeting.clone();
+            if self.store.repair_playback(&mut stored).is_err() {
+                continue;
+            }
+            if stored.meeting != before {
+                stored.meeting.updated_at = store::now();
+                // A full disk must not lose the repaired state; the next launch saves it.
+                let _ = self.store.save(&stored);
+            }
+            self.meetings.insert(id, stored);
+        }
     }
 
     pub fn unreadable_meetings(&self) -> Vec<String> {
@@ -2314,6 +2344,39 @@ mod tests {
             assert_eq!(reopened.meetings[&id].meeting, affected);
             assert_eq!(fs::read(&manifest_path).unwrap(), corrupt_bytes);
         }
+    }
+
+    #[test]
+    fn opening_settles_a_crashed_recording_before_writing_its_playback() {
+        let (_temporary, mut engine) = engine();
+        let meeting = engine.create_meeting("회의".into(), String::new()).unwrap();
+        let mut manifest = Manifest::new(
+            &meeting.id,
+            "synthetic",
+            "시험 입력",
+            1000,
+            1,
+            Encoding::F32,
+        );
+        let mut raw = engine.store.prepare_capture(&manifest).unwrap();
+        raw.write_all(&[0.25_f32.to_le_bytes(); 100].concat())
+            .unwrap();
+        raw.sync_all().unwrap();
+        drop(raw);
+        manifest.phase = CapturePhase::Recording;
+        store::write_manifest(&engine.store.root, &manifest).unwrap();
+        let stored = engine.meetings.get_mut(&meeting.id).unwrap();
+        stored.capture_id = Some(manifest.session_id.clone());
+        stored.meeting.status = MeetingStatus::Recording;
+        engine.store.save(stored).unwrap();
+        let root = engine.store.root.clone();
+        drop(engine);
+        let mut opened = Engine::open_without_playback(root).unwrap();
+        let settled = opened.meetings[&meeting.id].meeting.clone();
+        assert_eq!(settled.status, MeetingStatus::Interrupted);
+        assert!(settled.audio.is_none());
+        opened.repair_pending_playback();
+        assert!(opened.audio_path(&meeting.id).is_ok());
     }
 
     #[test]

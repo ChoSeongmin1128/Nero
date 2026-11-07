@@ -290,6 +290,13 @@ pub(crate) fn hydrate_capture_metadata(meeting: &mut Meeting, manifest: &Manifes
     meeting.capture_quality = manifest.quality.clone();
 }
 
+enum Recovered {
+    // A finished capture: its diagnostics are shown without rewriting the meeting.
+    Hydrate(Manifest),
+    Settled,
+    NeedsPlayback,
+}
+
 pub(crate) struct Store {
     pub root: PathBuf,
     _lock: File,
@@ -546,11 +553,19 @@ impl Store {
         Ok(())
     }
 
-    pub fn recover(&self, meetings: &mut BTreeMap<String, StoredMeeting>) -> Result<()> {
+    /// Settles every meeting's state from its capture and returns the meetings whose
+    /// playback file still has to be written; `repair_playback` writes it.
+    pub fn recover(&self, meetings: &mut BTreeMap<String, StoredMeeting>) -> Result<Vec<String>> {
+        let mut playback = Vec::new();
         for stored in meetings.values_mut() {
             let previous = stored.meeting.clone();
             let hydration = match self.recover_meeting(stored) {
-                Ok(hydration) => hydration,
+                Ok(Recovered::Hydrate(manifest)) => Some(manifest),
+                Ok(Recovered::Settled) => None,
+                Ok(Recovered::NeedsPlayback) => {
+                    playback.push(stored.meeting.id.clone());
+                    None
+                }
                 Err(error) => {
                     stored.meeting.status = MeetingStatus::Interrupted;
                     if self.audio_path(&stored.meeting).is_err() {
@@ -579,10 +594,10 @@ impl Store {
                 hydrate_capture_metadata(&mut stored.meeting, &manifest);
             }
         }
-        Ok(())
+        Ok(playback)
     }
 
-    fn recover_meeting(&self, stored: &mut StoredMeeting) -> Result<Option<Manifest>> {
+    fn recover_meeting(&self, stored: &mut StoredMeeting) -> Result<Recovered> {
         let Some(session_id) = stored.capture_id.clone() else {
             if matches!(
                 stored.meeting.status,
@@ -592,13 +607,13 @@ impl Store {
                     "녹음 정보가 누락된 회의가 있습니다.".into(),
                 ));
             }
-            return Ok(None);
+            return Ok(Recovered::Settled);
         };
         let relative = sessions_dir(&stored.meeting.id)
             .join(&session_id)
             .join("manifest.json");
         let path = checked_path(&self.root, &relative)?;
-        let mut manifest: Manifest = read_json(&path)?;
+        let manifest: Manifest = read_json(&path)?;
         manifest.validate()?;
         if manifest.meeting_id != stored.meeting.id || manifest.session_id != session_id {
             return Err(CoreError::Storage(
@@ -616,31 +631,59 @@ impl Store {
             || manifest.phase == CapturePhase::Interrupted;
         let playback_needs_repair = interrupted && self.audio_path(&stored.meeting).is_err();
         if !unfinished && !playback_needs_repair {
-            return Ok(Some(manifest));
+            return Ok(Recovered::Hydrate(manifest));
         }
         hydrate_capture_metadata(&mut stored.meeting, &manifest);
-        manifest.warning = stored.meeting.warning.clone();
-        let raw = checked_path(&self.root, &manifest.relative_dir().join("audio.pcm"))
-            .and_then(|path| open_read(&path));
-        let raw = match raw {
-            Ok(raw) => raw,
+        // The state settles now; writing the playback file reads the whole PCM, so it
+        // is left to `repair_playback`.
+        match self.recovered_raw(&manifest) {
+            Ok((_, message)) => {
+                stored.meeting.status = MeetingStatus::Interrupted;
+                stored.meeting.error = Some(message);
+                Ok(Recovered::NeedsPlayback)
+            }
             Err(error) => {
                 stored.meeting.status = MeetingStatus::Interrupted;
                 stored.meeting.audio = None;
                 stored.meeting.error = Some(format!(
                     "원본 녹음을 읽을 수 없어 복구하지 못했습니다: {error}"
                 ));
-                return Ok(None);
+                Ok(Recovered::Settled)
             }
-        };
-        manifest.phase = CapturePhase::Interrupted;
+        }
+    }
+
+    // The interrupted session's PCM length and the message for what it holds.
+    fn recovered_raw(&self, manifest: &Manifest) -> Result<(u64, String)> {
+        let raw = checked_path(&self.root, &manifest.relative_dir().join("audio.pcm"))
+            .and_then(|path| open_read(&path))?;
         let raw_bytes = raw.metadata()?.len();
-        manifest.error = Some(if raw_bytes < manifest.frame_bytes() as u64 {
-            "저장된 오디오가 없어 녹음을 복구하지 못했습니다.".into()
+        let message = if raw_bytes < manifest.frame_bytes() as u64 {
+            "저장된 오디오가 없어 녹음을 복구하지 못했습니다."
         } else {
-            "녹음이 중단되었습니다. 저장된 구간을 복구했습니다.".into()
-        });
-        drop(raw);
+            "녹음이 중단되었습니다. 저장된 구간을 복구했습니다."
+        };
+        Ok((raw_bytes, message.into()))
+    }
+
+    /// Writes the playback file of an interrupted recording that `recover` returned.
+    pub(crate) fn repair_playback(&self, stored: &mut StoredMeeting) -> Result<()> {
+        let session_id = stored
+            .capture_id
+            .clone()
+            .ok_or_else(|| CoreError::Storage("녹음 정보가 누락된 회의가 있습니다.".into()))?;
+        let path = checked_path(
+            &self.root,
+            &sessions_dir(&stored.meeting.id)
+                .join(&session_id)
+                .join("manifest.json"),
+        )?;
+        let mut manifest: Manifest = read_json(&path)?;
+        manifest.validate()?;
+        manifest.warning = stored.meeting.warning.clone();
+        let (raw_bytes, message) = self.recovered_raw(&manifest)?;
+        manifest.phase = CapturePhase::Interrupted;
+        manifest.error = Some(message);
         let playback = stored.meeting.audio.as_ref().and_then(|artifact| {
             (artifact.session_id == manifest.session_id
                 && artifact.frames == raw_bytes / manifest.frame_bytes() as u64
@@ -659,7 +702,7 @@ impl Store {
                 stored.meeting.error = Some(format!("녹음이 중단되었습니다. 원본은 보관되지만 재생 파일을 만들지 못했습니다. 앱을 다시 열면 다시 만듭니다: {error}"));
             }
         }
-        Ok(None)
+        Ok(())
     }
 
     pub fn audio_path(&self, meeting: &Meeting) -> Result<PathBuf> {
