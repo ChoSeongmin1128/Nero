@@ -197,6 +197,24 @@ mod tests {
     }
 
     #[test]
+    fn tools_that_stop_work_or_replace_content_are_destructive() {
+        let tools = tools();
+        for name in [
+            "ai_chat_cancel",
+            "calendars_select",
+            "recording_control",
+            "transcription_start",
+        ] {
+            let tool = tools.iter().find(|tool| tool.name == name).unwrap();
+            assert_eq!(
+                tool.annotations.clone().unwrap().destructive_hint,
+                Some(true),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
     fn processing_tools_require_explicit_intent_and_disclose_downloads() {
         let tools = tools();
         let find = |name: &str| tools.iter().find(|tool| tool.name == name).unwrap();
