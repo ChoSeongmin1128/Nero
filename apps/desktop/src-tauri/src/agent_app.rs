@@ -38,6 +38,18 @@ fn core_error(error: CoreError) -> ControlError {
 fn value(result: impl Serialize) -> Result<Value, ControlError> {
     serde_json::to_value(result).map_err(|_| rejected("응답을 만들지 못했습니다."))
 }
+// An agent reads a conversation without each answer's stored inputs: the attached meeting
+// and Notion text, every citation it allowed and the template prompt. They can reach
+// megabytes, past the app connection's limit, and the meeting and source tools read them.
+fn conversation_view(conversation: crate::ai_chat::Conversation) -> Result<Value, ControlError> {
+    let mut view = value(conversation)?;
+    for message in view["messages"].as_array_mut().into_iter().flatten() {
+        if let Some(fields) = message.as_object_mut() {
+            fields.remove("binding");
+        }
+    }
+    Ok(view)
+}
 fn block_on<T>(future: impl std::future::Future<Output = T>) -> T {
     tauri::async_runtime::block_on(future)
 }
@@ -74,7 +86,7 @@ impl<L> AgentApp<'_, L> {
             } => self.chats_list(trashed, meeting_id),
             AppRequest::AiChatGet { conversation_id } => {
                 let (_lease, chat) = self.chat_lease()?;
-                value(chat.read(&conversation_id).map_err(rejected)?)
+                conversation_view(chat.read(&conversation_id).map_err(rejected)?)
             }
             AppRequest::AiModelsList { refresh } => self.models(refresh),
             AppRequest::AiChatSend {
@@ -138,7 +150,7 @@ impl<L> AgentApp<'_, L> {
                     app,
                     json!({"area":"aiChat","conversationIds":[conversation_id]}),
                 );
-                value(conversation)
+                conversation_view(conversation)
             }
             AppRequest::AiAnswerSave {
                 conversation_id,
@@ -718,4 +730,33 @@ fn meeting_view(meeting: &nero_core::Meeting) -> Result<Value, ControlError> {
 }
 fn not_ready(message: String) -> ControlError {
     ControlError::new("speech_not_ready", message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_conversation_view_leaves_out_stored_answer_inputs() {
+        let id = uuid::Uuid::new_v4().to_string();
+        let message = |role: &str| {
+            json!({"id":uuid::Uuid::new_v4().to_string(),"requestId":uuid::Uuid::new_v4().to_string(),
+                "role":role,"text":"보존할 답변","status":"completed",
+                "citations":[{"reference":1,"kind":"meeting","label":"회의 00:01"}],
+                "binding":{"citations":[],"inputSha256":"synthetic","templatePrompt":"프롬프트",
+                    "inputSnapshot":{"meetings":[{"notes":"x".repeat(2 * 1024 * 1024)}]}}})
+        };
+        let conversation: crate::ai_chat::Conversation = serde_json::from_value(json!({
+            "formatVersion":2,"id":id,"provider":"claude","modelId":"synthetic",
+            "messages":[message("user"), message("assistant")]
+        }))
+        .unwrap();
+        let view = conversation_view(conversation).unwrap();
+        assert!(serde_json::to_vec(&view).unwrap().len() < 64 * 1024);
+        for message in view["messages"].as_array().unwrap() {
+            assert!(message.get("binding").is_none());
+            assert_eq!(message["text"], "보존할 답변");
+            assert_eq!(message["citations"][0]["reference"], 1);
+        }
+    }
 }

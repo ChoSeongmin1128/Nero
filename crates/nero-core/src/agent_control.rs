@@ -17,6 +17,8 @@ const MAX_FRAME: usize = 1024 * 1024;
 const DESCRIPTOR: &str = "agent-control.json";
 // Requests answered at once; more wait for a free slot.
 const MAX_CONNECTIONS: usize = 8;
+const RESPONSE_TOO_LARGE: &str =
+    "Nero의 응답이 연결의 전송 한도(1MiB)를 넘었습니다. 조회 범위를 줄여 다시 요청해 주세요.";
 const UNKNOWN_RESULT: &str =
     "수정 결과를 확인하지 못했습니다. 같은 요청을 반복하기 전에 현재 상태를 조회해 주세요.";
 
@@ -989,6 +991,7 @@ pub fn request(
                 "Nero가 요청을 처리하지 못했습니다. 현재 처리 상태를 확인해 주세요.",
             ),
             "mutation_result_unknown" => ("mutation_result_unknown", UNKNOWN_RESULT),
+            "response_too_large" => ("response_too_large", RESPONSE_TOO_LARGE),
             _ => core_code_message(received)
                 .unwrap_or(("mutation_failed", "수정을 완료하지 못했습니다.")),
         };
@@ -1073,10 +1076,14 @@ fn serve_connection(mut stream: TcpStream, expected: &Descriptor, handlers: &Han
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handlers.answer(request)))
                 .unwrap_or_else(|_| Err(ControlError::unknown_result()))
         });
-    let (response, after_response) = match result {
+    let (mut response, after_response) = match result {
         Ok(reply) => (json!({"result":reply.result}), reply.after_response),
         Err(error) => (json!({"error":error}), None),
     };
+    // A reply over the frame limit is reported instead of closing without an answer.
+    if serde_json::to_vec(&response).map_or(true, |bytes| bytes.len() > MAX_FRAME) {
+        response = json!({"error":ControlError::new("response_too_large", RESPONSE_TOO_LARGE)});
+    }
     let _ = write_frame(&mut stream, &response);
     // The app owns an accepted update even if its client disconnects.
     if let Some(action) = after_response {
@@ -1634,6 +1641,22 @@ mod tests {
             true
         );
         assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn a_reply_over_the_frame_limit_is_reported_as_too_large() {
+        let (directory, core, meeting) = fixture();
+        let _server = Server::start(directory.path(), core, |_| {
+            Ok(json!({"text":"x".repeat(MAX_FRAME)}))
+        })
+        .unwrap();
+        let params = json!({"meetingId":meeting.id,"expectedVersion":meeting_edit_version(&meeting).unwrap(),"notes":"에이전트 메모"});
+        assert_eq!(
+            request(directory.path(), "meeting_update", params)
+                .unwrap_err()
+                .code,
+            "response_too_large"
+        );
     }
 
     #[test]

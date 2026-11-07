@@ -314,6 +314,7 @@ idempotentHint=false이며 기존 내용을 바꾸거나 삭제하는 도구에�
 | 작업 | `job_retry`, `job_acknowledge` | `jobs retry/acknowledge ID` |
 
 - CLI 옵션은 도구 입력 이름을 그대로 쓴다. 불리언은 `--이름`/`--no-이름`, 목록은 단수형 옵션을 반복하며(`--meeting-id`), `--file JSON_PATH`는 나머지 필드를 한 객체로 준다. 결과는 JSON이다.
+- `ai_chat_get`과 `ai_chat_version_select`는 답변마다 저장한 입력 자료(첨부한 회의/Notion 본문, 허용한 인용 목록, 템플릿 프롬프트)를 빼고 반환한다. 이 자료는 회의/자료 도구로 읽는다. 앱 연결의 응답이 전송 한도(1MiB)를 넘으면 연결을 끊지 않고 `response_too_large`로 알린다.
 - `ai_chat_send`는 사용자의 구독 계정으로 앱의 AI에 질문하고 바로 `conversationId`, `requestId`를 돌려준다. 답변은 `ai_chat_get`의 상태가 완료/실패/취소가 될 때까지 읽는다. `conversationId`가 없으면 새 대화를 만든다. 요약 스킬은 회의 하나와 템플릿이 필요하며 질문 없이 보낼 수 있다. 추론 수준을 생략하면 모델의 기본 수준을 쓴다.
 - `ai_chats_trash`는 고른 대화 또는 마지막 활동이 지정한 일수보다 오래된 대화를 휴지통으로 옮기며 답변 중인 대화는 건너뛴다. 대화 영구 삭제는 없다.
 - `recording_control`의 `start`는 빈 회의나 새 회의(`title`)에 지정한 입력 장치 또는 기본 장치로 녹음한다. 앱 화면처럼 진행 중인 처리 작업을 멈추고 시작하며, 필요하면 macOS가 마이크 권한을 묻는다. `stop`은 앱 화면과 같이 녹음 후 처리를 이어서 시작한다.
