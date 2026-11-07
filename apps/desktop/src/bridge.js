@@ -52,11 +52,19 @@ export const exportDocument = (meetingId, kind, format, includeCitations = false
 
 export async function subscribeSnapshots(callback) {
   if (!isTauri()) return () => {};
-  return listen('nero://snapshot', (event) => {
-    const snapshot = event.payload;
-    if (latestSnapshot && snapshot.revision < latestSnapshot.revision) return;
-    callback(accept(snapshot));
-  });
+  const stops = await Promise.all([
+    listen('nero://snapshot', (event) => {
+      const snapshot = event.payload;
+      if (latestSnapshot && snapshot.revision < latestSnapshot.revision) return;
+      callback(accept(snapshot));
+    }),
+    // A recording tick carries only the session; meetings stay as last received.
+    listen('nero://snapshot-session', ({ payload }) => {
+      if (!latestSnapshot || payload.revision < latestSnapshot.revision) return;
+      callback(accept({ ...latestSnapshot, revision: payload.revision, session: payload.session }));
+    }),
+  ]);
+  return () => stops.forEach(stop => stop());
 }
 
 export async function subscribeOpenMeeting(callback) {

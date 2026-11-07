@@ -338,8 +338,47 @@ async fn on_core<T: Send + 'static>(
 }
 
 fn publish(app: &tauri::AppHandle, snapshot: &Snapshot) {
-    let _ = app.emit("nero://snapshot", snapshot);
+    let _ = app.emit_to("main", "nero://snapshot", snapshot);
+    let _ = app.emit_to("recorder", "nero://snapshot", recorder_snapshot(snapshot));
     sync_recorder(app, snapshot);
+}
+
+// The recorder panel shows only the recording's meeting and never its notes.
+fn recorder_snapshot(snapshot: &Snapshot) -> Snapshot {
+    let meeting_id = snapshot
+        .session
+        .as_ref()
+        .map(|session| session.meeting_id.as_str());
+    Snapshot {
+        revision: snapshot.revision,
+        meetings: snapshot
+            .meetings
+            .iter()
+            .filter(|meeting| Some(meeting.id.as_str()) == meeting_id)
+            .map(|meeting| Meeting {
+                notes: String::new(),
+                attendees: Vec::new(),
+                ..meeting.clone()
+            })
+            .collect(),
+        folders: Vec::new(),
+        session: snapshot.session.clone(),
+    }
+}
+
+// A recording tick changes only the session (clock and capture counters); send just
+// that, and windows keep the meetings and folders they already have.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionUpdate<'a> {
+    revision: u64,
+    session: &'a Option<nero_core::SessionSnapshot>,
+}
+
+fn session_only(previous: Option<&Snapshot>, snapshot: &Snapshot) -> bool {
+    previous.is_some_and(|previous| {
+        previous.meetings == snapshot.meetings && previous.folders == snapshot.folders
+    })
 }
 
 fn show_main(app: &tauri::AppHandle) {
@@ -453,6 +492,59 @@ mod snapshot_tests {
             name: "Project".into(),
         });
         assert!(snapshot_changed(Some(&initial), &next));
+    }
+
+    #[test]
+    fn recording_ticks_send_the_session_and_the_recorder_gets_its_meeting_without_notes() {
+        let meeting = |id: &str| -> Meeting {
+            serde_json::from_value(serde_json::json!({
+                "id": id, "title": "Meeting", "notes": "Synthetic notes",
+                "attendees": [{"id": "attendee", "name": "Person"}],
+                "createdAt": 1, "updatedAt": 1, "status": "recording", "audio": null, "error": null
+            }))
+            .unwrap()
+        };
+        let recording = Snapshot {
+            revision: 1,
+            meetings: vec![meeting("meeting"), meeting("other")],
+            folders: vec![],
+            session: Some(serde_json::from_value(serde_json::json!({
+                "id": "capture", "meetingId": "meeting", "deviceId": "mic", "deviceName": "Microphone",
+                "state": "recording", "elapsedMs": 1000, "savedFrames": 16000,
+                "sampleRate": 16000, "channels": 1, "error": null
+            })).unwrap()),
+        };
+        let mut tick = recording.clone();
+        tick.revision = 2;
+        let session = tick.session.as_mut().unwrap();
+        session.elapsed_ms += 750;
+        session.saved_frames += 12000;
+        assert!(session_only(Some(&recording), &tick));
+        assert!(!session_only(None, &tick));
+        let mut paused = tick.clone();
+        paused.session.as_mut().unwrap().state = nero_core::SessionState::Paused;
+        assert!(session_only(Some(&recording), &paused));
+        let mut edited = tick.clone();
+        edited.meetings[1].notes.push_str(" edited");
+        assert!(!session_only(Some(&recording), &edited));
+        let mut filed = tick.clone();
+        filed.folders.push(nero_core::Folder {
+            id: "folder".into(),
+            name: "Project".into(),
+        });
+        assert!(!session_only(Some(&recording), &filed));
+        let mut ended = tick.clone();
+        ended.session = None;
+
+        let recorder = recorder_snapshot(&tick);
+        assert_eq!(recorder.revision, tick.revision);
+        assert_eq!(recorder.session, tick.session);
+        assert_eq!(recorder.meetings.len(), 1);
+        assert_eq!(recorder.meetings[0].id, "meeting");
+        assert_eq!(recorder.meetings[0].title, "Meeting");
+        assert!(recorder.meetings[0].notes.is_empty());
+        assert!(recorder.meetings[0].attendees.is_empty());
+        assert!(recorder_snapshot(&ended).meetings.is_empty());
     }
 
     #[test]
@@ -1432,7 +1524,16 @@ fn poll(
                 if let Some(session) = interrupted_session(previous.as_ref(), &snapshot) {
                     report_interrupted_recording(&app, session);
                 }
-                publish(&app, &snapshot);
+                if session_only(previous.as_ref(), &snapshot) {
+                    let update = SessionUpdate {
+                        revision: snapshot.revision,
+                        session: &snapshot.session,
+                    };
+                    let _ = app.emit("nero://snapshot-session", update);
+                    sync_recorder(&app, &snapshot);
+                } else {
+                    publish(&app, &snapshot);
+                }
                 previous = Some(snapshot);
             } else {
                 sync_recorder(&app, &snapshot);

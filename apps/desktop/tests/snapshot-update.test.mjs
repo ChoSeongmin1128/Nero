@@ -1,6 +1,36 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
+import { build } from 'esbuild';
 import { snapshotSignatures, compareSnapshotSignatures } from '../src/snapshot-update.js';
+
+const tauriStub = 'export const isTauri = () => true; export const convertFileSrc = value => value; export const invoke = (...args) => globalThis.testInvoke(...args); export const listen = async (name, handler) => { globalThis.testListeners[name] = handler; return () => {}; };';
+const bridgeBundle = await build({ entryPoints: [fileURLToPath(new URL('../src/bridge.js', import.meta.url))], bundle: true, write: false, format: 'esm', plugins: [{ name: 'tauri-stub', setup(builder) {
+  builder.onResolve({ filter: /^@tauri-apps\/api\// }, args => ({ path: args.path, namespace: 'tauri-stub' }));
+  builder.onLoad({ filter: /.*/, namespace: 'tauri-stub' }, () => ({ contents: tauriStub }));
+} }] });
+
+test('recording ticks update the session of the last full snapshot', async () => {
+  globalThis.testListeners = {};
+  globalThis.testInvoke = async () => { throw new Error('unexpected native call'); };
+  const bridge = await import(`data:text/javascript;base64,${Buffer.from(bridgeBundle.outputFiles[0].text).toString('base64')}`);
+  const received = [];
+  await bridge.subscribeSnapshots(snapshot => received.push(snapshot));
+  const tick = globalThis.testListeners['nero://snapshot-session'];
+  const session = { id: 'capture', meetingId: 'a', state: 'recording', elapsedMs: 1000, savedFrames: 16000 };
+  tick({ payload: { revision: 1, session } });
+  assert.equal(received.length, 0);
+  const full = { revision: 2, meetings: [{ id: 'a', title: 'Meeting', notes: 'Notes' }], folders: [], session };
+  globalThis.testListeners['nero://snapshot']({ payload: full });
+  tick({ payload: { revision: 3, session: { ...session, elapsedMs: 1750 } } });
+  assert.deepEqual(received.at(-1), { ...full, revision: 3, session: { ...session, elapsedMs: 1750 } });
+  assert.equal(compareSnapshotSignatures(snapshotSignatures(received[0]), snapshotSignatures(received.at(-1))).timerOnly, true);
+  tick({ payload: { revision: 2, session: { ...session, elapsedMs: 9999 } } });
+  tick({ payload: { revision: 4, session: null } });
+  assert.deepEqual(received.at(-1), { ...full, revision: 4, session: null });
+  assert.equal(received.length, 3);
+  delete globalThis.testListeners; delete globalThis.testInvoke;
+});
 
 const snapshot = () => ({
   meetings: [{ id: 'a', title: 'Meeting', notes: 'Notes', attendees: [{ id: 'person', name: 'Person' }], folderId: 'folder', deletedAt: null, audio: { frames: 10 }, captureQuality: { xrunCount: 0 }, calendarReference: { title: 'Event' } }],
