@@ -20,13 +20,20 @@ fn main() {
             println!("cargo:rerun-if-changed={}", root.join(path).display());
         }
         let python = std::env::var("PYTHON").unwrap_or_else(|_| "python3".into());
-        let checked = std::process::Command::new(python)
+        println!("cargo:rerun-if-env-changed=NERO_BUILD_ENV");
+        let mut check = std::process::Command::new(python);
+        check
             .arg(root.join("scripts/native-diarization/prepare.py"))
             .arg("--verify-staged")
             .arg(root.join("apps/desktop/.generated/native/diarization"))
             .arg("--target")
-            .arg(target)
-            .arg("--optional")
+            .arg(target);
+        // The NeMo runtime runs the default recognition and speaker analysis; only
+        // non-production builds may go without it.
+        if std::env::var("NERO_BUILD_ENV").as_deref() != Ok("production") {
+            check.arg("--optional");
+        }
+        let checked = check
             .env("PYTHONDONTWRITEBYTECODE", "1")
             .output()
             .expect("Python is required to verify a packaged native speech runtime");

@@ -20,10 +20,12 @@ if (speechTarget) {
     '--verify-staged', resolve(root, 'apps/desktop/.generated/native/summary'),
     '--target', speechTarget, '--optional',
   ], { cwd: root, stdio: 'inherit', env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' } });
+  // The NeMo runtime runs the default recognition and speaker analysis, so a
+  // production package without it must not reach signing.
   execFileSync(process.env.PYTHON || 'python3', [
     resolve(root, 'scripts/native-diarization/prepare.py'),
     '--verify-staged', resolve(root, 'apps/desktop/.generated/native/diarization'),
-    '--target', speechTarget, '--optional',
+    '--target', speechTarget, ...(process.env.NERO_BUILD_ENV === 'production' ? [] : ['--optional']),
   ], { cwd: root, stdio: 'inherit', env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' } });
   execFileSync(process.env.PYTHON || 'python3', [
     resolve(root, 'scripts/native-whisper/prepare.py'),
