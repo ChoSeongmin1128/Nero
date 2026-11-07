@@ -230,6 +230,23 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Options, QueryError
     Ok(Options { root, json, action })
 }
 
+fn split_flag(argument: &str) -> (&str, Option<&str>) {
+    argument
+        .split_once('=')
+        .map_or((argument, None), |(flag, value)| (flag, Some(value)))
+}
+
+// `--flag=value` or `--flag value`; an empty value is never meaningful.
+fn flag_value<'a>(
+    inline: Option<&'a str>,
+    args: &mut impl Iterator<Item = &'a str>,
+) -> Result<&'a str, QueryError> {
+    inline
+        .or_else(|| args.next())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(QueryError::invalid)
+}
+
 fn parse_jobs(command: &str, remaining: &[&str]) -> Result<Action, QueryError> {
     let method = match command {
         "list" => "jobs_list",
@@ -246,13 +263,8 @@ fn parse_jobs(command: &str, remaining: &[&str]) -> Result<Action, QueryError> {
         params.insert("jobId".into(), json!(id));
     }
     while let Some(argument) = args.next() {
-        let (flag, inline) = argument
-            .split_once('=')
-            .map_or((argument, None), |(flag, value)| (flag, Some(value)));
-        let value = inline
-            .or_else(|| args.next())
-            .filter(|value| !value.is_empty())
-            .ok_or_else(QueryError::invalid)?;
+        let (flag, inline) = split_flag(argument);
+        let value = flag_value(inline, &mut args)?;
         let (key, value) = match (command, flag) {
             ("list", "--meeting-id") => ("meetingId", json!(value)),
             ("list", "--offset" | "--limit") => (
@@ -270,10 +282,10 @@ fn parse_jobs(command: &str, remaining: &[&str]) -> Result<Action, QueryError> {
             return Err(QueryError::invalid());
         }
     }
-    let params = Value::Object(params);
-    nero_core::agent_control::JobRequest::parse(method, params.clone())
-        .map_err(|_| QueryError::invalid())?;
-    Ok(Action::Request { method, params })
+    Ok(Action::Request {
+        method,
+        params: Value::Object(params),
+    })
 }
 
 fn parse_import(remaining: &[&str]) -> Result<Action, QueryError> {
@@ -285,13 +297,8 @@ fn parse_import(remaining: &[&str]) -> Result<Action, QueryError> {
     params.insert("path".into(), json!(path));
     let mut args = remaining.iter().copied();
     while let Some(argument) = args.next() {
-        let (flag, inline) = argument
-            .split_once('=')
-            .map_or((argument, None), |(flag, value)| (flag, Some(value)));
-        let value = inline
-            .or_else(|| args.next())
-            .filter(|value| !value.is_empty())
-            .ok_or_else(QueryError::invalid)?;
+        let (flag, inline) = split_flag(argument);
+        let value = flag_value(inline, &mut args)?;
         let key = match flag {
             "--meeting-id" => "meetingId",
             "--expected-version" => "expectedVersion",
@@ -301,12 +308,9 @@ fn parse_import(remaining: &[&str]) -> Result<Action, QueryError> {
             return Err(QueryError::invalid());
         }
     }
-    let params = Value::Object(params);
-    nero_core::agent_control::ProcessingRequest::parse("meeting_import", params.clone())
-        .map_err(|_| QueryError::invalid())?;
     Ok(Action::Request {
         method: "meeting_import",
-        params,
+        params: Value::Object(params),
     })
 }
 
@@ -333,13 +337,8 @@ fn parse_speech(command: &str, remaining: &[&str]) -> Result<Action, QueryError>
         }
         "cancel-switch" => {
             while let Some(argument) = args.next() {
-                let (flag, inline) = argument
-                    .split_once('=')
-                    .map_or((argument, None), |(flag, value)| (flag, Some(value)));
-                let value = inline
-                    .or_else(|| args.next())
-                    .filter(|value| !value.is_empty())
-                    .ok_or_else(QueryError::invalid)?;
+                let (flag, inline) = split_flag(argument);
+                let value = flag_value(inline, &mut args)?;
                 if flag != "--target" || params.insert("target".into(), json!(value)).is_some() {
                     return Err(QueryError::invalid());
                 }
@@ -348,10 +347,10 @@ fn parse_speech(command: &str, remaining: &[&str]) -> Result<Action, QueryError>
         }
         _ => return Err(QueryError::invalid()),
     };
-    let params = Value::Object(params);
-    nero_core::agent_control::ProcessingRequest::parse(method, params.clone())
-        .map_err(|_| QueryError::invalid())?;
-    Ok(Action::Request { method, params })
+    Ok(Action::Request {
+        method,
+        params: Value::Object(params),
+    })
 }
 
 fn parse_query(group: &str, command: &str, remaining: &[&str]) -> Result<Action, QueryError> {
@@ -387,9 +386,7 @@ fn parse_query(group: &str, command: &str, remaining: &[&str]) -> Result<Action,
         );
     }
     while let Some(argument) = args.next() {
-        let (flag, inline) = argument
-            .split_once('=')
-            .map_or((argument, None), |(flag, value)| (flag, Some(value)));
+        let (flag, inline) = split_flag(argument);
         if flag == "--include-citations" {
             if method != "summary_get"
                 || inline.is_some()
@@ -437,9 +434,7 @@ fn parse_query(group: &str, command: &str, remaining: &[&str]) -> Result<Action,
         if params.contains_key(field) {
             return Err(QueryError::invalid());
         }
-        let value = inline
-            .or_else(|| args.next())
-            .ok_or_else(QueryError::invalid)?;
+        let value = flag_value(inline, &mut args)?;
         let value = match field {
             "folderId" | "on" | "timezone" | "expectedSourceVersion" => Value::String(value.into()),
             "format" if matches!(value, "txt" | "md") => Value::String(value.into()),
@@ -448,45 +443,17 @@ fn parse_query(group: &str, command: &str, remaining: &[&str]) -> Result<Action,
                 Ok(number) => json!(number),
                 Err(_) => Value::String(value.into()),
             },
-            "start" | "end" => {
-                let number = value.parse::<f64>().map_err(|_| QueryError::invalid())?;
-                if !number.is_finite() || number < 0.0 {
-                    return Err(QueryError::invalid());
-                }
-                json!(number)
-            }
-            _ => {
-                let number = value.parse::<u64>().map_err(|_| QueryError::invalid())?;
-                if (field == "limit" && !(1..=200).contains(&number))
-                    || (field == "maxBytes" && !(1..=MAX_RESPONSE_BYTES as u64).contains(&number))
-                {
-                    return Err(QueryError::invalid());
-                }
-                json!(number)
-            }
+            // JSON has no infinity or NaN: serde_json would send null, which reads as absent.
+            "start" | "end" => json!(value
+                .parse::<f64>()
+                .ok()
+                .filter(|number| number.is_finite())
+                .ok_or_else(QueryError::invalid)?),
+            _ => json!(value.parse::<u64>().map_err(|_| QueryError::invalid())?),
         };
         params.insert(field.into(), value);
     }
-    if params.get("unfiled") == Some(&Value::Bool(true)) && params.contains_key("folderId") {
-        return Err(QueryError::invalid());
-    }
-    let normalized = dates::normalize(method, Value::Object(params.clone()))?;
-    if normalized
-        .get("from")
-        .and_then(Value::as_u64)
-        .zip(normalized.get("to").and_then(Value::as_u64))
-        .is_some_and(|(from, to)| from >= to)
-    {
-        return Err(QueryError::invalid());
-    }
-    if params
-        .get("start")
-        .and_then(Value::as_f64)
-        .zip(params.get("end").and_then(Value::as_f64))
-        .is_some_and(|(start, end)| start >= end)
-    {
-        return Err(QueryError::invalid());
-    }
+    // Ranges, dates and field relations are checked once on the query path MCP also uses.
     Ok(Action::Request {
         method,
         params: Value::Object(params),
@@ -514,13 +481,8 @@ fn parse_templates(command: &str, remaining: &[&str]) -> Result<Action, QueryErr
     }
     let mut file = None;
     while let Some(argument) = args.next() {
-        let (flag, inline) = argument
-            .split_once('=')
-            .map_or((argument, None), |(flag, value)| (flag, Some(value)));
-        let value = inline
-            .or_else(|| args.next())
-            .filter(|value| !value.is_empty())
-            .ok_or_else(QueryError::invalid)?;
+        let (flag, inline) = split_flag(argument);
+        let value = flag_value(inline, &mut args)?;
         match flag {
             "--file" if matches!(command, "create" | "update") && file.is_none() => {
                 file = Some(PathBuf::from(value))
@@ -586,13 +548,8 @@ fn parse_people_mutation(method: &'static str, remaining: &[&str]) -> Result<Act
     }
     let mut file = None;
     while let Some(argument) = args.next() {
-        let (flag, inline) = argument
-            .split_once('=')
-            .map_or((argument, None), |(flag, value)| (flag, Some(value)));
-        let value = inline
-            .or_else(|| args.next())
-            .filter(|value| !value.is_empty())
-            .ok_or_else(QueryError::invalid)?;
+        let (flag, inline) = split_flag(argument);
+        let value = flag_value(inline, &mut args)?;
         match flag {
             "--file" if file.is_none() => file = Some(PathBuf::from(value)),
             "--expected-version" if !params.contains_key("expectedVersion") => {
@@ -658,9 +615,7 @@ fn parse_mutation(group: &str, command: &str, remaining: &[&str]) -> Result<Acti
     }
     let mut file = None;
     while let Some(argument) = args.next() {
-        let (flag, inline) = argument
-            .split_once('=')
-            .map_or((argument, None), |(flag, value)| (flag, Some(value)));
+        let (flag, inline) = split_flag(argument);
         if flag == "--clear"
             && method == "meeting_date_set"
             && inline.is_none()
@@ -669,10 +624,7 @@ fn parse_mutation(group: &str, command: &str, remaining: &[&str]) -> Result<Acti
             params.insert("meetingDate".into(), Value::Null);
             continue;
         }
-        let value = inline
-            .or_else(|| args.next())
-            .filter(|value| !value.is_empty())
-            .ok_or_else(QueryError::invalid)?;
+        let value = flag_value(inline, &mut args)?;
         match flag {
             "--expected-version"
                 if !matches!(
@@ -713,10 +665,10 @@ fn parse_mutation(group: &str, command: &str, remaining: &[&str]) -> Result<Acti
             content,
         })
     } else {
-        let params = Value::Object(params);
-        nero_core::agent_control::Mutation::parse(method, params.clone())
-            .map_err(|_| QueryError::invalid())?;
-        Ok(Action::Request { method, params })
+        Ok(Action::Request {
+            method,
+            params: Value::Object(params),
+        })
     }
 }
 
@@ -1219,6 +1171,18 @@ mod tests {
         parse(values.iter().map(OsString::from))
     }
 
+    // Parses, then sends the request where MCP sends it: the shared reader or the app
+    // request parser must reject it before touching a library or the app.
+    fn rejected_after_parsing(values: &[&str]) -> bool {
+        let library = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let Action::Request { method, params } = args(values).unwrap().action else {
+            return false;
+        };
+        let rejected = crate::dispatch(library.path(), method, params)
+            .is_err_and(|error| error.code == "invalid_input");
+        rejected && std::fs::read_dir(library.path()).unwrap().next().is_none()
+    }
+
     #[test]
     fn app_update_commands_only_accept_the_official_service_actions() {
         for action in ["status", "check", "download", "install"] {
@@ -1247,9 +1211,9 @@ mod tests {
         let id = "00000000-0000-0000-0000-000000000001";
         let version = format!("sha256:{}", "a".repeat(64));
         assert!(args(&["jobs", "list", "--meeting-id", id, "--limit", "200"]).is_ok());
-        assert!(args(&["jobs", "list", "--limit", "201"]).is_err());
-        assert!(args(&["jobs", "list", "--limit", "0"]).is_err());
-        assert!(args(&["jobs", "cancel", id]).is_err());
+        assert!(rejected_after_parsing(&["jobs", "list", "--limit", "201"]));
+        assert!(rejected_after_parsing(&["jobs", "list", "--limit", "0"]));
+        assert!(rejected_after_parsing(&["jobs", "cancel", id]));
         assert!(args(&["jobs", "cancel", id, "--expected-version", &version]).is_ok());
         assert!(args(&[
             "jobs",
@@ -1318,10 +1282,16 @@ mod tests {
             Action::Help
         );
         for arguments in [
-            vec!["meetings", "import"],
             vec!["meetings", "import", "relative.m4a"],
             vec!["meetings", "import", audio, "--meeting-id", id],
             vec!["meetings", "import", audio, "--expected-version", &version],
+            vec!["speech", "cancel-switch"],
+            vec!["speech", "cancel-switch", "--target", "../x"],
+        ] {
+            assert!(rejected_after_parsing(&arguments), "{arguments:?}");
+        }
+        for arguments in [
+            vec!["meetings", "import"],
             vec!["meetings", "import", audio, "--transcribe"],
             vec![
                 "meetings",
@@ -1343,8 +1313,6 @@ mod tests {
                 "--acknowledge-memory-warning",
                 "--acknowledge-memory-warning",
             ],
-            vec!["speech", "cancel-switch"],
-            vec!["speech", "cancel-switch", "--target", "../x"],
             vec!["speech", "status"],
         ] {
             assert!(args(&arguments).is_err(), "{arguments:?}");
@@ -1415,8 +1383,14 @@ mod tests {
                 params: json!({"query":"term","unfiled":true})
             }
         );
+        assert!(rejected_after_parsing(&[
+            "meetings",
+            "list",
+            "--unfiled",
+            "--folder-id",
+            "11111111-1111-4111-8111-111111111111"
+        ]));
         for values in [
-            vec!["meetings", "list", "--unfiled", "--folder-id", "id"],
             vec!["meetings", "list", "--unfiled", "--unfiled"],
             vec!["meetings", "list", "--unfiled=true"],
             vec!["folders", "list", "--unfiled"],
@@ -1427,12 +1401,20 @@ mod tests {
 
     #[test]
     fn rejects_writes_unknown_duplicate_and_invalid_filters() {
+        let meeting = "11111111-1111-4111-8111-111111111111";
         for values in [
-            vec!["meetings", "delete", "id"],
             vec!["meetings", "list", "--limit", "201"],
             vec!["meetings", "list", "--limit", "0"],
             vec!["meetings", "list", "--from", "20", "--to", "10"],
+            vec!["transcript", "get", meeting, "--start", "-1"],
+            vec!["transcript", "get", meeting, "--start", "5", "--end", "5"],
+        ] {
+            assert!(rejected_after_parsing(&values), "{values:?}");
+        }
+        for values in [
+            vec!["meetings", "delete", "id"],
             vec!["transcript", "get", "id", "--start", "NaN"],
+            vec!["transcript", "get", "id", "--start", "inf"],
             vec!["meetings", "list", "--unknown", "value"],
             vec!["meetings", "list", "--limit", "2", "--limit", "3"],
         ] {
@@ -1495,6 +1477,10 @@ mod tests {
             ],
             vec!["meetings", "list", "--max-bytes", "0"],
             vec!["meetings", "list", "--max-bytes", "1048577"],
+        ] {
+            assert!(rejected_after_parsing(&arguments), "{arguments:?}");
+        }
+        for arguments in [
             vec!["transcript", "get", "id", "--timezone", "UTC"],
             vec!["folders", "list", "--on", "2026-10-28"],
         ] {
@@ -1579,11 +1565,11 @@ mod tests {
                 "2026-10-28",
                 "--clear",
             ],
-            vec!["folders", "create", "Folder"],
             vec!["templates", "get", "meeting", "--deleted"],
         ] {
             assert!(args(&arguments).is_err(), "{arguments:?}");
         }
+        assert!(rejected_after_parsing(&["folders", "create", "Folder"]));
     }
 
     #[test]
