@@ -206,11 +206,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     const mountSummaryTemplatePicker = () => ({reload:async()=>{},isAvailable:()=>true,selected:async()=>({id:'meeting',revision:'test'})});
     const mountDocumentActions = () => ({ update() {}, close() {} });
     const mountAgentConnectionDialog = () => ({ open(...args) { testAgentDialogCalls.push(args); }, update() {}, close() {}, isOpen: () => false });
-    const mountLibrary = ({getState}) => ({ render() {}, resetSelection() {}, toggleSelection() {}, handleRowSelection: () => false, show: async () => {}, visibleMeetings() {
-      const current = getState(), query = document.getElementById('search').value.trim();
-      const ids = current.librarySearchIds == null ? null : new Set(current.librarySearchIds);
-      return filterLibraryMeetings(current.snapshot.meetings, current.libraryFilter, query && !ids ? query : '').filter(meeting => !query || !ids || ids.has(meeting.id)).sort((a,b) => (b.recordedAt ?? b.createdAt ?? 0) - (a.recordedAt ?? a.createdAt ?? 0) || (b.createdAt ?? 0) - (a.createdAt ?? 0));
-    } });
+    const mountLibrary = () => ({ render() {}, resetSelection() {}, show: async () => {} });
     const mountConfirmDialog = () => ({confirm:async()=>false});
     const mountSpeakers = ({getState}) => ({beforeLeave:async()=>true,render() {}, reset() {}, open: async () => {}, label: segment => getState().transcriptDraft?.doc?.speakers?.find(speaker=>speaker.id === segment.speakerId)?.name || '화자 미지정'});
 
@@ -1211,40 +1207,6 @@ test('date classification persists without changing the recording or creation ti
   assert.equal(page.saved().meetingDate, '2026-10-01');
   assert.equal(page.element('meeting-day').value, '2026-10-01');
   assert.equal(page.element('meeting-date-message').hidden, false);
-});
-
-test('meeting list shows local recording time and refreshes it when recording starts', async () => {
-  const page = await openApp();
-  const createdAt = new Date(2026, 9, 20, 9, 5).getTime();
-  const recordedAt = new Date(2026, 9, 20, 18, 41).getTime();
-  const meeting = { ...page.saved(), createdAt, meetingDate: '2026-10-01' };
-  page.app.acceptSnapshot({ revision: 2, session: null, meetings: [meeting] });
-  assert.match(page.element('meeting-list').innerHTML, />10\. 20\. 09:05<\/span>/);
-  assert.match(page.element('meeting-list').innerHTML, /title="생성 /);
-  page.element('meeting-list').scrollTop = 80;
-  page.app.acceptSnapshot({ revision: 3, session: null, meetings: [{ ...meeting, recordedAt }] });
-  const html = page.element('meeting-list').innerHTML;
-  assert.match(html, />10\. 20\. 18:41<\/span>/);
-  assert.match(html, /title="녹음 시작 /);
-  assert.match(html, /회의 날짜 2026-10-01/);
-  assert.doesNotMatch(html, />10\. 1\. 18:41/);
-  assert.equal(page.element('meeting-list').scrollTop, 80);
-});
-
-test('meeting list orders by the displayed timestamp without inventing imported recording time', async () => {
-  const page = await openApp();
-  const stamp = (hour, minute) => new Date(2026, 9, 20, hour, minute).getTime();
-  const recorded = { ...page.saved(), id: 'recorded', createdAt: stamp(8, 0), recordedAt: stamp(18, 41), meetingDate: '2026-10-01', audio: {} };
-  const imported = { ...page.saved(), id: 'imported', createdAt: stamp(14, 5), audio: {} };
-  const midnight = { ...page.saved(), id: 'midnight', createdAt: stamp(0, 0) };
-  page.app.acceptSnapshot({ revision: 2, session: null, meetings: [midnight, imported, recorded] });
-  const html = page.element('meeting-list').innerHTML;
-  assert.ok(html.indexOf('data-meeting-id="recorded"') < html.indexOf('data-meeting-id="imported"'));
-  assert.ok(html.indexOf('data-meeting-id="imported"') < html.indexOf('data-meeting-id="midnight"'));
-  assert.match(html, />10\. 20\. 00:00<\/span>/);
-  const importedRow = html.slice(html.indexOf('data-meeting-id="imported"'), html.indexOf('data-meeting-id="midnight"'));
-  assert.match(importedRow, /title="생성 /);
-  assert.doesNotMatch(importedRow, /녹음 시작/);
 });
 
 test('automatic recorder preference persists and rolls back native preference when storage fails', async () => {

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { createRequire } from 'node:module';
 import { countLibraryMeetings, filterLibraryMeetings, recentLibraryMeetings, mountLibrary } from '../src/library-ui.js';
 
 const meetings = () => [
@@ -8,6 +9,7 @@ const meetings = () => [
   { id: 'three', title: '보관할 회의', notes: '', folderId: 'project', deletedAt: 100 },
 ];
 const settle = () => new Promise(resolve => setImmediate(resolve));
+globalThis.NeroUI ??= createRequire(import.meta.url)('../../../design-system/components.js');
 
 test('single-pass counts preserve active, deleted, empty and orphan folder scopes', () => {
   const input = [...meetings(),
@@ -27,7 +29,7 @@ function harness(overrides = {}, options = {}) {
   const state = { snapshot: { meetings: meetings(), folders: [{ id: 'project', name: '프로젝트' }], session: null }, selectedId: 'one', connected: true, libraryView: 'all', libraryFilter: 'all', libraryOpen: true, librarySelection: new Set(), libraryBusy: false, processing: { status: 'idle' } };
   let locked = false, owner, frameId = 0;
   class Node {
-    constructor(id) { this.id = id; this.listeners = {}; this.dataset = {}; this.value = ''; this.open = false; this.hidden = false; this.disabled = false; this.isConnected = true; this.ownerDocument = owner; this.style = {}; this.children = []; }
+    constructor(id) { this.id = id; this.listeners = {}; this.dataset = {}; this.value = ''; this.open = false; this.hidden = false; this.disabled = false; this.isConnected = true; this.ownerDocument = owner; this.style = {}; this.children = []; this.classList = { toggle() {}, add() {}, remove() {} }; }
     addEventListener(name, listener) { this.listeners[name] = listener; }
     setAttribute(name, value) { this[name] = value; }
     removeAttribute(name) { delete this[name]; }
@@ -79,7 +81,7 @@ function harness(overrides = {}, options = {}) {
   controller = mountLibrary({ bridge, getState: () => state, byId,
     finishEditing: async action => { locked = true; calls.push({ name: 'flush' }); try { return await action(); } finally { locked = false; } },
     acceptSnapshot: value => { state.snapshot = value; }, selectMeeting() {}, render,
-    showError: error => errors.push(String(error)), escape: value => String(value ?? '').replace(/[&<>"]/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[character]), icon: name => `<svg data-icon="${name}"></svg>`,
+    showError: error => errors.push(String(error)), recordingStatus: phase => phase, duration: String, escape: value => String(value ?? '').replace(/[&<>"]/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[character]), icon: name => `<svg data-icon="${name}"></svg>`,
     ...options,
   });
   controller.render();

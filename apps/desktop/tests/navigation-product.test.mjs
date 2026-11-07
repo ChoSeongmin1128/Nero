@@ -2,10 +2,12 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFile } from 'node:fs/promises';
 import { Window } from 'happy-dom';
+import { createRequire } from 'node:module';
 import { mountLibrary, renderMeetingMenu, formatRecentDuration } from '../src/library-ui.js';
 import { mountSidebarViews } from '../src/sidebar-views.js';
 
 const settle = () => new Promise(resolve => setImmediate(resolve));
+globalThis.NeroUI ??= createRequire(import.meta.url)('../../../design-system/components.js');
 async function setup(t, preferences = {}) {
   const window = new Window({ url: 'http://nero.test', settings: { disableCSSFileLoading: true, disableJavaScriptFileLoading: true } });
   t.after(() => window.happyDOM.abort());
@@ -27,7 +29,7 @@ async function setup(t, preferences = {}) {
     },
   };
   let library;
-  library = mountLibrary({ bridge, duration: milliseconds => `${milliseconds / 1000}초`, getState: () => state, byId: id => document.getElementById(id), finishEditing: async action => action(), acceptSnapshot(snapshot) { state.snapshot = snapshot; }, selectMeeting(id) { state.selectedId = id; state.libraryOpen = false; library.render(); }, render() { library.render(); }, showError(error) { throw error; }, beginNavigation(history) { navigationCalls.push(history); return () => true; }, escape, icon: name => `<svg data-icon="${name}"></svg>` });
+  library = mountLibrary({ bridge, duration: milliseconds => `${milliseconds / 1000}초`, recordingStatus: phase => phase, isAudioReady: id => state.readyAudio === id, getState: () => state, byId: id => document.getElementById(id), finishEditing: async action => action(), acceptSnapshot(snapshot) { state.snapshot = snapshot; }, selectMeeting(id) { state.selectedId = id; state.libraryOpen = false; library.render(); }, render() { library.render(); }, showError(error) { throw error; }, beginNavigation(history) { navigationCalls.push(history); return () => true; }, escape, icon: name => `<svg data-icon="${name}"></svg>` });
   library.render();
   const byId = id => document.getElementById(id);
   const sidebarViews = mountSidebarViews({ aside: byId('navigation-sidebar'), navigation: byId('sidebar-navigation-view'), notifications: byId('notification-center'), trigger: byId('notifications-open'), badge: byId('notification-count'), onPreview: view => library.preview(view) });
@@ -504,8 +506,7 @@ test('recording export and location actions require validated playback and send 
   state.selectedId = 'filed';
   library.render();
   assert.deepEqual(buttons.map(button => button.disabled), [true, true]);
-  state.audioKey = 'filed:undefined:96000';
-  document.getElementById('audio-message').dataset.state = 'ready';
+  state.readyAudio = 'filed';
   menu.dispatchEvent(new window.Event('toggle'));
   assert.deepEqual(buttons.map(button => button.disabled), [false, false]);
   for (const button of buttons) button.click();
@@ -515,7 +516,7 @@ test('recording export and location actions require validated playback and send 
   menu.dispatchEvent(new window.Event('toggle'));
   assert.deepEqual(buttons.map(button => button.disabled), [true, true]);
   state.snapshot.session = null;
-  document.getElementById('audio-message').dataset.state = 'error';
+  state.readyAudio = null;
   menu.dispatchEvent(new window.Event('toggle'));
   assert.deepEqual(buttons.map(button => button.disabled), [true, true]);
 });

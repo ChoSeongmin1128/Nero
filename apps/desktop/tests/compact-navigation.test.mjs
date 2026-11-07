@@ -4,6 +4,8 @@ import { readFile } from 'node:fs/promises';
 import { Window } from 'happy-dom';
 import { mountNavigationSidebar } from '../../../design-system/navigation.mjs';
 import { mountLibrary } from '../src/library-ui.js';
+import { createRequire } from 'node:module';
+globalThis.NeroUI ??= createRequire(import.meta.url)('../../../design-system/components.js');
 import { mountSidebarViews } from '../src/sidebar-views.js';
 
 function setup(t, preferences = {}) {
@@ -239,7 +241,7 @@ test('keyboard enters and returns from each product preview without advancing th
     folders: [{ id: 'project', name: '프로젝트' }],
   } };
   const calls = [];
-  const library = mountLibrary({ bridge: {}, getState: () => state, byId: el, finishEditing: async action => action(), acceptSnapshot() {}, selectMeeting: id => calls.push(['select', id]), render() {}, showError(error) { throw error; }, beginNavigation: history => { calls.push(['navigate', history]); return () => true; }, escape: value => String(value ?? ''), icon: name => `<svg data-icon="${name}"></svg>`, duration: String });
+  const library = mountLibrary({ bridge: {}, getState: () => state, byId: el, finishEditing: async action => action(), acceptSnapshot() {}, selectMeeting: id => calls.push(['select', id]), render() {}, showError(error) { throw error; }, beginNavigation: history => { calls.push(['navigate', history]); return () => true; }, escape: value => String(value ?? ''), icon: name => `<svg data-icon="${name}"></svg>`, duration: String, recordingStatus: String });
   library.render();
   const views = mountSidebarViews({ aside: el('navigation-sidebar'), navigation: el('sidebar-navigation-view'), notifications: el('notification-center'), trigger: el('notifications-open'), badge: el('notification-count'), onPreview: view => library.preview(view) });
   t.after(() => views.destroy());
