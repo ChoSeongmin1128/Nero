@@ -78,6 +78,16 @@ test('취소한 요청이 끝날 때까지 바쁨 상태를 유지해 바로 다
   assert.equal(flow.getSnapshot().busy, false);
 });
 
+test('닫혀 있어도 같은 회의의 자료 수를 다시 읽습니다', async () => {
+  let sources = [];
+  const { flow, select } = setup({ meetingSources: async () => ({ revision: sources.length, sources }) });
+  select({ id: 'one' }); await tick();
+  assert.equal(flow.getSnapshot().open, false);
+  sources = [{ sourceId: 'agent-added' }];
+  await flow.reload();
+  assert.equal(flow.getSnapshot().sources.length, 1);
+});
+
 test('갱신 충돌이나 취소 시 기존 참조를 유지합니다', async () => {
   const pending = deferred(); let calls = 0;
   const { flow, source, select } = setup({

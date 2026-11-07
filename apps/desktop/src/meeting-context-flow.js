@@ -40,7 +40,17 @@ export function createMeetingContextFlow({ bridge, getMeeting, onChanged = () =>
       }).catch(() => {});
     },
     setLink(link) { publish({ link }); },
-    async reload() { if (state.open && state.meetingId === getMeeting()?.id) await load(state.meetingId, epoch); },
+    async reload() {
+      const meetingId = getMeeting()?.id;
+      if (!meetingId || state.meetingId !== meetingId) return;
+      if (state.open) { await load(meetingId, epoch); return; }
+      // Closed, the button still shows how many sources the meeting has.
+      const token = epoch;
+      try {
+        const value = await bridge.meetingSources(meetingId);
+        if (!disposed && epoch === token && getMeeting()?.id === meetingId) publish({ revision: value.revision, sources: value.sources });
+      } catch {}
+    },
     async add() {
       const { meetingId, revision, link } = state, token = epoch;
       if (!current(meetingId, token) || state.busy || state.loading || !link.trim()) return;
