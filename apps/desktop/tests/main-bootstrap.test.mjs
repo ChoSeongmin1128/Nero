@@ -138,7 +138,7 @@ test('the real application HTML boots and opens all settings tabs without stale 
   for (const name of ['appearance', 'icons', 'components']) window.eval(await readFile(new URL(`../../../design-system/${name}.js`, import.meta.url), 'utf8'));
   const calls = [];
   const subscriptions = {};
-  const snapshot = { revision: 1, session: null, meetings: [], folders: [] };
+  let snapshot = { revision: 1, session: null, meetings: [], folders: [] };
   const stubs = {
     readSnapshot: () => snapshot, listDevices: () => [],
     processingStatus: () => ({ status: 'idle', supported: true, modelReady: true, summarySupported: true, summaryReady: true }),
@@ -192,6 +192,7 @@ test('the real application HTML boots and opens all settings tabs without stale 
   assert.equal(window.document.getElementById('sidebar-app-update').querySelector('[data-app-update-label]').textContent, '다시 시작해 업데이트');
   assert.doesNotMatch(window.document.getElementById('notification-center').textContent, /업데이트 설치 준비 완료/);
   const recording = { revision: 2, folders: [], meetings: [{ id: 'one', title: '회의', createdAt: 1, notes: '', status: 'recording' }], session: { id: 'capture', meetingId: 'one', state: 'paused', elapsedMs: 1000 } };
+  snapshot = recording;
   subscriptions.subscribeSnapshots(recording);
   await wait(() => window.document.querySelector('[data-action="show-recorder"]'));
   const reopen = window.document.querySelector('[data-action="show-recorder"]');

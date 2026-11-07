@@ -14,7 +14,7 @@ export function mountTerminologySettings({ byId, bridge, isProcessing, onChange 
     info = null;
     error = '';
     render();
-    if (!active || !bridge.readTerminologySettings) return;
+    if (!active) return;
     try {
       if (saving) await saving.catch(() => {});
       if (!current(value)) return;

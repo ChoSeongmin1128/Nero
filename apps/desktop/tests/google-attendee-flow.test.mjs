@@ -75,7 +75,7 @@ test('existing temporary and saved attendees retain IDs and names when sources a
 
 test('one failed CAS preserves manual, Google and promotion changes without another write path', async () => {
   let calls = 0;
-  const f = fixture({ applyMeetingAttendeeDraft: async () => { calls++; throw Error('Version conflict'); }, replaceMeetingAttendees: async () => assert.fail('Must not save a subset'), promoteMeetingAttendee: async () => assert.fail('Must not save a subset') });
+  const f = fixture({ applyMeetingAttendeeDraft: async () => { calls++; throw Error('Version conflict'); } });
   await f.flow.open('meeting'); f.flow.rename('manual', 'Changed');
   f.flow.chooseGoogle(source('100'), 'new'); await f.flow.promote('new-1', 'Promoted person');
   const draft = clone(f.flow.getSnapshot());

@@ -6,9 +6,6 @@ function call(command, args) {
 }
 export const readPeopleCatalog = () => call('people_catalog');
 export const replacePeopleCatalog = (expectedVersion, people, groups) => call('replace_people_catalog', { expectedVersion, people, groups });
-export const readMeetingAttendees = meetingId => call('meeting_attendees', { id: meetingId });
-export const replaceMeetingAttendees = (meetingId, expectedVersion, attendees) => call('replace_meeting_attendees', { id: meetingId, expectedVersion, attendees });
-export const promoteMeetingAttendee = (meetingId, expectedVersion, expectedCatalogVersion, attendeeId, name) => call('promote_meeting_attendee', { id: meetingId, expectedVersion, expectedCatalogVersion, attendeeId, name });
 export const readGoogleAttendeeRoster = id => call('google_attendee_roster', { id });
 export const fetchGoogleAttendees = (id, includeMeet = true) => call('fetch_google_attendees', { id, includeMeet });
 export const applyMeetingAttendeeDraft = (id, expectedVersion, draft) => call('apply_meeting_attendee_draft', { id, expectedVersion, draft });

@@ -47,11 +47,7 @@ export function createAttendeeFlow({ bridge, onChanged = () => {}, uuid = () => 
   // connected account there is nothing to fetch and no retry that could help.
   const readCalendar = () => bridge.readCalendarSettings ? bridge.readCalendarSettings().catch(() => null) : Promise.resolve(null);
   const googleAccess = meeting => !meeting?.calendarReference ? 'unlinked' : calendar && !calendar.connected ? 'disconnected' : 'ready';
-  const read = async () => {
-    if (bridge.readGoogleAttendeeRoster) return bridge.readGoogleAttendeeRoster(meetingId);
-    const [meeting, catalog] = await Promise.all([bridge.readMeetingAttendees(meetingId), bridge.readPeopleCatalog()]);
-    return { ...meeting, catalog };
-  };
+  const read = () => bridge.readGoogleAttendeeRoster(meetingId);
   const operate = async task => {
     if (!state.open || state.busy || state.googleConnecting) return false;
     const generation = epoch;
@@ -93,13 +89,7 @@ export function createAttendeeFlow({ bridge, onChanged = () => {}, uuid = () => 
       return operate(async () => {
         if (!dirty()) return;
         const next = clone(draft()); next.attendees = next.attendees.map(item => ({ ...item, name: item.name?.trim() || undefined }));
-        let result;
-        if (bridge.applyMeetingAttendeeDraft) result = await bridge.applyMeetingAttendeeDraft(state.meeting.id, expected, next);
-        else {
-          if (next.sources.length || next.personLinks.length || next.promotions.length) throw new Error('Nero 앱을 업데이트해 주세요.');
-          result = await bridge.replaceMeetingAttendees(state.meeting.id, expected, next.attendees);
-        }
-        accept(result);
+        accept(await bridge.applyMeetingAttendeeDraft(state.meeting.id, expected, next));
         await Promise.resolve(onChanged()).catch(() => {});
       });
     },

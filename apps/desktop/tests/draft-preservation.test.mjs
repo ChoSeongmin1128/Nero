@@ -113,7 +113,8 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
   let devices = [];
   let closeRequest;
   const bridge = {
-    setAutoRecorder: async () => {}, subscribeProcessingError: async () => () => {},
+    setAutoRecorder: async () => {}, subscribeProcessingError: async () => () => {}, subscribeAgentWriteRequest: async () => () => {}, subscribeAgentChanged: async () => () => {},
+    readTerminologySettings: async () => ({ available: false }),
     readSummary: async () => null,
     exportDocument: async (id, kind, format, includeCitations) => ({ name: `회의-음성 기록.${format}`, text: id === 'a' && kind === 'transcript' ? transcript.segments.map(segment => segment.text).join('\n') : 'native summary result', kind, format, includeCitations }),
     subscribeProcessing: async () => () => {}, processingStatus: async () => structuredClone(readiness), readTranscript: async (id) => id === 'a' ? structuredClone(transcript) : null,
@@ -1155,15 +1156,12 @@ test('capture quality warning stays visible during recording and after completio
   assert.equal(page.element('recording-message').textContent, '장치 연결이 끊어졌습니다.');
 });
 
-test('discarded older snapshots cannot replace the content comparison or recording timer', async () => {
+test('a timer-only snapshot updates the recording time without rewriting the meeting status', async () => {
   const page = await openApp();
   const initial = structuredClone(page.app.state.snapshot);
   const active = { ...initial, revision: 10, session: { id: 'capture', meetingId: 'a', state: 'recording', elapsedMs: 1000 } };
   page.app.acceptSnapshot(active);
   const statusWrites = page.element('meeting-status').htmlWrites;
-  page.app.acceptSnapshot({ ...active, revision: 9, meetings: [], session: null });
-  assert.equal(page.app.state.snapshot.revision, 10);
-  assert.equal(page.app.state.selectedId, 'a');
   page.app.acceptSnapshot({ ...active, revision: 11, session: { ...active.session, elapsedMs: 2000 } });
   assert.equal(page.element('recording-time').textContent, '00:02');
   assert.equal(page.element('meeting-status').htmlWrites, statusWrites);

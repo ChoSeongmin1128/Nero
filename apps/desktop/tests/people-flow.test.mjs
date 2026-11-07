@@ -4,6 +4,7 @@ import { nameUnnamedAttendees, attendeeInputAction, addPeople, attendeeLabel, cr
 
 const empty = () => ({ people: [], groups: [], editVersion: 'catalog:1' });
 const meeting = (id = 'meeting', attendees = [], editVersion = 'meeting:1') => ({ meeting: { id, attendees }, editVersion });
+const roster = (readMeeting, readCatalog = async () => empty()) => async id => ({ ...await readMeeting(id), catalog: await readCatalog() });
 const wait = async predicate => { for (let i = 0; i < 50; i++) { if (predicate()) return; await new Promise(resolve => setTimeout(resolve, 2)); } assert.fail('State did not settle'); };
 
 test('adding a group preserves existing names, skips duplicates and never assigns a speaker', () => {
@@ -16,7 +17,7 @@ test('adding a group preserves existing names, skips duplicates and never assign
 
 test('recording roster changes save against the read version and do not modify the catalog', async () => {
   const writes = []; let changed = 0;
-  const flow = createAttendeeFlow({ bridge: { readMeetingAttendees: async () => meeting(), readPeopleCatalog: async () => empty(), replaceMeetingAttendees: async (...args) => { writes.push(args); return meeting('meeting', args[2], 'meeting:2'); } }, uuid: () => 'guest', onChanged: () => { changed++; } });
+  const flow = createAttendeeFlow({ bridge: { readGoogleAttendeeRoster: roster(async () => meeting()), applyMeetingAttendeeDraft: async (id, version, draft) => { writes.push([id, version, draft.attendees]); return meeting('meeting', draft.attendees, 'meeting:2'); } }, uuid: () => 'guest', onChanged: () => { changed++; } });
   await flow.open('meeting'); flow.addTemporary(); flow.rename('guest', '방문자');
   assert.equal(flow.isDirty(), true);
   assert.equal(await flow.save(), true);
@@ -25,7 +26,7 @@ test('recording roster changes save against the read version and do not modify t
 });
 
 test('a conflicting roster save preserves the local draft and does not pretend it was applied', async () => {
-  const flow = createAttendeeFlow({ bridge: { readMeetingAttendees: async () => meeting(), readPeopleCatalog: async () => empty(), replaceMeetingAttendees: async () => { throw Error('회의가 변경됐습니다.'); } }, uuid: () => 'guest' });
+  const flow = createAttendeeFlow({ bridge: { readGoogleAttendeeRoster: roster(async () => meeting()), applyMeetingAttendeeDraft: async () => { throw Error('회의가 변경됐습니다.'); } }, uuid: () => 'guest' });
   await flow.open('meeting'); flow.addTemporary();
   assert.equal(await flow.save(), false); assert.equal(flow.isDirty(), true);
   assert.equal(flow.getSnapshot().attendees.length, 1); assert.match(flow.getSnapshot().error, /변경/);
@@ -34,7 +35,7 @@ test('a conflicting roster save preserves the local draft and does not pretend i
 test('promotion stays in the roster draft and applies with manual changes in one write', async () => {
   const calls = [];
   let sequence = 0;
-  const flow = createAttendeeFlow({ bridge: { readMeetingAttendees: async () => meeting(), readPeopleCatalog: async () => empty(), applyMeetingAttendeeDraft: async (...args) => { calls.push(args); throw Error('인원 목록이 변경됐습니다.'); } }, uuid: () => `draft-${++sequence}` });
+  const flow = createAttendeeFlow({ bridge: { readGoogleAttendeeRoster: roster(async () => meeting()), applyMeetingAttendeeDraft: async (...args) => { calls.push(args); throw Error('인원 목록이 변경됐습니다.'); } }, uuid: () => `draft-${++sequence}` });
   await flow.open('meeting'); flow.addTemporary(); flow.rename('guest', '김하늘');
   assert.equal(await flow.promote('draft-1', ' 김하늘 '), true);
   assert.equal(calls.length, 0);
@@ -48,7 +49,7 @@ test('promotion stays in the roster draft and applies with manual changes in one
 
 test('a slow meeting request cannot replace a different meeting opened later', async () => {
   let complete;
-  const flow = createAttendeeFlow({ bridge: { readMeetingAttendees: id => id === 'old' ? new Promise(resolve => { complete = resolve; }) : Promise.resolve(meeting('new')), readPeopleCatalog: async () => empty() } });
+  const flow = createAttendeeFlow({ bridge: { readGoogleAttendeeRoster: roster(id => id === 'old' ? new Promise(resolve => { complete = resolve; }) : Promise.resolve(meeting('new'))) } });
   const pending = flow.open('old'); await flow.open('new'); complete(meeting('old')); await pending;
   assert.equal(flow.getSnapshot().meeting.id, 'new'); assert.equal(flow.getSnapshot().busy, false);
 });
@@ -118,8 +119,7 @@ test('initial roster read failure can retry the same meeting without closing the
   let fail = true;
   const reads = [];
   const flow = createAttendeeFlow({ bridge: {
-    readMeetingAttendees: async id => { reads.push(id); if (fail) throw Error('읽기 실패'); return meeting(id); },
-    readPeopleCatalog: async () => empty(),
+    readGoogleAttendeeRoster: roster(async id => { reads.push(id); if (fail) throw Error('읽기 실패'); return meeting(id); }),
   } });
   await flow.open('retry-meeting');
   assert.equal(flow.getSnapshot().meeting, null);
@@ -134,8 +134,7 @@ test('initial roster read failure can retry the same meeting without closing the
 test('initial reads can be cancelled and their late reply cannot populate a later meeting', async () => {
   let resolveOld;
   const flow = createAttendeeFlow({ bridge: {
-    readMeetingAttendees: id => id === 'old' ? new Promise(resolve => { resolveOld = resolve; }) : Promise.resolve(meeting(id)),
-    readPeopleCatalog: async () => empty(),
+    readGoogleAttendeeRoster: roster(id => id === 'old' ? new Promise(resolve => { resolveOld = resolve; }) : Promise.resolve(meeting(id))),
   } });
   const opening = flow.open('old');
   assert.equal(flow.getSnapshot().loading, true);
@@ -150,8 +149,8 @@ test('initial reads can be cancelled and their late reply cannot populate a late
 test('pending attendee writes remain protected from dismissal', async () => {
   let resolveSave;
   const flow = createAttendeeFlow({ bridge: {
-    readMeetingAttendees: async () => meeting(), readPeopleCatalog: async () => empty(),
-    replaceMeetingAttendees: () => new Promise(resolve => { resolveSave = resolve; }),
+    readGoogleAttendeeRoster: roster(async () => meeting()),
+    applyMeetingAttendeeDraft: () => new Promise(resolve => { resolveSave = resolve; }),
   }, uuid: () => 'new' });
   await flow.open('meeting'); flow.addTemporary(); const saving = flow.save();
   assert.equal(flow.getSnapshot().loading, false); assert.equal(flow.close(), false);
@@ -248,8 +247,8 @@ test('one attendee input resolves group, managed people and temporary names befo
   let id = 0; const writes = [];
   const catalog = { ...empty(), people: [{ id: 'p', name: '민서' }, { id: 'q', name: '도윤' }], groups: [{ id: 'g', name: '제품팀', personIds: ['p', 'q'] }] };
   const flow = createAttendeeFlow({ uuid: () => `a${++id}`, bridge: {
-    readMeetingAttendees: async () => meeting(), readPeopleCatalog: async () => catalog,
-    replaceMeetingAttendees: async (...args) => { writes.push(args); return meeting('meeting', args[2], 'meeting:2'); },
+    readGoogleAttendeeRoster: roster(async () => meeting(), async () => catalog),
+    applyMeetingAttendeeDraft: async (id, version, draft) => { writes.push([id, version, draft.attendees]); return meeting('meeting', draft.attendees, 'meeting:2'); },
   } });
   await flow.open('meeting'); assert.equal(flow.addInput('제품팀, 방문자\n새 이름'), true);
   assert.equal(writes.length, 0); assert.equal(flow.getSnapshot().attendees.length, 4);

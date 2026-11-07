@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { ArrowUp, ArrowLeft, ArrowUpRight, Search, Square, Plus, X, FileText, RotateCcw, NotebookPen, Copy, Check, ChevronDown, ChevronLeft, ChevronRight, SquarePen, Trash2, MessageCircle, Pencil } from 'lucide-react';
 import { conversationPath, questionVersions, sentQuestions } from './ai-chat-versions.js';
-import { effectiveEffort, usableAccount } from './ai-chat-flow.js';
+import { effectiveEffort, temporaryMessageId, usableAccount } from './ai-chat-flow.js';
 import { Popover, PopoverTrigger, PopoverContent, PopoverTitle } from '../../../design-system/components/ui/popover.jsx';
 import { brandIconUrl } from './brand-icons.js';
 import { BrandIcon } from './brand-icon.jsx';
@@ -106,7 +106,7 @@ function Question({ flow, conversation, message, busy, catalog, onMeeting }) {
   const template = message.template?.name || catalog?.templates?.find(item => item.id === message.templateId)?.name || '';
   const input = React.useRef(null);
   const { siblings, position } = questionVersions(conversation, message.id);
-  const locked = busy || Boolean(conversation.activeRequestId || conversation.action) || /^(?:user|assistant):/.test(message.id);
+  const locked = busy || Boolean(conversation.activeRequestId || conversation.action) || temporaryMessageId(message.id);
   React.useEffect(() => { if (editing) { input.current?.focus(); input.current?.setSelectionRange(text.length, text.length); } }, [editing]);
   React.useEffect(() => { setEditing(false); }, [conversation.key]);
   const changed = Boolean(text.trim()) && text.trim() !== typed.trim();

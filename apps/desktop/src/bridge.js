@@ -75,8 +75,6 @@ export async function subscribeCloseRequest(callback) {
 }
 
 export const processingStatus = () => call('processing_status');
-export const prepareModel = () => call('prepare_model');
-export const setSpeechEngine = engine => call('set_speech_engine', { engine });
 export const requestSpeechEngine = engine => call('request_speech_engine', { engine });
 export const cancelSpeechSwitch = () => call('cancel_speech_switch');
 export const respondSpeechOffer = accept => call('respond_speech_offer', { accept });

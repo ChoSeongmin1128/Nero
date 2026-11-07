@@ -462,7 +462,6 @@ async function changeMeetingDate() {
 }
 
 function acceptSnapshot(snapshot) {
-  if (snapshot.revision != null && state.snapshot.revision != null && snapshot.revision < state.snapshot.revision) return;
   const previousMeeting = currentMeeting();
   const signatures = snapshotSignatures(snapshot);
   const comparison = compareSnapshotSignatures(state.snapshotSignatures, signatures);
@@ -1583,8 +1582,8 @@ byId('audio-player').addEventListener('timeupdate', () => {
 
 try {
   await bridge.subscribeSnapshots(acceptSnapshot);
-  await bridge.subscribeAgentWriteRequest?.(onAgentWriteRequest);
-  await bridge.subscribeAgentChanged?.(onAgentChanged);
+  await bridge.subscribeAgentWriteRequest(onAgentWriteRequest);
+  await bridge.subscribeAgentChanged(onAgentChanged);
   await bridge.subscribeProcessingError(({ message }) => showError(message));
   await bridge.subscribeProcessing((progress) => { void acceptProcessing(progress).catch(showError); });
   await bridge.setAutoRecorder(state.autoRecorder);

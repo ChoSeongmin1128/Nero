@@ -53,7 +53,6 @@ function showError(error) {
 }
 
 function acceptSnapshot(value) {
-  if (value.revision != null && snapshot.revision != null && value.revision < snapshot.revision) return;
   snapshot = value;
   render();
 }

@@ -1,6 +1,6 @@
 import { conversationPath, parentOf, questionVersions, ROOT } from './ai-chat-versions.js';
 const DRAFT = 'draft';
-const temporary = id => /^(?:user|assistant):/.test(String(id || ''));
+export const temporaryMessageId = id => /^(?:user|assistant):/.test(String(id || ''));
 const emptyConversation = id => ({ id: id || null, key: id || DRAFT, title: '새 대화', messages: [], activeRequestId: null, draft: '', templateId: null, skillId: null, summaryTargetId: null, meetings: [], sources: [], excludedSourceKeys: [], contextBusy: false, compositionInitialized: false, error: '', feedback: '', action: null, loading: false, loaded: !id });
 const errorMessage = (error, fallback) => error?.message || fallback;
 const terminal = new Set(['completed', 'failed', 'cancelled']);
@@ -564,7 +564,7 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
         const attachments = attachmentsFor(context), saveTargets = context.meetings.map(meeting => ({ meetingId: meeting.id, title: meeting.title, canSaveSummary: false }));
         // Messages only this window shows (a failed start) never reach the store, so the
         // store's parent is the last stored message on the shown path.
-        const shownStored = conversationPath(context).filter(item => !temporary(item.id));
+        const shownStored = conversationPath(context).filter(item => !temporaryMessageId(item.id));
         const parentId = editOf ? parentOf(context, editOf) : shownStored.at(-1)?.id || ROOT;
         const versions = editOf ? { ...previousVersions, [parentId]: questionKey } : context.versions;
         const messages = [...context.messages, { id: questionKey, parentId, role: 'user', text: text.trim(), status: 'completed', effort, templateId, skillId, summaryTargetId: context.summaryTargetId, attachments }, { id: `assistant:${requestId}`, parentId: questionKey, requestId, role: 'assistant', text: '', status: 'streaming', modelId, provider: state.provider, effort, skillId, summaryTargetId: context.summaryTargetId, citations: [], attachments, saveTargets }];
@@ -596,7 +596,7 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
       const conversation = state.conversation;
       if (conversation.activeRequestId || conversation.action || !String(text || '').trim()) return false;
       const prompt = conversationPath(conversation).find(item => item.id === messageId && item.role === 'user');
-      if (!prompt || temporary(prompt.id)) return false;
+      if (!prompt || temporaryMessageId(prompt.id)) return false;
       const selection = attachmentSelection(prompt.attachments);
       if ((prompt.attachments || []).filter(item => item.kind === 'meeting').length !== selection.meetings.length) { updateConversation(conversation.key, { error: '삭제된 회의를 제외하고 다시 질문해 주세요.' }); return false; }
       return flow.send(text, { editOf: messageId, templateId: prompt.templateId || prompt.template?.id || '', skillId: prompt.skillId || '', summaryTargetId: prompt.summaryTargetId || '', ...selection });
