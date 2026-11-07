@@ -724,10 +724,14 @@ fn initialized_session(path: &Path, client: &str, token: &str) -> Option<Value> 
     let file = OpenOptions::new()
         .read(true)
         .write(true)
-        .open(lock_path)
+        .open(&lock_path)
         .ok()?;
     match file.try_lock_exclusive() {
+        // The CLI holds this lock while its session lives; a free lock means a host
+        // killed it before it could remove its files, so they are removed here.
         Ok(()) => {
+            let _ = fs::remove_file(path);
+            let _ = fs::remove_file(&lock_path);
             let _ = FileExt::unlock(&file);
             None
         }
@@ -1755,6 +1759,23 @@ mod tests {
             fs::write(temp.path().join(format!("{i:032}.json")), "{}").unwrap();
         }
         assert!(live_session(temp.path(), "codex", token, &generation));
+    }
+    #[test]
+    fn a_session_whose_process_is_gone_leaves_no_files_behind() {
+        let temp = tempfile::tempdir().unwrap();
+        let token = "11111111-1111-4111-8111-111111111111";
+        let generation = "a".repeat(64);
+        let session = temp.path().join("00000000000000000000000000000001.json");
+        fs::write(
+            &session,
+            json!({"schemaVersion":1,"client":"codex","token":token,"generation":generation})
+                .to_string(),
+        )
+        .unwrap();
+        fs::write(session.with_extension("lock"), b"").unwrap();
+        assert!(!live_session(temp.path(), "codex", token, &generation));
+        assert!(!session.exists());
+        assert!(!session.with_extension("lock").exists());
     }
     #[test]
     fn template_only_package_updates_change_generation_with_the_same_native_binary() {
