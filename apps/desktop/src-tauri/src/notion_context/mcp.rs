@@ -344,7 +344,15 @@ pub(super) fn parse_source(result: Value, page_id: &str, fetched_at: u64) -> Res
     if normalize_page_id(&url)? != page_id {
         return Err(Error::Protocol);
     }
-    let title = value.and_then(|value| metadata_text(value, &["title", "name"]));
+    // A tab or line break in a Notion title is spacing, not a reason to refuse the page.
+    let title = value
+        .and_then(|value| metadata_text(value, &["title", "name"]))
+        .map(|title| {
+            title
+                .chars()
+                .map(|c| if c.is_control() { ' ' } else { c })
+                .collect::<String>()
+        });
     let last_edited_at = value.and_then(|value| {
         metadata_text(value, &["page_last_edited_at", "last_edited_time"]).or_else(|| {
             metadata_text(

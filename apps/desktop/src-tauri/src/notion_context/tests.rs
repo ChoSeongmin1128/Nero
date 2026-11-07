@@ -571,6 +571,14 @@ fn missing_storage_reads_do_not_initialize_any_library_or_reuse_another_clients_
 }
 
 #[test]
+fn control_characters_in_a_title_become_spaces() {
+    let result =
+        json!({"content":[],"structuredContent":{"id":PAGE,"title":"A\tB\nC","text":"body"}});
+    let source = mcp::parse_source(result, PAGE, 1).unwrap();
+    assert_eq!(source.title.as_deref(), Some("A B C"));
+}
+
+#[test]
 fn truncated_pages_keep_the_reported_omissions_and_empty_bodies_are_not_invented() {
     let result = json!({"content":[{"type":"text","text":json!({"id":PAGE,"title":"Partial","text":"Observed body","truncated":true,"unknown_block_count":7,"unknown_block_ids":[OTHER]}).to_string()}]});
     let source = mcp::parse_source(result, PAGE, 1).unwrap();
