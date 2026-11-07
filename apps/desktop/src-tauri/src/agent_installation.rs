@@ -769,6 +769,19 @@ pub(super) fn client_info(
     }
     .into();
     match info.installation_state.as_str() {
+        // Claude installs a local package only when its number is larger, so a
+        // package rebuilt under the same number never replaces the installed one.
+        "outdated"
+            if client == "claude"
+                && info.installed_version.is_some()
+                && info.installed_version == info.package_version =>
+        {
+            info.state = "update_required".into();
+            info.action = "none".into();
+            info.detail = Some(format!(
+                "{name}에 설치된 Nero 연동과 번호가 같아 업데이트되지 않습니다. {name} 설정에서 Nero 연동을 제거한 뒤 다시 연결해 주세요."
+            ));
+        }
         "outdated" => {
             info.state = "update_required".into();
             info.action = "update".into();
