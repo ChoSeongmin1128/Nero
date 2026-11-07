@@ -345,12 +345,7 @@ fn check_source(
         return Err(failure(FailureKind::SourceChanged));
     }
     let snapshot = core.snapshot().map_err(source_failure)?;
-    if snapshot.session.is_some_and(|session| {
-        matches!(
-            session.state,
-            nero_core::SessionState::Recording | nero_core::SessionState::Paused
-        )
-    }) {
+    if snapshot.active_session().is_some() {
         return Err(failure(FailureKind::RecordingActive));
     }
     Ok(())

@@ -1461,14 +1461,8 @@ impl Processing {
                     if core
                         .snapshot()
                         .map_err(preflight_core_failure)?
-                        .session
-                        .is_some_and(|s| {
-                            matches!(
-                                s.state,
-                                nero_core::SessionState::Recording
-                                    | nero_core::SessionState::Paused
-                            )
-                        })
+                        .active_session()
+                        .is_some()
                     {
                         return Err(Failure::new(
                             FailureKind::RecordingActive,

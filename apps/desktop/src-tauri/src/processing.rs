@@ -1252,10 +1252,7 @@ impl Processing {
 
     fn synchronize_recording(&self, core: &CoreHandle) -> Result<(), String> {
         self.recording.store(
-            core.snapshot()
-                .map_err(message)?
-                .session
-                .is_some_and(|s| matches!(s.state, SessionState::Recording | SessionState::Paused)),
+            core.snapshot().map_err(message)?.active_session().is_some(),
             Ordering::Release,
         );
         Ok(())
@@ -1644,12 +1641,10 @@ impl Processing {
         {
             return Err(nero_core::CoreError::MeetingNotFound);
         }
-        if snapshot.session.as_ref().is_some_and(|session| {
-            matches!(
-                session.state,
-                SessionState::Recording | SessionState::Paused
-            ) && ids.contains(&session.meeting_id)
-        }) {
+        if snapshot
+            .active_session()
+            .is_some_and(|session| ids.contains(&session.meeting_id))
+        {
             return Err(nero_core::CoreError::InvalidState(
                 "녹음을 마친 뒤 삭제해 주세요.".into(),
             ));
@@ -3039,12 +3034,7 @@ impl Processing {
                 // optional profile must never prevent preserving the recognized baseline.
                 let terminology = crate::terminology::load_snapshot(&this);
                 core.audio_path(&meeting_id).map_err(message)?;
-                if core.snapshot().map_err(message)?.session.is_some_and(|s| {
-                    matches!(
-                        s.state,
-                        nero_core::SessionState::Recording | nero_core::SessionState::Paused
-                    )
-                }) {
+                if core.snapshot().map_err(message)?.active_session().is_some() {
                     return Err("녹음을 마친 뒤 음성 인식을 시작해 주세요.".into());
                 }
                 this.update(|p| {
