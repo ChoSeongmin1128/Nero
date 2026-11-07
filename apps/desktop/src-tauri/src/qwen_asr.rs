@@ -391,6 +391,10 @@ pub(super) fn recognize(
     for index in 0..bounds.len() {
         command.arg(inputs.path().join(format!("chunk-{index:04}.wav")));
     }
+    // The chunks are on disk; a 200-minute recording's samples (about 730 MiB) need
+    // not stay in memory while the recognizer runs.
+    let frames = pcm.len();
+    drop(pcm);
     for (name, _) in std::env::vars_os() {
         let text = name.to_string_lossy();
         if text.starts_with("GGML_") || text.starts_with("CRISPASR_") {
@@ -418,7 +422,7 @@ pub(super) fn recognize(
         ));
     let mut child = crate::process_tree::spawn(&mut command)?;
     let began = Instant::now();
-    let limit = Duration::from_secs(600 + 3 * (pcm.len() / RATE) as u64);
+    let limit = Duration::from_secs(600 + 3 * (frames / RATE) as u64);
     loop {
         if cancel.load(Ordering::Acquire) {
             return Err("Qwen 처리를 취소했습니다.".into());
@@ -459,7 +463,6 @@ pub(super) fn recognize(
     {
         return Err("Qwen 실행기나 모델이 처리 중 변경됐습니다.".into());
     }
-    let frames = pcm.len();
     Ok(serde_json::to_vec(&json!({"schemaVersion":1,"model":model["repository"],"modelRevision":model["revision"],
         "modelSha256":hashes[0],"alignerSha256":hashes[1],"runtime":runtime["identity"],"target":"macos-arm64",
         "processingPolicy":"qwen3-pause-chunks-v1","completionEvidence":"crispasr-exit0-v1",
