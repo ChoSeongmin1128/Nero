@@ -545,7 +545,10 @@ fn model_speaker_id(value: Option<&serde_json::Value>) -> Option<String> {
     }
 }
 
-fn validate_speakers(speakers: &[TranscriptSpeaker], assignments: &[Option<String>]) -> Result<()> {
+pub(crate) fn validate_speakers(
+    speakers: &[TranscriptSpeaker],
+    assignments: &[Option<String>],
+) -> Result<()> {
     let mut ids = BTreeSet::new();
     for speaker in speakers {
         if speaker.id.is_empty()

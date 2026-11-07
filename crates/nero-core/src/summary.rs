@@ -217,26 +217,17 @@ pub(crate) fn citation_bytes(root: &Path, relative: &Path) -> Result<Vec<u8>> {
 fn validate_citation_source(source: &Transcript) -> Result<()> {
     store::validate_id(&source.version.id)?;
     store::validate_id(&source.source_session_id)?;
-    if source.segments.is_empty() || source.segments.len() > 100_000 || source.speakers.len() > 4096
-    {
+    if source.segments.is_empty() || source.segments.len() > 100_000 {
         return Err(invalid_citations());
     }
-    let mut speakers = BTreeSet::new();
-    for speaker in &source.speakers {
-        if speaker.id.is_empty()
-            || speaker.id.len() > 128
-            || !speaker
-                .id
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b':'))
-            || !speakers.insert(&speaker.id)
-            || speaker.name.trim().is_empty()
-            || speaker.name.len() > 256
-            || speaker.name.chars().any(char::is_control)
-        {
-            return Err(invalid_citations());
-        }
-    }
+    // The same speaker rules a transcript write enforces, including assignments.
+    let assignments = source
+        .segments
+        .iter()
+        .map(|segment| segment.speaker_id.clone())
+        .collect::<Vec<_>>();
+    crate::transcript::validate_speakers(&source.speakers, &assignments)
+        .map_err(|_| invalid_citations())?;
     let mut segments = BTreeSet::new();
     for segment in &source.segments {
         store::validate_id(&segment.id)?;
@@ -249,10 +240,6 @@ fn validate_citation_source(source: &Transcript) -> Result<()> {
             || segment.original_text.len() > 2 * 1024 * 1024
             || segment.text.contains('\0')
             || segment.original_text.contains('\0')
-            || segment
-                .speaker_id
-                .as_ref()
-                .is_some_and(|id| !speakers.contains(id))
         {
             return Err(invalid_citations());
         }
