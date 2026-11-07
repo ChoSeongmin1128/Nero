@@ -136,9 +136,23 @@ pub fn meeting_removal<T>(
         .try_state::<AiDesktop>()
         .and_then(|state| state.chat.clone());
     crate::meeting_context_desktop::removal(app, ids, permanent, || match chat {
-        Some(chat) => chat
-            .with_meeting_removal(ids, permanent, || action().map_err(|e| e.to_string()))
-            .map_err(nero_core::CoreError::InvalidState),
+        Some(chat) => {
+            // The chat layer speaks in strings; the action's own error (an edit
+            // conflict, a recording in the way) goes back to the caller unchanged.
+            let mut failure = None;
+            chat.with_meeting_removal(ids, permanent, || {
+                action().map_err(|error| {
+                    let message = error.to_string();
+                    failure = Some(error);
+                    message
+                })
+            })
+            .map_err(|message| {
+                failure
+                    .take()
+                    .unwrap_or(nero_core::CoreError::InvalidState(message))
+            })
+        }
         None => action(),
     })
 }
