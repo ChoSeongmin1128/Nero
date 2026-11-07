@@ -33,6 +33,14 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
   } catch {}
   const persistModels = () => { try { globalThis.localStorage?.setItem('nero.ai.models.v1', JSON.stringify({ accounts: Object.fromEntries(modelCache), selection: { provider: state.provider, accountId: state.accountId, modelId: state.modelId, effort: state.effort } })); } catch {} };
   const publish = patch => { if (disposed) return; state = { ...state, ...patch }; listeners.forEach(listener => listener()); };
+  const pickModel = (models, defaultModelId, current = state.modelId) => [current, defaultModelId].find(id => id && models.some(item => item.id === id)) || models[0]?.id || null;
+  const storeModels = (accountId, result, patch = {}) => {
+    const models = (result.models || []).map(cleanModel);
+    modelCache.set(accountId, { models, defaultModelId: result.defaultModelId });
+    const modelId = pickModel(models, result.defaultModelId);
+    publish({ ...patch, ...(state.accountId === accountId ? { models, modelId, effort: allowedEffort(models, modelId, state.effort) } : {}) });
+    persistModels();
+  };
   const invalidateModels = accountId => {
     if (!accountId) return;
     modelGenerations.set(accountId, (modelGenerations.get(accountId) || 0) + 1);
@@ -121,7 +129,9 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
     if (changed) modelEpoch += 1;
     const cached = usableAccount(selected) && modelCache.get(accountId);
     const models = cached?.models || [];
-    const modelId = accountId === state.accountId && state.modelId ? state.modelId : cached?.defaultModelId || models[0]?.id || null;
+    const current = accountId === state.accountId ? state.modelId : null;
+    // The same account keeps its choice while its models are not loaded yet.
+    const modelId = current && !models.length ? current : pickModel(models, cached?.defaultModelId, current);
     publish({ accounts, accountsLoaded: true, provider, accountId, activeAccountId, models, modelId, effort: changed ? null : allowedEffort(models, modelId, state.effort), ...(changed ? { modelsBusy: false, modelError: '' } : {}) });
     // Claude rows come from the app's own cache, so a passive read also replaces labels saved by an earlier version.
     for (const item of accounts.filter(item => item.provider === 'claude' && usableAccount(item) && !refreshedModels.has(item.id) && !passiveModels.has(item.id))) {
@@ -129,14 +139,7 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
       passiveModels.add(item.id);
       void bridge.models(item.id, false).then(result => {
         if (disposed || generation !== (modelGenerations.get(item.id) || 0) || refreshedModels.has(item.id) || !state.accounts.some(account => account.id === item.id && usableAccount(account))) return;
-        const models = (result.models || []).map(cleanModel);
-        if (!models.length) return;
-        modelCache.set(item.id, { models, defaultModelId: result.defaultModelId });
-        if (state.accountId === item.id) {
-          const modelId = models.some(model => model.id === state.modelId) ? state.modelId : result.defaultModelId || models[0]?.id || null;
-          publish({ models, modelId, effort: allowedEffort(models, modelId, state.effort) });
-        } else publish({});
-        persistModels();
+        if (result.models?.length) storeModels(item.id, result);
       }).catch(() => {});
     }
   };
@@ -253,12 +256,31 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
     if (terminal.has(status)) void flow.loadList(true);
     if (status === 'completed' && messages[index].skillId === 'meeting-summary' && messages[index].summaryTargetId && messages[index].id === event.messageId) {
       const message = messages[index], meetingId = message.summaryTargetId;
-      if (message.saveTargets.some(target => target.meetingId === meetingId && target.canSaveSummary === true)) {
-        updateConversation(id, { action: `summary:${message.id}` });
-        void (async () => { try { await beforeWrite(meetingId); const result = await bridge.saveSummary({ conversationId: id, messageId: message.id, meetingId }); if (!result?.summaryId || result.applied === false) throw new Error('요약 저장 결과를 확인하지 못했습니다.'); updateConversation(id, { feedback: '요약을 저장했습니다.' }); await onSaved('summary', meetingId); } catch (error) { updateConversation(id, { error: errorMessage(error, '요약을 저장하지 못했습니다. 다시 시도해 주세요.') }); } finally { if (conversations.get(id)?.action === `summary:${message.id}`) updateConversation(id, { action: null }); } })();
-      } else updateConversation(id, { error: '선택한 회의에 요약을 저장할 수 없습니다.' });
+      if (message.saveTargets.some(target => target.meetingId === meetingId && target.canSaveSummary === true)) void saveAnswer(id, 'summary', message.id, meetingId);
+      else updateConversation(id, { error: '선택한 회의에 요약을 저장할 수 없습니다.' });
     }
   };
+  async function saveAnswer(id, kind, messageId, targetMeetingId) {
+    const conversation = conversations.get(id);
+    const message = conversation?.messages.find(item => item.id === messageId);
+    const targets = message?.saveTargets || [];
+    const eligibleTargets = kind === 'summary' ? targets.filter(item => item.canSaveSummary === true) : targets;
+    const meetingId = targetMeetingId || (eligibleTargets.length === 1 ? eligibleTargets[0].meetingId : null);
+    if (!['summary', 'note'].includes(kind) || !id || !conversation || !meetingId || !eligibleTargets.some(item => item.meetingId === meetingId) || conversation.activeRequestId || conversation.action || message?.role !== 'assistant' || message.status !== 'completed' || !message.text.trim()) return false;
+    const action = `${kind}:${messageId}`;
+    updateConversation(id, { action, error: '', feedback: '' });
+    try {
+      await beforeWrite(meetingId);
+      if (disposed || conversations.get(id)?.action === 'deleting') return false;
+      const payload = { conversationId: id, messageId, meetingId };
+      const result = await (kind === 'summary' ? bridge.saveSummary(payload) : bridge.appendNote(payload));
+      if (kind === 'summary' && (!result?.summaryId || result.applied === false)) throw new Error('요약 저장 결과를 확인하지 못했습니다.');
+      updateConversation(id, { feedback: kind === 'summary' ? '요약을 저장했습니다.' : '메모에 추가했습니다.' });
+      try { await onSaved(kind, meetingId); } catch { updateConversation(id, { error: '저장한 결과를 표시하지 못했습니다. 회의를 다시 열어 주세요.' }); }
+      return true;
+    } catch (error) { updateConversation(id, { error: errorMessage(error, '저장하지 못했습니다. 다시 시도해 주세요.') }); return false; }
+    finally { if (conversations.get(id)?.action === action) updateConversation(id, { action: null }); }
+  }
   // The panel follows the meeting on screen: its latest conversation, or a new one with the
   // meeting attached. An unsent draft waits for its meeting to come back.
   const meetingDrafts = new Map();
@@ -632,25 +654,7 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
       } catch (error) { if (owns()) updateConversation(id, { error: errorMessage(error, '복사하지 못했습니다. 다시 시도해 주세요.') }); return false; }
       finally { if (conversations.get(id)?.action === action) updateConversation(id, { action: null }); }
     },
-    async save(kind, messageId, targetMeetingId) {
-      const id = state.conversation.id, conversation = state.conversation;
-      const message = conversation.messages.find(item => item.id === messageId);
-      const targets = message?.saveTargets || [];
-      const eligibleTargets = kind === 'summary' ? targets.filter(item => item.canSaveSummary === true) : targets;
-      const meetingId = targetMeetingId || (eligibleTargets.length === 1 ? eligibleTargets[0].meetingId : null);
-      if (!['summary', 'note'].includes(kind) || !id || !meetingId || !eligibleTargets.some(item => item.meetingId === meetingId) || conversation.activeRequestId || conversation.action || message?.role !== 'assistant' || message.status !== 'completed' || !message.text.trim()) return false;
-      updateConversation(id, { action: `${kind}:${messageId}`, error: '', feedback: '' });
-      try {
-        await beforeWrite(meetingId);
-        if (disposed || conversations.get(id)?.action === 'deleting') return false;
-        const payload = { conversationId: id, messageId, meetingId };
-        await (kind === 'summary' ? bridge.saveSummary(payload) : bridge.appendNote(payload));
-        updateConversation(id, { feedback: kind === 'summary' ? '요약을 저장했습니다.' : '메모에 추가했습니다.' });
-        try { await onSaved(kind, meetingId); } catch { updateConversation(id, { error: '저장한 결과를 표시하지 못했습니다. 회의를 다시 열어 주세요.' }); }
-        return true;
-      } catch (error) { updateConversation(id, { error: errorMessage(error, '저장하지 못했습니다. 다시 시도해 주세요.') }); return false; }
-      finally { if (conversations.get(id)?.action !== 'deleting') updateConversation(id, { action: null }); }
-    },
+    save(kind, messageId, targetMeetingId) { return saveAnswer(state.conversation.id, kind, messageId, targetMeetingId); },
     setSettingsActive(settingsActive) {
       if (settingsActive === state.settingsActive) return;
       publish({ settingsActive });
@@ -676,12 +680,8 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
       try {
         const result = await bridge.models(accountId);
         if (disposed || generation !== (modelGenerations.get(accountId) || 0)) return;
-        const models = (result.models || []).map(cleanModel);
-        modelCache.set(accountId, { models, defaultModelId: result.defaultModelId });
         refreshedModels.add(accountId);
-        const modelId = models.some(model => model.id === state.modelId) ? state.modelId : models.some(model => model.id === result.defaultModelId) ? result.defaultModelId : models[0]?.id || null;
-        publish({ modelGroups: { ...state.modelGroups, [accountId]: { busy: false, error: '' } }, ...(state.accountId === accountId ? { models, modelId, effort: allowedEffort(models, modelId, state.effort) } : {}) });
-        persistModels();
+        storeModels(accountId, result, { modelGroups: { ...state.modelGroups, [accountId]: { busy: false, error: '' } } });
       } catch (error) { if (!disposed && generation === (modelGenerations.get(accountId) || 0)) publish({ modelGroups: { ...state.modelGroups, [accountId]: { busy: false, error: errorMessage(error, '모델을 불러오지 못했습니다.') } } }); }
     },
     // Opening the model menu is the request: the cached list shows at once and each
@@ -721,7 +721,7 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
       const cached = modelCache.get(accountId);
       if (!explicit || (account()?.state === 'unknown' && cached?.models?.length)) {
         const models = cached?.models || [];
-        const modelId = models.some(item => item.id === state.modelId) ? state.modelId : cached?.defaultModelId || models[0]?.id || null;
+        const modelId = pickModel(models, cached?.defaultModelId);
         publish({ models, modelId, effort: allowedEffort(models, modelId, state.effort), modelsBusy: false, modelError: '' });
         return;
       }
@@ -729,11 +729,8 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
       try {
         const result = await bridge.models(accountId);
         if (epoch !== modelEpoch || disposed) return;
-        const models = result.models || [];
-        modelCache.set(accountId, { models, defaultModelId: result.defaultModelId });
         refreshedModels.add(accountId);
-        const modelId = models.some(item => item.id === state.modelId) ? state.modelId : models.some(item => item.id === result.defaultModelId) ? result.defaultModelId : models[0]?.id || null;
-        publish({ models, modelId, effort: allowedEffort(models, modelId, state.effort), modelError: models.length ? '' : '사용할 수 있는 모델이 없습니다.' }); persistModels();
+        storeModels(accountId, result, { modelError: result.models?.length ? '' : '사용할 수 있는 모델이 없습니다.' });
         if (explicit && account()?.state === 'unknown') {
           try {
             const snapshot = await bridge.accounts();
@@ -745,7 +742,7 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
             if (epoch === modelEpoch && !disposed) publish({ accountsError: errorMessage(error, 'AI 계정을 확인하지 못했습니다.') });
           }
         }
-      } catch (error) { if (epoch === modelEpoch) { const models = cached?.models || []; const modelId = models.some(model => model.id === state.modelId) ? state.modelId : cached?.defaultModelId || models[0]?.id || null; publish({ models, modelId, effort: allowedEffort(models, modelId, state.effort), modelError: models.length ? '' : errorMessage(error, '모델을 불러오지 못했습니다.'), modelGroups: { ...state.modelGroups, [accountId]: { busy: false, error: errorMessage(error, '모델을 불러오지 못했습니다.') } } }); } }
+      } catch (error) { if (epoch === modelEpoch) { const models = cached?.models || []; const modelId = pickModel(models, cached?.defaultModelId); publish({ models, modelId, effort: allowedEffort(models, modelId, state.effort), modelError: models.length ? '' : errorMessage(error, '모델을 불러오지 못했습니다.'), modelGroups: { ...state.modelGroups, [accountId]: { busy: false, error: errorMessage(error, '모델을 불러오지 못했습니다.') } } }); } }
       finally { if (epoch === modelEpoch) publish({ modelsBusy: false }); }
     },
     selectModel(modelId) { if (!state.conversation.activeRequestId && state.models.some(item => item.id === modelId)) { publish({ modelId, effort: modelId === state.modelId ? state.effort : null }); persistModels(); } },

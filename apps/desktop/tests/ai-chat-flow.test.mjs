@@ -269,7 +269,7 @@ test('stop waits for a terminal event and failed cancellation remains retryable'
 
 test('only confirmed complete answers can be saved and duplicate saves are suppressed', async () => {
   const pending = deferred(); let writes = 0;
-  const app = await harness({ saveSummary: async () => { writes++; await pending.promise; } }); app.flow.edit('Question'); await app.flow.send();
+  const app = await harness({ saveSummary: async () => { writes++; await pending.promise; return { summaryId: 'summary' }; } }); app.flow.edit('Question'); await app.flow.send();
   assert.equal(await app.flow.save('summary', app.state().conversation.messages.at(-1).id), false);
   app.emit({ type: 'completed', text: 'Saved answer', messageId: 'answer' });
   const save = app.flow.save('summary', 'answer'); await tick(); assert.equal(await app.flow.save('summary', 'answer'), false);
@@ -599,6 +599,20 @@ test('an old history load cannot override an explicitly selected conversation', 
 });
 
 
+test('a manual summary save also requires a confirmed native summary', async () => {
+  const app = await harness({ saveSummary: async () => ({ applied: false }) }); app.flow.edit('Question'); await app.flow.send();
+  app.emit({ type: 'completed', text: 'Answer', messageId: 'answer' });
+  assert.equal(await app.flow.save('summary', 'answer'), false);
+  assert.equal(app.state().conversation.feedback, ''); assert.match(app.state().conversation.error, /요약 저장 결과를 확인하지 못했습니다/); app.flow.dispose();
+});
+
+test('every model load stores cleaned entries and picks only an offered model', async () => {
+  const app = await harness({ models: async () => ({ models: [{ id: 'model', label: 'Model', internal: 'value' }], defaultModelId: 'retired' }) });
+  assert.deepEqual(app.state().models, [{ id: 'model', label: 'Model' }]); assert.equal(app.state().modelId, 'model');
+  app.flow.selectProvider('chatgpt'); await tick();
+  assert.equal(app.state().modelId, 'model'); app.flow.dispose();
+});
+
 test('summary saving uses native target capability while note appending remains available', async () => {
   const app = await harness(); app.flow.edit('Question'); await app.flow.send();
   app.emit({ type: 'completed', text: 'Answer', messageId: 'answer', saveTargets: [{ meetingId: 'meeting-a', title: 'Meeting', canSaveSummary: false }] });
@@ -608,7 +622,7 @@ test('summary saving uses native target capability while note appending remains 
 
 test('a failed screen refresh after persistence does not report the successful write as failed', async () => {
   let writes = 0;
-  const app = await harness({ saveSummary: async () => { writes++; } }, { onSaved: async () => { throw Error('Refresh failed'); } });
+  const app = await harness({ saveSummary: async () => { writes++; return { summaryId: 'summary' }; } }, { onSaved: async () => { throw Error('Refresh failed'); } });
   app.flow.edit('Question'); await app.flow.send(); app.emit({ type: 'completed', text: 'Answer', messageId: 'answer' });
   assert.equal(await app.flow.save('summary', 'answer'), true); assert.equal(writes, 1); assert.equal(app.state().conversation.feedback, '요약을 저장했습니다.'); assert.match(app.state().conversation.error, /표시하지 못/); app.flow.dispose();
 });
