@@ -15,6 +15,8 @@ use std::time::Duration;
 const PROTOCOL: u32 = 1;
 const MAX_FRAME: usize = 1024 * 1024;
 const DESCRIPTOR: &str = "agent-control.json";
+// Requests answered at once; more wait for a free slot.
+const MAX_CONNECTIONS: usize = 8;
 const UNKNOWN_RESULT: &str =
     "수정 결과를 확인하지 못했습니다. 같은 요청을 반복하기 전에 현재 상태를 조회해 주세요.";
 
@@ -1090,21 +1092,21 @@ pub struct Server {
     _writer: CoreHandle,
 }
 
-type Handler<T, R> = Box<dyn Fn(T) -> std::result::Result<R, ControlError> + Send>;
+type Handler<T, R> = Box<dyn Fn(T) -> std::result::Result<R, ControlError> + Send + Sync>;
 
 // What the running app answers for each request family. A family left at its default
 // answers like an app that predates it.
 pub struct Handlers {
     mutation: Handler<Mutation, Value>,
     jobs: Handler<JobRequest, Value>,
-    metadata: Box<dyn Fn() -> std::result::Result<AppMetadata, ControlError> + Send>,
+    metadata: Box<dyn Fn() -> std::result::Result<AppMetadata, ControlError> + Send + Sync>,
     updates: Handler<AppUpdateAction, ControlReply>,
     processing: Handler<ProcessingRequest, Value>,
     app: Handler<AppRequest, Value>,
 }
 impl Handlers {
     pub fn new(
-        mutation: impl Fn(Mutation) -> std::result::Result<Value, ControlError> + Send + 'static,
+        mutation: impl Fn(Mutation) -> std::result::Result<Value, ControlError> + Send + Sync + 'static,
     ) -> Self {
         Self {
             mutation: Box::new(mutation),
@@ -1122,14 +1124,14 @@ impl Handlers {
     }
     pub fn jobs(
         mut self,
-        jobs: impl Fn(JobRequest) -> std::result::Result<Value, ControlError> + Send + 'static,
+        jobs: impl Fn(JobRequest) -> std::result::Result<Value, ControlError> + Send + Sync + 'static,
     ) -> Self {
         self.jobs = Box::new(jobs);
         self
     }
     pub fn metadata(
         mut self,
-        metadata: impl Fn() -> std::result::Result<AppMetadata, ControlError> + Send + 'static,
+        metadata: impl Fn() -> std::result::Result<AppMetadata, ControlError> + Send + Sync + 'static,
     ) -> Self {
         self.metadata = Box::new(metadata);
         self
@@ -1138,6 +1140,7 @@ impl Handlers {
         mut self,
         updates: impl Fn(AppUpdateAction) -> std::result::Result<ControlReply, ControlError>
             + Send
+            + Sync
             + 'static,
     ) -> Self {
         self.updates = Box::new(updates);
@@ -1147,6 +1150,7 @@ impl Handlers {
         mut self,
         processing: impl Fn(ProcessingRequest) -> std::result::Result<Value, ControlError>
             + Send
+            + Sync
             + 'static,
     ) -> Self {
         self.processing = Box::new(processing);
@@ -1154,7 +1158,7 @@ impl Handlers {
     }
     pub fn app(
         mut self,
-        app: impl Fn(AppRequest) -> std::result::Result<Value, ControlError> + Send + 'static,
+        app: impl Fn(AppRequest) -> std::result::Result<Value, ControlError> + Send + Sync + 'static,
     ) -> Self {
         self.app = Box::new(app);
         self
@@ -1179,7 +1183,7 @@ impl Server {
     pub fn start(
         root: &Path,
         core: CoreHandle,
-        handler: impl Fn(Mutation) -> std::result::Result<Value, ControlError> + Send + 'static,
+        handler: impl Fn(Mutation) -> std::result::Result<Value, ControlError> + Send + Sync + 'static,
     ) -> std::result::Result<Self, ControlError> {
         Self::serve(root, core, Handlers::new(handler))
     }
@@ -1187,8 +1191,8 @@ impl Server {
     pub fn start_with_jobs(
         root: &Path,
         core: CoreHandle,
-        handler: impl Fn(Mutation) -> std::result::Result<Value, ControlError> + Send + 'static,
-        jobs: impl Fn(JobRequest) -> std::result::Result<Value, ControlError> + Send + 'static,
+        handler: impl Fn(Mutation) -> std::result::Result<Value, ControlError> + Send + Sync + 'static,
+        jobs: impl Fn(JobRequest) -> std::result::Result<Value, ControlError> + Send + Sync + 'static,
     ) -> std::result::Result<Self, ControlError> {
         Self::serve(root, core, Handlers::new(handler).jobs(jobs))
     }
@@ -1196,9 +1200,9 @@ impl Server {
     pub fn start_with_metadata(
         root: &Path,
         core: CoreHandle,
-        handler: impl Fn(Mutation) -> std::result::Result<Value, ControlError> + Send + 'static,
-        jobs: impl Fn(JobRequest) -> std::result::Result<Value, ControlError> + Send + 'static,
-        metadata: impl Fn() -> std::result::Result<AppMetadata, ControlError> + Send + 'static,
+        handler: impl Fn(Mutation) -> std::result::Result<Value, ControlError> + Send + Sync + 'static,
+        jobs: impl Fn(JobRequest) -> std::result::Result<Value, ControlError> + Send + Sync + 'static,
+        metadata: impl Fn() -> std::result::Result<AppMetadata, ControlError> + Send + Sync + 'static,
     ) -> std::result::Result<Self, ControlError> {
         Self::serve(
             root,
@@ -1210,11 +1214,12 @@ impl Server {
     pub fn start_with_updates(
         root: &Path,
         core: CoreHandle,
-        handler: impl Fn(Mutation) -> std::result::Result<Value, ControlError> + Send + 'static,
-        jobs: impl Fn(JobRequest) -> std::result::Result<Value, ControlError> + Send + 'static,
-        metadata: impl Fn() -> std::result::Result<AppMetadata, ControlError> + Send + 'static,
+        handler: impl Fn(Mutation) -> std::result::Result<Value, ControlError> + Send + Sync + 'static,
+        jobs: impl Fn(JobRequest) -> std::result::Result<Value, ControlError> + Send + Sync + 'static,
+        metadata: impl Fn() -> std::result::Result<AppMetadata, ControlError> + Send + Sync + 'static,
         updates: impl Fn(AppUpdateAction) -> std::result::Result<ControlReply, ControlError>
             + Send
+            + Sync
             + 'static,
     ) -> std::result::Result<Self, ControlError> {
         Self::serve(
@@ -1230,14 +1235,16 @@ impl Server {
     pub fn start_with_processing(
         root: &Path,
         core: CoreHandle,
-        handler: impl Fn(Mutation) -> std::result::Result<Value, ControlError> + Send + 'static,
-        jobs: impl Fn(JobRequest) -> std::result::Result<Value, ControlError> + Send + 'static,
-        metadata: impl Fn() -> std::result::Result<AppMetadata, ControlError> + Send + 'static,
+        handler: impl Fn(Mutation) -> std::result::Result<Value, ControlError> + Send + Sync + 'static,
+        jobs: impl Fn(JobRequest) -> std::result::Result<Value, ControlError> + Send + Sync + 'static,
+        metadata: impl Fn() -> std::result::Result<AppMetadata, ControlError> + Send + Sync + 'static,
         updates: impl Fn(AppUpdateAction) -> std::result::Result<ControlReply, ControlError>
             + Send
+            + Sync
             + 'static,
         processing: impl Fn(ProcessingRequest) -> std::result::Result<Value, ControlError>
             + Send
+            + Sync
             + 'static,
     ) -> std::result::Result<Self, ControlError> {
         Self::serve(
@@ -1298,11 +1305,27 @@ impl Server {
         let worker = thread::Builder::new()
             .name("nero-agent-control".into())
             .spawn(move || {
+                let handlers = Arc::new(handlers);
+                let mut connections: Vec<thread::JoinHandle<()>> = Vec::new();
                 while !stopped.load(Ordering::Acquire) {
+                    connections.retain(|connection| !connection.is_finished());
+                    if connections.len() >= MAX_CONNECTIONS {
+                        thread::sleep(Duration::from_millis(20));
+                        continue;
+                    }
                     match listener.accept() {
                         Ok((stream, peer)) => {
-                            if peer.ip().is_loopback() {
-                                serve_connection(stream, &expected, &handlers);
+                            if !peer.ip().is_loopback() {
+                                continue;
+                            }
+                            // Each request runs on its own thread, so one waiting on the
+                            // network, a model or an edit lease does not hold up the rest.
+                            let (expected, handlers) = (expected.clone(), handlers.clone());
+                            if let Ok(connection) = thread::Builder::new()
+                                .name("nero-agent-request".into())
+                                .spawn(move || serve_connection(stream, &expected, &handlers))
+                            {
+                                connections.push(connection);
                             }
                         }
                         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -1312,6 +1335,9 @@ impl Server {
                         // connections); the server keeps listening until it is stopped.
                         Err(_) => thread::sleep(Duration::from_millis(200)),
                     }
+                }
+                for connection in connections {
+                    let _ = connection.join();
                 }
             })
             .map_err(|_| {
@@ -1511,52 +1537,77 @@ mod tests {
     }
 
     #[test]
-    fn a_request_its_client_abandoned_while_queued_never_runs() {
-        let (directory, core, meeting) = fixture();
+    fn a_request_its_client_abandoned_before_it_was_read_never_runs() {
         let calls = Arc::new(AtomicUsize::new(0));
         let invoked = calls.clone();
+        let handlers = Handlers::new(move |_| {
+            invoked.fetch_add(1, Ordering::SeqCst);
+            Ok(json!({"applied":true}))
+        });
+        let descriptor = Descriptor {
+            protocol: PROTOCOL,
+            address: SocketAddrV4::new(Ipv4Addr::LOCALHOST, 1),
+            generation: uuid::Uuid::new_v4().to_string(),
+            secret: "a".repeat(64),
+        };
+        let envelope = Envelope {
+            protocol: PROTOCOL,
+            generation: descriptor.generation.clone(),
+            secret: descriptor.secret.clone(),
+            method: "meeting_update".into(),
+            params: json!({"meetingId":uuid::Uuid::new_v4().to_string(),"expectedVersion":format!("sha256:{}", "0".repeat(64)),"title":"제목"}),
+        };
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        // The client wrote its request, then gave up before the server read it.
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        write_frame(&mut client, &envelope).unwrap();
+        drop(client);
+        let (stream, _) = listener.accept().unwrap();
+        serve_connection(stream, &descriptor, &handlers);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        write_frame(&mut client, &envelope).unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        serve_connection(stream, &descriptor, &handlers);
+        let response: Value = serde_json::from_slice(&read_frame(&mut client).unwrap()).unwrap();
+        assert_eq!(response["result"]["applied"], true);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_slow_request_does_not_hold_up_other_requests() {
+        let (directory, core, meeting) = fixture();
         let (started, start) = std::sync::mpsc::channel();
         let (released, release) = std::sync::mpsc::channel::<()>();
         let release = std::sync::Mutex::new(release);
-        let _server = Server::start(directory.path(), core, move |_| {
-            if invoked.fetch_add(1, Ordering::SeqCst) == 0 {
+        let _server = Server::start_with_metadata(
+            directory.path(),
+            core,
+            move |_| {
                 started.send(()).unwrap();
-                release
-                    .lock()
-                    .unwrap()
-                    .recv_timeout(Duration::from_secs(3))
-                    .unwrap();
-            }
-            Ok(json!({"applied":true}))
-        })
-        .unwrap();
-        let params = json!({"meetingId":meeting.id,"expectedVersion":meeting_edit_version(&meeting).unwrap(),"notes":"에이전트 메모"});
-        let root = directory.path().to_path_buf();
-        let slow_params = params.clone();
-        let slow = thread::spawn(move || request(&root, "meeting_update", slow_params));
-        start.recv_timeout(Duration::from_secs(3)).unwrap();
-        // A second client queues behind the slow request, then gives up.
-        let descriptor = read_descriptor(directory.path()).unwrap();
-        let mut queued = TcpStream::connect(descriptor.address).unwrap();
-        write_frame(
-            &mut queued,
-            &Envelope {
-                protocol: PROTOCOL,
-                generation: descriptor.generation,
-                secret: descriptor.secret,
-                method: "meeting_update".into(),
-                params: params.clone(),
+                let _ = release.lock().unwrap().recv_timeout(Duration::from_secs(5));
+                Ok(json!({"applied":true}))
+            },
+            |_| Ok(json!({"jobs":[]})),
+            || {
+                Ok(AppMetadata {
+                    version: "0.0.2".into(),
+                    build: "7".into(),
+                    integration_version: None,
+                })
             },
         )
         .unwrap();
-        drop(queued);
+        let params = json!({"meetingId":meeting.id,"expectedVersion":meeting_edit_version(&meeting).unwrap(),"notes":"에이전트 메모"});
+        let root = directory.path().to_path_buf();
+        let slow = thread::spawn(move || request(&root, "meeting_update", params));
+        start.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert_eq!(
+            request(directory.path(), "app_metadata", json!({})).unwrap()["build"],
+            "7"
+        );
         released.send(()).unwrap();
         assert_eq!(slow.join().unwrap().unwrap()["applied"], true);
-        assert_eq!(
-            request(directory.path(), "meeting_update", params).unwrap()["applied"],
-            true
-        );
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
     #[test]
