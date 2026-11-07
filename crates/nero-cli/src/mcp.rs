@@ -102,7 +102,13 @@ impl ServerHandler for NeroMcp {
         }
         self.observe_request(&context);
         let params = Value::Object(request.arguments.unwrap_or_default());
-        let result = match dispatch(&self.root, &request.name, params) {
+        // A call can wait on the running app for many seconds. Off the single-threaded
+        // runtime, other calls and cancellations are still read and answered meanwhile.
+        let (root, name) = (self.root.clone(), request.name.to_string());
+        let result = match tokio::task::spawn_blocking(move || dispatch(&root, &name, params))
+            .await
+            .map_err(|_| ErrorData::internal_error("Nero request stopped", None))?
+        {
             Ok(value) => CallToolResult::success(vec![ContentBlock::text(value.to_string())]),
             Err(error) => {
                 CallToolResult::error(vec![ContentBlock::text(error.as_json().to_string())])

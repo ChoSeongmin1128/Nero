@@ -764,6 +764,36 @@ fn cli_and_mcp_import_through_app_writer_and_reject_stale_contexts() {
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 4);
 }
 
+#[test]
+fn mcp_answers_other_calls_while_one_waits_for_the_app() {
+    use nero_core::agent_control::Server;
+    let root = fixture();
+    let core = nero_core::CoreHandle::open(root.path()).unwrap();
+    let (started, start) = mpsc::channel();
+    let (released, release) = mpsc::channel::<()>();
+    let release = std::sync::Mutex::new(release);
+    let _server = Server::start(root.path(), core, move |_| {
+        started.send(()).unwrap();
+        let _ = release
+            .lock()
+            .unwrap()
+            .recv_timeout(Duration::from_secs(20));
+        Ok(json!({"applied":true}))
+    })
+    .unwrap();
+    let mut process = McpProcess::start(root.path());
+    process.initialize();
+    process.send(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"meeting_update","arguments":{"meetingId":MEETING_ID,"expectedVersion":format!("sha256:{}", "0".repeat(64)),"title":"Synthetic title"}}}));
+    start.recv_timeout(Duration::from_secs(10)).unwrap();
+    process.send(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"meetings_list","arguments":{}}}));
+    assert_eq!(
+        tool_data(&process.result(3))["meetings"][0]["id"],
+        MEETING_ID
+    );
+    released.send(()).unwrap();
+    assert_eq!(tool_data(&process.result(2))["applied"], true);
+}
+
 #[cfg(unix)]
 #[test]
 fn explicit_linked_roots_are_rejected_without_following_them() {
