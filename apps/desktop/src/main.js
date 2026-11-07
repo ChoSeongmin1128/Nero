@@ -551,8 +551,10 @@ async function selectMeeting(id, searchIntent = null, isHistoryCurrent = null) {
   const latest = beginNavigation(Boolean(isHistoryCurrent));
   const historyValid = isHistoryCurrent || (() => true);
   try {
-    await finishEditing(() => {
-      if (!latest() || !historyValid()) return;
+    await finishEditing(async () => {
+      // Recorder panel, finished import or notification can open a meeting while the
+      // modal speaker editor is open; unsaved speaker changes need its confirmation.
+      if (!await speakers.beforeLeave() || !latest() || !historyValid()) return;
       const meeting = state.snapshot.meetings.find(item => item.id === id);
       if (!meeting || meeting.deletedAt) return;
       const changed = state.selectedId !== id;

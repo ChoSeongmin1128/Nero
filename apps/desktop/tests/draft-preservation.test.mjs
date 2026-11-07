@@ -1812,6 +1812,22 @@ test('agent summary writes reload the open summary before releasing edit ownersh
 });
 
 
+test('opening another meeting from outside asks the speaker editor before closing it', async () => {
+  const page = await openApp();
+  const speakers = page.app.appLeaveEditors[3];
+  let answer = false, asked = 0, resets = 0;
+  speakers.beforeLeave = async () => { asked++; return answer; };
+  speakers.reset = () => { resets++; };
+  await page.app.selectMeeting('b');
+  assert.equal(asked, 1);
+  assert.equal(resets, 0);
+  assert.equal(page.app.state.selectedId, 'a');
+  answer = true;
+  await page.app.selectMeeting('b');
+  assert.equal(asked, 2);
+  assert.equal(page.app.state.selectedId, 'b');
+});
+
 test('agent transcript writes reload the open transcript so later edits start from its version', async () => {
   const page = await openApp(transcriptDocument());
   assert.equal(page.app.state.transcriptDraft.doc.version.revision, 0);
