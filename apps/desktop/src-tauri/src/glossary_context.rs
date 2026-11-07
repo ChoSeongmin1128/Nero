@@ -42,8 +42,9 @@ impl Context {
         let mut result = String::new();
         for entry in &self.snapshot.entries {
             let separator = if result.is_empty() { "" } else { ", " };
+            // A long term that does not fit leaves room for shorter ones after it.
             if result.len() + separator.len() + entry.term.len() > MAX_PROMPT_BYTES {
-                break;
+                continue;
             }
             result.push_str(separator);
             result.push_str(&entry.term);
@@ -308,10 +309,14 @@ mod tests {
                     term: "나".repeat(10),
                     source_id: "source".into(),
                 },
+                domain_glossary::Entry {
+                    term: "AB".into(),
+                    source_id: "source".into(),
+                },
             ],
         };
         let context = Context::new("meeting", snapshot).unwrap();
-        assert_eq!(context.prompt(), "가".repeat(70));
+        assert_eq!(context.prompt(), format!("{}, AB", "가".repeat(70)));
         assert!(context.prompt().len() <= MAX_PROMPT_BYTES);
         assert_eq!(
             context.evidence(SpeechEngine::WhisperTurbo)["promptStatus"],
