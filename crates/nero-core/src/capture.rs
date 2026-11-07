@@ -816,8 +816,6 @@ fn checkpoint(root: &Path, raw: &File, manifest: &mut Manifest, signals: &Signal
     Ok(manifest.saved_frames)
 }
 
-// An unreadable free-space figure does not stop a recording; the write itself
-// still reports a full disk.
 fn stop_before_disk_fills(root: &Path, manifest: &Manifest, signals: &Signals) {
     if signals.fault.load(Ordering::Acquire) != 0 {
         return;
@@ -825,9 +823,7 @@ fn stop_before_disk_fills(root: &Path, manifest: &Manifest, signals: &Signals) {
     let Ok(directory) = store::checked_path(root, &manifest.relative_dir()) else {
         return;
     };
-    if disk_space::available(&directory)
-        .is_ok_and(|available| available < disk_space::recording_bytes(manifest))
-    {
+    if disk_space::missing(&directory, disk_space::recording_bytes(manifest)).is_some() {
         signals.stop_for_space();
     }
 }

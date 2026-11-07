@@ -34,6 +34,8 @@ The recorder close action hides the window for the current recording only. The r
 toolbar provides an explicitly labelled icon to show it again during recording or pause.
 An explicit show validates the current session ID and does not change the saved automatic
 presentation preference. A manual presentation ends with that session.
+A recording that stops by itself (device, write or storage fault) closes the panel with its
+session, so the main window comes forward and shows the reason.
 
 ## Quitting
 
@@ -60,7 +62,8 @@ are ignored. A meeting folder that cannot be read (damaged or newer `meeting.jso
 recording folders without meeting information, links or files) stays on disk, is left
 out of the library and is reported once at launch. Cleanup never treats it as deleted.
 A meeting whose interruption recovery cannot be saved keeps the recovered state in
-memory and is recovered again at the next launch.
+memory and is recovered again at the next launch. Any other startup failure, such as an
+unreadable `library.json`, is shown in an error dialog and the app quits when it closes.
 
 ## Calendar meeting preparation
 

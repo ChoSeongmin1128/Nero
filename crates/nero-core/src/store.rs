@@ -489,14 +489,10 @@ impl Store {
 
     pub fn prepare_capture(&self, manifest: &Manifest) -> Result<File> {
         manifest.validate()?;
-        let meetings = checked_path(&self.root, Path::new("meetings"))?;
-        if let Some(missing) = disk_space::available(&meetings).ok().and_then(|available| {
-            disk_space::shortfall(available, disk_space::recording_bytes(manifest))
-        }) {
-            return Err(CoreError::Storage(format!(
-                "저장 공간이 부족합니다. 약 {missing}를 더 확보한 뒤 다시 시도해 주세요."
-            )));
-        }
+        disk_space::ensure(
+            &checked_path(&self.root, Path::new("meetings"))?,
+            disk_space::recording_bytes(manifest),
+        )?;
         let meeting_dir = Path::new("meetings").join(&manifest.meeting_id);
         let sessions_dir = checked_path(&self.root, &meeting_dir.join("sessions"))?;
         ensure_directory(&sessions_dir)?;
@@ -782,13 +778,10 @@ fn finalize_audio_with_playback(
     }
     if !wav_path.exists() {
         remove_playback_temporaries(root, manifest)?;
-        let directory = checked_path(root, &manifest.relative_dir())?;
-        let required = disk_space::playback_bytes(&playback);
-        if let Some(missing) = disk_space::shortfall(disk_space::available(&directory)?, required) {
-            return Err(CoreError::Storage(format!(
-                "저장 공간이 부족해 재생 파일을 만들지 못했습니다. 약 {missing}를 더 확보해 주세요."
-            )));
-        }
+        disk_space::ensure(
+            &checked_path(root, &manifest.relative_dir())?,
+            disk_space::playback_bytes(&playback),
+        )?;
         let temporary = manifest
             .relative_dir()
             .join(format!("audio.{}.wav.tmp", Uuid::new_v4()));

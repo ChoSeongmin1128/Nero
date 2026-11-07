@@ -13,13 +13,27 @@ const METADATA_BYTES: u64 = 16 << 20;
 // to 2 s, checkpoints run every second and the desktop polls every 750 ms.
 const HEADROOM_SECONDS: u64 = 10;
 
-pub(crate) fn available(path: &Path) -> Result<u64> {
+fn available(path: &Path) -> Option<u64> {
     #[cfg(test)]
     if let Some(bytes) = tests::forced(path) {
-        return Ok(bytes);
+        return Some(bytes);
     }
-    fs2::available_space(path)
-        .map_err(|_| CoreError::Storage("저장 공간을 확인하지 못했습니다.".into()))
+    fs2::available_space(path).ok()
+}
+
+// How much more space `required` needs at `path`, e.g. "1.2 GB". An unreadable
+// free-space figure never blocks; a write still reports a full disk.
+pub(crate) fn missing(path: &Path, required: u64) -> Option<String> {
+    available(path).and_then(|available| shortfall(available, required))
+}
+
+pub(crate) fn ensure(path: &Path, required: u64) -> Result<()> {
+    match missing(path, required) {
+        Some(missing) => Err(CoreError::Storage(format!(
+            "저장 공간이 부족합니다. 약 {missing}를 더 확보해 주세요."
+        ))),
+        None => Ok(()),
+    }
 }
 
 pub(crate) fn wav_bytes(frames: u64, sample_rate: u32, channels: u16) -> u64 {
@@ -50,7 +64,7 @@ pub(crate) fn playback_bytes(playback: &Playback) -> u64 {
         .saturating_add(SYSTEM_RESERVE_BYTES)
 }
 
-pub(crate) fn shortfall(available: u64, required: u64) -> Option<String> {
+pub fn shortfall(available: u64, required: u64) -> Option<String> {
     if available >= required {
         return None;
     }

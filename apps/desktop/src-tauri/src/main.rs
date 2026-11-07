@@ -503,6 +503,36 @@ mod snapshot_tests {
         });
         assert!(snapshot_changed(Some(&initial), &next));
     }
+
+    #[test]
+    fn only_a_recording_that_stops_by_itself_is_reported() {
+        let with = |state: &str, id: &str| {
+            Snapshot {
+            revision: 1,
+            meetings: vec![],
+            folders: vec![],
+            session: Some(
+                serde_json::from_value(serde_json::json!({
+                    "id": id, "meetingId": "meeting", "deviceId": "mic", "deviceName": "Microphone",
+                    "state": state, "elapsedMs": 1000, "savedFrames": 16000,
+                    "sampleRate": 16000, "channels": 1, "error": "저장 공간이 부족해 녹음을 멈췄습니다."
+                }))
+                .unwrap(),
+            ),
+        }
+        };
+        let recording = with("recording", "a");
+        let interrupted = with("interrupted", "a");
+        assert_eq!(
+            interrupted_session(Some(&recording), &interrupted).map(|s| s.id.as_str()),
+            Some("a")
+        );
+        assert!(interrupted_session(Some(&with("paused", "a")), &interrupted).is_some());
+        assert!(interrupted_session(Some(&recording), &with("completed", "a")).is_none());
+        assert!(interrupted_session(Some(&interrupted), &interrupted).is_none());
+        assert!(interrupted_session(Some(&with("recording", "b")), &interrupted).is_none());
+        assert!(interrupted_session(None, &interrupted).is_none());
+    }
 }
 
 fn sync_recorder(app: &tauri::AppHandle, snapshot: &Snapshot) {
@@ -1368,6 +1398,126 @@ async fn open_meeting(
     .map_err(|_| "회의를 열지 못했습니다.".into())
 }
 
+fn start(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    let root = app.path().app_data_dir()?;
+    app.manage(app_updater::AppUpdates::new(
+        app.path().app_cache_dir()?.join("app-update"),
+    )?);
+    identity_migration::validate_startup(&root)?;
+    let core = CoreHandle::open(&root)?;
+    let processing = Processing::new(root.clone(), app.path().resource_dir()?);
+    let unreadable = core.unreadable_meetings()?.len();
+    if unreadable != 0 {
+        processing.report_startup_issue(
+            "library-read",
+            format!("회의 {unreadable}개를 읽지 못해 목록에서 뺐습니다. 파일은 그대로 두었습니다."),
+        );
+    }
+    processing.cleanup_removed_meeting_jobs(&core);
+    processing.upgrade_transcript_sources(&core);
+    let polling = Arc::new(AtomicBool::new(true));
+    let agent_mutations = agent_mutations::AgentMutations::start(
+        app.handle().clone(),
+        &root,
+        core.clone(),
+        processing.clone(),
+    );
+    app.manage(DesktopState {
+        agent_mutations,
+        core: core.clone(),
+        quitting: Arc::new(AtomicBool::new(false)),
+        polling: polling.clone(),
+        recorder: Mutex::new(recorder_policy::RecorderPolicy::default()),
+        processing: processing.clone(),
+        lifecycle: lifecycle::Lifecycle::default(),
+        drops: Arc::new(drop_import::DropImports::new(
+            app.path().app_cache_dir()?.join("dropped-audio"),
+        )),
+    });
+    #[cfg(target_os = "macos")]
+    app_termination::install(app.handle());
+    calendar_desktop::install(app.handle(), root.clone());
+    ai_chat_desktop::install(
+        app.handle(),
+        root.clone(),
+        app.path().resource_dir()?,
+        core.clone(),
+    );
+    let handle = app.handle().clone();
+    std::thread::spawn(move || poll(handle, core, processing, polling));
+    Ok(())
+}
+
+// Instead of closing without a word, say why the app could not start.
+fn report_startup_failure(app: &tauri::AppHandle, error: &str) {
+    for window in app.webview_windows().into_values() {
+        let _ = window.hide();
+    }
+    let exit = app.clone();
+    app.dialog()
+        .message(format!("Nero를 시작하지 못했습니다.\n\n{error}"))
+        .title("Nero")
+        .kind(tauri_plugin_dialog::MessageDialogKind::Error)
+        .show(move |_| exit.exit(1));
+}
+
+fn poll(
+    app: tauri::AppHandle,
+    core: CoreHandle,
+    processing: Arc<Processing>,
+    polling: Arc<AtomicBool>,
+) {
+    let mut previous: Option<Snapshot> = None;
+    let mut previous_progress = None;
+    while polling.load(Ordering::Acquire) {
+        let _ = processing.drive(&core);
+        if let Ok(snapshot) = core.snapshot() {
+            if snapshot_changed(previous.as_ref(), &snapshot) {
+                if let Some(session) = interrupted_session(previous.as_ref(), &snapshot) {
+                    report_interrupted_recording(&app, session);
+                }
+                publish(&app, &snapshot);
+                previous = Some(snapshot);
+            } else {
+                sync_recorder(&app, &snapshot);
+            }
+        }
+        let progress = processing.snapshot();
+        if previous_progress.as_ref() != Some(&progress) {
+            let _ = app.emit_to("main", "nero://processing", &progress);
+            previous_progress = Some(progress);
+        }
+        std::thread::sleep(Duration::from_millis(750));
+    }
+}
+
+// A recording that ends without the person stopping it (device, write or space
+// fault) also hides the recorder panel, so bring the reason to the main window.
+fn interrupted_session<'a>(
+    previous: Option<&Snapshot>,
+    snapshot: &'a Snapshot,
+) -> Option<&'a nero_core::SessionSnapshot> {
+    let before = previous.and_then(active_session)?;
+    snapshot.session.as_ref().filter(|session| {
+        session.id == before && session.state == nero_core::SessionState::Interrupted
+    })
+}
+
+fn report_interrupted_recording(app: &tauri::AppHandle, session: &nero_core::SessionSnapshot) {
+    show_main(app);
+    let _ = app.emit_to(
+        "main",
+        "nero://processing-error",
+        ProcessingError {
+            meeting_id: Some(session.meeting_id.clone()),
+            message: session
+                .error
+                .clone()
+                .unwrap_or_else(|| "녹음이 중단되었습니다. 저장된 음성을 확인하세요.".into()),
+        },
+    );
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct QuitRequest {
@@ -2110,67 +2260,9 @@ fn main() {
             read_summary_citations
         ])
         .setup(|app| {
-            let root = app.path().app_data_dir()?;
-            app.manage(app_updater::AppUpdates::new(
-                app.path().app_cache_dir()?.join("app-update"),
-            )?);
-            identity_migration::validate_startup(&root)?;
-            let core = CoreHandle::open(&root)?;
-            let processing = Processing::new(root.clone(), app.path().resource_dir()?);
-            processing.report_unreadable_meetings(&core);
-            processing.cleanup_removed_meeting_jobs(&core);
-            processing.upgrade_transcript_sources(&core);
-            let polling = Arc::new(AtomicBool::new(true));
-            let agent_mutations = agent_mutations::AgentMutations::start(
-                app.handle().clone(),
-                &root,
-                core.clone(),
-                processing.clone(),
-            );
-            app.manage(DesktopState {
-                agent_mutations,
-                core: core.clone(),
-                quitting: Arc::new(AtomicBool::new(false)),
-                polling: polling.clone(),
-                recorder: Mutex::new(recorder_policy::RecorderPolicy::default()),
-                processing: processing.clone(),
-                lifecycle: lifecycle::Lifecycle::default(),
-                drops: Arc::new(drop_import::DropImports::new(
-                    app.path().app_cache_dir()?.join("dropped-audio"),
-                )),
-            });
-            #[cfg(target_os = "macos")]
-            app_termination::install(app.handle());
-            calendar_desktop::install(app.handle(), root.clone());
-            ai_chat_desktop::install(
-                app.handle(),
-                root.clone(),
-                app.path().resource_dir()?,
-                core.clone(),
-            );
-            let handle = app.handle().clone();
-            std::thread::spawn(move || {
-                let mut previous: Option<Snapshot> = None;
-                let mut previous_progress = None;
-                while polling.load(Ordering::Acquire) {
-                    let _ = processing.drive(&core);
-                    if let Ok(snapshot) = core.snapshot() {
-                        let changed = snapshot_changed(previous.as_ref(), &snapshot);
-                        if changed {
-                            publish(&handle, &snapshot);
-                            previous = Some(snapshot);
-                        } else {
-                            sync_recorder(&handle, &snapshot);
-                        }
-                    }
-                    let progress = processing.snapshot();
-                    if previous_progress.as_ref() != Some(&progress) {
-                        let _ = handle.emit_to("main", "nero://processing", &progress);
-                        previous_progress = Some(progress);
-                    }
-                    std::thread::sleep(Duration::from_millis(750));
-                }
-            });
+            if let Err(error) = start(app) {
+                report_startup_failure(app.handle(), &error.to_string());
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -2216,21 +2308,23 @@ fn main() {
         .build(context)
         .expect("Nero를 시작하지 못했습니다.");
     app.run(|app, event| {
+        // Without state, setup failed and only the error dialog remains.
+        let Some(state) = app.try_state::<DesktopState>() else {
+            return;
+        };
         #[cfg(target_os = "macos")]
         if matches!(&event, tauri::RunEvent::Reopen { .. }) {
             show_main(app);
         }
         if let tauri::RunEvent::ExitRequested { ref api, .. } = event {
-            if !app.state::<DesktopState>().quitting.load(Ordering::Acquire) {
+            if !state.quitting.load(Ordering::Acquire) {
                 api.prevent_exit();
                 ask_quit(app);
             }
         }
         if let tauri::RunEvent::Exit = event {
-            app.state::<DesktopState>().agent_mutations.stop();
-            app.state::<DesktopState>()
-                .polling
-                .store(false, Ordering::Release);
+            state.agent_mutations.stop();
+            state.polling.store(false, Ordering::Release);
         }
     });
 }

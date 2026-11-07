@@ -44,6 +44,14 @@ impl Engine {
         self.unreadable.iter().cloned().collect()
     }
 
+    pub fn kept_meeting_ids(&self) -> BTreeSet<String> {
+        self.meetings
+            .keys()
+            .chain(&self.unreadable)
+            .cloned()
+            .collect()
+    }
+
     pub fn meetings(&self) -> Vec<Meeting> {
         let mut meetings: Vec<_> = self
             .meetings
@@ -2077,7 +2085,7 @@ mod tests {
             .error
             .as_ref()
             .unwrap()
-            .contains("저장 공간이 부족해"));
+            .contains("저장 공간이 부족합니다"));
         assert!(!session.join("audio.wav").exists());
         assert_eq!(temporaries(), 0);
         drop(restored);

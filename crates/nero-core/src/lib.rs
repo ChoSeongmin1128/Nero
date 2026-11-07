@@ -5,7 +5,7 @@ pub mod audio_normalize;
 mod audio_playback;
 mod capture;
 mod diarization;
-mod disk_space;
+pub mod disk_space;
 mod engine;
 pub mod environment;
 pub mod identity;
@@ -69,7 +69,7 @@ pub enum CoreError {
     InvalidState(String),
     #[error("{0}")]
     Audio(String),
-    #[error("저장할 수 없습니다: {0}")]
+    #[error("{0}")]
     Storage(String),
     #[error(transparent)]
     Reader(#[from] reader::ReadError),
@@ -334,6 +334,12 @@ impl CoreHandle {
     /// Meeting folders that exist on disk but could not be read at startup.
     pub fn unreadable_meetings(&self) -> Result<Vec<String>> {
         self.call_unfenced(|engine| Ok(engine.unreadable_meetings()))
+    }
+
+    /// Every meeting whose folder is kept, including trashed and unreadable ones.
+    /// Data owned by any other meeting ID belongs to a removed meeting.
+    pub fn kept_meeting_ids(&self) -> Result<std::collections::BTreeSet<String>> {
+        self.call(|engine| Ok(engine.kept_meeting_ids()))
     }
 
     pub fn create_meeting(&self, title: &str, notes: &str) -> Result<Meeting> {

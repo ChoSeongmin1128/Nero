@@ -9,18 +9,12 @@ pub fn check(path: &Path, required: u64) -> Result<(), String> {
 }
 
 fn compare(available: u64, required: u64) -> Result<(), String> {
-    if available >= required {
-        return Ok(());
+    match nero_core::disk_space::shortfall(available, required) {
+        Some(amount) => Err(format!(
+            "저장 공간이 부족합니다. 약 {amount}를 더 확보한 뒤 다시 시도해 주세요."
+        )),
+        None => Ok(()),
     }
-    let shortfall = required - available;
-    let amount = if shortfall >= 1_000_000_000 {
-        format!("{:.1} GB", (shortfall as f64 / 100_000_000.0).ceil() / 10.0)
-    } else {
-        format!("{} MB", shortfall.div_ceil(1_000_000))
-    };
-    Err(format!(
-        "저장 공간이 부족합니다. 약 {amount}를 더 확보한 뒤 다시 시도해 주세요."
-    ))
 }
 
 pub fn write_error(error: io::Error) -> String {

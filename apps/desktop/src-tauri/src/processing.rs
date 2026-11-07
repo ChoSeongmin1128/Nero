@@ -1712,12 +1712,7 @@ impl Processing {
     pub fn cleanup_removed_meeting_jobs(&self, core: &CoreHandle) {
         let canonical_cleanup = core.retry_purge_cleanup();
         let result = (|| -> nero_core::Result<()> {
-            let existing = core
-                .list_meetings()?
-                .into_iter()
-                .map(|meeting| meeting.id)
-                .chain(core.unreadable_meetings()?)
-                .collect::<HashSet<_>>();
+            let existing = core.kept_meeting_ids()?;
             for (path, owner) in self.owned_jobs()? {
                 if !existing.contains(&owner.meeting_id) {
                     fs::remove_dir_all(path)?;
@@ -1745,18 +1740,13 @@ impl Processing {
         }
     }
 
-    pub fn report_unreadable_meetings(&self, core: &CoreHandle) {
-        let count = core.unreadable_meetings().map_or(0, |ids| ids.len());
-        if count == 0 {
-            return;
-        }
+    // Shown once the main window asks for processing status.
+    pub fn report_startup_issue(&self, kind: &str, message: String) {
         self.startup_issues.lock().unwrap().push(Progress {
             id: Some(Uuid::new_v4().to_string()),
-            kind: "library-read".into(),
+            kind: kind.into(),
             status: "failed".into(),
-            message: format!(
-                "회의 {count}개를 읽지 못해 목록에서 뺐습니다. 파일은 그대로 두었습니다."
-            ),
+            message,
             ..Default::default()
         });
     }
@@ -1772,13 +1762,10 @@ impl Processing {
         if result.is_ok_and(|report| report.unavailable == 0) {
             return;
         }
-        self.startup_issues.lock().unwrap().push(Progress {
-            id: Some(Uuid::new_v4().to_string()),
-            kind: "transcript-upgrade".into(),
-            status: "failed".into(),
-            message: "일부 음성 기록의 화자 정보를 복구하지 못했습니다. 원문과 수정본은 유지했습니다. 앱을 다시 열면 재시도합니다.".into(),
-            ..Default::default()
-        });
+        self.report_startup_issue(
+            "transcript-upgrade",
+            "일부 음성 기록의 화자 정보를 복구하지 못했습니다. 원문과 수정본은 유지했습니다. 앱을 다시 열면 재시도합니다.".into(),
+        );
     }
 
     pub fn notify_startup_issues(&self, notify: impl FnOnce(&[Progress]) -> bool) {
@@ -4986,16 +4973,6 @@ mod tests {
         assert!(unknown.exists());
         assert!(invalid.exists());
         assert!(unreadable.exists());
-        process.report_unreadable_meetings(&core);
-        let mut notices = Vec::new();
-        process.notify_startup_issues(|issues| {
-            notices.extend(issues.iter().map(|issue| issue.message.clone()));
-            true
-        });
-        assert_eq!(
-            notices,
-            ["회의 1개를 읽지 못해 목록에서 뺐습니다. 파일은 그대로 두었습니다."]
-        );
     }
     #[cfg(unix)]
     #[test]

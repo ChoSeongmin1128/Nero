@@ -1602,7 +1602,6 @@ byId('transcript-rows').addEventListener('keydown', event => {
 // macOS logout, Cmd+Q and Dock quit wait for an answer. Any path that does not end
 // in quitting tells the app to stay; after a successful quit this does nothing.
 const stayOpen = () => bridge.cancelQuit().catch(() => {});
-let quitConfirmed = false;
 async function onQuitRequest({ sessionId } = {}) {
   if (!activeSession()) {
     await run(() => prepareAppLeave(() => bridge.requestQuit(null)));
@@ -1613,7 +1612,6 @@ async function onQuitRequest({ sessionId } = {}) {
     await stayOpen();
     return;
   }
-  quitConfirmed = false;
   pendingQuitSessionId = sessionId;
   const dialog = byId('quit-dialog');
   dialog.innerHTML = globalThis.NeroUI.dialogContent({ title: '녹음을 종료하고 나갈까요?', titleId: 'quit-title', bodyHTML: '<p>지금까지 녹음한 음성과 메모를 저장한 뒤 앱을 종료합니다.</p>', actionsHTML: button('계속 녹음', 'cancel-quit', null, '') + button('저장하고 종료', 'confirm-quit', null, 'primary') });
@@ -1625,14 +1623,15 @@ byId('quit-dialog').addEventListener('click', (event) => {
   if (action === 'cancel-quit') byId('quit-dialog').close();
   if (action === 'confirm-quit') {
     const sessionId = pendingQuitSessionId;
-    quitConfirmed = true;
+    pendingQuitSessionId = null;
     byId('quit-dialog').close();
     void run(() => finishEditing(() => bridge.requestQuit(sessionId))).finally(stayOpen);
   }
 });
+// Closing without confirming (button, Escape) keeps the app open.
 byId('quit-dialog').addEventListener('close', () => {
+  if (pendingQuitSessionId !== null) void stayOpen();
   pendingQuitSessionId = null;
-  if (!quitConfirmed) void stayOpen();
 });
 const dropConfirmation = mountConfirmDialog({ container: byId('drop-dialog') });
 mountDropImport({ window: globalThis, overlay: byId('drop-overlay'), message: byId('drop-overlay-message'),
