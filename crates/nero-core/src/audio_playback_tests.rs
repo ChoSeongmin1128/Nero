@@ -488,3 +488,26 @@ fn sparse_three_hour_capture_accepts_complete_standard_playback_without_reading_
     raw.read_exact(&mut actual).unwrap();
     assert_eq!(actual, sentinel);
 }
+
+#[test]
+fn a_non_finite_sample_becomes_silence_in_playback_and_live_reads() {
+    let (_temporary, store, _stored, mut manifest, original) = fixture(48_000, 1);
+    let pcm = store.root.join(manifest.relative_dir()).join("audio.pcm");
+    let mut bytes = original.clone();
+    bytes[..4].copy_from_slice(&f32::NAN.to_le_bytes());
+    bytes[4..8].copy_from_slice(&f32::INFINITY.to_le_bytes());
+    fs::write(&pcm, &bytes).unwrap();
+    let artifact = finalize_audio(&store.root, &mut manifest).unwrap().unwrap();
+    let mut reader = hound::WavReader::open(store.root.join(&artifact.relative_path)).unwrap();
+    let samples: Vec<f32> = reader
+        .samples::<f32>()
+        .take(2)
+        .map(|sample| sample.unwrap())
+        .collect();
+    assert_eq!(samples, vec![0.0, 0.0]);
+    let mono =
+        crate::audio_playback::read_native_mono(&mut Cursor::new(bytes), Encoding::F32, 1, 2)
+            .unwrap();
+    assert_eq!(mono, vec![0.0, 0.0]);
+    assert_eq!(fs::read(&pcm).unwrap()[..4], f32::NAN.to_le_bytes());
+}

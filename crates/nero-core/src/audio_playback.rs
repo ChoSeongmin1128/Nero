@@ -110,12 +110,11 @@ impl Playback {
             let mut sample = [0_u8; 8];
             for _ in 0..count {
                 input.read_exact(&mut sample[..manifest.encoding.bytes()])?;
+                let value = manifest
+                    .encoding
+                    .sample(&sample[..manifest.encoding.bytes()]);
                 writer
-                    .write_sample(
-                        manifest
-                            .encoding
-                            .sample(&sample[..manifest.encoding.bytes()]),
-                    )
+                    .write_sample(if value.is_finite() { value } else { 0.0 })
                     .map_err(|error| CoreError::Storage(error.to_string()))?;
             }
             return Ok(());
@@ -162,11 +161,14 @@ pub(crate) fn read_native_mono(
     for frame in bytes.chunks_exact(frame_bytes) {
         let mut sum = 0.0;
         for value in frame.chunks_exact(encoding.bytes()) {
+            // A device that delivers NaN or infinity for a sample is read as silence there,
+            // the same in every playback length and in live speech; the PCM keeps it as is.
             let sample = encoding.sample(value);
-            if !sample.is_finite() {
-                return Err(CoreError::Audio("음성 샘플이 올바르지 않습니다.".into()));
-            }
-            sum += f64::from(sample);
+            sum += if sample.is_finite() {
+                f64::from(sample)
+            } else {
+                0.0
+            };
         }
         mono.push(sum / f64::from(channels));
     }
