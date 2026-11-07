@@ -176,6 +176,39 @@ fn a_failed_import_removes_its_staged_copy_and_keeps_the_original() {
     assert_eq!(fs::read(&source).unwrap(), b"not audio");
 }
 
+#[cfg(unix)]
+#[test]
+fn a_failed_journal_write_blocks_new_work_only_until_the_record_is_written() {
+    use std::os::unix::fs::PermissionsExt;
+    let (_temporary, process) = setup();
+    let mut job = record("summary-model");
+    job.status = JobStatus::Running;
+    let id = job.id.clone();
+    process.save_job(job).unwrap();
+    process.update(|p| {
+        p.id = Some(id.clone());
+        p.kind = "summary-model".into();
+        p.status = "running".into();
+    });
+    let states = process.root.join("processing").join(&id).join("job-state");
+    let mode = |bits| fs::set_permissions(&states, fs::Permissions::from_mode(bits)).unwrap();
+    mode(0o500);
+    process.update(|p| {
+        p.status = "completed".into();
+        p.message = "완료".into();
+    });
+    assert_eq!(status(&process, &id), JobStatus::Running);
+    assert!(process.job_ready().is_err());
+    assert!(process.job_ready().is_err());
+    mode(0o700);
+    process.job_ready().unwrap();
+    assert_eq!(status(&process, &id), JobStatus::Completed);
+    let saved = process.journal.records().unwrap();
+    let saved = saved.iter().find(|record| record.id == id).unwrap();
+    assert_eq!(saved.status, JobStatus::Completed);
+    assert_eq!(saved.message, "완료");
+}
+
 #[test]
 fn a_completed_preparation_hides_earlier_failures_of_the_same_kind() {
     let (_temporary, process) = setup();
@@ -1162,7 +1195,7 @@ fn continuation_journal_failure_preserves_committed_text_and_blocks_reexecution(
         process.progress.lock().unwrap().phase.as_deref(),
         Some("saving")
     );
-    assert!(process.journal_error.lock().unwrap().is_some());
+    assert!(process.job_ready().is_err());
     assert_eq!(
         core.transcript(&meeting_id).unwrap().unwrap().segments[0].text,
         "저장 완료된 본문"

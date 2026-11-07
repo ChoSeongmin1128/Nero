@@ -152,9 +152,17 @@ impl Journal {
         no_follow(&mut options);
         let mut file = options.open(&path).map_err(|_| invalid())?;
         validate_file(&file)?;
-        file.write_all(&bytes).map_err(|_| invalid())?;
-        file.write_all(b"\n").map_err(|_| invalid())?;
-        file.sync_all().map_err(|_| invalid())?;
+        let written = file
+            .write_all(&bytes)
+            .and_then(|_| file.write_all(b"\n"))
+            .and_then(|_| file.sync_all());
+        if written.is_err() {
+            // This write is known to have failed: withdraw its generation so the job can
+            // be written again, instead of leaving an uncertain latest state behind.
+            drop(file);
+            let _ = fs::remove_file(&path);
+            return Err(invalid());
+        }
         sync_directory(&states)
     }
 

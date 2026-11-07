@@ -31,7 +31,10 @@ create-new files and file synchronization instead of replacement rename. Unix al
 the directory; Windows power-loss durability still needs device validation.
 
 A damaged latest generation never reverts to an older actionable state. Startup isolates
-individual damaged jobs, preserves their bytes and recovers valid jobs. Unsafe common
+individual damaged jobs, preserves their bytes and recovers valid jobs. A write that fails
+while the app runs withdraws only the generation it created and keeps the record; new work
+waits until that record, or a newer state of the same job, is written, then continues
+without a restart. Unsafe common
 processing paths remain shared storage errors. Legacy jobs receive no invented status.
 
 | Stored state | Restart |

@@ -321,6 +321,9 @@ pub struct Processing {
     records: Mutex<Vec<JobRecord>>,
     journal: Journal,
     journal_error: Mutex<Option<String>>,
+    // Records whose journal write failed. New work waits until each one, or a newer
+    // state of the same job, is written.
+    unsaved: Mutex<HashMap<String, JobRecord>>,
     retry_gate: Mutex<()>,
     pub(super) recording: AtomicBool,
     interrupted_jobs: Mutex<HashSet<String>>,
@@ -544,6 +547,7 @@ impl Processing {
             records: Mutex::new(records),
             journal,
             journal_error: Mutex::new(journal_error),
+            unsaved: Mutex::new(HashMap::new()),
             retry_gate: Mutex::new(()),
             recording: AtomicBool::new(false),
             interrupted_jobs: Mutex::new(HashSet::new()),
@@ -1126,8 +1130,7 @@ impl Processing {
                     record.message = progress.message.clone();
                     record.meeting_id = progress.meeting_id.clone();
                     record.updated_at = now().max(record.updated_at);
-                    if let Err(error) = self.save_job(record) {
-                        *self.journal_error.lock().unwrap() = Some(error.clone());
+                    if let Err(error) = self.save_job_or_keep(record) {
                         progress.status = "failed".into();
                         progress.message = error;
                     }
@@ -1137,7 +1140,30 @@ impl Processing {
     }
 
     fn save_job(&self, record: JobRecord) -> Result<(), String> {
-        self.journal.write(&record)?;
+        self.write_job(record, false)
+    }
+
+    // A failed write keeps its record to be written again before new work starts.
+    fn save_job_or_keep(&self, record: JobRecord) -> Result<(), String> {
+        self.write_job(record, true)
+    }
+
+    // `unsaved` is held across every write, so a kept record never lands after a newer
+    // state of the same job.
+    fn write_job(&self, record: JobRecord, keep: bool) -> Result<(), String> {
+        let mut unsaved = self.unsaved.lock().unwrap();
+        if let Err(error) = self.journal.write(&record) {
+            if keep {
+                unsaved.insert(record.id.clone(), record);
+            }
+            return Err(error);
+        }
+        unsaved.remove(&record.id);
+        self.remember(record);
+        Ok(())
+    }
+
+    fn remember(&self, record: JobRecord) {
         let mut records = self.records.lock().unwrap();
         if let Some(previous) = records.iter_mut().find(|r| r.id == record.id) {
             *previous = record;
@@ -1145,13 +1171,18 @@ impl Processing {
             records.push(record);
         }
         self.revision.fetch_add(1, Ordering::AcqRel);
-        Ok(())
     }
 
     fn job_ready(&self) -> Result<(), String> {
         self.worker_ready()?;
         if let Some(error) = self.journal_error.lock().unwrap().as_ref() {
             return Err(error.clone());
+        }
+        let mut unsaved = self.unsaved.lock().unwrap();
+        while let Some(id) = unsaved.keys().next().cloned() {
+            self.journal.write(&unsaved[&id])?;
+            let record = unsaved.remove(&id).unwrap();
+            self.remember(record);
         }
         Ok(())
     }
@@ -1467,10 +1498,7 @@ impl Processing {
         if let Some(mut record) = record {
             record.phase = Some(phase.into());
             record.updated_at = now().max(record.updated_at);
-            self.save_job(record).map_err(|error| {
-                *self.journal_error.lock().unwrap() = Some(error.clone());
-                error
-            })?;
+            self.save_job_or_keep(record)?;
         }
         Ok(())
     }
@@ -1825,10 +1853,9 @@ impl Processing {
                 fs::remove_dir_all(path)?;
             }
         }
-        self.records
-            .lock()
-            .unwrap()
-            .retain(|r| !r.meeting_id.as_ref().is_some_and(|id| ids.contains(id)));
+        let removed = |r: &JobRecord| r.meeting_id.as_ref().is_some_and(|id| ids.contains(id));
+        self.unsaved.lock().unwrap().retain(|_, r| !removed(r));
+        self.records.lock().unwrap().retain(|r| !removed(r));
         self.revision.fetch_add(1, Ordering::AcqRel);
         Ok(())
     }
@@ -2286,9 +2313,7 @@ impl Processing {
             record.status = JobStatus::Failed;
             record.message = error.clone();
             record.updated_at = now().max(record.updated_at);
-            if let Err(failure) = self.save_job(record) {
-                *self.journal_error.lock().unwrap() = Some(failure);
-            }
+            let _ = self.save_job_or_keep(record);
             error
         })
     }
@@ -2674,20 +2699,14 @@ impl Processing {
             error
         })?;
         if !exists {
-            self.save_job(record).map_err(|restore_error| {
-                *self.journal_error.lock().unwrap() = Some(restore_error.clone());
-                restore_error
-            })?;
+            self.save_job_or_keep(record)?;
             return Err(scheduled.err().unwrap_or_else(|| {
                 "재시도 작업이 만들어지지 않았습니다. 현재 상태를 확인해 주세요.".into()
             }));
         }
         handed_off.phase = None;
         handed_off.message = "새 작업으로 다시 시도했습니다.".into();
-        self.save_job(handed_off).map_err(|error| {
-            *self.journal_error.lock().unwrap() = Some(error.clone());
-            error
-        })?;
+        self.save_job_or_keep(handed_off)?;
         scheduled?;
         self.update(|_| ());
         Ok(self.snapshot())
@@ -3235,10 +3254,7 @@ impl Processing {
         record.source_fingerprint = Some(fingerprint);
         record.phase = Some("postprocessing".into());
         record.updated_at = now().max(record.updated_at);
-        self.save_job(record).map_err(|error| {
-            *self.journal_error.lock().unwrap() = Some(error.clone());
-            error
-        })?;
+        self.save_job_or_keep(record)?;
         progress.kind = "diarize".into();
         progress.committing = false;
         progress.summary_committing = false;
