@@ -223,6 +223,9 @@ pub enum AppRequest {
         meeting_id: Option<String>,
         device_id: Option<String>,
         title: Option<String>,
+        // pause, resume or stop only: refused when another recording is active.
+        #[serde(default)]
+        session_id: Option<String>,
     },
     MeetingCreate {
         #[serde(default)]
@@ -457,8 +460,11 @@ impl AppRequest {
                 meeting_id,
                 device_id,
                 title,
+                session_id,
             } => {
-                meeting_id.as_deref().is_none_or(id)
+                session_id.as_deref().is_none_or(id)
+                    && !(*action == RecordingAction::Start && session_id.is_some())
+                    && meeting_id.as_deref().is_none_or(id)
                     && device_id
                         .as_deref()
                         .is_none_or(|value| text(value, 1024) && !value.is_empty())
@@ -633,6 +639,11 @@ mod tests {
             ),
         ];
         assert_eq!(samples.len(), METHODS.len());
+        assert!(AppRequest::parse(
+            "recording_control",
+            json!({"action":"stop","sessionId":meeting})
+        )
+        .is_ok());
         for (method, params) in samples {
             assert!(
                 AppRequest::parse(method, params.clone()).is_ok(),
@@ -672,6 +683,10 @@ mod tests {
             (
                 "recording_control",
                 json!({"action":"start","meetingId":meeting,"title":"x"}),
+            ),
+            (
+                "recording_control",
+                json!({"action":"start","sessionId":meeting}),
             ),
             (
                 "meeting_source_add",

@@ -332,7 +332,8 @@ impl<L> AgentApp<'_, L> {
                 meeting_id,
                 device_id,
                 title,
-            } => self.recording(action, meeting_id, device_id, title),
+                session_id,
+            } => self.recording(action, meeting_id, device_id, title, session_id),
             AppRequest::MeetingCreate { title, notes } => {
                 desktop
                     .processing
@@ -674,11 +675,19 @@ impl<L> AgentApp<'_, L> {
         meeting_id: Option<String>,
         device_id: Option<String>,
         title: Option<String>,
+        expected_session: Option<String>,
     ) -> Result<Value, ControlError> {
         let app = self.app;
         let desktop = app.state::<DesktopState>();
         let snapshot = desktop.core.snapshot().map_err(core_error)?;
         let session = crate::active_session(&snapshot).map(str::to_owned);
+        // An agent naming a recording never pauses or stops one the person started since.
+        if expected_session.is_some() && expected_session != session {
+            return Err(ControlError::new(
+                "edit_conflict",
+                "진행 중인 녹음이 바뀌었습니다. recording_devices로 현재 녹음을 확인해 주세요.",
+            ));
+        }
         let changed = match action {
             RecordingAction::Start => {
                 if session.is_some() {
