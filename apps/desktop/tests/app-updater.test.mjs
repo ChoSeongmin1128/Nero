@@ -201,3 +201,28 @@ test('disabled updater never schedules, checks, downloads, installs or saves', a
   assert.equal(appUpdateAction(updater.getSnapshot()).action, null);
   updater.dispose();
 });
+
+test('consecutive automatic failures back off up to the ordinary check interval and reset after success', async () => {
+  const scheduled = [];
+  let failing = true;
+  const updater = createAppUpdater({ invoke: async command => {
+    if (command === 'app_update_check') return { phase: 'available' };
+    if (command === 'app_update_download') {
+      if (failing) throw Error('signature did not verify');
+      return { phase: 'ready', downloadReady: true };
+    }
+    return { phase: 'idle' };
+  }, listen: async () => () => {}, schedule: (fn, delay) => { scheduled.push({ fn, delay }); return scheduled.length; }, unschedule() {} });
+  await updater.start();
+  const delays = [];
+  for (let n = 0; n < 8; n++) {
+    await scheduled.at(-1).fn();
+    delays.push(scheduled.at(-1).delay / 60_000);
+  }
+  assert.deepEqual(delays, [5, 10, 20, 40, 80, 160, 320, 360]);
+  failing = false;
+  await scheduled.at(-1).fn();
+  assert.equal(updater.getSnapshot().downloadReady, true);
+  assert.equal(scheduled.at(-1).delay, 6 * 60 * 60 * 1000);
+  updater.dispose();
+});

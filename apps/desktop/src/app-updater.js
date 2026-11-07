@@ -1,5 +1,8 @@
 // Native verification and installation policy live in Rust. The consuming screen
 // owns styling and must finish every editor save before calling install().
+const RETRY_DELAY = 5 * 60 * 1000;
+const CHECK_INTERVAL = 6 * 60 * 60 * 1000;
+
 export function createAppUpdater({ invoke, listen, saveEdits, onChange = () => {}, setInstalling = () => {}, schedule = setTimeout, unschedule = clearTimeout }) {
   let snapshot = { phase: 'idle', message: '' };
   let disposed = false;
@@ -7,6 +10,10 @@ export function createAppUpdater({ invoke, listen, saveEdits, onChange = () => {
   let recoveryQuitting = false;
   let removeListener;
   let timer;
+  // Each automatic retry may download the whole package again, so consecutive
+  // failures back off until they reach the ordinary check interval.
+  let failures = 0;
+  const retryDelay = () => Math.min(RETRY_DELAY * 2 ** failures, CHECK_INTERVAL);
   const scheduleCheck = delay => {
     if (timer !== undefined) unschedule(timer);
     timer = undefined;
@@ -16,10 +23,11 @@ export function createAppUpdater({ invoke, listen, saveEdits, onChange = () => {
     if (disposed || !value) return;
     if (snapshot.recoveryRequired && !value.recoveryRequired) return;
     snapshot = { ...value };
+    if (snapshot.phase === 'current' || snapshot.downloadReady) failures = 0;
     if (snapshot.enabled === false && timer !== undefined) { unschedule(timer); timer = undefined; }
     setInstalling(snapshot.phase === 'installing' || Boolean(snapshot.recoveryRequired));
     onChange(snapshot);
-    if (snapshot.recoveryRequired || (snapshot.phase === 'error' && !snapshot.downloadReady)) scheduleCheck(5 * 60 * 1000);
+    if (snapshot.recoveryRequired || (snapshot.phase === 'error' && !snapshot.downloadReady)) scheduleCheck(retryDelay());
   };
   const run = async (command, before) => {
     if (disposed || busy || (snapshot.enabled === false && command !== 'app_update_status')) return false;
@@ -64,12 +72,13 @@ export function createAppUpdater({ invoke, listen, saveEdits, onChange = () => {
     timer = undefined;
     if (disposed || snapshot.enabled === false || snapshot.recoveryRequired) return;
     if (busy || ['checking', 'downloading', 'installing'].includes(snapshot.phase)) {
-      scheduleCheck(5 * 60 * 1000);
+      scheduleCheck(RETRY_DELAY);
       return;
     }
     if (!snapshot.downloadReady) await check();
-    if (timer === undefined) scheduleCheck(
-      snapshot.phase === 'error' && !snapshot.downloadReady ? 5 * 60 * 1000 : 6 * 60 * 60 * 1000);
+    const failed = snapshot.phase === 'error' && !snapshot.downloadReady;
+    if (timer === undefined) scheduleCheck(failed ? retryDelay() : CHECK_INTERVAL);
+    if (failed) failures += 1;
   };
   return {
     async start() {
