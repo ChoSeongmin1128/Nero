@@ -82,9 +82,14 @@ fn validate(snapshot: &Snapshot) -> Result<(), String> {
     }
     let mut seen = BTreeSet::new();
     for entry in &snapshot.entries {
+        if valid_term(&entry.term) && !seen.insert(entry.term.to_lowercase()) {
+            return Err(format!(
+                "\"{}\" 용어가 이미 있습니다. 대소문자만 다른 용어는 하나만 둘 수 있습니다.",
+                entry.term
+            ));
+        }
         let parts: Vec<_> = entry.source_id.split(':').collect();
         if !valid_term(&entry.term)
-            || !seen.insert(entry.term.to_lowercase())
             || parts.len() != 3
             || parts[0] != "notion"
             || crate::notion_context::normalize_page_id(parts[1])
@@ -489,6 +494,19 @@ mod tests {
             truncated: false,
             unknown_block_count: None,
         }
+    }
+    #[test]
+    fn a_case_only_duplicate_names_the_term() {
+        let entry = |term: &str| Entry {
+            term: term.into(),
+            source_id: source().source_id,
+        };
+        let error = validate(&Snapshot {
+            revision: 1,
+            entries: vec![entry("API"), entry("api")],
+        })
+        .unwrap_err();
+        assert!(error.contains("\"api\" 용어가 이미 있습니다"), "{error}");
     }
     #[test]
     fn extracts_only_explicit_literals() {
