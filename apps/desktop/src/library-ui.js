@@ -64,6 +64,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
   let navigationKey = '', cardsKey = '', breadcrumbKey = '';
   const folderOverview = () => state().libraryFilter === 'all' && state().libraryView === 'folders' && !query();
   const dragPreview = createDragPreview(owner);
+  let listRows = { ids: [], markup: [] };
   let folderKey = '', recentKey = '', previewKey = '', listKey = '', pending = null, returnFocus = null, returnRecentId = null, dragSources = [];
   let dropTarget = null, selectionAnchor = null;
   const menus = mountActionMenus({ owner, onEscape: clearDrag });
@@ -367,7 +368,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     const focused = active?.closest?.('[data-meeting-id]')?.dataset.meetingId;
     const focusSelector = active?.matches?.('[data-library-toggle]') ? '[data-library-toggle]' : active?.matches?.('summary') ? 'summary' : '[data-open-meeting]';
     const scroll = list.scrollTop;
-    list.innerHTML = meetings.map(meeting => {
+    const rows = meetings.map(meeting => {
       const phase = phaseOf(meeting), timestamp = meeting.recordedAt ?? meeting.createdAt;
       const timestampLabel = `${listDate.format(timestamp)} ${listTime.format(timestamp)}`;
       const timestampDescription = `${meeting.recordedAt != null ? '녹음 시작' : '생성'} ${fullDate.format(timestamp)}\n회의 날짜 ${meetingDay(meeting)}`;
@@ -381,7 +382,13 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
       const status = phase === 'completed' ? '' : `<span class="meeting-item-state ${['recording','paused'].includes(phase) ? 'recording' : ''}">${escape(recordingStatus(phase))}</span>`;
       const content = `<span class="meeting-item-content"><strong title="${escape(meeting.title || '제목 없는 회의')}">${escape(meeting.title || '제목 없는 회의')}</strong><span class="meeting-item-meta"><span class="meeting-item-time" title="${escape(timestampDescription)}" aria-label="${escape(timestampDescription)}">${escape(timestampLabel)}</span>${length ? `<span>${escape(length)}</span>` : ''}${state().libraryFilter === 'all' ? `<span>${escape(state().snapshot.folders?.find(folder => folder.id === meeting.folderId)?.name || '미분류')}</span>` : ''}</span>${snippet}</span>${status}`;
       return `<article class="meeting-entry${selected ? ' is-selected' : ''}" data-meeting-id="${escape(meeting.id)}"${meeting.deletedAt == null ? ' draggable="true"' : ''}>${checkbox}${globalThis.NeroUI.button({ className: 'meeting-item', attrs: { 'data-open-meeting': meeting.id, 'aria-current': String(meeting.id === state().selectedId), title: meeting.title }, html: content })}${more}</article>`;
-    }).join('') || renderEmpty(search);
+    });
+    const ids = meetings.map(meeting => meeting.id);
+    // The same rows in the same order: replace only the rows whose markup changed.
+    if (rows.length && list.children.length === rows.length && ids.length === listRows.ids.length && ids.every((id, index) => id === listRows.ids[index])) {
+      rows.forEach((row, index) => { if (row !== listRows.markup[index]) list.children[index].outerHTML = row; });
+    } else list.innerHTML = rows.join('') || renderEmpty(search);
+    listRows = { ids, markup: rows };
     list.classList.toggle('has-selection', selection().size > 0);
     list.scrollTop = scroll;
     if (focused) [...list.querySelectorAll('[data-meeting-id]')].find(node => node.dataset.meetingId === focused)?.querySelector(focusSelector)?.focus({ preventScroll: true });

@@ -132,3 +132,26 @@ test('opening a row passes its content search hit while a trashed row only toggl
   assert.equal(state.librarySelection.has('gone'), true);
   window.happyDOM.abort();
 });
+
+test('a changed meeting replaces only its own list row and other changes still rebuild the list', () => {
+  const meetings = [{ id: 'one', title: '첫 회의', status: 'completed', createdAt: at(20, 9, 0), deletedAt: null }, { id: 'two', title: '둘째 회의', status: 'completed', createdAt: at(20, 10, 0), deletedAt: null }];
+  const { window, document, state, render } = createList(meetings);
+  const row = id => document.querySelector(`[data-meeting-id="${id}"]`);
+  const untouched = row('one'), changed = row('two');
+  state.snapshot = { ...state.snapshot, meetings: [meetings[0], { ...meetings[1], title: '바뀐 회의' }] };
+  render();
+  assert.equal(row('one'), untouched);
+  assert.notEqual(row('two'), changed);
+  assert.equal(row('two').querySelector('strong').textContent, '바뀐 회의');
+  state.librarySelection.add('one');
+  render();
+  assert.notEqual(row('one'), untouched);
+  assert.equal(row('one').querySelector('[data-library-toggle]').checked, true);
+  state.snapshot = { ...state.snapshot, meetings: [meetings[0]] };
+  render();
+  assert.deepEqual([...document.querySelectorAll('[data-meeting-id]')].map(node => node.dataset.meetingId), ['one']);
+  state.snapshot = { ...state.snapshot, meetings: [] };
+  render();
+  assert.match(document.getElementById('meeting-list').textContent, /첫 회의를 시작/);
+  window.happyDOM.abort();
+});
