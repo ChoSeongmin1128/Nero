@@ -161,6 +161,7 @@ struct Unit {
 pub(super) fn restore_words(raw: &[u8], start: usize, end: usize) -> Result<Vec<Value>, String> {
     let native: Native = serde_json::from_slice(raw).map_err(|_| failure())?;
     let mut words = Vec::new();
+    let mut previous: Option<(usize, usize)> = None;
     for segment in native.transcription {
         let tokens: Vec<(usize, usize)> = {
             let mut spans = Vec::new();
@@ -232,7 +233,16 @@ pub(super) fn restore_words(raw: &[u8], start: usize, end: usize) -> Result<Vec<
                 let local = usize::try_from(t).map_err(|_| failure())? * (RATE / 100);
                 Ok((start + local.saturating_sub(PAD)).clamp(start, end))
             };
-            let (s, e) = (frame(t0)?, frame(t1)?);
+            let (mut s, mut e) = (frame(t0)?, frame(t1)?);
+            // CrispASR aligns each of its 30 s input slices on its own, so a word at a slice
+            // boundary can run backward from the word before it. Those times cannot be kept
+            // in order, so the word stays in place as a zero-length word (unknown speaker).
+            if let Some((before_start, before_end)) = previous {
+                if s < before_start || e < before_end {
+                    (s, e) = (before_end, before_end);
+                }
+            }
+            previous = Some((s, e));
             words.push(json!({"word": std::mem::take(&mut pending) + piece,
                 "start": s as f64 / RATE as f64, "end": e as f64 / RATE as f64}));
         }
@@ -518,6 +528,34 @@ mod tests {
         let early = r#"{"transcription":[{"text":"예","words":[{"text":"예","t0":10,"t1":20}]}]}"#;
         let clamped = restore_words(early.as_bytes(), 0, RATE).unwrap();
         assert_eq!(clamped[0]["start"], 0.0);
+    }
+
+    #[test]
+    fn a_word_running_backward_across_native_slices_keeps_its_place_without_time() {
+        // Two native segments, as for two separately aligned slices meeting at 30 s.
+        let raw = r#"{"transcription":[
+            {"text":"하나 둘","words":[{"text":"하나","t0":100,"t1":200},{"text":"둘","t0":3001,"t1":3006}]},
+            {"text":"셋 넷","words":[{"text":"셋","t0":3000,"t1":3030},{"text":"넷","t0":3050,"t1":3100}]}]}"#;
+        let words = restore_words(raw.as_bytes(), 0, 40 * RATE).unwrap();
+        let times = words
+            .iter()
+            .map(|w| {
+                (
+                    w["word"].as_str().unwrap(),
+                    w["start"].as_f64().unwrap(),
+                    w["end"].as_f64().unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            times,
+            vec![
+                ("하나", 0.0, 1.0),
+                ("둘", 29.01, 29.06),
+                ("셋", 29.06, 29.06),
+                ("넷", 29.5, 30.0)
+            ]
+        );
     }
 
     #[test]

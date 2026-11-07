@@ -133,7 +133,10 @@ GGUF and Qwen3-ForcedAligner GGUF once and writes one native JSON per chunk.
 Word times come only from aligner units. Each unit must match the next characters of
 the transcript text; only non-alphanumeric text may lack a unit, and a unit may not
 span two text words. Times are shifted by the chunk start and the padding, then
-limited to the chunk. Nothing is interpolated. A mismatch fails processing with the
+limited to the chunk. CrispASR aligns each of its 30 second input slices separately,
+so a word at a slice boundary can start or end before the word kept ahead of it; that
+word keeps its place as a zero-length word at the earlier word's end. Nothing is
+interpolated. A mismatch fails processing with the
 native outputs and audio preserved. Zero-length words keep an unknown speaker.
 
 `qwen3-pause-chunks-v1` with `crispasr-exit0-v1`, `forced-aligner-text-units-v1` and
