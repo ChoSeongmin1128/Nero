@@ -73,7 +73,8 @@ impl<L> AgentApp<'_, L> {
                 meeting_id,
             } => self.chats_list(trashed, meeting_id),
             AppRequest::AiChatGet { conversation_id } => {
-                value(self.chat()?.read(&conversation_id).map_err(rejected)?)
+                let (_lease, chat) = self.chat_lease()?;
+                value(chat.read(&conversation_id).map_err(rejected)?)
             }
             AppRequest::AiModelsList { refresh } => self.models(refresh),
             AppRequest::AiChatSend {
@@ -129,8 +130,8 @@ impl<L> AgentApp<'_, L> {
                 conversation_id,
                 message_id,
             } => {
-                let conversation = self
-                    .chat()?
+                let (_lease, chat) = self.chat_lease()?;
+                let conversation = chat
                     .select_version(&conversation_id, &message_id)
                     .map_err(rejected)?;
                 changed(
@@ -161,8 +162,8 @@ impl<L> AgentApp<'_, L> {
                 older_than_days,
             } => self.chats_trash(conversation_ids, older_than_days),
             AppRequest::AiChatsRestore { conversation_ids } => {
-                let _lease = desktop.lifecycle.begin_transition().map_err(rejected)?;
-                self.chat()?.restore(&conversation_ids).map_err(rejected)?;
+                let (_lease, chat) = self.chat_lease()?;
+                chat.restore(&conversation_ids).map_err(rejected)?;
                 changed(
                     app,
                     json!({"area":"aiChat","conversationIds":conversation_ids}),
@@ -500,6 +501,21 @@ impl<L> AgentApp<'_, L> {
             .chat()
             .map_err(|message| ControlError::new("account_unavailable", message))
     }
+    // The screen's transition rule for chat store work; see AiDesktop::chat_lease.
+    fn chat_lease(
+        &self,
+    ) -> Result<
+        (
+            crate::lifecycle::TransitionLease,
+            std::sync::Arc<crate::ai_chat::AiChat>,
+        ),
+        ControlError,
+    > {
+        self.app
+            .state::<AiDesktop>()
+            .chat_lease(self.app)
+            .map_err(rejected)
+    }
     fn notion(
         &self,
     ) -> Result<std::sync::Arc<crate::notion_context::NotionContextService>, ControlError> {
@@ -510,7 +526,8 @@ impl<L> AgentApp<'_, L> {
     }
 
     fn chats_list(&self, trashed: bool, meeting_id: Option<String>) -> Result<Value, ControlError> {
-        let mut conversations = self.chat()?.list(trashed).map_err(rejected)?;
+        let (_lease, chat) = self.chat_lease()?;
+        let mut conversations = chat.list(trashed).map_err(rejected)?;
         if let Some(id) = meeting_id {
             conversations.retain(|item| item.meeting_ids.contains(&id));
         }
@@ -522,7 +539,7 @@ impl<L> AgentApp<'_, L> {
         ids: Vec<String>,
         older_than_days: Option<u32>,
     ) -> Result<Value, ControlError> {
-        let chat = self.chat()?;
+        let (_lease, chat) = self.chat_lease()?;
         let ids = match older_than_days {
             Some(days) => {
                 let cutoff = now_ms().saturating_sub(u64::from(days) * DAY_MS);
@@ -541,12 +558,6 @@ impl<L> AgentApp<'_, L> {
         if ids.is_empty() {
             return Ok(json!({"trashed":[]}));
         }
-        let _lease = self
-            .app
-            .state::<DesktopState>()
-            .lifecycle
-            .begin_transition()
-            .map_err(rejected)?;
         let trashed = chat.trash(&ids, true).map_err(rejected)?;
         changed(self.app, json!({"area":"aiChat","conversationIds":trashed}));
         Ok(json!({"trashed":trashed}))
