@@ -148,7 +148,7 @@ CLI/MCP는 URL, 설치 파일 경로, 서명 키를 입력받지 않는다. 앱 
 - `--from MS|YYYY-MM-DD`, `--to MS|YYYY-MM-DD`는 from 포함/to 미포함이다. `--on YYYY-MM-DD`는 해당 하루를 뜻하며 from/to와 함께 지정하지 않는다. 날짜 문자열과 on은 `--timezone Asia/Seoul` 같은 명시적인 IANA 시간대가 필요하다. MCP도 `from`/`to`의 날짜 문자열과 `on`/`timezone`을 같은 방식으로 받는다.
 - 날짜는 녹음 시작 시각을 우선하고 없으면 생성 시각을 사용한다. 사용자 지정 회의 날짜와는 별개다. 하루의 끝은 달력상 다음 날로 계산해 DST의 23/25시간을 반영한다. 자정이 없거나 두 번 존재하는 경계는 오류로 반환하며 epoch 밀리초로 명시할 수 있다.
 - 일반 목록에는 녹음/생성 날짜와 시각을 표시한다. 표시 시간대는 `--timezone` 값이며 생략하면 UTC라고 표시한다. JSON의 원시 epoch 필드는 바꾸지 않는다.
-- 기본 50개, 최대 200개씩 조회한다. `--max-bytes N`(MCP `maxBytes`)는 JSON payload의 byte 예산이며 최대 1MiB, 기본값도 1MiB다. MCP 외부 메시지/CLI 끝개행은 예산에 포함하지 않는다. 예산에 따라 요청 limit보다 적은 완전한 항목을 반환한다. 단일 항목이나 응답 메타데이터가 예산을 넘으면 명시적 오류를 반환하고 텍스트를 자르지 않는다.
+- 기본 50개, 최대 200개씩 조회한다. `--max-bytes N`(MCP `maxBytes`)는 JSON payload의 byte 예산이며 최대 1MiB다. CLI 기본값은 1MiB이고, MCP는 `summary_context`를 뺀 페이지 조회의 기본값이 24KiB다. Claude Code는 25,000토큰 또는 50,000자를 넘는 도구 결과를 파일로 돌리는데([MCP 문서](https://code.claude.com/docs/en/mcp)), 토큰과 문자는 각각 1바이트 이상이므로 24KiB 페이지는 언어와 관계없이 대화 안에 남는다. MCP 외부 메시지/CLI 끝개행은 예산에 포함하지 않는다. 예산에 따라 요청 limit보다 적은 완전한 항목을 반환한다. 단일 항목이나 응답 메타데이터가 예산을 넘으면 명시적 오류를 반환하고 텍스트를 자르지 않는다.
 - `pagination.returned`는 실제 항목 수, `nextOffset`은 다음 위치이며 끝이면 null이다. 다음 위치를 offset+limit으로 계산하지 않는다. `hasMore`와 nextOffset은 요청 범위의 끝을 뜻하며 전체 원문을 읽었다는 증거가 아니다.
 - 연속 조회는 첫 `sourceVersion`을 `--expected-source-version HASH`(MCP `expectedSourceVersion`)로 보내며 방법/검색/폴더/시간 범위를 유지한다. 원문이 바뀌면 `source_version_mismatch` 오류를 반환하고 본문을 반환하지 않는다. 이전 페이지와 새 버전을 섞지 않는다. 중간 편집이 계속되면 자동 반복 대신 중단을 알린다.
 - 음성 기록은 발언 단위다. 메모와 요약은 줄 경계를 우선하되 긴 줄도 UTF-8 경계에서 나누는 `textChunks` 단위다. 반환 text를 순서대로 연결하면 개행을 포함한 선택 형식의 전체 본문을 복원할 수 있다.

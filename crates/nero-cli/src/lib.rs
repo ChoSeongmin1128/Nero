@@ -145,6 +145,17 @@ enum Route {
     Reader,
 }
 
+// Claude Code moves a tool result over 25,000 tokens or 50,000 characters to a file
+// (code.claude.com/docs/en/mcp). Tokens and characters each take at least one UTF-8
+// byte, so a 24 KiB page stays in the conversation in any language; later pages
+// follow pagination. summary_context returns its context whole and keeps the default.
+pub(crate) const MCP_PAGE_BYTES: usize = 24 * 1024;
+
+pub(crate) fn mcp_page_budget(method: &str) -> Option<usize> {
+    (matches!(route(method), Route::Reader) && !matches!(method, "status" | "summary_context"))
+        .then_some(MCP_PAGE_BYTES)
+}
+
 fn route(method: &str) -> Route {
     if method == "app_update" {
         Route::Update

@@ -1,4 +1,4 @@
-use crate::{dispatch, input_schema, METHODS};
+use crate::{dispatch, input_schema, mcp_page_budget, METHODS};
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, CompleteRequestParams, CompleteResult,
     ContentBlock, CustomRequest, CustomResult, ErrorCode, Implementation, ListPromptsResult,
@@ -101,7 +101,13 @@ impl ServerHandler for NeroMcp {
             ));
         }
         self.observe_request(&context);
-        let params = Value::Object(request.arguments.unwrap_or_default());
+        let mut arguments = request.arguments.unwrap_or_default();
+        if let Some(budget) = mcp_page_budget(&request.name) {
+            arguments
+                .entry("maxBytes")
+                .or_insert_with(|| Value::from(budget));
+        }
+        let params = Value::Object(arguments);
         // A call can wait on the running app for many seconds. Off the single-threaded
         // runtime, other calls and cancellations are still read and answered meanwhile.
         let (root, name) = (self.root.clone(), request.name.to_string());
@@ -193,6 +199,31 @@ mod tests {
             assert_eq!(annotations.idempotent_hint, Some(is_read_only(&tool.name)));
             assert_eq!(annotations.open_world_hint, Some(is_open_world(&tool.name)));
             assert_eq!(tool.input_schema["additionalProperties"], false);
+        }
+    }
+
+    #[test]
+    fn paged_reads_default_to_a_page_that_stays_in_the_conversation() {
+        for method in [
+            "meetings_list",
+            "meetings_search",
+            "meeting_get",
+            "transcript_get",
+            "summary_get",
+        ] {
+            assert_eq!(
+                crate::mcp_page_budget(method),
+                Some(crate::MCP_PAGE_BYTES),
+                "{method}"
+            );
+        }
+        for method in [
+            "status",
+            "summary_context",
+            "templates_list",
+            "recording_control",
+        ] {
+            assert_eq!(crate::mcp_page_budget(method), None, "{method}");
         }
     }
 
