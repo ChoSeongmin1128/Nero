@@ -53,6 +53,9 @@ function showError(error) {
 }
 
 function acceptSnapshot(value) {
+  // The panel is hidden and reused between recordings; an earlier recording's failed
+  // action does not belong to a new one.
+  if (value?.session?.id && value.session.id !== snapshot.session?.id) localError = '';
   snapshot = value;
   render();
 }

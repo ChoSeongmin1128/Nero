@@ -86,3 +86,13 @@ test('unclassified legacy warnings and operation failures remain actionable', as
   assert.equal(page.element('recorder-error').textContent, '저장 실패');
   assert.equal(page.element('recorder-status').classList.contains('is-error'), true);
 });
+
+test('a failed action does not follow the panel into the next recording', async t => {
+  const initial = snapshot(null);
+  const page = await open(t, initial);
+  page.window.document.querySelector('[data-action="stop"]').click();
+  await page.window.happyDOM.whenAsyncComplete();
+  assert.equal(page.element('recorder-time').textContent, '오류 확인');
+  page.accept({ ...initial, revision: 5, session: { ...initial.session, id: 'next-capture', elapsedMs: 1000 } });
+  assert.notEqual(page.element('recorder-time').textContent, '오류 확인');
+});
