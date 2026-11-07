@@ -315,6 +315,7 @@ pub struct Processing {
     pub(super) resources: PathBuf,
     progress: Mutex<Progress>,
     startup_issues: Mutex<Vec<Progress>>,
+    startup_issues_requested: AtomicBool,
     running: Mutex<Option<Running>>,
     pending: Mutex<VecDeque<Pending>>,
     records: Mutex<Vec<JobRecord>>,
@@ -531,6 +532,7 @@ impl Processing {
             resources,
             progress: Mutex::new(Progress::default()),
             startup_issues: Mutex::new(startup_issues),
+            startup_issues_requested: AtomicBool::new(false),
             running: Mutex::new(None),
             pending: Mutex::new(VecDeque::new()),
             records: Mutex::new(records),
@@ -1856,7 +1858,8 @@ impl Processing {
         }
     }
 
-    // Shown once the main window asks for processing status.
+    // Shown once the main window asks for processing status, or after that by the
+    // poll loop for checks that finish later.
     pub fn report_startup_issue(&self, kind: &str, message: String) {
         self.startup_issues.lock().unwrap().push(Progress {
             id: Some(Uuid::new_v4().to_string()),
@@ -1875,8 +1878,11 @@ impl Processing {
         &self,
         result: nero_core::Result<nero_core::TranscriptUpgradeReport>,
     ) {
-        if result.is_ok_and(|report| report.unavailable == 0) {
-            return;
+        match result {
+            Ok(report) if report.unavailable == 0 => return,
+            // Quitting or a recording stopped the pass; the next launch runs it again.
+            Err(nero_core::CoreError::Unavailable | nero_core::CoreError::RecordingBusy) => return,
+            _ => {}
         }
         self.report_startup_issue(
             "transcript-upgrade",
@@ -1885,6 +1891,15 @@ impl Processing {
     }
 
     pub fn notify_startup_issues(&self, notify: impl FnOnce(&[Progress]) -> bool) {
+        self.startup_issues_requested.store(true, Ordering::Release);
+        self.notify_late_startup_issues(notify);
+    }
+
+    /// Delivers issues found after the main window first asked, once it listens.
+    pub fn notify_late_startup_issues(&self, notify: impl FnOnce(&[Progress]) -> bool) {
+        if !self.startup_issues_requested.load(Ordering::Acquire) {
+            return;
+        }
         let mut issues = self.startup_issues.lock().unwrap();
         if !issues.is_empty() && notify(&issues) {
             issues.clear();
@@ -4836,6 +4851,26 @@ mod tests {
         assert_eq!(status.status, "failed");
         assert!(!status.message.contains(&meeting.id));
         assert!(process.root.join("meetings").join(&meeting.id).exists());
+    }
+    #[test]
+    fn a_late_startup_issue_waits_until_the_main_window_has_asked() {
+        let (_temp, process) = setup();
+        process.record_transcript_upgrade(Err(nero_core::CoreError::Storage("late".into())));
+        process.notify_late_startup_issues(|_| panic!("the window has not asked yet"));
+        process.notify_startup_issues(|_| true);
+        process.record_transcript_upgrade(Ok(nero_core::TranscriptUpgradeReport {
+            upgraded: 0,
+            unchanged: 0,
+            unavailable: 1,
+        }));
+        let delivered = std::cell::Cell::new(0);
+        process.notify_late_startup_issues(|issues| {
+            delivered.set(issues.len());
+            true
+        });
+        assert_eq!(delivered.get(), 1);
+        process.record_transcript_upgrade(Err(nero_core::CoreError::RecordingBusy));
+        assert!(process.startup_issues.lock().unwrap().is_empty());
     }
     #[test]
     fn successful_source_upgrade_does_not_add_a_startup_notice() {

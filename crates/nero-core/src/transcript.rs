@@ -75,6 +75,19 @@ pub struct TranscriptUpgradeReport {
     pub unavailable: u64,
 }
 
+impl TranscriptUpgradeReport {
+    /// Counts one meeting. Quitting or a recording stops the pass for this launch.
+    pub fn add(&mut self, result: Result<bool>) -> Result<()> {
+        match result {
+            Ok(true) => self.upgraded += 1,
+            Ok(false) => self.unchanged += 1,
+            Err(error @ (CoreError::Unavailable | CoreError::RecordingBusy)) => return Err(error),
+            Err(_) => self.unavailable += 1,
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Transcript {
@@ -1104,28 +1117,38 @@ impl Engine {
         Ok(restored)
     }
 
+    #[cfg(test)]
     pub fn upgrade_transcript_sources(&mut self) -> Result<TranscriptUpgradeReport> {
+        let mut report = TranscriptUpgradeReport::default();
+        for id in self.transcript_meeting_ids() {
+            report.add(self.upgrade_transcript_source_of(&id))?;
+        }
+        Ok(report)
+    }
+
+    pub fn transcript_meeting_ids(&self) -> Vec<String> {
+        self.meetings
+            .values()
+            .filter(|stored| stored.meeting.transcript_id.is_some())
+            .map(|stored| stored.meeting.id.clone())
+            .collect()
+    }
+
+    pub fn upgrade_transcript_source_of(&mut self, id: &str) -> Result<bool> {
         if self.quitting {
             return Err(CoreError::Unavailable);
         }
         if self.capture.is_some() {
             return Err(CoreError::RecordingBusy);
         }
-        let ids: Vec<_> = self
+        if self
             .meetings
-            .values()
-            .filter(|stored| stored.meeting.transcript_id.is_some())
-            .map(|stored| stored.meeting.id.clone())
-            .collect();
-        let mut report = TranscriptUpgradeReport::default();
-        for id in ids {
-            match self.upgrade_transcript_source(&id) {
-                Ok(true) => report.upgraded += 1,
-                Ok(false) => report.unchanged += 1,
-                Err(_) => report.unavailable += 1,
-            }
+            .get(id)
+            .is_none_or(|stored| stored.meeting.transcript_id.is_none())
+        {
+            return Ok(false);
         }
-        Ok(report)
+        self.upgrade_transcript_source(id)
     }
 
     fn upgrade_transcript_source(&self, id: &str) -> Result<bool> {

@@ -1464,7 +1464,6 @@ fn start(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     processing.cleanup_removed_meeting_jobs(&core);
-    processing.upgrade_transcript_sources(&core);
     let agent_mutations = agent_mutations::AgentMutations::start(
         app.handle().clone(),
         &root,
@@ -1515,9 +1514,13 @@ fn poll(
     processing: Arc<Processing>,
     lifecycle: lifecycle::Lifecycle,
 ) {
+    // Reads every transcript, so it runs here instead of before the window opens,
+    // and before any job can pick up a transcript that still needs it.
+    processing.upgrade_transcript_sources(&core);
     let mut previous: Option<Snapshot> = None;
     let mut previous_progress = None;
     while !lifecycle.exiting() {
+        processing.notify_late_startup_issues(|issues| emit_startup_issues(&app, issues));
         let _ = processing.drive(&core);
         if let Ok(snapshot) = core.snapshot() {
             if snapshot_changed(previous.as_ref(), &snapshot) {
@@ -1671,22 +1674,26 @@ fn processing_status(
     state: tauri::State<'_, DesktopState>,
 ) -> Result<Progress, String> {
     require_main(&window)?;
-    state.processing.notify_startup_issues(|issues| {
-        app.emit_to(
-            "main",
-            "nero://processing-error",
-            ProcessingError {
-                meeting_id: None,
-                message: issues
-                    .iter()
-                    .map(|issue| issue.message.as_str())
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            },
-        )
-        .is_ok()
-    });
+    state
+        .processing
+        .notify_startup_issues(|issues| emit_startup_issues(&app, issues));
     Ok(state.processing.snapshot())
+}
+
+fn emit_startup_issues(app: &tauri::AppHandle, issues: &[Progress]) -> bool {
+    app.emit_to(
+        "main",
+        "nero://processing-error",
+        ProcessingError {
+            meeting_id: None,
+            message: issues
+                .iter()
+                .map(|issue| issue.message.as_str())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        },
+    )
+    .is_ok()
 }
 #[tauri::command]
 fn set_speech_engine(

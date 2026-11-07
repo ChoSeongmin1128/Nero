@@ -265,8 +265,13 @@ pub struct CoreHandle {
 }
 
 impl CoreHandle {
+    /// One meeting per call, so the app's other requests are not held behind the pass.
     pub fn upgrade_transcript_sources(&self) -> Result<TranscriptUpgradeReport> {
-        self.call(|engine| engine.upgrade_transcript_sources())
+        let mut report = TranscriptUpgradeReport::default();
+        for id in self.call(|engine| Ok(engine.transcript_meeting_ids()))? {
+            report.add(self.call(move |engine| engine.upgrade_transcript_source_of(&id)))?;
+        }
+        Ok(report)
     }
     pub fn open(root: impl AsRef<Path>) -> Result<Self> {
         let root = root.as_ref().to_path_buf();
