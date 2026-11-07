@@ -886,6 +886,13 @@ fn validate_playback(path: &Path, playback: &Playback) -> Result<()> {
     Ok(())
 }
 
+/// A field or value this build does not know comes from a newer Nero: an update to
+/// make, not damage. Writers stay strict so an older build never drops it on save.
+pub(crate) fn written_by_newer_version(error: &serde_json::Error) -> bool {
+    let message = error.to_string();
+    message.contains("unknown field") || message.contains("unknown variant")
+}
+
 pub(crate) fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
     let bytes = read_limited(open_read(path)?, MAX_JSON_BYTES)?
         .ok_or_else(|| CoreError::Storage("저장 정보가 너무 큽니다.".into()))?;

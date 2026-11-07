@@ -358,8 +358,13 @@ impl TemplateStore {
         let Some(bytes) = read_optional(&path)? else {
             return Ok(Catalog::default());
         };
-        let catalog: Catalog =
-            serde_json::from_slice(&bytes).map_err(|_| TemplateError::InvalidDocument)?;
+        let catalog: Catalog = serde_json::from_slice(&bytes).map_err(|error| {
+            if crate::store::written_by_newer_version(&error) {
+                TemplateError::UnsupportedFormat
+            } else {
+                TemplateError::InvalidDocument
+            }
+        })?;
         if catalog.version != FORMAT_VERSION {
             return Err(TemplateError::UnsupportedFormat);
         }
@@ -1078,6 +1083,14 @@ mod tests {
             assert!(store.create(content("교체하지 말 것")).is_err());
             assert_eq!(fs::read_to_string(&path).unwrap(), text);
         }
+        let newer = r#"{"version":1,"templates":{},"addedLater":true}"#;
+        fs::write(&path, newer).unwrap();
+        assert!(matches!(
+            store.list(),
+            Err(TemplateError::UnsupportedFormat)
+        ));
+        assert!(store.create(content("교체하지 말 것")).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), newer);
     }
 
     #[test]

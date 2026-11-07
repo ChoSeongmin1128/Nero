@@ -403,9 +403,13 @@ impl<'a> Transaction<'a> {
                 None => return Err(ReadError::InvalidDocument.into()),
             }
         }
-        serde_json::from_value(value)
-            .map(Some)
-            .map_err(|_| ReadError::InvalidDocument.into())
+        serde_json::from_value(value).map(Some).map_err(|error| {
+            if store::written_by_newer_version(&error) {
+                ReadError::UnsupportedFormat.into()
+            } else {
+                ReadError::InvalidDocument.into()
+            }
+        })
     }
 
     fn content(&mut self, relative: &Path) -> Result<Option<Vec<u8>>> {
@@ -1791,6 +1795,11 @@ mod tests {
         unreadable(|error| matches!(error, CoreError::Reader(ReadError::InvalidDocument)));
         let mut value: Value = serde_json::from_slice(&original).unwrap();
         value["schemaVersion"] = json!(99);
+        fs::write(&meeting, serde_json::to_vec(&value).unwrap()).unwrap();
+        unreadable(|error| matches!(error, CoreError::Reader(ReadError::UnsupportedFormat)));
+        // A field added by a newer Nero asks for an update instead of reporting damage.
+        let mut value: Value = serde_json::from_slice(&original).unwrap();
+        value["meeting"]["addedLater"] = json!(true);
         fs::write(&meeting, serde_json::to_vec(&value).unwrap()).unwrap();
         unreadable(|error| matches!(error, CoreError::Reader(ReadError::UnsupportedFormat)));
         fs::write(&meeting, vec![b' '; MAX_DOCUMENT_BYTES as usize + 1]).unwrap();
