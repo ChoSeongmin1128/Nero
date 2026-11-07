@@ -629,7 +629,8 @@ pub fn text_for_target(text: &str, citations: &[Citation], meeting_id: &str) -> 
                 } else if citation.kind == "notion" {
                     notion_link(citation)
                 } else {
-                    format!("({})", citation.label)
+                    // A meeting title such as "[2024-05-01] 주간" must not read as a row number.
+                    format!("({})", citation.label.replace('[', "\\["))
                 }
             })
             .collect::<Vec<_>>()
@@ -854,5 +855,44 @@ mod attachment_restore_tests {
         let attachment = &restored.attachments()[0];
         assert_eq!(attachment.page_id.as_deref(), Some(page.as_str()));
         assert_eq!(attachment.source_id.as_deref(), Some(source));
+    }
+}
+
+#[cfg(test)]
+mod bracketed_label_tests {
+    use super::*;
+
+    #[test]
+    fn labels_with_bracketed_dates_never_read_as_transcript_rows() {
+        let local = Citation {
+            reference: 1,
+            kind: "meeting".into(),
+            label: "회의 00:01".into(),
+            meeting_id: Some("target".into()),
+            segment_id: Some("s".into()),
+            start: Some(1.0),
+            url: None,
+            source_id: None,
+        };
+        let other = Citation {
+            reference: 2,
+            label: "[2024-05-01] 주간 00:03".into(),
+            meeting_id: Some("other".into()),
+            ..local.clone()
+        };
+        let notion = Citation {
+            reference: 3,
+            kind: "notion".into(),
+            label: "[2024-05-01]".into(),
+            meeting_id: None,
+            segment_id: None,
+            start: None,
+            url: Some("https://www.notion.so/example".into()),
+            source_id: None,
+        };
+        assert_eq!(
+            text_for_target("결정 [1] 배경 [2] 문서 [3]", &[local, other, notion], "target"),
+            "결정 [1] 배경 (\\[2024-05-01] 주간 00:03) 문서 [2024-05-01](https://www.notion.so/example)"
+        );
     }
 }

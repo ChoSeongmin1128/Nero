@@ -306,9 +306,13 @@ fn validate_import_references(text: &str, count: usize) -> Result<()> {
         if crate::presentation::escaped(text.as_bytes(), at) {
             continue;
         }
-        let Some((reference, _)) = text[at + 1..].split_once(']') else {
+        let Some((reference, rest)) = text[at + 1..].split_once(']') else {
             continue;
         };
+        // "[2024-05-01](https://...)" is link text, which the renderer keeps as a link.
+        if rest.starts_with('(') {
+            continue;
+        }
         if reference.is_empty()
             || !reference
                 .chars()
@@ -632,6 +636,15 @@ mod tests {
         assert!(validate_import_references("연도 [2024] 근거 [2]", 2).is_err());
         assert!(validate_import_references(r"\\[2024]", 2).is_err());
         assert!(validate_import_references("할 일 [ ] 메모 [a [1]", 1).is_ok());
+    }
+
+    #[test]
+    fn link_text_in_an_imported_summary_is_not_a_reference() {
+        assert!(
+            validate_import_references("근거 [1] [2024-05-01](https://www.notion.so/a)", 1).is_ok()
+        );
+        assert!(validate_import_references("[2024](https://www.notion.so/a)", 1).is_ok());
+        assert!(validate_import_references("연도 [2024] (참고)", 1).is_err());
     }
     use crate::transcript::tests::{output, setup};
 
