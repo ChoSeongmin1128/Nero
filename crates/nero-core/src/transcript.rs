@@ -1683,7 +1683,11 @@ impl Engine {
                 &evidence.before,
             )?;
         }
-        immutable_bytes(&self.store.root, &directory.join(&edit_name), &after)?;
+        // Receipts point at this copy as their evidence. A plain edit has no receipt,
+        // and current.json already holds the document, so nothing would read it.
+        if upgrade.is_some() || terminology.is_some() || speaker_analysis.is_some() {
+            immutable_bytes(&self.store.root, &directory.join(&edit_name), &after)?;
+        }
         if let Some(evidence) = upgrade {
             // 적용 뒤 영수증 쓰기 실패가 성공한 교체를 숨기지 않도록 증거를 먼저 보존한다.
             immutable_json(
@@ -4330,6 +4334,32 @@ pub(crate) mod tests {
             std::fs::read(evidence_dir.join("raw.json")).unwrap(),
             activity_bytes
         );
+    }
+
+    #[test]
+    fn a_plain_edit_does_not_leave_a_copy_nothing_reads() {
+        let (_temp, mut engine, id, _) = setup();
+        let source = engine.commit_transcript(&id, None, output()).unwrap();
+        let directory = engine
+            .store
+            .root
+            .join(transcript_dir(&id, &source.version.id).unwrap());
+        let names = |directory: &Path| {
+            let mut names: Vec<_> = std::fs::read_dir(directory)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect();
+            names.sort();
+            names
+        };
+        let before = names(&directory);
+        let mut texts: Vec<_> = source.segments.iter().map(|s| s.text.clone()).collect();
+        texts[0] = "편집한 문장".into();
+        let edited = engine
+            .edit_transcript(&id, source.version.clone(), texts)
+            .unwrap();
+        assert_eq!(edited.segments[0].text, "편집한 문장");
+        assert_eq!(names(&directory), before);
     }
 
     #[test]
