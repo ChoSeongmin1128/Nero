@@ -25,6 +25,8 @@ const actionsSource = await readFile(new URL('../src/transcript-actions.js', imp
 const feedbackSource = await readFile(new URL('../src/processing-feedback.js', import.meta.url), 'utf8');
 const processingStateSource = await readFile(new URL('../src/processing-state.js', import.meta.url), 'utf8');
 const preparationProgressSource = await readFile(new URL('../src/model-preparation-progress.js', import.meta.url), 'utf8');
+const agentSettingsSource = await readFile(new URL('../src/agent-settings.js', import.meta.url), 'utf8');
+const terminologySettingsSource = await readFile(new URL('../src/terminology-settings.js', import.meta.url), 'utf8');
 const componentsSource = await readFile(new URL('../../../design-system/components.js', import.meta.url), 'utf8');
 const markdownSource = await buildMarkdownSource();
 const markup = new Window();
@@ -167,6 +169,8 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     ${feedbackSource.replace(/^import .*;\r?\n/gm, '').replace(/^export /gm, '')}
     ${processingStateSource.replace(/^export /gm, '')}
     ${preparationProgressSource.replace(/^export /gm, '')}
+    ${agentSettingsSource.replace(/^export /gm, '')}
+    ${terminologySettingsSource.replace(/^export /gm, '')}
     ${searchSource.replace(/^export /gm, '')}
     ${actionsSource.replace(/^import .*;\r?\n/gm, '').replace(/^export /gm, '')}
     let restoreForTest;

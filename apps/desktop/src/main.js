@@ -40,6 +40,8 @@ import { mountMeetingContext } from './meeting-context-ui.jsx';
 import * as aiChatBridge from './ai-chat-bridge.js';
 import { mountSummaryEvidence } from './summary-evidence.js';
 import { mountAgentConnectionDialog } from './agent-connection-dialog.jsx';
+import { mountAgentSettings } from './agent-settings.js';
+import { mountTerminologySettings } from './terminology-settings.js';
 import { mountTemplateSettings } from './template-settings.jsx';
 import { mountSpeechModelPicker, speechTitle } from './speech-model-picker.js';
 import { bindPreparationProgress } from './model-preparation-progress.js';
@@ -57,8 +59,6 @@ const byId = (id) => document.getElementById(id);
 const summaryTemplatePicker = mountSummaryTemplatePicker({ node: byId('summary-template'), bridge, onAvailabilityChange: () => queueMicrotask(() => render()) });
 void summaryTemplatePicker.reload();
 const settingsPanels = [...byId('settings-dialog').querySelectorAll('.app-settings-tabs [role="tab"][data-settings-panel]')].map(tab => tab.dataset.settingsPanel);
-const terminologySettings = { info: null, error: '', request: 0, saving: null };
-const agentConnection = { info: null, loading: false, error: '', request: 0, refresh: 0, timer: null, pending: {}, errors: {} };
 const agentConnectionDialog = mountAgentConnectionDialog({ container: byId('settings-dialog'), fallbackTrigger: () => byId('settings-agent-manual') });
 const templateSettings = mountTemplateSettings({ container: byId('settings-dialog'), panel: byId('settings-templates-panel'), bridge });
 const peopleSettings = mountPeopleSettings({ container: byId('settings-dialog'), panel: byId('settings-people-panel'), bridge });
@@ -66,6 +66,8 @@ const meetingAttendees = mountMeetingAttendees({ container: document.body, bridg
 let integrationNotices = [];
 let appUpdateNotices = [];
 const integrationMonitor = createIntegrationMonitor({ bridge, onChange(notices) { integrationNotices = notices; render(); } });
+const agentSettings = mountAgentSettings({ byId, bridge, dialog: agentConnectionDialog, integrationMonitor });
+const terminologySettings = mountTerminologySettings({ byId, bridge, isProcessing: () => processingActive(), onChange: () => renderSettings() });
 const calendarSettings = mountCalendarSettings({ panel: byId('calendar-settings'), bridge, onSnapshot: value => integrationMonitor.acceptCalendar(value) });
 const calendarReference = mountCalendarMeetingReference({ container: byId('calendar-meeting-reference'), bridge });
 const calendarPicker = mountCalendarMeetingPicker({ container: document.body, bridge,
@@ -583,185 +585,11 @@ function microphoneIssue() {
   return '';
 }
 
-function resetTerminologySettings() {
-  terminologySettings.request += 1;
-  terminologySettings.info = null;
-  terminologySettings.error = '';
-}
-
-function terminologyRequestCurrent(request) {
-  return request === terminologySettings.request && byId('settings-dialog').open && state.settingsPanel === 'recording';
-}
-
-function renderTerminologySettings() {
-  const { info, saving } = terminologySettings;
-  byId('settings-terminology-row').hidden = !info?.available;
-  byId('terminology-enabled').checked = Boolean(info?.enabled);
-  byId('terminology-enabled').disabled = !info?.available || Boolean(saving) || processingActive();
-}
-
-async function loadTerminologySettings() {
-  resetTerminologySettings();
-  renderSettings();
-  if (!byId('settings-dialog').open || state.settingsPanel !== 'recording' || !bridge.readTerminologySettings) return;
-  const request = terminologySettings.request;
-  try {
-    if (terminologySettings.saving) await terminologySettings.saving.catch(() => {});
-    if (!terminologyRequestCurrent(request)) return;
-    const info = await bridge.readTerminologySettings();
-    if (!terminologyRequestCurrent(request)) return;
-    terminologySettings.info = info;
-  } catch {
-    if (!terminologyRequestCurrent(request)) return;
-    terminologySettings.error = '용어 설정을 불러오지 못했습니다. 탭을 다시 열어 주세요.';
-  } finally {
-    if (terminologyRequestCurrent(request)) renderSettings();
-  }
-}
-
-async function changeTerminologyEnabled() {
-  const previous = terminologySettings.info;
-  const request = terminologySettings.request;
-  if (!terminologyRequestCurrent(request) || !previous?.available || terminologySettings.saving || processingActive()) return renderSettings();
-  const enabled = byId('terminology-enabled').checked;
-  terminologySettings.info = { ...previous, enabled };
-  terminologySettings.error = '';
-  const saving = Promise.resolve().then(() => bridge.setTerminologyEnabled(enabled));
-  terminologySettings.saving = saving;
-  renderSettings();
-  try {
-    const info = await saving;
-    if (terminologyRequestCurrent(request)) terminologySettings.info = info;
-  } catch {
-    if (terminologyRequestCurrent(request)) {
-      terminologySettings.info = previous;
-      terminologySettings.error = '용어 설정을 저장하지 못했습니다.';
-    }
-  } finally {
-    if (terminologySettings.saving === saving) terminologySettings.saving = null;
-    if (terminologyRequestCurrent(request)) renderSettings();
-  }
-}
-
-function renderAgentConnection() {
-  const { info, error } = agentConnection;
-  agentConnectionDialog.update(info);
-  const available = Boolean(info?.available && info.executablePath && info.config);
-  const message = error || (info && !available ? info.unavailableReason || '연결 도구가 포함되지 않은 빌드입니다.' : '');
-  byId('settings-agent-status').textContent = message;
-  byId('settings-agent-status').hidden = !message;
-  for (const client of ['claude', 'codex']) {
-    const entry = info?.clients?.find(item => item.id === client);
-    const pending = Boolean(agentConnection.pending[client]);
-    const pendingLabel = { updating: '업데이트 중', checking: '확인 중', connecting: '연결 중' }[agentConnection.pending[client]];
-    byId(`settings-${client}-spinner`).hidden = !pending && !(agentConnection.loading && !info);
-    const labels = { not_connected: '연결 안 됨', update_required: '업데이트 필요', installation_unknown: '설치 확인 필요', installed: '설치됨', disabled: '사용 안 함', connected: '연결됨', error: '확인 불가', unavailable: '사용 불가' };
-    const status = byId(`settings-${client}-status`);
-    status.textContent = pending ? pendingLabel : !info ? (error ? '확인 불가' : '확인 중') : labels[entry?.state] || '사용 불가';
-    status.dataset.state = pending ? agentConnection.pending[client] : !info ? (error ? 'error' : 'loading') : entry?.state || 'unavailable';
-    const button = byId(`settings-${client}-connect`);
-    button.hidden = !pending && entry?.state === 'connected';
-    button.disabled = pending || !available || !entry || entry.state === 'unavailable' || entry.state === 'connected';
-    button.textContent = pending ? pendingLabel : entry?.action === 'connect' && entry?.state === 'installation_unknown' ? '연결 화면 열기' : entry?.action === 'recheck' || ['installation_unknown', 'disabled'].includes(entry?.state) ? '다시 확인' : entry?.state === 'update_required' ? '업데이트' : entry?.state === 'error' ? '다시 확인' : '연결';
-    button.setAttribute?.('aria-label', `${client === 'claude' ? 'Claude' : 'ChatGPT'} ${button.textContent}`);
-    const errorNode = byId(`settings-${client}-error`);
-    const failed = Boolean(agentConnection.errors[client]) || entry?.state === 'error';
-    const needsAction = entry?.state === 'disabled' || (entry?.state === 'installation_unknown' && entry?.action === 'recheck');
-    errorNode.textContent = failed || needsAction ? agentConnection.errors[client] || entry?.detail || '' : '';
-    errorNode.className = failed ? 'notice' : 'settings-client-note';
-    errorNode.setAttribute?.('role', failed ? 'alert' : 'status');
-    errorNode.hidden = !errorNode.textContent;
-  }
-
-}
-
-function agentConnectionActive() {
-  return byId('settings-dialog').open && state.settingsPanel === 'agent';
-}
-
-async function loadAgentConnection(force = false, forceHostRefresh = false) {
-  if (!agentConnectionActive()) {
-    resetAgentConnection();
-    return;
-  }
-  if (agentConnection.loading || (!force && agentConnection.info)) return;
-  clearTimeout(agentConnection.timer);
-  agentConnection.timer = null;
-  const request = agentConnection.request;
-  const refresh = ++agentConnection.refresh;
-  agentConnection.loading = true;
-  agentConnection.error = '';
-  renderAgentConnection();
-  try {
-    const info = await bridge.agentConnectionInfo(forceHostRefresh);
-    if (request !== agentConnection.request || refresh !== agentConnection.refresh || !agentConnectionActive()) return;
-    agentConnection.info = info;
-    integrationMonitor.acceptAgents(info);
-  } catch {
-    if (request !== agentConnection.request || refresh !== agentConnection.refresh || !agentConnectionActive()) return;
-    agentConnection.error = '연결 상태를 불러오지 못했습니다.';
-  } finally {
-    if (request === agentConnection.request) {
-      agentConnection.loading = false;
-      if (agentConnectionActive()) {
-        renderAgentConnection();
-        agentConnection.timer = setTimeout(() => { agentConnection.timer = null; void loadAgentConnection(true); }, 3000);
-      }
-    }
-  }
-}
-
-async function connectAgentClient(client) {
-  const entry = agentConnection.info?.clients?.find(item => item.id === client);
-  if (!agentConnectionActive() || agentConnection.pending[client] || !agentConnection.info?.available || !entry || ['unavailable', 'connected'].includes(entry.state)) return;
-  const request = agentConnection.request;
-  const checking = entry.action === 'recheck' || (!entry.action && ['error', 'installation_unknown', 'disabled'].includes(entry.state));
-  agentConnection.pending[client] = checking ? 'checking' : entry.state === 'update_required' ? 'updating' : 'connecting';
-  agentConnection.errors[client] = '';
-  agentConnection.refresh += 1;
-  renderAgentConnection();
-  try {
-    const info = await (checking ? bridge.agentConnectionInfo(true) : bridge.connectAgentClient(client));
-    if (request !== agentConnection.request || !agentConnectionActive()) return;
-    integrationMonitor.acceptAgents(info);
-    const updated = info.clients?.find(item => item.id === client);
-    if (updated) agentConnection.info = { ...agentConnection.info, clients: agentConnection.info.clients.map(item => item.id === client ? updated : item) };
-    if (client === 'claude' && info.claudeExtensionPath) agentConnectionDialog.openClaudeExtension(info.claudeExtensionPath, byId('settings-claude-connect'));
-  } catch (error) {
-    const message = typeof error === 'string' ? error : error?.message;
-    const reason = typeof message === 'string' && message.length <= 160 && !/[\r\n]/.test(message) && /[가-힣]/.test(message) ? message : checking ? '확인하지 못했습니다. 다시 시도해 주세요.' : '연결하지 못했습니다. 다시 시도해 주세요.';
-    if (request === agentConnection.request && agentConnectionActive()) agentConnection.errors[client] = reason;
-  } finally {
-    delete agentConnection.pending[client];
-    agentConnection.refresh += 1;
-    if (agentConnectionActive()) {
-      renderAgentConnection();
-      if (!checking) void loadAgentConnection(true);
-    }
-  }
-}
-
-function resetAgentConnection() {
-  agentConnectionDialog.close({ restoreFocus: false });
-  agentConnection.request += 1;
-  agentConnection.refresh += 1;
-  clearTimeout(agentConnection.timer);
-  agentConnection.timer = null;
-  agentConnection.info = null;
-  agentConnection.loading = false;
-  agentConnection.error = '';
-  agentConnection.errors = {};
-}
-
-function openAgentConnectionPrompt() {
-  if (agentConnectionActive()) agentConnectionDialog.open(agentConnection.info, byId('settings-agent-manual'));
-}
-
 function renderSettings() {
   const dialog = byId('settings-dialog');
   const recording = state.settingsPanel === 'recording';
-  renderAgentConnection();
-  renderTerminologySettings();
+  agentSettings.setActive(dialog.open && state.settingsPanel === 'agent');
+  terminologySettings.setActive(dialog.open && recording);
   templateSettings.setActive(dialog.open && state.settingsPanel === 'templates');
   calendarSettings.setActive(dialog.open && state.settingsPanel === 'agent');
   aiChat?.setSettingsActive(dialog.open && state.settingsPanel === 'agent');
@@ -817,8 +645,6 @@ async function openSettings(panel = 'appearance', returnId = 'settings') {
     renderSettings();
     globalThis.NeroControls.refresh?.();
     byId(`settings-${panel}-tab`).focus({ preventScroll: true });
-    void loadAgentConnection(false, true);
-    void loadTerminologySettings();
   });
   try { await refreshDevices(); } catch { state.settingsError = '마이크 목록을 불러오지 못했습니다. 다시 시도해 주세요.'; renderSettings(); }
 }
@@ -948,13 +774,12 @@ async function selectSettingsPanel(name, focus = false) {
   await leaveSettings(() => {
     state.settingsPanel = name; renderSettings();
     if (focus) byId(`settings-${name}-tab`).focus({ preventScroll: true });
-    void loadAgentConnection(false, true); void loadTerminologySettings();
   });
 }
 byId('settings-close').addEventListener('click', () => { void closeSettings(); });
 bindDialogDismiss(byId('settings-dialog'), { dismiss: closeSettings, blocked: () => templateSettings.isConfirming() || peopleSettings.isConfirming() });
 bindDialogDismiss(byId('quit-dialog'));
-byId('settings-dialog').addEventListener('close', () => { aiChat?.setSettingsActive(false); templateSettings.hide(); peopleSettings.hide(); void summaryTemplatePicker.reload(); resetTerminologySettings(); resetAgentConnection(); globalThis.NeroControls.close?.(); returnFocusTarget(byId(state.settingsReturnId) || byId('settings'), byId('navigation-toggle')).focus({ preventScroll: true }); });
+byId('settings-dialog').addEventListener('close', () => { aiChat?.setSettingsActive(false); templateSettings.hide(); peopleSettings.hide(); void summaryTemplatePicker.reload(); terminologySettings.setActive(false); agentSettings.setActive(false); globalThis.NeroControls.close?.(); returnFocusTarget(byId(state.settingsReturnId) || byId('settings'), byId('navigation-toggle')).focus({ preventScroll: true }); });
 for (const name of settingsPanels) byId(`settings-${name}-tab`).addEventListener('click', () => { void selectSettingsPanel(name, true); });
 byId('settings-dialog').addEventListener('keydown', event => {
   if (event.isComposing || event.keyCode === 229 || (templateSettings.isConfirming() || peopleSettings.isConfirming())) return;
@@ -965,10 +790,6 @@ byId('settings-dialog').addEventListener('keydown', event => {
   const name = settingsPanels[event.key === 'Home' ? 0 : event.key === 'End' ? settingsPanels.length - 1 : (index + step + settingsPanels.length) % settingsPanels.length];
   void selectSettingsPanel(name, true);
 });
-byId('settings-agent-manual').addEventListener('click', openAgentConnectionPrompt);
-for (const client of ['claude', 'codex']) byId(`settings-${client}-connect`).addEventListener('click', () => { void connectAgentClient(client); });
-globalThis.addEventListener?.('focus', () => { if (agentConnectionActive()) void loadAgentConnection(true); });
-byId('terminology-enabled').addEventListener('change', changeTerminologyEnabled);
 byId('settings-microphone').addEventListener('change', changeMicrophone);
 
 byId('models').addEventListener('click', () => run(async () => {
@@ -1076,7 +897,7 @@ async function prepareAppLeave(action) {
 function onAgentChanged(change) {
   if (change.area === 'aiChat') aiChat?.flow.externalChange(change.conversationIds || []);
   else if (change.area === 'meetingSources' || change.area === 'terminology') void meetingContext?.reload();
-  else if (change.area === 'settings') void loadTerminologySettings();
+  else if (change.area === 'settings') void terminologySettings.reload();
 }
 
 async function onAgentWriteRequest({ requestId, kind } = {}) {

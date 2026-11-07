@@ -2,10 +2,8 @@ import { createIntegrationMonitor } from '../src/integration-notifications.js';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
-import vm from 'node:vm';
+import { mountAgentSettings } from '../src/agent-settings.js';
 
-const source = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
-const functions = source.slice(source.indexOf('function renderAgentConnection()'), source.indexOf('function renderSettings()'));
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 const info = { available: true, executablePath: '/Example App/nero', dataDir: '/Example Library', config: { mcpServers: { nero: { command: '/Example App/nero', args: ['mcp', '--data-dir', '/Example Library'] } } }, cliExample: 'nero meetings list', clients: [{ id: 'claude', state: 'not_connected' }, { id: 'codex', state: 'not_connected' }] };
 
@@ -15,7 +13,7 @@ function harness({ load = async () => info, write = async () => {}, connect = as
     if (!nodes.has(id)) {
       const classes = new Set();
       const attributes = new Map();
-      nodes.set(id, { textContent: '', dataset: {}, hidden: false, disabled: false, open: id === 'settings-dialog',
+      nodes.set(id, { textContent: '', dataset: {}, hidden: false, disabled: false, open: id === 'settings-dialog', listeners: {}, addEventListener(name, listener) { this.listeners[name] = listener; },
         classList: { add: value => classes.add(value), remove: value => classes.delete(value), contains: value => classes.has(value) },
         setAttribute(name, value) { attributes.set(name, String(value)); }, getAttribute: name => attributes.get(name) ?? null,
         focus() { throw Error('Unexpected focus'); } });
@@ -23,16 +21,22 @@ function harness({ load = async () => info, write = async () => {}, connect = as
     return nodes.get(id);
   };
   const state = { settingsPanel: 'agent' };
-  const agentConnection = { info: null, loading: false, error: '', request: 0, refresh: 0, timer: null, pending: {}, errors: {} };
   let calls = 0;
   const copied = [], timers = new Map();
   const dialog = { opened: [], triggers: [], updates: [], closed: [], open(value, trigger) { dialog.opened.push(value); dialog.triggers.push(trigger); }, update: value => dialog.updates.push(value), close: value => dialog.closed.push(value) };
-  const context = vm.createContext({ integrationMonitor: createIntegrationMonitor({ bridge: {} }), byId, state, agentConnection, agentConnectionDialog: dialog, bridge: { agentConnectionInfo: force => { calls += 1; return load(force); }, connectAgentClient: connect },
-    navigator: { clipboard: { writeText: async text => { copied.push(text); await write(text); } } },
-    copyFeedbackTimers: new Map(), setTimeout: callback => { const key = {}; timers.set(key, callback); return key; }, clearTimeout: key => timers.delete(key),
-  });
-  vm.runInContext(functions, context);
-  return { byId, state, agentConnection, copied, timers, context, dialog, get calls() { return calls; } };
+  const settings = mountAgentSettings({ byId, dialog, integrationMonitor: createIntegrationMonitor({ bridge: {} }),
+    bridge: { agentConnectionInfo: force => { calls += 1; return load(force); }, connectAgentClient: connect },
+    schedule: callback => { const key = {}; timers.set(key, callback); return key; }, unschedule: key => timers.delete(key) });
+  // Stands in for main's renderSettings, which activates the panel while the agent tab is open.
+  const active = () => byId('settings-dialog').open && state.settingsPanel === 'agent';
+  const context = {
+    loadAgentConnection: (force = false, hostRefresh = false) => active() ? settings.setActive(true) ?? settings.load(force, hostRefresh) : settings.setActive(false),
+    connectAgentClient: client => settings.connect(client),
+    resetAgentConnection: () => settings.setActive(false),
+    renderAgentConnection: () => settings.setActive(active()),
+    openAgentConnectionPrompt: () => { settings.setActive(active()); settings.openPrompt(); },
+  };
+  return { byId, state, copied, timers, context, dialog, get calls() { return calls; } };
 }
 
 test('loads only while the agent panel is open and deduplicates renders and tab visits', async () => {
@@ -51,7 +55,7 @@ test('loads only while the agent panel is open and deduplicates renders and tab 
   await first;
   await app.context.loadAgentConnection();
   assert.equal(app.calls, 1);
-  assert.equal(app.agentConnection.info.executablePath, info.executablePath);
+  assert.equal(app.dialog.updates.at(-1).executablePath, info.executablePath);
   assert.equal(app.byId('settings-claude-connect').disabled, false);
 });
 
@@ -83,7 +87,7 @@ test('late native replies cannot replace a reopened dialog or move focus', async
   old.resolve({ available: false });
   await first;
   assert.equal(app.byId('settings-claude-connect').disabled, false);
-  assert.equal(app.agentConnection.info, info);
+  assert.equal(app.dialog.updates.at(-1), info);
 });
 
 test('manual setup owns configuration instructions and settings has no advanced code controls', async () => {
@@ -325,7 +329,7 @@ test('refresh retains rows and stops when switching panels', async () => {
   await app.context.loadAgentConnection();
   pending.resolve({ ...info, clients: [{ id: 'claude', state: 'connected' }] });
   await refresh;
-  assert.equal(app.agentConnection.info, null);
+  assert.equal(app.dialog.updates.at(-1), null);
   assert.equal(app.timers.size, 0);
 });
 

@@ -1,25 +1,26 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
 import test from 'node:test';
-import vm from 'node:vm';
+import { mountTerminologySettings } from '../src/terminology-settings.js';
 
-const source = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
-const functions = source.slice(source.indexOf('function resetTerminologySettings()'), source.indexOf('function renderAgentConnection()'));
 const deferred = () => { let resolve, reject; const promise = new Promise((done, fail) => { resolve = done; reject = fail; }); return { promise, resolve, reject }; };
 function harness({ read = async () => ({ available: true, enabled: true }), save = async enabled => ({ available: true, enabled }) } = {}) {
   const nodes = new Map();
   const byId = id => {
-    if (!nodes.has(id)) nodes.set(id, { hidden: false, checked: false, disabled: false, open: id === 'settings-dialog' });
+    if (!nodes.has(id)) nodes.set(id, { hidden: false, checked: false, disabled: false, open: id === 'settings-dialog', addEventListener() {} });
     return nodes.get(id);
   };
   const state = { settingsPanel: 'recording' };
-  const terminologySettings = { info: null, error: '', request: 0, saving: null };
   let reads = 0, running = false;
-  const context = vm.createContext({ byId, state, terminologySettings, processingActive: () => running,
-    bridge: { readTerminologySettings: () => { reads += 1; return read(); }, setTerminologyEnabled: save },
-    renderSettings: () => context.renderTerminologySettings(),
-  });
-  vm.runInContext(functions, context);
+  const terminologySettings = mountTerminologySettings({ byId, isProcessing: () => running, onChange() {},
+    bridge: { readTerminologySettings: () => { reads += 1; return read(); }, setTerminologyEnabled: save } });
+  // Stands in for main's renderSettings, which activates the panel while the recording tab is open.
+  const active = () => byId('settings-dialog').open && state.settingsPanel === 'recording';
+  const context = {
+    loadTerminologySettings: () => active() ? terminologySettings.setActive(true) ?? terminologySettings.reload() : terminologySettings.setActive(false),
+    resetTerminologySettings: () => terminologySettings.setActive(false),
+    renderTerminologySettings: () => terminologySettings.setActive(active()),
+    changeTerminologyEnabled: () => terminologySettings.change(),
+  };
   return { byId, state, terminologySettings, context, get reads() { return reads; }, set running(value) { running = value; } };
 }
 
