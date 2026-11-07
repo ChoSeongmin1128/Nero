@@ -78,7 +78,7 @@ mod macos {
         let Some(state) = app.try_state::<DesktopState>() else {
             return NOW;
         };
-        if state.quitting.load(Ordering::Acquire) {
+        if state.lifecycle.exiting() {
             return NOW;
         }
         if REPLY_OWED.swap(true, Ordering::AcqRel) {

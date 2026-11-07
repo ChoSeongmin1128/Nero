@@ -2,7 +2,7 @@ use crate::calendar::{self, CalendarService, CalendarSnapshot, Occurrence};
 use crate::DesktopState;
 use nero_core::{CalendarReference, Meeting, Snapshot};
 use std::path::PathBuf;
-use std::sync::{atomic::Ordering, Arc};
+use std::sync::Arc;
 use std::time::Duration;
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
@@ -59,7 +59,7 @@ pub fn install(app: &tauri::AppHandle, root: PathBuf) {
         let mut previous_revision = None;
         loop {
             let state = app.state::<DesktopState>();
-            if !state.polling.load(Ordering::Acquire) {
+            if state.lifecycle.exiting() {
                 break;
             }
             let core = state.core.clone();

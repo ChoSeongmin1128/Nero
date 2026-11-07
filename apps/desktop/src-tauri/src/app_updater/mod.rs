@@ -4,7 +4,7 @@ use policy::ReleaseIdentity;
 use serde::{Deserialize, Serialize};
 use std::{
     path::{Path, PathBuf},
-    sync::{atomic::Ordering, Arc, Mutex},
+    sync::{Arc, Mutex},
     time::Duration,
 };
 use tauri::{Emitter, Manager, WebviewWindow};
@@ -697,7 +697,7 @@ pub(crate) async fn prepare_install(app: tauri::AppHandle) -> Result<InstallPlan
         .ok_or("현재보다 새로운 빌드만 설치할 수 있습니다.")?;
     let bytes = read_limited(&state.cache.join("package"), MAX_PACKAGE)?;
     let identity = state.verify(&update, &bytes)?;
-    if desktop.quitting.load(Ordering::Acquire) {
+    if desktop.lifecycle.exiting() {
         return Err("앱을 종료하고 있습니다.".into());
     }
     let lease = desktop
@@ -739,8 +739,6 @@ pub(crate) async fn prepare_install(app: tauri::AppHandle) -> Result<InstallPlan
     let receipt =
         serde_json::to_vec(&pending).map_err(|_| "업데이트 기록을 만들지 못했습니다.".to_string());
     let cache = state.cache.clone();
-    let quitting = desktop.quitting.clone();
-    let polling = desktop.polling.clone();
     let install_app = app.clone();
     let task = Box::new(move || {
         let _ai_shutdown = ai_shutdown;
@@ -772,8 +770,6 @@ pub(crate) async fn prepare_install(app: tauri::AppHandle) -> Result<InstallPlan
             }
             return;
         }
-        quitting.store(true, Ordering::Release);
-        polling.store(false, Ordering::Release);
         fence.commit();
         install_app.restart();
     });
@@ -796,8 +792,7 @@ pub fn app_update_recovery_quit(
         return Err("앱 복구가 필요한 상태에서만 실행할 수 있습니다.".into());
     }
     // Core/processing are already fenced. Do not reopen or re-finalize them.
-    desktop.quitting.store(true, Ordering::Release);
-    desktop.polling.store(false, Ordering::Release);
+    desktop.lifecycle.mark_exiting();
     app.exit(0);
     Ok(())
 }

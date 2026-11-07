@@ -14,6 +14,9 @@ struct State {
     owner: Option<(u64, ExitKind)>,
     next: u64,
     transitions: usize,
+    // Set once the process is going away: background loops stop and macOS
+    // termination requests are answered at once.
+    exiting: bool,
 }
 
 #[derive(Clone, Default)]
@@ -22,6 +25,16 @@ pub struct Lifecycle(Arc<Mutex<State>>);
 impl Lifecycle {
     pub fn is_closing(&self) -> bool {
         self.0.lock().unwrap().owner.is_some()
+    }
+
+    pub fn exiting(&self) -> bool {
+        self.0.lock().unwrap().exiting
+    }
+
+    // For an exit that does not go through a lease: update recovery and the
+    // process's own Exit event.
+    pub fn mark_exiting(&self) {
+        self.0.lock().unwrap().exiting = true;
     }
 
     pub fn begin_exit(&self, kind: ExitKind) -> Result<ExitLease, String> {
@@ -76,6 +89,7 @@ impl ExitLease {
     /// Only process termination releases it; no competing path can take over.
     pub fn commit(mut self) {
         self.armed = false;
+        self.lifecycle.mark_exiting();
     }
 }
 impl Drop for ExitLease {
@@ -160,6 +174,18 @@ mod tests {
         assert!(lifecycle.is_closing());
         assert!(lifecycle.begin_exit(ExitKind::Update).is_err());
         assert!(lifecycle.begin_exit(ExitKind::Quit).is_err());
+    }
+
+    #[test]
+    fn only_a_committed_exit_marks_the_process_as_exiting() {
+        let lifecycle = Lifecycle::default();
+        drop(lifecycle.begin_exit(ExitKind::Quit).unwrap());
+        assert!(!lifecycle.exiting());
+        lifecycle.begin_exit(ExitKind::Update).unwrap().commit();
+        assert!(lifecycle.exiting());
+        let recovery = Lifecycle::default();
+        recovery.mark_exiting();
+        assert!(recovery.exiting());
     }
 
     #[test]

@@ -69,10 +69,7 @@ use nero_core::{
 };
 use processing::{Processing, Progress};
 use serde::Serialize;
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc, Mutex,
-};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{Emitter, Manager, WebviewWindow};
 #[cfg(not(target_os = "macos"))]
@@ -83,8 +80,6 @@ use tauri_plugin_dialog::DialogExt;
 struct DesktopState {
     core: CoreHandle,
     agent_mutations: Arc<agent_mutations::AgentMutations>,
-    quitting: Arc<AtomicBool>,
-    polling: Arc<AtomicBool>,
     processing: Arc<Processing>,
     lifecycle: lifecycle::Lifecycle,
     recorder: Mutex<recorder_policy::RecorderPolicy>,
@@ -1422,7 +1417,6 @@ fn start(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     }
     processing.cleanup_removed_meeting_jobs(&core);
     processing.upgrade_transcript_sources(&core);
-    let polling = Arc::new(AtomicBool::new(true));
     let agent_mutations = agent_mutations::AgentMutations::start(
         app.handle().clone(),
         &root,
@@ -1432,8 +1426,6 @@ fn start(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     app.manage(DesktopState {
         agent_mutations,
         core: core.clone(),
-        quitting: Arc::new(AtomicBool::new(false)),
-        polling: polling.clone(),
         recorder: Mutex::new(recorder_policy::RecorderPolicy::default()),
         processing: processing.clone(),
         lifecycle: lifecycle::Lifecycle::default(),
@@ -1451,7 +1443,8 @@ fn start(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         core.clone(),
     );
     let handle = app.handle().clone();
-    std::thread::spawn(move || poll(handle, core, processing, polling));
+    let lifecycle = app.state::<DesktopState>().lifecycle.clone();
+    std::thread::spawn(move || poll(handle, core, processing, lifecycle));
     Ok(())
 }
 
@@ -1472,11 +1465,11 @@ fn poll(
     app: tauri::AppHandle,
     core: CoreHandle,
     processing: Arc<Processing>,
-    polling: Arc<AtomicBool>,
+    lifecycle: lifecycle::Lifecycle,
 ) {
     let mut previous: Option<Snapshot> = None;
     let mut previous_progress = None;
-    while polling.load(Ordering::Acquire) {
+    while !lifecycle.exiting() {
         let _ = processing.drive(&core);
         if let Ok(snapshot) = core.snapshot() {
             if snapshot_changed(previous.as_ref(), &snapshot) {
@@ -1582,8 +1575,6 @@ async fn shut_down_for_quit(
     let ai_shutdown = ai_chat_desktop::prepare_shutdown(&app).await?;
     let processing = state.processing.clone();
     let core = state.core.clone();
-    let quitting = state.quitting.clone();
-    let polling = state.polling.clone();
     // Own the lease inside the side-effecting task, so dropping the IPC future
     // cannot release it while shutdown is still running in the background.
     tauri::async_runtime::spawn_blocking(move || {
@@ -1600,8 +1591,6 @@ async fn shut_down_for_quit(
             }
         };
         publish(&app, &snapshot);
-        quitting.store(true, Ordering::Release);
-        polling.store(false, Ordering::Release);
         exit_lease.commit();
         if !app_termination::reply(&app, true) {
             app.exit(0);
@@ -2320,14 +2309,14 @@ fn main() {
             show_main(app);
         }
         if let tauri::RunEvent::ExitRequested { ref api, .. } = event {
-            if !state.quitting.load(Ordering::Acquire) {
+            if !state.lifecycle.exiting() {
                 api.prevent_exit();
                 ask_quit(app);
             }
         }
         if let tauri::RunEvent::Exit = event {
             state.agent_mutations.stop();
-            state.polling.store(false, Ordering::Release);
+            state.lifecycle.mark_exiting();
         }
     });
 }
