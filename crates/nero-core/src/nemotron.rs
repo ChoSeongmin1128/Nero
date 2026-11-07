@@ -313,6 +313,24 @@ pub(crate) const WORD_PROJECTOR_VERSION: &str = "nemotron-word-speakers-v1";
 pub(crate) const WHISPER_WORD_PROJECTOR_VERSION: &str = "whisper-word-speakers-v1";
 pub(crate) const QWEN_WORD_PROJECTOR_VERSION: &str = "qwen3-word-speakers-v1";
 
+// The pinned Nemotron repository, read from the same manifest its output is checked against.
+fn nemotron_model() -> &'static str {
+    static MODEL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    MODEL.get_or_init(|| {
+        serde_json::from_str::<serde_json::Value>(include_str!(
+            "../../../config/models/nemotron-asr.json"
+        ))
+        .ok()
+        .and_then(|manifest| manifest["repository"].as_str().map(str::to_owned))
+        .unwrap_or_default()
+    })
+}
+
+// Models whose words carry native times, so speakers can be assigned word by word.
+pub(crate) fn supports_word_speakers(model: &str) -> bool {
+    model == crate::whisper::MODEL || model == crate::qwen::MODEL || model == nemotron_model()
+}
+
 // Whisper and the Qwen aligner can emit zero-length words; those keep an unknown speaker.
 fn zero_length_unknown(model: &str) -> bool {
     model == crate::whisper::MODEL || model == crate::qwen::MODEL
@@ -613,10 +631,12 @@ fn materialize(
     {
         return Err(derived_invalid());
     }
-    let prepared = (u128::from(output.posterior.input_frames) * 16_000
-        + u128::from(output.posterior.input_sample_rate / 2))
-        / u128::from(output.posterior.input_sample_rate);
-    if prepared != u128::from(output.posterior.prepared_frames)
+    let prepared = crate::audio_normalize::output_frames(
+        output.posterior.input_frames,
+        output.posterior.input_sample_rate,
+    )
+    .map_err(|_| derived_invalid())?;
+    if prepared != output.posterior.prepared_frames
         || output.posterior.frames != output.posterior.prepared_frames / 160 + 1
     {
         return Err(derived_invalid());
@@ -846,9 +866,9 @@ pub(crate) fn create_speaker_generation(
         return Err(derived_invalid());
     }
     let parsed: WordOutput = serde_json::from_slice(&canonical).map_err(|_| derived_invalid())?;
-    let prepared = (u128::from(frames) * 16_000 + u128::from(sample_rate / 2))
-        / u128::from(sample_rate.max(1));
-    if sample_rate == 0 || prepared != u128::from(parsed.input_audio_frames) {
+    if crate::audio_normalize::output_frames(frames, sample_rate).ok()
+        != Some(parsed.input_audio_frames)
+    {
         return Err(derived_invalid());
     }
     let positions = parsed

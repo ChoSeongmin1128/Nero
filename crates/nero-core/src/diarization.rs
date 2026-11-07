@@ -1,3 +1,4 @@
+use crate::audio_normalize::output_frames;
 use crate::{CoreError, Result, Transcript, TranscriptSpeaker};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -37,9 +38,7 @@ fn normalization(
     sample_rate: u32,
 ) -> Result<(Option<f64>, serde_json::Value)> {
     if draft.posterior.is_some() && posterior_profile(draft) {
-        let prepared =
-            (u128::from(frames) * 16_000 + u128::from(sample_rate / 2)) / u128::from(sample_rate);
-        let prepared = u64::try_from(prepared).map_err(|_| invalid())?;
+        let prepared = output_frames(frames, sample_rate).map_err(|_| invalid())?;
         return Ok((
             Some(prepared as f64 / 16_000.0),
             serde_json::json!({
@@ -57,9 +56,7 @@ fn normalization(
     }
     // This exception is tied to the model/runtime pins above, not a generic epsilon.
     // src/common/audio_resampler.cpp: rounded_output_count uses nearest/ties-up.
-    let resampled = (u128::from(frames) * u128::from(TIMEBASE) + u128::from(sample_rate / 2))
-        / u128::from(sample_rate);
-    let resampled = u64::try_from(resampled).map_err(|_| invalid())?;
+    let resampled = output_frames(frames, sample_rate).map_err(|_| invalid())?;
     if resampled == 0 {
         return Err(invalid());
     }
@@ -181,9 +178,8 @@ pub(crate) fn posterior_slots(
     {
         return Err(invalid());
     }
-    let resampled =
-        (u128::from(frames) * 16_000 + u128::from(sample_rate / 2)) / u128::from(sample_rate);
-    let expected = u64::try_from(resampled).map_err(|_| invalid())? / 160 + 1;
+    let resampled = output_frames(frames, sample_rate).map_err(|_| invalid())?;
+    let expected = resampled / 160 + 1;
     let bytes = expected
         .checked_mul(8)
         .and_then(|n| n.checked_mul(4))

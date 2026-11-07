@@ -1465,11 +1465,7 @@ impl Engine {
             .audio
             .as_ref()
             .ok_or_else(|| CoreError::InvalidState("원음 정보가 없습니다.".into()))?;
-        if draft.posterior.is_some()
-            && matches!(
-                draft.source.model.as_str(),
-                "nvidia/nemotron-3.5-asr-streaming-0.6b" | crate::whisper::MODEL | crate::qwen::MODEL
-            )
+        if draft.posterior.is_some() && crate::nemotron::supports_word_speakers(&draft.source.model)
         {
             let before = draft.source.version.clone();
             let before_digest = crate::summary::transcript_digest(&draft.source)?;
