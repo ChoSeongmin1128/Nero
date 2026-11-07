@@ -128,7 +128,7 @@ fn sync_windows(app: &tauri::AppHandle, service: &CalendarService) {
     if let (Some(event), Some(name)) = (presented, wanted) {
         if let Some(window) = app.get_webview_window(&name) {
             let _ = window.emit("nero://calendar-reminder", event);
-            crate::recover_recorder_position(&window);
+            crate::window_position::keep_on_screen(&window);
             return;
         }
         let mut builder =
@@ -154,7 +154,7 @@ fn sync_windows(app: &tauri::AppHandle, service: &CalendarService) {
             builder = builder.position(x, y);
         }
         if let Ok(window) = builder.build() {
-            crate::recover_recorder_position(&window);
+            crate::window_position::keep_on_screen(&window);
         }
     }
 }

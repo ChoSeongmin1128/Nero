@@ -44,8 +44,8 @@ mod people_desktop;
 mod process_tree;
 mod processing;
 mod qwen_asr;
-mod recorder_geometry;
 mod recorder_policy;
+mod recorder_window;
 mod recording_files;
 mod release_capabilities;
 mod secret_store;
@@ -64,6 +64,7 @@ mod summary_template;
 mod template_settings;
 mod terminology;
 mod whisper_asr;
+mod window_position;
 use nero_core::{
     CoreHandle, Device, DocumentFormat, DocumentKind, ExportedDocument, Meeting, Snapshot,
     SummaryCitations, SummaryView, Transcript, TranscriptHistory, TranscriptSpeaker,
@@ -74,8 +75,6 @@ use serde::Serialize;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{Emitter, Manager, WebviewWindow};
-#[cfg(not(target_os = "macos"))]
-use tauri::{WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_dialog::DialogExt;
 
@@ -339,31 +338,12 @@ async fn on_core<T: Send + 'static>(
 
 fn publish(app: &tauri::AppHandle, snapshot: &Snapshot) {
     let _ = app.emit_to("main", "nero://snapshot", snapshot);
-    let _ = app.emit_to("recorder", "nero://snapshot", recorder_snapshot(snapshot));
-    sync_recorder(app, snapshot);
-}
-
-// The recorder panel shows only the recording's meeting and never its notes.
-fn recorder_snapshot(snapshot: &Snapshot) -> Snapshot {
-    let meeting_id = snapshot
-        .session
-        .as_ref()
-        .map(|session| session.meeting_id.as_str());
-    Snapshot {
-        revision: snapshot.revision,
-        meetings: snapshot
-            .meetings
-            .iter()
-            .filter(|meeting| Some(meeting.id.as_str()) == meeting_id)
-            .map(|meeting| Meeting {
-                notes: String::new(),
-                attendees: Vec::new(),
-                ..meeting.clone()
-            })
-            .collect(),
-        folders: Vec::new(),
-        session: snapshot.session.clone(),
-    }
+    let _ = app.emit_to(
+        "recorder",
+        "nero://snapshot",
+        recorder_window::recorder_snapshot(snapshot),
+    );
+    recorder_window::sync(app, snapshot);
 }
 
 // A recording tick changes only the session (clock and capture counters); send just
@@ -387,20 +367,7 @@ fn show_main(app: &tauri::AppHandle) {
         let _ = window.show();
         let _ = window.set_focus();
     }
-    request_recorder_sync(app);
-}
-
-fn request_recorder_sync(app: &tauri::AppHandle) {
-    let Some(state) = app.try_state::<DesktopState>() else {
-        return;
-    };
-    let core = state.core.clone();
-    let app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        if let Ok(snapshot) = on_core(core, |core| core.snapshot()).await {
-            sync_recorder(&app, &snapshot);
-        }
-    });
+    recorder_window::request_sync(app);
 }
 
 fn snapshot_changed(previous: Option<&Snapshot>, snapshot: &Snapshot) -> bool {
@@ -409,52 +376,6 @@ fn snapshot_changed(previous: Option<&Snapshot>, snapshot: &Snapshot) -> bool {
             || value.folders != snapshot.folders
             || value.session != snapshot.session
     })
-}
-
-#[cfg(not(target_os = "macos"))]
-fn show_recorder_window(app: &tauri::AppHandle) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window("recorder") {
-        window
-            .set_always_on_top(true)
-            .map_err(recorder_window_error)?;
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        window
-            .set_visible_on_all_workspaces(true)
-            .map_err(recorder_window_error)?;
-        return window.show().map_err(recorder_window_error);
-    }
-    let mut builder =
-        WebviewWindowBuilder::new(app, "recorder", WebviewUrl::App("recorder.html".into()))
-            .title("Nero 녹음 제어")
-            .inner_size(236.0, 44.0)
-            .resizable(false)
-            .decorations(false)
-            .transparent(true)
-            .shadow(false)
-            .always_on_top(true)
-            .skip_taskbar(true)
-            .focused(false);
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    {
-        builder = builder.visible_on_all_workspaces(true);
-    }
-    if let Some(monitor) = app
-        .get_webview_window("main")
-        .and_then(|main| main.current_monitor().ok().flatten())
-    {
-        let area = monitor.work_area();
-        let scale = monitor.scale_factor();
-        let x = (f64::from(area.position.x) + f64::from(area.size.width) / 2.0) / scale - 118.0;
-        let y = f64::from(area.position.y) / scale + 16.0;
-        builder = builder.position(x, y);
-    }
-    builder.build().map(|_| ()).map_err(recorder_window_error)
-}
-
-#[cfg(not(target_os = "macos"))]
-fn recorder_window_error(error: tauri::Error) -> String {
-    let detail: String = error.to_string().chars().take(512).collect();
-    format!("녹음 제어창을 열지 못했습니다. 앱 창에서 녹음을 조작해 주세요.\n{detail}")
 }
 
 #[cfg(test)]
@@ -536,7 +457,7 @@ mod snapshot_tests {
         let mut ended = tick.clone();
         ended.session = None;
 
-        let recorder = recorder_snapshot(&tick);
+        let recorder = recorder_window::recorder_snapshot(&tick);
         assert_eq!(recorder.revision, tick.revision);
         assert_eq!(recorder.session, tick.session);
         assert_eq!(recorder.meetings.len(), 1);
@@ -544,7 +465,9 @@ mod snapshot_tests {
         assert_eq!(recorder.meetings[0].title, "Meeting");
         assert!(recorder.meetings[0].notes.is_empty());
         assert!(recorder.meetings[0].attendees.is_empty());
-        assert!(recorder_snapshot(&ended).meetings.is_empty());
+        assert!(recorder_window::recorder_snapshot(&ended)
+            .meetings
+            .is_empty());
     }
 
     #[test]
@@ -576,157 +499,6 @@ mod snapshot_tests {
         assert!(interrupted_session(Some(&with("recording", "b")), &interrupted).is_none());
         assert!(interrupted_session(None, &interrupted).is_none());
     }
-}
-
-fn sync_recorder(app: &tauri::AppHandle, snapshot: &Snapshot) {
-    #[cfg(target_os = "macos")]
-    {
-        let state = app.state::<DesktopState>();
-        let mut recorder = state.recorder.lock().unwrap();
-        recorder.update(active_session(snapshot), false);
-        macos_recorder::sync(app, snapshot, recorder.is_shown());
-    }
-    #[cfg(not(target_os = "macos"))]
-    sync_floating_recorder(app, snapshot);
-}
-
-#[cfg(not(target_os = "macos"))]
-fn sync_floating_recorder(app: &tauri::AppHandle, snapshot: &Snapshot) {
-    let Some(main) = app.get_webview_window("main") else {
-        return;
-    };
-    let background = !main.is_visible().unwrap_or(true) || main.is_minimized().unwrap_or(false);
-    let action = app
-        .state::<DesktopState>()
-        .recorder
-        .lock()
-        .unwrap()
-        .update(active_session(snapshot), background);
-    match action {
-        Some(recorder_policy::Presentation::Show) => {
-            if let Err(message) = show_recorder_window(app) {
-                app.state::<DesktopState>()
-                    .recorder
-                    .lock()
-                    .unwrap()
-                    .show_failed();
-                report_processing_error(
-                    app,
-                    snapshot
-                        .session
-                        .as_ref()
-                        .map(|session| session.meeting_id.clone()),
-                    message,
-                );
-            }
-        }
-        Some(recorder_policy::Presentation::Hide) => {
-            if let Some(window) = app.get_webview_window("recorder") {
-                let _ = window.hide();
-            }
-        }
-        None => (),
-    }
-    if app
-        .state::<DesktopState>()
-        .recorder
-        .lock()
-        .unwrap()
-        .can_reposition(std::time::Instant::now())
-    {
-        if let Some(window) = app
-            .get_webview_window("recorder")
-            .filter(|window| window.is_visible().unwrap_or(false))
-        {
-            recover_recorder_position(&window);
-        }
-    }
-}
-
-fn recover_recorder_position(window: &WebviewWindow) {
-    use recorder_geometry::Rect;
-    let (Ok(position), Ok(size), Ok(monitors)) = (
-        window.outer_position(),
-        window.outer_size(),
-        window.available_monitors(),
-    ) else {
-        return;
-    };
-    let areas = monitors
-        .iter()
-        .map(|monitor| {
-            let a = monitor.work_area();
-            Rect {
-                x: a.position.x,
-                y: a.position.y,
-                width: a.size.width,
-                height: a.size.height,
-            }
-        })
-        .collect::<Vec<_>>();
-    let preferred = window
-        .current_monitor()
-        .ok()
-        .flatten()
-        .and_then(|current| {
-            monitors
-                .iter()
-                .position(|m| m.position() == current.position())
-        })
-        .unwrap_or(0);
-    if let Some((x, y)) = recorder_geometry::recover_position(
-        Rect {
-            x: position.x,
-            y: position.y,
-            width: size.width,
-            height: size.height,
-        },
-        &areas,
-        preferred,
-    ) {
-        let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
-    }
-}
-
-#[tauri::command]
-async fn show_recorder(
-    window: WebviewWindow,
-    app: tauri::AppHandle,
-    state: tauri::State<'_, DesktopState>,
-    session_id: String,
-) -> Result<(), String> {
-    require_main(&window)?;
-    let snapshot = on_core(state.core.clone(), |core| core.snapshot()).await?;
-    let session = active_session(&snapshot)
-        .filter(|id| *id == session_id)
-        .ok_or("녹음이 종료되었습니다.")?;
-    state.recorder.lock().unwrap().request_show(session);
-    sync_recorder(&app, &snapshot);
-    Ok(())
-}
-
-#[tauri::command]
-async fn set_auto_recorder(
-    window: WebviewWindow,
-    app: tauri::AppHandle,
-    state: tauri::State<'_, DesktopState>,
-    enabled: bool,
-) -> Result<(), String> {
-    require_main(&window)?;
-    state.recorder.lock().unwrap().set_automatic(enabled);
-    let snapshot = on_core(state.core.clone(), |core| core.snapshot()).await?;
-    sync_recorder(&app, &snapshot);
-    Ok(())
-}
-
-#[tauri::command]
-fn drag_recorder(window: WebviewWindow) -> Result<(), String> {
-    if window.label() != "recorder" {
-        return Err("녹음 제어창에서 실행해 주세요.".into());
-    }
-    window
-        .start_dragging()
-        .map_err(|_| "창을 이동하지 못했습니다.".into())
 }
 
 fn active_session(snapshot: &Snapshot) -> Option<&str> {
@@ -1397,28 +1169,6 @@ async fn export_text(
 }
 
 #[tauri::command]
-fn hide_recorder(window: WebviewWindow, app: tauri::AppHandle) -> Result<(), String> {
-    require_local_window(&window)?;
-    dismiss_recorder(&app)
-}
-
-fn dismiss_recorder(app: &tauri::AppHandle) -> Result<(), String> {
-    app.state::<DesktopState>()
-        .recorder
-        .lock()
-        .unwrap()
-        .dismiss();
-    #[cfg(target_os = "macos")]
-    macos_recorder::hide(app);
-    if let Some(recorder) = app.get_webview_window("recorder") {
-        recorder
-            .hide()
-            .map_err(|_| "제어창을 숨기지 못했습니다.".to_string())?;
-    }
-    Ok(())
-}
-
-#[tauri::command]
 async fn hide_main(
     window: WebviewWindow,
     app: tauri::AppHandle,
@@ -1429,7 +1179,7 @@ async fn hide_main(
     window
         .hide()
         .map_err(|_| "창을 숨기지 못했습니다.".to_string())?;
-    sync_recorder(&app, &snapshot);
+    recorder_window::sync(&app, &snapshot);
     Ok(())
 }
 
@@ -1565,13 +1315,13 @@ fn poll(
                         session: &snapshot.session,
                     };
                     let _ = app.emit("nero://snapshot-session", update);
-                    sync_recorder(&app, &snapshot);
+                    recorder_window::sync(&app, &snapshot);
                 } else {
                     publish(&app, &snapshot);
                 }
                 previous = Some(snapshot);
             } else {
-                sync_recorder(&app, &snapshot);
+                recorder_window::sync(&app, &snapshot);
             }
         }
         let progress = processing.snapshot();
@@ -2299,10 +2049,10 @@ fn main() {
             audio_file,
             export_text,
             export_document,
-            hide_recorder,
-            show_recorder,
-            set_auto_recorder,
-            drag_recorder,
+            recorder_window::hide_recorder,
+            recorder_window::show_recorder,
+            recorder_window::set_auto_recorder,
+            recorder_window::drag_recorder,
             hide_main,
             open_meeting,
             request_quit,
@@ -2364,7 +2114,7 @@ fn main() {
                     tauri::WindowEvent::Focused(_) | tauri::WindowEvent::Resized(_)
                 )
             {
-                request_recorder_sync(window.app_handle());
+                recorder_window::request_sync(window.app_handle());
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();

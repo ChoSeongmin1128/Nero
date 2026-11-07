@@ -72,6 +72,52 @@ pub fn recover_position(window: Rect, work_areas: &[Rect], preferred: usize) -> 
     (position != (window.x, window.y)).then_some(position)
 }
 
+/// Moves a floating window (the recorder panel, a calendar reminder) back onto a
+/// visible monitor when a display change left it off screen.
+pub fn keep_on_screen(window: &tauri::WebviewWindow) {
+    let (Ok(position), Ok(size), Ok(monitors)) = (
+        window.outer_position(),
+        window.outer_size(),
+        window.available_monitors(),
+    ) else {
+        return;
+    };
+    let areas = monitors
+        .iter()
+        .map(|monitor| {
+            let a = monitor.work_area();
+            Rect {
+                x: a.position.x,
+                y: a.position.y,
+                width: a.size.width,
+                height: a.size.height,
+            }
+        })
+        .collect::<Vec<_>>();
+    let preferred = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .and_then(|current| {
+            monitors
+                .iter()
+                .position(|m| m.position() == current.position())
+        })
+        .unwrap_or(0);
+    if let Some((x, y)) = recover_position(
+        Rect {
+            x: position.x,
+            y: position.y,
+            width: size.width,
+            height: size.height,
+        },
+        &areas,
+        preferred,
+    ) {
+        let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
