@@ -199,6 +199,31 @@ fn save(
     file.persist(path).map_err(|_| invalid())?;
     Ok(result)
 }
+// Notion's markdown can append an attribute block (`{color="blue"}`) and inline tags
+// (`<mention-user url="..."/>`) to a heading; neither is part of the term.
+fn plain_heading(text: &str) -> String {
+    let mut text = text.trim();
+    if let (true, Some(start)) = (text.ends_with('}'), text.rfind('{')) {
+        text = &text[..start];
+    }
+    let mut plain = String::new();
+    let mut rest = text;
+    while let Some(start) = rest.find('<') {
+        let tag = rest[start + 1..]
+            .starts_with(|c: char| c.is_ascii_alphabetic() || c == '/')
+            .then(|| rest[start..].find('>'))
+            .flatten();
+        let Some(end) = tag else {
+            plain.push_str(&rest[..=start]);
+            rest = &rest[start + 1..];
+            continue;
+        };
+        plain.push_str(&rest[..start]);
+        rest = &rest[start + end + 1..];
+    }
+    plain.push_str(rest);
+    plain.split_whitespace().collect::<Vec<_>>().join(" ")
+}
 fn candidates(source: &NotionSource) -> Vec<Candidate> {
     let mut result = Vec::new();
     let title = source.title.clone().unwrap_or_else(|| source.url.clone());
@@ -233,7 +258,7 @@ fn candidates(source: &NotionSource) -> Vec<Candidate> {
         }
         let hashes = line.chars().take_while(|c| *c == '#').count();
         if (1..=6).contains(&hashes) && line.as_bytes().get(hashes) == Some(&b' ') {
-            add(&line[hashes + 1..], "heading");
+            add(&plain_heading(&line[hashes + 1..]), "heading");
         }
         let mut parts = line.split('`');
         while parts.next().is_some() {
@@ -460,7 +485,7 @@ mod tests {
             last_edited_at: None,
             fetched_at: 0,
             sha256: String::new(),
-            body: "# 문서 제목\n본문 일반 단어와 `API`\n```\n# 코드 속 제목\n`숨김`\n```".into(),
+            body: "# 문서 제목\n본문 일반 단어와 `API`\n```\n# 코드 속 제목\n`숨김`\n```\n## 담당 <mention-user url=\"user://1\"/> {color=\"blue\"}\n## A < B".into(),
             truncated: false,
             unknown_block_count: None,
         }
@@ -470,7 +495,7 @@ mod tests {
         let c = candidates(&source());
         assert_eq!(
             c.iter().map(|v| v.term.as_str()).collect::<Vec<_>>(),
-            vec!["제품명", "문서 제목", "API"]
+            vec!["제품명", "문서 제목", "API", "담당", "A < B"]
         );
     }
     #[test]
