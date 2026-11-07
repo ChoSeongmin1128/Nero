@@ -531,7 +531,12 @@ impl Processing {
             speech_engine: Mutex::new(speech_engine),
             speaker_enabled: Mutex::new(speaker_enabled),
             apple_speech_variant: Mutex::new(apple_speech_variant),
-            apple_speech: Mutex::new(crate::apple_speech::probe(&resources, apple_speech_variant)),
+            // Only a saved Apple Speech selection needs its status before startup finishes.
+            apple_speech: Mutex::new(if speech_engine == SpeechEngine::AppleSpeech {
+                crate::apple_speech::probe(&resources, apple_speech_variant)
+            } else {
+                crate::apple_speech::Availability::default()
+            }),
             speech_preference_error: Mutex::new(speech_preference_error),
             speech_switch: Mutex::new(speech_switch),
             speech_offers: Mutex::new(speech_offers),
@@ -562,6 +567,25 @@ impl Processing {
         let working = process.speech_preference_error.lock().unwrap().is_none()
             && process.model_ready_for(process.speech_engine());
         process.offer_eligible.store(working, Ordering::Release);
+        if process.speech_engine() != SpeechEngine::AppleSpeech
+            && crate::apple_speech::installed(&process.resources)
+        {
+            let background = process.clone();
+            let _ = thread::Builder::new()
+                .name("nero-apple-speech-status".into())
+                .spawn(move || {
+                    let status = crate::apple_speech::probe(&background.resources, None);
+                    let mut current = background.apple_speech.lock().unwrap();
+                    // A probe made since startup for an explicit choice is newer.
+                    if *current == crate::apple_speech::Availability::default()
+                        && *current != status
+                    {
+                        *current = status;
+                        drop(current);
+                        background.update(|_| ());
+                    }
+                });
+        }
         process
     }
     pub(super) fn model(&self) -> Model {
@@ -625,7 +649,7 @@ impl Processing {
     }
     fn supported(&self) -> bool {
         self.speech_preference_error.lock().unwrap().is_none()
-            && self.supported_for(self.speech_engine())
+            && self.selectable(self.speech_engine())
     }
     fn platform_supported(&self) -> bool {
         #[cfg(test)]
@@ -633,6 +657,14 @@ impl Processing {
             return supported;
         }
         platform_supported()
+    }
+    // A status check that failed is not a verdict: Apple Speech stays selectable, and
+    // choosing or preparing it checks again before anything is saved or started.
+    fn selectable(&self, engine: SpeechEngine) -> bool {
+        self.supported_for(engine)
+            || engine == SpeechEngine::AppleSpeech
+                && self.apple_speech.lock().unwrap().asset_status == "unknown"
+                && self.supported_with(engine, true)
     }
     // Uses the cached Apple Speech probe, so the frequent snapshot never runs the helper.
     fn supported_for(&self, engine: SpeechEngine) -> bool {
@@ -1032,6 +1064,9 @@ impl Processing {
             })
             .collect();
         crate::speech_recommendation::apply(&mut progress.speech_choices);
+        for choice in &mut progress.speech_choices {
+            choice.supported = self.selectable(choice.id);
+        }
         (
             progress.summary_supported,
             progress.summary_ready,

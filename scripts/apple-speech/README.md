@@ -4,7 +4,7 @@ macOS 26 이상 Apple silicon 앱에서 `SpeechAnalyzer`를 사용한다. Nero �
 
 지원 여부는 실행 환경의 API 결과로 확인한다. `SpeechTranscriber.isAvailable`과 `supportedLocale(equivalentTo:)`가 한국어를 지원하면 `SpeechTranscriber`를 선택한다. 그렇지 않으면 한국어를 지원하는 `DictationTranscriber`를 선택할 수 있다. 선택은 준비 전에 결정해 preference, capture session, job에 저장한다. 준비와 전사에는 이 선택을 필수 인자로 전달하며, 실행 실패 때 다른 전사기로 바꾸지 않는다. 시스템 서비스 접근이 제한된 프로세스의 지원 조회는 일반 앱 실행과 다를 수 있다.
 
-- `status [variant]`: 기기/한국어 지원과 시스템 자산 설치 상태만 조회한다. 다운로드나 자산 예약을 하지 않는다.
+- `status [variant]`: 기기/한국어 지원과 시스템 자산 설치 상태만 조회한다. 다운로드나 자산 예약을 하지 않는다. 앱 시작 시에는 macOS 기본 전사를 선택해 둔 경우에만 이 조회를 기다리고, 그 밖에는 백그라운드에서 조회한다. 조회가 실패하거나 시간 안에 끝나지 않으면(`unknown`) 지원하지 않는다고 판정하지 않고 선택지로 남겨 두며, 선택하거나 준비할 때 다시 조회한다.
 - `prepare <variant> <output>`: 필요한 경우에만 locale 예약과 `AssetInstallationRequest.downloadAndInstall()`을 실행한다.
 - `transcribe <variant> <input> <output>`: 설치된 자산만 사용한다. 준비되지 않았으면 실패하며 자산을 다운로드하지 않는다.
 

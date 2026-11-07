@@ -66,9 +66,12 @@ fn availability(raw: &[u8]) -> Result<Availability, String> {
     }
     Ok(value)
 }
+// Whether `probe` runs the helper at all; without it the status is the default.
+pub(super) fn installed(resources: &Path) -> bool {
+    cfg!(all(target_os = "macos", target_arch = "aarch64")) && executable(resources).is_file()
+}
 pub(super) fn probe(resources: &Path, variant: Option<AppleVariant>) -> Availability {
-    if !cfg!(all(target_os = "macos", target_arch = "aarch64")) || !executable(resources).is_file()
-    {
+    if !installed(resources) {
         return Availability::default();
     }
     let mut command = Command::new(executable(resources));

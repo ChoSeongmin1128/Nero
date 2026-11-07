@@ -158,3 +158,55 @@ fn every_apple_speech_start_check_uses_the_platform_and_audio_prepare_gate() {
     );
     assert!(process.records.lock().unwrap().is_empty());
 }
+
+#[test]
+fn a_failed_status_check_neither_delays_startup_nor_hides_the_choice() {
+    let temporary = tempfile::tempdir().unwrap();
+    let base = temporary.path().canonicalize().unwrap();
+    let root = base.join("library");
+    let resources = base.join("resources");
+    fs::create_dir(&root).unwrap();
+    fs::create_dir_all(resources.join("native/apple-speech")).unwrap();
+    fs::write(resources.join("native/AudioPrepare"), b"unused").unwrap();
+    let helper = resources.join("native/apple-speech/nero-apple-speech");
+    fs::write(&helper, "#!/bin/sh\nsleep 3\nexit 9\n").unwrap();
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).unwrap();
+    let started = std::time::Instant::now();
+    let process = Processing::new(root, resources);
+    assert!(started.elapsed() < Duration::from_secs(2));
+    *process.platform_supported_override.lock().unwrap() = Some(true);
+    if !crate::apple_speech::installed(&process.resources) {
+        return; // The helper runs only on Apple Silicon macOS.
+    }
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while process.apple_speech.lock().unwrap().asset_status != "unknown" {
+        assert!(std::time::Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(50));
+    }
+    let apple = |process: &Processing| {
+        process
+            .snapshot()
+            .speech_choices
+            .into_iter()
+            .find(|choice| choice.id == SpeechEngine::AppleSpeech)
+            .unwrap()
+    };
+    assert!(apple(&process).supported);
+    assert!(!apple(&process).ready);
+    // Choosing it checks again; nothing is saved until that check succeeds.
+    let availability = serde_json::json!({"supported":true,"ready":true,"locale":"ko-KR","assetStatus":"installed",
+        "message":"Synthetic installed asset","variant":"speechTranscriber","speechAvailable":true,
+        "speechLocaleSupported":true,"dictationLocaleSupported":true});
+    fs::write(
+        &helper,
+        format!("#!/bin/sh\ncase \"$1\" in\nstatus) printf '%s' '{availability}' ;;\n*) exit 23 ;;\nesac\n"),
+    )
+    .unwrap();
+    process
+        .request_speech_engine(SpeechEngine::AppleSpeech)
+        .unwrap();
+    assert_eq!(
+        process.snapshot().speech_engine,
+        Some(SpeechEngine::AppleSpeech)
+    );
+}
