@@ -57,24 +57,42 @@ impl ControlError {
             _ => "storage_error",
         };
         let message = match error {
-            CoreError::EditConflict => {
-                "다른 변경이 저장되었습니다. 최신 정보를 읽고 다시 시도해 주세요."
-            }
-            CoreError::MeetingNotFound => "회의를 찾을 수 없습니다.",
-            CoreError::InvalidInput(_) => "수정 요청의 값이나 대상이 올바르지 않습니다.",
             CoreError::RecordingBusy | CoreError::StaleSession => {
                 "녹음을 마친 뒤 다시 시도해 주세요."
             }
-            CoreError::InvalidState(_) => {
-                "회의 또는 처리 상태가 바뀌어 수정하지 못했습니다. 현재 상태를 확인해 주세요."
-            }
-            CoreError::Unavailable | CoreError::StoreBusy => {
-                "Nero 앱이 수정 요청을 처리할 수 없습니다."
-            }
-            _ => "변경을 저장하지 못했습니다. Nero 앱에서 저장 상태를 확인해 주세요.",
+            _ => core_code_message(code).map_or("", |(_, message)| message),
         };
         Self::new(code, message)
     }
+}
+
+// Messages for the codes a core error maps to, shared by the app's reply and the
+// CLI client that reads it.
+fn core_code_message(code: &str) -> Option<(&'static str, &'static str)> {
+    Some(match code {
+        "edit_conflict" => (
+            "edit_conflict",
+            "다른 변경이 저장되었습니다. 최신 정보를 읽고 다시 시도해 주세요.",
+        ),
+        "meeting_not_found" => ("meeting_not_found", "회의를 찾을 수 없습니다."),
+        "invalid_input" => (
+            "invalid_input",
+            "수정 요청의 값이나 대상이 올바르지 않습니다.",
+        ),
+        "invalid_state" => (
+            "invalid_state",
+            "회의 또는 처리 상태가 바뀌어 수정하지 못했습니다. 현재 상태를 확인해 주세요.",
+        ),
+        "app_not_ready" => (
+            "app_not_ready",
+            "Nero 앱에서 저장 상태를 확인한 뒤 다시 시도해 주세요.",
+        ),
+        "storage_error" => (
+            "storage_error",
+            "변경을 저장하지 못했습니다. Nero 앱에서 저장 상태를 확인해 주세요.",
+        ),
+        _ => return None,
+    })
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -915,11 +933,8 @@ pub fn request(
         if agent_app::METHODS.contains(&method) {
             return Err(app_error(error));
         }
-        let (code, message) = match error["code"].as_str().unwrap_or("") {
-            "edit_conflict" => (
-                "edit_conflict",
-                "다른 변경이 저장되었습니다. 최신 정보를 읽고 다시 시도해 주세요.",
-            ),
+        let received = error["code"].as_str().unwrap_or("");
+        let (code, message) = match received {
             "invalid_input" if method == "app_update" => (
                 "app_update_unsupported",
                 "실행 중인 Nero는 에이전트 업데이트를 지원하지 않습니다. 앱의 업데이트 화면을 사용해 주세요.",
@@ -986,24 +1001,8 @@ pub fn request(
                 "processing_rejected",
                 "Nero가 요청을 처리하지 못했습니다. 현재 처리 상태를 확인해 주세요.",
             ),
-            "invalid_input" => (
-                "invalid_input",
-                "수정 요청의 값이나 대상이 올바르지 않습니다.",
-            ),
-            "meeting_not_found" => ("meeting_not_found", "회의를 찾을 수 없습니다."),
-            "invalid_state" => (
-                "invalid_state",
-                "회의 또는 처리 상태가 바뀌어 수정하지 못했습니다. 현재 상태를 확인해 주세요.",
-            ),
-            "app_not_ready" => (
-                "app_not_ready",
-                "Nero 앱에서 저장 상태를 확인한 뒤 다시 시도해 주세요.",
-            ),
-            "storage_error" => (
-                "storage_error",
-                "변경을 저장하지 못했습니다. Nero 앱에서 저장 상태를 확인해 주세요.",
-            ),
-            _ => ("mutation_failed", "수정을 완료하지 못했습니다."),
+            _ => core_code_message(received)
+                .unwrap_or(("mutation_failed", "수정을 완료하지 못했습니다.")),
         };
         return Err(ControlError::new(code, message));
     }
