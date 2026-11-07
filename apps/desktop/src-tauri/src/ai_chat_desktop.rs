@@ -131,9 +131,6 @@ pub(crate) fn account_view(
     let snapshot = accounts.snapshot()?;
     let mut values = vec![];
     for account in snapshot.accounts {
-        if account.provider == Provider::Claude {
-            continue;
-        }
         let state = if account.can_invoke {
             "ready"
         } else if account.state == "connecting" {
@@ -148,9 +145,6 @@ pub(crate) fn account_view(
         values.push(json!({"id":account.id,"provider":account.provider,"state":state,"label":account.label,"configured":account.configured,"detail":account.reason}));
     }
     for provider in &snapshot.providers {
-        if provider.id == Provider::Claude {
-            continue;
-        }
         if !values
             .iter()
             .any(|account| account["provider"] == serde_json::to_value(provider.id).unwrap())
@@ -177,8 +171,6 @@ async fn open(url: String) -> Result<(), String> {
             url.host_str(),
             Some(
                 "auth.openai.com"
-                    | "claude.ai"
-                    | "platform.claude.com"
                     | "mcp.notion.com"
                     | "www.notion.so"
                     | "notion.so"

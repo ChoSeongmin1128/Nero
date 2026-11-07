@@ -1,4 +1,4 @@
-use super::{claude, oidc, Provider};
+use super::oidc;
 use crate::oauth_callback::CallbackPage;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use ring::rand::{SecureRandom, SystemRandom};
@@ -14,7 +14,6 @@ use std::time::{Duration, Instant};
 
 pub(super) struct Pending {
     pub id: String,
-    pub provider: Provider,
     pub host_id: String,
     pub selected_id: Option<String>,
     pub expected_revision: Option<u64>,
@@ -107,72 +106,11 @@ impl Pending {
         Ok((
             Self {
                 id: id.clone(),
-                provider: Provider::ChatGpt,
                 host_id: host_id.into(),
                 selected_id,
                 expected_revision: revision,
                 account_id,
                 client_id,
-                verifier,
-                nonce,
-                redirect_uri,
-                cancelled: Arc::new(AtomicBool::new(false)),
-                completing: AtomicBool::new(false),
-                listener,
-                state,
-                started: Instant::now(),
-                page: Arc::new(Mutex::new(None)),
-            },
-            SignInAttempt {
-                id,
-                authorization_url: url.into(),
-            },
-        ))
-    }
-    pub fn begin_claude(
-        host_id: &str,
-        selected_id: Option<String>,
-        revision: Option<u64>,
-    ) -> Result<(Self, SignInAttempt), String> {
-        let listener = TcpListener::bind(("127.0.0.1", 53692))
-            .or_else(|_| TcpListener::bind(("127.0.0.1", 0)))
-            .map_err(|_| "브라우저 연결을 준비하지 못했습니다.")?;
-        listener
-            .set_nonblocking(true)
-            .map_err(|_| "브라우저 연결을 준비하지 못했습니다.")?;
-        let port = listener
-            .local_addr()
-            .map_err(|_| "브라우저 연결을 준비하지 못했습니다.")?
-            .port();
-        let id = uuid::Uuid::new_v4().to_string();
-        let state = random_value()?;
-        let nonce = random_value()?;
-        let verifier = random_value()?;
-        let redirect_uri = format!("http://localhost:{port}/callback");
-        let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
-        let mut url = reqwest::Url::parse(claude::AUTHORIZE).unwrap();
-        url.query_pairs_mut().extend_pairs([
-            ("code", "true"),
-            ("client_id", claude::CLIENT_ID),
-            ("response_type", "code"),
-            ("redirect_uri", redirect_uri.as_str()),
-            ("scope", claude::SCOPES),
-            ("state", state.as_str()),
-            ("code_challenge", challenge.as_str()),
-            ("code_challenge_method", "S256"),
-        ]);
-        let account_id = selected_id
-            .clone()
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        Ok((
-            Self {
-                id: id.clone(),
-                provider: Provider::Claude,
-                host_id: host_id.into(),
-                selected_id,
-                expected_revision: revision,
-                account_id,
-                client_id: Some(claude::CLIENT_ID.into()),
                 verifier,
                 nonce,
                 redirect_uri,
@@ -207,10 +145,6 @@ impl Pending {
             .to_string();
         let deadline = self.started + Duration::from_secs(180);
         let page = self.page.clone();
-        let provider = match self.provider {
-            Provider::ChatGpt => "ChatGPT",
-            Provider::Claude => "Claude",
-        };
         tokio::task::spawn_blocking(move || {
             receive(
                 listener,
@@ -222,7 +156,6 @@ impl Pending {
                 &external,
                 deadline,
                 page,
-                provider,
             )
         })
         .await
@@ -256,7 +189,6 @@ fn receive(
     external: &AtomicBool,
     deadline: Instant,
     page: Arc<Mutex<Option<CallbackPage>>>,
-    provider: &str,
 ) -> Result<Authorization, String> {
     while Instant::now() < deadline {
         if cancelled(own, external) {
@@ -292,7 +224,7 @@ fn receive(
                     }
                     Some(Ok(authorization)) => {
                         let mut callback =
-                            CallbackPage::begin_for(stream, provider, "Nero로 돌아가 주세요.");
+                            CallbackPage::begin_for(stream, "ChatGPT", "Nero로 돌아가 주세요.");
                         let mut target = page
                             .lock()
                             .map_err(|_| "브라우저 연결 상태를 확인하지 못했습니다.")?;
@@ -605,48 +537,5 @@ mod tests {
             .receive(Arc::new(AtomicBool::new(false)))
             .await
             .is_err());
-    }
-    #[test]
-    fn claude_browser_flow_is_pkce_bound_and_requests_subscription_scopes_only() {
-        let (pending, attempt) = Pending::begin_claude("urn:uuid:fixture", None, None).unwrap();
-        let url = reqwest::Url::parse(&attempt.authorization_url).unwrap();
-        let query: BTreeMap<_, _> = url
-            .query_pairs()
-            .map(|(key, value)| (key.into_owned(), value.into_owned()))
-            .collect();
-        assert_eq!(url.host_str(), Some("claude.ai"));
-        assert_eq!(query["client_id"], claude::CLIENT_ID);
-        assert_eq!(query["scope"], "user:profile user:inference");
-        assert_ne!(pending.state, pending.verifier);
-        assert_eq!(
-            query["code_challenge"],
-            URL_SAFE_NO_PAD.encode(Sha256::digest(pending.verifier.as_bytes()))
-        );
-        let callback_url = reqwest::Url::parse(&pending.redirect_uri).unwrap();
-        assert_eq!(callback_url.host_str(), Some("localhost"));
-        assert_eq!(callback_url.path(), "/callback");
-        let host = callback_url.authority();
-        let request = format!(
-            "GET /callback?state={}&code=fixture HTTP/1.1\r\nHost: {host}\r\n\r\n",
-            pending.state
-        );
-        assert!(matches!(
-            callback_for_path(
-                &request,
-                host,
-                "/callback",
-                &pending.state,
-                Some(claude::CLIENT_ID)
-            ),
-            Some(Ok(_))
-        ));
-        assert!(callback_for_path(
-            &request,
-            host,
-            "/auth/callback",
-            &pending.state,
-            Some(claude::CLIENT_ID)
-        )
-        .is_none());
     }
 }

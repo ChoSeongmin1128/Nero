@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -12,7 +11,6 @@ const MAX_FRAME: usize = 512 * 1024;
 const INCOMPLETE: &str = "AI가 답변을 완성하지 못했습니다. 다시 시도해 주세요.";
 const REPLY_TIMEOUT: Duration = Duration::from_secs(600);
 const TIMED_OUT: &str = "AI 응답 시간이 초과되었습니다. 다시 시도해 주세요.";
-const MAX_CLAUDE_RETRIES: usize = 2;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -23,8 +21,6 @@ pub struct ChatModel {
     pub effort: EffortCapability,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub previous: bool,
-    #[serde(skip)]
-    pub(super) max_output_tokens: Option<u64>,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -119,14 +115,7 @@ fn client() -> Result<reqwest::Client, String> {
         .map_err(|_| "AI 연결을 준비하지 못했습니다.".into())
 }
 fn authorize(request: reqwest::RequestBuilder, access: &ProviderAccess) -> reqwest::RequestBuilder {
-    let request = request.bearer_auth(&access.access_token);
-    if access.provider == "claude" {
-        request
-            .header("anthropic-version", "2023-06-01")
-            .header("anthropic-beta", "oauth-2025-04-20")
-    } else {
-        request
-    }
+    request.bearer_auth(&access.access_token)
 }
 fn http_error(status: reqwest::StatusCode) -> String {
     match status.as_u16() {
@@ -178,10 +167,7 @@ async fn http_failure(mut response: reqwest::Response, provider: &str) -> String
         .iter()
         .filter_map(|(name, value)| {
             let key = name.as_str();
-            if key == "retry-after"
-                || key == "x-should-retry"
-                || key.starts_with("anthropic-ratelimit-")
-            {
+            if key == "retry-after" || key == "x-should-retry" {
                 value
                     .to_str()
                     .ok()
@@ -292,37 +278,11 @@ fn model_rows(value: &Value) -> Result<Vec<ChatModel>, String> {
             label: label.into(),
             effort: catalog_effort(row),
             previous: false,
-            max_output_tokens: row["max_tokens"].as_u64().filter(|v| *v > 0),
         });
     }
     Ok(models)
 }
-// Claude subscription OAuth documents inference, not account model-catalog discovery.
-// Model identifiers and limits: https://platform.claude.com/docs/en/models/overview (2026-11-02).
-fn claude_models() -> Models {
-    let models = [
-        ("claude-sonnet-5-5", "Claude Sonnet 5.5"),
-        ("claude-opus-5-5", "Claude Opus 5.5"),
-        ("claude-haiku-5-5", "Claude Haiku 5.5"),
-    ]
-    .into_iter()
-    .map(|(id, label)| ChatModel {
-        id: id.into(),
-        label: label.into(),
-        effort: EffortCapability::default(),
-        previous: false,
-        max_output_tokens: Some(128000),
-    })
-    .collect::<Vec<_>>();
-    Models {
-        default_model_id: Some(models[0].id.clone()),
-        models,
-    }
-}
 pub async fn models(access: &ProviderAccess) -> Result<Models, String> {
-    if access.provider == "claude" {
-        return Ok(claude_models());
-    }
     if access.provider != "chatgpt" {
         return Err("AI 계정을 확인해 주세요.".into());
     }
@@ -439,8 +399,6 @@ struct Events {
     text: String,
     completed: bool,
     response_id: Option<String>,
-    stop_reason: Option<String>,
-    blocks: BTreeMap<u64, String>,
 }
 impl Events {
     fn text(&mut self, part: &str, delta: &mut impl FnMut(&str)) -> Result<(), String> {
@@ -464,131 +422,49 @@ impl Events {
         if matches!(kind, "error" | "response.failed" | "response.incomplete") {
             return Err(stream_failure(provider, &event));
         }
-        if provider == "chatgpt" {
-            match kind {
-                "response.created" => {
-                    let id = event["response"]["id"]
-                        .as_str()
-                        .ok_or("AI 응답을 확인하지 못했습니다.")?;
-                    if self.response_id.as_deref().is_some_and(|old| old != id) {
-                        return Err("AI 응답이 변경되었습니다.".into());
-                    }
-                    self.response_id = Some(id.into());
+        match kind {
+            "response.created" => {
+                let id = event["response"]["id"]
+                    .as_str()
+                    .ok_or("AI 응답을 확인하지 못했습니다.")?;
+                if self.response_id.as_deref().is_some_and(|old| old != id) {
+                    return Err("AI 응답이 변경되었습니다.".into());
                 }
-                "response.output_text.delta" => self.text(
-                    event["delta"]
-                        .as_str()
-                        .ok_or("AI 응답을 확인하지 못했습니다.")?,
-                    delta,
-                )?,
-                "response.completed" => {
-                    let response = &event["response"];
-                    let id = response["id"]
-                        .as_str()
-                        .ok_or("AI 응답을 확인하지 못했습니다.")?;
-                    if self.response_id.as_deref().is_some_and(|old| old != id)
-                        || response["status"] != "completed"
-                    {
-                        return Err(INCOMPLETE.into());
-                    }
-                    if let Some(output) = response["output"].as_array() {
-                        let text = output
-                            .iter()
-                            .flat_map(|item| item["content"].as_array().into_iter().flatten())
-                            .filter(|item| item["type"] == "output_text")
-                            .filter_map(|item| item["text"].as_str())
-                            .collect::<String>();
-                        if text != self.text {
-                            return Err(
-                                "완성된 답변과 수신한 내용이 다릅니다. 다시 시도해 주세요.".into(),
-                            );
-                        }
-                    }
-                    self.response_id = Some(id.into());
-                    self.completed = true;
-                }
-                _ => {}
+                self.response_id = Some(id.into());
             }
-        } else {
-            match kind {
-                "message_start" => {
-                    if self.response_id.is_some() || self.completed {
-                        return Err("AI 응답이 변경되었습니다.".into());
-                    }
-                    self.response_id = Some(
-                        event["message"]["id"]
-                            .as_str()
-                            .ok_or("AI 응답을 확인하지 못했습니다.")?
-                            .into(),
-                    );
+            "response.output_text.delta" => self.text(
+                event["delta"]
+                    .as_str()
+                    .ok_or("AI 응답을 확인하지 못했습니다.")?,
+                delta,
+            )?,
+            "response.completed" => {
+                let response = &event["response"];
+                let id = response["id"]
+                    .as_str()
+                    .ok_or("AI 응답을 확인하지 못했습니다.")?;
+                if self.response_id.as_deref().is_some_and(|old| old != id)
+                    || response["status"] != "completed"
+                {
+                    return Err(INCOMPLETE.into());
                 }
-                "content_block_start" => {
-                    if self.response_id.is_none() || self.completed {
-                        return Err(INCOMPLETE.into());
-                    }
-                    let index = event["index"]
-                        .as_u64()
-                        .ok_or("AI 응답을 확인하지 못했습니다.")?;
-                    let block = &event["content_block"];
-                    let kind = block["type"].as_str().unwrap_or_default();
-                    if !matches!(kind, "text" | "thinking" | "redacted_thinking")
-                        || self.blocks.insert(index, kind.into()).is_some()
-                    {
-                        return Err(INCOMPLETE.into());
-                    }
-                    if kind == "text" {
-                        self.text(block["text"].as_str().unwrap_or_default(), delta)?;
+                if let Some(output) = response["output"].as_array() {
+                    let text = output
+                        .iter()
+                        .flat_map(|item| item["content"].as_array().into_iter().flatten())
+                        .filter(|item| item["type"] == "output_text")
+                        .filter_map(|item| item["text"].as_str())
+                        .collect::<String>();
+                    if text != self.text {
+                        return Err(
+                            "완성된 답변과 수신한 내용이 다릅니다. 다시 시도해 주세요.".into()
+                        );
                     }
                 }
-                "content_block_delta" => {
-                    let index = event["index"]
-                        .as_u64()
-                        .ok_or("AI 응답을 확인하지 못했습니다.")?;
-                    if !self.blocks.contains_key(&index) {
-                        return Err(INCOMPLETE.into());
-                    }
-                    if event["delta"]["type"] == "text_delta" {
-                        if self.blocks.get(&index).map(String::as_str) != Some("text") {
-                            return Err(INCOMPLETE.into());
-                        }
-                        self.text(
-                            event["delta"]["text"]
-                                .as_str()
-                                .ok_or("AI 응답을 확인하지 못했습니다.")?,
-                            delta,
-                        )?;
-                    }
-                }
-                "content_block_stop" => {
-                    let index = event["index"]
-                        .as_u64()
-                        .ok_or("AI 응답을 확인하지 못했습니다.")?;
-                    if self.blocks.remove(&index).is_none() {
-                        return Err(INCOMPLETE.into());
-                    }
-                }
-                "message_delta" => {
-                    if let Some(reason) = event["delta"]["stop_reason"].as_str() {
-                        self.stop_reason = Some(reason.into());
-                    }
-                }
-                "message_stop" => {
-                    if self.response_id.is_none() || !self.blocks.is_empty() {
-                        return Err(INCOMPLETE.into());
-                    }
-                    if !matches!(
-                        self.stop_reason.as_deref(),
-                        Some("end_turn" | "stop_sequence")
-                    ) {
-                        return Err(failure_message(
-                            reqwest::StatusCode::BAD_GATEWAY,
-                            self.stop_reason.as_deref(),
-                        ));
-                    }
-                    self.completed = true;
-                }
-                _ => {}
+                self.response_id = Some(id.into());
+                self.completed = true;
             }
+            _ => {}
         }
         Ok(())
     }
@@ -600,99 +476,16 @@ impl Events {
     }
 }
 fn request_body(
-    provider: &str,
     model: &ChatModel,
     instructions: &str,
     input: Vec<Value>,
     effort: Option<&str>,
 ) -> Value {
-    if provider == "claude" {
-        json!({"model":model.id,"system":instructions,"messages":input,
-            "max_tokens":model.max_output_tokens.unwrap_or(8192).min(32768),"stream":true})
-    } else {
-        let mut body = json!({"model":model.id,"instructions":instructions,"input":input,"store":false,"stream":true});
-        if let Some(effort) = effort {
-            body["reasoning"] = json!({"effort":effort});
-        }
-        body
+    let mut body = json!({"model":model.id,"instructions":instructions,"input":input,"store":false,"stream":true});
+    if let Some(effort) = effort {
+        body["reasoning"] = json!({"effort":effort});
     }
-}
-fn clone_reply_request(
-    request: &reqwest::Request,
-    deadline: tokio::time::Instant,
-) -> Result<reqwest::Request, String> {
-    let remaining = deadline
-        .checked_duration_since(tokio::time::Instant::now())
-        .filter(|remaining| !remaining.is_zero())
-        .ok_or(TIMED_OUT)?;
-    let mut request = request
-        .try_clone()
-        .ok_or("AI 요청을 준비하지 못했습니다.")?;
-    *request.timeout_mut() = Some(remaining);
-    Ok(request)
-}
-fn claude_retry_delay(
-    provider: &str,
-    status: reqwest::StatusCode,
-    headers: &reqwest::header::HeaderMap,
-    retries: usize,
-    random: f64,
-) -> Option<Duration> {
-    if provider != "claude"
-        || status != reqwest::StatusCode::TOO_MANY_REQUESTS
-        || retries >= MAX_CLAUDE_RETRIES
-        || headers.get("x-should-retry").and_then(|v| v.to_str().ok()) != Some("true")
-        || headers
-            .keys()
-            .any(|name| name.as_str().starts_with("anthropic-ratelimit-unified"))
-    {
-        return None;
-    }
-    let seconds = |name: &str, divisor: f64| {
-        headers
-            .get(name)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.trim().parse::<f64>().ok())
-            .filter(|v| v.is_finite() && *v >= 0.0)
-            .map(|v| v / divisor)
-    };
-    if headers.contains_key("retry-after-ms") || headers.contains_key("retry-after") {
-        let delay = seconds("retry-after-ms", 1000.0).or_else(|| seconds("retry-after", 1.0))?;
-        return (delay <= 60.0).then(|| Duration::from_secs_f64(delay));
-    }
-    // Anthropic SDK backoff: https://github.com/anthropics/anthropic-sdk-typescript/blob/main/src/client.ts
-    Some(Duration::from_secs_f64(
-        0.5 * 2_f64.powi(retries as i32) * (1.0 - random.clamp(0.0, 1.0) * 0.25),
-    ))
-}
-fn retry_random() -> f64 {
-    let bytes = uuid::Uuid::new_v4().into_bytes();
-    u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as f64 / u32::MAX as f64
-}
-async fn wait_retry(
-    delay: Duration,
-    deadline: tokio::time::Instant,
-    cancel: &AtomicBool,
-) -> Result<(), String> {
-    if cancel.load(Ordering::Acquire) {
-        return Err("취소했습니다.".into());
-    }
-    if deadline.saturating_duration_since(tokio::time::Instant::now()) <= delay {
-        return Err(TIMED_OUT.into());
-    }
-    tokio::select! {
-        biased;
-        _ = wait_cancel(cancel) => Err("취소했습니다.".into()),
-        _ = tokio::time::sleep(delay) => {
-            if cancel.load(Ordering::Acquire) {
-                Err("취소했습니다.".into())
-            } else if tokio::time::Instant::now() >= deadline {
-                Err(TIMED_OUT.into())
-            } else {
-                Ok(())
-            }
-        }
-    }
+    body
 }
 pub async fn reply(
     access: &ProviderAccess,
@@ -705,7 +498,6 @@ pub async fn reply(
 ) -> Result<String, String> {
     let endpoint = match access.provider.as_str() {
         "chatgpt" => "https://api.openai.com/v1/responses",
-        "claude" => "https://api.anthropic.com/v1/messages?beta=true",
         _ => return Err("AI 계정을 확인해 주세요.".into()),
     };
     if cancel.load(Ordering::Acquire) {
@@ -715,41 +507,17 @@ pub async fn reply(
     let client = client()?;
     let request = authorize(client.post(endpoint), access)
         .header("Accept", "text/event-stream")
-        .json(&request_body(
-            &access.provider,
-            model,
-            instructions,
-            input,
-            effort,
-        ))
+        .json(&request_body(model, instructions, input, effort))
         .build()
         .map_err(|_| "AI 요청을 준비하지 못했습니다.")?;
     let response = async {
-        let mut retries = 0;
-        let mut response = loop {
-            if cancel.load(Ordering::Acquire) {
-                return Err("취소했습니다.".into());
-            }
-            let response = client
-                .execute(clone_reply_request(&request, deadline)?)
-                .await
-                .map_err(|_| "AI 서비스에 연결하지 못했습니다.")?;
-            if response.status().is_success() {
-                break response;
-            }
-            let Some(delay) = claude_retry_delay(
-                &access.provider,
-                response.status(),
-                response.headers(),
-                retries,
-                retry_random(),
-            ) else {
-                return Err(http_failure(response, &access.provider).await);
-            };
-            retries += 1;
-            drop(response);
-            wait_retry(delay, deadline, &cancel).await?;
-        };
+        let mut response = client
+            .execute(request)
+            .await
+            .map_err(|_| "AI 서비스에 연결하지 못했습니다.")?;
+        if !response.status().is_success() {
+            return Err(http_failure(response, &access.provider).await);
+        }
         let mut wire = Wire::default();
         let mut events = Events::default();
         loop {
@@ -790,164 +558,6 @@ async fn wait_cancel(cancel: &AtomicBool) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn retry_headers() -> reqwest::header::HeaderMap {
-        let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert("x-should-retry", "true".parse().unwrap());
-        headers
-    }
-    #[test]
-    fn retries_only_explicit_transient_claude_throttles_before_the_limit() {
-        let mut headers = retry_headers();
-        let status = reqwest::StatusCode::TOO_MANY_REQUESTS;
-        assert!(claude_retry_delay("claude", status, &headers, 0, 0.0).is_some());
-        assert!(claude_retry_delay("claude", status, &headers, 1, 0.0).is_some());
-        assert!(claude_retry_delay("claude", status, &headers, 2, 0.0).is_none());
-        assert!(claude_retry_delay("chatgpt", status, &headers, 0, 0.0).is_none());
-        for status in [401, 403, 408, 409, 500, 503] {
-            assert!(claude_retry_delay(
-                "claude",
-                reqwest::StatusCode::from_u16(status).unwrap(),
-                &headers,
-                0,
-                0.0,
-            )
-            .is_none());
-        }
-        headers.remove("x-should-retry");
-        assert!(claude_retry_delay("claude", status, &headers, 0, 0.0).is_none());
-        headers.insert("x-should-retry", "false".parse().unwrap());
-        assert!(claude_retry_delay("claude", status, &headers, 0, 0.0).is_none());
-        headers.insert("x-should-retry", "true".parse().unwrap());
-        headers.insert(
-            "anthropic-ratelimit-unified-status",
-            "allowed".parse().unwrap(),
-        );
-        assert!(claude_retry_delay("claude", status, &headers, 0, 0.0).is_none());
-    }
-    #[test]
-    fn retry_backoff_has_bounded_exponential_jitter() {
-        let headers = retry_headers();
-        let delay = |retries, random| {
-            claude_retry_delay(
-                "claude",
-                reqwest::StatusCode::TOO_MANY_REQUESTS,
-                &headers,
-                retries,
-                random,
-            )
-            .unwrap()
-        };
-        assert_eq!(delay(0, 0.0), Duration::from_millis(500));
-        assert_eq!(delay(0, 1.0), Duration::from_millis(375));
-        assert_eq!(delay(1, 0.0), Duration::from_millis(1000));
-        assert_eq!(delay(1, 1.0), Duration::from_millis(750));
-        for _ in 0..16 {
-            let delay = delay(0, retry_random());
-            assert!((Duration::from_millis(375)..=Duration::from_millis(500)).contains(&delay));
-        }
-    }
-    #[test]
-    fn retry_after_is_respected_without_shortening_long_server_delays() {
-        let mut headers = retry_headers();
-        let delay = |headers: &reqwest::header::HeaderMap| {
-            claude_retry_delay(
-                "claude",
-                reqwest::StatusCode::TOO_MANY_REQUESTS,
-                headers,
-                0,
-                0.0,
-            )
-        };
-        headers.insert("retry-after", "9".parse().unwrap());
-        assert_eq!(delay(&headers), Some(Duration::from_secs(9)));
-        headers.insert("retry-after-ms", "1500".parse().unwrap());
-        assert_eq!(delay(&headers), Some(Duration::from_millis(1500)));
-        headers.insert("retry-after-ms", "60000".parse().unwrap());
-        assert_eq!(delay(&headers), Some(Duration::from_secs(60)));
-        headers.insert("retry-after-ms", "60001".parse().unwrap());
-        assert!(delay(&headers).is_none());
-        headers.remove("retry-after-ms");
-        headers.insert("retry-after", "60.001".parse().unwrap());
-        assert!(delay(&headers).is_none());
-        headers.insert("retry-after", "0".parse().unwrap());
-        assert_eq!(delay(&headers), Some(Duration::ZERO));
-        for invalid in [
-            "invalid",
-            "-1",
-            "NaN",
-            "inf",
-            "Wed, 21 Oct 2030 07:28:00 GMT",
-        ] {
-            headers.insert("retry-after", invalid.parse().unwrap());
-            assert!(delay(&headers).is_none());
-        }
-    }
-    #[test]
-    fn cloned_attempt_preserves_the_frozen_request_and_shares_its_deadline() {
-        let request = reqwest::Client::new()
-            .post("https://example.invalid/v1/messages?beta=true")
-            .header("Authorization", "Bearer synthetic")
-            .header("anthropic-beta", "oauth-2025-04-20")
-            .timeout(REPLY_TIMEOUT)
-            .json(&json!({"messages":[{"role":"user","content":"frozen"}],"stream":true}))
-            .build()
-            .unwrap();
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
-        let attempt = clone_reply_request(&request, deadline).unwrap();
-        assert_eq!(attempt.method(), request.method());
-        assert_eq!(attempt.url(), request.url());
-        assert_eq!(attempt.headers(), request.headers());
-        assert_eq!(
-            attempt.body().unwrap().as_bytes(),
-            request.body().unwrap().as_bytes()
-        );
-        assert!(attempt.timeout().copied().unwrap() <= Duration::from_secs(1));
-        assert_eq!(request.timeout().copied(), Some(REPLY_TIMEOUT));
-        assert_eq!(
-            clone_reply_request(&request, tokio::time::Instant::now()).unwrap_err(),
-            TIMED_OUT
-        );
-    }
-    #[tokio::test]
-    async fn retry_wait_stops_promptly_on_cancellation() {
-        let cancel = Arc::new(AtomicBool::new(false));
-        let trigger = async {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-            cancel.store(true, Ordering::Release);
-        };
-        let wait = tokio::time::timeout(
-            Duration::from_millis(500),
-            wait_retry(
-                Duration::from_secs(60),
-                tokio::time::Instant::now() + REPLY_TIMEOUT,
-                &cancel,
-            ),
-        );
-        let (result, ()) = tokio::join!(wait, trigger);
-        assert_eq!(result.unwrap().unwrap_err(), "취소했습니다.");
-    }
-    #[tokio::test]
-    async fn retry_wait_cannot_extend_the_request_deadline() {
-        let cancel = AtomicBool::new(false);
-        let result = wait_retry(
-            Duration::from_secs(60),
-            tokio::time::Instant::now() + Duration::from_millis(10),
-            &cancel,
-        )
-        .await;
-        assert_eq!(result.unwrap_err(), TIMED_OUT);
-        cancel.store(true, Ordering::Release);
-        assert_eq!(
-            wait_retry(
-                Duration::ZERO,
-                tokio::time::Instant::now() + REPLY_TIMEOUT,
-                &cancel
-            )
-            .await
-            .unwrap_err(),
-            "취소했습니다."
-        );
-    }
     fn decode(provider: &str, bytes: &[u8]) -> Result<String, String> {
         let mut wire = Wire::default();
         let mut events = Events::default();
@@ -976,29 +586,18 @@ mod tests {
         assert!(decode("chatgpt",b"data: {\"type\":\"response.created\",\"response\":{\"id\":\"r1\"}}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"r2\",\"status\":\"completed\"}}\n\n").is_err());
     }
     #[test]
-    fn claude_requires_stopped_blocks_and_terminal_end_turn() {
-        let prefix="data: {\"type\":\"message_start\",\"message\":{\"id\":\"m\"}}\n\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"회의\"}}\n\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n";
-        let wire=format!("{prefix}data: {{\"type\":\"message_delta\",\"delta\":{{\"stop_reason\":\"end_turn\"}}}}\n\ndata: {{\"type\":\"message_stop\"}}");
-        assert_eq!(decode("claude", wire.as_bytes()).unwrap(), "회의");
-        assert!(decode("claude", wire.replace("end_turn", "max_tokens").as_bytes()).is_err());
-        assert!(decode("claude", prefix.as_bytes()).is_err());
-    }
-    #[test]
     fn model_visibility_retirement_and_no_key_fallback() {
-        let models=model_rows(&json!({"data":[{"id":"visible","display_name":"Visible","max_tokens":32000},{"id":"gone","lifecycle":"retired"},{"id":"private","visibility":"hidden"}]})).unwrap();
+        let models=model_rows(&json!({"data":[{"id":"visible","display_name":"Visible"},{"id":"gone","lifecycle":"retired"},{"id":"private","visibility":"hidden"}]})).unwrap();
         assert_eq!(models.len(), 1);
-        assert_eq!(models[0].max_output_tokens, Some(32000));
         let body = request_body(
-            "claude",
             &models[0],
             "Nero meeting assistant",
             vec![json!({"role":"user","content":"hello"})],
             None,
         );
-        assert_eq!(body["system"], "Nero meeting assistant");
+        assert_eq!(body["instructions"], "Nero meeting assistant");
         assert!(body.get("api_key").is_none());
         assert!(body.get("tools").is_none());
-        assert_eq!(body["max_tokens"], 32000);
     }
     #[test]
     fn effort_metadata_and_documented_fallback_are_model_specific() {
@@ -1016,9 +615,9 @@ mod tests {
         assert!(!models[1].effort.allows("high"));
         assert!(models[2].effort.allows("high"));
         assert_eq!(models[3].effort.supported, None);
-        let body = request_body("chatgpt", &models[0], "test", vec![], Some("high"));
+        let body = request_body(&models[0], "test", vec![], Some("high"));
         assert_eq!(body["reasoning"]["effort"], "high");
-        assert!(request_body("chatgpt", &models[0], "test", vec![], None)
+        assert!(request_body(&models[0], "test", vec![], None)
             .get("reasoning")
             .is_none());
     }
@@ -1045,7 +644,6 @@ mod live_probe {
         let provider =
             std::env::var("NERO_AI_PROBE_PROVIDER").expect("NERO_AI_PROBE_PROVIDER is required");
         let selected = match provider.as_str() {
-            "claude" => crate::ai_accounts::Provider::Claude,
             "chatgpt" => crate::ai_accounts::Provider::ChatGpt,
             _ => panic!("invalid provider"),
         };
@@ -1073,7 +671,7 @@ mod live_probe {
             let session=accounts.subscription_session(&account.id).await?;
             let access=ProviderAccess{provider:provider.clone(),access_token:session.access_token().into()};
             let selected_model=if let Ok(model)=std::env::var("NERO_AI_PROBE_MODEL"){
-                ChatModel{id:model.clone(),label:model,effort:EffortCapability::default(),previous:false,max_output_tokens:Some(128)}
+                ChatModel{id:model.clone(),label:model,effort:EffortCapability::default(),previous:false}
             }else{
                 let catalog=models(&access).await?;
                 catalog.models.into_iter().next().ok_or("이 계정에서 사용할 모델을 찾지 못했습니다.")?

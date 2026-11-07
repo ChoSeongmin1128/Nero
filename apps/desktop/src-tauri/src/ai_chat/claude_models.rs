@@ -85,7 +85,6 @@ pub(super) fn chat_models(
                 },
                 id: model.value,
                 label,
-                max_output_tokens: None,
             }
         })
         .collect()

@@ -1,4 +1,3 @@
-mod claude;
 mod credentials;
 mod oauth;
 mod oidc;
@@ -80,9 +79,6 @@ pub struct SignOutOutcome {
 
 #[derive(Clone)]
 pub struct SubscriptionSession {
-    pub provider: Provider,
-    pub account_id: String,
-    pub base_url: &'static str,
     access_token: String,
 }
 #[must_use]
@@ -220,6 +216,7 @@ impl AiAccounts {
         }
         Ok(self.read_projection().unwrap_or_else(Self::unchecked_view))
     }
+    #[cfg(test)]
     pub fn resolve_accounts(&self) -> Result<AccountsSnapshot, String> {
         self.resolve_accounts_inner(false)
     }
@@ -298,6 +295,7 @@ impl AiAccounts {
         snapshot.accounts = projection
             .accounts
             .into_iter()
+            .filter(|account| account.provider == Provider::ChatGpt)
             .map(|account| AccountSnapshot {
                 id: account.id,
                 provider: account.provider,
@@ -427,21 +425,19 @@ impl AiAccounts {
         AccountsSnapshot {
             checked: true,
             active_account_id: state.active_account_id.clone(),
-            accounts: state.accounts.iter().map(AccountRecord::snapshot).collect(),
-            providers: vec![
-                ProviderInfo {
-                    id: Provider::ChatGpt,
-                    name: "ChatGPT".into(),
-                    configured: true,
-                    reason: None,
-                },
-                ProviderInfo {
-                    id: Provider::Claude,
-                    name: "Claude".into(),
-                    configured: true,
-                    reason: None,
-                },
-            ],
+            // Claude records from earlier builds stay stored but are never listed.
+            accounts: state
+                .accounts
+                .iter()
+                .filter(|account| account.provider == Provider::ChatGpt)
+                .map(AccountRecord::snapshot)
+                .collect(),
+            providers: vec![ProviderInfo {
+                id: Provider::ChatGpt,
+                name: "ChatGPT".into(),
+                configured: true,
+                reason: None,
+            }],
         }
     }
     pub fn begin_sign_in(
@@ -507,27 +503,19 @@ impl AiAccounts {
                 self.retry_credentials();
             }
         }
-        let (pending, request) = if provider == Provider::Claude {
-            oauth::Pending::begin_claude(
-                state.host_id.as_deref().unwrap(),
-                account_id,
-                selected.as_ref().map(|account| account.revision),
-            )
-        } else {
-            oauth::Pending::begin(
-                state.host_id.as_deref().unwrap(),
-                account_id,
-                selected.as_ref().map(|account| account.revision),
-                selected.as_ref().map(|account| account.client_id.clone()),
-                selected
-                    .as_ref()
-                    .and_then(|account| account.tokens.as_ref())
-                    .and_then(|tokens| tokens.id_token.as_deref()),
-                selected
-                    .as_ref()
-                    .and_then(|account| account.email.as_deref()),
-            )
-        }?;
+        let (pending, request) = oauth::Pending::begin(
+            state.host_id.as_deref().unwrap(),
+            account_id,
+            selected.as_ref().map(|account| account.revision),
+            selected.as_ref().map(|account| account.client_id.clone()),
+            selected
+                .as_ref()
+                .and_then(|account| account.tokens.as_ref())
+                .and_then(|tokens| tokens.id_token.as_deref()),
+            selected
+                .as_ref()
+                .and_then(|account| account.email.as_deref()),
+        )?;
         let mut current = self
             .pending
             .lock()
@@ -572,9 +560,6 @@ impl AiAccounts {
         pending: &PendingSignIn,
         cancel: &Arc<AtomicBool>,
     ) -> Result<AccountSnapshot, String> {
-        if pending.provider == Provider::Claude {
-            return self.finish_claude_sign_in(pending, cancel).await;
-        }
         let callback = pending.receive(cancel.clone()).await?;
         let _operation = with_cancel(self.operation.lock(), &pending.cancelled, cancel).await?;
         self.ensure_open()?;
@@ -707,165 +692,6 @@ impl AiAccounts {
         }
         Ok(snapshot)
     }
-    async fn finish_claude_sign_in(
-        &self,
-        pending: &oauth::Pending,
-        cancel: &Arc<AtomicBool>,
-    ) -> Result<AccountSnapshot, String> {
-        let callback = pending.receive(cancel.clone()).await?;
-        let _operation = with_cancel(self.operation.lock(), &pending.cancelled, cancel).await?;
-        self.ensure_open()?;
-        let _file = self.file_guard()?;
-        stopped(&pending.cancelled, cancel)?;
-        let state = self.read()?;
-        if state.host_id.as_deref() != Some(pending.host_id.as_str()) {
-            return Err("로그인 중 기기 연결 정보가 변경되었습니다. 다시 연결해 주세요.".into());
-        }
-        let selected = match pending.selected_id.as_deref() {
-            Some(id) => {
-                let account = state
-                    .accounts
-                    .iter()
-                    .find(|account| account.id == id && account.provider == Provider::Claude)
-                    .ok_or("선택한 Claude 계정을 찾지 못했습니다.")?;
-                if Some(account.revision) != pending.expected_revision {
-                    return Err("로그인 중 계정이 변경되었습니다. 다시 연결해 주세요.".into());
-                }
-                Some(account.clone())
-            }
-            None => None,
-        };
-        let value=self.json_request(self.client.post(claude::TOKEN).json(&serde_json::json!({"grant_type":"authorization_code","client_id":claude::CLIENT_ID,"code":callback.code,"state":pending.state,"redirect_uri":pending.redirect_uri,"code_verifier":pending.verifier})),&pending.cancelled,cancel).await.map_err(|_|"Claude 연결을 완료하지 못했습니다. 다시 시도해 주세요.")?;
-        let response: claude::Response = serde_json::from_value(value)
-            .map_err(|_| "Claude 구독 인증 응답을 확인하지 못했습니다.")?;
-        let identity = response.identity();
-        if let (Some(expected), Some((actual, _))) = (
-            selected
-                .as_ref()
-                .and_then(|account| account.subject.as_deref()),
-            identity.as_ref(),
-        ) {
-            if expected != actual {
-                return Err("선택한 Claude 계정과 로그인한 계정이 다릅니다.".into());
-            }
-        }
-        let tokens = response.into_tokens(None)?;
-        let pending_guard = self
-            .pending
-            .lock()
-            .map_err(|_| "AI 연결 상태를 확인하지 못했습니다.")?;
-        if !pending_guard
-            .as_ref()
-            .is_some_and(|current| current.id == pending.id)
-        {
-            return Err("AI 로그인을 취소했습니다.".into());
-        }
-        stopped(&pending.cancelled, cancel)?;
-        self.ensure_open()?;
-        let mut current = state;
-        let record = if let Some(selected) = selected {
-            let record = current
-                .accounts
-                .iter_mut()
-                .find(|account| account.id == selected.id)
-                .ok_or("선택한 Claude 계정을 찾지 못했습니다.")?;
-            if record.provider != Provider::Claude || record.revision != selected.revision {
-                return Err("로그인 중 계정이 변경되었습니다. 다시 연결해 주세요.".into());
-            }
-            record
-        } else {
-            current.accounts.push(AccountRecord {
-                provider: Provider::Claude,
-                id: pending.account_id.clone(),
-                client_id: claude::CLIENT_ID.into(),
-                subject: None,
-                email: None,
-                name: None,
-                revision: 0,
-                tokens: None,
-            });
-            current.accounts.last_mut().unwrap()
-        };
-        record.subject = identity.as_ref().map(|(subject, _)| subject.clone());
-        record.email = identity.and_then(|(_, email)| email);
-        record.name = None;
-        record.tokens = Some(tokens);
-        record.revision += 1;
-        let snapshot = record.snapshot();
-        current.active_account_id = Some(record.id.clone());
-        self.save(&current)?;
-        Ok(snapshot)
-    }
-    async fn refresh_claude_session(
-        &self,
-        state: &mut SavedState,
-        position: usize,
-        cancel: &Arc<AtomicBool>,
-    ) -> Result<SubscriptionSession, String> {
-        let account = state.accounts[position].clone();
-        if account.provider == Provider::Claude {
-            return Err("Claude Code에서 구독 계정을 사용해 주세요.".into());
-        }
-        let old = account
-            .tokens
-            .as_ref()
-            .ok_or("Claude에 다시 로그인해 주세요.")?;
-        let refresh = old
-            .refresh_token
-            .as_deref()
-            .ok_or("Claude에 다시 로그인해 주세요.")?;
-        stopped(cancel, cancel)?;
-        self.ensure_open()?;
-        let transaction = Arc::new(AtomicBool::new(false));
-        let response=self.json_request(self.client.post(claude::TOKEN).json(&serde_json::json!({"grant_type":"refresh_token","client_id":claude::CLIENT_ID,"refresh_token":refresh})),&transaction,&transaction).await;
-        let value = match response {
-            Ok(value) => value,
-            Err(failure) => {
-                if failure.code.as_deref().is_some_and(terminal_refresh) {
-                    state.accounts[position].tokens = None;
-                    state.accounts[position].revision += 1;
-                    self.save(state)?;
-                }
-                return Err("Claude 인증을 갱신하지 못했습니다. 다시 로그인해 주세요.".into());
-            }
-        };
-        let response: claude::Response = serde_json::from_value(value)
-            .map_err(|_| "Claude 인증 갱신 응답을 확인하지 못했습니다.")?;
-        if let (Some(expected), Some((actual, _))) =
-            (account.subject.as_deref(), response.identity())
-        {
-            if expected != actual {
-                state.accounts[position].tokens = None;
-                state.accounts[position].revision += 1;
-                self.save(state)?;
-                return Err("갱신된 Claude 계정이 기존 계정과 다릅니다.".into());
-            }
-        }
-        let replacement = match response.into_tokens(Some(old)) {
-            Ok(replacement) => replacement,
-            Err(error) => {
-                state.accounts[position].tokens = None;
-                state.accounts[position].revision += 1;
-                self.save(state)?;
-                return Err(error);
-            }
-        };
-        let access_token = replacement.access_token.clone();
-        let enabled = replacement.plan_enabled(Provider::Claude);
-        state.accounts[position].tokens = Some(replacement);
-        state.accounts[position].revision += 1;
-        self.save(state)?;
-        stopped(cancel, cancel)?;
-        if !enabled {
-            return Err(plan_disabled(Provider::Claude).into());
-        }
-        Ok(SubscriptionSession {
-            provider: Provider::Claude,
-            account_id: account.id,
-            base_url: claude::BASE_URL,
-            access_token,
-        })
-    }
     pub fn cancel_sign_in(&self, id: &str) -> Result<(), String> {
         let mut current = self
             .pending
@@ -915,6 +741,7 @@ impl AiAccounts {
             Ok(())
         }
     }
+    #[cfg(test)]
     pub fn select_account(&self, id: &str) -> Result<AccountSnapshot, String> {
         self.ensure_open()?;
         self.cancel_pending()?;
@@ -955,9 +782,7 @@ impl AiAccounts {
             return Err("기존 Claude 계정 정보는 유지됩니다.".into());
         }
         let cancelled = Arc::new(AtomicBool::new(false));
-        let revocation_confirmed = if selected.provider == Provider::Claude {
-            selected.tokens.is_none()
-        } else if let Some(refresh) = selected
+        let revocation_confirmed = if let Some(refresh) = selected
             .tokens
             .as_ref()
             .and_then(|tokens| tokens.refresh_token.as_deref())
@@ -1094,20 +919,15 @@ impl AiAccounts {
         let position = state
             .accounts
             .iter()
-            .position(|account| account.id == selected_id)
+            .position(|account| account.id == selected_id && account.provider == Provider::ChatGpt)
             .ok_or(SIGN_IN_REQUIRED)?;
         let account = state.accounts[position].clone();
         let old = account.tokens.as_ref().ok_or(SIGN_IN_REQUIRED)?;
-        if account.provider == Provider::ChatGpt && account.subject.is_none() {
+        if account.subject.is_none() {
             return Err(SIGN_IN_REQUIRED.into());
         }
-        if !old.plan_enabled(account.provider) {
-            return Err(plan_disabled(account.provider).into());
-        }
-        if account.provider == Provider::Claude && old.expires_at <= now() {
-            return self
-                .refresh_claude_session(&mut state, position, &cancel)
-                .await;
+        if !old.plan_enabled() {
+            return Err(PLAN_DISABLED.into());
         }
         let access = if old.expires_at > now() {
             old.access_token.clone()
@@ -1174,7 +994,7 @@ impl AiAccounts {
                     return Err(error);
                 }
             };
-            if !replacement.plan_enabled(Provider::ChatGpt) {
+            if !replacement.plan_enabled() {
                 state.accounts[position].tokens = Some(replacement);
                 state.accounts[position].revision += 1;
                 self.save(&state)?;
@@ -1188,13 +1008,6 @@ impl AiAccounts {
         };
         stopped(&cancel, &cancel)?;
         Ok(SubscriptionSession {
-            provider: account.provider,
-            account_id: account.id.clone(),
-            base_url: if account.provider == Provider::Claude {
-                claude::BASE_URL
-            } else {
-                oidc::RESOURCE
-            },
             access_token: access,
         })
     }
@@ -1372,63 +1185,31 @@ impl AiAccounts {
     }
 }
 impl Tokens {
-    fn plan_enabled(&self, provider: Provider) -> bool {
-        match provider {
-            Provider::ChatGpt => {
-                self.scopes.iter().any(|scope| scope == oidc::DIRECT_SCOPE)
-                    && self.scopes.iter().any(|scope| scope == "resource.invoke")
-            }
-            Provider::Claude => {
-                self.access_token.starts_with("sk-ant-oat")
-                    && self.scopes.iter().any(|scope| scope == "user:inference")
-            }
-        }
+    fn plan_enabled(&self) -> bool {
+        self.scopes.iter().any(|scope| scope == oidc::DIRECT_SCOPE)
+            && self.scopes.iter().any(|scope| scope == "resource.invoke")
     }
 }
 impl AccountRecord {
     fn snapshot(&self) -> AccountSnapshot {
-        if self.provider == Provider::Claude {
-            return AccountSnapshot {
-                id: self.id.clone(),
-                provider: self.provider,
-                label: "Claude 구독".into(),
-                email: None,
-                state: "signed_out".into(),
-                can_invoke: false,
-                configured: true,
-                reason: Some("Claude Code에서 구독 계정으로 로그인해 주세요.".into()),
-            };
-        }
         let (state, can_invoke, reason) = match self.tokens.as_ref() {
-            Some(tokens) if !tokens.plan_enabled(self.provider) => (
-                "plan_disabled",
-                false,
-                Some(plan_disabled(self.provider).into()),
-            ),
+            Some(tokens) if !tokens.plan_enabled() => {
+                ("plan_disabled", false, Some(PLAN_DISABLED.into()))
+            }
             Some(tokens)
-                if (self.subject.is_some() || self.provider == Provider::Claude)
+                if self.subject.is_some()
                     && (tokens.expires_at > now() || tokens.refresh_token.is_some()) =>
             {
                 ("connected", true, None)
             }
-            _ => (
-                "signed_out",
-                false,
-                Some(sign_in_required(self.provider).into()),
-            ),
+            _ => ("signed_out", false, Some(SIGN_IN_REQUIRED.into())),
         };
         let label = self
             .name
             .as_ref()
             .or(self.email.as_ref())
             .cloned()
-            .unwrap_or_else(|| {
-                if self.provider == Provider::Claude {
-                    "Claude 구독".into()
-                } else {
-                    "ChatGPT 계정".into()
-                }
-            });
+            .unwrap_or_else(|| "ChatGPT 계정".into());
         AccountSnapshot {
             id: self.id.clone(),
             provider: self.provider,
@@ -1610,8 +1391,8 @@ mod tests {
         let encoded = serde_json::to_string(&snapshot).unwrap();
         assert!(!encoded.contains("PRIVATE"));
         assert!(!encoded.contains("oaiapp_"));
-        assert!(snapshot.providers[1].configured);
-        assert!(snapshot.providers[1].reason.is_none());
+        assert!(snapshot.providers[0].configured);
+        assert!(snapshot.providers[0].reason.is_none());
         assert!(temp
             .path()
             .canonicalize()
@@ -1649,7 +1430,7 @@ mod tests {
             scope: Some("openid".into()),
         };
         let next = response.into_tokens(Some(&previous), true).unwrap();
-        assert!(!next.plan_enabled(Provider::ChatGpt));
+        assert!(!next.plan_enabled());
         assert_eq!(next.refresh_token.as_deref(), Some("new_refresh"));
         assert_eq!(next.id_token, previous.id_token);
     }
@@ -1862,23 +1643,75 @@ mod tests {
         );
         assert_eq!(stored.active_account_id.as_deref(), Some("second"));
     }
-    #[test]
-    fn legacy_claude_credentials_are_not_offered_for_invocation() {
-        let mut account = record("claude-local", "fixture");
-        account.provider = Provider::Claude;
-        account.subject = None;
-        account.email = None;
-        account.name = None;
-        let token = account.tokens.as_mut().unwrap();
+    #[tokio::test]
+    async fn legacy_claude_credentials_are_preserved_but_never_listed_or_invoked() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().canonicalize().unwrap().join("ai");
+        let store = Arc::new(Memory::default());
+        let mut legacy = record("claude-local", "fixture");
+        legacy.provider = Provider::Claude;
+        legacy.subject = None;
+        legacy.email = None;
+        let token = legacy.tokens.as_mut().unwrap();
         token.access_token = "sk-ant-oat01-fixture".into();
         token.scopes = vec!["user:inference".into()];
-        let snapshot = account.snapshot();
-        assert!(!snapshot.can_invoke);
-        assert_eq!(snapshot.state, "signed_out");
-        assert!(snapshot.label.starts_with("Claude 구독"));
-        assert!(snapshot.email.is_none());
-        account.tokens.as_mut().unwrap().access_token = "sk-ant-api03-fixture".into();
-        assert!(!account.snapshot().can_invoke);
+        credentials::write(
+            store.as_ref(),
+            &SavedState {
+                host_id: Some("urn:uuid:fixture".into()),
+                active_account_id: Some("claude-local".into()),
+                accounts: vec![legacy.clone(), record("first", "fixture-client")],
+            },
+        )
+        .unwrap();
+        fs::create_dir_all(&directory).unwrap();
+        let older_projection = PublicProjection {
+            version: 1,
+            active_account_id: Some("claude-local".into()),
+            accounts: vec![
+                PublicAccount {
+                    id: "claude-local".into(),
+                    provider: Provider::Claude,
+                    label: "Claude 구독".into(),
+                },
+                PublicAccount {
+                    id: "first".into(),
+                    provider: Provider::ChatGpt,
+                    label: "ChatGPT 계정".into(),
+                },
+            ],
+        };
+        fs::write(
+            directory.join("accounts-public-v1.json"),
+            serde_json::to_vec(&older_projection).unwrap(),
+        )
+        .unwrap();
+        let manager = AiAccounts::with_store(directory, store.clone()).unwrap();
+        let listed = |snapshot: AccountsSnapshot| {
+            assert!(snapshot
+                .providers
+                .iter()
+                .all(|provider| provider.id == Provider::ChatGpt));
+            snapshot
+                .accounts
+                .into_iter()
+                .map(|account| account.id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(listed(manager.snapshot().unwrap()), ["first"]);
+        let stored = store.values.lock().unwrap().clone();
+        assert_eq!(listed(manager.resolve_accounts().unwrap()), ["first"]);
+        assert!(manager.subscription_session("claude-local").await.is_err());
+        assert!(manager.subscription_session("").await.is_err());
+        assert!(manager.sign_out("claude-local").await.is_err());
+        assert_eq!(*store.values.lock().unwrap(), stored);
+        manager.select_account("first").unwrap();
+        let saved = credentials::read::<SavedState>(store.as_ref()).unwrap();
+        assert_eq!(saved.accounts.len(), 2);
+        assert_eq!(
+            serde_json::to_value(&saved.accounts[0]).unwrap(),
+            serde_json::to_value(&legacy).unwrap()
+        );
     }
     #[test]
     fn cross_process_operation_lock_prevents_racing_rotating_credential_writes() {
@@ -1969,7 +1802,7 @@ mod tests {
         .unwrap();
         let before = store.reads.load(Ordering::Relaxed);
         let session = manager.subscription_session("").await.unwrap();
-        assert_eq!(session.account_id, "first");
+        assert_eq!(session.access_token(), "SYNTHETIC_ACCESS_PRIVATE");
         assert_eq!(store.reads.load(Ordering::Relaxed) - before, per_load);
     }
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2473,17 +2306,4 @@ fn form_body(fields: &[(&str, &str)]) -> String {
     let mut url = reqwest::Url::parse("https://auth.openai.com").unwrap();
     url.query_pairs_mut().extend_pairs(fields.iter().copied());
     url.query().unwrap_or_default().to_owned()
-}
-
-fn sign_in_required(provider: Provider) -> &'static str {
-    match provider {
-        Provider::ChatGpt => SIGN_IN_REQUIRED,
-        Provider::Claude => "Claude에 다시 로그인해 주세요.",
-    }
-}
-fn plan_disabled(provider: Provider) -> &'static str {
-    match provider {
-        Provider::ChatGpt => PLAN_DISABLED,
-        Provider::Claude => "Claude 구독 사용 권한이 없습니다. 다시 연결해 주세요.",
-    }
 }

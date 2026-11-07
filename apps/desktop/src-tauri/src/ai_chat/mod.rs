@@ -513,11 +513,8 @@ impl AiChat {
                 .map_err(|_| "Claude 모델 목록을 새로고침하지 못했습니다.".to_string())??;
         } else {
             let session = self.accounts.subscription_session(id).await?;
-            if session.provider != Provider::ChatGpt {
-                return Err("AI 계정 연결을 확인해 주세요.".into());
-            }
             let catalog = provider::models(&provider::ProviderAccess {
-                provider: provider_id(session.provider).into(),
+                provider: provider_id(Provider::ChatGpt).into(),
                 access_token: session.access_token().into(),
             })
             .await?;
@@ -597,7 +594,6 @@ impl AiChat {
                 .into_iter()
                 .find(|account| {
                     account.id == request.account_id
-                        && account.provider == Provider::ChatGpt
                         && (account.can_invoke || account.state == "unknown")
                 })
                 .ok_or("먼저 AI 계정에 로그인해 주세요.")?
@@ -904,11 +900,8 @@ impl AiChat {
                         .accounts
                         .subscription_session_with_cancel(&request.account_id, cancel.clone())
                         .await?;
-                    if session.provider != selected_provider {
-                        return Err("선택한 AI 계정이 변경되었습니다.".into());
-                    }
                     let access = provider::ProviderAccess {
-                        provider: provider_id(session.provider).into(),
+                        provider: provider_id(selected_provider).into(),
                         access_token: session.access_token().into(),
                     };
                     let models = provider::models_with_cancel(&access, &cancel).await?;
@@ -1211,7 +1204,6 @@ mod tests {
                     id: "model".into(),
                     label: "공개 모델 이름".into(),
                     previous: false,
-                    max_output_tokens: None,
                 }],
                 default_model_id: Some("model".into()),
             },
