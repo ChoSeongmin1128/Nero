@@ -1,4 +1,4 @@
-import { formatBytes, memoryWarningFor, modelPreparation, speechModelKinds } from './processing-state.js';
+import { formatBytes, memoryBlocked, memoryWarningFor, modelPreparation, speakerNeedsPreparation, speechModelKinds } from './processing-state.js';
 import { bindPreparationProgress } from './model-preparation-progress.js';
 
 const titles = {
@@ -200,7 +200,7 @@ export function mountSpeechModelPicker({ node, onSelect, onPrepare, onSpeakerCha
     write(memoryText, 'textContent', warning);
     write(memoryInput, 'checked', Boolean(warning) && acknowledged.has(warningChoice.id));
     write(memoryInput, 'disabled', disabled);
-    write(confirm, 'disabled', Boolean(stagedChoice && memoryWarningFor(stagedChoice)) && !acknowledged.has(staged));
+    write(confirm, 'disabled', Boolean(stagedChoice) && memoryBlocked(stagedChoice, acknowledged));
 
     progress.update(preparation);
     write(cancel, 'textContent', preparation.state === 'cancelling' ? '취소 중' : switching ? '전환 취소' : '취소');
@@ -216,11 +216,10 @@ export function mountSpeechModelPicker({ node, onSelect, onPrepare, onSpeakerCha
     write(error, 'textContent', failureMessage);
     write(error, 'hidden', !failureMessage);
     const current = entries.find(choice => choice.id === active);
-    const speakerNeedsPreparation = speakerEnabled && state.speakerSupported === true && state.speakerReady === false;
     write(prepare, 'textContent', current?.id === 'appleSpeech' ? '준비' : '모델 다운로드');
     write(prepare, 'hidden', !onPrepare || busy || failed || Boolean(switching) || Boolean(stagedChoice)
-      || (state.modelReady === true && !speakerNeedsPreparation) || current?.supported !== true);
-    write(prepare, 'disabled', Boolean(warning) && warningChoice?.id === active && !acknowledged.has(active));
+      || (state.modelReady === true && !speakerNeedsPreparation(state)) || current?.supported !== true);
+    write(prepare, 'disabled', memoryBlocked(current, acknowledged));
   }
   return { update };
 }

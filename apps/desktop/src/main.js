@@ -25,7 +25,7 @@ import '../../../design-system/react-controls.jsx';
 import * as bridge from './bridge.js';
 import { ui, icon, escape, button, duration, recordingStatus, statusMarkup, sessionControls, applySystemAppearance } from './ui.js';
 import { processingFeedback, canRetryProcessing, canDismissProcessing } from './processing-feedback.js';
-import { processingJobs, pendingJob, processingResults, latestMeetingProcessing, processingNotices, modelPreparation, memoryWarningFor, speechModelKinds, summaryModelKinds } from './processing-state.js';
+import { processingJobs, pendingJob, processingResults, latestMeetingProcessing, processingNotices, modelPreparation, memoryBlocked, speakerNeedsPreparation, speechModelKinds, summaryModelKinds } from './processing-state.js';
 import { mountLibrary, filterLibraryMeetings, renderMeetingMenu } from './library-ui.js';
 import { mountSpeakers } from './speakers-ui.js';
 import { createMeetingSearch, mountDocumentSearch } from './meeting-search.js';
@@ -95,8 +95,7 @@ function acknowledgeSpeechMemory(engine, checked) {
   render();
 }
 function speechMemoryBlocked() {
-  const selected = state.processing.speechChoices?.find(choice => choice.id === state.processing.speechEngine);
-  return Boolean(memoryWarningFor(selected)) && !speechMemoryAcknowledged.has(selected.id);
+  return memoryBlocked(state.processing.speechChoices?.find(choice => choice.id === state.processing.speechEngine), speechMemoryAcknowledged);
 }
 // A locally requested cancel shows as cancelling before the native job reports it.
 function preparationView(kinds) {
@@ -348,8 +347,7 @@ function renderSetup() {
   if (byId('setup-message').hidden !== !byId('setup-message').textContent) byId('setup-message').hidden = !byId('setup-message').textContent;
   const messageState = failed ? setupView.state : '';
   if (byId('setup-message').dataset.state !== messageState) byId('setup-message').dataset.state = messageState;
-  const speakerNeedsPreparation = job.speakerEnabled !== false && job.speakerSupported === true && job.speakerReady === false;
-  byId('setup-download').hidden = (ready && !speakerNeedsPreparation) || unsupported || running;
+  byId('setup-download').hidden = (ready && !speakerNeedsPreparation(job)) || unsupported || running;
   byId('setup-download').disabled = !state.connected || state.busy || Boolean(pendingJob(state.processing, { models: true })) || speechMemoryBlocked();
   setText('setup-download', failed ? '다시 시도' : job.speechEngine === 'appleSpeech' ? '준비' : '다운로드');
   if (state.busy) byId('setup-cancel').disabled = true;

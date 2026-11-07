@@ -1,4 +1,5 @@
-const modelJobs = new Set(['setup', 'model', 'summary-model', 'speaker-model']);
+import { byteProgress, modelKinds } from './processing-state.js';
+
 export const canRetryProcessing = job => job?.acknowledged !== true && !job?.retrySuccessorId && job?.retryable === true && ['interrupted', 'failed', 'cancelled'].includes(job?.status);
 export const canDismissProcessing = job => job?.acknowledged !== true && !job?.retrySuccessorId && ['completed', 'interrupted', 'failed', 'cancelled', 'needsReview'].includes(job?.status);
 const jobTitles = {
@@ -71,14 +72,9 @@ export function processingFeedback(job = {}, { cancelling = false } = {}) {
     || (job.kind === 'summary' && job.summaryCommitting === true));
   const cancelRequested = (active || queued) && !committing && (cancelling || job.status === 'cancelling' || job.message === '취소 중');
   const title = jobTitles[job.kind] || '처리';
-  let progress = null;
   // Byte counts describe model preparation. Inference messages and chunk counts
   // do not report completed work and must not become a percentage.
-  if (active && !cancelRequested && modelJobs.has(job.kind)
-    && Number.isFinite(job.totalBytes) && job.totalBytes > 0) {
-    const value = Math.min(job.totalBytes, Math.max(0, Number.isFinite(job.bytes) ? job.bytes : 0));
-    progress = { value, max: job.totalBytes, percent: Math.floor(value / job.totalBytes * 100) };
-  }
+  const progress = active && !cancelRequested && modelKinds.has(job.kind) ? byteProgress(job) : null;
   const terminal = { completed: '완료', failed: '실패', cancelled: '취소됨', queued: '대기 중', interrupted: '중단됨', needsReview: '확인 필요' }[job.status];
   let heading = cancelRequested ? `${title} 취소 중` : `${title}${active ? ' 중' : terminal ? ` ${terminal}` : ''}`;
   if (active && job.kind === 'summary' && !cancelRequested) {

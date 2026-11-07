@@ -164,7 +164,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     ${qualitySource.replace(/^export /gm, '')}
     const mountNotesWidth = () => ({update(){}});
     ${detailSource.replace(/^import .*;\r?\n/gm, '').replace(/^export /gm, '')}
-    ${feedbackSource.replace(/^export /gm, '')}
+    ${feedbackSource.replace(/^import .*;\r?\n/gm, '').replace(/^export /gm, '')}
     ${processingStateSource.replace(/^export /gm, '')}
     ${preparationProgressSource.replace(/^export /gm, '')}
     ${searchSource.replace(/^export /gm, '')}

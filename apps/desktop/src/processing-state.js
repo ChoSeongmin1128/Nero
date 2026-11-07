@@ -1,5 +1,5 @@
 const pendingStatuses = new Set(['queued', 'running', 'cancelling']);
-const modelKinds = new Set(['setup', 'model', 'summary-model', 'speaker-model']);
+export const modelKinds = new Set(['setup', 'model', 'summary-model', 'speaker-model']);
 
 export function processingJobs(progress = {}) {
   progress ||= {};
@@ -64,6 +64,12 @@ export function formatBytes(bytes) {
   return `${Math.max(1, Math.round(bytes / 1e6))} MB`;
 }
 
+export function byteProgress(job) {
+  if (!Number.isFinite(job?.totalBytes) || job.totalBytes <= 0) return null;
+  const value = Math.min(job.totalBytes, Math.max(0, Number.isFinite(job.bytes) ? job.bytes : 0));
+  return { value, max: job.totalBytes, percent: Math.floor(value / job.totalBytes * 100) };
+}
+
 // One reading of a model download for every screen. Byte counts come only from the
 // job that owns them (processingJobs merges the running job's counters by id).
 export function modelPreparation(progress, kinds) {
@@ -71,15 +77,14 @@ export function modelPreparation(progress, kinds) {
   const jobs = processingJobs(progress).filter(job => wanted.has(job.kind));
   const active = jobs.find(job => pendingStatuses.has(job.status));
   if (active) {
-    const counted = active.status !== 'queued' && Number.isFinite(active.totalBytes) && active.totalBytes > 0;
-    const value = counted ? Math.min(active.totalBytes, Math.max(0, Number(active.bytes) || 0)) : 0;
+    const counted = active.status === 'queued' ? null : byteProgress(active);
     return {
       state: active.status === 'queued' ? 'queued' : active.status === 'cancelling' ? 'cancelling' : 'running',
       jobId: active.id,
-      percent: counted ? Math.floor(value / active.totalBytes * 100) : null,
-      value,
-      max: counted ? active.totalBytes : 0,
-      size: counted ? `${formatBytes(value)} / ${formatBytes(active.totalBytes)}` : '',
+      percent: counted ? counted.percent : null,
+      value: counted ? counted.value : 0,
+      max: counted ? counted.max : 0,
+      size: counted ? `${formatBytes(counted.value)} / ${formatBytes(counted.max)}` : '',
       stage: active.status === 'queued' ? '앞선 작업이 끝나면 시작합니다.' : active.status === 'cancelling' ? '취소 중' : String(active.message || '').trim() || '준비 중',
       cancellable: active.status !== 'cancelling' && active.committing !== true,
     };
@@ -101,3 +106,8 @@ export function modelPreparation(progress, kinds) {
 export function memoryWarningFor(choice) {
   return choice && choice.supported === true && choice.ready !== true && typeof choice.memoryWarning === 'string' ? choice.memoryWarning : '';
 }
+
+// Preparing a choice with a memory warning waits for the user's acknowledgement.
+export const memoryBlocked = (choice, acknowledged) => Boolean(memoryWarningFor(choice)) && !acknowledged.has(choice.id);
+
+export const speakerNeedsPreparation = progress => progress?.speakerEnabled !== false && progress?.speakerSupported === true && progress?.speakerReady === false;
