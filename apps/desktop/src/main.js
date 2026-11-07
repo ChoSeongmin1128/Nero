@@ -127,7 +127,8 @@ const appUpdateView = mountAppUpdateView({ container: byId('app-update'), bridge
     render();
   },
 });
-let pendingQuitSessionId = null;
+// The recording a quit confirmation is about; null while the dialog is closed.
+let quitQuestion = null;
 let selectionRequest = 0;
 function beginNavigation(history = false) { if (!history) viewHistory?.cancel(); const request = ++selectionRequest; return () => request === selectionRequest; }
 let speakerReplay = null;
@@ -141,6 +142,8 @@ function setHTML(id, html) { const node = byId(id); if (node.innerHTML !== html)
 function setText(id, text) { const node = byId(id); if (node.textContent !== text) node.textContent = text; }
 const currentMeeting = () => state.snapshot.meetings.find((meeting) => meeting.id === state.selectedId);
 const activeSession = () => ['recording', 'paused', 'finalizing'].includes(state.snapshot.session?.state) ? state.snapshot.session : null;
+// The session a quit names, as the app counts it: only one still taking audio.
+const recordingSessionId = () => ['recording', 'paused'].includes(state.snapshot.session?.state) ? state.snapshot.session.id : null;
 const stateFor = (meeting) => activeSession()?.meetingId === meeting.id ? activeSession().state : meeting.status;
 
 function paintIconButton(node, name = node.dataset.uiIcon, label = node.getAttribute('aria-label')) {
@@ -463,11 +466,15 @@ async function changeMeetingDate() {
 
 function acceptSnapshot(snapshot) {
   const previousMeeting = currentMeeting();
+  const previousRecording = recordingSessionId();
   const signatures = snapshotSignatures(snapshot);
   const comparison = compareSnapshotSignatures(state.snapshotSignatures, signatures);
   const changed = !state.connected || comparison.changed;
   const timerOnly = state.connected && comparison.timerOnly;
   state.snapshot = snapshot;
+  // A recording that ends or is replaced while the quit dialog is open changes
+  // what confirming quits; after it ends, confirming is an ordinary quit.
+  if (quitQuestion && recordingSessionId() !== previousRecording) quitQuestion.sessionId = recordingSessionId();
   state.snapshotSignatures = signatures;
   state.connected = true;
   if (state.selectedId && !snapshot.meetings.some(meeting => meeting.id === state.selectedId && meeting.deletedAt == null)) { state.selectedId = null; state.draft = null; state.transcriptDraft = null; state.summary = null; state.libraryOpen = true; speakers.reset(); clearAudio(); }
@@ -1390,17 +1397,19 @@ byId('transcript-rows').addEventListener('keydown', event => {
 // macOS logout, Cmd+Q and Dock quit wait for an answer. Any path that does not end
 // in quitting tells the app to stay; after a successful quit this does nothing.
 const stayOpen = () => bridge.cancelQuit().catch(() => {});
-async function onQuitRequest({ sessionId } = {}) {
-  if (!activeSession()) {
+// The request names the recording as the app saw it just now; this screen's
+// snapshot can be a moment behind.
+async function onQuitRequest({ sessionId = null } = {}) {
+  if (!sessionId) {
     await run(() => prepareAppLeave(() => bridge.requestQuit(null)));
     await stayOpen();
     return;
   }
-  if (sessionId !== activeSession().id || !await prepareAppLeave(() => true)) {
+  if (!await prepareAppLeave(() => true)) {
     await stayOpen();
     return;
   }
-  pendingQuitSessionId = sessionId;
+  quitQuestion = { sessionId };
   const dialog = byId('quit-dialog');
   dialog.innerHTML = globalThis.NeroUI.dialogContent({ title: '녹음을 종료하고 나갈까요?', titleId: 'quit-title', bodyHTML: '<p>지금까지 녹음한 음성과 메모를 저장한 뒤 앱을 종료합니다.</p>', actionsHTML: button('계속 녹음', 'cancel-quit', null, '') + button('저장하고 종료', 'confirm-quit', null, 'primary') });
   if (!dialog.open) dialog.showModal();
@@ -1410,16 +1419,16 @@ byId('quit-dialog').addEventListener('click', (event) => {
   const action = event.target.closest('[data-action]')?.dataset.action;
   if (action === 'cancel-quit') byId('quit-dialog').close();
   if (action === 'confirm-quit') {
-    const sessionId = pendingQuitSessionId;
-    pendingQuitSessionId = null;
+    const { sessionId } = quitQuestion;
+    quitQuestion = null;
     byId('quit-dialog').close();
     void run(() => finishEditing(() => bridge.requestQuit(sessionId))).finally(stayOpen);
   }
 });
 // Closing without confirming (button, Escape) keeps the app open.
 byId('quit-dialog').addEventListener('close', () => {
-  if (pendingQuitSessionId !== null) void stayOpen();
-  pendingQuitSessionId = null;
+  if (quitQuestion) void stayOpen();
+  quitQuestion = null;
 });
 const dropConfirmation = mountConfirmDialog({ container: byId('drop-dialog') });
 mountDropImport({ window: globalThis, overlay: byId('drop-overlay'), message: byId('drop-overlay-message'),

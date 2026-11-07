@@ -139,7 +139,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
         return structuredClone(snapshot.meetings.find(meeting => meeting.id === id));
       });
     },
-    requestQuit() { const pending = deferred(); exits.push({ type: 'quit', pending }); return pending.promise; },
+    requestQuit(sessionId) { const pending = deferred(); exits.push({ type: 'quit', sessionId, pending }); return pending.promise; },
     async cancelQuit() { exits.push({ type: 'stay' }); },
     hideMain() { const pending = deferred(); exits.push({ type: 'close', pending }); return pending.promise; },
   };
@@ -525,6 +525,37 @@ test('a system quit that does not end in quitting tells the app to stay', async 
   page.exits[1].pending.resolve();
   await leaving;
   assert.deepEqual(page.exits.map(exit => exit.type), ['stay', 'quit', 'stay']);
+});
+
+test('the quit dialog follows a recording that ends or is replaced while it is open', async () => {
+  for (const [after, expected] of [['completed', null], ['replaced', 'session-b']]) {
+    const page = await openApp();
+    page.element('quit-dialog').querySelector = () => ({ focus() {} });
+    const meetings = page.app.state.snapshot.meetings;
+    page.app.acceptSnapshot({ revision: 2, meetings, session: { id: 'session-a', meetingId: 'a', state: 'recording', elapsedMs: 1000 } });
+    await page.app.onQuitRequest({ sessionId: 'session-a' });
+    assert.equal(page.element('quit-dialog').open, true);
+    page.app.acceptSnapshot({ revision: 3, meetings, session: after === 'completed'
+      ? { id: 'session-a', meetingId: 'a', state: 'completed', elapsedMs: 2000 }
+      : { id: 'session-b', meetingId: 'b', state: 'recording', elapsedMs: 0 } });
+    page.element('quit-dialog').listeners.get('click')({ target: { closest: () => ({ dataset: { action: 'confirm-quit' } }) } });
+    await tick();
+    assert.equal(page.exits[0].type, 'quit', after);
+    assert.equal(page.exits[0].sessionId, expected, after);
+    page.exits[0].pending.resolve();
+  }
+});
+
+test('a quit request trusts its own session when this screen has not caught up', async () => {
+  const page = await openApp();
+  page.element('quit-dialog').querySelector = () => ({ focus() {} });
+  await page.app.onQuitRequest({ sessionId: 'just-started' });
+  assert.equal(page.element('quit-dialog').open, true);
+  assert.equal(page.exits.length, 0);
+  page.element('quit-dialog').listeners.get('click')({ target: { closest: () => ({ dataset: { action: 'confirm-quit' } }) } });
+  await tick();
+  assert.equal(page.exits[0].sessionId, 'just-started');
+  page.exits[0].pending.resolve();
 });
 
 test('quit commits an active transcript composition before requesting native exit', async () => {
