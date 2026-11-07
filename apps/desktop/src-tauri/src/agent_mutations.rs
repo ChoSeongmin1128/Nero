@@ -5,7 +5,7 @@ use nero_core::agent_control::{
     AppUpdateAction, ControlError, ControlReply, Handlers, JobRequest, Mutation, ProcessingRequest,
     Server,
 };
-use nero_core::{CoreError, CoreHandle, DraftAttachmentTarget, SessionState};
+use nero_core::{CoreError, CoreHandle, DraftAttachmentTarget};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -379,12 +379,7 @@ impl ProcessingPort for AppProcessing<'_> {
     }
     fn recording(&self) -> Result<bool, ControlError> {
         let snapshot = self.core.snapshot().map_err(ControlError::core)?;
-        Ok(snapshot.session.as_ref().is_some_and(|session| {
-            matches!(
-                session.state,
-                SessionState::Recording | SessionState::Paused
-            )
-        }))
+        Ok(snapshot.active_session().is_some())
     }
     fn require_meeting_models(&self) -> Result<(), String> {
         self.processing.require_meeting_models()

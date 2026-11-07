@@ -1,6 +1,6 @@
 use crate::calendar::{self, CalendarService, CalendarSnapshot, Occurrence};
 use crate::DesktopState;
-use nero_core::{CalendarReference, Meeting, SessionState, Snapshot};
+use nero_core::{CalendarReference, Meeting, Snapshot};
 use std::path::PathBuf;
 use std::sync::{atomic::Ordering, Arc};
 use std::time::Duration;
@@ -94,12 +94,7 @@ fn publish(app: &tauri::AppHandle) {
     );
 }
 fn recording_busy(snapshot: &Snapshot) -> bool {
-    snapshot.session.as_ref().is_some_and(|session| {
-        matches!(
-            session.state,
-            SessionState::Recording | SessionState::Paused
-        )
-    })
+    snapshot.active_session().is_some()
 }
 fn label(key: &str) -> Option<String> {
     let digest = key.strip_prefix("google:")?;

@@ -690,16 +690,7 @@ fn drag_recorder(window: WebviewWindow) -> Result<(), String> {
 }
 
 fn active_session(snapshot: &Snapshot) -> Option<&str> {
-    snapshot
-        .session
-        .as_ref()
-        .filter(|session| {
-            matches!(
-                session.state,
-                nero_core::SessionState::Recording | nero_core::SessionState::Paused
-            )
-        })
-        .map(|session| session.id.as_str())
+    snapshot.active_session().map(|session| session.id.as_str())
 }
 
 #[tauri::command]
@@ -1671,6 +1662,28 @@ fn prepare_model(
     require_main(&window)?;
     state.processing.prepare_model()
 }
+// Both import entry points (file picker and drop) check the same conditions first.
+async fn import_preflight(
+    state: &DesktopState,
+    target: Option<nero_core::DraftAttachmentTarget>,
+) -> Result<(), String> {
+    state.processing.require_meeting_models()?;
+    if !state.processing.snapshot().supported {
+        return Err("이 기기의 음성 가져오기가 아직 준비되지 않았습니다.".into());
+    }
+    let snapshot = on_core(state.core.clone(), |core| core.snapshot()).await?;
+    if active_session(&snapshot).is_some() {
+        return Err("녹음을 마친 뒤 음성을 가져와 주세요.".into());
+    }
+    if let Some(target) = target {
+        on_core(state.core.clone(), move |core| {
+            core.validate_draft_attachment(target)
+        })
+        .await?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 async fn prepare_meeting_models(
     window: WebviewWindow,
@@ -1740,20 +1753,7 @@ async fn import_audio(
     target: Option<nero_core::DraftAttachmentTarget>,
 ) -> Result<Option<Progress>, String> {
     require_main(&window)?;
-    state.processing.require_meeting_models()?;
-    if !state.processing.snapshot().supported {
-        return Err("이 기기의 음성 가져오기가 아직 준비되지 않았습니다.".into());
-    }
-    let snapshot = on_core(state.core.clone(), |core| core.snapshot()).await?;
-    if active_session(&snapshot).is_some() {
-        return Err("녹음을 마친 뒤 음성을 가져와 주세요.".into());
-    }
-    if let Some(target) = target.clone() {
-        on_core(state.core.clone(), move |core| {
-            core.validate_draft_attachment(target)
-        })
-        .await?;
-    }
+    import_preflight(&state, target.clone()).await?;
     let source = tauri::async_runtime::spawn_blocking(move || {
         app.dialog()
             .file()
@@ -1786,20 +1786,7 @@ async fn drop_import_begin(
     target: Option<nero_core::DraftAttachmentTarget>,
 ) -> Result<String, String> {
     require_main(&window)?;
-    state.processing.require_meeting_models()?;
-    if !state.processing.snapshot().supported {
-        return Err("이 기기의 음성 가져오기가 아직 준비되지 않았습니다.".into());
-    }
-    let snapshot = on_core(state.core.clone(), |core| core.snapshot()).await?;
-    if active_session(&snapshot).is_some() {
-        return Err("녹음을 마친 뒤 음성을 가져와 주세요.".into());
-    }
-    if let Some(target) = target.clone() {
-        on_core(state.core.clone(), move |core| {
-            core.validate_draft_attachment(target)
-        })
-        .await?;
-    }
+    import_preflight(&state, target.clone()).await?;
     // The cache copy and the meeting copy exist together until the import finishes.
     storage_space::check(&state.processing.root, size.saturating_mul(2))?;
     state.drops.begin(&name, size, target)

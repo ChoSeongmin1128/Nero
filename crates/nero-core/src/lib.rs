@@ -224,6 +224,18 @@ pub struct Snapshot {
     pub session: Option<SessionSnapshot>,
 }
 
+impl Snapshot {
+    /// The capture still recording or paused; the last ended session is not active.
+    pub fn active_session(&self) -> Option<&SessionSnapshot> {
+        self.session.as_ref().filter(|session| {
+            matches!(
+                session.state,
+                SessionState::Recording | SessionState::Paused
+            )
+        })
+    }
+}
+
 type Job = Box<dyn FnOnce(&mut Engine) + Send>;
 
 enum Command {
