@@ -15,6 +15,8 @@ use std::time::Duration;
 const PROTOCOL: u32 = 1;
 const MAX_FRAME: usize = 1024 * 1024;
 const DESCRIPTOR: &str = "agent-control.json";
+const UNKNOWN_RESULT: &str =
+    "수정 결과를 확인하지 못했습니다. 같은 요청을 반복하기 전에 현재 상태를 조회해 주세요.";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ControlError {
@@ -36,10 +38,7 @@ impl ControlError {
         Self::new("invalid_input", "수정 요청의 형식이 올바르지 않습니다.")
     }
     fn unknown_result() -> Self {
-        Self::new(
-            "mutation_result_unknown",
-            "수정 결과를 확인하지 못했습니다. 같은 요청을 반복하기 전에 현재 상태를 조회해 주세요.",
-        )
+        Self::new("mutation_result_unknown", UNKNOWN_RESULT)
     }
     pub fn core(error: CoreError) -> Self {
         let code = match &error {
@@ -987,6 +986,7 @@ pub fn request(
                 "processing_rejected",
                 "Nero가 요청을 처리하지 못했습니다. 현재 처리 상태를 확인해 주세요.",
             ),
+            "mutation_result_unknown" => ("mutation_result_unknown", UNKNOWN_RESULT),
             _ => core_code_message(received)
                 .unwrap_or(("mutation_failed", "수정을 완료하지 못했습니다.")),
         };
@@ -1038,6 +1038,47 @@ fn remove_own_descriptor(root: &Path, descriptor: &Descriptor) {
                 let _ = std::fs::remove_file(path);
             }
         }
+    }
+}
+
+// Answers one connection. A panicking handler answers an unknown result instead of
+// ending the server, which no one would restart until the app does.
+fn serve_connection(mut stream: TcpStream, expected: &Descriptor, handlers: &Handlers) {
+    if stream.set_nonblocking(false).is_err()
+        || stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .is_err()
+        || stream
+            .set_write_timeout(Some(Duration::from_secs(2)))
+            .is_err()
+    {
+        return;
+    }
+    let frame = read_frame(&mut stream).ok();
+    if frame.is_some() && abandoned(&stream) {
+        return;
+    }
+    let result = frame
+        .and_then(|bytes| serde_json::from_slice::<Envelope>(&bytes).ok())
+        .filter(|value| {
+            value.protocol == PROTOCOL
+                && value.generation == expected.generation
+                && matches_secret(&expected.secret, &value.secret)
+        })
+        .ok_or_else(|| ControlError::new("app_not_ready", "Nero 수정 연결을 다시 확인해 주세요."))
+        .and_then(|value| ControlRequest::parse(&value.method, value.params))
+        .and_then(|request| {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handlers.answer(request)))
+                .unwrap_or_else(|_| Err(ControlError::unknown_result()))
+        });
+    let (response, after_response) = match result {
+        Ok(reply) => (json!({"result":reply.result}), reply.after_response),
+        Err(error) => (json!({"error":error}), None),
+    };
+    let _ = write_frame(&mut stream, &response);
+    // The app owns an accepted update even if its client disconnects.
+    if let Some(action) = after_response {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(action));
     }
 }
 
@@ -1259,55 +1300,17 @@ impl Server {
             .spawn(move || {
                 while !stopped.load(Ordering::Acquire) {
                     match listener.accept() {
-                        Ok((mut stream, peer)) => {
-                            if !peer.ip().is_loopback() {
-                                continue;
-                            }
-                            if stream.set_nonblocking(false).is_err()
-                                || stream
-                                    .set_read_timeout(Some(Duration::from_secs(2)))
-                                    .is_err()
-                                || stream
-                                    .set_write_timeout(Some(Duration::from_secs(2)))
-                                    .is_err()
-                            {
-                                continue;
-                            }
-                            let frame = read_frame(&mut stream).ok();
-                            if frame.is_some() && abandoned(&stream) {
-                                continue;
-                            }
-                            let result = frame
-                                .and_then(|bytes| serde_json::from_slice::<Envelope>(&bytes).ok())
-                                .filter(|value| {
-                                    value.protocol == PROTOCOL
-                                        && value.generation == expected.generation
-                                        && matches_secret(&expected.secret, &value.secret)
-                                })
-                                .ok_or_else(|| {
-                                    ControlError::new(
-                                        "app_not_ready",
-                                        "Nero 수정 연결을 다시 확인해 주세요.",
-                                    )
-                                })
-                                .and_then(|value| {
-                                    ControlRequest::parse(&value.method, value.params)
-                                })
-                                .and_then(|request| handlers.answer(request));
-                            let (response, after_response) = match result {
-                                Ok(reply) => (json!({"result":reply.result}), reply.after_response),
-                                Err(error) => (json!({"error":error}), None),
-                            };
-                            let _ = write_frame(&mut stream, &response);
-                            // The app owns an accepted update even if its client disconnects.
-                            if let Some(action) = after_response {
-                                action();
+                        Ok((stream, peer)) => {
+                            if peer.ip().is_loopback() {
+                                serve_connection(stream, &expected, &handlers);
                             }
                         }
                         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                             thread::sleep(Duration::from_millis(20))
                         }
-                        Err(_) => break,
+                        // Accept fails transiently (descriptor exhaustion, aborted
+                        // connections); the server keeps listening until it is stopped.
+                        Err(_) => thread::sleep(Duration::from_millis(200)),
                     }
                 }
             })
@@ -1549,6 +1552,32 @@ mod tests {
         drop(queued);
         released.send(()).unwrap();
         assert_eq!(slow.join().unwrap().unwrap()["applied"], true);
+        assert_eq!(
+            request(directory.path(), "meeting_update", params).unwrap()["applied"],
+            true
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn a_panicking_handler_is_answered_and_the_server_keeps_serving() {
+        let (directory, core, meeting) = fixture();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let invoked = calls.clone();
+        let _server = Server::start(directory.path(), core, move |_| {
+            if invoked.fetch_add(1, Ordering::SeqCst) == 0 {
+                panic!("synthetic handler failure");
+            }
+            Ok(json!({"applied":true}))
+        })
+        .unwrap();
+        let params = json!({"meetingId":meeting.id,"expectedVersion":meeting_edit_version(&meeting).unwrap(),"notes":"에이전트 메모"});
+        assert_eq!(
+            request(directory.path(), "meeting_update", params.clone())
+                .unwrap_err()
+                .code,
+            "mutation_result_unknown"
+        );
         assert_eq!(
             request(directory.path(), "meeting_update", params).unwrap()["applied"],
             true
