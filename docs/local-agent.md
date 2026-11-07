@@ -189,6 +189,8 @@ editVersion을 사용한다. 휴지통 복원용 editVersion은 `meetings list -
 
 충돌 시 최신 값을 읽고 변경을 다시 판단한다. `mutation_result_unknown`은 요청 결과를
 확인하지 못했다는 뜻이므로 같은 변경을 즉시 재시도하지 않고 현재 상태부터 조회한다.
+CLI가 응답을 기다리다 포기하고 연결을 닫은 요청은 앱이 아직 처리하지 않았다면 실행하지 않는다.
+이미 처리를 시작한 요청은 끝까지 진행되므로 이 경우에도 현재 상태부터 확인한다.
 
 요약 생성 전에 `summary context`로 `context`를 보관한 뒤 음성 기록과 메모를 모든 페이지에
 걸쳐 읽는다. `context`는 `transcriptVersion`의 id/revision, `transcriptSha256`,

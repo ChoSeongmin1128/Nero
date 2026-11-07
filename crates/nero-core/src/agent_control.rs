@@ -849,6 +849,20 @@ fn read_frame(stream: &mut TcpStream) -> std::io::Result<Vec<u8>> {
     stream.read_exact(&mut bytes)?;
     Ok(bytes)
 }
+// A client that stopped waiting (its read timeout passed or it exited) has closed its
+// end. Its request may have queued behind a slow one and must not take effect now.
+fn abandoned(stream: &TcpStream) -> bool {
+    if stream.set_nonblocking(true).is_err() {
+        return true;
+    }
+    let mut probe = [0; 1];
+    let closed = match stream.peek(&mut probe) {
+        Ok(0) => true,
+        Ok(_) => false,
+        Err(error) => error.kind() != std::io::ErrorKind::WouldBlock,
+    };
+    stream.set_nonblocking(false).is_err() || closed
+}
 fn matches_secret(expected: &str, value: &str) -> bool {
     expected.len() == value.len()
         && expected
@@ -1259,8 +1273,11 @@ impl Server {
                             {
                                 continue;
                             }
-                            let result = read_frame(&mut stream)
-                                .ok()
+                            let frame = read_frame(&mut stream).ok();
+                            if frame.is_some() && abandoned(&stream) {
+                                continue;
+                            }
+                            let result = frame
                                 .and_then(|bytes| serde_json::from_slice::<Envelope>(&bytes).ok())
                                 .filter(|value| {
                                     value.protocol == PROTOCOL
@@ -1445,6 +1462,9 @@ mod tests {
     fn accepted_update_work_survives_a_disconnected_client() {
         let (directory, core, _) = fixture();
         let (completed, completion) = std::sync::mpsc::channel();
+        let (started, start) = std::sync::mpsc::channel();
+        let (disconnected, disconnect) = std::sync::mpsc::channel::<()>();
+        let disconnect = std::sync::Mutex::new(disconnect);
         let _server = Server::start_with_updates(
             directory.path(),
             core,
@@ -1452,6 +1472,12 @@ mod tests {
             |_| Ok(json!({})),
             || Err(ControlError::unavailable()),
             move |_| {
+                started.send(()).unwrap();
+                disconnect
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(2))
+                    .unwrap();
                 let completed = completed.clone();
                 Ok(ControlReply::after_response(
                     json!({"accepted":true}),
@@ -1475,8 +1501,59 @@ mod tests {
             },
         )
         .unwrap();
+        start.recv_timeout(Duration::from_secs(3)).unwrap();
         drop(stream);
+        disconnected.send(()).unwrap();
         completion.recv_timeout(Duration::from_secs(3)).unwrap();
+    }
+
+    #[test]
+    fn a_request_its_client_abandoned_while_queued_never_runs() {
+        let (directory, core, meeting) = fixture();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let invoked = calls.clone();
+        let (started, start) = std::sync::mpsc::channel();
+        let (released, release) = std::sync::mpsc::channel::<()>();
+        let release = std::sync::Mutex::new(release);
+        let _server = Server::start(directory.path(), core, move |_| {
+            if invoked.fetch_add(1, Ordering::SeqCst) == 0 {
+                started.send(()).unwrap();
+                release
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(3))
+                    .unwrap();
+            }
+            Ok(json!({"applied":true}))
+        })
+        .unwrap();
+        let params = json!({"meetingId":meeting.id,"expectedVersion":meeting_edit_version(&meeting).unwrap(),"notes":"에이전트 메모"});
+        let root = directory.path().to_path_buf();
+        let slow_params = params.clone();
+        let slow = thread::spawn(move || request(&root, "meeting_update", slow_params));
+        start.recv_timeout(Duration::from_secs(3)).unwrap();
+        // A second client queues behind the slow request, then gives up.
+        let descriptor = read_descriptor(directory.path()).unwrap();
+        let mut queued = TcpStream::connect(descriptor.address).unwrap();
+        write_frame(
+            &mut queued,
+            &Envelope {
+                protocol: PROTOCOL,
+                generation: descriptor.generation,
+                secret: descriptor.secret,
+                method: "meeting_update".into(),
+                params: params.clone(),
+            },
+        )
+        .unwrap();
+        drop(queued);
+        released.send(()).unwrap();
+        assert_eq!(slow.join().unwrap().unwrap()["applied"], true);
+        assert_eq!(
+            request(directory.path(), "meeting_update", params).unwrap()["applied"],
+            true
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
     #[test]
