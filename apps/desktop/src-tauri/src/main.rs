@@ -610,16 +610,13 @@ fn sync_floating_recorder(app: &tauri::AppHandle, snapshot: &Snapshot) {
                     .lock()
                     .unwrap()
                     .show_failed();
-                let _ = app.emit_to(
-                    "main",
-                    "nero://processing-error",
-                    ProcessingError {
-                        meeting_id: snapshot
-                            .session
-                            .as_ref()
-                            .map(|session| session.meeting_id.clone()),
-                        message,
-                    },
+                report_processing_error(
+                    app,
+                    snapshot
+                        .session
+                        .as_ref()
+                        .map(|session| session.meeting_id.clone()),
+                    message,
                 );
             }
         }
@@ -1195,13 +1192,10 @@ async fn pause_recording(
 pub(crate) fn start_live_speech(app: &tauri::AppHandle, snapshot: &Snapshot) {
     let state = app.state::<DesktopState>();
     if state.processing.start_live(&state.core, snapshot).is_err() {
-        let _ = app.emit_to(
-            "main",
-            "nero://processing-error",
-            ProcessingError {
-                meeting_id: snapshot.session.as_ref().map(|s| s.meeting_id.clone()),
-                message: "녹음은 계속합니다. 음성 기록은 녹음을 마친 뒤 처리합니다.".into(),
-            },
+        report_processing_error(
+            app,
+            snapshot.session.as_ref().map(|s| s.meeting_id.clone()),
+            "녹음은 계속합니다. 음성 기록은 녹음을 마친 뒤 처리합니다.".into(),
         );
     }
 }
@@ -1263,16 +1257,13 @@ async fn change_recording(
                 }
                 Ok(None) => (),
                 Err(message) => {
-                    let _ = app.emit_to(
-                        "main",
-                        "nero://processing-error",
-                        ProcessingError {
-                            meeting_id: snapshot
-                                .session
-                                .as_ref()
-                                .map(|session| session.meeting_id.clone()),
-                            message,
-                        },
+                    report_processing_error(
+                        &app,
+                        snapshot
+                            .session
+                            .as_ref()
+                            .map(|session| session.meeting_id.clone()),
+                        message,
                     );
                 }
             }
@@ -1288,6 +1279,24 @@ async fn change_recording(
 struct ProcessingError {
     meeting_id: Option<String>,
     message: String,
+}
+
+/// Shows a processing or recording problem in the main window, tied to a meeting
+/// when there is one.
+pub(crate) fn report_processing_error(
+    app: &tauri::AppHandle,
+    meeting_id: Option<String>,
+    message: String,
+) -> bool {
+    app.emit_to(
+        "main",
+        "nero://processing-error",
+        ProcessingError {
+            meeting_id,
+            message,
+        },
+    )
+    .is_ok()
 }
 
 #[tauri::command]
@@ -1418,6 +1427,21 @@ struct OpenMeeting {
     error: Option<String>,
 }
 
+/// Brings the main window forward on a meeting, with a notice when given.
+pub(crate) fn show_meeting(
+    app: &tauri::AppHandle,
+    meeting_id: String,
+    error: Option<String>,
+) -> Result<(), String> {
+    show_main(app);
+    app.emit_to(
+        "main",
+        "nero://open-meeting",
+        OpenMeeting { meeting_id, error },
+    )
+    .map_err(|_| "회의를 열지 못했습니다.".into())
+}
+
 #[tauri::command]
 async fn open_meeting(
     window: WebviewWindow,
@@ -1436,16 +1460,11 @@ async fn open_meeting(
     if !exists {
         return Err("회의를 찾지 못했습니다.".into());
     }
-    show_main(&app);
-    app.emit_to(
-        "main",
-        "nero://open-meeting",
-        OpenMeeting {
-            meeting_id,
-            error: error.map(|text| text.chars().take(2048).collect()),
-        },
+    show_meeting(
+        &app,
+        meeting_id,
+        error.map(|text| text.chars().take(2048).collect()),
     )
-    .map_err(|_| "회의를 열지 못했습니다.".into())
 }
 
 fn start(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
@@ -1565,16 +1584,13 @@ fn interrupted_session<'a>(
 
 fn report_interrupted_recording(app: &tauri::AppHandle, session: &nero_core::SessionSnapshot) {
     show_main(app);
-    let _ = app.emit_to(
-        "main",
-        "nero://processing-error",
-        ProcessingError {
-            meeting_id: Some(session.meeting_id.clone()),
-            message: session
-                .error
-                .clone()
-                .unwrap_or_else(|| "녹음이 중단되었습니다. 저장된 음성을 확인하세요.".into()),
-        },
+    report_processing_error(
+        app,
+        Some(session.meeting_id.clone()),
+        session
+            .error
+            .clone()
+            .unwrap_or_else(|| "녹음이 중단되었습니다. 저장된 음성을 확인하세요.".into()),
     );
 }
 
@@ -1681,19 +1697,8 @@ fn processing_status(
 }
 
 fn emit_startup_issues(app: &tauri::AppHandle, issues: &[Progress]) -> bool {
-    app.emit_to(
-        "main",
-        "nero://processing-error",
-        ProcessingError {
-            meeting_id: None,
-            message: issues
-                .iter()
-                .map(|issue| issue.message.as_str())
-                .collect::<Vec<_>>()
-                .join("\n"),
-        },
-    )
-    .is_ok()
+    let messages: Vec<_> = issues.iter().map(|issue| issue.message.as_str()).collect();
+    report_processing_error(app, None, messages.join("\n"))
 }
 #[tauri::command]
 fn set_speech_engine(

@@ -578,16 +578,11 @@ pub async fn start_calendar_recording(
         let _ = service.dismiss(&key);
         sync_windows(&app, &service);
         crate::publish(&app, &current);
-        crate::show_main(&app);
         let error = meeting
             .deleted_at
             .is_some()
-            .then_some("휴지통에 있는 회의입니다. 복원 후 열어 주세요.");
-        let _ = app.emit_to(
-            "main",
-            "nero://open-meeting",
-            serde_json::json!({"meetingId":meeting.id,"error":error}),
-        );
+            .then(|| "휴지통에 있는 회의입니다. 복원 후 열어 주세요.".to_string());
+        let _ = crate::show_meeting(&app, meeting.id.clone(), error);
         return Ok(current);
     }
     let recording_calendar = service.clone();
@@ -608,12 +603,7 @@ pub async fn start_calendar_recording(
     let _ = service.dismiss(&key);
     let _ = service.tick(calendar::now_ms(), true);
     sync_windows(&app, &service);
-    crate::show_main(&app);
-    let _ = app.emit_to(
-        "main",
-        "nero://open-meeting",
-        serde_json::json!({"meetingId":meeting.id,"error":null}),
-    );
+    let _ = crate::show_meeting(&app, meeting.id.clone(), None);
     Ok(snapshot)
 }
 

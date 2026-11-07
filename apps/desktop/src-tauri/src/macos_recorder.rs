@@ -4,7 +4,7 @@ use serde::Serialize;
 use std::ffi::{c_char, CStr, CString};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 
 static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
 static GENERATION: AtomicU64 = AtomicU64::new(0);
@@ -131,16 +131,7 @@ extern "C" fn action(action: *const c_char, session: *const c_char) {
             match crate::on_core(core, |core| core.snapshot()).await {
                 Ok(snapshot) => {
                     if let Some(current) = snapshot.session.filter(|s| s.id == expected) {
-                        crate::show_main(&app);
-                        app.emit_to(
-                            "main",
-                            "nero://open-meeting",
-                            crate::OpenMeeting {
-                                meeting_id: current.meeting_id,
-                                error: current.error,
-                            },
-                        )
-                        .map_err(|_| "회의를 열지 못했습니다.".to_string())
+                        crate::show_meeting(&app, current.meeting_id, current.error)
                     } else {
                         Err("녹음이 종료되었습니다.".into())
                     }
