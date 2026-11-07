@@ -396,29 +396,37 @@ impl CalendarService {
             .filter(|token| !token.is_empty())
             .ok_or("백그라운드 연결 권한을 받지 못했습니다. 다시 연결해 주세요.")?;
         let _gate = self.token_gate.lock().unwrap();
+        // The keychain may ask the person to allow access. The settings screen and the
+        // reminder tick read `inner` meanwhile, so the token is staged without holding it.
+        let current_slot = {
+            let inner = self.inner.lock().unwrap();
+            if generation != self.generation.load(Ordering::Acquire) {
+                return Err("현재 연결 요청이 아닙니다.".into());
+            }
+            inner.state.token_slot
+        };
+        TokenStore
+            .save(
+                &StoredToken {
+                    refresh_token,
+                    account_id: account.clone(),
+                    client_id: config.client_id.clone(),
+                },
+                !current_slot,
+                crate::secret_store::Access::Interactive,
+            )
+            .map_err(|_| "Google 연결을 저장하지 못했습니다. 다시 연결해 주세요.".to_string())?;
         let mut inner = self.inner.lock().unwrap();
-        if generation != self.generation.load(Ordering::Acquire) {
+        if generation != self.generation.load(Ordering::Acquire)
+            || inner.state.token_slot != current_slot
+        {
             return Err("현재 연결 요청이 아닙니다.".into());
         }
         let next = connected_state(&inner.state, &account, calendars, pending.include_meet)?;
         let next = commit_connection(
-            inner.state.token_slot,
+            current_slot,
             next,
-            |slot| {
-                TokenStore
-                    .save(
-                        &StoredToken {
-                            refresh_token,
-                            account_id: account,
-                            client_id: config.client_id.clone(),
-                        },
-                        slot,
-                        crate::secret_store::Access::Interactive,
-                    )
-                    .map_err(|_| {
-                        "Google 연결을 저장하지 못했습니다. 다시 연결해 주세요.".to_string()
-                    })
-            },
+            |_| Ok(()),
             |next| persist(&self.directory, next),
         )?;
         inner.scheduler = Scheduler {
@@ -488,19 +496,44 @@ impl CalendarService {
         {
             let _access = self.access_gate.lock().await;
             let _gate = self.token_gate.lock().unwrap();
-            let mut inner = self.inner.lock().unwrap();
-            if inner.pending_token.is_some() {
-                Self::recover_pending(&mut inner, |token, slot| {
-                    TokenStore.save(token, slot, crate::secret_store::Access::Interactive)
-                })?;
-            } else if matches!(inner.credential_blocked, Some(Blocked::Keychain)) {
-                let slot = inner.state.token_slot;
-                let token = TokenStore
-                    .load(slot, crate::secret_store::Access::Interactive)
+            // The keychain may wait on the person; `inner` stays free for the screen
+            // and the tick, and the result applies only to the same connection.
+            let (pending, blocked_slot, generation) = {
+                let inner = self.inner.lock().unwrap();
+                (
+                    inner.pending_token.clone(),
+                    matches!(inner.credential_blocked, Some(Blocked::Keychain))
+                        .then_some(inner.state.token_slot),
+                    self.generation.load(Ordering::Acquire),
+                )
+            };
+            let loaded = match (&pending, blocked_slot) {
+                (Some(_), _) => None,
+                (None, Some(slot)) => Some((
+                    slot,
+                    TokenStore
+                        .load(slot, crate::secret_store::Access::Interactive)
+                        .map_err(|_| {
+                            "Google 연결을 확인하지 못했습니다. 다시 시도해 주세요.".to_string()
+                        })?,
+                )),
+                (None, None) => None,
+            };
+            if let Some((slot, token, _)) = &pending {
+                TokenStore
+                    .save(token, *slot, crate::secret_store::Access::Interactive)
                     .map_err(|_| {
-                        "Google 연결을 확인하지 못했습니다. 다시 시도해 주세요.".to_string()
+                        "Google 연결을 저장하지 못했습니다. 다시 시도해 주세요.".to_string()
                     })?;
-                inner.stored_token = Some((slot, token));
+            }
+            let mut inner = self.inner.lock().unwrap();
+            if generation != self.generation.load(Ordering::Acquire) {
+                return Err("캘린더 선택이나 연결이 변경되었습니다.".into());
+            }
+            if pending.is_some() {
+                Self::recover_pending(&mut inner, |_, _| Ok(()))?;
+            } else if let Some(stored) = loaded {
+                inner.stored_token = Some(stored);
             }
             inner.credential_blocked = None;
             inner.error = None;
