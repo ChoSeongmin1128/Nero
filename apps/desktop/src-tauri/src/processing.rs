@@ -1930,16 +1930,13 @@ impl Processing {
             self.revision.fetch_add(1, Ordering::AcqRel);
             Ok(())
         })();
+        // A startup notice, like other startup issues: as current progress it had no job
+        // record to acknowledge and vanished when the next job started.
         if canonical_cleanup.is_err() || result.is_err() {
-            self.update(|progress| {
-                *progress = Progress {
-                    id: Some(Uuid::new_v4().to_string()),
-                    kind: "cleanup".into(),
-                    status: "failed".into(),
-                    message: "삭제한 회의의 임시 파일을 정리하지 못했습니다.".into(),
-                    ..Default::default()
-                };
-            });
+            self.report_startup_issue(
+                "cleanup",
+                "삭제한 회의의 임시 파일을 정리하지 못했습니다.".into(),
+            );
         }
     }
 
@@ -4966,7 +4963,7 @@ mod tests {
         let core = CoreHandle::open(&process.root).unwrap();
         std::os::unix::fs::symlink(temp.path(), process.root.join("processing")).unwrap();
         process.cleanup_removed_meeting_jobs(&core);
-        let status = process.progress.lock().unwrap().clone();
+        let status = process.startup_issues.lock().unwrap()[0].clone();
         assert_eq!(status.kind, "cleanup");
         assert_eq!(status.status, "failed");
         assert_eq!(
@@ -5004,7 +5001,7 @@ mod tests {
         let core = CoreHandle::open(&process.root).unwrap();
         assert!(core.list_meetings().unwrap().is_empty());
         process.cleanup_removed_meeting_jobs(&core);
-        let status = process.progress.lock().unwrap().clone();
+        let status = process.startup_issues.lock().unwrap()[0].clone();
         assert_eq!(status.kind, "cleanup");
         assert_eq!(status.status, "failed");
         assert!(!status.message.contains(&meeting.id));
@@ -5082,22 +5079,18 @@ mod tests {
         let core = CoreHandle::open(&process.root).unwrap();
         std::os::unix::fs::symlink(temp.path(), process.root.join("processing")).unwrap();
         process.cleanup_removed_meeting_jobs(&core);
-        let cleanup = process.progress.lock().unwrap().clone();
         process.record_transcript_upgrade(Err(nero_core::CoreError::Storage(
             "private/source/path".into(),
         )));
-        assert!(process.progress.lock().unwrap().clone() == cleanup);
-        assert_eq!(cleanup.kind, "cleanup");
-        assert_eq!(cleanup.status, "failed");
         process.notify_startup_issues(|issues| {
-            assert_eq!(issues[0].kind, "transcript-upgrade");
-            assert!(!issues[0].message.contains("private/source/path"));
+            assert_eq!(issues[0].kind, "cleanup");
+            assert_eq!(issues[1].kind, "transcript-upgrade");
+            assert!(!issues[1].message.contains("private/source/path"));
             false
         });
-        assert_eq!(process.startup_issues.lock().unwrap().len(), 1);
+        assert_eq!(process.startup_issues.lock().unwrap().len(), 2);
         process.notify_startup_issues(|_| true);
         assert!(process.startup_issues.lock().unwrap().is_empty());
-        assert!(process.progress.lock().unwrap().clone() == cleanup);
     }
     #[test]
     fn historic_job_ownership_requires_a_unique_exact_raw_result() {
