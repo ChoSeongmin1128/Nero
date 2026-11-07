@@ -329,9 +329,47 @@ fn fit_response(value: Value, method: &str, params: &Params) -> Result<Value> {
 
 #[derive(Clone, PartialEq, Eq)]
 enum Observation {
-    File(Option<[u8; 32]>),
+    File(Option<Seen>),
     Directory(Vec<String>),
     DirectoryPresence(bool),
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct Seen {
+    digest: [u8; 32],
+    stamp: Stamp,
+}
+
+// Writers replace documents by rename, so the identity of the file that was read
+// tells a later check whether it changed without reading it again.
+#[derive(Clone, PartialEq, Eq)]
+struct Stamp {
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+    #[cfg(unix)]
+    inode: (u64, u64),
+}
+
+impl Stamp {
+    fn of(metadata: &fs::Metadata) -> Self {
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt;
+        Self {
+            len: metadata.len(),
+            modified: metadata.modified().ok(),
+            #[cfg(unix)]
+            inode: (metadata.dev(), metadata.ino()),
+        }
+    }
+}
+
+fn unreadable_document(error: &CoreError) -> bool {
+    matches!(
+        error,
+        CoreError::Reader(
+            ReadError::InvalidDocument | ReadError::UnsupportedFormat | ReadError::DocumentTooLarge
+        )
+    )
 }
 
 struct Transaction<'a> {
@@ -374,9 +412,12 @@ impl<'a> Transaction<'a> {
         let content = read_content(self.root, relative)?;
         self.observations.insert(
             relative.to_path_buf(),
-            Observation::File(content.as_ref().map(|bytes| Sha256::digest(bytes).into())),
+            Observation::File(content.as_ref().map(|(bytes, stamp)| Seen {
+                digest: Sha256::digest(bytes).into(),
+                stamp: stamp.clone(),
+            })),
         );
-        Ok(content)
+        Ok(content.map(|(bytes, _)| bytes))
     }
 
     fn directory(&mut self, relative: &Path) -> Result<Vec<String>> {
@@ -400,11 +441,14 @@ impl<'a> Transaction<'a> {
     fn verify(&self) -> Result<bool> {
         for (relative, before) in &self.observations {
             let after = match before {
-                Observation::File(_) => Observation::File(
-                    read_content(self.root, relative)?
-                        .as_ref()
-                        .map(|bytes| Sha256::digest(bytes).into()),
-                ),
+                Observation::File(seen) => {
+                    if read_stamp(self.root, relative)?
+                        != seen.as_ref().map(|seen| seen.stamp.clone())
+                    {
+                        return Ok(false);
+                    }
+                    continue;
+                }
                 Observation::Directory(_) => match read_directory(self.root, relative) {
                     Ok(names) => Observation::Directory(names),
                     Err(_) => return Ok(false),
@@ -426,9 +470,9 @@ impl<'a> Transaction<'a> {
             hash.update(path.to_string_lossy().as_bytes());
             hash.update([0]);
             match observation {
-                Observation::File(Some(digest)) => {
+                Observation::File(Some(seen)) => {
                     hash.update([1]);
-                    hash.update(digest);
+                    hash.update(seen.digest);
                 }
                 Observation::File(None) => hash.update([2]),
                 Observation::Directory(names) => {
@@ -746,11 +790,7 @@ impl<'a> Transaction<'a> {
                 match self.meeting_in_view(&id, library, params.trashed == Some(true), false) {
                     Ok(Some(meeting)) => meeting,
                     Ok(None) => continue,
-                    Err(CoreError::Reader(
-                        ReadError::InvalidDocument
-                        | ReadError::UnsupportedFormat
-                        | ReadError::DocumentTooLarge,
-                    )) => {
+                    Err(error) if unreadable_document(&error) => {
                         unreadable += 1;
                         continue;
                     }
@@ -769,9 +809,17 @@ impl<'a> Transaction<'a> {
             }
             let trashed = params.trashed == Some(true);
             let transcript = if trashed {
-                None
+                Ok(None)
             } else {
-                self.transcript(&meeting)?
+                self.transcript(&meeting)
+            };
+            let transcript = match transcript {
+                Ok(transcript) => transcript,
+                Err(error) if unreadable_document(&error) => {
+                    unreadable += 1;
+                    continue;
+                }
+                Err(error) => return Err(error),
             };
             let mut value = meeting_value(&meeting, transcript.as_ref());
             value["editVersion"] = json!(crate::agent_control::meeting_edit_version(&meeting)?);
@@ -780,7 +828,14 @@ impl<'a> Transaction<'a> {
                 value.as_object_mut().unwrap().remove("transcriptVersion");
             }
             if method == "meetings_search" {
-                let summary = self.summary(&meeting, transcript.as_ref())?;
+                let summary = match self.summary(&meeting, transcript.as_ref()) {
+                    Ok(summary) => summary,
+                    Err(error) if unreadable_document(&error) => {
+                        unreadable += 1;
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                };
                 let mut matches = Vec::new();
                 let mut matches_truncated = false;
                 for (field, text) in [
@@ -910,7 +965,16 @@ fn validate_root(root: &Path) -> Result<()> {
     Ok(())
 }
 
-fn read_content(root: &Path, relative: &Path) -> Result<Option<Vec<u8>>> {
+fn read_stamp(root: &Path, relative: &Path) -> Result<Option<Stamp>> {
+    let path = store::checked_path(root, relative)?;
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) => Ok(Some(Stamp::of(&metadata))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn read_content(root: &Path, relative: &Path) -> Result<Option<(Vec<u8>, Stamp)>> {
     let path = store::checked_path(root, relative)?;
     let file = match store::open_read(&path) {
         Ok(file) => file,
@@ -922,8 +986,9 @@ fn read_content(root: &Path, relative: &Path) -> Result<Option<Vec<u8>>> {
         }
         Err(error) => return Err(error),
     };
+    let stamp = Stamp::of(&file.metadata()?);
     match store::read_limited(file, MAX_DOCUMENT_BYTES)? {
-        Some(bytes) => Ok(Some(bytes)),
+        Some(bytes) => Ok(Some((bytes, stamp))),
         None => Err(ReadError::DocumentTooLarge.into()),
     }
 }
@@ -1747,6 +1812,17 @@ mod tests {
             reader.query("transcript_get", json!({"meetingId":fixture.id})),
             Err(CoreError::Reader(ReadError::InvalidDocument))
         ));
+        // A damaged transcript leaves its meeting out of a list or search instead of
+        // failing the whole result.
+        fs::write(&current, b"{broken").unwrap();
+        for (method, params) in [
+            ("meetings_list", json!({})),
+            ("meetings_search", json!({"query":"회의"})),
+        ] {
+            let listed = reader.query(method, params).unwrap();
+            assert_eq!(listed["unreadableMeetings"], 1, "{method}");
+            assert_eq!(listed["pagination"]["total"], 0, "{method}");
+        }
     }
 
     #[test]
