@@ -8,6 +8,11 @@ recovery. The rendering layer does not infer missing audio from counters or obse
   The macOS CPAL backend forwards the device-global processor-overload notification as xrun.
 - Route changes ask users to check their microphone. Queue, writer, device and format faults
   retain their specific recovery instructions and interrupted state.
+- A disconnected device or an invalidated stream does not end the capture. It records a
+  route change and waits, checking once a second, for the same device to deliver the same
+  sample rate, channels and sample format; the PCM file then continues and the gap is
+  missing from the recording. A different format ends the capture as interrupted with its
+  saved audio. Stopping while it waits completes the recording normally.
 - Diagnostics remain available in a collapsed disclosure. Old counters remain readable without
   invented positions. Stored PCM, raw transcript and prior edits are not changed by display policy.
 

@@ -14,6 +14,7 @@ pub(crate) struct Engine {
     pub(crate) library: Library,
     pub(crate) capture: Option<Capture>,
     unreadable: BTreeSet<String>,
+    last_reconnect: Option<std::time::Instant>,
     last_session: Option<SessionSnapshot>,
     revision: u64,
     pub(crate) quitting: bool,
@@ -34,6 +35,7 @@ impl Engine {
             library,
             capture: None,
             unreadable,
+            last_reconnect: None,
             last_session: None,
             revision: 0,
             quitting: false,
@@ -764,13 +766,47 @@ impl Engine {
     }
 
     pub fn poll_capture(&mut self) {
-        let error = self
-            .capture
-            .as_ref()
-            .and_then(|capture| capture.signals.error());
-        if let Some(error) = error {
+        let Some(capture) = self.capture.as_ref() else {
+            return;
+        };
+        if let Some(error) = capture.signals.error() {
             let _ = self.finish(CapturePhase::Interrupted, Some(error));
+        } else if capture.signals.detached() {
+            self.reconnect_capture();
         }
+    }
+
+    // A detached capture waits, with its route-change warning, for the same device to
+    // return with the same format; a different format ends it. Tried once a second,
+    // the capture checkpoint cadence, not on every 40 ms poll.
+    fn reconnect_capture(&mut self) {
+        let now = std::time::Instant::now();
+        if self
+            .last_reconnect
+            .is_some_and(|last| now.duration_since(last) < std::time::Duration::from_secs(1))
+        {
+            return;
+        }
+        self.last_reconnect = Some(now);
+        let Some(capture) = self.capture.as_mut() else {
+            return;
+        };
+        let Ok((device, config, encoding)) = capture::select_device(&capture.manifest.device_id)
+        else {
+            return;
+        };
+        let manifest = &capture.manifest;
+        if config.sample_rate() != manifest.sample_rate
+            || config.channels() != manifest.channels
+            || encoding != manifest.encoding
+        {
+            let _ = self.finish(
+                CapturePhase::Interrupted,
+                Some("마이크의 오디오 형식이 바뀌어 녹음을 멈췄습니다. 여기까지 녹음한 내용은 저장했습니다.".into()),
+            );
+            return;
+        }
+        let _ = capture.reattach(&device, config);
     }
 
     pub fn snapshot(&mut self) -> Snapshot {
@@ -2494,16 +2530,24 @@ mod tests {
         let edit = |engine: &mut Engine, base: (&str, &str), notes: &str| {
             engine.edit_meeting(&id, base, "회의".into(), notes.into())
         };
-        assert_eq!(edit(&mut engine, ("회의", ""), "첫 메모").unwrap().notes, "첫 메모");
+        assert_eq!(
+            edit(&mut engine, ("회의", ""), "첫 메모").unwrap().notes,
+            "첫 메모"
+        );
         // An AI answer appended while the person kept typing from "첫 메모".
         engine
             .update_meeting(&id, "회의".into(), "첫 메모\n\n답변".into())
             .unwrap();
         assert_eq!(
-            edit(&mut engine, ("회의", "첫 메모"), "첫 메모 수정").unwrap().notes,
+            edit(&mut engine, ("회의", "첫 메모"), "첫 메모 수정")
+                .unwrap()
+                .notes,
             "첫 메모 수정\n\n답변"
         );
-        let empty = engine.create_meeting("빈 회의".into(), "".into()).unwrap().id;
+        let empty = engine
+            .create_meeting("빈 회의".into(), "".into())
+            .unwrap()
+            .id;
         engine
             .update_meeting(&empty, "빈 회의".into(), "답변".into())
             .unwrap();

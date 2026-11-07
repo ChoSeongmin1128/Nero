@@ -164,6 +164,9 @@ pub(crate) struct Signals {
     queued_bytes: AtomicU64,
     phase: AtomicU8,
     completion: AtomicU8,
+    // The input stream stopped (device gone or stream invalidated) but the capture
+    // continues once the same device delivers the same format again.
+    detached: AtomicBool,
 }
 
 impl Signals {
@@ -188,6 +191,7 @@ impl Signals {
             queued_bytes: AtomicU64::new(0),
             phase: AtomicU8::new(0),
             completion: AtomicU8::new(0),
+            detached: AtomicBool::new(false),
         }
     }
 
@@ -221,6 +225,20 @@ impl Signals {
             };
             self.record_event(kind);
         }
+    }
+
+    fn detach(&self) {
+        if self.fault.load(Ordering::Acquire) != 0 {
+            return;
+        }
+        self.accepting.store(false, Ordering::Release);
+        if !self.detached.swap(true, Ordering::AcqRel) {
+            self.record_event(CaptureQualityEventKind::RouteChanged);
+        }
+    }
+
+    pub(crate) fn detached(&self) -> bool {
+        self.detached.load(Ordering::Acquire)
     }
 
     // Not a quality fault: the capture stops early so its playback WAV still fits.
@@ -277,6 +295,9 @@ impl Signals {
             }
             cpal::ErrorKind::DeviceChanged => {
                 self.record_event(CaptureQualityEventKind::RouteChanged)
+            }
+            cpal::ErrorKind::StreamInvalidated | cpal::ErrorKind::DeviceNotAvailable => {
+                self.detach()
             }
             _ => self.fail_device(error),
         }
@@ -409,6 +430,8 @@ impl CallbackSink {
 enum WriterCommand {
     Flush(mpsc::SyncSender<Result<u64>>),
     Finish(CapturePhase, Option<String>),
+    // Audio from a reopened stream: write what is left of the old queue, then this one.
+    Reattach(Consumer<u8>),
 }
 
 pub(crate) struct CaptureOutcome {
@@ -469,6 +492,7 @@ impl CaptureReader {
 pub(crate) struct Capture {
     pub manifest: Manifest,
     pub signals: Arc<Signals>,
+    capacity: usize,
     stream: Option<cpal::Stream>,
     writer: Option<JoinHandle<CaptureOutcome>>,
     control: mpsc::Sender<WriterCommand>,
@@ -500,19 +524,7 @@ impl Capture {
         raw: File,
         capacity: usize,
     ) -> Result<(Self, CallbackSink)> {
-        let (mut producer, mut consumer) = RingBuffer::<u8>::new(capacity);
-        if capacity != 0 {
-            // Touch queue pages before callbacks, then discard preparation bytes before the writer starts.
-            let mut prepared = producer
-                .write_chunk(capacity)
-                .map_err(|_| CoreError::Audio("녹음 입력 버퍼를 준비하지 못했습니다.".into()))?;
-            std::hint::black_box(prepared.as_mut_slices());
-            prepared.commit_all();
-            consumer
-                .read_chunk(capacity)
-                .map_err(|_| CoreError::Audio("녹음 입력 버퍼를 준비하지 못했습니다.".into()))?
-                .commit_all();
-        }
+        let (producer, consumer) = queue(capacity)?;
         let signals = Arc::new(Signals::new(manifest.frame_bytes()));
         let (control, commands) = mpsc::channel();
         let root = root.to_path_buf();
@@ -540,6 +552,7 @@ impl Capture {
             Self {
                 manifest,
                 signals,
+                capacity,
                 stream: None,
                 writer: Some(writer),
                 control,
@@ -566,6 +579,43 @@ impl Capture {
             .map_err(|error| CoreError::Audio(format!("마이크를 열 수 없습니다: {error}")))?;
         self.stream = Some(stream);
         Ok(())
+    }
+
+    // Reopens input after a detach on a device delivering the capture's exact format.
+    // The gap is missing from the recording; the PCM file and its frames continue.
+    pub fn reattach(
+        &mut self,
+        device: &cpal::Device,
+        config: cpal::SupportedStreamConfig,
+    ) -> Result<()> {
+        self.stream.take();
+        let sink = self.replace_queue()?;
+        self.attach_stream(device, config, sink)?;
+        self.play()?;
+        self.resume_input();
+        Ok(())
+    }
+
+    fn replace_queue(&mut self) -> Result<CallbackSink> {
+        let (producer, consumer) = queue(self.capacity)?;
+        self.control
+            .send(WriterCommand::Reattach(consumer))
+            .map_err(|_| CoreError::Unavailable)?;
+        Ok(CallbackSink {
+            producer,
+            signals: self.signals.clone(),
+            frame_bytes: self.manifest.frame_bytes(),
+            timing: timing::CallbackTiming::new(self.manifest.sample_rate),
+        })
+    }
+
+    fn resume_input(&self) {
+        self.signals.detached.store(false, Ordering::Release);
+        if self.manifest.phase == CapturePhase::Recording
+            && self.signals.fault.load(Ordering::Acquire) == 0
+        {
+            self.signals.accepting.store(true, Ordering::SeqCst);
+        }
     }
 
     pub fn play(&self) -> Result<()> {
@@ -607,7 +657,9 @@ impl Capture {
         self.signals.epoch.fetch_add(1, Ordering::Release);
         self.signals.phase.store(1, Ordering::Release);
         self.manifest.phase = CapturePhase::Recording;
-        self.signals.accepting.store(true, Ordering::SeqCst);
+        if !self.signals.detached() {
+            self.signals.accepting.store(true, Ordering::SeqCst);
+        }
         Ok(())
     }
 
@@ -733,6 +785,23 @@ pub(crate) fn select_device(
         }
     };
     Ok((device, config, encoding))
+}
+
+// Touches queue pages before callbacks, then discards the preparation bytes.
+fn queue(capacity: usize) -> Result<(Producer<u8>, Consumer<u8>)> {
+    let (mut producer, mut consumer) = RingBuffer::<u8>::new(capacity);
+    if capacity != 0 {
+        let mut prepared = producer
+            .write_chunk(capacity)
+            .map_err(|_| CoreError::Audio("녹음 입력 버퍼를 준비하지 못했습니다.".into()))?;
+        std::hint::black_box(prepared.as_mut_slices());
+        prepared.commit_all();
+        consumer
+            .read_chunk(capacity)
+            .map_err(|_| CoreError::Audio("녹음 입력 버퍼를 준비하지 못했습니다.".into()))?
+            .commit_all();
+    }
+    Ok((producer, consumer))
 }
 
 struct PendingAudio {
@@ -863,6 +932,16 @@ fn writer_loop(
                 last_checkpoint = Instant::now();
             }
             Ok(WriterCommand::Finish(phase, error)) => break (phase, error),
+            Ok(WriterCommand::Reattach(consumer)) => {
+                if let Err(error) = pending.write_to(&mut raw, &signals, manifest.frame_bytes()) {
+                    signals.fail(FAULT_WRITER);
+                    break (
+                        CapturePhase::Interrupted,
+                        Some(format!("녹음을 저장하지 못했습니다: {error}")),
+                    );
+                }
+                pending.consumer = consumer;
+            }
             Err(mpsc::TryRecvError::Disconnected) => {
                 signals.interrupted();
                 break (
@@ -1015,6 +1094,39 @@ mod tests {
         let (capture, sink) =
             Capture::prepare_with_capacity(&store.root, manifest, raw, capacity).unwrap();
         (temporary, store, capture, sink)
+    }
+
+    #[test]
+    fn a_detached_capture_continues_in_the_same_file_with_a_new_queue() {
+        let (_temp, _store, mut capture, mut sink) = setup(4096);
+        capture.begin();
+        sink.write(&[0.25_f32.to_le_bytes(); 3].concat());
+        capture.flush().unwrap();
+        capture
+            .signals
+            .device_event(cpal::ErrorKind::StreamInvalidated.into());
+        assert!(capture.signals.detached());
+        assert_eq!(capture.signals.error(), None);
+        // The old stream keeps no audio once detached, and resume waits for the device.
+        sink.write(&[0.5_f32.to_le_bytes(); 2].concat());
+        drop(sink);
+        capture.pause().unwrap();
+        capture.resume().unwrap();
+        assert!(!capture.signals.accepting.load(Ordering::Acquire));
+        let mut sink = capture.replace_queue().unwrap();
+        capture.resume_input();
+        assert!(!capture.signals.detached());
+        sink.write(&[0.75_f32.to_le_bytes(); 4].concat());
+        let outcome = capture.finish(CapturePhase::Completed, None).unwrap();
+        assert_eq!(outcome.manifest.phase, CapturePhase::Completed);
+        assert_eq!(outcome.manifest.saved_frames, 7);
+        assert!(outcome
+            .manifest
+            .quality
+            .unwrap()
+            .events
+            .iter()
+            .any(|event| event.kind == CaptureQualityEventKind::RouteChanged));
     }
 
     #[test]
@@ -1372,9 +1484,10 @@ mod tests {
         sink.write(&[0.25_f32.to_le_bytes(); 10].concat());
         capture.flush().unwrap();
         capture.signals.device_event(cpal::ErrorKind::Xrun.into());
+        // A disconnect or invalidated stream waits for the device; other errors end it.
         capture.signals.device_event(cpal::Error::with_message(
-            cpal::ErrorKind::DeviceNotAvailable,
-            "Device disconnected",
+            cpal::ErrorKind::BackendError,
+            "Device failed",
         ));
         sink.write(&[0.5_f32.to_le_bytes(); 10].concat());
         let outcome = capture.finish(CapturePhase::Completed, None).unwrap();
@@ -1385,7 +1498,7 @@ mod tests {
             .error
             .as_ref()
             .unwrap()
-            .contains("DeviceNotAvailable"));
+            .contains("BackendError"));
         assert!(outcome.manifest.warning.is_some());
         let quality = outcome.manifest.quality.as_ref().unwrap();
         assert_eq!(quality.xrun_count, 1);
