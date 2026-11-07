@@ -120,3 +120,41 @@ fn platform_override_is_instance_scoped_and_defaults_to_actual_gate() {
     assert_eq!(first.platform_supported(), platform_supported());
     assert!(!second.platform_supported());
 }
+
+#[test]
+fn every_apple_speech_start_check_uses_the_platform_and_audio_prepare_gate() {
+    let temporary = tempfile::tempdir().unwrap();
+    let base = temporary.path().canonicalize().unwrap();
+    let root = base.join("library");
+    let resources = base.join("resources");
+    fs::create_dir(&root).unwrap();
+    fs::create_dir_all(resources.join("native/apple-speech")).unwrap();
+    let availability = serde_json::json!({"supported":true,"ready":true,"locale":"ko-KR","assetStatus":"installed",
+        "message":"Synthetic installed asset","variant":"speechTranscriber","speechAvailable":true,
+        "speechLocaleSupported":true,"dictationLocaleSupported":true});
+    let helper = resources.join("native/apple-speech/nero-apple-speech");
+    fs::write(
+        &helper,
+        format!("#!/bin/sh\ncase \"$1\" in\nstatus) printf '%s' '{availability}' ;;\n*) exit 23 ;;\nesac\n"),
+    )
+    .unwrap();
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).unwrap();
+    let process = Processing::new(root, resources.clone());
+    let variant = Some(AppleVariant::SpeechTranscriber);
+    let apple = SpeechEngine::AppleSpeech;
+    // The helper alone reports a supported, ready system; the app's own gates still apply.
+    *process.platform_supported_override.lock().unwrap() = Some(true);
+    assert_eq!(process.engine_status(apple, variant), (false, true));
+    fs::write(resources.join("native/AudioPrepare"), b"unused").unwrap();
+    assert_eq!(process.engine_status(apple, variant), (true, true));
+    *process.platform_supported_override.lock().unwrap() = Some(false);
+    assert_eq!(process.engine_status(apple, variant), (false, true));
+    let error = process
+        .prepare_meeting_models_with_id(false, None, Some(apple), Some(false), variant)
+        .err();
+    assert_eq!(
+        error.as_deref(),
+        Some("이 환경에서는 음성 인식과 회의 요약을 아직 사용할 수 없습니다.")
+    );
+    assert!(process.records.lock().unwrap().is_empty());
+}

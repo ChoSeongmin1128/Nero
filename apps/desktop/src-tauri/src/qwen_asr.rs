@@ -1,5 +1,6 @@
 // Qwen3-ASR-ko through the pinned CrispASR CLI: pause chunks, gain, aligner words.
 use crate::processing::{cancelled, plain_file};
+use crate::summary_failure::Failure;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -307,7 +308,7 @@ pub(super) fn recognize(
     work: &Path,
     cancel: &AtomicBool,
     model_dir: &Path,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, Failure> {
     let model: Value = serde_json::from_str(MANIFEST).map_err(|_| failure())?;
     let runtime: Value = serde_json::from_str(RUNTIME).map_err(|_| failure())?;
     let files: Vec<PathBuf> = (0..2)
@@ -336,7 +337,7 @@ pub(super) fn recognize(
         || spec.bits_per_sample != 16
         || spec.sample_format != hound::SampleFormat::Int
     {
-        return Err(failure());
+        return Err(failure().into());
     }
     let mut input = Sha256::new();
     let mut pcm = Vec::with_capacity(wav.duration() as usize);
@@ -346,7 +347,7 @@ pub(super) fn recognize(
         pcm.push(f32::from(sample) / 32768.0);
     }
     if pcm.is_empty() {
-        return Err(failure());
+        return Err(failure().into());
     }
     let input_sha = format!("{:x}", input.finalize());
     let bounds = pause_split(&pcm);
@@ -449,14 +450,14 @@ pub(super) fn recognize(
         return Err("Qwen 실행기나 모델이 처리 중 변경됐습니다.".into());
     }
     let frames = pcm.len();
-    serde_json::to_vec(&json!({"schemaVersion":1,"model":model["repository"],"modelRevision":model["revision"],
+    Ok(serde_json::to_vec(&json!({"schemaVersion":1,"model":model["repository"],"modelRevision":model["revision"],
         "modelSha256":hashes[0],"alignerSha256":hashes[1],"runtime":runtime["identity"],"target":"macos-arm64",
         "processingPolicy":"qwen3-pause-chunks-v1","completionEvidence":"crispasr-exit0-v1",
         "timestampPolicy":"forced-aligner-text-units-v1","gainPolicy":"window-gain-v1","padFrames":PAD,
         "completed":true,"inputAudioFrames":frames,"audioSampleRate":RATE,
         "audioDurationSeconds":frames as f64/RATE as f64,"inputPcmSha256":input_sha,
         "chunks":chunks,"words":words}))
-    .map_err(|_| failure())
+    .map_err(|_| failure())?)
 }
 
 #[cfg(test)]

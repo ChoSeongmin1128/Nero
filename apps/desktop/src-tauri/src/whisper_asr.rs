@@ -7,6 +7,7 @@ mod native;
 mod probe;
 mod runtime;
 use crate::processing::{cancelled, plain_file};
+use crate::summary_failure::Failure;
 pub(super) use buffered::Buffered;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -85,7 +86,7 @@ pub(super) fn recognize(
     model_dir: &Path,
     engine: crate::speech_choice::SpeechEngine,
     prompt: &str,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, Failure> {
     let model: Value = serde_json::from_str(engine.manifest()).map_err(|_| failure())?;
     let mut buffered = Buffered::new(
         executable(resources),
@@ -101,7 +102,7 @@ pub(super) fn recognize(
         || wav.spec().bits_per_sample != 16
         || wav.spec().sample_format != hound::SampleFormat::Int
     {
-        return Err(failure());
+        return Err(failure().into());
     }
     let frames = u64::from(wav.duration());
     let mut samples = wav.samples::<i16>();
@@ -118,5 +119,5 @@ pub(super) fn recognize(
     }
     let sha = buffered.pcm_digest();
     let result = buffered.finish(frames, &sha, cancel)?;
-    serde_json::to_vec(&result).map_err(|_| failure())
+    Ok(serde_json::to_vec(&result).map_err(|_| failure())?)
 }

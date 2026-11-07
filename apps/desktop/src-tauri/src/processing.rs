@@ -600,7 +600,12 @@ impl Processing {
         }
         platform_supported()
     }
+    // Uses the cached Apple Speech probe, so the frequent snapshot never runs the helper.
     fn supported_for(&self, engine: SpeechEngine) -> bool {
+        let apple = self.apple_speech.lock().unwrap().supported;
+        self.supported_with(engine, apple)
+    }
+    fn supported_with(&self, engine: SpeechEngine, apple_supported: bool) -> bool {
         self.platform_supported()
             && crate::speech_audio::supported(self)
             && match engine {
@@ -610,12 +615,21 @@ impl Processing {
                     cfg!(all(target_os = "macos", target_arch = "aarch64"))
                         && crate::whisper_asr::supported(&self.resources)
                 }
-                SpeechEngine::AppleSpeech => self.apple_speech.lock().unwrap().supported,
+                SpeechEngine::AppleSpeech => apple_supported,
                 // Qwen needs the Nemotron stream for its recording preview.
                 SpeechEngine::QwenKo => {
                     crate::qwen_asr::supported(&self.resources) && crate::asr::supported(self)
                 }
             }
+    }
+    // (supported, ready) before starting work with `engine`. Apple Speech is probed
+    // again for `variant` instead of trusting the cached status.
+    fn engine_status(&self, engine: SpeechEngine, variant: Option<AppleVariant>) -> (bool, bool) {
+        if engine != SpeechEngine::AppleSpeech {
+            return (self.supported_for(engine), self.model_ready_for(engine));
+        }
+        let status = crate::apple_speech::probe(&self.resources, variant);
+        (self.supported_with(engine, status.supported), status.ready)
     }
     // Every speech model a selection prepares, including Qwen's Nemotron preview model.
     fn speech_bytes(engine: SpeechEngine) -> u64 {
@@ -2059,16 +2073,14 @@ impl Processing {
             crate::summary::availability(self).0
         } else if matches!(kind, "diarize" | "speaker-model") {
             crate::diarization::availability(self).0
-        } else if engine == Some(SpeechEngine::AppleSpeech) {
-            self.platform_supported()
-                && crate::speech_audio::supported(self)
-                && crate::apple_speech::probe(
-                    &self.resources,
-                    apple_variant.or_else(|| self.apple_speech_variant()),
-                )
-                .supported
+        } else if let Some(engine) = engine {
+            self.engine_status(
+                engine,
+                apple_variant.or_else(|| self.apple_speech_variant()),
+            )
+            .0
         } else {
-            self.supported_for(engine.unwrap_or_else(|| self.speech_engine()))
+            self.supported_for(self.speech_engine())
         };
         if !supported {
             return Err("이 기기의 처리 실행기가 아직 준비되지 않았습니다.".into());
@@ -2328,11 +2340,7 @@ impl Processing {
         let speaker_enabled = required_speakers.unwrap_or_else(|| self.speaker_enabled());
         let apple_variant = required_variant.or_else(|| self.apple_speech_variant());
         let progress = self.snapshot();
-        let apple_status = (engine == SpeechEngine::AppleSpeech)
-            .then(|| crate::apple_speech::probe(&self.resources, apple_variant));
-        if !apple_status
-            .as_ref()
-            .map_or_else(|| self.supported_for(engine), |status| status.supported)
+        if !self.engine_status(engine, apple_variant).0
             || (include_summary && !progress.summary_supported)
         {
             return Err("이 환경에서는 음성 인식과 회의 요약을 아직 사용할 수 없습니다.".into());
@@ -2927,12 +2935,7 @@ impl Processing {
                     .map(|job| job.engine)
             })
             .unwrap_or_else(|| self.speech_engine());
-        let apple_status = (engine == SpeechEngine::AppleSpeech)
-            .then(|| crate::apple_speech::probe(&self.resources, apple_variant));
-        if apple_status.as_ref().map_or_else(
-            || !self.supported_for(engine) || !self.model_ready_for(engine),
-            |status| !status.supported || !status.ready,
-        ) {
+        if self.engine_status(engine, apple_variant) != (true, true) {
             return Err("먼저 음성 인식 모델을 준비해 주세요.".into());
         }
         let job_id = requested_id
@@ -3070,12 +3073,6 @@ impl Processing {
                                 &cancel,
                                 &directory,
                             )
-                            .map_err(|message| {
-                                crate::summary_failure::Failure::new(
-                                    crate::summary_failure::FailureKind::Output,
-                                    message,
-                                )
-                            })
                         }
                         SpeechEngine::AppleSpeech => crate::apple_speech::recognize(
                             &this,
@@ -3101,12 +3098,6 @@ impl Processing {
                                 engine,
                                 &glossary.prompt(),
                             )
-                            .map_err(|message| {
-                                crate::summary_failure::Failure::new(
-                                    crate::summary_failure::FailureKind::Output,
-                                    message,
-                                )
-                            })
                         }
                     },
                 }
