@@ -310,55 +310,9 @@ fn open_connection(action: &agent_connection::ConnectionAction) -> Result<Option
     if action.kind == "file" {
         return Ok(Some(action.target.clone()));
     }
-    #[cfg(target_os = "macos")]
-    {
-        let mut command = std::process::Command::new("/usr/bin/open");
-        if action.kind == "file" {
-            command.args(["-b", "com.anthropic.claudefordesktop"]);
-        }
-        let status = command
-            .arg(&action.target)
-            .output()
-            .map_err(|_| "앱을 열지 못했습니다. 설치 상태를 확인해 주세요.".to_string())?;
-        if status.status.success() {
-            return Ok(None);
-        }
-    }
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::ffi::OsStrExt;
-        #[link(name = "shell32")]
-        extern "system" {
-            fn ShellExecuteW(
-                window: *mut std::ffi::c_void,
-                operation: *const u16,
-                file: *const u16,
-                parameters: *const u16,
-                directory: *const u16,
-                show: i32,
-            ) -> isize;
-        }
-        let wide = |text: &str| {
-            std::ffi::OsStr::new(text)
-                .encode_wide()
-                .chain(Some(0))
-                .collect::<Vec<_>>()
-        };
-        let operation = wide("open");
-        let target = wide(&action.target);
-        let result = unsafe {
-            ShellExecuteW(
-                std::ptr::null_mut(),
-                operation.as_ptr(),
-                target.as_ptr(),
-                std::ptr::null(),
-                std::ptr::null(),
-                1,
-            )
-        };
-        if result > 32 {
-            return Ok(None);
-        }
+    let bundle = (action.kind == "file").then_some("com.anthropic.claudefordesktop");
+    if external_open::open_target(&action.target, bundle) {
+        return Ok(None);
     }
     Err("앱을 열지 못했습니다. 설치 상태를 확인해 주세요.".into())
 }

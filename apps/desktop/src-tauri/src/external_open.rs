@@ -8,17 +8,26 @@ pub(crate) fn open_url(url: &reqwest::Url) -> Result<(), ()> {
     {
         return Err(());
     }
-    let url = url.as_str();
+    open_target(url.as_str(), None).then_some(()).ok_or(())
+}
+
+// Hands a URL or file to the system, optionally to a specific macOS app bundle.
+// Windows opens it with the registered handler and ignores the bundle.
+pub(crate) fn open_target(target: &str, bundle: Option<&str>) -> bool {
     #[cfg(target_os = "macos")]
-    if std::process::Command::new("/usr/bin/open")
-        .arg(url)
-        .status()
-        .is_ok_and(|status| status.success())
     {
-        return Ok(());
+        let mut command = std::process::Command::new("/usr/bin/open");
+        if let Some(bundle) = bundle {
+            command.args(["-b", bundle]);
+        }
+        command
+            .arg(target)
+            .output()
+            .is_ok_and(|output| output.status.success())
     }
     #[cfg(target_os = "windows")]
     {
+        let _ = bundle;
         use std::os::windows::ffi::OsStrExt;
         #[link(name = "shell32")]
         extern "system" {
@@ -38,8 +47,8 @@ pub(crate) fn open_url(url: &reqwest::Url) -> Result<(), ()> {
                 .collect::<Vec<_>>()
         };
         let operation = wide("open");
-        let target = wide(url);
-        if unsafe {
+        let target = wide(target);
+        let result = unsafe {
             ShellExecuteW(
                 std::ptr::null_mut(),
                 operation.as_ptr(),
@@ -48,10 +57,12 @@ pub(crate) fn open_url(url: &reqwest::Url) -> Result<(), ()> {
                 std::ptr::null(),
                 1,
             )
-        } > 32
-        {
-            return Ok(());
-        }
+        };
+        result > 32
     }
-    Err(())
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = (target, bundle);
+        false
+    }
 }
