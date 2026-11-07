@@ -884,7 +884,7 @@ impl Engine {
                 history.unavailable += 1;
                 continue;
             }
-            match self.history_document(id, &transcript_id) {
+            match self.generation_document(id, &transcript_id, false) {
                 Ok((document, edited, updated_at)) => {
                     history.entries.push(TranscriptHistoryEntry {
                         current: current == Some(transcript_id.as_str()),
@@ -908,6 +908,18 @@ impl Engine {
     }
 
     fn history_document(&self, id: &str, transcript_id: &str) -> Result<(Transcript, bool, u64)> {
+        self.generation_document(id, transcript_id, true)
+    }
+
+    // The history list skips hashing speaker probabilities (up to 128 MiB per
+    // generation, with every other request waiting on the core); restoring a
+    // generation or applying on top of it verifies them in full.
+    fn generation_document(
+        &self,
+        id: &str,
+        transcript_id: &str,
+        verify_posterior: bool,
+    ) -> Result<(Transcript, bool, u64)> {
         let meeting = &self
             .meetings
             .get(id)
@@ -1010,19 +1022,21 @@ impl Engine {
                     "화자 확률 원본의 크기가 다릅니다.".into(),
                 ));
             }
-            let mut digest = Sha256::new();
-            let mut buffer = [0_u8; 64 * 1024];
-            loop {
-                let count = file.read(&mut buffer)?;
-                if count == 0 {
-                    break;
+            if verify_posterior {
+                let mut digest = Sha256::new();
+                let mut buffer = [0_u8; 64 * 1024];
+                loop {
+                    let count = file.read(&mut buffer)?;
+                    if count == 0 {
+                        break;
+                    }
+                    digest.update(&buffer[..count]);
                 }
-                digest.update(&buffer[..count]);
-            }
-            if format!("{:x}", digest.finalize()) != expected_hash {
-                return Err(CoreError::Storage(
-                    "화자 확률 원본을 확인할 수 없습니다.".into(),
-                ));
+                if format!("{:x}", digest.finalize()) != expected_hash {
+                    return Err(CoreError::Storage(
+                        "화자 확률 원본을 확인할 수 없습니다.".into(),
+                    ));
+                }
             }
         }
         let mut ids = BTreeSet::new();
@@ -4638,7 +4652,9 @@ pub(crate) mod tests {
             engine.transcript(&id).unwrap().unwrap().version,
             after.version
         );
-        assert_eq!(engine.transcript_history(&id).unwrap().unavailable, 1);
+        // The list does not hash speaker probabilities; work built on the generation does.
+        assert_eq!(engine.transcript_history(&id).unwrap().unavailable, 0);
+        assert!(engine.history_document(&id, &after.version.id).is_err());
     }
     #[test]
     fn legacy_moss_reanalysis_validates_new_posterior_but_keeps_the_legacy_generation() {
