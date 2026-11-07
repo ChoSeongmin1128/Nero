@@ -693,23 +693,27 @@ impl<L> AgentApp<'_, L> {
                 if session.is_some() {
                     return Err(ControlError::new("recording_active", "이미 녹음 중입니다."));
                 }
-                let meeting_id = match meeting_id {
-                    Some(id) => id,
+                match meeting_id {
+                    Some(id) => block_on(crate::begin_recording(app.clone(), id, device_id))
+                        .map_err(rejected)?,
                     None => {
                         desktop
                             .processing
                             .require_meeting_models()
                             .map_err(not_ready)?;
+                        // The meeting is made only after readiness and microphone
+                        // permission pass, so a refused start leaves no empty meeting.
                         let title = title.unwrap_or_else(|| "새 회의".into());
-                        desktop
-                            .core
-                            .create_meeting(&title, "")
-                            .map_err(core_error)?
-                            .id
+                        block_on(crate::start_capture(app, device_id, move |core, device| {
+                            let snapshot = core
+                                .create_recording(&title, "", device)
+                                .map_err(|error| error.to_string())?;
+                            Ok(((), snapshot))
+                        }))
+                        .map(|(_, snapshot)| snapshot)
+                        .map_err(rejected)?
                     }
-                };
-                block_on(crate::begin_recording(app.clone(), meeting_id, device_id))
-                    .map_err(rejected)?
+                }
             }
             _ => {
                 let session = session.ok_or_else(|| {
