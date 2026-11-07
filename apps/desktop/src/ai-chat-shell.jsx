@@ -150,6 +150,12 @@ function SourcePicker({ flow, state, onSettings, getMeetings }) {
     </PopoverContent>
   </Popover>;
 }
+// Every streamed delta renders the whole conversation; parse an answer only when it changes.
+function AnswerMarkdown({ message, onReveal }) {
+  const citable = (message.citations || []).map(item => item.reference), streaming = message.status === 'streaming';
+  const html = React.useMemo(() => globalThis.NeroUI.summaryDocument(message.text, { streaming, citable }), [message.text, streaming, citable.join(',')]);
+  return <div className="ai-chat-markdown" dangerouslySetInnerHTML={{ __html: html }} onClick={event => { const control = event.target.closest('[data-summary-citations]'); if (!control) return; const refs = control.dataset.summaryCitations.split(',').map(Number); const citation = message.citations?.find(item => refs.includes(item.reference)); if (citation) void onReveal(citation); }} />;
+}
 function AnswerCopy({ flow, state, message }) {
   const [open, setOpen] = React.useState(false), owner = state.conversation.id;
   React.useEffect(() => { setOpen(false); }, [state.active, owner]);
@@ -216,7 +222,7 @@ export function GlobalAiChat({ flow, onSettings = () => {}, onCitation = async (
       {conversation.loading ? <p className="ai-chat-muted" role="status">대화를 불러오는 중</p> : !shown.length && <div className="ai-chat-empty"><MessageCircle size={28} strokeWidth={1.3} aria-hidden="true" /><h2>무엇을 도와드릴까요?</h2>{Boolean(conversation.meetings.length) && <button type="button" className="quiet small" onClick={() => { flow.summaryPrompt(); composer.current?.focus(); }}>결정 사항과 할 일 정리</button>}</div>}
       {shown.map(message => <article key={message.id} className={`ai-chat-message ai-chat-message--${message.role}`} aria-label={message.role === 'user' ? '내 질문' : 'AI 답변'}>
         {message.role === 'user' && <Question flow={flow} conversation={conversation} message={message} busy={busy} catalog={state.catalog} onMeeting={onOpenMeeting} />}
-        {message.role === 'assistant' && message.text && (globalThis.NeroUI?.summaryDocument ? <div className="ai-chat-markdown" dangerouslySetInnerHTML={{ __html: globalThis.NeroUI.summaryDocument(message.text, { streaming: message.status === 'streaming', citable: (message.citations || []).map(item => item.reference) }) }} onClick={event => { const control = event.target.closest('[data-summary-citations]'); if (!control) return; const refs = control.dataset.summaryCitations.split(',').map(Number); const citation = message.citations?.find(item => refs.includes(item.reference)); if (citation) void reveal(citation); }} /> : <div className="ai-chat-text">{message.text}</div>)}
+        {message.role === 'assistant' && message.text && (globalThis.NeroUI?.summaryDocument ? <AnswerMarkdown message={message} onReveal={reveal} /> : <div className="ai-chat-text">{message.text}</div>)}
         {message.role === 'assistant' && message.status === 'completed' && message.actualModelId && <p className="ai-chat-muted">모델: {message.actualModelId}</p>}
         {message.status === 'streaming' && <span className="ai-chat-message-status" role="status"><span className="activity-spinner" aria-hidden="true" /><span className="sr-only">답변 중</span></span>}
         {['cancelled', 'interrupted'].includes(message.status) && <p className="ai-chat-message-status">{message.status === 'cancelled' ? '중지됨' : '답변이 중단되었습니다.'}</p>}

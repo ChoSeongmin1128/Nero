@@ -333,6 +333,23 @@ test('assistant markup is escaped by the shared renderer', async t => {
   assert.match(app.node('ai-chat-inspector').querySelector('.summary-document').textContent, /<img/);
 });
 
+test('a streamed delta parses only the answer that changed', async t => {
+  const app = await fixture(t, { delay: 10000 });
+  const send = async text => { app.ui.flow.edit(text); await app.ui.flow.send(); return app.calls.filter(call => call[0] === 'send').at(-1)[1]; };
+  const first = await send('첫 질문');
+  app.ui.flow.receive({ requestId: first.requestId, conversationId: first.conversationId, type: 'completed', messageId: 'first-answer', text: '첫 답변 **완료**' });
+  await wait(() => app.node('ai-chat-inspector').querySelector('.summary-document strong'));
+  const second = await send('둘째 질문');
+  const parsed = [], parse = app.window.NeroUI.summaryDocument;
+  app.window.NeroUI.summaryDocument = (text, options) => { parsed.push(text); return parse(text, options); };
+  for (const [sequence, text] of [[1, '둘째 '], [2, '답변 '], [3, '스트림']]) {
+    app.ui.flow.receive({ requestId: second.requestId, conversationId: second.conversationId, type: 'delta', sequence, text });
+    await wait(() => parsed.at(-1)?.endsWith(text));
+  }
+  assert.match(app.node('ai-chat-inspector').textContent, /둘째 답변 스트림/);
+  assert.equal(parsed.filter(text => text.startsWith('첫 답변')).length, 0);
+});
+
 test('IME Enter does not submit a question', async t => {
   const app = await fixture(t); app.ui.flow.edit('입력 중');
   await wait(() => !app.node('ai-chat-inspector').querySelector('[aria-label="질문 보내기"]').disabled);
