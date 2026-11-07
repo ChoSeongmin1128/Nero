@@ -2515,6 +2515,20 @@ impl Processing {
         file.sync_all().map_err(crate::storage_space::write_error)?;
         drop(file);
         fs::rename(marker, target.join("verified.json")).map_err(message)?;
+        // Bytes set aside by an earlier attempt are not needed once every file is verified.
+        if let Ok(entries) = fs::read_dir(&target) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let set_aside = name.starts_with("verified.invalid-")
+                    || model.files.iter().any(|file| {
+                        name.starts_with(&format!("{}.invalid-", file.name))
+                            || name.starts_with(&format!("{}.partial-", file.name))
+                    });
+                if set_aside && entry.file_type().is_ok_and(|kind| kind.is_file()) {
+                    let _ = fs::remove_file(entry.path());
+                }
+            }
+        }
         Ok(model.bytes())
     }
     pub fn recording_start<T>(
@@ -5071,6 +5085,37 @@ mod tests {
         cancel.store(false, Ordering::Release);
         fs::write(&file, b"other").unwrap();
         assert!(!matches_file(&file, &item, &cancel));
+    }
+
+    #[test]
+    fn verifying_a_model_removes_bytes_set_aside_by_earlier_attempts() {
+        let (_temporary, process) = setup();
+        let manifest = serde_json::json!({"repository":"synthetic/model","revision":"r1",
+            "files":[{"name":"model.bin","bytes":5,"sha256":format!("{:x}", Sha256::digest(b"model"))}]});
+        let spec = ModelSpec {
+            manifest: Box::leak(manifest.to_string().into_boxed_str()),
+            label: "Synthetic",
+            stage: ModelStage::Speech,
+        };
+        let directory = process.model_dir_of(spec).unwrap();
+        fs::write(directory.join("model.bin"), b"model").unwrap();
+        let set_aside = [
+            "model.bin.invalid-1",
+            "model.bin.partial-2",
+            "verified.invalid-3.json",
+        ];
+        for name in set_aside {
+            fs::write(directory.join(name), b"old").unwrap();
+        }
+        fs::write(directory.join("unrelated.invalid-4"), b"kept").unwrap();
+        process
+            .prepare_files(spec, &AtomicBool::new(false), 0, 5)
+            .unwrap();
+        assert!(process.model_ready(spec));
+        for name in set_aside {
+            assert!(!directory.join(name).exists(), "{name}");
+        }
+        assert!(directory.join("unrelated.invalid-4").exists());
     }
 
     #[test]

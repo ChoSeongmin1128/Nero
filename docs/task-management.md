@@ -44,6 +44,8 @@ processing paths remain shared storage errors. Legacy jobs receive no invented s
 
 No recovered job loads a model or starts recording automatically. Retry creates a new job;
 it does not restore an in-memory decoder. Downloads reuse existing Range/hash verification.
+Bytes a download set aside as invalid or as an unresumable partial are removed once every
+file of that model is verified.
 
 ## Source and cancellation
 
