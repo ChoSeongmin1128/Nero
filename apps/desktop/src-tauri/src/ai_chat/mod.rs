@@ -1121,8 +1121,13 @@ impl AiChat {
             .find(|target| target.meeting_id == meeting_id)
             .ok_or("이 답변에 첨부된 회의를 선택해 주세요.")?;
         if summary {
+            // A receipt means saved only while that summary is still the current one;
+            // after another summary replaced it, the answer is written again.
             if let Some(id) = message.summary_receipts.get(meeting_id) {
-                return Ok(json!({"summaryId":id}));
+                let current = self.core.summary(meeting_id).map_err(|e| e.to_string())?;
+                if current.is_some_and(|view| &view.document.id == id) {
+                    return Ok(json!({"summaryId":id}));
+                }
             }
         } else if message.note_receipts.contains(meeting_id) {
             return Ok(json!({"applied":true}));
@@ -1537,6 +1542,28 @@ mod tests {
         // The appended note changed the notes the third answer read.
         assert!(chat.save_summary(&third, &third_answer, &meeting).is_err());
         assert_eq!(replaced["summaryId"], current_summary(&chat, &meeting));
+    }
+    #[test]
+    fn a_save_receipt_counts_only_while_its_summary_is_current() {
+        let (root, chat) = service();
+        let meeting = transcribed_meeting(&chat, root.path());
+        let (first, first_answer) = answered(&chat, &meeting, "결정 [1]");
+        let (second, second_answer) = answered(&chat, &meeting, "다른 결정 [1]");
+        let saved = chat.save_summary(&first, &first_answer, &meeting).unwrap();
+        assert_eq!(
+            chat.save_summary(&first, &first_answer, &meeting).unwrap(),
+            saved
+        );
+        assert_eq!(saved["summaryId"], current_summary(&chat, &meeting));
+        chat.save_summary(&second, &second_answer, &meeting)
+            .unwrap();
+        let again = chat.save_summary(&first, &first_answer, &meeting).unwrap();
+        assert_ne!(again, saved);
+        assert_eq!(again["summaryId"], current_summary(&chat, &meeting));
+        assert_eq!(
+            chat.core.summary(&meeting).unwrap().unwrap().document.text,
+            "결정 [1]"
+        );
     }
     #[test]
     fn copying_free_chat_requires_no_meeting_and_never_mutates_the_conversation() {
