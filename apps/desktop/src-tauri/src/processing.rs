@@ -1524,7 +1524,7 @@ impl Processing {
         Ok(())
     }
 
-    fn bind_job(path: &Path, meeting_id: &str) -> Result<(), String> {
+    pub(super) fn bind_job(path: &Path, meeting_id: &str) -> Result<(), String> {
         if path.join("owner.json").exists() {
             let file = plain_file(&path.join("owner.json"))?;
             if file.metadata().map_err(message)?.len() > 4096 {

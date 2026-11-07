@@ -165,11 +165,7 @@ impl Processing {
             .capture_reader(&session.id)
             .map_err(|e| e.to_string())?;
         let path = directory(&self.root, &format!("processing/{}", uuid::Uuid::new_v4()))?;
-        fs::write(
-            path.join("owner.json"),
-            serde_json::to_vec(&json!({"meetingId":session.meeting_id})).unwrap(),
-        )
-        .map_err(|e| e.to_string())?;
+        Processing::bind_job(&path, &session.meeting_id)?;
         let cancel = Arc::new(AtomicBool::new(false));
         let running = Arc::new(AtomicBool::new(true));
         let child = Arc::new(Mutex::new(None));
