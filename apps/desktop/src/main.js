@@ -473,7 +473,9 @@ function acceptSnapshot(snapshot) {
   if (state.selectedId && !snapshot.meetings.some(meeting => meeting.id === state.selectedId && meeting.deletedAt == null)) { state.selectedId = null; state.draft = null; state.transcriptDraft = null; state.summary = null; state.libraryOpen = true; speakers.reset(); clearAudio(); }
   const saved = currentMeeting();
   const draft = state.draft;
-  if (saved && draft?.id === saved.id && !draft.dirty && !draft.saving && (draft.title !== saved.title || draft.notes !== (saved.notes || ''))) {
+  // Compare with what this draft last saved: a save stores the title trimmed, which is
+  // not a change made elsewhere and must not replace the text being typed.
+  if (saved && draft?.id === saved.id && !draft.dirty && !draft.saving && (draft.savedTitle !== saved.title || draft.savedNotes !== (saved.notes || ''))) {
     state.draft = { ...draft, title: saved.title, notes: saved.notes || '', savedTitle: saved.title, savedNotes: saved.notes || '', version: draft.version + 1 };
     byId('meeting-title').value = saved.title;
     byId('meeting-notes').value = saved.notes || '';

@@ -1714,6 +1714,24 @@ test('agent writes flush pending edits and reconcile focused metadata before unl
   assert.equal(page.app.state.draft.title, '에이전트 제목');
 });
 
+test('recording snapshots keep the title being typed after a save stores it trimmed', async () => {
+  const page = await openApp();
+  for (const [typed, stored] of [['주간 회의 ', '주간 회의'], ['', '제목 없는 회의']]) {
+    page.element('meeting-title').focus();
+    page.element('meeting-title').value = typed;
+    page.app.onEdit();
+    const saving = page.app.saveDraft();
+    await tick();
+    page.updates.at(-1).pending.resolve();
+    await saving;
+    assert.equal(page.saved().title, stored);
+    const snapshot = await page.bridge.readSnapshot();
+    page.app.acceptSnapshot({ ...snapshot, revision: 100 + page.updates.length, session: { id: 'capture', meetingId: 'a', state: 'recording', elapsedMs: 750 * page.updates.length } });
+    assert.equal(page.element('meeting-title').value, typed);
+    assert.equal(page.app.state.draft.title, typed);
+  }
+});
+
 for (let rejected = 0; rejected < 4; rejected++) {
   test(`agent app updates reject installation when editor ${rejected} declines leaving`, async () => {
     const page = await openApp();
