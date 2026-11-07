@@ -35,11 +35,32 @@ pub struct CalendarSnapshot {
     pub meet_connected: bool,
     pub connecting: bool,
     pub restoring: bool,
+    pub keychain_blocked: bool,
     pub account_label: Option<String>,
     pub calendars: Vec<CalendarChoice>,
     pub selected_calendars: Vec<String>,
     pub last_synced_at: Option<u64>,
     pub error: Option<String>,
+}
+
+const KEYCHAIN_BLOCKED: &str =
+    "저장된 Google 연결에 접근할 수 없습니다. 다시 시도해 접근을 허용하거나 다시 연결해 주세요.";
+
+#[derive(Debug, Clone)]
+enum Blocked {
+    // The keychain refused background access; an explicit retry may ask for it.
+    Keychain,
+    // Google rejected the credential; only a new connection helps.
+    Revoked(String),
+}
+
+impl Blocked {
+    fn message(&self) -> String {
+        match self {
+            Self::Keychain => KEYCHAIN_BLOCKED.into(),
+            Self::Revoked(message) => message.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -75,7 +96,7 @@ struct Inner {
     authorization_url: Option<String>,
     cancel: Option<Arc<AtomicBool>>,
     auth_ready: bool,
-    credential_blocked: Option<String>,
+    credential_blocked: Option<Blocked>,
     stored_token: Option<(bool, StoredToken)>,
     pending_token: Option<(bool, StoredToken, Access)>,
     needs_sync: bool,
@@ -221,6 +242,7 @@ impl CalendarService {
                 && inner.auth_ready,
             connecting: inner.connecting_id.is_some(),
             restoring,
+            keychain_blocked: matches!(inner.credential_blocked, Some(Blocked::Keychain)),
             account_label: inner.state.account.clone(),
             calendars: inner.state.calendars.clone(),
             selected_calendars: inner.state.selected.clone(),
@@ -450,7 +472,7 @@ impl CalendarService {
                 Self::recover_pending(&mut inner, |token, slot| {
                     TokenStore.save(token, slot, crate::secret_store::Access::Interactive)
                 })?;
-            } else if inner.credential_blocked.is_some() {
+            } else if matches!(inner.credential_blocked, Some(Blocked::Keychain)) {
                 let slot = inner.state.token_slot;
                 let token = TokenStore
                     .load(slot, crate::secret_store::Access::Interactive)
@@ -535,7 +557,7 @@ impl CalendarService {
         {
             inner.auth_ready = false;
             inner.access = None;
-            inner.credential_blocked = Some(error.message());
+            inner.credential_blocked = Some(Blocked::Revoked(error.message()));
             inner.error = Some(error.message());
             inner.state.revision += 1;
         }
@@ -553,7 +575,7 @@ impl CalendarService {
         {
             inner.auth_ready = false;
             inner.access = None;
-            inner.credential_blocked = Some(error.message());
+            inner.credential_blocked = Some(Blocked::Revoked(error.message()));
             inner.error = Some(error.message());
             inner.state.revision += 1;
         }
@@ -594,11 +616,11 @@ impl CalendarService {
         result
     }
     fn credential_error(&self, generation: u64, error: crate::secret_store::Error) -> String {
-        let message = "저장된 Google 연결에 접근할 수 없습니다. 다시 연결해 주세요.".to_string();
+        let message = KEYCHAIN_BLOCKED.to_string();
         if error == crate::secret_store::Error::InteractionRequired {
             let mut inner = self.inner.lock().unwrap();
             if generation == self.generation.load(Ordering::Acquire) {
-                inner.credential_blocked = Some(message.clone());
+                inner.credential_blocked = Some(Blocked::Keychain);
                 inner.auth_ready = false;
                 inner.stored_token = None;
             }
@@ -617,8 +639,8 @@ impl CalendarService {
             if generation != self.generation.load(Ordering::Acquire) {
                 return Err("캘린더 선택이나 연결이 변경되었습니다.".into());
             }
-            if let Some(message) = &inner.credential_blocked {
-                return Err(message.clone());
+            if let Some(blocked) = &inner.credential_blocked {
+                return Err(blocked.message());
             }
             if let Some((_, token)) = inner
                 .stored_token
@@ -664,8 +686,7 @@ impl CalendarService {
                 ..stored
             };
             if save(&rotated, token_slot).is_err() {
-                let message =
-                    "저장된 Google 연결에 접근할 수 없습니다. 다시 연결해 주세요.".to_string();
+                let message = KEYCHAIN_BLOCKED.to_string();
                 inner.pending_token = Some((
                     token_slot,
                     rotated,
@@ -675,7 +696,7 @@ impl CalendarService {
                             .saturating_add(response.expires_in.saturating_mul(1000)),
                     },
                 ));
-                inner.credential_blocked = Some(message.clone());
+                inner.credential_blocked = Some(Blocked::Keychain);
                 inner.error = Some(message.clone());
                 inner.state.revision += 1;
                 inner.auth_ready = false;
@@ -708,8 +729,8 @@ impl CalendarService {
             if inner.connecting_id.is_some() {
                 return Err("Google 연결을 확인하고 있습니다.".into());
             }
-            if let Some(message) = &inner.credential_blocked {
-                return Err(message.clone());
+            if let Some(blocked) = &inner.credential_blocked {
+                return Err(blocked.message());
             }
             (
                 inner
@@ -1640,7 +1661,7 @@ mod tests {
                 expires_at: now_ms() + 120_000,
             },
         ));
-        inner.credential_blocked = Some("blocked".into());
+        inner.credential_blocked = Some(Blocked::Keychain);
         assert!(CalendarService::recover_pending(&mut inner, |_, _| Err(
             crate::secret_store::Error::InteractionRequired
         ))
@@ -1943,13 +1964,25 @@ mod tests {
             inner.error = Some("네트워크".into());
         }
         assert!(service.snapshot().connected);
-        service.inner.lock().unwrap().credential_blocked = Some("blocked".into());
+        service.inner.lock().unwrap().credential_blocked = Some(Blocked::Keychain);
         assert!(!service.snapshot().connected);
         let mut inner = service.inner.lock().unwrap();
         inner.credential_blocked = None;
         inner.state.last_synced_at = None;
         drop(inner);
         assert!(!service.snapshot().connected);
+    }
+
+    #[test]
+    fn only_a_keychain_block_offers_the_access_retry() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = CalendarService::new(temp.path().into()).unwrap();
+        service.inner.lock().unwrap().state.account = Some("primary-id".into());
+        service.inner.lock().unwrap().credential_blocked = Some(Blocked::Keychain);
+        assert!(service.snapshot().keychain_blocked);
+        service.inner.lock().unwrap().credential_blocked =
+            Some(Blocked::Revoked("권한 해제".into()));
+        assert!(!service.snapshot().keychain_blocked);
     }
 
     #[test]

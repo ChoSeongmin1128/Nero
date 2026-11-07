@@ -100,7 +100,7 @@ function CalendarSettings({ flow }) {
       {snapshot.lastSyncedAt && <div className="calendar-settings-actions"><span className="calendar-settings-synced">{new Date(snapshot.lastSyncedAt).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })} 확인</span></div>}
     </>}
     {!snapshot.configured && !snapshot.error && state.snapshot.revision >= 0 && <p className="notice" role="status">이 버전에는 Google Calendar 연결 정보가 없습니다.</p>}
-    {view.error && <p className="notice" role="alert">{view.error}{snapshot.connected && !connecting && <> <button type="button" className="small quiet" disabled={state.busy} onClick={() => { void flow.refresh(); }}>다시 시도</button></>}</p>}
+    {view.error && <p className="notice" role="alert">{view.error}{(snapshot.connected || snapshot.keychainBlocked) && !connecting && <> <button type="button" className="small quiet" disabled={state.busy} onClick={() => { void flow.refresh(); }}>다시 시도</button></>}</p>}
   </section>;
 }
 

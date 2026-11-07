@@ -1,4 +1,4 @@
-const initial = { revision: -1, configured: false, connected: false, connecting: false, restoring: false, calendars: [], selectedCalendars: [], accountLabel: null, lastSyncedAt: null, error: null };
+const initial = { revision: -1, configured: false, connected: false, connecting: false, restoring: false, keychainBlocked: false, calendars: [], selectedCalendars: [], accountLabel: null, lastSyncedAt: null, error: null };
 
 export function createCalendarSettingsFlow({ bridge }) {
   let state = { active: false, snapshot: initial, busy: false, connecting: false, phase: 'idle', reopening: false, error: '' };

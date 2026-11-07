@@ -71,3 +71,33 @@ for (const reduced of [false, true]) test(`calendar selection keeps focus and or
   assert.equal(animations.length, reduced ? 0 : 2);
   for (const animation of animations) { assert.equal(animation.options.duration, 180); assert.match(animation.frames[0].transform, /translateY/); }
 });
+
+test('a keychain-blocked account offers a retry that asks for access again, a revoked one does not', async t => {
+  const app = fileURLToPath(new URL('../', import.meta.url));
+  const bundle = await build({ entryPoints: [app + 'src/calendar-settings.jsx'], bundle: true, write: false, format: 'iife', globalName: 'CalendarUI', loader: { '.css': 'empty' }, define: { 'process.env.NODE_ENV': '"production"' } });
+  for (const keychainBlocked of [true, false]) {
+    const window = new Window({ url: 'http://nero.test', settings: { enableJavaScriptEvaluation: true, suppressInsecureJavaScriptEnvironmentWarning: true } });
+    t.after(() => window.happyDOM.abort());
+    window.document.body.innerHTML = '<div id="calendar"></div>';
+    window.eval(bundle.outputFiles[0].text);
+    const snapshot = { revision: 1, configured: true, connected: false, connecting: false, restoring: false, keychainBlocked,
+      accountLabel: 'person@example.com', calendars: [], selectedCalendars: [], error: '저장된 Google 연결에 접근할 수 없습니다.' };
+    let syncs = 0;
+    const panel = window.CalendarUI.mountCalendarSettings({ panel: window.document.getElementById('calendar'), bridge: {
+      readCalendarSettings: async () => snapshot, subscribeCalendarSettings: async () => () => {},
+      syncCalendar: async () => { syncs++; return snapshot; },
+    } });
+    t.after(() => panel.dispose());
+    const wait = async predicate => { for (let n = 0; n < 100; n++) { if (predicate()) return; await new Promise(resolve => setTimeout(resolve, 5)); } assert.fail('Calendar error did not render'); };
+    const button = text => [...window.document.querySelectorAll('button')].find(node => node.textContent === text);
+    panel.setActive(true);
+    await wait(() => window.document.querySelector('[role="alert"]'));
+    assert.ok(button('Google 연결'));
+    if (keychainBlocked) {
+      button('다시 시도').click();
+      await wait(() => syncs === 1);
+    } else {
+      assert.equal(button('다시 시도'), undefined);
+    }
+  }
+});

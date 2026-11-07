@@ -32,6 +32,7 @@ impl CalendarDesktop {
                 meet_connected: false,
                 connecting: false,
                 restoring: false,
+                keychain_blocked: false,
                 account_label: None,
                 calendars: vec![],
                 selected_calendars: vec![],
