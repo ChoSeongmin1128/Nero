@@ -152,6 +152,31 @@ fn starting_recording_keeps_a_download_running_and_does_not_cancel_it() {
 }
 
 #[test]
+fn a_failed_import_removes_its_staged_copy_and_keeps_the_original() {
+    let (_temporary, process) = setup();
+    *process.platform_supported_override.lock().unwrap() = Some(true);
+    for path in [
+        process.worker("AudioPrepare"),
+        crate::native_speech::executable(&process, true),
+    ] {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, b"synthetic").unwrap();
+    }
+    if !process.supported_for(process.speech_engine()) {
+        return;
+    }
+    let core = CoreHandle::open(&process.root).unwrap();
+    let source = process.root.join("broken.wav");
+    fs::write(&source, b"not audio").unwrap();
+    let id = process.import(core, source.clone()).unwrap().id.unwrap();
+    finish(&process);
+    assert_eq!(status(&process, &id), JobStatus::Failed);
+    let staged = process.root.join("processing").join(&id).join("source");
+    assert!(!staged.join("broken.wav").exists());
+    assert_eq!(fs::read(&source).unwrap(), b"not audio");
+}
+
+#[test]
 fn a_completed_preparation_hides_earlier_failures_of_the_same_kind() {
     let (_temporary, process) = setup();
     let failed_record = |kind: &str| {

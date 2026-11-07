@@ -71,7 +71,7 @@ mono/16kHz/PCM16 WAV를 만듭니다. 원본 PCM을 줄이거나 대체하지 �
 | 파일 | 책임 |
 |---|---|
 | `formats.rs` | Core의 원본 보관 형식 목록을 사용하는 파일 선택/확장자 검증 |
-| `import.rs` | 원본을 작업 폴더로 안전하게 복사, 원본 제목 추출 |
+| `import.rs` | 원본을 작업 폴더로 안전하게 복사(가져오기가 끝나면 이 복사본은 지움), 원본 제목 추출 |
 | `platform.rs` | WAV/공통 디코더/macOS 변환기 선택 |
 | `decode.rs` | 컨테이너/단일 오디오 트랙 선택과 스트리밍 디코딩 |
 | `presentation.rs` | M4A AAC의 명시된 재생 구간과 인코더 priming/padding 분리 |

@@ -2796,6 +2796,8 @@ impl Processing {
                 }
                 let imported = crate::speech_audio::stage_import(&source, &path, &cancel)?;
                 let copied = imported.path;
+                // Core keeps its own copy of the original; an import is never retried.
+                let _staged = tempfile::TempPath::try_from_path(&copied).ok();
                 this.update(|p| p.message = "음성을 준비하고 있습니다.".into());
                 let prepared =
                     crate::speech_audio::AnalysisAudio::prepare(&this, &copied, &path, &cancel)
