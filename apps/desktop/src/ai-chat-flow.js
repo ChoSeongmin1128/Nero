@@ -587,7 +587,9 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
         const message = errorMessage(error, '전송하지 못했습니다. 다시 시도해 주세요.');
         // A refused edit leaves the store on the earlier version, so the window returns to it.
         if (editOf) { updateConversation(id, { activeRequestId: null, action: null, error: message, versions: previousVersions, messages: current.messages.filter(item => item.requestId !== requestId && item.id !== questionKey) }); return false; }
-        updateConversation(id, { activeRequestId: null, action: null, error: message, messages: current.messages.map(item => item.requestId === requestId && item.role === 'assistant' ? { ...item, status: 'failed', error: message } : item) });
+        // A refused question (too long, say) returns to the input so it can be shortened;
+        // anything typed meanwhile is kept instead.
+        updateConversation(id, { activeRequestId: null, action: null, error: message, draft: current.draft || text, messages: current.messages.map(item => item.requestId === requestId && item.role === 'assistant' ? { ...item, status: 'failed', error: message } : item) });
         return false;
       } finally {
         if (pendingStarts.get(id) === starting) pendingStarts.delete(id);

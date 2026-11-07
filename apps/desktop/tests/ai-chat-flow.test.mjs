@@ -148,6 +148,13 @@ test('opening from a meeting does not attach it to an existing conversation', as
   app.flow.dispose();
 });
 
+test('a refused question returns to the input so it can be shortened', async () => {
+  const app = await harness({ send: async () => { throw new Error('질문이 너무 깁니다.'); } });
+  app.flow.edit('아주 긴 질문'); assert.equal(await app.flow.send(), false);
+  assert.equal(app.state().conversation.draft, '아주 긴 질문');
+  assert.equal(app.state().conversation.error, '질문이 너무 깁니다.'); app.flow.dispose();
+});
+
 test('the panel follows the meeting on screen while other answers keep streaming in their own chat', async () => {
   const app = await harness(); app.flow.edit('Question'); await app.flow.send();
   app.flow.edit('Next question'); app.flow.setMeeting(exampleMeetings[1]); await tick(); await tick();
