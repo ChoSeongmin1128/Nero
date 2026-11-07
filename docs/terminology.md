@@ -30,7 +30,9 @@ constraints limit edits; they are not a guarantee of recognition or contextual a
 
 ## Optional contextual model
 
-If the separately prepared summary model is available, its existing local runtime
+This stage is off while the local summary model is disabled for the release
+(`LOCAL_SUMMARY_ENABLED`), even when a model prepared by an earlier build is present.
+When enabled and the separately prepared summary model is available, its existing local runtime
 classifies fixed candidates as accept, keep or uncertain. It cannot generate replacement
 wording. Accepted decisions must cite an actual supplied utterance containing an
 independent cue. Missing, malformed, uncertain or out-of-context decisions retain the

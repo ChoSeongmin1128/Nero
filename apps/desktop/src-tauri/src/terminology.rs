@@ -387,7 +387,9 @@ pub(super) fn correct(
             }
         }
     }
-    if !requests.is_empty() {
+    // The local summary model is off in this release; a model left from an earlier
+    // build must not run here either.
+    if crate::release_capabilities::LOCAL_SUMMARY_ENABLED && !requests.is_empty() {
         let (supported, ready, _) = crate::summary::availability(process);
         if supported && ready {
             let runtime = tokio::runtime::Builder::new_current_thread()
