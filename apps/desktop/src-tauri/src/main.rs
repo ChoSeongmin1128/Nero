@@ -1528,6 +1528,12 @@ async fn shut_down_for_quit(
     session_id: Option<String>,
 ) -> Result<(), String> {
     let exit_lease = state.lifecycle.begin_exit(lifecycle::ExitKind::Quit)?;
+    // The confirmation named a recording; check it before stopping chats and
+    // processing, which cannot be undone if the quit is then refused.
+    let current = on_core(state.core.clone(), |core| core.snapshot()).await?;
+    if active_session(&current) != session_id.as_deref() {
+        return Err(nero_core::CoreError::StaleSession.to_string());
+    }
     let ai_shutdown = ai_chat_desktop::prepare_shutdown(&app).await?;
     let processing = state.processing.clone();
     let core = state.core.clone();
