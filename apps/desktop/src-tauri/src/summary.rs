@@ -1540,6 +1540,9 @@ impl Processing {
                         process.record_rejection(error).map_err(storage)?;
                     }
                     saved.map_err(commit_summary_failure)?;
+                    // Checkpoints only resume an unfinished run; once a summary is saved
+                    // none of this meeting's earlier inputs need them.
+                    let _ = fs::remove_dir_all(&cache_base);
                     Ok(Some(meeting_id))
                 })();
                 result.map_err(|error| process.report(error))
