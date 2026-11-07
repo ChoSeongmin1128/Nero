@@ -165,6 +165,11 @@ fn page_links_normalize_only_explicit_notion_page_ids() {
             "https://app.notion.com/p/synthetic-workspace/Title-{}?source=copy_link",
             PAGE.replace('-', "")
         ),
+        format!(
+            "https://www.notion.so/workspace/{}?v=0123456789abcdef0123456789abcdef&p={}&pm=s",
+            OTHER.replace('-', ""),
+            PAGE.replace('-', "")
+        ),
     ] {
         assert_eq!(normalize_page_id(&value).unwrap(), PAGE);
     }

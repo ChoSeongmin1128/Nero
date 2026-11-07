@@ -696,10 +696,21 @@ pub fn normalize_page_id(input: &str) -> Result<String> {
         {
             return Err(Error::InvalidLink);
         }
-        url.path_segments()
-            .and_then(|segments| segments.filter(|value| !value.is_empty()).next_back())
-            .ok_or(Error::InvalidLink)?
-            .to_owned()
+        // A page opened as a preview inside a database keeps the database in the
+        // path and names the page in `p`.
+        let preview = url
+            .query_pairs()
+            .find(|(key, _)| key == "p")
+            .map(|(_, page)| page.into_owned())
+            .filter(|page| matches!(page.len(), 32 | 36) && uuid::Uuid::parse_str(page).is_ok());
+        match preview {
+            Some(page) => page,
+            None => url
+                .path_segments()
+                .and_then(|segments| segments.filter(|value| !value.is_empty()).next_back())
+                .ok_or(Error::InvalidLink)?
+                .to_owned(),
+        }
     } else {
         value.to_owned()
     };
