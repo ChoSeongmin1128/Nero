@@ -1245,7 +1245,6 @@ fn start(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             format!("회의 {unreadable}개를 읽지 못해 목록에서 뺐습니다. 파일은 그대로 두었습니다."),
         );
     }
-    processing.cleanup_removed_meeting_jobs(&core);
     let agent_mutations = agent_mutations::AgentMutations::start(
         app.handle().clone(),
         &root,
@@ -1296,8 +1295,9 @@ fn poll(
     processing: Arc<Processing>,
     lifecycle: lifecycle::Lifecycle,
 ) {
-    // Reads every transcript, so it runs here instead of before the window opens,
-    // and before any job can pick up a transcript that still needs it.
+    // Both read or remove whole folders, so they run here instead of before the
+    // window opens, and before any job can pick up work they still need to settle.
+    processing.cleanup_removed_meeting_jobs(&core);
     processing.upgrade_transcript_sources(&core);
     let mut previous: Option<Snapshot> = None;
     let mut previous_progress = None;
