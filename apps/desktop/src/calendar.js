@@ -9,7 +9,7 @@ function render() {
   byId('calendar-title').textContent = error ? '일정 알림 확인 필요' : event?.title || '일정 알림';
   byId('calendar-title').title = error || [event?.title, event?.calendarName].filter(Boolean).join('\n');
   byId('calendar-countdown').textContent = event ? reminderCountdown(event.startAt) : '';
-  byId('calendar-record').disabled = busy || !event || event.startAt <= Date.now();
+  byId('calendar-record').disabled = busy || !event;
   byId('calendar-record').textContent = busy ? '확인 중' : '녹음 시작';
   byId('calendar-dismiss').disabled = busy;
   byId('calendar-error').textContent = error;
