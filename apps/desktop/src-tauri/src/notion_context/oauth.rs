@@ -406,8 +406,9 @@ async fn token_request(
             cancellation,
         )
         .await?;
-    let value: Value = serde_json::from_slice(&response.body).map_err(|_| Error::Protocol)?;
+    // A gateway error page is not JSON; it is a temporary failure, not a broken link.
     if !(200..300).contains(&response.status) {
+        let value: Value = serde_json::from_slice(&response.body).unwrap_or_default();
         return Err(
             if matches!(
                 value["error"].as_str(),
@@ -419,7 +420,7 @@ async fn token_request(
             },
         );
     }
-    Ok(value)
+    serde_json::from_slice(&response.body).map_err(|_| Error::Protocol)
 }
 pub(super) async fn exchange(http: &dyn Http, pending: &Pending, code: &str) -> Result<Credential> {
     let value = token_request(

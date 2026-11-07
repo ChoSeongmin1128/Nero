@@ -342,6 +342,27 @@ async fn mcp_bootstrap_echoes_session_and_reads_only_the_selected_page_as_extern
 }
 
 #[tokio::test]
+async fn only_a_missing_method_reads_as_an_unsupported_page_tool() {
+    for (code, expected) in [
+        (-32601, Error::ToolUnavailable),
+        (-32602, Error::InvalidRequest),
+        (-32603, Error::Connection),
+    ] {
+        let mut replies = bootstrap();
+        replies.push(response(
+            200,
+            json!({"jsonrpc":"2.0","id":3,"error":{"code":code,"message":"synthetic"}}),
+        ));
+        let (_temp, service, _, _) = fixture(replies);
+        let error = service
+            .fetch_sources("rpc-error".into(), vec![PAGE.into()])
+            .await
+            .unwrap_err();
+        assert_eq!(error.to_string(), expected.to_string(), "{code}");
+    }
+}
+
+#[tokio::test]
 async fn refetch_and_disconnect_preserve_immutable_cached_document_snapshots() {
     let mut replies = bootstrap();
     replies.push(document("First source body"));

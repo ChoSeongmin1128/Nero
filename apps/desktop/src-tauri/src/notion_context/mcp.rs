@@ -264,8 +264,14 @@ fn rpc_result(response: &Response, id: u64) -> Result<Value> {
         if value["id"].as_u64() != Some(id) {
             return Err(Error::Protocol);
         }
-        if value.get("error").is_some() {
-            return Err(Error::ToolUnavailable);
+        if let Some(error) = value.get("error") {
+            // Only a missing method means the page tool is unsupported; other
+            // JSON-RPC errors are the server failing this request.
+            return Err(match error["code"].as_i64() {
+                Some(-32601) => Error::ToolUnavailable,
+                Some(-32602) => Error::InvalidRequest,
+                _ => Error::Connection,
+            });
         }
         if result
             .replace(value.get("result").cloned().ok_or(Error::Protocol)?)

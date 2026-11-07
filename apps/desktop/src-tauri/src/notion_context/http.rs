@@ -67,6 +67,15 @@ pub(super) trait Http: Send + Sync {
 }
 
 pub(super) struct ReqwestHttp(reqwest::Client);
+
+// The 30-second request limit is a timeout, which also tells the server to cancel.
+fn transport_error(error: reqwest::Error) -> Error {
+    if error.is_timeout() {
+        Error::Timeout
+    } else {
+        Error::Network
+    }
+}
 impl ReqwestHttp {
     pub fn new() -> Result<Self> {
         reqwest::Client::builder()
@@ -100,7 +109,7 @@ impl Http for ReqwestHttp {
                         .body(request.body)
                         .send()
                         .await
-                        .map_err(|_| Error::Network)?;
+                        .map_err(transport_error)?;
                     if response
                         .content_length()
                         .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
@@ -122,7 +131,7 @@ impl Http for ReqwestHttp {
                         .get("content-type")
                         .is_some_and(|value| value.starts_with("text/event-stream"));
                     let mut body = vec![];
-                    while let Some(chunk) = response.chunk().await.map_err(|_| Error::Network)? {
+                    while let Some(chunk) = response.chunk().await.map_err(transport_error)? {
                         cancellation.check()?;
                         if body.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
                             return Err(Error::Budget);
