@@ -650,7 +650,9 @@ impl AiChat {
             prepared.instructions.push_str("\n첨부한 회의의 요약 본문을 작성합니다. 저장은 Nero가 처리하므로 저장을 완료했다고 답하지 않습니다.\n");
             prepared.instructions.push_str(skills::WRITING_RULES);
         }
-        if let Some(origins) = &request.source_origins {
+        // The screen always sends a map; an empty one needs no Notion service, so a
+        // Notion setup failure does not block questions without sources.
+        if let Some(origins) = request.source_origins.as_ref().filter(|o| !o.is_empty()) {
             let notion = self
                 .notion
                 .as_ref()
