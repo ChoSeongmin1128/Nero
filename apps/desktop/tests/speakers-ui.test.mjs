@@ -6,6 +6,7 @@ import vm from 'node:vm';
 const dismissSource = await readFile(new URL('../src/dialog-dismiss.js', import.meta.url), 'utf8');
 const source = await readFile(new URL('../src/speakers-ui.js', import.meta.url), 'utf8');
 const processingStateSource = await readFile(new URL('../src/processing-state.js', import.meta.url), 'utf8');
+const transcriptActionsSource = await readFile(new URL('../src/transcript-actions.js', import.meta.url), 'utf8');
 const tick = () => new Promise(setImmediate);
 const plain = value => JSON.parse(JSON.stringify(value));
 const escape = value => String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
@@ -77,7 +78,7 @@ function openController(doc = documentForTest()) {
     } }));
   } };
   const context = vm.createContext({ escape, duration: value => `00:${String(Math.floor(value / 1000)).padStart(2, '0')}`, icon: () => '', TextEncoder, document, requestAnimationFrame: callback => callback(), crypto: { randomUUID: () => 'generated-id' }, NeroControls: { enhanceAll() {}, refresh() {}, close() {} } });
-  const functions = vm.runInContext(`${dismissSource.replace(/^export /gm, '')}\n${processingStateSource.replace(/^export /gm, '')}\n${source.replace(/^import .*;\r?\n/gm, '').replace(/^export /gm, '')}\n({ mountSpeakers, speakerLabel, copyWorking, assignSelected, mergeSpeakers, nextSpeakerName, validateNames })`, context);
+  const functions = vm.runInContext(`${dismissSource.replace(/^export /gm, '')}\n${processingStateSource.replace(/^export /gm, '')}\n${transcriptActionsSource.replace(/^import .*;\r?\n/gm, '').replace(/^export /gm, '')}\n${source.replace(/^import .*;\r?\n/gm, '').replace(/^export /gm, '')}\n({ mountSpeakers, speakerLabel, copyWorking, assignSelected, mergeSpeakers, nextSpeakerName, validateNames })`, context);
   let confirmDiscard = async () => true;
   const controller = functions.mountSpeakers({ confirmDiscard: () => confirmDiscard(), bridge, getState: () => state, finishEditing: async action => {
     flushes.push(true); state.editLocks += 1;

@@ -1,9 +1,9 @@
 import { bindDialogDismiss } from './dialog-dismiss.js';
 import { pendingJob } from './processing-state.js';
+import { sameTranscriptVersion } from './transcript-actions.js';
 import { escape, duration, icon } from './ui.js';
 
 const newSpeakerValue = '__new__';
-const sameVersion = (a, b) => a?.id === b?.id && a?.revision === b?.revision;
 const copySpeakers = speakers => (speakers || []).map(speaker => ({ id: speaker.id, name: speaker.name }));
 const assignmentsOf = doc => doc.segments.map(segment => segment.speakerId ?? null);
 const sameState = (a, b) => JSON.stringify([a.speakers, a.assignments]) === JSON.stringify([b.speakers, b.assignments]);
@@ -88,7 +88,7 @@ export function mountSpeakers({ bridge, getState, finishEditing, onUpdated, onPr
 
   function undoFor(view) {
     const record = view && undoByMeeting.get(view.id);
-    return record && sameVersion(record.expected, view.doc.version) ? record : null;
+    return record && sameTranscriptVersion(record.expected, view.doc.version) ? record : null;
   }
 
   function message(text, error = false) {
@@ -121,7 +121,7 @@ export function mountSpeakers({ bridge, getState, finishEditing, onUpdated, onPr
   function syncPlayback() {
     if (!editing || !dialog.open) return;
     const view = current();
-    const unavailable = blocked(view) || view.id !== editing.id || !sameVersion(view.doc.version, editing.base.version);
+    const unavailable = blocked(view) || view.id !== editing.id || !sameTranscriptVersion(view.doc.version, editing.base.version);
     body.querySelectorAll('[data-speaker-play]').forEach(button => {
       const playing = editing.listeningId === button.dataset.speakerPlay && isPlaying();
       button.innerHTML = `${icon(playing ? 'pause' : 'play')}<span>${playing ? '일시정지' : '다시 듣기'}</span>`;
@@ -160,7 +160,7 @@ export function mountSpeakers({ bridge, getState, finishEditing, onUpdated, onPr
   function controls() {
     if (!editing || !dialog.open) return;
     const view = current();
-    const stale = !view || view.id !== editing.id || !sameVersion(view.doc.version, editing.base.version);
+    const stale = !view || view.id !== editing.id || !sameTranscriptVersion(view.doc.version, editing.base.version);
     body.querySelectorAll('button, input, select').forEach(node => { node.disabled = saving || ((stale || blocked(view)) && !node.hasAttribute('data-speaker-close')); });
     for (const id of ['speaker-analyze', 'speaker-analysis-confirm']) {
       const action = byId(id);
@@ -266,7 +266,7 @@ export function mountSpeakers({ bridge, getState, finishEditing, onUpdated, onPr
     try {
       await finishEditing(async () => {
         const view = current();
-        if (editing !== owner || blocked(view) || view.id !== owner.id || !sameVersion(view.doc.version, owner.base.version)) throw new Error('음성 기록이 변경되었습니다. 수정을 보존하고 화자 편집을 다시 열어 주세요.');
+        if (editing !== owner || blocked(view) || view.id !== owner.id || !sameTranscriptVersion(view.doc.version, owner.base.version)) throw new Error('음성 기록이 변경되었습니다. 수정을 보존하고 화자 편집을 다시 열어 주세요.');
         const record = undo ? undoFor(view) : null;
         if (undo && (!record || !unchanged())) throw new Error('되돌릴 수 있는 화자 수정이 없습니다.');
         const next = undo ? record.previous : owner.mode === 'single' ? assignSelected(owner.working, owner.selected, owner.assignmentTarget, owner.newName, () => owner.newId ||= crypto.randomUUID()) : owner.working;
@@ -286,13 +286,13 @@ export function mountSpeakers({ bridge, getState, finishEditing, onUpdated, onPr
   async function analyze() {
     const owner = editing;
     const view = current();
-    if (!owner || !owner.analysisConfirm || analysisBlocked(view) || !sameVersion(view.doc.version, owner.base.version)) return;
+    if (!owner || !owner.analysisConfirm || analysisBlocked(view) || !sameTranscriptVersion(view.doc.version, owner.base.version)) return;
     saving = true;
     controls();
     try {
       await finishEditing(async () => {
         const latest = current();
-        if (editing !== owner || analysisBlocked(latest) || latest.id !== owner.id || !sameVersion(latest.doc.version, owner.base.version)) throw new Error('음성 기록이 변경되었습니다. 화자 편집을 다시 열어 주세요.');
+        if (editing !== owner || analysisBlocked(latest) || latest.id !== owner.id || !sameTranscriptVersion(latest.doc.version, owner.base.version)) throw new Error('음성 기록이 변경되었습니다. 화자 편집을 다시 열어 주세요.');
         const progress = latest.state.processing.speakerReady
           ? await bridge.diarizeMeeting(owner.id, { ...owner.base.version })
           : await bridge.prepareSpeakerModel();
@@ -308,7 +308,7 @@ export function mountSpeakers({ bridge, getState, finishEditing, onUpdated, onPr
     trigger.hidden = !view;
     trigger.disabled = blocked(view) || opening || saving || Boolean(view?.state.editLocks);
     const record = view && undoByMeeting.get(view.id);
-    if (record && !sameVersion(record.expected, view.doc.version)) undoByMeeting.delete(view.id);
+    if (record && !sameTranscriptVersion(record.expected, view.doc.version)) undoByMeeting.delete(view.id);
     if (editing && (!view || view.id !== editing.id)) close();
     controls();
   }

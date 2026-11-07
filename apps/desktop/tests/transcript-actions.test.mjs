@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mountTranscriptActions } from '../src/transcript-actions.js';
+import { mountTranscriptActions, sameTranscriptVersion } from '../src/transcript-actions.js';
 
 const settle = () => new Promise(resolve => setImmediate(resolve));
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
@@ -57,6 +57,16 @@ function harness({ context: override = {}, bridge: overrides = {}, finish } = {}
   const click = async action => { byId('transcript-actions-body').events.click({ target: { closest: selector => selector === `[data-transcript-actions-${action}]` ? {} : null } }); await settle(); };
   return { byId, context, calls, errors, controller, select, submit, click, trigger };
 }
+
+test('a missing transcript version matches only another missing version', () => {
+  assert.equal(sameTranscriptVersion(null, null), true);
+  assert.equal(sameTranscriptVersion(undefined, null), true);
+  assert.equal(sameTranscriptVersion(null, version()), false);
+  assert.equal(sameTranscriptVersion(version(), undefined), false);
+  assert.equal(sameTranscriptVersion(version(), version()), true);
+  assert.equal(sameTranscriptVersion(version(), version('current', 2)), false);
+  assert.equal(sameTranscriptVersion(version(), version('other', 1)), false);
+});
 
 test('rebuild flushes first and requires confirmation before replacing a document', async () => {
   const app = harness();

@@ -1,6 +1,7 @@
 import { bindDialogDismiss } from './dialog-dismiss.js';
 import { pendingJob } from './processing-state.js';
-const sameVersion = (a, b) => (a == null && b == null) || (a?.id === b?.id && a?.revision === b?.revision);
+// A missing version means no transcript yet: two missing versions match, a missing and a saved one do not.
+export const sameTranscriptVersion = (a, b) => a == null || b == null ? a == b : a.id === b.id && a.revision === b.revision;
 const versionOf = context => context?.transcript?.version ? { ...context.transcript.version } : null;
 const messageOf = error => error instanceof Error ? error.message : String(error);
 
@@ -42,7 +43,7 @@ export function mountTranscriptActions({ byId, bridge, getContext, finishEditing
     if (!context?.meeting || context.meeting.id !== owner.meetingId || context.meeting.deletedAt != null) throw new Error('회의가 변경되었습니다. 원하는 회의에서 다시 열어 주세요.');
     const reason = blocked(context, owner.kind);
     if (reason) throw new Error(reason);
-    if (checkVersion && !sameVersion(versionOf(context), owner.expected)) throw new Error('음성 기록이 변경되었습니다. 창을 닫고 다시 열어 주세요.');
+    if (checkVersion && !sameTranscriptVersion(versionOf(context), owner.expected)) throw new Error('음성 기록이 변경되었습니다. 창을 닫고 다시 열어 주세요.');
     return context;
   }
   const active = owner => pending === owner && owner.serial === serial;
@@ -59,12 +60,12 @@ export function mountTranscriptActions({ byId, bridge, getContext, finishEditing
   }
   function mismatch(owner) {
     const current = owner.entries.find(entry => entry.current);
-    return !current || !sameVersion(current.version, owner.expected);
+    return !current || !sameTranscriptVersion(current.version, owner.expected);
   }
   function canConfirm(owner) {
     if (owner.loading || owner.saving || owner.loadFailed) return false;
     try { currentOwner(owner); } catch { return false; }
-    return owner.kind === 'rebuild' || (!mismatch(owner) && owner.entries.some(entry => !entry.current && sameVersion(entry.version, owner.selected)));
+    return owner.kind === 'rebuild' || (!mismatch(owner) && owner.entries.some(entry => !entry.current && sameTranscriptVersion(entry.version, owner.selected)));
   }
   function draw() {
     const owner = pending;
@@ -83,7 +84,7 @@ export function mountTranscriptActions({ byId, bridge, getContext, finishEditing
     } else if (owner.loadFailed) {
       content = '<p>이전 기록을 불러오지 못했습니다.</p>';
     } else {
-      content = `${entries.some(entry => !entry.current) ? '' : '<p class="transcript-actions-empty">이전 음성 기록이 없습니다.</p>'}${entries.length ? `<fieldset class="transcript-history-list"><legend class="sr-only">되돌릴 음성 기록 선택</legend>${entries.map((entry, index) => `<label class="transcript-history-choice${entry.current ? ' is-current' : ''}"><input type="radio" name="transcript-history-choice" data-transcript-history-choice="${index}"${entry.current || owner.saving ? ' disabled' : ''}${sameVersion(entry.version, owner.selected) ? ' checked' : ''}><span class="transcript-history-description"><span class="transcript-history-title"><strong>${escape(dateLabel(entry.updatedAt))}</strong>${entry.current ? '<span class="transcript-history-current">현재 사용 중</span>' : ''}</span><span class="transcript-history-meta">발언 ${Number(entry.segmentCount) || 0}개${entry.edited ? ' / 문장 또는 화자 수정됨' : ''}</span></span></label>`).join('')}</fieldset>` : ''}${owner.unavailable ? `<p class="transcript-actions-unavailable" role="status">불러올 수 없는 기록 ${Number(owner.unavailable)}개가 있습니다.</p>` : ''}${entries.length && mismatch(owner) ? '<p class="transcript-actions-unavailable">현재 음성 기록이 변경되었습니다. 창을 닫고 다시 열어 주세요.</p>' : ''}`;
+      content = `${entries.some(entry => !entry.current) ? '' : '<p class="transcript-actions-empty">이전 음성 기록이 없습니다.</p>'}${entries.length ? `<fieldset class="transcript-history-list"><legend class="sr-only">되돌릴 음성 기록 선택</legend>${entries.map((entry, index) => `<label class="transcript-history-choice${entry.current ? ' is-current' : ''}"><input type="radio" name="transcript-history-choice" data-transcript-history-choice="${index}"${entry.current || owner.saving ? ' disabled' : ''}${sameTranscriptVersion(entry.version, owner.selected) ? ' checked' : ''}><span class="transcript-history-description"><span class="transcript-history-title"><strong>${escape(dateLabel(entry.updatedAt))}</strong>${entry.current ? '<span class="transcript-history-current">현재 사용 중</span>' : ''}</span><span class="transcript-history-meta">발언 ${Number(entry.segmentCount) || 0}개${entry.edited ? ' / 문장 또는 화자 수정됨' : ''}</span></span></label>`).join('')}</fieldset>` : ''}${owner.unavailable ? `<p class="transcript-actions-unavailable" role="status">불러올 수 없는 기록 ${Number(owner.unavailable)}개가 있습니다.</p>` : ''}${entries.length && mismatch(owner) ? '<p class="transcript-actions-unavailable">현재 음성 기록이 변경되었습니다. 창을 닫고 다시 열어 주세요.</p>' : ''}`;
     }
     const label = owner.saving ? (owner.kind === 'rebuild' ? '변환 시작 중' : '되돌리는 중') : (owner.kind === 'rebuild' ? '다시 변환' : '이 기록으로 되돌리기');
     body.innerHTML = `<form class="transcript-actions-form"><header class="transcript-actions-header"><h2 id="transcript-actions-title">${title}</h2></header><div class="transcript-actions-content" tabindex="0">${content}<p id="transcript-actions-error" class="field-error" role="alert"${owner.error ? '' : ' hidden'}>${escape(owner.error || '')}</p></div><footer class="transcript-actions-footer">${owner.kind === 'history' ? `<button type="button" class="quiet" data-transcript-actions-reload${owner.loading || owner.saving ? ' disabled' : ''}>다시 불러오기</button>` : ''}<span class="transcript-actions-footer-spacer"></span><button type="button" data-transcript-actions-close${owner.saving ? ' disabled' : ''}>취소</button><button type="submit" class="primary" data-transcript-actions-confirm${canConfirm(owner) ? '' : ' disabled'}>${owner.saving ? '<span class="activity-spinner" aria-hidden="true"></span>' : ''}<span>${label}</span></button></footer></form>`;
@@ -182,7 +183,7 @@ export function mountTranscriptActions({ byId, bridge, getContext, finishEditing
         currentOwner(owner);
         if (owner.kind === 'rebuild') await onRebuild(owner.meetingId);
         else {
-          if (!owner.entries.some(entry => !entry.current && sameVersion(entry.version, target)) || mismatch(owner)) throw new Error('선택한 이전 기록이 변경되었습니다. 목록을 다시 불러와 주세요.');
+          if (!owner.entries.some(entry => !entry.current && sameTranscriptVersion(entry.version, target)) || mismatch(owner)) throw new Error('선택한 이전 기록이 변경되었습니다. 목록을 다시 불러와 주세요.');
           const restored = await bridge.restoreTranscript(owner.meetingId, { ...owner.expected }, target);
           await onRestored(restored, owner.meetingId);
         }

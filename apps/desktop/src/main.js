@@ -29,7 +29,7 @@ import { processingJobs, pendingJob, processingResults, latestMeetingProcessing,
 import { mountLibrary, filterLibraryMeetings, renderMeetingMenu } from './library-ui.js';
 import { mountSpeakers } from './speakers-ui.js';
 import { createMeetingSearch, mountDocumentSearch } from './meeting-search.js';
-import { mountTranscriptActions } from './transcript-actions.js';
+import { mountTranscriptActions, sameTranscriptVersion } from './transcript-actions.js';
 import { liveTranscriptRows } from './live-transcript.js';
 import { meetingResultPreview } from './meeting-result-preview.js';
 import { mountMeetingDetail } from './meeting-detail-ui.js';
@@ -465,7 +465,7 @@ function render() {
   if (intent?.meetingId === meeting.id && state.transcriptLoaded && state.summaryLoaded) {
     state.pendingSearchIntent = null;
     const hit = intent.hit, doc = state.transcriptDraft?.doc;
-    const valid = hit.transcriptVersion?.id === doc?.version.id && hit.transcriptVersion?.revision === doc?.version.revision;
+    const valid = sameTranscriptVersion(hit.transcriptVersion, doc?.version);
     const index = valid && doc?.segments[hit.index]?.id === hit.segmentId ? hit.index : undefined;
     void documentSearch.find(intent.query, { view: hit.kind === 'speaker' ? 'transcript' : hit.kind, index });
   }
@@ -1412,7 +1412,7 @@ async function acceptProcessing(progress) {
 function summaryIsStale() {
   const doc = state.summary?.document, transcript = state.transcriptDraft?.doc;
   const notesChanged = doc?.notesSha256 != null && state.draft?.id === state.selectedId && state.draft.notes !== state.draft.savedNotes;
-  return Boolean(state.summary?.stale || notesChanged || state.transcriptDraft?.dirty || (doc && state.transcriptLoaded && (doc.sourceVersion.id !== transcript?.version.id || doc.sourceVersion.revision !== transcript?.version.revision)));
+  return Boolean(state.summary?.stale || notesChanged || state.transcriptDraft?.dirty || (doc && state.transcriptLoaded && !sameTranscriptVersion(doc.sourceVersion, transcript?.version)));
 }
 
 function resultPreview(meeting) {
@@ -1517,7 +1517,6 @@ function seekRecording(seconds) {
   }
 }
 
-const sameTranscriptVersion = (a, b) => Boolean(a && b && a.id === b.id && a.revision === b.revision);
 byId('import-audio').addEventListener('click', () => run(() => finishEditing(async () => {
   if (!modelsReady()) return openSetup();
   const target = await bridge.draftAttachmentTarget(state.selectedId);
@@ -1734,8 +1733,8 @@ summaryEvidence = mountSummaryEvidence({
   onError: error => console.warn('Summary evidence unavailable', error),
   async onNavigate(entry, response, context) {
     const valid = () => context.meetingId === state.selectedId && context.summaryId === state.summary?.document?.id && !context.dirty && !state.transcriptDraft?.dirty
-      && sameTranscriptVersion(context.currentVersion, state.transcriptDraft?.doc?.version)
-      && sameTranscriptVersion(response.currentVersion, state.transcriptDraft?.doc?.version)
+      && state.transcriptDraft?.doc && sameTranscriptVersion(context.currentVersion, state.transcriptDraft.doc.version)
+      && sameTranscriptVersion(response.currentVersion, state.transcriptDraft.doc.version)
       && entry.currentSegmentIds?.length && entry.currentSegmentIds.every(id => state.transcriptDraft.doc.segments.some(segment => segment.id === id));
     if (!valid()) return false;
     state.pendingSearchIntent = null;
@@ -1752,7 +1751,7 @@ summaryEvidence = mountSummaryEvidence({
   },
   onPlay(entry, response, context) {
     if (context.meetingId !== state.selectedId || context.summaryId !== state.summary?.document?.id || context.dirty !== Boolean(state.transcriptDraft?.dirty)
-      || !sameTranscriptVersion(context.currentVersion, state.transcriptDraft?.doc?.version) || !response.audioAvailable
+      || !state.transcriptDraft?.doc || !sameTranscriptVersion(context.currentVersion, state.transcriptDraft.doc.version) || !response.audioAvailable
       || response.sourceSessionId !== currentMeeting()?.audio?.sessionId || !Number.isFinite(entry.segment?.start) || entry.segment.start < 0) return;
     speakerReplay = null; seekRecording(entry.segment.start);
   },
