@@ -27,6 +27,12 @@ const MAX_OUTPUT: usize = 4 * 1024 * 1024;
 const MAX_INPUT: usize = 4 * 1024 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(600);
 const ERROR: &str = "Claude Code 실행을 완료하지 못했습니다.";
+const CANCELLED: &str = "취소했습니다.";
+const MISSING: &str = "Claude Code를 실행하지 못했습니다. 실행 파일이 바뀌었거나 삭제되었다면 설정에서 Claude 연결을 다시 확인해 주세요.";
+const LOGIN_EXPIRED: &str =
+    "Claude 로그인이 만료되었습니다. 설정에서 Claude에 다시 로그인해 주세요.";
+const RATE_LIMITED: &str =
+    "Claude 사용 한도에 도달했습니다. 한도가 초기화된 뒤 다시 시도해 주세요.";
 
 #[derive(Clone, Debug)]
 pub struct Runner {
@@ -113,7 +119,7 @@ fn run(
     if input.len() > MAX_INPUT || cancel.load(Ordering::Acquire) {
         return Err("요청이 너무 크거나 취소되었습니다.".into());
     }
-    let mut child = crate::process_tree::spawn(&mut command)?;
+    let mut child = crate::process_tree::spawn(&mut command).map_err(|_| MISSING)?;
     let mut stdin = child.stdin.take().ok_or(ERROR)?;
     let (input_tx, input_rx) = mpsc::channel();
     thread::spawn(move || {
@@ -154,7 +160,7 @@ fn run(
             let _ = child.kill();
             let _ = child.wait();
             return Err(if cancel.load(Ordering::Acquire) {
-                "취소했습니다."
+                CANCELLED
             } else {
                 "Claude 응답 시간이 초과되었습니다."
             }
@@ -368,6 +374,30 @@ mod tests {
         .is_err());
     }
     #[test]
+    fn failed_turns_keep_the_reason_a_user_can_act_on() {
+        let cancel = AtomicBool::new(false);
+        for (kind, expected) in [
+            ("authentication_failed", LOGIN_EXPIRED),
+            ("rate_limit", RATE_LIMITED),
+            ("server_error", ERROR),
+        ] {
+            let script = format!(
+                "printf '%s\\n' '{{\"type\":\"assistant\",\"message\":{{\"content\":[]}},\"error\":\"{kind}\"}}' '{{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":true,\"result\":\"failed\"}}'; exit 1"
+            );
+            let error = stream_reply(shell(&script), "", &cancel, &mut |_| {}).unwrap_err();
+            assert_eq!(error, expected, "{kind}");
+        }
+        let missing = command(Path::new("/nonexistent/claude-code"));
+        assert_eq!(
+            stream_reply(missing, "", &cancel, &mut |_| {}).unwrap_err(),
+            MISSING
+        );
+        assert_eq!(
+            reply_failure(Some("rate_limit"), CANCELLED.into()),
+            CANCELLED
+        );
+    }
+    #[test]
     fn cancellation_terminates_running_child() {
         let cancel = Arc::new(AtomicBool::new(false));
         let flag = cancel.clone();
@@ -411,7 +441,7 @@ impl Runner {
     }
     pub fn identity(&self, cancel: &AtomicBool) -> Result<String, String> {
         use sha2::{Digest, Sha256};
-        let mut file = std::fs::File::open(&self.binary).map_err(|_| ERROR)?;
+        let mut file = std::fs::File::open(&self.binary).map_err(|_| MISSING)?;
         let mut hash = Sha256::new();
         let mut total = 0u64;
         let mut buffer = [0u8; 65536];
@@ -481,15 +511,36 @@ impl Runner {
         }
         let work = tempfile::tempdir().map_err(|_| ERROR)?;
         let cmd = reply_command(&self.binary, work.path(), model, effort);
-        let mut stream = ReplyStream::default();
-        run(cmd, prompt.as_bytes().to_vec(), TIMEOUT, &cancel, |chunk| {
-            stream.feed(chunk, &mut delta)
-        })?;
-        let text = stream.finish(&mut delta)?;
-        Ok(Reply {
-            text,
-            actual_model_id: stream.actual_model(),
-        })
+        stream_reply(cmd, prompt, &cancel, &mut delta)
+    }
+}
+
+fn stream_reply(
+    cmd: Command,
+    prompt: &str,
+    cancel: &AtomicBool,
+    delta: &mut impl FnMut(&str),
+) -> Result<Reply, String> {
+    let mut stream = ReplyStream::default();
+    let text = run(cmd, prompt.as_bytes().to_vec(), TIMEOUT, cancel, |chunk| {
+        stream.feed(chunk, &mut *delta)
+    })
+    .and_then(|()| stream.finish(&mut *delta))
+    .map_err(|error| reply_failure(stream.failure.as_deref(), error))?;
+    Ok(Reply {
+        text,
+        actual_model_id: stream.actual_model(),
+    })
+}
+
+// Claude Code marks a failed turn's assistant message with an error kind. The kinds a
+// user can act on keep their own message; anything else stays the general failure.
+fn reply_failure(kind: Option<&str>, error: String) -> String {
+    match kind {
+        _ if error == CANCELLED => error,
+        Some("authentication_failed" | "oauth_org_not_allowed") => LOGIN_EXPIRED.into(),
+        Some("rate_limit") => RATE_LIMITED.into(),
+        _ => error,
     }
 }
 
@@ -620,6 +671,7 @@ struct ReplyStream {
     stop: Option<String>,
     saw_partial: bool,
     actual_models: std::collections::BTreeSet<String>,
+    failure: Option<String>,
 }
 impl ReplyStream {
     fn feed(&mut self, chunk: &[u8], delta: &mut impl FnMut(&str)) -> Result<(), String> {
@@ -653,6 +705,11 @@ impl ReplyStream {
                         if let Some(stop) = event["delta"]["stop_reason"].as_str() {
                             self.stop = Some(stop.into());
                         }
+                    }
+                }
+                Some("assistant") => {
+                    if let Some(kind) = v["error"].as_str() {
+                        self.failure.get_or_insert_with(|| kind.into());
                     }
                 }
                 Some("result") => {
