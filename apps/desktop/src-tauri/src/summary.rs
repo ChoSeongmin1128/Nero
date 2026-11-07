@@ -1,8 +1,8 @@
 //! On-demand local summary worker. No provider authentication or remote inference.
 use crate::memory::{MemoryMonitor, MemoryState};
 use crate::processing::{
-    cancelled, directory, interruptible, matches_file, message, plain_file, Model, Processing,
-    Progress, Worker,
+    cancelled, directory, interruptible, message, plain_file, Model, ModelSpec, ModelStage,
+    Processing, Progress, Worker,
 };
 use crate::summary_failure::{
     classify_worker_failure, recovery, Failure, FailureDetail, FailureKind,
@@ -46,14 +46,14 @@ const SYSTEM: &str = concat!(source_policy!(), "중요한 사실 끝에는 제�
 const JSON_SYSTEM: &str = concat!(source_policy!(), "원문 근거는 JSON sources 배열에만 기록하고 text/title에는 대괄호 인용을 넣지 마세요. 근거 번호를 새로 만들지 마세요. 내부 추론이나 사용 방법 설명 없이 요청한 JSON 객체만 출력하세요. 출력 스키마가 inputs를 요구하면 원문 번호를 재출력하지 말고 입력 항목 번호만 연결하세요.");
 const INPUT_BOUNDARY: &str = "회의 일시/장소 메타데이터는 제공되지 않았습니다. 해당 섹션을 생성하지 마세요. 별도 attendance_reference가 없으면 참석 명단도 제공되지 않은 것입니다. 참석 명단이 제공되더라도 참고 이름과 실제 음성 기록의 화자는 별개입니다. 명단의 순서/개수/이름 유사성으로 화자나 1인칭 담당자를 추정하지 마세요. 사용자 지정명은 사용자 입력을 근거로 1인칭 담당자를 참조할 수 있습니다. 자동 표시명과 출처 미기록 표시명은 실제 이름으로 추정하지 마세요. 어떤 표시명도 실제 목소리 신원 검증 결과는 아닙니다. 표식은 참석자가 아니고 개수는 참석 인원이 아닙니다. 구간 내부 표식의 동일인 연결은 구간 경계를 넘을 수 없습니다. 미지정/자동/출처 미기록 화자의 1인칭 약속은 본문에 이름이 명시되지 않으면 담당자를 미정으로 남기세요.";
 
+pub(super) const SUMMARY_MODEL: ModelSpec = ModelSpec {
+    manifest: MANIFEST,
+    label: "Gemma4-E4B",
+    stage: ModelStage::Summary,
+};
+
 fn model() -> Model {
-    serde_json::from_str(MANIFEST).expect("bundled summary manifest")
-}
-fn model_dir(process: &Processing) -> Result<PathBuf, String> {
-    directory(
-        &process.root,
-        &format!("models/Gemma4-E4B-{}", model().revision),
-    )
+    SUMMARY_MODEL.model()
 }
 fn executable(process: &Processing, gpu: bool) -> PathBuf {
     process
@@ -98,22 +98,13 @@ fn supported_platform() -> bool {
     })
 }
 pub fn availability(process: &Processing) -> (bool, bool, u64) {
-    let spec = model();
     let supported = supported_platform()
         && (executable(process, true).is_file() || executable(process, false).is_file());
-    let ready = model_dir(process).ok().is_some_and(|dir| {
-        plain_file(&dir.join("verified.json"))
-            .ok()
-            .is_some_and(|f| {
-                let mut text = String::new();
-                f.take(65536).read_to_string(&mut text).is_ok() && text == MANIFEST
-            })
-            && spec.files.iter().all(|f| {
-                fs::symlink_metadata(dir.join(&f.name))
-                    .is_ok_and(|m| m.is_file() && !m.file_type().is_symlink() && m.len() == f.bytes)
-            })
-    });
-    (supported, ready, spec.files.iter().map(|f| f.bytes).sum())
+    (
+        supported,
+        process.model_ready(SUMMARY_MODEL),
+        model().bytes(),
+    )
 }
 type SummaryResult<T> = Result<T, Failure>;
 
@@ -1218,17 +1209,16 @@ pub(super) async fn run_structured(
     }
     process.update(|p| p.message = "용어 확인 모델을 확인하고 있습니다.".into());
     let spec = model();
-    let dir = model_dir(process).map_err(storage)?;
-    for item in &spec.files {
-        if !matches_file(&dir.join(&item.name), item, cancel) {
-            check_cancel(cancel)?;
-            crate::processing::invalidate_readiness(&dir).map_err(storage)?;
-            return Err(Failure::new(
+    let dir = process
+        .verified_model_dir(SUMMARY_MODEL, cancel)
+        .map_err(|error| match error.kind {
+            // Terminology keeps the original text rather than asking for a new model.
+            FailureKind::ModelNotReady => Failure::new(
                 FailureKind::Input,
                 "언어 모델 검증을 완료하지 못해 원문을 유지했습니다.",
-            ));
-        }
-    }
+            ),
+            _ => error,
+        })?;
     let weights = dir.join(&spec.files[0].name);
     let monitor = MemoryMonitor::new();
     let (responses, receipt) = monitor_attempt(
@@ -1391,7 +1381,7 @@ fn report_summary_failure(process: &Processing, error: Failure) -> String {
 impl Processing {
     pub fn prepare_summary(self: &Arc<Self>) -> Result<Progress, String> {
         crate::release_capabilities::require_local_summary()?;
-        self.prepare_named_model(MANIFEST, "summary-model", "Gemma4-E4B")
+        self.prepare_named_model(SUMMARY_MODEL, "summary-model")
     }
     pub fn summarize_selected(
         self: &Arc<Self>,
@@ -1496,17 +1486,16 @@ impl Processing {
                     }
                     process.update(|p| p.message = "모델을 확인하고 있습니다.".into());
                     let spec = model();
-                    let dir = model_dir(&process).map_err(storage)?;
-                    for item in &spec.files {
-                        if !matches_file(&dir.join(&item.name), item, &cancel) {
-                            check_cancel(&cancel)?;
-                            crate::processing::invalidate_readiness(&dir).map_err(storage)?;
-                            return Err(Failure::new(
-                                FailureKind::ModelNotReady,
-                                "요약 모델을 다시 준비해 주세요.",
-                            ));
-                        }
-                    }
+                    let dir =
+                        process
+                            .verified_model_dir(SUMMARY_MODEL, &cancel)
+                            .map_err(|error| match error.kind {
+                                FailureKind::ModelNotReady => Failure::new(
+                                    FailureKind::ModelNotReady,
+                                    "요약 모델을 다시 준비해 주세요.",
+                                ),
+                                _ => error,
+                            })?;
                     let runtime = tokio::runtime::Builder::new_current_thread()
                         .enable_all()
                         .build()
@@ -1617,7 +1606,11 @@ mod tests {
             .unwrap();
         assert_eq!(error.kind, FailureKind::Input);
         assert!(fs::read_dir(&path).unwrap().next().is_none());
-        assert!(!model_dir(&process).unwrap().join("verified.json").exists());
+        assert!(!process
+            .model_dir_of(SUMMARY_MODEL)
+            .unwrap()
+            .join("verified.json")
+            .exists());
     }
     #[test]
     fn cleanup_failure_is_not_hidden_by_cancellation_or_failed_evidence_write() {

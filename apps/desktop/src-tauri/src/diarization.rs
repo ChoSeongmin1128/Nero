@@ -1,7 +1,7 @@
 //! Optional whole-recording speaker analysis. It never treats ASR-local tags as identities.
 use crate::processing::native_speech::{self, executable, library, Backend};
 use crate::processing::{
-    cancelled, directory, invalidate_readiness, matches_file, plain_file, Model, Processing,
+    cancelled, directory, plain_file, verify_model_files, Model, ModelSpec, ModelStage, Processing,
     Progress,
 };
 use crate::speech_audio::AnalysisAudio;
@@ -10,7 +10,7 @@ use nero_core::{
     CoreHandle, SpeakerAnalysisDraft, SpeakerPosterior, Transcript, TranscriptVersion,
 };
 use serde_json::{json, Value};
-use std::fs::{self, OpenOptions};
+use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{atomic::AtomicBool, Arc};
@@ -20,42 +20,25 @@ use nero_core::speech_runtime::current as runtime;
 const RESULT_LIMIT: u64 = 16 * 1024 * 1024;
 const POSTERIOR_LIMIT: u64 = 128 * 1024 * 1024;
 
-pub(super) fn model() -> Model {
-    serde_json::from_str(MANIFEST).expect("bundled diarization manifest")
-}
+pub(super) const SPEAKER_MODEL: ModelSpec = ModelSpec {
+    manifest: MANIFEST,
+    label: "Nemotron3",
+    stage: ModelStage::Speakers,
+};
 
-pub(super) fn model_dir(process: &Processing) -> Result<PathBuf, String> {
-    directory(
-        &process.root,
-        &format!("models/Nemotron3-{}", model().revision),
-    )
+pub(super) fn model() -> Model {
+    SPEAKER_MODEL.model()
 }
 
 pub fn availability(process: &Processing) -> (bool, bool, u64) {
-    let spec = model();
     let supported = (cfg!(all(target_os = "macos", target_arch = "aarch64"))
         || cfg!(all(target_os = "windows", target_arch = "x86_64")))
         && ((executable(process, true).is_file() && library(process, true).is_file())
             || (executable(process, false).is_file() && library(process, false).is_file()));
-    let ready = model_dir(process).ok().is_some_and(|directory| {
-        plain_file(&directory.join("verified.json"))
-            .ok()
-            .is_some_and(|file| {
-                let mut contents = String::new();
-                file.take(65536).read_to_string(&mut contents).is_ok() && contents == MANIFEST
-            })
-            && spec.files.iter().all(|item| {
-                fs::symlink_metadata(directory.join(&item.name)).is_ok_and(|metadata| {
-                    metadata.is_file()
-                        && !metadata.file_type().is_symlink()
-                        && metadata.len() == item.bytes
-                })
-            })
-    });
     (
         supported,
-        ready,
-        spec.files.iter().map(|item| item.bytes).sum(),
+        process.model_ready(SPEAKER_MODEL),
+        model().bytes(),
     )
 }
 
@@ -200,7 +183,9 @@ fn analyze(
     path: &Path,
     cancel: &AtomicBool,
 ) -> Result<SpeakerAnalysisDraft, Failure> {
-    let directory = model_dir(process).map_err(|_| failure(FailureKind::Storage))?;
+    let directory = process
+        .model_dir_of(SPEAKER_MODEL)
+        .map_err(|_| failure(FailureKind::Storage))?;
     analyze_with_model(process, source, audio, path, cancel, &directory)
 }
 
@@ -214,7 +199,8 @@ pub(super) fn completed_live(
 ) -> Result<SpeakerAnalysisDraft, Failure> {
     let spec = model();
     let item = &spec.files[0];
-    let weights = model_dir(process)
+    let weights = process
+        .model_dir_of(SPEAKER_MODEL)
         .map_err(|_| failure(FailureKind::Storage))?
         .join(&item.name);
     let gpu = backend != "cpu";
@@ -245,12 +231,7 @@ pub(super) fn analyze_with_model(
 ) -> Result<SpeakerAnalysisDraft, Failure> {
     let spec = model();
     let item = &spec.files[0];
-    check_cancel(cancel)?;
-    if !matches_file(&directory.join(&item.name), item, cancel) {
-        check_cancel(cancel)?;
-        invalidate_readiness(&directory).map_err(|_| failure(FailureKind::Storage))?;
-        return Err(failure(FailureKind::ModelNotReady));
-    }
+    verify_model_files(directory, &spec, cancel).map_err(|error| failure(error.kind))?;
     plain_file(audio).map_err(|_| failure(FailureKind::Input))?;
     let mut gpu = executable(process, true).is_file() && library(process, true).is_file();
     let mut attempt = 0u8;
@@ -437,7 +418,7 @@ pub(super) fn analyze_recording(
 
 impl Processing {
     pub fn prepare_diarization(self: &Arc<Self>) -> Result<Progress, String> {
-        self.prepare_named_model(MANIFEST, "speaker-model", "Nemotron3")
+        self.prepare_named_model(SPEAKER_MODEL, "speaker-model")
     }
 
     pub fn diarize(
@@ -503,6 +484,7 @@ impl Processing {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     fn baseline(process: &Processing) -> (CoreHandle, String, Transcript, PathBuf) {
         let core = CoreHandle::open(&process.root).unwrap();

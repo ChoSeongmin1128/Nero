@@ -345,7 +345,9 @@ fn run(
     let model_path = process.model_dir_for(engine)?.join(&asr.files[0].name);
     let speaker_model = crate::diarization::model();
     let speaker_weights = if speaker_enabled {
-        crate::diarization::model_dir(&process)?.join(&speaker_model.files[0].name)
+        process
+            .model_dir_of(crate::diarization::SPEAKER_MODEL)?
+            .join(&speaker_model.files[0].name)
     } else {
         path.join("unused-speaker-model")
     };

@@ -19,8 +19,6 @@ use uuid::Uuid;
 #[path = "native_speech.rs"]
 pub(crate) mod native_speech;
 
-const MODEL_LABEL: &str = crate::asr::LABEL;
-
 fn platform_supported() -> bool {
     static SUPPORTED: OnceLock<bool> = OnceLock::new();
     *SUPPORTED.get_or_init(|| {
@@ -48,6 +46,85 @@ pub(super) struct Model {
     pub(super) repository: String,
     pub(super) revision: String,
     pub(super) files: Vec<ModelFile>,
+}
+impl Model {
+    pub(super) fn bytes(&self) -> u64 {
+        self.files.iter().map(|file| file.bytes).sum()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ModelStage {
+    Speech,
+    Speakers,
+    Summary,
+}
+impl ModelStage {
+    fn id(self) -> &'static str {
+        match self {
+            Self::Speech => "speech",
+            Self::Speakers => "speakers",
+            Self::Summary => "summary",
+        }
+    }
+    fn title(self) -> &'static str {
+        match self {
+            Self::Speech => "음성 인식 모델",
+            Self::Speakers => "화자 구분 모델",
+            Self::Summary => "요약 모델",
+        }
+    }
+}
+
+// A pinned model stored under `models/{label}-{revision}`. Speech engines derive theirs
+// from `SpeechEngine`; the speaker and summary models declare a constant.
+#[derive(Clone, Copy)]
+pub(super) struct ModelSpec {
+    pub(super) manifest: &'static str,
+    pub(super) label: &'static str,
+    pub(super) stage: ModelStage,
+}
+impl ModelSpec {
+    pub(super) fn speech(engine: SpeechEngine) -> Self {
+        Self {
+            manifest: engine.manifest(),
+            label: engine.label(),
+            stage: ModelStage::Speech,
+        }
+    }
+    pub(super) fn model(self) -> Model {
+        serde_json::from_str(self.manifest).expect("bundled model manifest")
+    }
+    fn relative_dir(self) -> String {
+        format!("models/{}-{}", self.label, self.model().revision)
+    }
+}
+
+// Hashes every pinned file before use. A mismatch withdraws the readiness marker so the
+// model is prepared again; the error kind is Cancelled, Storage or ModelNotReady.
+pub(super) fn verify_model_files(
+    directory: &Path,
+    model: &Model,
+    cancel: &AtomicBool,
+) -> Result<(), crate::summary_failure::Failure> {
+    use crate::summary_failure::{Failure, FailureKind};
+    let cancelled = |cancel: &AtomicBool| {
+        cancelled(cancel).map_err(|message| Failure::new(FailureKind::Cancelled, message))
+    };
+    for item in &model.files {
+        cancelled(cancel)?;
+        let matches = matches_file(&directory.join(&item.name), item, cancel);
+        cancelled(cancel)?;
+        if !matches {
+            invalidate_readiness(directory)
+                .map_err(|message| Failure::new(FailureKind::Storage, message))?;
+            return Err(Failure::new(
+                FailureKind::ModelNotReady,
+                "모델 파일을 다시 준비해 주세요.",
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Serialize, Default, PartialEq, Eq)]
@@ -470,14 +547,44 @@ impl Processing {
         self.model_dir_for(self.speech_engine())
     }
     pub(super) fn model_dir_for(&self, engine: SpeechEngine) -> Result<PathBuf, String> {
-        directory(
-            &self.root,
-            &format!(
-                "models/{}-{}",
-                engine.label(),
-                Self::model_for(engine).revision
-            ),
-        )
+        self.model_dir_of(ModelSpec::speech(engine))
+    }
+    pub(super) fn model_dir_of(&self, spec: ModelSpec) -> Result<PathBuf, String> {
+        directory(&self.root, &spec.relative_dir())
+    }
+    // The verified marker matches the manifest and every file has its pinned size.
+    pub(super) fn model_ready(&self, spec: ModelSpec) -> bool {
+        let Ok(path) = self.model_dir_of(spec) else {
+            return false;
+        };
+        let marker = plain_file(&path.join("verified.json"))
+            .ok()
+            .and_then(|file| {
+                let mut value = String::new();
+                file.take(65536).read_to_string(&mut value).ok()?;
+                Some(value)
+            });
+        marker.as_deref() == Some(spec.manifest)
+            && spec.model().files.iter().all(|file| {
+                fs::symlink_metadata(path.join(&file.name)).is_ok_and(|meta| {
+                    meta.is_file() && !meta.file_type().is_symlink() && meta.len() == file.bytes
+                })
+            })
+    }
+    // The model directory after every pinned file is hashed again for this use.
+    pub(super) fn verified_model_dir(
+        &self,
+        spec: ModelSpec,
+        cancel: &AtomicBool,
+    ) -> Result<PathBuf, crate::summary_failure::Failure> {
+        let directory = self.model_dir_of(spec).map_err(|message| {
+            crate::summary_failure::Failure::new(
+                crate::summary_failure::FailureKind::Storage,
+                message,
+            )
+        })?;
+        verify_model_files(&directory, &spec.model(), cancel)?;
+        Ok(directory)
     }
     pub(super) fn worker(&self, name: &str) -> PathBuf {
         self.resources.join("native").join(name)
@@ -515,8 +622,7 @@ impl Processing {
         engine
             .requirements()
             .into_iter()
-            .flat_map(|engine| Self::model_for(engine).files)
-            .map(|file| file.bytes)
+            .map(|engine| Self::model_for(engine).bytes())
             .sum()
     }
     // Bytes still missing for every model `engine` needs; `.part` files count as received.
@@ -528,7 +634,7 @@ impl Processing {
             .requirements()
             .into_iter()
             .try_fold(0, |sum, engine| {
-                Ok(sum + self.remaining_model_bytes(engine.manifest(), engine.label())?)
+                Ok(sum + self.remaining_model_bytes(ModelSpec::speech(engine))?)
             })
     }
     fn speakers_ready(&self, enabled: bool) -> bool {
@@ -542,25 +648,7 @@ impl Processing {
         engine
             .requirements()
             .into_iter()
-            .all(|engine| self.own_model_ready(engine))
-    }
-    fn own_model_ready(&self, engine: SpeechEngine) -> bool {
-        let Ok(path) = self.model_dir_for(engine) else {
-            return false;
-        };
-        let marker = plain_file(&path.join("verified.json"))
-            .ok()
-            .and_then(|file| {
-                let mut value = String::new();
-                file.take(65536).read_to_string(&mut value).ok()?;
-                Some(value)
-            });
-        marker.as_deref() == Some(engine.manifest())
-            && Self::model_for(engine).files.iter().all(|file| {
-                fs::symlink_metadata(path.join(&file.name)).is_ok_and(|meta| {
-                    meta.is_file() && !meta.file_type().is_symlink() && meta.len() == file.bytes
-                })
-            })
+            .all(|engine| self.model_ready(ModelSpec::speech(engine)))
     }
     // Selects an engine. A ready engine becomes active now. Without a working engine
     // (first setup) the selection is only recorded; setup downloads it explicitly.
@@ -754,7 +842,7 @@ impl Processing {
             return None;
         }
         let speakers = if self.speaker_enabled() && !progress.speaker_ready {
-            self.remaining_model_bytes(crate::diarization::MANIFEST, "Nemotron3")
+            self.remaining_model_bytes(crate::diarization::SPEAKER_MODEL)
                 .unwrap_or(0)
         } else {
             0
@@ -911,7 +999,7 @@ impl Processing {
             (false, false, 0)
         };
         let model = self.model();
-        progress.model_bytes = model.files.iter().map(|file| file.bytes).sum();
+        progress.model_bytes = model.bytes();
         progress.model_ready = progress
             .speech_engine
             .is_some_and(|engine| self.model_ready_for(engine));
@@ -2251,12 +2339,12 @@ impl Processing {
         }
         let required = self.remaining_speech_bytes(engine)?
             + if speaker_enabled && crate::diarization::availability(self).0 {
-                self.remaining_model_bytes(crate::diarization::MANIFEST, "Nemotron3")?
+                self.remaining_model_bytes(crate::diarization::SPEAKER_MODEL)?
             } else {
                 0
             }
             + if include_summary {
-                self.remaining_model_bytes(crate::summary::MANIFEST, "Gemma4-E4B")?
+                self.remaining_model_bytes(crate::summary::SUMMARY_MODEL)?
             } else {
                 0
             };
@@ -2276,11 +2364,7 @@ impl Processing {
                 let progress = this.snapshot();
                 let total = Self::speech_bytes(engine)
                     + if speaker_enabled && crate::diarization::availability(&this).0 {
-                        crate::diarization::model()
-                            .files
-                            .iter()
-                            .map(|file| file.bytes)
-                            .sum()
+                        crate::diarization::model().bytes()
                     } else {
                         0
                     }
@@ -2311,33 +2395,21 @@ impl Processing {
                 } else {
                     let mut done = 0;
                     for engine in engine.requirements() {
-                        done += this.prepare_files(
-                            engine.manifest(),
-                            engine.label(),
-                            &cancel,
-                            done,
-                            total,
-                        )?;
+                        done +=
+                            this.prepare_files(ModelSpec::speech(engine), &cancel, done, total)?;
                     }
                     done
                 };
                 if speaker_enabled && crate::diarization::availability(&this).0 {
                     first += this.prepare_files(
-                        crate::diarization::MANIFEST,
-                        "Nemotron3",
+                        crate::diarization::SPEAKER_MODEL,
                         &cancel,
                         first,
                         total,
                     )?;
                 }
                 if include_summary {
-                    this.prepare_files(
-                        crate::summary::MANIFEST,
-                        "Gemma4-E4B",
-                        &cancel,
-                        first,
-                        total,
-                    )?;
+                    this.prepare_files(crate::summary::SUMMARY_MODEL, &cancel, first, total)?;
                 }
                 Ok(None)
             },
@@ -2345,24 +2417,22 @@ impl Processing {
     }
     pub(super) fn prepare_named_model(
         self: &Arc<Self>,
-        manifest: &'static str,
+        spec: ModelSpec,
         kind: &str,
-        label: &'static str,
     ) -> Result<Progress, String> {
-        self.prepare_named_model_with_id(manifest, kind, label, None)
+        self.prepare_named_model_with_id(spec, kind, None)
     }
 
     fn prepare_named_model_with_id(
         self: &Arc<Self>,
-        manifest: &'static str,
+        spec: ModelSpec,
         kind: &str,
-        label: &'static str,
         requested_id: Option<String>,
     ) -> Result<Progress, String> {
         if kind == "summary-model" {
             crate::release_capabilities::require_local_summary()?;
         }
-        crate::storage_space::check(&self.root, self.remaining_model_bytes(manifest, label)?)?;
+        crate::storage_space::check(&self.root, self.remaining_model_bytes(spec)?)?;
         self.start_scoped(
             kind,
             None,
@@ -2372,20 +2442,14 @@ impl Processing {
             None,
             requested_id,
             move |this, cancel, _path| {
-                let total = serde_json::from_str::<Model>(manifest)
-                    .map_err(message)?
-                    .files
-                    .iter()
-                    .map(|file| file.bytes)
-                    .sum();
-                this.prepare_files(manifest, label, &cancel, 0, total)?;
+                this.prepare_files(spec, &cancel, 0, spec.model().bytes())?;
                 Ok(None)
             },
         )
     }
-    fn remaining_model_bytes(&self, manifest: &str, label: &str) -> Result<u64, String> {
-        let model: Model = serde_json::from_str(manifest).map_err(message)?;
-        let target = self.root.join(format!("models/{label}-{}", model.revision));
+    fn remaining_model_bytes(&self, spec: ModelSpec) -> Result<u64, String> {
+        let model = spec.model();
+        let target = self.root.join(spec.relative_dir());
         let length = |path: PathBuf| {
             fs::symlink_metadata(path)
                 .ok()
@@ -2408,14 +2472,13 @@ impl Processing {
     }
     fn prepare_files(
         &self,
-        manifest: &str,
-        label: &str,
+        spec: ModelSpec,
         cancel: &AtomicBool,
         offset: u64,
         total: u64,
     ) -> Result<u64, String> {
-        let model: Model = serde_json::from_str(manifest).map_err(message)?;
-        let target = directory(&self.root, &format!("models/{label}-{}", model.revision))?;
+        let model = spec.model();
+        let target = self.model_dir_of(spec)?;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -2431,22 +2494,8 @@ impl Processing {
             for item in &model.files {
                 cancelled(cancel)?;
                 self.update(|p| {
-                    p.model_stage = Some(
-                        match label {
-                            MODEL_LABEL | "WhisperTurbo" | "WhisperLargeV3" | "QwenKo" => "speech",
-                            "Nemotron3" => "speakers",
-                            _ => "summary",
-                        }
-                        .into(),
-                    );
-                    p.message = match label {
-                        MODEL_LABEL | "WhisperTurbo" | "WhisperLargeV3" | "QwenKo" => {
-                            "음성 인식 모델 확인 중"
-                        }
-                        "Nemotron3" => "화자 구분 모델 확인 중",
-                        _ => "요약 모델 확인 중",
-                    }
-                    .into();
+                    p.model_stage = Some(spec.stage.id().into());
+                    p.message = format!("{} 확인 중", spec.stage.title());
                     p.bytes = offset + done;
                     p.total_bytes = total;
                 });
@@ -2454,16 +2503,7 @@ impl Processing {
                 let matches = matches_file(&destination, item, cancel);
                 cancelled(cancel)?;
                 if !matches {
-                    self.update(|p| {
-                        p.message = match label {
-                            MODEL_LABEL | "WhisperTurbo" | "WhisperLargeV3" | "QwenKo" => {
-                                "음성 인식 모델 다운로드 중"
-                            }
-                            "Nemotron3" => "화자 구분 모델 다운로드 중",
-                            _ => "요약 모델 다운로드 중",
-                        }
-                        .into()
-                    });
+                    self.update(|p| p.message = format!("{} 다운로드 중", spec.stage.title()));
                     let url = format!(
                         "https://huggingface.co/{}/resolve/{}/{}",
                         model.repository, model.revision, item.name
@@ -2485,12 +2525,12 @@ impl Processing {
             .create_new(true)
             .open(&marker)
             .map_err(message)?;
-        file.write_all(manifest.as_bytes())
+        file.write_all(spec.manifest.as_bytes())
             .map_err(crate::storage_space::write_error)?;
         file.sync_all().map_err(crate::storage_space::write_error)?;
         drop(file);
         fs::rename(marker, target.join("verified.json")).map_err(message)?;
-        Ok(model.files.iter().map(|file| file.bytes).sum())
+        Ok(model.bytes())
     }
     pub fn recording_start<T>(
         &self,
@@ -2675,15 +2715,13 @@ impl Processing {
                 record.apple_speech_variant,
             )?,
             "summary-model" => self.prepare_named_model_with_id(
-                crate::summary::MANIFEST,
+                crate::summary::SUMMARY_MODEL,
                 "summary-model",
-                "Gemma4-E4B",
                 Some(successor_id.into()),
             )?,
             "speaker-model" => self.prepare_named_model_with_id(
-                crate::diarization::MANIFEST,
+                crate::diarization::SPEAKER_MODEL,
                 "speaker-model",
-                "Nemotron3",
                 Some(successor_id.into()),
             )?,
             "transcribe" => self.transcribe_bound(
@@ -2968,21 +3006,13 @@ impl Processing {
                     p.phase = Some("preparing".into());
                     p.message = "모델을 확인하고 있습니다.".into();
                 });
-                let model = Self::model_for(engine);
+                // Apple Speech has no Nero model files; its job folder stands in.
                 let directory = if engine == SpeechEngine::AppleSpeech {
                     path.clone()
                 } else {
-                    this.model_dir_for(engine)?
+                    this.verified_model_dir(ModelSpec::speech(engine), &cancel)
+                        .map_err(|error| error.message)?
                 };
-                for item in &model.files {
-                    cancelled(&cancel)?;
-                    let matches = matches_file(&directory.join(&item.name), item, &cancel);
-                    cancelled(&cancel)?;
-                    if !matches {
-                        invalidate_readiness(&directory)?;
-                        return Err("모델 파일을 다시 준비해 주세요.".into());
-                    }
-                }
                 this.update(|p| {
                     p.phase = Some("recognizing".into());
                     p.message = if speaker_enabled {
@@ -5031,6 +5061,85 @@ mod tests {
         cancel.store(false, Ordering::Release);
         fs::write(&file, b"other").unwrap();
         assert!(!matches_file(&file, &item, &cancel));
+    }
+
+    #[test]
+    fn model_specs_keep_the_stored_paths_and_progress_stages() {
+        let (_temporary, process) = setup();
+        let speaker = crate::diarization::SPEAKER_MODEL;
+        let summary = crate::summary::SUMMARY_MODEL;
+        for (spec, label) in [
+            (speaker, "Nemotron3"),
+            (summary, "Gemma4-E4B"),
+            (ModelSpec::speech(SpeechEngine::Nemotron), "Nemotron35-ASR"),
+            (ModelSpec::speech(SpeechEngine::QwenKo), "QwenKo"),
+        ] {
+            assert_eq!(
+                process.model_dir_of(spec).unwrap(),
+                process
+                    .root
+                    .join(format!("models/{label}-{}", spec.model().revision))
+            );
+        }
+        for engine in SpeechEngine::ALL {
+            assert_eq!(ModelSpec::speech(engine).stage, ModelStage::Speech);
+        }
+        for (stage, id, title) in [
+            (ModelStage::Speech, "speech", "음성 인식 모델"),
+            (speaker.stage, "speakers", "화자 구분 모델"),
+            (summary.stage, "summary", "요약 모델"),
+        ] {
+            assert_eq!((stage.id(), stage.title()), (id, title));
+        }
+    }
+
+    #[test]
+    fn readiness_and_pre_use_verification_follow_one_rule_for_every_model() {
+        use crate::summary_failure::FailureKind;
+        let (_temporary, process) = setup();
+        let speaker = crate::diarization::SPEAKER_MODEL;
+        let summary = crate::summary::SUMMARY_MODEL;
+        // Sparse files of the pinned size with the marker: ready, without reading content.
+        for spec in [speaker, summary] {
+            let directory = process.model_dir_of(spec).unwrap();
+            for file in spec.model().files {
+                fs::File::create(directory.join(&file.name))
+                    .unwrap()
+                    .set_len(file.bytes)
+                    .unwrap();
+            }
+            fs::write(directory.join("verified.json"), spec.manifest).unwrap();
+            assert!(process.model_ready(spec));
+        }
+        assert!(crate::diarization::availability(&process).1);
+        assert!(crate::summary::availability(&process).1);
+        let marker = process.model_dir_of(speaker).unwrap().join("verified.json");
+        let cancelled = process
+            .verified_model_dir(speaker, &AtomicBool::new(true))
+            .unwrap_err();
+        assert_eq!(cancelled.kind, FailureKind::Cancelled);
+        assert!(marker.exists());
+        // The sparse file does not hash to the pin, so use withdraws readiness.
+        let mismatch = process
+            .verified_model_dir(speaker, &AtomicBool::new(false))
+            .unwrap_err();
+        assert_eq!(mismatch.kind, FailureKind::ModelNotReady);
+        assert!(!marker.exists());
+        assert!(!process.model_ready(speaker));
+        assert!(!crate::diarization::availability(&process).1);
+        let directory = process.root.join("synthetic-model");
+        fs::create_dir(&directory).unwrap();
+        fs::write(directory.join("weights.bin"), b"pinned").unwrap();
+        let pinned = Model {
+            repository: "example/model".into(),
+            revision: "example".into(),
+            files: vec![ModelFile {
+                name: "weights.bin".into(),
+                bytes: 6,
+                sha256: format!("{:x}", Sha256::digest(b"pinned")),
+            }],
+        };
+        assert!(verify_model_files(&directory, &pinned, &AtomicBool::new(false)).is_ok());
     }
 
     #[test]
