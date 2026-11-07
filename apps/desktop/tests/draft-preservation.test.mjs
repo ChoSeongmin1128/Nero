@@ -1718,6 +1718,20 @@ test('meeting and AI copies use the native clipboard bridge and propagate failur
 });
 
 
+test('an agent write that ends a composition puts the cursor back in the notes', async () => {
+  const page = await openApp();
+  const notes = page.element('meeting-notes');
+  notes.focus(); notes.value = '한글 입력'; notes.selectionStart = 3; notes.selectionEnd = 3;
+  const selections = [];
+  notes.setSelectionRange = (start, end) => selections.push([start, end]);
+  notes.listeners.get('compositionstart')();
+  page.bridge.agentWriteReady = async () => {};
+  const request = page.app.onAgentWriteRequest({ requestId: '22222222-2222-4222-8222-222222222222' });
+  await tick(); page.updates[0]?.pending.resolve(); await request;
+  assert.equal(page.document.activeElement, notes);
+  assert.deepEqual(selections.at(-1), [3, 3]);
+});
+
 test('agent writes flush pending edits and reconcile focused metadata before unlocking', async () => {
   const page = await openApp();
   for (const editor of page.app.appLeaveEditors) editor.beforeLeave = () => { throw new Error('meeting mutations do not leave every editor'); };

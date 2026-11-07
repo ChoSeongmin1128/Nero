@@ -868,7 +868,25 @@ document.addEventListener('keydown', (event) => {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') { event.preventDefault(); void finishEditing(() => {}).catch(() => {}); }
 });
 
+// Where the person was typing, so a save for another writer (an agent, a quit) can
+// put the cursor back once the editors unlock.
+function captureEditingFocus() {
+  const element = document.activeElement;
+  if (!element || !['meeting-title', 'meeting-notes'].includes(element.id) && element.dataset?.segment == null) return null;
+  return { id: element.id, segment: element.dataset?.segment ?? null, start: element.selectionStart, end: element.selectionEnd };
+}
+function restoreEditingFocus(focus) {
+  if (!focus || document.activeElement && document.activeElement !== document.body) return;
+  const element = focus.segment != null
+    ? byId('transcript-rows').querySelector(`[data-segment="${focus.segment}"]`)
+    : byId(focus.id);
+  if (!element || element.readOnly || element.isConnected === false) return;
+  element.focus();
+  if (Number.isInteger(focus.start)) element.setSelectionRange?.(focus.start, focus.end ?? focus.start);
+}
+
 async function finishEditing(action) {
+  const focus = captureEditingFocus();
   if (state.composing || state.transcriptComposing) {
     const editing = document.activeElement;
     const notesComposing = state.composing;
@@ -896,6 +914,7 @@ async function finishEditing(action) {
     byId('meeting-notes').readOnly = state.editLocks > 0;
     if (currentMeeting()) renderTranscript(currentMeeting());
     speakers.render();
+    if (state.editLocks === 0) restoreEditingFocus(focus);
   }
 }
 
