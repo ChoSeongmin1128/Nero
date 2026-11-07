@@ -162,6 +162,9 @@ pub(super) fn restore_words(raw: &[u8], start: usize, end: usize) -> Result<Vec<
     let native: Native = serde_json::from_slice(raw).map_err(|_| failure())?;
     let mut words = Vec::new();
     let mut previous: Option<(usize, usize)> = None;
+    // Punctuation before any word waits for the next word, even in a later segment; a
+    // chunk that holds only punctuation has no word to keep it and drops it.
+    let mut pending = String::new();
     for segment in native.transcription {
         let tokens: Vec<(usize, usize)> = {
             let mut spans = Vec::new();
@@ -212,7 +215,6 @@ pub(super) fn restore_words(raw: &[u8], start: usize, end: usize) -> Result<Vec<
         if text[cursor..].iter().any(|(_, c)| c.is_alphanumeric()) {
             return Err(failure());
         }
-        let mut pending = String::new();
         for (index, (a, b)) in tokens.iter().enumerate() {
             let piece = &segment.text[*a..*b];
             let Some((t0, t1)) = times[index] else {
@@ -245,9 +247,6 @@ pub(super) fn restore_words(raw: &[u8], start: usize, end: usize) -> Result<Vec<
             previous = Some((s, e));
             words.push(json!({"word": std::mem::take(&mut pending) + piece,
                 "start": s as f64 / RATE as f64, "end": e as f64 / RATE as f64}));
-        }
-        if !pending.is_empty() {
-            return Err(failure());
         }
     }
     Ok(words)
@@ -531,6 +530,15 @@ mod tests {
         let early = r#"{"transcription":[{"text":"예","words":[{"text":"예","t0":10,"t1":20}]}]}"#;
         let clamped = restore_words(early.as_bytes(), 0, RATE).unwrap();
         assert_eq!(clamped[0]["start"], 0.0);
+        // A chunk of punctuation alone has no word to keep it, and a segment that starts
+        // with punctuation gives it to the next segment's first word.
+        let only = r#"{"transcription":[{"text":".","words":[]}]}"#;
+        assert!(restore_words(only.as_bytes(), 0, RATE).unwrap().is_empty());
+        let carried = r#"{"transcription":[{"text":"\"","words":[]},{"text":"네","words":[{"text":"네","t0":0,"t1":1}]}]}"#;
+        assert_eq!(
+            restore_words(carried.as_bytes(), 0, RATE).unwrap()[0]["word"],
+            "\"네"
+        );
     }
 
     #[test]
