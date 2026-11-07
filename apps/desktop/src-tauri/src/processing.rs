@@ -16,11 +16,6 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use uuid::Uuid;
 
-#[path = "failure.rs"]
-pub(crate) mod failure;
-#[path = "native_speech.rs"]
-pub(crate) mod native_speech;
-
 fn platform_supported() -> bool {
     static SUPPORTED: OnceLock<bool> = OnceLock::new();
     *SUPPORTED.get_or_init(|| {
@@ -108,8 +103,8 @@ pub(super) fn verify_model_files(
     directory: &Path,
     model: &Model,
     cancel: &AtomicBool,
-) -> Result<(), crate::processing::failure::Failure> {
-    use crate::processing::failure::{Failure, FailureKind};
+) -> Result<(), crate::failure::Failure> {
+    use crate::failure::{Failure, FailureKind};
     let cancelled = |cancel: &AtomicBool| {
         cancelled(cancel).map_err(|message| Failure::new(FailureKind::Cancelled, message))
     };
@@ -158,8 +153,8 @@ pub struct Progress {
     pub model_stage: Option<String>,
     pub memory_state: Option<crate::memory::MemoryState>,
     pub phase: Option<String>,
-    pub failure_kind: Option<crate::processing::failure::FailureKind>,
-    pub failure_detail: Option<crate::processing::failure::FailureDetail>,
+    pub failure_kind: Option<crate::failure::FailureKind>,
+    pub failure_detail: Option<crate::failure::FailureDetail>,
     pub has_previous_summary: bool,
     pub retry_count: u8,
     pub committing: bool,
@@ -186,7 +181,7 @@ pub struct JobView {
     pub acknowledged: bool,
     pub created_at: u64,
     pub retry_successor_id: Option<String>,
-    pub failure_kind: Option<crate::processing::failure::FailureKind>,
+    pub failure_kind: Option<crate::failure::FailureKind>,
 }
 
 type Action = Box<
@@ -218,11 +213,11 @@ pub(super) struct JobSpec {
 }
 
 // The job phase recorded when Core refused a result before publishing anything.
-fn rejection_phase(kind: failure::FailureKind) -> Option<&'static str> {
+fn rejection_phase(kind: crate::failure::FailureKind) -> Option<&'static str> {
     match kind {
-        failure::FailureKind::Output => Some("outputRejected"),
-        failure::FailureKind::SourceChanged => Some("sourceChanged"),
-        failure::FailureKind::MeetingUnavailable => Some("meetingUnavailable"),
+        crate::failure::FailureKind::Output => Some("outputRejected"),
+        crate::failure::FailureKind::SourceChanged => Some("sourceChanged"),
+        crate::failure::FailureKind::MeetingUnavailable => Some("meetingUnavailable"),
         _ => None,
     }
 }
@@ -606,12 +601,9 @@ impl Processing {
         &self,
         spec: ModelSpec,
         cancel: &AtomicBool,
-    ) -> Result<PathBuf, crate::processing::failure::Failure> {
+    ) -> Result<PathBuf, crate::failure::Failure> {
         let directory = self.model_dir_of(spec).map_err(|message| {
-            crate::processing::failure::Failure::new(
-                crate::processing::failure::FailureKind::Storage,
-                message,
-            )
+            crate::failure::Failure::new(crate::failure::FailureKind::Storage, message)
         })?;
         verify_model_files(&directory, &spec.model(), cancel)?;
         Ok(directory)
@@ -1073,7 +1065,7 @@ impl Processing {
         Ok(())
     }
     // Records a failure's kind and detail on the current job and returns its message.
-    pub(super) fn report(&self, error: failure::Failure) -> String {
+    pub(super) fn report(&self, error: crate::failure::Failure) -> String {
         self.update(|progress| {
             progress.failure_kind = Some(error.kind);
             progress.failure_detail = error.detail.clone();
@@ -1406,7 +1398,7 @@ impl Processing {
         let rejection = result
             .as_ref()
             .err()
-            .and_then(failure::core_failure_kind)
+            .and_then(crate::failure::core_failure_kind)
             .and_then(|kind| Some((rejection_phase(kind)?, kind)));
         if let Ok(value) = &result {
             following(&mut progress, value)?;
@@ -2769,9 +2761,9 @@ impl Processing {
                             Err(
                                 nero_core::CoreError::EditConflict
                                 | nero_core::CoreError::RecordingBusy,
-                            ) => Some(failure::FailureKind::SourceChanged),
-                            Err(error) => failure::core_failure_kind(error)
-                                .filter(|kind| *kind != failure::FailureKind::Output),
+                            ) => Some(crate::failure::FailureKind::SourceChanged),
+                            Err(error) => crate::failure::core_failure_kind(error)
+                                .filter(|kind| *kind != crate::failure::FailureKind::Output),
                             Ok(_) => None,
                         }
                         .and_then(|kind| Some((rejection_phase(kind)?, kind)))
@@ -3643,7 +3635,7 @@ mod tests {
             touch(&process.worker("AudioPrepare"));
             touch(&crate::qwen_asr::executable(&process.resources));
             touch(&process.resources.join("native/crispasr/runtime.json"));
-            touch(&native_speech::executable(&process, true));
+            touch(&crate::native_speech::executable(&process, true));
             (temporary, process)
         }
         // A sparse file of the pinned size plus the verified marker; hashes are not read.
@@ -4997,7 +4989,7 @@ mod tests {
 
     #[test]
     fn readiness_and_pre_use_verification_follow_one_rule_for_every_model() {
-        use crate::processing::failure::FailureKind;
+        use crate::failure::FailureKind;
         let (_temporary, process) = setup();
         let speaker = crate::diarization::SPEAKER_MODEL;
         let summary = crate::summary::SUMMARY_MODEL;

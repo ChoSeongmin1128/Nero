@@ -1,4 +1,4 @@
-use crate::processing::failure::{Failure, FailureKind};
+use crate::failure::{Failure, FailureKind};
 use crate::processing::{cancelled, plain_file, Processing};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};

@@ -1,6 +1,6 @@
 //! On-demand local summary worker. No provider authentication or remote inference.
+use crate::failure::{core_failure_kind, Failure, FailureDetail, FailureKind};
 use crate::memory::{MemoryMonitor, MemoryState};
-use crate::processing::failure::{core_failure_kind, Failure, FailureDetail, FailureKind};
 use crate::processing::{
     cancelled, directory, interruptible, message, plain_file, Model, ModelSpec, ModelStage,
     Processing, Progress, Worker,

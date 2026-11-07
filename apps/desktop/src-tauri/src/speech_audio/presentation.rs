@@ -1,7 +1,7 @@
 //! AAC packet padding is not presentation audio. Apply declared M4A timing once,
 //! while still consuming and checking every decoded packet through EOF.
 use super::check_cancel;
-use crate::processing::failure::{Failure, FailureKind};
+use crate::failure::{Failure, FailureKind};
 use crate::processing::plain_file;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};

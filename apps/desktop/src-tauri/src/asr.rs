@@ -1,5 +1,5 @@
-use crate::processing::failure::{Failure, FailureKind};
-use crate::processing::native_speech::{self, executable, Backend};
+use crate::failure::{Failure, FailureKind};
+use crate::native_speech::{self, executable, Backend};
 use crate::processing::{cancelled, plain_file, Model, Processing};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};

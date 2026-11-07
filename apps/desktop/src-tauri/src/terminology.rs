@@ -1,4 +1,4 @@
-use crate::processing::failure::FailureKind;
+use crate::failure::FailureKind;
 use crate::processing::{cancelled, directory, message, plain_file, Processing};
 use crate::summary::{run_structured, StructuredRequest};
 use nero_core::{

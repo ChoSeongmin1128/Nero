@@ -1,5 +1,5 @@
 use super::{check_cancel, failure};
-use crate::processing::failure::{Failure, FailureKind};
+use crate::failure::{Failure, FailureKind};
 use crate::processing::plain_file;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;

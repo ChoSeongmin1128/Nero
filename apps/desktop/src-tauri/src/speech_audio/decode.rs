@@ -1,5 +1,5 @@
 use super::{check_cancel, failure, output::PcmOutput};
-use crate::processing::failure::{Failure, FailureKind};
+use crate::failure::{Failure, FailureKind};
 use crate::processing::plain_file;
 use std::path::Path;
 use std::sync::atomic::AtomicBool;

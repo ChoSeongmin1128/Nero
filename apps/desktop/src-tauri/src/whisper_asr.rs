@@ -6,7 +6,7 @@ mod buffered;
 mod native;
 mod probe;
 mod runtime;
-use crate::processing::failure::Failure;
+use crate::failure::Failure;
 use crate::processing::{cancelled, plain_file};
 pub(super) use buffered::Buffered;
 use serde_json::{json, Value};

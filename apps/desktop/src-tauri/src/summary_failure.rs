@@ -1,5 +1,5 @@
 //! Failure classification for the packaged llama.cpp summary worker.
-use crate::processing::failure::FailureKind;
+use crate::failure::FailureKind;
 
 fn number_between(line: &str, prefix: &str, suffix: &str) -> bool {
     let Some(number) = line

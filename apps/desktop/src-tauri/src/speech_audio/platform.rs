@@ -1,5 +1,5 @@
 use super::{check_cancel, decode, failure, formats, wav};
-use crate::processing::failure::Failure;
+use crate::failure::Failure;
 use crate::processing::Processing;
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
@@ -28,7 +28,7 @@ pub(super) fn prepare(
                 source.as_os_str().to_os_string(),
                 destination.as_os_str().to_os_string(),
             ];
-            return crate::processing::native_speech::run(
+            return crate::native_speech::run(
                 process,
                 &process.worker("AudioPrepare"),
                 &arguments,

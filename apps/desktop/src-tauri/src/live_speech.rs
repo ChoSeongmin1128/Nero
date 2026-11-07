@@ -1,7 +1,8 @@
 //! Recording follows its original writer. This consumer may block or fall
 //! behind on disk without backpressuring the device callback.
+use crate::native_speech;
 use crate::process_tree::TreeChild as Child;
-use crate::processing::{directory, native_speech, Processing};
+use crate::processing::{directory, Processing};
 use crate::speech_audio::normalize::Normalizer;
 use crate::speech_choice::SpeechEngine;
 use nero_core::{CaptureReader, CoreHandle, SessionState, Snapshot};

@@ -1,6 +1,6 @@
 //! The pinned NeMo speech package shared by recognition, speaker analysis and audio
 //! preparation: its file locations, backend names and the bounded child runner.
-use crate::processing::failure::FailureKind;
+use crate::failure::FailureKind;
 use crate::processing::{cancelled, plain_file, Processing, Worker};
 use serde::{Deserialize, Serialize};
 use std::fs::OpenOptions;

@@ -1,4 +1,4 @@
-use crate::processing::failure::{Failure, FailureKind};
+use crate::failure::{Failure, FailureKind};
 use crate::processing::{cancelled, plain_file, Processing};
 use crate::speech_choice::AppleVariant;
 use serde::{Deserialize, Serialize};

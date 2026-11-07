@@ -1,4 +1,4 @@
-use crate::processing::native_speech::Backend;
+use crate::native_speech::Backend;
 use crate::speech_library::SpeechLibrary;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};

@@ -1,6 +1,6 @@
 //! Optional whole-recording speaker analysis. It never treats ASR-local tags as identities.
-use crate::processing::failure::{core_failure_kind, Failure, FailureKind};
-use crate::processing::native_speech::{self, executable, library, Backend};
+use crate::failure::{core_failure_kind, Failure, FailureKind};
+use crate::native_speech::{self, executable, library, Backend};
 use crate::processing::{
     cancelled, directory, plain_file, verify_model_files, JobSpec, Model, ModelSpec, ModelStage,
     Processing, Progress,

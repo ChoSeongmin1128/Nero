@@ -1,5 +1,5 @@
 use super::{check_cancel, failure};
-use crate::processing::failure::{Failure, FailureKind};
+use crate::failure::{Failure, FailureKind};
 use crate::processing::plain_file;
 #[cfg(test)]
 use hound::WavWriter;

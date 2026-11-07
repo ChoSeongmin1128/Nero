@@ -56,7 +56,7 @@ pub(super) struct JobRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_successor_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub failure_kind: Option<crate::processing::failure::FailureKind>,
+    pub failure_kind: Option<crate::failure::FailureKind>,
     pub status: JobStatus,
     pub phase: Option<String>,
     pub message: String,
