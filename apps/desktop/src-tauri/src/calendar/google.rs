@@ -126,14 +126,15 @@ async fn token_request(
     {
         return Err(invalid());
     }
-    if token.scope.as_ref().is_some_and(|scope| {
+    Ok(token)
+}
+
+fn missing_scope(token: &TokenResponse) -> bool {
+    token.scope.as_ref().is_some_and(|scope| {
         SCOPES
             .split(' ')
             .any(|required| !scope.split(' ').any(|granted| granted == required))
-    }) {
-        return Err(Failure::Reconnect);
-    }
-    Ok(token)
+    })
 }
 
 fn token_failure(body: &Value) -> Failure {
@@ -162,7 +163,7 @@ pub async fn exchange(
     pending: &Pending,
     code: &str,
 ) -> Result<TokenResponse, Failure> {
-    token_request(
+    let token = token_request(
         client,
         config,
         &[
@@ -172,7 +173,14 @@ pub async fn exchange(
             ("redirect_uri", &pending.redirect_uri),
         ],
     )
-    .await
+    .await?;
+    // On first consent a cleared checkbox is the cause, not an expired connection.
+    if missing_scope(&token) {
+        return Err(Failure::Other(
+            "Google 동의 화면에서 캘린더 읽기 권한을 모두 허용한 뒤 다시 연결해 주세요.".into(),
+        ));
+    }
+    Ok(token)
 }
 pub async fn refresh(
     client: &Client,
@@ -182,7 +190,7 @@ pub async fn refresh(
     if token.client_id != config.client_id {
         return Err(Failure::Reconnect);
     }
-    token_request(
+    let token = token_request(
         client,
         config,
         &[
@@ -190,7 +198,11 @@ pub async fn refresh(
             ("refresh_token", &token.refresh_token),
         ],
     )
-    .await
+    .await?;
+    if missing_scope(&token) {
+        return Err(Failure::Reconnect);
+    }
+    Ok(token)
 }
 
 pub(super) async fn get(client: &Client, token: &str, url: Url) -> Result<Value, Failure> {
@@ -662,6 +674,21 @@ mod tests {
             requested,
             vec![None, Some("page-two".into()), Some("page-three".into())]
         );
+    }
+
+    #[test]
+    fn a_grant_missing_a_calendar_scope_is_recognized() {
+        let token = |scope: &str| TokenResponse {
+            access_token: "access".into(),
+            refresh_token: None,
+            expires_in: 3600,
+            scope: Some(scope.into()),
+            token_type: "Bearer".into(),
+        };
+        assert!(!missing_scope(&token(SCOPES)));
+        assert!(missing_scope(&token(
+            "https://www.googleapis.com/auth/calendar.events.readonly"
+        )));
     }
 
     #[test]
