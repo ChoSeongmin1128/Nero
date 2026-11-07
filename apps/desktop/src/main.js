@@ -753,6 +753,9 @@ byId('library-search-clear').addEventListener('click', () => {
 });
 byId('search').addEventListener('input', () => {
   beginNavigation();
+  // Results are meetings: the AI view cannot list them, and a trash view left for a
+  // meeting is no longer what is being searched.
+  if (state.libraryFilter === 'ai' || (!state.libraryOpen && state.libraryFilter === 'trash')) state.libraryFilter = 'all';
   state.libraryOpen = true; library.resetSelection(); render();
   meetingSearch.update(byId('search').value, state.libraryFilter === 'trash');
 });

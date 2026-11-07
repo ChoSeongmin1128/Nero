@@ -1970,6 +1970,21 @@ test('active library search remains visible and clearable when navigation is col
  assert.equal(page.element('library-search-status').hidden,true);
 });
 
+test('searching from the AI view or a meeting opened from trash lists matching meetings', async()=>{
+ const page=await openApp();
+ for(const [filter,libraryOpen] of [['ai',true],['ai',false],['trash',false]]){
+  page.app.state.libraryFilter=filter; page.app.state.libraryOpen=libraryOpen;
+  page.element('search').value='회의';
+  await page.element('search').listeners.get('input')();
+  assert.equal(page.app.state.libraryFilter,'all');
+  assert.equal(page.element('ai-library-screen').hidden,true);
+  assert.equal(page.element('library-screen').hidden,false);
+ }
+ page.app.state.libraryFilter='trash';
+ await page.element('search').listeners.get('input')();
+ assert.equal(page.app.state.libraryFilter,'trash');
+});
+
 test('main wires a global AI panel independently from meeting notes', async () => {
   const page = await openApp(); await page.app.selectMeeting('a');
   assert.equal(page.app.aiChatOptions.node.id, 'ai-chat-inspector');
