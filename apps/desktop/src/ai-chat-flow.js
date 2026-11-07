@@ -325,7 +325,10 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
     await flow.newConversation({ attachCurrent: true, fromOpen: true });
     return null;
   }
-  const canStart = (text, context = state.conversation) => Boolean(subscriptionReady && state.conversation.key && state.conversation.loaded && ready() && state.modelId && !state.modelsBusy && !state.modelError && !state.conversation.loading && !state.conversation.contextBusy && !state.conversation.activeRequestId && !state.conversation.action && !state.fetching && (text.trim() || context.skillId) && (!context.skillId || (context.templateId && context.meetings.length === 1 && context.meetings[0].id === context.summaryTargetId)));
+  // A model that takes a reasoning level is sent with one: its default, or the
+  // person's choice when the default is unknown.
+  const effortReady = effort => state.models.find(item => item.id === state.modelId)?.effort?.supported !== true || Boolean(effectiveEffort(state.models, state.modelId, effort));
+  const canStart = (text, context = state.conversation, effort = state.effort) => Boolean(subscriptionReady && effortReady(effort) && state.conversation.key && state.conversation.loaded && ready() && state.modelId && !state.modelsBusy && !state.modelError && !state.conversation.loading && !state.conversation.contextBusy && !state.conversation.activeRequestId && !state.conversation.action && !state.fetching && (text.trim() || context.skillId) && (!context.skillId || (context.templateId && context.meetings.length === 1 && context.meetings[0].id === context.summaryTargetId)));
   const flow = {
     getSnapshot: () => state,
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
@@ -531,7 +534,7 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
     },
     async send(text = state.conversation.draft, options = {}) {
       const context = { ...state.conversation, ...(options.editOf ? { useTemplate: false } : {}), meetings: options.meetings || state.conversation.meetings, sources: options.sources || state.conversation.sources, skillId: options.skillId ?? state.conversation.skillId, templateId: options.templateId ?? state.conversation.templateId, summaryTargetId: options.summaryTargetId ?? state.conversation.summaryTargetId };
-      if (!canStart(text, context)) return false;
+      if (!canStart(text, context, Object.hasOwn(options, 'effort') ? options.effort : state.effort)) return false;
       selectionInitialized = true;
       let id = state.conversation.key;
       const requestId = createId(), accountId = state.accountId, modelId = state.modelId;

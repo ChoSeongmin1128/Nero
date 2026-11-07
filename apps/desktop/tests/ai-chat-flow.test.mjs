@@ -148,6 +148,14 @@ test('opening from a meeting does not attach it to an existing conversation', as
   app.flow.dispose();
 });
 
+test('a model whose default reasoning level is unknown waits for a chosen level', async () => {
+  const app = await harness({ models: async () => ({ models: [{ id: 'model', label: 'Model', effort: { supported: true, levels: ['low', 'high'], default: null } }], defaultModelId: 'model' }) });
+  await tick(); await tick();
+  app.flow.edit('Question'); assert.equal(app.flow.canSend(), false);
+  app.flow.selectEffort('high'); assert.equal(app.flow.canSend(), true);
+  app.flow.dispose();
+});
+
 test('a refused question returns to the input so it can be shortened', async () => {
   const app = await harness({ send: async () => { throw new Error('질문이 너무 깁니다.'); } });
   app.flow.edit('아주 긴 질문'); assert.equal(await app.flow.send(), false);
