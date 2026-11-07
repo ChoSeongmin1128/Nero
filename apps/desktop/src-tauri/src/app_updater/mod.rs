@@ -278,19 +278,29 @@ impl AppUpdates {
             Err("개발 앱에서는 자동 업데이트를 사용할 수 없습니다.".into())
         }
     }
+    // A package that is installed, older or damaged is never installed; dropping it
+    // keeps the cache from holding a full package for good. pending.json stays.
+    fn discard_cached_package(&self) {
+        for name in ["package", "manifest.json"] {
+            let _ = std::fs::remove_file(self.cache.join(name));
+        }
+    }
     fn restore_cached(&self, app: &tauri::AppHandle) {
         if self.view().phase != "idle" {
             return;
         }
+        let Ok(updater) = self.updater(app) else {
+            return;
+        };
         let restored = (|| {
             let raw = read_limited(&self.cache.join("manifest.json"), MAX_METADATA)?;
             let manifest =
                 serde_json::from_slice(&raw).map_err(|_| "업데이트 정보를 읽지 못했습니다.")?;
-            let Some(update) = self
-                .updater(app)?
+            let Some(update) = updater
                 .restore_update(manifest)
                 .map_err(|_| "업데이트 정보를 확인하지 못했습니다.")?
             else {
+                self.discard_cached_package();
                 return Ok::<_, String>(());
             };
             let bytes = read_limited(&self.cache.join("package"), MAX_PACKAGE)?;
@@ -315,6 +325,7 @@ impl AppUpdates {
         // remains available; ordinary startup does not become an error dialog.
         if restored.is_err() {
             *self.candidate.lock().unwrap() = None;
+            self.discard_cached_package();
         }
     }
     fn transition(&self, phase: &str, message: &str) -> Status {
