@@ -13,6 +13,10 @@ recovery. The rendering layer does not infer missing audio from counters or obse
   sample rate, channels and sample format; the PCM file then continues and the gap is
   missing from the recording. A different format ends the capture as interrupted with its
   saved audio. Stopping while it waits completes the recording normally.
+- The writer drains the input queue every few milliseconds. The once-a-second durable
+  checkpoint (file sync and manifest) runs on its own thread, one at a time, so a slow
+  sync no longer holds back the drain and overflows the queue; a failed checkpoint
+  still ends the capture as interrupted.
 - Diagnostics remain available in a collapsed disclosure. Old counters remain readable without
   invented positions. Stored PCM, raw transcript and prior edits are not changed by display policy.
 

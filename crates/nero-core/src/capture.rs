@@ -868,8 +868,12 @@ fn drain_audio(
 
 fn checkpoint(root: &Path, raw: &File, manifest: &mut Manifest, signals: &Signals) -> Result<u64> {
     let started = Instant::now();
+    #[cfg(test)]
+    tests::delay_checkpoint(root);
+    // The drain thread may keep appending; only the length read before the sync is durable.
+    let length = raw.metadata()?.len();
     raw.sync_data()?;
-    manifest.saved_frames = raw.metadata()?.len() / manifest.frame_bytes() as u64;
+    manifest.saved_frames = length / manifest.frame_bytes() as u64;
     manifest.phase = match signals.phase.load(Ordering::Acquire) {
         1 => CapturePhase::Recording,
         2 => CapturePhase::Paused,
@@ -897,6 +901,45 @@ fn stop_before_disk_fills(root: &Path, manifest: &Manifest, signals: &Signals) {
     }
 }
 
+// Periodic checkpoints run beside the drain: a full sync can stall for longer than
+// the input queue holds, and draining behind it would overflow the queue and end
+// the recording. One runs at a time, and every other manifest write waits for it.
+type RunningCheckpoint = thread::JoinHandle<Result<u64>>;
+
+fn spawn_checkpoint(
+    root: &Path,
+    raw: &File,
+    manifest: &Manifest,
+    signals: &Arc<Signals>,
+) -> Result<RunningCheckpoint> {
+    let (root, raw, mut manifest, signals) = (
+        root.to_path_buf(),
+        raw.try_clone()?,
+        manifest.clone(),
+        signals.clone(),
+    );
+    Ok(thread::Builder::new()
+        .name("nero-capture-checkpoint".into())
+        .spawn(move || {
+            let saved = checkpoint(&root, &raw, &mut manifest, &signals)?;
+            stop_before_disk_fills(&root, &manifest, &signals);
+            Ok(saved)
+        })?)
+}
+
+fn settle_checkpoint(running: &mut Option<RunningCheckpoint>, wait: bool) -> Result<()> {
+    match running.take() {
+        Some(handle) if wait || handle.is_finished() => handle
+            .join()
+            .unwrap_or_else(|_| Err(CoreError::Audio("녹음 확인 작업이 중단되었습니다.".into())))
+            .map(|_| ()),
+        other => {
+            *running = other;
+            Ok(())
+        }
+    }
+}
+
 fn writer_loop(
     root: PathBuf,
     mut manifest: Manifest,
@@ -906,6 +949,7 @@ fn writer_loop(
     commands: mpsc::Receiver<WriterCommand>,
 ) -> CaptureOutcome {
     let mut last_checkpoint = Instant::now();
+    let mut running = None;
     let mut pending = PendingAudio::new(consumer);
     let (phase, mut error) = loop {
         if let Err(error) = pending.write_to(&mut raw, &signals, manifest.frame_bytes()) {
@@ -919,6 +963,7 @@ fn writer_loop(
             Ok(WriterCommand::Flush(reply)) => {
                 let result = pending
                     .write_to(&mut raw, &signals, manifest.frame_bytes())
+                    .and_then(|_| settle_checkpoint(&mut running, true))
                     .and_then(|_| checkpoint(&root, &raw, &mut manifest, &signals));
                 let failed = result.is_err();
                 let _ = reply.send(result);
@@ -951,19 +996,28 @@ fn writer_loop(
             }
             Err(mpsc::TryRecvError::Empty) => {}
         }
-        if last_checkpoint.elapsed() >= CHECKPOINT_INTERVAL {
-            if let Err(error) = checkpoint(&root, &raw, &mut manifest, &signals) {
-                signals.fail(FAULT_WRITER);
-                break (
-                    CapturePhase::Interrupted,
-                    Some(format!("녹음 파일의 저장을 확인하지 못했습니다: {error}")),
-                );
+        let checked = settle_checkpoint(&mut running, false).and_then(|_| {
+            if running.is_none() && last_checkpoint.elapsed() >= CHECKPOINT_INTERVAL {
+                running = Some(spawn_checkpoint(&root, &raw, &manifest, &signals)?);
+                last_checkpoint = Instant::now();
             }
-            stop_before_disk_fills(&root, &manifest, &signals);
-            last_checkpoint = Instant::now();
+            Ok(())
+        });
+        if let Err(error) = checked {
+            signals.fail(FAULT_WRITER);
+            break (
+                CapturePhase::Interrupted,
+                Some(format!("녹음 파일의 저장을 확인하지 못했습니다: {error}")),
+            );
         }
         thread::sleep(Duration::from_millis(4));
     };
+    if let Err(checkpoint_error) = settle_checkpoint(&mut running, true) {
+        signals.fail(FAULT_WRITER);
+        error.get_or_insert(format!(
+            "녹음 파일의 저장을 확인하지 못했습니다: {checkpoint_error}"
+        ));
+    }
     signals.accepting.store(false, Ordering::SeqCst);
     while signals.callbacks.load(Ordering::SeqCst) != 0 {
         thread::yield_now();
@@ -1042,6 +1096,49 @@ fn writer_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    static SLOW_CHECKPOINTS: Mutex<Vec<(PathBuf, Duration)>> = Mutex::new(Vec::new());
+
+    fn slow_checkpoints(root: &Path, delay: Option<Duration>) {
+        let mut slow = SLOW_CHECKPOINTS.lock().unwrap();
+        slow.retain(|(path, _)| path != root);
+        if let Some(delay) = delay {
+            slow.push((root.to_path_buf(), delay));
+        }
+    }
+
+    pub(super) fn delay_checkpoint(root: &Path) {
+        let delay = SLOW_CHECKPOINTS
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(path, _)| root.starts_with(path))
+            .map(|(_, delay)| *delay);
+        if let Some(delay) = delay {
+            thread::sleep(delay);
+        }
+    }
+
+    #[test]
+    fn a_slow_checkpoint_does_not_stop_the_queue_from_draining() {
+        let (_temporary, store, mut capture, mut sink) = setup(1024);
+        slow_checkpoints(&store.root, Some(Duration::from_millis(600)));
+        capture.begin();
+        // 4000 bytes a second into a 1024-byte queue for 2.5 seconds spans at least
+        // two checkpoints that each block longer than the queue holds.
+        let started = Instant::now();
+        let mut written = 0;
+        while started.elapsed() < Duration::from_millis(2500) {
+            sink.write(&[0.5_f32.to_le_bytes(); 8].concat());
+            written += 8;
+            thread::sleep(Duration::from_millis(8));
+        }
+        let outcome = capture.finish(CapturePhase::Completed, None).unwrap();
+        slow_checkpoints(&store.root, None);
+        assert_eq!(outcome.manifest.error, None);
+        assert_eq!(outcome.manifest.phase, CapturePhase::Completed);
+        assert_eq!(outcome.manifest.saved_frames, written);
+    }
 
     #[test]
     fn recording_stops_while_its_playback_wav_still_fits() {
@@ -1664,6 +1761,40 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![0.25, 0.5]
         );
+    }
+
+    #[test]
+    fn a_failed_periodic_checkpoint_ends_the_recording_and_keeps_the_raw_audio() {
+        let (_temporary, store, mut capture, mut sink) = setup(1024);
+        capture.begin();
+        sink.write(&[0.5_f32.to_le_bytes(); 16].concat());
+        let path = store
+            .root
+            .join(capture.manifest.relative_dir())
+            .join("manifest.json");
+        let saved = fs::read(&path).unwrap();
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        let started = Instant::now();
+        while capture.signals.error().is_none() && started.elapsed() < Duration::from_secs(5) {
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(capture.signals.error().is_some());
+        let outcome = capture.finish(CapturePhase::Completed, None).unwrap();
+        assert_eq!(outcome.manifest.phase, CapturePhase::Interrupted);
+        assert!(outcome.manifest.error.is_some());
+        assert!(
+            store
+                .root
+                .join(outcome.manifest.relative_dir())
+                .join("audio.pcm")
+                .metadata()
+                .unwrap()
+                .len()
+                >= 64
+        );
+        fs::remove_dir(&path).unwrap();
+        fs::write(path, saved).unwrap();
     }
 
     #[test]
