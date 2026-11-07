@@ -4,7 +4,6 @@ use crate::{CoreError, Result, Transcript, TranscriptSegment, TranscriptVersion}
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -211,18 +210,8 @@ fn invalid_citations() -> CoreError {
 }
 
 pub(crate) fn citation_bytes(root: &Path, relative: &Path) -> Result<Vec<u8>> {
-    let path = store::checked_path(root, relative)?;
-    let file = store::open_read(&path)?;
-    const LIMIT: u64 = store::MAX_JSON_BYTES;
-    if file.metadata()?.len() > LIMIT {
-        return Err(invalid_citations());
-    }
-    let mut bytes = Vec::new();
-    file.take(LIMIT + 1).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > LIMIT {
-        return Err(invalid_citations());
-    }
-    Ok(bytes)
+    let file = store::open_read(&store::checked_path(root, relative)?)?;
+    store::read_limited(file, store::MAX_JSON_BYTES)?.ok_or_else(invalid_citations)
 }
 
 fn validate_citation_source(source: &Transcript) -> Result<()> {
@@ -626,13 +615,10 @@ impl Engine {
             archive["notes"] = serde_json::json!(notes);
         }
         archive["attendees"] = serde_json::json!(draft.attendees.as_deref().unwrap_or_default());
-        let archive_bytes = store::json_bytes(&archive)?;
-        let mut file = store::create_new(&store::checked_path(
-            &self.store.root,
-            &relative.join("run.json"),
-        )?)?;
-        file.write_all(&archive_bytes)?;
-        file.sync_all()?;
+        store::write_new(
+            &store::checked_path(&self.store.root, &relative.join("run.json"))?,
+            &store::json_bytes(&archive)?,
+        )?;
         let current = self
             .transcript(id)?
             .ok_or_else(|| CoreError::InvalidState("전사가 없습니다.".into()))?;

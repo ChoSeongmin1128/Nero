@@ -6,7 +6,7 @@ use fs2::FileExt;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufReader, BufWriter, Seek, Write};
+use std::io::{BufReader, BufWriter, Read, Seek, Write};
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
@@ -866,12 +866,59 @@ fn validate_playback(path: &Path, playback: &Playback) -> Result<()> {
 }
 
 pub(crate) fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
-    let file = open_read(path)?;
-    if file.metadata()?.len() > MAX_JSON_BYTES {
-        return Err(CoreError::Storage("저장 정보가 너무 큽니다.".into()));
-    }
-    serde_json::from_reader(BufReader::new(file))
+    let bytes = read_limited(open_read(path)?, MAX_JSON_BYTES)?
+        .ok_or_else(|| CoreError::Storage("저장 정보가 너무 큽니다.".into()))?;
+    serde_json::from_slice(&bytes)
         .map_err(|_| CoreError::Storage("저장 정보의 형식이 올바르지 않습니다.".into()))
+}
+
+// The file's bytes, or None when it holds more than `limit`. Checked before and
+// while reading, so a file that grows meanwhile is refused too.
+pub(crate) fn read_limited(file: File, limit: u64) -> Result<Option<Vec<u8>>> {
+    if file.metadata()?.len() > limit {
+        return Ok(None);
+    }
+    let mut bytes = Vec::new();
+    file.take(limit + 1).read_to_end(&mut bytes)?;
+    Ok((bytes.len() as u64 <= limit).then_some(bytes))
+}
+
+// A new file that must not exist yet, written and synced before returning.
+pub(crate) fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
+    let mut file = create_new(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    Ok(())
+}
+
+// Every existing component of `path` is a real directory; missing ones are allowed.
+pub(crate) fn plain_ancestors(path: &Path) -> std::io::Result<bool> {
+    let mut current = PathBuf::new();
+    for part in path.components() {
+        current.push(part.as_os_str());
+        if matches!(part, Component::Prefix(_)) {
+            continue;
+        }
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if is_plain_directory(&metadata) => {}
+            Ok(_) => return Ok(false),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(true)
+}
+
+pub(crate) fn is_plain_directory(metadata: &fs::Metadata) -> bool {
+    metadata.is_dir() && !metadata.file_type().is_symlink() && !is_reparse_point(metadata)
+}
+
+// A regular file that is not a link, reparse point or one of several hard links.
+pub(crate) fn is_plain_file(metadata: &fs::Metadata) -> bool {
+    metadata.is_file()
+        && !metadata.file_type().is_symlink()
+        && !is_reparse_point(metadata)
+        && single_link(metadata)
 }
 
 #[cfg(test)]
@@ -1035,8 +1082,10 @@ fn validate_existing(path: &Path) -> Result<()> {
                     "연결된 파일이나 폴더는 사용할 수 없습니다.".into(),
                 ));
             }
-            if metadata.is_file() {
-                validate_links(&metadata)?;
+            if metadata.is_file() && !single_link(&metadata) {
+                return Err(CoreError::Storage(
+                    "연결된 파일은 사용할 수 없습니다.".into(),
+                ));
             }
             Ok(())
         }
@@ -1112,22 +1161,22 @@ fn validate_file(file: &File) -> Result<()> {
     if !metadata.is_file() || is_reparse_point(&metadata) {
         return Err(CoreError::Storage("일반 파일이 아닙니다.".into()));
     }
-    validate_links(&metadata)
-}
-
-#[cfg(unix)]
-fn validate_links(metadata: &fs::Metadata) -> Result<()> {
-    use std::os::unix::fs::MetadataExt;
-    if metadata.nlink() != 1 {
+    if !single_link(&metadata) {
         return Err(CoreError::Storage(
             "연결된 파일은 사용할 수 없습니다.".into(),
         ));
     }
     Ok(())
 }
+
+#[cfg(unix)]
+fn single_link(metadata: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    metadata.nlink() == 1
+}
 #[cfg(not(unix))]
-fn validate_links(_: &fs::Metadata) -> Result<()> {
-    Ok(())
+fn single_link(_: &fs::Metadata) -> bool {
+    true
 }
 
 #[cfg(windows)]
@@ -1141,17 +1190,17 @@ fn is_reparse_point(_: &fs::Metadata) -> bool {
 }
 
 #[cfg(unix)]
-fn no_follow(options: &mut OpenOptions) {
+pub(crate) fn no_follow(options: &mut OpenOptions) {
     use std::os::unix::fs::OpenOptionsExt;
     options.custom_flags(libc::O_NOFOLLOW).mode(0o600);
 }
 #[cfg(windows)]
-fn no_follow(options: &mut OpenOptions) {
+pub(crate) fn no_follow(options: &mut OpenOptions) {
     use std::os::windows::fs::OpenOptionsExt;
     options.custom_flags(0x0020_0000);
 }
 #[cfg(not(any(unix, windows)))]
-fn no_follow(_: &mut OpenOptions) {}
+pub(crate) fn no_follow(_: &mut OpenOptions) {}
 
 #[cfg(unix)]
 fn sync_parent(path: &Path) -> Result<()> {

@@ -8,7 +8,6 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
 const API_VERSION: u32 = 1;
@@ -909,28 +908,8 @@ fn validate_root(root: &Path) -> Result<()> {
             "저장소 경로에는 상위 경로나 상대 경로 요소를 사용할 수 없습니다.".into(),
         ));
     }
-    let mut current = PathBuf::new();
-    for part in root.components() {
-        current.push(part.as_os_str());
-        if matches!(part, Component::Prefix(_)) {
-            continue;
-        }
-        match fs::symlink_metadata(&current) {
-            Ok(metadata) => {
-                #[cfg(windows)]
-                let reparse = {
-                    use std::os::windows::fs::MetadataExt;
-                    metadata.file_attributes() & 0x400 != 0
-                };
-                #[cfg(not(windows))]
-                let reparse = false;
-                if metadata.is_symlink() || reparse || !metadata.is_dir() {
-                    return Err(ReadError::UnsafePath.into());
-                }
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
-            Err(error) => return Err(error.into()),
-        }
+    if !store::plain_ancestors(root)? {
+        return Err(ReadError::UnsafePath.into());
     }
     Ok(())
 }
@@ -947,15 +926,10 @@ fn read_content(root: &Path, relative: &Path) -> Result<Option<Vec<u8>>> {
         }
         Err(error) => return Err(error),
     };
-    if file.metadata()?.len() > MAX_DOCUMENT_BYTES {
-        return Err(ReadError::DocumentTooLarge.into());
+    match store::read_limited(file, MAX_DOCUMENT_BYTES)? {
+        Some(bytes) => Ok(Some(bytes)),
+        None => Err(ReadError::DocumentTooLarge.into()),
     }
-    let mut bytes = Vec::new();
-    file.take(MAX_DOCUMENT_BYTES + 1).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > MAX_DOCUMENT_BYTES {
-        return Err(ReadError::DocumentTooLarge.into());
-    }
-    Ok(Some(bytes))
 }
 
 fn read_directory(root: &Path, relative: &Path) -> Result<Vec<String>> {

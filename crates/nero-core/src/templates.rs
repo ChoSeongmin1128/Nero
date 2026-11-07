@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
-use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use uuid::Uuid;
 
@@ -454,13 +453,8 @@ impl TemplateStore {
         {
             return Err(TemplateError::UnsafePath);
         }
-        let mut current = PathBuf::new();
-        for part in self.root.components() {
-            current.push(part.as_os_str());
-            if matches!(part, Component::Prefix(_)) {
-                continue;
-            }
-            validate_directory(&current)?;
+        if !store::plain_ancestors(&self.root)? {
+            return Err(TemplateError::UnsafePath);
         }
         Ok(())
     }
@@ -475,7 +469,7 @@ impl TemplateStore {
         validate_optional_file(&path)?;
         let mut options = OpenOptions::new();
         options.read(true).write(true).create(true).truncate(false);
-        no_follow(&mut options);
+        store::no_follow(&mut options);
         let file = options.open(&path)?;
         validate_file_metadata(&file.metadata()?)?;
         file.try_lock_exclusive().map_err(|_| TemplateError::Busy)?;
@@ -554,13 +548,7 @@ fn require_revision(template: &PromptTemplate, expected: &str) -> Result<()> {
 
 fn validate_directory(path: &Path) -> Result<()> {
     match fs::symlink_metadata(path) {
-        Ok(metadata)
-            if metadata.is_dir()
-                && !metadata.file_type().is_symlink()
-                && !is_reparse(&metadata) =>
-        {
-            Ok(())
-        }
+        Ok(metadata) if store::is_plain_directory(&metadata) => Ok(()),
         Ok(_) => Err(TemplateError::UnsafePath),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error.into()),
@@ -576,17 +564,11 @@ fn validate_optional_file(path: &Path) -> Result<()> {
 }
 
 fn validate_file_metadata(metadata: &fs::Metadata) -> Result<()> {
-    if !metadata.is_file() || metadata.file_type().is_symlink() || is_reparse(metadata) {
-        return Err(TemplateError::UnsafePath);
+    if store::is_plain_file(metadata) {
+        Ok(())
+    } else {
+        Err(TemplateError::UnsafePath)
     }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if metadata.nlink() != 1 {
-            return Err(TemplateError::UnsafePath);
-        }
-    }
-    Ok(())
 }
 
 fn read_optional(path: &Path) -> Result<Option<Vec<u8>>> {
@@ -600,39 +582,11 @@ fn read_optional(path: &Path) -> Result<Option<Vec<u8>>> {
             }
         }
     }
-    let mut file = store::open_read(path)?;
-    let mut bytes = Vec::new();
-    Read::by_ref(&mut file)
-        .take(MAX_DOCUMENT_BYTES as u64 + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > MAX_DOCUMENT_BYTES {
-        return Err(TemplateError::InvalidDocument);
-    }
-    Ok(Some(bytes))
+    let file = store::open_read(path)?;
+    store::read_limited(file, MAX_DOCUMENT_BYTES as u64)?
+        .map(Some)
+        .ok_or(TemplateError::InvalidDocument)
 }
-
-#[cfg(windows)]
-fn is_reparse(metadata: &fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-    metadata.file_attributes() & 0x400 != 0
-}
-#[cfg(not(windows))]
-fn is_reparse(_: &fs::Metadata) -> bool {
-    false
-}
-
-#[cfg(unix)]
-fn no_follow(options: &mut OpenOptions) {
-    use std::os::unix::fs::OpenOptionsExt;
-    options.custom_flags(libc::O_NOFOLLOW).mode(0o600);
-}
-#[cfg(windows)]
-fn no_follow(options: &mut OpenOptions) {
-    use std::os::windows::fs::OpenOptionsExt;
-    options.custom_flags(0x0020_0000);
-}
-#[cfg(not(any(unix, windows)))]
-fn no_follow(_: &mut OpenOptions) {}
 
 #[cfg(test)]
 mod tests {

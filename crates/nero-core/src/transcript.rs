@@ -587,11 +587,7 @@ fn transcript_dir(meeting_id: &str, transcript_id: &str) -> Result<PathBuf> {
 }
 
 fn immutable_json(root: &Path, relative: &Path, value: &impl Serialize) -> Result<()> {
-    let bytes = store::json_bytes(value)?;
-    let mut file = store::create_new(&store::checked_path(root, relative)?)?;
-    file.write_all(&bytes)?;
-    file.sync_all()?;
-    Ok(())
+    immutable_bytes(root, relative, &store::json_bytes(value)?)
 }
 
 fn sha256(bytes: &[u8]) -> String {
@@ -599,24 +595,13 @@ fn sha256(bytes: &[u8]) -> String {
 }
 
 fn read_bytes(root: &Path, relative: &Path) -> Result<Vec<u8>> {
-    let path = store::checked_path(root, relative)?;
-    let file = store::open_read(&path)?;
-    if file.metadata()?.len() > 16 * 1024 * 1024 {
-        return Err(CoreError::Storage("저장 정보가 너무 큽니다.".into()));
-    }
-    let mut bytes = Vec::new();
-    file.take(16 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
-    if bytes.len() > 16 * 1024 * 1024 {
-        return Err(CoreError::Storage("저장 정보가 너무 큽니다.".into()));
-    }
-    Ok(bytes)
+    let file = store::open_read(&store::checked_path(root, relative)?)?;
+    store::read_limited(file, store::MAX_JSON_BYTES)?
+        .ok_or_else(|| CoreError::Storage("저장 정보가 너무 큽니다.".into()))
 }
 
 fn immutable_bytes(root: &Path, relative: &Path, bytes: &[u8]) -> Result<()> {
-    let mut file = store::create_new(&store::checked_path(root, relative)?)?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    Ok(())
+    store::write_new(&store::checked_path(root, relative)?, bytes)
 }
 
 fn source_position(seconds: f64, total_samples: u64) -> Option<u64> {
