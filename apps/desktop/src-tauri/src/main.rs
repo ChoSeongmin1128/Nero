@@ -1019,9 +1019,8 @@ async fn delete_folder(
                 .iter()
                 .map(|meeting| meeting.id.clone())
                 .collect::<Vec<_>>();
-            ai_chat_desktop::meeting_removal(&removal_app, &ids, false, || {
-                processing
-                    .meeting_trash(&core, &ids, || core.delete_folder_checked(request.clone()))
+            trash_coordinated(&removal_app, &processing, &core, &ids, || {
+                core.delete_folder_checked(request.clone())
             })
         } else {
             core.delete_folder_checked(request)
@@ -1047,6 +1046,20 @@ async fn move_meetings(
     finish_library_change(&app, state.core.clone(), result).await
 }
 
+/// Every way of trashing meetings stops their AI chat and context work, then their
+/// processing, before the action runs.
+pub(crate) fn trash_coordinated<T>(
+    app: &tauri::AppHandle,
+    processing: &Processing,
+    core: &CoreHandle,
+    ids: &[String],
+    action: impl FnOnce() -> nero_core::Result<T>,
+) -> nero_core::Result<T> {
+    ai_chat_desktop::meeting_removal(app, ids, false, || {
+        processing.meeting_trash(core, ids, action)
+    })
+}
+
 #[tauri::command]
 async fn trash_meetings(
     window: WebviewWindow,
@@ -1058,8 +1071,8 @@ async fn trash_meetings(
     let processing = state.processing.clone();
     let removal_app = app.clone();
     let result = on_core(state.core.clone(), move |core| {
-        ai_chat_desktop::meeting_removal(&removal_app, &ids, false, || {
-            processing.meeting_trash(&core, &ids, || core.trash_meetings(ids.clone()))
+        trash_coordinated(&removal_app, &processing, &core, &ids, || {
+            core.trash_meetings(ids.clone())
         })
     })
     .await;
