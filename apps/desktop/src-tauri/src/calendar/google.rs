@@ -310,12 +310,17 @@ pub async fn events_between(
         .map_err(|_| invalid())?
         .to_string();
     let mut result = BTreeMap::<String, (u64, Occurrence)>::new();
+    // Declining in one calendar declines the meeting; its copy in another selected
+    // calendar must not bring the reminder back.
+    let mut declined = BTreeSet::new();
     for calendar in selected {
-        let events = event_pages(account, calendar, start_at, end_at, |page_token| {
-            let url = events_url(calendar, &from, &to, page_token.as_deref());
-            async move { get(client, token, url?).await }
-        })
-        .await?;
+        let (events, declined_here) =
+            event_pages(account, calendar, start_at, end_at, |page_token| {
+                let url = events_url(calendar, &from, &to, page_token.as_deref());
+                async move { get(client, token, url?).await }
+            })
+            .await?;
+        declined.extend(declined_here);
         for (updated, event) in events {
             if result
                 .get(&event.key)
@@ -325,7 +330,11 @@ pub async fn events_between(
             }
         }
     }
-    Ok(result.into_values().map(|(_, event)| event).collect())
+    Ok(result
+        .into_iter()
+        .filter(|(key, _)| !declined.contains(key))
+        .map(|(_, (_, event))| event)
+        .collect())
 }
 
 pub(super) fn events_url(
@@ -356,7 +365,7 @@ async fn event_pages<F, Fut>(
     start_at: u64,
     end_at: u64,
     mut fetch: F,
-) -> Result<Vec<(u64, Occurrence)>, Failure>
+) -> Result<(Vec<(u64, Occurrence)>, BTreeSet<String>), Failure>
 where
     F: FnMut(Option<String>) -> Fut,
     Fut: std::future::Future<Output = Result<Value, Failure>>,
@@ -364,9 +373,14 @@ where
     let mut page_token = None;
     let mut seen = BTreeSet::new();
     let mut events = Vec::new();
+    let mut declined = BTreeSet::new();
     for _ in 0..MAX_PAGES {
         let page = fetch(page_token).await?;
         for raw in items(&page)? {
+            if declined_by_self(raw) {
+                declined.extend(occurrence_key(account, calendar, raw).ok());
+                continue;
+            }
             // One malformed event is left out instead of failing every calendar's sync.
             if let Ok(Some((updated, event))) = normalize(account, calendar, raw) {
                 if event.end_at > start_at && event.start_at < end_at {
@@ -376,7 +390,7 @@ where
         }
         page_token = next_page(&page, &mut seen)?;
         if page_token.is_none() {
-            return Ok(events);
+            return Ok((events, declined));
         }
     }
     Err(Failure::Other(
@@ -402,35 +416,22 @@ fn event_time(value: &Value) -> Result<u64, Failure> {
     };
     u64::try_from(time.as_millisecond()).map_err(|_| invalid())
 }
-pub(super) fn normalize(
+fn declined_by_self(raw: &Value) -> bool {
+    raw["attendees"].as_array().is_some_and(|attendees| {
+        attendees
+            .iter()
+            .any(|attendee| attendee["self"] == true && attendee["responseStatus"] == "declined")
+    })
+}
+fn occurrence_key(
     account: &str,
     calendar: &CalendarChoice,
     raw: &Value,
-) -> Result<Option<(u64, Occurrence)>, Failure> {
-    if raw["status"] == "cancelled"
-        || raw["start"]["date"].is_string()
-        || raw["end"]["date"].is_string()
-        || raw["attendees"].as_array().is_some_and(|attendees| {
-            attendees.iter().any(|attendee| {
-                attendee["self"] == true && attendee["responseStatus"] == "declined"
-            })
-        })
-        || !matches!(
-            raw["eventType"].as_str(),
-            None | Some("default" | "fromGmail")
-        )
-    {
-        return Ok(None);
-    }
+) -> Result<String, Failure> {
     let id = raw["id"]
         .as_str()
         .filter(|id| !id.is_empty())
         .ok_or_else(invalid)?;
-    let start = event_time(&raw["start"])?;
-    let end = event_time(&raw["end"])?;
-    if end <= start {
-        return Err(invalid());
-    }
     // An all-day series keeps only a date as each instance's original start.
     let original = if raw["recurringEventId"].is_string() {
         match raw["originalStartTime"]["date"].as_str() {
@@ -446,7 +447,30 @@ pub(super) fn normalize(
         serde_json::to_vec(&(account, &calendar.id, id, &original))
     }
     .map_err(|_| invalid())?;
-    let key = format!("google:{:x}", Sha256::digest(identity));
+    Ok(format!("google:{:x}", Sha256::digest(identity)))
+}
+pub(super) fn normalize(
+    account: &str,
+    calendar: &CalendarChoice,
+    raw: &Value,
+) -> Result<Option<(u64, Occurrence)>, Failure> {
+    if raw["status"] == "cancelled"
+        || raw["start"]["date"].is_string()
+        || raw["end"]["date"].is_string()
+        || declined_by_self(raw)
+        || !matches!(
+            raw["eventType"].as_str(),
+            None | Some("default" | "fromGmail")
+        )
+    {
+        return Ok(None);
+    }
+    let start = event_time(&raw["start"])?;
+    let end = event_time(&raw["end"])?;
+    if end <= start {
+        return Err(invalid());
+    }
+    let key = occurrence_key(account, calendar, raw)?;
     let mut links = BTreeSet::new();
     if let Some(entries) = raw["conferenceData"]["entryPoints"].as_array() {
         for entry in entries
@@ -633,11 +657,32 @@ mod tests {
                 },
             ))
             .unwrap();
-        assert_eq!(events.len(), 2);
+        assert_eq!(events.0.len(), 2);
         assert_eq!(
             requested,
             vec![None, Some("page-two".into()), Some("page-three".into())]
         );
+    }
+
+    #[test]
+    fn a_declined_copy_reports_its_key_so_other_copies_are_dropped() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let mut declined = event();
+        declined["attendees"] = json!([{"self":true,"responseStatus":"declined"}]);
+        let accepted = normalize("account", &calendar(), &event())
+            .unwrap()
+            .unwrap()
+            .1;
+        let (events, keys) = runtime
+            .block_on(event_pages("account", &calendar(), 1, u64::MAX, |_| {
+                let page = json!({"items":[declined.clone()]});
+                async move { Ok(page) }
+            }))
+            .unwrap();
+        assert!(events.is_empty());
+        assert!(keys.contains(&accepted.key));
     }
 
     #[test]
@@ -687,7 +732,7 @@ mod tests {
                 async move { Ok(page) }
             }))
             .unwrap();
-        assert_eq!(events.len(), 2);
+        assert_eq!(events.0.len(), 2);
     }
 
     #[test]
@@ -737,6 +782,6 @@ mod tests {
                 },
             ))
             .unwrap();
-        assert!(events.is_empty());
+        assert!(events.0.is_empty());
     }
 }
