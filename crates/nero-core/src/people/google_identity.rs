@@ -216,6 +216,47 @@ impl GoogleAttendeeSource {
 }
 
 impl GoogleIdentityState {
+    // Adds these Google identities to the person's link, refusing any already linked
+    // to someone else.
+    fn link(&mut self, person_id: &str, sources: &[&GoogleAttendeeSource]) -> Result<()> {
+        if self.links.iter().any(|link| {
+            link.person_id != person_id && sources.iter().any(|source| source.matches(link))
+        }) {
+            return Err(CoreError::InvalidInput(
+                "이미 다른 관리 인원에 연결된 Google 신원입니다.".into(),
+            ));
+        }
+        let mut link = self
+            .links
+            .iter()
+            .find(|link| link.person_id == person_id)
+            .cloned()
+            .unwrap_or(GoogleIdentityLink {
+                person_id: person_id.into(),
+                emails: vec![],
+                google_user_ids: vec![],
+            });
+        for source in sources {
+            if let Some(email) = &source.email {
+                if !link.emails.contains(email) {
+                    link.emails.push(email.clone());
+                }
+            }
+            if let Some(user_id) = &source.google_user_id {
+                if !link.google_user_ids.contains(user_id) {
+                    link.google_user_ids.push(user_id.clone());
+                }
+            }
+        }
+        if !link.emails.is_empty() || !link.google_user_ids.is_empty() {
+            link.emails.sort();
+            link.google_user_ids.sort();
+            self.links.retain(|old| old.person_id != person_id);
+            self.links.push(link);
+        }
+        Ok(())
+    }
+
     pub fn is_empty(&self) -> bool {
         self.links.is_empty() && self.meetings.is_empty()
     }
@@ -314,25 +355,11 @@ impl Engine {
             }
             library.people.people.push(promotion.person.clone());
         }
-        for attendee in &draft.attendees {
-            if let Some(person_id) = &attendee.person_id {
-                let retained =
-                    current.meeting.attendees.iter().any(|old| {
-                        old.id == attendee.id && old.person_id.as_ref() == Some(person_id)
-                    });
-                if !retained
-                    && !library
-                        .people
-                        .people
-                        .iter()
-                        .any(|person| &person.id == person_id)
-                {
-                    return Err(CoreError::InvalidInput(
-                        "선택한 관리 인원을 찾을 수 없습니다.".into(),
-                    ));
-                }
-            }
-        }
+        super::require_known_people(
+            &current.meeting.attendees,
+            &draft.attendees,
+            &library.people,
+        )?;
         let mut records = current.sources;
         let mut keys = BTreeSet::new();
         for entry in draft.sources {
@@ -383,46 +410,9 @@ impl Engine {
             if sources.is_empty() {
                 return Err(invalid());
             }
-            if library.google_identity.links.iter().any(|link| {
-                link.person_id != requested.person_id
-                    && sources.iter().any(|source| source.matches(link))
-            }) {
-                return Err(CoreError::InvalidInput(
-                    "이미 다른 관리 인원에 연결된 Google 신원입니다.".into(),
-                ));
-            }
-            let mut link = library
+            library
                 .google_identity
-                .links
-                .iter()
-                .find(|link| link.person_id == requested.person_id)
-                .cloned()
-                .unwrap_or(GoogleIdentityLink {
-                    person_id: requested.person_id.clone(),
-                    emails: vec![],
-                    google_user_ids: vec![],
-                });
-            for source in sources {
-                if let Some(email) = &source.email {
-                    if !link.emails.contains(email) {
-                        link.emails.push(email.clone());
-                    }
-                }
-                if let Some(user_id) = &source.google_user_id {
-                    if !link.google_user_ids.contains(user_id) {
-                        link.google_user_ids.push(user_id.clone());
-                    }
-                }
-            }
-            if !link.emails.is_empty() || !link.google_user_ids.is_empty() {
-                link.emails.sort();
-                link.google_user_ids.sort();
-                library
-                    .google_identity
-                    .links
-                    .retain(|old| old.person_id != requested.person_id);
-                library.google_identity.links.push(link);
-            }
+                .link(&requested.person_id, &sources)?;
         }
         if draft.attendees.is_empty() {
             library.meeting_attendees.remove(id);
@@ -649,50 +639,11 @@ impl Engine {
             return Err(invalid());
         }
         let mut library = self.library.clone();
-        for entry in &source_entries {
-            if library
-                .google_identity
-                .links
-                .iter()
-                .any(|link| link.person_id != person_id && entry.source.matches(link))
-            {
-                return Err(CoreError::InvalidInput(
-                    "이미 다른 관리 인원에 연결된 Google 신원입니다.".into(),
-                ));
-            }
-        }
-        let mut link = library
-            .google_identity
-            .links
+        let sources = source_entries
             .iter()
-            .find(|link| link.person_id == person_id)
-            .cloned()
-            .unwrap_or(GoogleIdentityLink {
-                person_id: person_id.into(),
-                emails: vec![],
-                google_user_ids: vec![],
-            });
-        for entry in &source_entries {
-            if let Some(email) = &entry.source.email {
-                if !link.emails.contains(email) {
-                    link.emails.push(email.clone());
-                }
-            }
-            if let Some(user_id) = &entry.source.google_user_id {
-                if !link.google_user_ids.contains(user_id) {
-                    link.google_user_ids.push(user_id.clone());
-                }
-            }
-        }
-        if !link.emails.is_empty() || !link.google_user_ids.is_empty() {
-            library
-                .google_identity
-                .links
-                .retain(|old| old.person_id != person_id);
-            link.emails.sort();
-            link.google_user_ids.sort();
-            library.google_identity.links.push(link);
-        }
+            .map(|entry| &entry.source)
+            .collect::<Vec<_>>();
+        library.google_identity.link(person_id, &sources)?;
         let target = roster
             .meeting
             .attendees

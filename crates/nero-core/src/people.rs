@@ -140,6 +140,29 @@ impl People {
     }
 }
 
+// An attendee may keep its link to a person since removed from the catalog, but a
+// new link must name a managed person.
+pub(super) fn require_known_people(
+    previous: &[MeetingAttendee],
+    attendees: &[MeetingAttendee],
+    people: &People,
+) -> Result<()> {
+    for attendee in attendees {
+        let Some(person_id) = &attendee.person_id else {
+            continue;
+        };
+        let retained = previous
+            .iter()
+            .any(|old| old.id == attendee.id && old.person_id.as_ref() == Some(person_id));
+        if !retained && !people.people.iter().any(|person| &person.id == person_id) {
+            return Err(CoreError::InvalidInput(
+                "선택한 관리 인원을 찾을 수 없습니다.".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 impl Engine {
     pub fn people_catalog(&self) -> Result<PeopleCatalog> {
         self.library.people.catalog()
@@ -179,26 +202,7 @@ impl Engine {
             .require_meeting_version(id, expected_version, true)?
             .meeting;
         validate_attendees(&attendees)?;
-        for attendee in &attendees {
-            if let Some(person_id) = &attendee.person_id {
-                let retained = meeting
-                    .attendees
-                    .iter()
-                    .any(|old| old.id == attendee.id && old.person_id.as_ref() == Some(person_id));
-                if !retained
-                    && !self
-                        .library
-                        .people
-                        .people
-                        .iter()
-                        .any(|person| &person.id == person_id)
-                {
-                    return Err(CoreError::InvalidInput(
-                        "선택한 관리 인원을 찾을 수 없습니다.".into(),
-                    ));
-                }
-            }
-        }
+        require_known_people(&meeting.attendees, &attendees, &self.library.people)?;
         let mut library = self.library.clone();
         if attendees.is_empty() {
             library.meeting_attendees.remove(id);
