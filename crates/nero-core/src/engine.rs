@@ -150,10 +150,7 @@ impl Engine {
         }
         let stored =
             self.require_meeting_version(&target.meeting_id, &target.expected_version, true)?;
-        if stored.meeting.status != MeetingStatus::Draft
-            || stored.capture_id.is_some()
-            || stored.meeting.audio.is_some()
-            || stored.meeting.transcript_id.is_some()
+        if !self.accepts_new_audio(stored)
             || self
                 .capture
                 .as_ref()
@@ -568,15 +565,28 @@ impl Engine {
             return Err(CoreError::RecordingBusy);
         }
         let stored = self.meetings.get(id).ok_or(CoreError::MeetingNotFound)?;
-        if stored.meeting.status != MeetingStatus::Draft
-            || stored.capture_id.is_some()
-            || stored.meeting.audio.is_some()
-        {
+        if !self.accepts_new_audio(stored) {
             return Err(CoreError::InvalidState(
                 "기존 녹음은 덮어쓰지 않습니다. 새 회의를 만들어 주세요.".into(),
             ));
         }
         Ok(())
+    }
+
+    // A meeting takes a new recording or import only while it holds no audio: a new
+    // draft, or one whose recording saved no frame (it failed to start or was
+    // stopped at once). A recording with saved audio is never replaced.
+    fn accepts_new_audio(&self, stored: &StoredMeeting) -> bool {
+        if stored.meeting.audio.is_some() || stored.meeting.transcript_id.is_some() {
+            return false;
+        }
+        match &stored.capture_id {
+            None => stored.meeting.status == MeetingStatus::Draft,
+            Some(session) => {
+                stored.meeting.status == MeetingStatus::Interrupted
+                    && self.store.capture_is_empty(&stored.meeting.id, session)
+            }
+        }
     }
 
     pub fn start(&mut self, meeting_id: &str, device_id: &str) -> Result<Snapshot> {
@@ -2585,6 +2595,28 @@ mod tests {
             Err(CoreError::EditConflict)
         ));
         assert_eq!(engine.meetings[&id].meeting.notes, "통째로 바뀐 메모");
+    }
+
+    #[test]
+    fn a_recording_that_saved_nothing_can_be_recorded_again_but_saved_audio_cannot() {
+        let (_temporary, mut engine) = engine();
+        let empty = engine.create_meeting("빈 녹음".into(), "".into()).unwrap();
+        let (session, sink) = synthetic(&mut engine, &empty.id);
+        drop(sink);
+        engine.stop(&session).unwrap();
+        assert_eq!(
+            engine.meetings[&empty.id].meeting.status,
+            MeetingStatus::Interrupted
+        );
+        assert!(engine.meetings[&empty.id].meeting.audio.is_none());
+        engine.draft(&empty.id).unwrap();
+        let target = engine.draft_attachment_target(&empty.id).unwrap();
+        assert_eq!(target.meeting_id, empty.id);
+        let (second, mut sink) = synthetic(&mut engine, &empty.id);
+        sink.write(&[0.5_f32.to_le_bytes(); 4].concat());
+        engine.stop(&second).unwrap();
+        assert!(engine.meetings[&empty.id].meeting.audio.is_some());
+        assert!(engine.draft(&empty.id).is_err());
     }
 
     #[test]

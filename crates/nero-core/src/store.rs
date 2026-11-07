@@ -489,6 +489,23 @@ impl Store {
         Ok(())
     }
 
+    // True only when the session's PCM holds less than one frame. Anything that cannot
+    // be read counts as holding audio, so it is never replaced.
+    pub fn capture_is_empty(&self, meeting_id: &str, session_id: &str) -> bool {
+        let directory = sessions_dir(meeting_id).join(session_id);
+        let manifest = checked_path(&self.root, &directory.join("manifest.json"))
+            .and_then(|path| read_json::<Manifest>(&path))
+            .ok()
+            .filter(|manifest| manifest.validate().is_ok());
+        let Some(manifest) = manifest else {
+            return false;
+        };
+        checked_path(&self.root, &directory.join("audio.pcm"))
+            .and_then(|path| open_read(&path))
+            .and_then(|file| Ok(file.metadata()?.len()))
+            .is_ok_and(|length| length < manifest.frame_bytes() as u64)
+    }
+
     pub fn prepare_capture(&self, manifest: &Manifest) -> Result<File> {
         manifest.validate()?;
         disk_space::ensure(
