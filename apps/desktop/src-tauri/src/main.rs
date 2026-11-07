@@ -8,6 +8,7 @@ mod ai_chat;
 mod ai_chat_desktop;
 #[cfg(target_os = "macos")]
 mod app_menu;
+mod app_termination;
 mod app_updater;
 mod apple_speech;
 mod asr;
@@ -1378,11 +1379,26 @@ fn ask_quit(app: &tauri::AppHandle) {
     let app = app.clone();
     let core = app.state::<DesktopState>().core.clone();
     tauri::async_runtime::spawn(async move {
-        if let Ok(snapshot) = on_core(core, |core| core.snapshot()).await {
-            let session_id = active_session(&snapshot).map(str::to_string);
-            let _ = app.emit_to("main", "nero://quit-requested", QuitRequest { session_id });
+        let asked = match on_core(core, |core| core.snapshot()).await {
+            Ok(snapshot) => {
+                let session_id = active_session(&snapshot).map(str::to_string);
+                app.emit_to("main", "nero://quit-requested", QuitRequest { session_id })
+                    .is_ok()
+            }
+            Err(_) => false,
+        };
+        if !asked {
+            app_termination::reply(&app, false);
         }
     });
+}
+
+// The screen decided not to quit: kept recording, unsaved edits or a stale request.
+#[tauri::command]
+fn cancel_quit(window: WebviewWindow, app: tauri::AppHandle) -> Result<(), String> {
+    require_main(&window)?;
+    app_termination::reply(&app, false);
+    Ok(())
 }
 
 #[tauri::command]
@@ -1393,6 +1409,18 @@ async fn request_quit(
     session_id: Option<String>,
 ) -> Result<(), String> {
     require_main(&window)?;
+    let result = shut_down_for_quit(app.clone(), &state, session_id).await;
+    if result.is_err() {
+        app_termination::reply(&app, false);
+    }
+    result
+}
+
+async fn shut_down_for_quit(
+    app: tauri::AppHandle,
+    state: &DesktopState,
+    session_id: Option<String>,
+) -> Result<(), String> {
     let exit_lease = state.lifecycle.begin_exit(lifecycle::ExitKind::Quit)?;
     let ai_shutdown = ai_chat_desktop::prepare_shutdown(&app).await?;
     let processing = state.processing.clone();
@@ -1418,7 +1446,9 @@ async fn request_quit(
         quitting.store(true, Ordering::Release);
         polling.store(false, Ordering::Release);
         exit_lease.commit();
-        app.exit(0);
+        if !app_termination::reply(&app, true) {
+            app.exit(0);
+        }
         Ok(())
     })
     .await
@@ -2046,6 +2076,7 @@ fn main() {
             hide_main,
             open_meeting,
             request_quit,
+            cancel_quit,
             processing_status,
             set_speech_engine,
             set_speaker_enabled,
@@ -2086,6 +2117,7 @@ fn main() {
             identity_migration::validate_startup(&root)?;
             let core = CoreHandle::open(&root)?;
             let processing = Processing::new(root.clone(), app.path().resource_dir()?);
+            processing.report_unreadable_meetings(&core);
             processing.cleanup_removed_meeting_jobs(&core);
             processing.upgrade_transcript_sources(&core);
             let polling = Arc::new(AtomicBool::new(true));
@@ -2107,6 +2139,8 @@ fn main() {
                     app.path().app_cache_dir()?.join("dropped-audio"),
                 )),
             });
+            #[cfg(target_os = "macos")]
+            app_termination::install(app.handle());
             calendar_desktop::install(app.handle(), root.clone());
             ai_chat_desktop::install(
                 app.handle(),

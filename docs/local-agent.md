@@ -207,7 +207,7 @@ SHA-256이다. 원문, 메모, 참석 명단 또는 기존 요약이 바뀌면 `
 
 | 도구 | 용도 |
 |---|---|
-| `meetings_list` | 날짜/폴더 조건의 회의 목록. `trashed:true`는 휴지통 메타데이터만 |
+| `meetings_list` | 날짜/폴더 조건의 회의 목록. `trashed:true`는 휴지통 메타데이터만. 읽지 못한 회의는 빼고 `unreadableMeetings`에 개수를 적음 |
 | `meetings_search` | 제목, 메모, 현재 음성 기록, 요약 검색 |
 | `meeting_get` | 회의 정보와 저장된 메모 |
 | `transcript_get` | 현재 교정본의 화자, 시각, 발언 ID와 텍스트 |

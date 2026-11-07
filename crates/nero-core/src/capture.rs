@@ -1,6 +1,7 @@
 #[path = "capture_timing.rs"]
 mod timing;
 
+use crate::disk_space;
 use crate::store::{
     self, CapturePhase, CaptureQuality, CaptureQualityEvent, CaptureQualityEventKind, Encoding,
     Manifest, CAPTURE_QUALITY_EVENT_KINDS, CAPTURE_QUALITY_INDIVIDUAL_EVENTS,
@@ -20,6 +21,7 @@ const FAULT_OVERFLOW: u8 = 1;
 const FAULT_DEVICE: u8 = 2;
 const FAULT_WRITER: u8 = 3;
 const FAULT_FORMAT: u8 = 4;
+const FAULT_SPACE: u8 = 5;
 const CHECKPOINT_INTERVAL: Duration = Duration::from_secs(1);
 const MAX_QUEUE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_DEVICE_DIAGNOSTIC_CHARS: usize = 512;
@@ -221,6 +223,14 @@ impl Signals {
         }
     }
 
+    // Not a quality fault: the capture stops early so its playback WAV still fits.
+    fn stop_for_space(&self) {
+        let _ = self
+            .fault
+            .compare_exchange(0, FAULT_SPACE, Ordering::AcqRel, Ordering::Acquire);
+        self.accepting.store(false, Ordering::Release);
+    }
+
     fn interrupted(&self) {
         if self.fault.load(Ordering::Acquire) == 0 {
             self.record_event(CaptureQualityEventKind::CaptureInterrupted);
@@ -324,6 +334,9 @@ impl Signals {
                 })
             }
             FAULT_WRITER => Some("녹음 파일을 저장하지 못해 중단했습니다.".into()),
+            FAULT_SPACE => Some(
+                "저장 공간이 부족해 녹음을 멈췄습니다. 여기까지 녹음한 내용은 저장했습니다.".into(),
+            ),
             _ => Some("마이크의 오디오 형식이 변경되어 녹음을 중단했습니다.".into()),
         }
     }
@@ -349,7 +362,11 @@ impl CallbackSink {
         self.write_with_timestamp(input, None);
     }
 
-    fn write_with_timestamp(&mut self, input: &[u8], timestamp: Option<cpal::InputStreamTimestamp>) {
+    fn write_with_timestamp(
+        &mut self,
+        input: &[u8],
+        timestamp: Option<cpal::InputStreamTimestamp>,
+    ) {
         self.signals.callbacks.fetch_add(1, Ordering::SeqCst);
         if self.signals.accepting.load(Ordering::SeqCst)
             && self.signals.fault.load(Ordering::Acquire) == 0
@@ -561,10 +578,9 @@ impl Capture {
 
     pub fn begin(&mut self) {
         self.manifest.phase = CapturePhase::Recording;
-        self.signals.begin_ns.store(
-            timing::elapsed_ns(self.signals.clock),
-            Ordering::Relaxed,
-        );
+        self.signals
+            .begin_ns
+            .store(timing::elapsed_ns(self.signals.clock), Ordering::Relaxed);
         self.signals.epoch.fetch_add(1, Ordering::Release);
         self.signals.phase.store(1, Ordering::Release);
         if self.signals.fault.load(Ordering::Acquire) == 0 {
@@ -800,6 +816,22 @@ fn checkpoint(root: &Path, raw: &File, manifest: &mut Manifest, signals: &Signal
     Ok(manifest.saved_frames)
 }
 
+// An unreadable free-space figure does not stop a recording; the write itself
+// still reports a full disk.
+fn stop_before_disk_fills(root: &Path, manifest: &Manifest, signals: &Signals) {
+    if signals.fault.load(Ordering::Acquire) != 0 {
+        return;
+    }
+    let Ok(directory) = store::checked_path(root, &manifest.relative_dir()) else {
+        return;
+    };
+    if disk_space::available(&directory)
+        .is_ok_and(|available| available < disk_space::recording_bytes(manifest))
+    {
+        signals.stop_for_space();
+    }
+}
+
 fn writer_loop(
     root: PathBuf,
     mut manifest: Manifest,
@@ -852,6 +884,7 @@ fn writer_loop(
                     Some(format!("녹음 파일의 저장을 확인하지 못했습니다: {error}")),
                 );
             }
+            stop_before_disk_fills(&root, &manifest, &signals);
             last_checkpoint = Instant::now();
         }
         thread::sleep(Duration::from_millis(4));
@@ -934,6 +967,38 @@ fn writer_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recording_stops_while_its_playback_wav_still_fits() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let mut manifest = Manifest::new(
+            &uuid::Uuid::new_v4().to_string(),
+            "synthetic",
+            "시험 입력",
+            48_000,
+            2,
+            Encoding::F32,
+        );
+        std::fs::create_dir_all(root.join(manifest.relative_dir())).unwrap();
+        manifest.saved_frames = 48_000 * 60;
+        let required = disk_space::recording_bytes(&manifest);
+        assert!(required > disk_space::SYSTEM_RESERVE_BYTES + 48_000 * 60 * 2 * 4);
+        let signals = Signals::new(manifest.frame_bytes());
+        signals.accepting.store(true, Ordering::Release);
+        disk_space::tests::force(&root, Some(required));
+        stop_before_disk_fills(&root, &manifest, &signals);
+        assert_eq!(signals.error(), None);
+        disk_space::tests::force(&root, Some(required - 1));
+        stop_before_disk_fills(&root, &manifest, &signals);
+        disk_space::tests::force(&root, None);
+        assert!(signals
+            .error()
+            .unwrap()
+            .starts_with("저장 공간이 부족해 녹음을 멈췄습니다."));
+        assert!(!signals.accepting.load(Ordering::Acquire));
+        assert_eq!(signals.quality(), None);
+    }
     use crate::store::{Store, MAX_CAPTURE_QUALITY_EVENTS};
     use std::fs;
 
@@ -981,7 +1046,9 @@ mod tests {
         let path = store.root.join(outcome.manifest.relative_dir());
         assert_eq!(fs::metadata(path.join("audio.pcm")).unwrap().len(), 12);
         assert_eq!(
-            hound::WavReader::open(path.join("audio.wav")).unwrap().duration(),
+            hound::WavReader::open(path.join("audio.wav"))
+                .unwrap()
+                .duration(),
             3,
         );
         let persisted: Manifest =

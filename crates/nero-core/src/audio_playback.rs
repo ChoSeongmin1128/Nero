@@ -59,6 +59,14 @@ impl Playback {
         })
     }
 
+    // RIFF header and format chunks stay under the 4 KiB allowance.
+    pub fn wav_bytes(&self) -> u64 {
+        self.frames
+            .saturating_mul(u64::from(self.spec.channels))
+            .saturating_mul(u64::from(self.spec.bits_per_sample / 8))
+            .saturating_add(4096)
+    }
+
     pub fn from_artifact(artifact: &AudioArtifact) -> Result<Self> {
         match &artifact.playback {
             None => Self::with_native_limit(

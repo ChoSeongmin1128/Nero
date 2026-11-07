@@ -5,6 +5,7 @@ pub mod audio_normalize;
 mod audio_playback;
 mod capture;
 mod diarization;
+mod disk_space;
 mod engine;
 pub mod environment;
 pub mod identity;
@@ -328,6 +329,11 @@ impl CoreHandle {
 
     pub fn list_meetings(&self) -> Result<Vec<Meeting>> {
         self.call(|engine| Ok(engine.meetings()))
+    }
+
+    /// Meeting folders that exist on disk but could not be read at startup.
+    pub fn unreadable_meetings(&self) -> Result<Vec<String>> {
+        self.call_unfenced(|engine| Ok(engine.unreadable_meetings()))
     }
 
     pub fn create_meeting(&self, title: &str, notes: &str) -> Result<Meeting> {

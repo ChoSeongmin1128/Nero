@@ -752,12 +752,22 @@ impl<'a> Transaction<'a> {
             .trim()
             .to_lowercase();
         let mut meetings = Vec::new();
+        let mut unreadable = 0_usize;
         for id in names {
-            let Some(meeting) =
-                self.meeting_in_view(&id, library, params.trashed == Some(true), false)?
-            else {
-                continue;
-            };
+            let meeting =
+                match self.meeting_in_view(&id, library, params.trashed == Some(true), false) {
+                    Ok(Some(meeting)) => meeting,
+                    Ok(None) => continue,
+                    Err(CoreError::Reader(
+                        ReadError::InvalidDocument
+                        | ReadError::UnsupportedFormat
+                        | ReadError::DocumentTooLarge,
+                    )) => {
+                        unreadable += 1;
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                };
             let time = meeting.recorded_at.unwrap_or(meeting.created_at);
             if params
                 .folder_id
@@ -838,9 +848,11 @@ impl<'a> Transaction<'a> {
                 .cmp(&timestamp(a))
                 .then_with(|| a["id"].as_str().cmp(&b["id"].as_str()))
         });
-        Ok(
-            json!({"pagination":params.page(meetings.len(),"meetings"),"meetings":params.select(meetings)}),
-        )
+        let mut value = json!({"pagination":params.page(meetings.len(),"meetings"),"meetings":params.select(meetings)});
+        if unreadable != 0 {
+            value["unreadableMeetings"] = json!(unreadable);
+        }
+        Ok(value)
     }
 }
 
@@ -960,14 +972,16 @@ fn read_directory(root: &Path, relative: &Path) -> Result<Vec<String>> {
         .map_err(|_| CoreError::Storage("회의 목록 폴더가 없거나 읽을 수 없습니다.".into()))?
     {
         let entry = entry?;
+        // Names that are not meeting IDs (Finder's .DS_Store, for example) are not ours.
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        if store::validate_id(&name).is_err() {
+            continue;
+        }
         if !entry.file_type()?.is_dir() || entry.file_type()?.is_symlink() {
             return Err(ReadError::UnsafePath.into());
         }
-        let name = entry
-            .file_name()
-            .into_string()
-            .map_err(|_| ReadError::InvalidDocument)?;
-        store::validate_id(&name).map_err(|_| ReadError::InvalidDocument)?;
         store::checked_path(root, &relative.join(&name))?;
         names.push(name);
     }
@@ -1734,24 +1748,30 @@ mod tests {
             .join(&fixture.id)
             .join("meeting.json");
         let original = fs::read(&meeting).unwrap();
+        // A list reports how many meetings it left out; reading that meeting fails.
+        let unreadable = |expected: fn(&CoreError) -> bool| {
+            let listed = reader.query("meetings_list", json!({})).unwrap();
+            assert_eq!(listed["unreadableMeetings"], 1);
+            assert_eq!(listed["pagination"]["total"], 0);
+            assert!(expected(
+                &reader
+                    .query("meeting_get", json!({"meetingId":fixture.id}))
+                    .unwrap_err()
+            ));
+        };
         fs::write(&meeting, b"{broken").unwrap();
-        assert!(matches!(
-            reader.query("meetings_list", json!({})),
-            Err(CoreError::Reader(ReadError::InvalidDocument))
-        ));
+        unreadable(|error| matches!(error, CoreError::Reader(ReadError::InvalidDocument)));
         let mut value: Value = serde_json::from_slice(&original).unwrap();
         value["schemaVersion"] = json!(99);
         fs::write(&meeting, serde_json::to_vec(&value).unwrap()).unwrap();
-        assert!(matches!(
-            reader.query("meetings_list", json!({})),
-            Err(CoreError::Reader(ReadError::UnsupportedFormat))
-        ));
+        unreadable(|error| matches!(error, CoreError::Reader(ReadError::UnsupportedFormat)));
         fs::write(&meeting, vec![b' '; MAX_DOCUMENT_BYTES as usize + 1]).unwrap();
-        assert!(matches!(
-            reader.query("meetings_list", json!({})),
-            Err(CoreError::Reader(ReadError::DocumentTooLarge))
-        ));
+        unreadable(|error| matches!(error, CoreError::Reader(ReadError::DocumentTooLarge)));
         fs::write(&meeting, original).unwrap();
+        fs::write(fixture.root.join("meetings").join(".DS_Store"), b"finder").unwrap();
+        let listed = reader.query("meetings_list", json!({})).unwrap();
+        assert_eq!(listed["pagination"]["total"], 1);
+        assert!(listed.get("unreadableMeetings").is_none());
         let current = fixture
             .root
             .join("meetings")
@@ -1829,10 +1849,9 @@ mod tests {
                 );
             } else {
                 fs::create_dir(fixture.root.join(relative.join("sessions"))).unwrap();
-                assert!(matches!(
-                    fixture.reader().query("meetings_list", json!({})),
-                    Err(CoreError::Reader(ReadError::InvalidDocument))
-                ));
+                let listed = fixture.reader().query("meetings_list", json!({})).unwrap();
+                assert_eq!(listed["pagination"]["total"], 1);
+                assert_eq!(listed["unreadableMeetings"], 1);
             }
             assert!(!transaction.verify().unwrap());
         }

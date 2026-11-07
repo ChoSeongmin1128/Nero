@@ -13,6 +13,7 @@ pub(crate) struct Engine {
     pub(crate) meetings: BTreeMap<String, StoredMeeting>,
     pub(crate) library: Library,
     pub(crate) capture: Option<Capture>,
+    unreadable: BTreeSet<String>,
     last_session: Option<SessionSnapshot>,
     revision: u64,
     pub(crate) quitting: bool,
@@ -22,17 +23,25 @@ impl Engine {
     pub fn open(root: PathBuf) -> Result<Self> {
         let store = Store::open(root)?;
         let library = store.load_library()?;
-        let mut meetings = store.load_with_library(&library)?;
+        let store::LoadedMeetings {
+            mut meetings,
+            unreadable,
+        } = store.load_meetings(&library)?;
         store.recover(&mut meetings)?;
         Ok(Self {
             store,
             meetings,
             library,
             capture: None,
+            unreadable,
             last_session: None,
             revision: 0,
             quitting: false,
         })
+    }
+
+    pub fn unreadable_meetings(&self) -> Vec<String> {
+        self.unreadable.iter().cloned().collect()
     }
 
     pub fn meetings(&self) -> Vec<Meeting> {
@@ -2019,6 +2028,99 @@ mod tests {
     }
 
     #[test]
+    fn recovery_without_room_for_playback_writes_nothing_and_retries_after_space_returns() {
+        let (temporary, mut engine) = engine();
+        let meeting = engine.create_meeting("회의".into(), "메모".into()).unwrap();
+        let mut manifest = Manifest::new(
+            &meeting.id,
+            "synthetic",
+            "시험 입력",
+            1000,
+            1,
+            Encoding::F32,
+        );
+        let mut raw = engine.store.prepare_capture(&manifest).unwrap();
+        raw.write_all(&[0.125_f32.to_le_bytes(); 50].concat())
+            .unwrap();
+        drop(raw);
+        manifest.phase = CapturePhase::Recording;
+        store::write_manifest(&engine.store.root, &manifest).unwrap();
+        let stored = engine.meetings.get_mut(&meeting.id).unwrap();
+        stored.capture_id = Some(manifest.session_id.clone());
+        stored.meeting.status = MeetingStatus::Recording;
+        engine.store.save(stored).unwrap();
+        let root = engine.store.root.clone();
+        let session = root.join(manifest.relative_dir());
+        let stale = session.join(format!("audio.{}.wav.tmp", Uuid::new_v4()));
+        fs::write(&stale, b"half-written").unwrap();
+        drop(engine);
+        let temporaries = || {
+            fs::read_dir(&session)
+                .unwrap()
+                .filter(|entry| {
+                    entry
+                        .as_ref()
+                        .unwrap()
+                        .file_name()
+                        .to_string_lossy()
+                        .ends_with(".wav.tmp")
+                })
+                .count()
+        };
+
+        crate::disk_space::tests::force(&root, Some(crate::disk_space::SYSTEM_RESERVE_BYTES));
+        let restored = Engine::open(root.clone()).unwrap();
+        let recovered = &restored.meetings[&meeting.id].meeting;
+        assert_eq!(recovered.status, MeetingStatus::Interrupted);
+        assert!(recovered.audio.is_none());
+        assert!(recovered
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("저장 공간이 부족해"));
+        assert!(!session.join("audio.wav").exists());
+        assert_eq!(temporaries(), 0);
+        drop(restored);
+
+        crate::disk_space::tests::force(&root, None);
+        let restored = Engine::open(root.clone()).unwrap();
+        assert_eq!(
+            restored.meetings[&meeting.id]
+                .meeting
+                .audio
+                .as_ref()
+                .unwrap()
+                .frames,
+            50
+        );
+        assert!(restored.audio_path(&meeting.id).is_ok());
+        assert_eq!(temporaries(), 0);
+        drop(restored);
+        drop(temporary);
+    }
+
+    #[test]
+    fn a_capture_is_not_started_without_room_to_finish_it() {
+        let (temporary, mut engine) = engine();
+        let meeting = engine.create_meeting("회의".into(), "".into()).unwrap();
+        let manifest = Manifest::new(
+            &meeting.id,
+            "synthetic",
+            "시험 입력",
+            1000,
+            1,
+            Encoding::F32,
+        );
+        let root = engine.store.root.clone();
+        crate::disk_space::tests::force(&root, Some(crate::disk_space::SYSTEM_RESERVE_BYTES));
+        let error = engine.store.prepare_capture(&manifest).unwrap_err();
+        crate::disk_space::tests::force(&root, None);
+        assert!(error.to_string().contains("저장 공간이 부족합니다. 약 "));
+        assert!(!root.join(manifest.relative_dir()).exists());
+        drop(temporary);
+    }
+
+    #[test]
     fn invalid_capture_metadata_is_isolated_without_changing_saved_edits_or_audio() {
         for corruption in ["json", "schema", "identity"] {
             let (_temporary, mut engine, id, _source) = crate::transcript::tests::setup();
@@ -2340,12 +2442,51 @@ mod tests {
                 .store
                 .root
                 .join("meetings")
-                .join(meeting.id)
+                .join(&meeting.id)
                 .join("meeting.json"),
             duplicate_dir.join("meeting.json"),
         )
         .unwrap();
-        assert!(engine.store.load().is_err());
+        let loaded = engine.store.load_meetings(&engine.library).unwrap();
+        assert_eq!(loaded.unreadable, BTreeSet::from([duplicate_id]));
+        assert!(loaded.meetings.contains_key(&meeting.id));
+    }
+
+    #[test]
+    fn foreign_entries_and_unreadable_meetings_do_not_close_the_library() {
+        let (temporary, mut engine) = engine();
+        let kept = engine
+            .create_meeting("남는 회의".into(), "메모".into())
+            .unwrap();
+        let root = engine.store.root.clone();
+        let meetings = root.join("meetings");
+        drop(engine);
+        fs::write(meetings.join(".DS_Store"), b"finder").unwrap();
+        fs::create_dir(meetings.join("Untitled Folder")).unwrap();
+        let corrupt = Uuid::new_v4().to_string();
+        fs::create_dir(meetings.join(&corrupt)).unwrap();
+        fs::write(meetings.join(&corrupt).join("meeting.json"), b"{").unwrap();
+        let orphan = Uuid::new_v4().to_string();
+        fs::create_dir_all(meetings.join(&orphan).join("sessions")).unwrap();
+        let file = Uuid::new_v4().to_string();
+        fs::write(meetings.join(&file), b"").unwrap();
+        let engine = Engine::open(root).unwrap();
+        assert_eq!(
+            engine
+                .meetings()
+                .into_iter()
+                .map(|meeting| meeting.id)
+                .collect::<Vec<_>>(),
+            [kept.id]
+        );
+        let mut unreadable = vec![corrupt.clone(), orphan, file];
+        unreadable.sort();
+        assert_eq!(engine.unreadable_meetings(), unreadable);
+        assert_eq!(
+            fs::read(meetings.join(&corrupt).join("meeting.json")).unwrap(),
+            b"{"
+        );
+        drop(temporary);
     }
 
     #[cfg(unix)]

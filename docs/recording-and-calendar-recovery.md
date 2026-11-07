@@ -35,6 +35,33 @@ toolbar provides an explicitly labelled icon to show it again during recording o
 An explicit show validates the current session ID and does not change the saved automatic
 presentation preference. A manual presentation ends with that session.
 
+## Quitting
+
+On macOS, Cmd+Q, Dock quit, logout, restart and shutdown ask the app delegate first.
+Nero answers later and runs the same quit flow as its own Quit command: an active
+recording shows the save-and-quit confirmation, otherwise the app saves pending edits
+and quits. Logout waits for that answer. Keeping the recording, a declined editor
+leave or a failed shutdown cancels the request, and the system termination with it.
+
+## Storage space
+
+A new capture needs room for its playback WAV, 10 seconds of further audio, metadata
+and a 1 GiB reserve left to macOS, which grows swap in 1 GiB files. Recording does
+not start without it. During recording, each checkpoint compares free space with the
+same requirement for the frames saved so far and stops the capture as interrupted,
+with its saved audio and playback WAV, before the disk fills. Creating a playback WAV
+checks the same reserve first. A half-written playback file is removed on failure and
+on the next attempt; an interrupted recording without playback retries at launch.
+
+## Unreadable meetings
+
+Entries in `meetings/` whose names are not meeting IDs, such as Finder's `.DS_Store`,
+are ignored. A meeting folder that cannot be read (damaged or newer `meeting.json`,
+recording folders without meeting information, links or files) stays on disk, is left
+out of the library and is reported once at launch. Cleanup never treats it as deleted.
+A meeting whose interruption recovery cannot be saved keeps the recovered state in
+memory and is recovered again at the next launch.
+
 ## Calendar meeting preparation
 
 The picker starts with today, including ended events. Previous/next day and the shared

@@ -136,6 +136,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
       });
     },
     requestQuit() { const pending = deferred(); exits.push({ type: 'quit', pending }); return pending.promise; },
+    async cancelQuit() { exits.push({ type: 'stay' }); },
     hideMain() { const pending = deferred(); exits.push({ type: 'close', pending }); return pending.promise; },
   };
   const copied = [], agentDialogCalls = [], aiLifecycle = [];
@@ -477,6 +478,20 @@ test('a transcript read still adopts its result when the draft owner and version
   assert.equal(page.app.state.transcriptLoaded, true);
   assert.equal(page.app.state.transcriptLoadError, false);
   assert.match(page.element('transcript-rows').innerHTML, /정상적으로 다시 읽은 문장/);
+});
+
+test('a system quit that does not end in quitting tells the app to stay', async () => {
+  const page = await openApp();
+  page.templateSettings.beforeLeave = async () => false;
+  await page.app.onQuitRequest({});
+  assert.deepEqual(page.exits.map(exit => exit.type), ['stay']);
+  page.templateSettings.beforeLeave = async () => true;
+  const leaving = page.app.onQuitRequest({});
+  await tick();
+  assert.deepEqual(page.exits.map(exit => exit.type), ['stay', 'quit']);
+  page.exits[1].pending.resolve();
+  await leaving;
+  assert.deepEqual(page.exits.map(exit => exit.type), ['stay', 'quit', 'stay']);
 });
 
 test('quit commits an active transcript composition before requesting native exit', async () => {

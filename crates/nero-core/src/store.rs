@@ -1,4 +1,5 @@
 use crate::audio_playback::Playback;
+use crate::disk_space;
 use crate::library::Library;
 use crate::{AudioArtifact, CoreError, Meeting, MeetingStatus, Result};
 use fs2::FileExt;
@@ -259,6 +260,14 @@ pub(crate) struct StoredMeeting {
     pub generated_title: bool,
 }
 
+#[derive(Default)]
+pub(crate) struct LoadedMeetings {
+    pub meetings: BTreeMap<String, StoredMeeting>,
+    // Meeting folders kept on disk but left out of the library because they could
+    // not be read. Nothing may treat these IDs as deleted.
+    pub unreadable: BTreeSet<String>,
+}
+
 pub(crate) fn hydrate_capture_metadata(meeting: &mut Meeting, manifest: &Manifest) {
     if meeting.recorded_at.is_none() && manifest.device_id != "import" {
         meeting.recorded_at = Some(manifest.started_at);
@@ -291,8 +300,9 @@ impl Store {
         Ok(Self { root, _lock: lock })
     }
 
+    #[cfg(test)]
     pub fn load(&self) -> Result<BTreeMap<String, StoredMeeting>> {
-        self.load_with_library(&self.load_library()?)
+        Ok(self.load_meetings(&self.load_library()?)?.meetings)
     }
 
     pub fn load_library(&self) -> Result<Library> {
@@ -311,60 +321,69 @@ impl Store {
         write_json(&self.root, Path::new("library.json"), library)
     }
 
-    pub fn load_with_library(&self, library: &Library) -> Result<BTreeMap<String, StoredMeeting>> {
+    // One unreadable meeting must not keep the whole library closed. Entries whose
+    // names are not meeting IDs (Finder's .DS_Store, for example) are not ours.
+    pub fn load_meetings(&self, library: &Library) -> Result<LoadedMeetings> {
         let meetings_path = checked_path(&self.root, Path::new("meetings"))?;
-        let mut meetings = BTreeMap::new();
-        let mut seen = BTreeSet::new();
+        let mut loaded = LoadedMeetings::default();
         for entry in fs::read_dir(meetings_path)? {
             let entry = entry?;
-            let id = entry.file_name().to_string_lossy().into_owned();
-            validate_id(&id)?;
-            if library.pending_purges.contains(&id) {
+            let Some(id) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            if validate_id(&id).is_err() || library.pending_purges.contains(&id) {
                 continue;
             }
-            if entry.file_type()?.is_symlink() || !entry.file_type()?.is_dir() {
-                return Err(CoreError::Storage(
-                    "회의 폴더의 형식이 올바르지 않습니다.".into(),
-                ));
-            }
-            let relative = Path::new("meetings").join(&id).join("meeting.json");
-            let path = checked_path(&self.root, &relative)?;
-            if !path.exists() {
-                let sessions = checked_path(
-                    &self.root,
-                    &Path::new("meetings").join(&id).join("sessions"),
-                )?;
-                if sessions.exists() {
-                    return Err(CoreError::Storage(
-                        "회의 정보가 없는 녹음 폴더가 있습니다.".into(),
-                    ));
+            match self.load_meeting(&entry, &id) {
+                Ok(Some(mut stored)) => {
+                    library.project(&mut stored.meeting);
+                    loaded.meetings.insert(id, stored);
                 }
-                continue;
+                Ok(None) => {}
+                Err(_) => {
+                    loaded.unreadable.insert(id);
+                }
             }
-            let mut stored: StoredMeeting = read_json(&path)?;
-            if stored.schema_version != SCHEMA_VERSION
-                || stored.meeting.id != id
-                || !seen.insert(stored.meeting.id.clone())
-            {
+        }
+        Ok(loaded)
+    }
+
+    fn load_meeting(&self, entry: &fs::DirEntry, id: &str) -> Result<Option<StoredMeeting>> {
+        if entry.file_type()?.is_symlink() || !entry.file_type()?.is_dir() {
+            return Err(CoreError::Storage(
+                "회의 폴더의 형식이 올바르지 않습니다.".into(),
+            ));
+        }
+        let relative = Path::new("meetings").join(id).join("meeting.json");
+        let path = checked_path(&self.root, &relative)?;
+        if !path.exists() {
+            let sessions =
+                checked_path(&self.root, &Path::new("meetings").join(id).join("sessions"))?;
+            if sessions.exists() {
                 return Err(CoreError::Storage(
-                    "중복되거나 올바르지 않은 회의 정보가 있습니다.".into(),
+                    "회의 정보가 없는 녹음 폴더가 있습니다.".into(),
                 ));
             }
-            validate_text(&stored.meeting.title, &stored.meeting.notes)?;
-            if let Some(date) = &stored.meeting.meeting_date {
-                validate_meeting_date(date)?;
-            }
-            if let Some(capture_id) = &stored.capture_id {
-                validate_id(capture_id)?;
-            }
-            if let Some(audio) = &stored.meeting.audio {
-                validate_artifact(&id, audio)?;
-                checked_path(&self.root, Path::new(&audio.relative_path))?;
-            }
-            library.project(&mut stored.meeting);
-            meetings.insert(id, stored);
+            return Ok(None);
         }
-        Ok(meetings)
+        let stored: StoredMeeting = read_json(&path)?;
+        if stored.schema_version != SCHEMA_VERSION || stored.meeting.id != id {
+            return Err(CoreError::Storage(
+                "올바르지 않은 회의 정보가 있습니다.".into(),
+            ));
+        }
+        validate_text(&stored.meeting.title, &stored.meeting.notes)?;
+        if let Some(date) = &stored.meeting.meeting_date {
+            validate_meeting_date(date)?;
+        }
+        if let Some(capture_id) = &stored.capture_id {
+            validate_id(capture_id)?;
+        }
+        if let Some(audio) = &stored.meeting.audio {
+            validate_artifact(id, audio)?;
+            checked_path(&self.root, Path::new(&audio.relative_path))?;
+        }
+        Ok(Some(stored))
     }
 
     pub fn create(&self, title: String, notes: String) -> Result<StoredMeeting> {
@@ -470,6 +489,14 @@ impl Store {
 
     pub fn prepare_capture(&self, manifest: &Manifest) -> Result<File> {
         manifest.validate()?;
+        let meetings = checked_path(&self.root, Path::new("meetings"))?;
+        if let Some(missing) = disk_space::available(&meetings).ok().and_then(|available| {
+            disk_space::shortfall(available, disk_space::recording_bytes(manifest))
+        }) {
+            return Err(CoreError::Storage(format!(
+                "저장 공간이 부족합니다. 약 {missing}를 더 확보한 뒤 다시 시도해 주세요."
+            )));
+        }
         let meeting_dir = Path::new("meetings").join(&manifest.meeting_id);
         let sessions_dir = checked_path(&self.root, &meeting_dir.join("sessions"))?;
         ensure_directory(&sessions_dir)?;
@@ -505,7 +532,9 @@ impl Store {
                 {
                     stored.meeting.updated_at = now();
                 }
-                self.save(stored)?;
+                // A full disk must not keep the library closed. The recovered state
+                // stays in memory and the next launch derives and saves it again.
+                let _ = self.save(stored);
             }
             // Reading a completed capture must not rewrite its meeting document merely
             // to expose diagnostics or metadata added by a newer application build.
@@ -592,7 +621,7 @@ impl Store {
             Ok(audio) => stored.meeting.audio = audio,
             Err(error) => {
                 stored.meeting.audio = None;
-                stored.meeting.error = Some(format!("녹음이 중단되었습니다. 원본은 보관되지만 재생 파일을 만들지 못했습니다: {error}"));
+                stored.meeting.error = Some(format!("녹음이 중단되었습니다. 원본은 보관되지만 재생 파일을 만들지 못했습니다. 앱을 다시 열면 다시 만듭니다: {error}"));
             }
         }
         Ok(None)
@@ -752,23 +781,38 @@ fn finalize_audio_with_playback(
         sync_parent(&backup)?;
     }
     if !wav_path.exists() {
+        remove_playback_temporaries(root, manifest)?;
+        let directory = checked_path(root, &manifest.relative_dir())?;
+        let required = disk_space::playback_bytes(&playback);
+        if let Some(missing) = disk_space::shortfall(disk_space::available(&directory)?, required) {
+            return Err(CoreError::Storage(format!(
+                "저장 공간이 부족해 재생 파일을 만들지 못했습니다. 약 {missing}를 더 확보해 주세요."
+            )));
+        }
         let temporary = manifest
             .relative_dir()
             .join(format!("audio.{}.wav.tmp", Uuid::new_v4()));
         let temporary_path = checked_path(root, &temporary)?;
         let output = create_new(&temporary_path)?;
-        let durable = output.try_clone()?;
-        let mut writer =
-            hound::WavWriter::new(BufWriter::new(output), playback.spec).map_err(wav_error)?;
-        let mut input = BufReader::new(file);
-        playback.write(&mut input, &mut writer, manifest)?;
-        writer.finalize().map_err(wav_error)?;
-        durable.sync_all()?;
-        checked_path(root, &wav_relative)?;
-        if wav_path.exists() {
-            return Err(CoreError::Storage("재생 파일이 이미 존재합니다.".into()));
+        let written = (|| -> Result<()> {
+            let durable = output.try_clone()?;
+            let mut writer =
+                hound::WavWriter::new(BufWriter::new(output), playback.spec).map_err(wav_error)?;
+            let mut input = BufReader::new(file);
+            playback.write(&mut input, &mut writer, manifest)?;
+            writer.finalize().map_err(wav_error)?;
+            durable.sync_all()?;
+            checked_path(root, &wav_relative)?;
+            if wav_path.exists() {
+                return Err(CoreError::Storage("재생 파일이 이미 존재합니다.".into()));
+            }
+            fs::rename(&temporary_path, &wav_path)?;
+            Ok(())
+        })();
+        if let Err(error) = written {
+            let _ = fs::remove_file(&temporary_path);
+            return Err(error);
         }
-        fs::rename(&temporary_path, &wav_path)?;
         sync_parent(&wav_path)?;
     }
     write_manifest(root, manifest)?;
@@ -780,6 +824,30 @@ fn finalize_audio_with_playback(
         channels: manifest.channels,
         playback: playback.metadata(),
     }))
+}
+
+// A playback WAV left half-written by an earlier crash or full disk is never
+// reused; each attempt writes a new uniquely named file.
+fn remove_playback_temporaries(root: &Path, manifest: &Manifest) -> Result<()> {
+    let directory = checked_path(root, &manifest.relative_dir())?;
+    for entry in fs::read_dir(&directory)? {
+        let entry = entry?;
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        let Some(id) = name
+            .strip_prefix("audio.")
+            .and_then(|rest| rest.strip_suffix(".wav.tmp"))
+        else {
+            continue;
+        };
+        if Uuid::parse_str(id).is_err() || !entry.file_type()?.is_file() {
+            continue;
+        }
+        let path = checked_path(root, &manifest.relative_dir().join(&name))?;
+        fs::remove_file(&path)?;
+    }
+    Ok(())
 }
 
 fn validate_playback(path: &Path, playback: &Playback) -> Result<()> {

@@ -40,6 +40,7 @@ export const showRecorder = sessionId => call('show_recorder', { sessionId });
 export const hideMain = () => call('hide_main');
 export const openMeeting = (meetingId, error = null) => call('open_meeting', { meetingId, error });
 export const requestQuit = (sessionId = null) => call('request_quit', { sessionId });
+export const cancelQuit = () => call('cancel_quit');
 export const audioUrl = async (meetingId) => convertFileSrc(await call('audio_file', { meetingId }));
 export const revealRecordingFile = (meetingId) => call('reveal_recording_file', { meetingId });
 export const exportRecordingFile = (meetingId) => call('export_recording_file', { meetingId });

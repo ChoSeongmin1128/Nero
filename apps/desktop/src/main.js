@@ -1599,13 +1599,21 @@ byId('transcript-rows').addEventListener('keydown', event => {
   else if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); void completeTranscriptRow(); }
 });
 
+// macOS logout, Cmd+Q and Dock quit wait for an answer. Any path that does not end
+// in quitting tells the app to stay; after a successful quit this does nothing.
+const stayOpen = () => bridge.cancelQuit().catch(() => {});
+let quitConfirmed = false;
 async function onQuitRequest({ sessionId } = {}) {
   if (!activeSession()) {
     await run(() => prepareAppLeave(() => bridge.requestQuit(null)));
+    await stayOpen();
     return;
   }
-  if (sessionId !== activeSession().id) return;
-  if (!await prepareAppLeave(() => true)) return;
+  if (sessionId !== activeSession().id || !await prepareAppLeave(() => true)) {
+    await stayOpen();
+    return;
+  }
+  quitConfirmed = false;
   pendingQuitSessionId = sessionId;
   const dialog = byId('quit-dialog');
   dialog.innerHTML = globalThis.NeroUI.dialogContent({ title: '녹음을 종료하고 나갈까요?', titleId: 'quit-title', bodyHTML: '<p>지금까지 녹음한 음성과 메모를 저장한 뒤 앱을 종료합니다.</p>', actionsHTML: button('계속 녹음', 'cancel-quit', null, '') + button('저장하고 종료', 'confirm-quit', null, 'primary') });
@@ -1617,11 +1625,15 @@ byId('quit-dialog').addEventListener('click', (event) => {
   if (action === 'cancel-quit') byId('quit-dialog').close();
   if (action === 'confirm-quit') {
     const sessionId = pendingQuitSessionId;
+    quitConfirmed = true;
     byId('quit-dialog').close();
-    run(() => finishEditing(() => bridge.requestQuit(sessionId)));
+    void run(() => finishEditing(() => bridge.requestQuit(sessionId))).finally(stayOpen);
   }
 });
-byId('quit-dialog').addEventListener('close', () => { pendingQuitSessionId = null; });
+byId('quit-dialog').addEventListener('close', () => {
+  pendingQuitSessionId = null;
+  if (!quitConfirmed) void stayOpen();
+});
 const dropConfirmation = mountConfirmDialog({ container: byId('drop-dialog') });
 mountDropImport({ window: globalThis, overlay: byId('drop-overlay'), message: byId('drop-overlay-message'),
   onDrop: (files, onProgress) => run(() => finishEditing(async () => {

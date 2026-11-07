@@ -1716,6 +1716,7 @@ impl Processing {
                 .list_meetings()?
                 .into_iter()
                 .map(|meeting| meeting.id)
+                .chain(core.unreadable_meetings()?)
                 .collect::<HashSet<_>>();
             for (path, owner) in self.owned_jobs()? {
                 if !existing.contains(&owner.meeting_id) {
@@ -1742,6 +1743,22 @@ impl Processing {
                 };
             });
         }
+    }
+
+    pub fn report_unreadable_meetings(&self, core: &CoreHandle) {
+        let count = core.unreadable_meetings().map_or(0, |ids| ids.len());
+        if count == 0 {
+            return;
+        }
+        self.startup_issues.lock().unwrap().push(Progress {
+            id: Some(Uuid::new_v4().to_string()),
+            kind: "library-read".into(),
+            status: "failed".into(),
+            message: format!(
+                "회의 {count}개를 읽지 못해 목록에서 뺐습니다. 파일은 그대로 두었습니다."
+            ),
+            ..Default::default()
+        });
     }
 
     pub fn upgrade_transcript_sources(&self, core: &CoreHandle) {
@@ -4952,15 +4969,33 @@ mod tests {
             }
             path
         };
+        let unreadable_id = Uuid::new_v4().to_string();
         let orphan = job(Some(&Uuid::new_v4().to_string()));
         let active = job(Some(&existing.id));
         let unknown = job(None);
         let invalid = job(Some("invalid"));
+        let unreadable = job(Some(&unreadable_id));
+        drop(core);
+        let folder = process.root.join("meetings").join(&unreadable_id);
+        fs::create_dir(&folder).unwrap();
+        fs::write(folder.join("meeting.json"), b"{").unwrap();
+        let core = CoreHandle::open(&process.root).unwrap();
         process.cleanup_removed_meeting_jobs(&core);
         assert!(!orphan.exists());
         assert!(active.exists());
         assert!(unknown.exists());
         assert!(invalid.exists());
+        assert!(unreadable.exists());
+        process.report_unreadable_meetings(&core);
+        let mut notices = Vec::new();
+        process.notify_startup_issues(|issues| {
+            notices.extend(issues.iter().map(|issue| issue.message.clone()));
+            true
+        });
+        assert_eq!(
+            notices,
+            ["회의 1개를 읽지 못해 목록에서 뺐습니다. 파일은 그대로 두었습니다."]
+        );
     }
     #[cfg(unix)]
     #[test]
