@@ -564,6 +564,22 @@ impl<'a> Transaction<'a> {
             if let Some(quality) = &stored.meeting.capture_quality {
                 quality.validate().map_err(|_| ReadError::InvalidDocument)?;
             }
+        } else if let (None, Some(capture_id)) = (stored.meeting.recorded_at, &stored.capture_id) {
+            // Meetings saved before recordedAt existed take it from their capture, as the
+            // app and meeting_get show it; lists filter and sort by it. A capture that
+            // cannot be read only leaves the time out here.
+            let relative = store::sessions_dir(id)
+                .join(capture_id)
+                .join("manifest.json");
+            if let Ok(Some(manifest)) = self.document::<store::Manifest>(&relative, true) {
+                if manifest.validate().is_ok()
+                    && manifest.meeting_id == id
+                    && &manifest.session_id == capture_id
+                    && manifest.device_id != "import"
+                {
+                    stored.meeting.recorded_at = Some(manifest.started_at);
+                }
+            }
         }
         library.project(&mut stored.meeting);
         Ok((stored.meeting.deleted_at.is_some() == trashed).then_some(stored.meeting))
@@ -1938,6 +1954,36 @@ mod tests {
             .map(|meeting| meeting["id"].as_str().unwrap().to_string())
             .collect();
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn lists_take_an_older_meetings_recording_time_from_its_capture() {
+        let fixture = Fixture::new();
+        let store = store::Store::open(fixture.root.clone()).unwrap();
+        let mut older = store
+            .create("Older recording".into(), String::new())
+            .unwrap();
+        let manifest = store::Manifest::new(
+            &older.meeting.id,
+            "synthetic",
+            "Synthetic input",
+            16000,
+            1,
+            store::Encoding::F32,
+        );
+        drop(store.prepare_capture(&manifest).unwrap());
+        older.capture_id = Some(manifest.session_id.clone());
+        older.meeting.recorded_at = None;
+        store.save(&older).unwrap();
+        let listed = fixture.reader().query("meetings_list", json!({})).unwrap();
+        let row = listed["meetings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|meeting| meeting["id"] == older.meeting.id.as_str())
+            .unwrap()
+            .clone();
+        assert_eq!(row["recordedAt"], manifest.started_at);
     }
 
     #[test]
