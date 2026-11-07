@@ -475,18 +475,28 @@ impl Store {
         Ok(())
     }
 
+    // Each pending meeting is checked and removed on its own: one folder that cannot
+    // be removed (a link inside, a locked file) must not keep every later purge from
+    // freeing space. The first failure is still reported.
     pub fn cleanup_purges(&self, library: &Library) -> Result<()> {
-        self.validate_purge(&library.pending_purges)?;
+        let mut first_error = None;
         for id in &library.pending_purges {
-            let path = checked_path(&self.root, &Path::new("meetings").join(id))?;
-            if path.exists() {
-                // remove_dir_all does not follow links. Validation also refuses linked
-                // or special entries, and the root never includes model directories.
-                fs::remove_dir_all(&path)?;
-                sync_parent(&path)?;
+            let removed = (|| {
+                self.validate_purge(&BTreeSet::from([id.clone()]))?;
+                let path = checked_path(&self.root, &Path::new("meetings").join(id))?;
+                if path.exists() {
+                    // remove_dir_all does not follow links. Validation also refuses linked
+                    // or special entries, and the root never includes model directories.
+                    fs::remove_dir_all(&path)?;
+                    sync_parent(&path)?;
+                }
+                Ok(())
+            })();
+            if let Err(error) = removed {
+                first_error.get_or_insert(error);
             }
         }
-        Ok(())
+        first_error.map_or(Ok(()), Err)
     }
 
     // True only when the session's PCM holds less than one frame. Anything that cannot
@@ -1256,3 +1266,30 @@ pub(crate) fn now() -> u64 {
 #[cfg(test)]
 #[path = "audio_playback_tests.rs"]
 mod playback_tests;
+
+#[cfg(all(test, unix))]
+mod purge_tests {
+    use super::*;
+
+    #[test]
+    fn one_meeting_that_cannot_be_removed_does_not_block_the_others() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap().join("store");
+        let store = Store::open(root.clone()).unwrap();
+        let blocked = store.create("Blocked".into(), String::new()).unwrap();
+        let freed = store.create("Freed".into(), String::new()).unwrap();
+        std::os::unix::fs::symlink(
+            temp.path(),
+            root.join("meetings")
+                .join(&blocked.meeting.id)
+                .join("linked"),
+        )
+        .unwrap();
+        let mut library = Library::default();
+        library.pending_purges.insert(blocked.meeting.id.clone());
+        library.pending_purges.insert(freed.meeting.id.clone());
+        assert!(store.cleanup_purges(&library).is_err());
+        assert!(!root.join("meetings").join(&freed.meeting.id).exists());
+        assert!(root.join("meetings").join(&blocked.meeting.id).exists());
+    }
+}
