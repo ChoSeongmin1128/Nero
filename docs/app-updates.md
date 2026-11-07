@@ -244,10 +244,13 @@ once public, and keep publishing ownership separate from platform packaging.
    feed, package sizes/hashes and signatures, then uses the production headless
    verifier for the signed version/build. Redirects remain HTTPS-only and bounded;
    short-lived CDN query strings are never retained in receipts.
-3. Commit the same prepared feed bytes as `docs/updates/<platform>.json` on `main`
-   for each published platform. After GitHub Pages deploys it (responses are cached
-   for up to 10 minutes), verify again with `--feed-url
-   https://choseongmin1128.github.io/Nero/updates/<platform>.json` and a new receipt.
+3. For each published platform, commit a feed that contains only that platform as
+   `docs/updates/<platform>.json` on `main`. A release feed with both platforms is
+   refused at a platform URL, so when both are published generate one single-platform
+   feed per platform (step 4 of preparation with only that platform's options). After
+   GitHub Pages deploys it (responses are cached for up to 10 minutes), verify again
+   with `--feed-url https://choseongmin1128.github.io/Nero/updates/<platform>.json`,
+   that platform's local feed and receipt, and a new delivery receipt.
    This channel is what 0.0.2 and later installations read.
 4. Only after verification succeeds, promote that same release to stable/latest.
    GitHub documents that prereleases cannot be latest; the latest-release choice
