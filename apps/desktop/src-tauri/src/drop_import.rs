@@ -42,8 +42,10 @@ fn file_name(name: &str) -> Result<&str, String> {
         .extension()
         .and_then(|value| value.to_str())
         .map(str::to_ascii_lowercase);
+    // NTFS and APFS limit a name to 255 UTF-16 units, not bytes: a long Korean name
+    // (three UTF-8 bytes per syllable) still fits.
     if name.is_empty()
-        || name.len() > 255
+        || name.encode_utf16().count() > 255
         || name.contains(['/', '\\', ':', '\0'])
         || matches!(name, "." | "..")
         || !extension.is_some_and(|extension| {
@@ -182,6 +184,8 @@ mod tests {
         let finished = drops.finish(&token).unwrap();
         assert_eq!(fs::read(&finished.path).unwrap(), b"abc");
         assert_eq!(finished.path.file_name().unwrap(), "회의.wav");
+        assert!(file_name(&format!("{}.wav", "가".repeat(100))).is_ok());
+        assert!(file_name(&format!("{}.wav", "가".repeat(252))).is_err());
         drop(RemoveOnDrop(finished.directory.clone()));
         assert!(!finished.directory.exists());
     }
