@@ -545,7 +545,9 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
       updateConversation(id, { action: 'sending', error: '', feedback: '' });
       try {
         await beforeWrite();
-        const templateId = context.templateId || (context.useTemplate ? await getTemplate() : null);
+        // The quick prompt states what to write; without its selected template (deleted or
+        // unreadable) it is sent with the built-in instructions instead of failing.
+        const templateId = context.templateId || (context.useTemplate ? await Promise.resolve().then(getTemplate).catch(() => null) : null);
         const skillId = options.skillId || context.skillId;
         if (disposed || conversations.get(id)?.action === 'deleting') return false;
         if (id === DRAFT) {

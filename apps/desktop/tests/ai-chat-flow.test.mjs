@@ -290,6 +290,12 @@ test('summary requests use the existing selected template and flush before sendi
   app.flow.summaryPrompt(); await app.flow.send(); assert.deepEqual(order, ['flush', 'template']); assert.equal(app.calls[0][1].templateId, 'template-id'); app.flow.dispose();
 });
 
+test('the decisions prompt still sends with built-in instructions after its template is deleted', async () => {
+  const app = await harness({}, { getTemplate: async () => { throw Error('요약 템플릿을 다시 선택해 주세요.'); } });
+  app.flow.summaryPrompt(); assert.equal(await app.flow.send(), true);
+  assert.equal(app.calls[0][0], 'send'); assert.equal(app.calls[0][1].templateId, undefined); assert.equal(app.state().conversation.error, ''); app.flow.dispose();
+});
+
 test('stale model loads cannot enable a different provider', async () => {
   const pending = deferred(); const app = await harness({ models: () => pending.promise }); app.flow.selectProvider('claude');
   pending.resolve({ models: [{ id: 'wrong', label: 'Wrong' }], defaultModelId: 'wrong' }); await tick();
