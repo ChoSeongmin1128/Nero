@@ -1536,6 +1536,9 @@ impl Processing {
                     let saved = process
                         .commit_summary(&cancel, || Ok(core.commit_summary(&meeting_id, draft)))
                         .map_err(|error| Failure::new(FailureKind::Cancelled, error))?;
+                    if let Err(error) = &saved {
+                        process.record_rejection(error).map_err(storage)?;
+                    }
                     saved.map_err(commit_summary_failure)?;
                     Ok(Some(meeting_id))
                 })();

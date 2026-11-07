@@ -1466,20 +1466,14 @@ impl Processing {
         self.save_phase(&progress, "saving")?;
         progress.phase = Some("saving".into());
         let result = commit();
-        let rejection = result
-            .as_ref()
-            .err()
-            .and_then(crate::failure::core_failure_kind)
-            .and_then(|kind| Some((rejection_phase(kind)?, kind)));
-        if let Ok(value) = &result {
-            following(&mut progress, value)?;
-            self.save_phase(&progress, "postprocessing")?;
-            progress.phase = Some("postprocessing".into());
-        } else if let Some((phase, kind)) = rejection {
+        match &result {
+            Ok(value) => {
+                following(&mut progress, value)?;
+                self.save_phase(&progress, "postprocessing")?;
+                progress.phase = Some("postprocessing".into());
+            }
             // These core transcript errors precede current-document publication.
-            self.save_phase(&progress, phase)?;
-            progress.phase = Some(phase.into());
-            progress.failure_kind = Some(kind);
+            Err(error) => self.apply_rejection(&mut progress, error)?,
         }
         progress.revision = self
             .revision
@@ -1487,6 +1481,34 @@ impl Processing {
             .saturating_add(1);
         drop(progress);
         result.map_err(message)
+    }
+
+    // A core refusal at the save step stored nothing: the job ends with that reason
+    // instead of leaving "saving" for the worker to report as needing a check.
+    fn apply_rejection(
+        &self,
+        progress: &mut Progress,
+        error: &nero_core::CoreError,
+    ) -> Result<(), String> {
+        let Some((phase, kind)) = crate::failure::core_failure_kind(error)
+            .and_then(|kind| Some((rejection_phase(kind)?, kind)))
+        else {
+            return Ok(());
+        };
+        self.save_phase(progress, phase)?;
+        progress.phase = Some(phase.into());
+        progress.failure_kind = Some(kind);
+        Ok(())
+    }
+
+    pub(super) fn record_rejection(&self, error: &nero_core::CoreError) -> Result<(), String> {
+        let mut progress = self.progress.lock().unwrap();
+        self.apply_rejection(&mut progress, error)?;
+        progress.revision = self
+            .revision
+            .fetch_add(1, Ordering::AcqRel)
+            .saturating_add(1);
+        Ok(())
     }
 
     fn commit_result<T>(

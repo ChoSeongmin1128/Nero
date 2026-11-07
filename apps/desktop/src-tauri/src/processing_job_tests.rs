@@ -427,6 +427,39 @@ fn commit_persists_saving_before_the_effect_can_run() {
         .unwrap();
 }
 
+#[test]
+fn a_refused_summary_save_ends_with_its_reason_instead_of_saving() {
+    let (_temporary, process) = setup();
+    let mut record = record("summary");
+    record.status = JobStatus::Running;
+    let id = record.id.clone();
+    process.save_job(record).unwrap();
+    process.update(|progress| {
+        progress.id = Some(id.clone());
+        progress.kind = "summary".into();
+        progress.status = "running".into();
+    });
+    let saved = process
+        .commit_summary(&AtomicBool::new(false), || {
+            Ok(Err::<(), _>(nero_core::CoreError::InvalidState(
+                "음성 기록이 변경되었습니다.".into(),
+            )))
+        })
+        .unwrap();
+    process.record_rejection(&saved.unwrap_err()).unwrap();
+    let record = Journal::new(process.root.clone())
+        .records()
+        .unwrap()
+        .into_iter()
+        .find(|record| record.id == id)
+        .unwrap();
+    assert_eq!(record.phase.as_deref(), Some("sourceChanged"));
+    assert_eq!(
+        process.progress.lock().unwrap().phase.as_deref(),
+        Some("sourceChanged")
+    );
+}
+
 fn edited_source(process: &Processing) -> (CoreHandle, String, nero_core::Transcript) {
     let core = CoreHandle::open(&process.root).unwrap();
     let input = process.root.join("synthetic-input.wav");
