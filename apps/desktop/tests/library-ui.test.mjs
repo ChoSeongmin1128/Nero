@@ -401,7 +401,8 @@ test('meeting rename uses the saved current notes and rejects an empty title', a
   app.byId('library-meeting-name').value = '새 제목';
   app.state.snapshot.meetings[0].notes = '저장된 최신 메모';
   await app.submit();
-  assert.deepEqual(app.calls.find(call => call.name === 'renameMeeting').args, ['one', '새 제목', '저장된 최신 메모']);
+  const base = { title: app.state.snapshot.meetings[0].title, notes: '저장된 최신 메모' };
+  assert.deepEqual(app.calls.find(call => call.name === 'renameMeeting').args, ['one', base, '새 제목', '저장된 최신 메모']);
 });
 
 test('trash confirmation explains cancelling the affected processing job', () => {
@@ -508,7 +509,7 @@ test('renaming a meeting invalidates content search without changing its scope',
   app.byId('library-meeting-name').value = '제품 검토';
   await app.submit();
   assert.deepEqual(changes, ['project']);
-  assert.equal(app.calls.find(call => call.name === 'renameMeeting').args[1], '제품 검토');
+  assert.equal(app.calls.find(call => call.name === 'renameMeeting').args[2], '제품 검토');
 });
 
 function showTrashPreview(app) {

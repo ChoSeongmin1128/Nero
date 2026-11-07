@@ -128,11 +128,12 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     subscribeCloseRequest: async (callback) => { closeRequest = callback; return () => {}; },
     readSnapshot: async () => structuredClone(snapshot), listDevices: async () => structuredClone(devices),
     async setMeetingDate(id, meetingDate) { snapshot = { ...snapshot, revision: snapshot.revision + 1, meetings: snapshot.meetings.map(meeting => meeting.id === id ? { ...meeting, meetingDate } : meeting) }; },
-    updateMeeting(id, title, notes) {
+    updateMeeting(id, base, title, notes) {
       const pending = deferred();
-      updates.push({ id, title, notes, pending });
+      updates.push({ id, base, title, notes, pending });
       return pending.promise.then(() => {
         snapshot = { ...snapshot, revision: snapshot.revision + 1, meetings: snapshot.meetings.map((meeting) => meeting.id === id ? { ...meeting, title, notes } : meeting) };
+        return structuredClone(snapshot.meetings.find(meeting => meeting.id === id));
       });
     },
     requestQuit() { const pending = deferred(); exits.push({ type: 'quit', pending }); return pending.promise; },
@@ -478,6 +479,37 @@ test('a transcript read still adopts its result when the draft owner and version
   assert.equal(page.app.state.transcriptLoaded, true);
   assert.equal(page.app.state.transcriptLoadError, false);
   assert.match(page.element('transcript-rows').innerHTML, /정상적으로 다시 읽은 문장/);
+});
+
+test('a note appended meanwhile comes back after the saved edit', async () => {
+  const page = await openApp();
+  page.edit('내 메모');
+  const saving = page.app.saveDraft();
+  await tick();
+  assert.equal(JSON.stringify(page.updates[0].base), JSON.stringify({ title: '회의 A', notes: '' }));
+  page.updates[0].pending.resolve();
+  // The stub returns what it stored; pretend the app kept an AI answer after it.
+  await tick();
+  await saving;
+  page.bridge.updateMeeting = async (id, base, title, notes) => ({ ...page.saved(), title, notes: `${notes}\n\n답변` });
+  page.edit('내 메모 수정');
+  await page.app.saveDraft();
+  assert.equal(page.element('meeting-notes').value, '내 메모 수정\n\n답변');
+  assert.equal(page.app.state.draft.savedNotes, '내 메모 수정\n\n답변');
+});
+
+test('an edit made elsewhere is not overwritten until the next save', async () => {
+  const page = await openApp();
+  page.bridge.updateMeeting = async () => { throw new Error('다른 변경이 저장되었습니다.'); };
+  page.bridge.readSnapshot = async () => ({ revision: 50, session: null, meetings: [{ ...page.saved(), notes: '에이전트가 바꾼 메모' }] });
+  page.edit('내 메모');
+  await assert.rejects(page.app.saveDraft(), /다시 저장하면 그 변경을 덮어씁니다/);
+  assert.equal(page.element('meeting-notes').value, '내 메모');
+  assert.equal(page.app.state.draft.savedNotes, '에이전트가 바꾼 메모');
+  const sent = [];
+  page.bridge.updateMeeting = async (id, base, title, notes) => { sent.push(base); return { ...page.saved(), title, notes }; };
+  await page.app.saveDraft();
+  assert.equal(JSON.stringify(sent), JSON.stringify([{ title: '회의 A', notes: '에이전트가 바꾼 메모' }]));
 });
 
 test('a system quit that does not end in quitting tells the app to stay', async () => {

@@ -260,7 +260,8 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
       if (!title) throw new Error('회의 이름을 입력해 주세요.');
       const latest = current(id);
       if (!latest || latest.deletedAt != null) throw new Error('회의를 찾을 수 없습니다.');
-      return bridge.updateMeeting(id, title, latest.notes || '');
+      const base = { title: latest.title, notes: latest.notes || '' };
+      return bridge.updateMeeting(id, base, title, base.notes);
     } });
   }
   function moveDialog(ids) {

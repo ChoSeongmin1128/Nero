@@ -888,12 +888,14 @@ async fn update_meeting(
     window: WebviewWindow,
     state: tauri::State<'_, DesktopState>,
     id: String,
+    base_title: String,
+    base_notes: String,
     title: String,
     notes: String,
 ) -> Result<Meeting, String> {
     require_main(&window)?;
     on_core(state.core.clone(), move |core| {
-        core.update_meeting(&id, &title, &notes)
+        core.edit_meeting(&id, (&base_title, &base_notes), &title, &notes)
     })
     .await
 }

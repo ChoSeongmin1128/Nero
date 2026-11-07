@@ -522,7 +522,7 @@ function acceptSnapshot(snapshot) {
   const saved = currentMeeting();
   const draft = state.draft;
   if (saved && draft?.id === saved.id && !draft.dirty && !draft.saving && (draft.title !== saved.title || draft.notes !== (saved.notes || ''))) {
-    state.draft = { ...draft, title: saved.title, notes: saved.notes || '', savedNotes: saved.notes || '', version: draft.version + 1 };
+    state.draft = { ...draft, title: saved.title, notes: saved.notes || '', savedTitle: saved.title, savedNotes: saved.notes || '', version: draft.version + 1 };
     byId('meeting-title').value = saved.title;
     byId('meeting-notes').value = saved.notes || '';
   }
@@ -559,8 +559,27 @@ function saveDraft() {
   draft.saving = true;
   renderSaveState();
   const task = state.saveQueue.catch(() => {}).then(async () => {
-    await bridge.updateMeeting(draft.id, title, notes);
-    draft.savedNotes = notes;
+    let saved;
+    try {
+      saved = await bridge.updateMeeting(draft.id, { title: draft.savedTitle, notes: draft.savedNotes }, title, notes);
+    } catch (error) {
+      // Changed elsewhere since the edit began: keep the text here and let the next
+      // save replace what is stored now.
+      const stored = (await bridge.readSnapshot()).meetings.find(meeting => meeting.id === draft.id);
+      if (stored && (stored.title !== draft.savedTitle || (stored.notes || '') !== draft.savedNotes)) {
+        draft.savedTitle = stored.title;
+        draft.savedNotes = stored.notes || '';
+        throw new Error('다른 곳에서 메모나 제목이 바뀌어 저장하지 않았습니다. 지금 내용으로 다시 저장하면 그 변경을 덮어씁니다.');
+      }
+      throw error;
+    }
+    draft.savedTitle = saved.title;
+    draft.savedNotes = saved.notes;
+    // Text appended meanwhile (an AI answer) came back after this edit.
+    if (saved.notes !== notes && draft.version === version && state.draft === draft) {
+      draft.notes = saved.notes;
+      byId('meeting-notes').value = saved.notes;
+    }
     const refreshSummary = state.draft === draft && state.summary?.document?.notesSha256 != null;
     if (refreshSummary && notesChanged) state.summary = { ...state.summary, stale: true };
     acceptSnapshot(await bridge.readSnapshot());
@@ -595,7 +614,7 @@ async function selectMeeting(id, searchIntent = null, isHistoryCurrent = null) {
         state.summaryLoaded = false; state.transcriptLoaded = false;
         state.summaryLoadError = false; state.transcriptLoadError = false;
         void loadSummary(id); void loadTranscript(id);
-        state.draft = { id, title: meeting.title, notes: meeting.notes || '', savedNotes: meeting.notes || '', dirty: false, saving: false, version: 0 };
+        state.draft = { id, title: meeting.title, notes: meeting.notes || '', savedTitle: meeting.title, savedNotes: meeting.notes || '', dirty: false, saving: false, version: 0 };
         byId('meeting-title').value = meeting.title;
         byId('meeting-notes').value = meeting.notes || '';
         byId('meeting-notes').scrollTop = 0;

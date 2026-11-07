@@ -493,6 +493,33 @@ impl Engine {
         self.commit_meeting(stored)
     }
 
+    // A screen edit that started from `base` (title, notes). Text appended after
+    // the base meanwhile, such as an AI answer added to the notes, is kept after
+    // the edit; any other change made since is a conflict.
+    pub fn edit_meeting(
+        &mut self,
+        id: &str,
+        base: (&str, &str),
+        title: String,
+        notes: String,
+    ) -> Result<Meeting> {
+        self.require_active_meeting(id)?;
+        let current = &self.meetings[id].meeting;
+        if current.title != base.0 {
+            return Err(CoreError::EditConflict);
+        }
+        let added = current
+            .notes
+            .strip_prefix(base.1)
+            .ok_or(CoreError::EditConflict)?;
+        let notes = if added.is_empty() || notes.is_empty() || added.starts_with('\n') {
+            format!("{notes}{added}")
+        } else {
+            format!("{notes}\n\n{added}")
+        };
+        self.update_meeting(id, title, notes)
+    }
+
     pub fn set_meeting_date(&mut self, id: &str, meeting_date: Option<String>) -> Result<Meeting> {
         if self.quitting {
             return Err(CoreError::Unavailable);
@@ -2458,6 +2485,50 @@ mod tests {
         let loaded = engine.store.load_meetings(&engine.library).unwrap();
         assert_eq!(loaded.unreadable, BTreeSet::from([duplicate_id]));
         assert!(loaded.meetings.contains_key(&meeting.id));
+    }
+
+    #[test]
+    fn a_screen_edit_keeps_an_appended_note_and_refuses_other_changes() {
+        let (_temporary, mut engine) = engine();
+        let id = engine.create_meeting("회의".into(), "".into()).unwrap().id;
+        let edit = |engine: &mut Engine, base: (&str, &str), notes: &str| {
+            engine.edit_meeting(&id, base, "회의".into(), notes.into())
+        };
+        assert_eq!(edit(&mut engine, ("회의", ""), "첫 메모").unwrap().notes, "첫 메모");
+        // An AI answer appended while the person kept typing from "첫 메모".
+        engine
+            .update_meeting(&id, "회의".into(), "첫 메모\n\n답변".into())
+            .unwrap();
+        assert_eq!(
+            edit(&mut engine, ("회의", "첫 메모"), "첫 메모 수정").unwrap().notes,
+            "첫 메모 수정\n\n답변"
+        );
+        let empty = engine.create_meeting("빈 회의".into(), "".into()).unwrap().id;
+        engine
+            .update_meeting(&empty, "빈 회의".into(), "답변".into())
+            .unwrap();
+        assert_eq!(
+            engine
+                .edit_meeting(&empty, ("빈 회의", ""), "빈 회의".into(), "내 메모".into())
+                .unwrap()
+                .notes,
+            "내 메모\n\n답변"
+        );
+        engine
+            .update_meeting(&id, "회의".into(), "통째로 바뀐 메모".into())
+            .unwrap();
+        assert!(matches!(
+            edit(&mut engine, ("회의", "첫 메모 수정\n\n답변"), "덮어쓰기"),
+            Err(CoreError::EditConflict)
+        ));
+        engine
+            .update_meeting(&id, "바뀐 제목".into(), "통째로 바뀐 메모".into())
+            .unwrap();
+        assert!(matches!(
+            edit(&mut engine, ("회의", "통째로 바뀐 메모"), "덮어쓰기"),
+            Err(CoreError::EditConflict)
+        ));
+        assert_eq!(engine.meetings[&id].meeting.notes, "통째로 바뀐 메모");
     }
 
     #[test]

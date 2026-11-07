@@ -644,6 +644,19 @@ impl CoreHandle {
         self.call(move |engine| engine.update_meeting(&id, title, notes))
     }
 
+    /// Saves an edit that started from `base` (title, notes); see `Engine::edit_meeting`.
+    pub fn edit_meeting(
+        &self,
+        id: &str,
+        base: (&str, &str),
+        title: &str,
+        notes: &str,
+    ) -> Result<Meeting> {
+        let (id, base_title, base_notes) = (id.to_owned(), base.0.to_owned(), base.1.to_owned());
+        let (title, notes) = (title.to_owned(), notes.to_owned());
+        self.call(move |engine| engine.edit_meeting(&id, (&base_title, &base_notes), title, notes))
+    }
+
     pub fn set_meeting_date(&self, id: &str, meeting_date: Option<String>) -> Result<Meeting> {
         let id = id.to_owned();
         self.call(move |engine| engine.set_meeting_date(&id, meeting_date))

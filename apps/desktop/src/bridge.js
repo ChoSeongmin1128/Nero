@@ -24,7 +24,9 @@ export const readSnapshot = () => call('read_snapshot').then(accept);
 export const agentConnectionInfo = (forceHostRefresh = false) => call('agent_connection_info', { forceHostRefresh });
 export const connectAgentClient = (client) => call('agent_connect_client', { client });
 export const createMeeting = (title, notes = '') => call('create_meeting', { title, notes });
-export const updateMeeting = (id, title, notes) => call('update_meeting', { id, title, notes });
+// `base` is the title and notes the edit started from; the app keeps text appended
+// after it meanwhile and refuses other changes made since.
+export const updateMeeting = (id, base, title, notes) => call('update_meeting', { id, baseTitle: base.title, baseNotes: base.notes, title, notes });
 export const setMeetingDate = (id, meetingDate) => call('set_meeting_date', { id, meetingDate });
 export const listDevices = () => call('list_devices');
 export const startRecording = (meetingId, deviceId = null) => call('start_recording', { meetingId, deviceId }).then(accept);
