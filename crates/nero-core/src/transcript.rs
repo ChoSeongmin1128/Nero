@@ -807,11 +807,22 @@ impl Engine {
             }
             Ok(())
         })();
+        // A failed import never becomes audio: its session (a full source copy and a
+        // partial PCM) is removed instead of being recovered later as a cut-off
+        // recording. A draft keeps whatever its own saved state says.
+        let session_kept = self
+            .meetings
+            .get(&stored.meeting.id)
+            .is_some_and(|saved| saved.capture_id.as_ref() == Some(&manifest.session_id));
+        if result.is_err() && !session_kept {
+            let _ = self.store.remove_session(&manifest);
+        }
         if attaching {
             return result.map(|_| stored.meeting);
         }
         if let Err(error) = &result {
-            stored.meeting.status = MeetingStatus::Interrupted;
+            stored.capture_id = None;
+            stored.meeting.status = MeetingStatus::Draft;
             stored.meeting.error = Some(error.to_string());
             let _ = self.store.save(&stored);
         }
@@ -1984,6 +1995,51 @@ pub(crate) mod tests {
         drop(engine);
         let reopened = Engine::open(root).unwrap();
         assert_eq!(reopened.meetings[&draft.id].meeting, draft);
+    }
+
+    #[test]
+    fn an_import_that_fails_midway_leaves_no_session_and_no_cut_off_recording() {
+        let (_temp, mut engine, _, wav) = setup();
+        // The header promises more samples than the file holds, so reading fails
+        // after the session and the source copy exist.
+        let bytes = std::fs::read(&wav).unwrap();
+        let truncated = wav.with_file_name("truncated.wav");
+        std::fs::write(&truncated, &bytes[..bytes.len() / 2]).unwrap();
+        let sessions = |engine: &Engine, id: &str| {
+            let path = engine.store.root.join("meetings").join(id).join("sessions");
+            path.exists() && std::fs::read_dir(path).unwrap().count() > 0
+        };
+        let draft = engine
+            .create_meeting("Draft".into(), String::new())
+            .unwrap();
+        let target = engine.draft_attachment_target(&draft.id).unwrap();
+        assert!(engine
+            .import_audio_into_draft(target, wav.clone(), truncated.clone())
+            .is_err());
+        assert!(!sessions(&engine, &draft.id));
+        let failed = engine
+            .import_audio("New".into(), wav.clone(), truncated)
+            .unwrap_err();
+        let created = engine
+            .meetings
+            .values()
+            .find(|stored| stored.meeting.title == "New")
+            .unwrap()
+            .clone();
+        assert_eq!(created.meeting.status, MeetingStatus::Draft);
+        assert!(created.capture_id.is_none());
+        assert_eq!(
+            created.meeting.error.as_deref(),
+            Some(failed.to_string().as_str())
+        );
+        assert!(!sessions(&engine, &created.meeting.id));
+        let root = engine.store.root.clone();
+        drop(engine);
+        let reopened = Engine::open(root).unwrap();
+        assert_eq!(
+            reopened.meetings[&created.meeting.id].meeting.status,
+            MeetingStatus::Draft
+        );
     }
 
     #[test]

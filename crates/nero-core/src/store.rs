@@ -534,6 +534,18 @@ impl Store {
         )?)
     }
 
+    /// Removes a capture session that never became the meeting's audio, such as a
+    /// failed import. Its source copy and PCM are this app's own files.
+    pub(crate) fn remove_session(&self, manifest: &Manifest) -> Result<()> {
+        let directory = checked_path(&self.root, &manifest.relative_dir())?;
+        if directory.exists() {
+            validate_removal_tree(&directory)?;
+            fs::remove_dir_all(&directory)?;
+            sync_parent(&directory)?;
+        }
+        Ok(())
+    }
+
     pub fn recover(&self, meetings: &mut BTreeMap<String, StoredMeeting>) -> Result<()> {
         for stored in meetings.values_mut() {
             let previous = stored.meeting.clone();
