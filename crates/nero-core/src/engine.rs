@@ -2347,6 +2347,23 @@ mod tests {
     }
 
     #[test]
+    fn a_completed_meeting_gets_its_missing_playback_file_back() {
+        let (_temporary, engine, id, _source) = crate::transcript::tests::setup();
+        let path = engine.audio_path(&id).unwrap();
+        let before = engine.meetings[&id].meeting.clone();
+        std::fs::remove_file(&path).unwrap();
+        let root = engine.store.root.clone();
+        drop(engine);
+        let reopened = Engine::open(root).unwrap();
+        assert_eq!(reopened.audio_path(&id).unwrap(), path);
+        assert_eq!(
+            reopened.meetings[&id].meeting.status,
+            MeetingStatus::Completed
+        );
+        assert_eq!(reopened.meetings[&id].meeting.error, before.error);
+    }
+
+    #[test]
     fn opening_settles_a_crashed_recording_before_writing_its_playback() {
         let (_temporary, mut engine) = engine();
         let meeting = engine.create_meeting("회의".into(), String::new()).unwrap();

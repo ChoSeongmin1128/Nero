@@ -293,6 +293,8 @@ pub(crate) fn hydrate_capture_metadata(meeting: &mut Meeting, manifest: &Manifes
 enum Recovered {
     // A finished capture: its diagnostics are shown without rewriting the meeting.
     Hydrate(Manifest),
+    // A finished capture whose playback file must be written again.
+    RewritePlayback(Manifest),
     Settled,
     NeedsPlayback,
 }
@@ -561,6 +563,10 @@ impl Store {
             let previous = stored.meeting.clone();
             let hydration = match self.recover_meeting(stored) {
                 Ok(Recovered::Hydrate(manifest)) => Some(manifest),
+                Ok(Recovered::RewritePlayback(manifest)) => {
+                    playback.push(stored.meeting.id.clone());
+                    Some(manifest)
+                }
                 Ok(Recovered::Settled) => None,
                 Ok(Recovered::NeedsPlayback) => {
                     playback.push(stored.meeting.id.clone());
@@ -629,6 +635,18 @@ impl Store {
         );
         let interrupted = stored.meeting.status == MeetingStatus::Interrupted
             || manifest.phase == CapturePhase::Interrupted;
+        if !unfinished && !interrupted {
+            // A finished recording whose playback file went missing or was damaged is
+            // written again from its PCM; its state stays as it is.
+            let missing = stored.meeting.status == MeetingStatus::Completed
+                && stored.meeting.audio.is_some()
+                && self.audio_path(&stored.meeting).is_err();
+            return Ok(if missing {
+                Recovered::RewritePlayback(manifest)
+            } else {
+                Recovered::Hydrate(manifest)
+            });
+        }
         let playback_needs_repair = interrupted && self.audio_path(&stored.meeting).is_err();
         if !unfinished && !playback_needs_repair {
             return Ok(Recovered::Hydrate(manifest));
@@ -680,6 +698,18 @@ impl Store {
         )?;
         let mut manifest: Manifest = read_json(&path)?;
         manifest.validate()?;
+        if stored.meeting.status == MeetingStatus::Completed {
+            let playback = stored
+                .meeting
+                .audio
+                .as_ref()
+                .and_then(|artifact| Playback::from_artifact(artifact).ok());
+            if let Some(audio) = finalize_audio_with_playback(&self.root, &mut manifest, playback)?
+            {
+                stored.meeting.audio = Some(audio);
+            }
+            return Ok(());
+        }
         manifest.warning = stored.meeting.warning.clone();
         let (raw_bytes, message) = self.recovered_raw(&manifest)?;
         manifest.phase = CapturePhase::Interrupted;
