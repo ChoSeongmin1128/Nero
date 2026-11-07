@@ -9,6 +9,10 @@ pub(super) const DIRECT_SCOPE: &str = "chatgpt.tokens.use.direct";
 pub(super) const SCOPES: &str =
     "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct";
 const INVALID: &str = "ChatGPT 계정의 인증 정보를 확인하지 못했습니다. 다시 로그인해 주세요.";
+// Allowed difference between this computer's clock and the issuer's, the 5-minute
+// skew Google's auth libraries and Kerberos accept. Without it a clock a second slow
+// failed sign-in and logged the account out on refresh.
+const CLOCK_SKEW_SECONDS: u64 = 300;
 
 #[derive(Deserialize)]
 pub(super) struct Discovery {
@@ -169,9 +173,11 @@ fn validate_claims(
     if claims.iss != ISSUER
         || audiences.len() != 1
         || audiences[0] != client_id
-        || claims.exp <= now
-        || claims.iat > now
-        || claims.nbf.is_some_and(|nbf| nbf > now)
+        || claims.exp.saturating_add(CLOCK_SKEW_SECONDS) <= now
+        || claims.iat > now.saturating_add(CLOCK_SKEW_SECONDS)
+        || claims
+            .nbf
+            .is_some_and(|nbf| nbf > now.saturating_add(CLOCK_SKEW_SECONDS))
         || claims.subject_invalid()
     {
         return Err(INVALID.into());
@@ -226,14 +232,24 @@ mod tests {
         assert!(
             validate_claims(claims(), "oaiapp_fixture", Some("wrong"), "fixture", 100).is_err()
         );
-        assert!(
-            validate_claims(claims(), "oaiapp_fixture", Some("nonce"), "fixture", 200).is_err()
-        );
+        assert!(validate_claims(
+            claims(),
+            "oaiapp_fixture",
+            Some("nonce"),
+            "fixture",
+            200 + CLOCK_SKEW_SECONDS
+        )
+        .is_err());
         let mut wrong = claims();
         wrong.iss = "https://other.invalid".into();
         assert!(validate_claims(wrong, "oaiapp_fixture", Some("nonce"), "fixture", 100).is_err());
+        // A clock a little slow or fast still signs in; one far off does not.
+        let mut skewed = claims();
+        skewed.iat = 101;
+        assert!(validate_claims(skewed, "oaiapp_fixture", Some("nonce"), "fixture", 100).is_ok());
+        assert!(validate_claims(claims(), "oaiapp_fixture", Some("nonce"), "fixture", 201).is_ok());
         let mut future = claims();
-        future.iat = 101;
+        future.iat = 101 + CLOCK_SKEW_SECONDS;
         assert!(validate_claims(future, "oaiapp_fixture", Some("nonce"), "fixture", 100).is_err());
     }
     #[test]
