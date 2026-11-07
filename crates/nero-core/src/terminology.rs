@@ -330,12 +330,13 @@ pub fn discover_candidates(
     let source_hash = transcript_digest(source)?;
     let profile_bytes = serde_json::to_vec(profile).map_err(|_| invalid())?;
     let profile_hash = format!("{:x}", Sha256::digest(profile_bytes));
-    let mut candidates = Vec::new();
+    let mut accepted = Vec::new();
     for (segment_index, segment) in source.segments.iter().enumerate() {
         // Automatic processing never revisits user corrections or a previous correction revision.
         if segment.text != segment.original_text {
             continue;
         }
+        let mut candidates = Vec::new();
         let canonical_ranges: Vec<_> = profile
             .rules
             .iter()
@@ -411,35 +412,34 @@ pub fn discover_candidates(
                         replacement: rule.canonical.clone(),
                         context_cues,
                     });
-                    if candidates.len() > MAX_TERMINOLOGY_CANDIDATES {
-                        return Err(invalid());
-                    }
                 }
             }
         }
-    }
-    candidates.sort_by_key(|c| (c.segment_index, c.byte_start, c.byte_end));
-    // An overlapping interpretation is uncertain, so neither candidate can be accepted.
-    let ambiguous: BTreeSet<_> = candidates
-        .iter()
-        .enumerate()
-        .filter_map(|(index, a)| {
-            candidates
-                .iter()
-                .enumerate()
-                .any(|(other, b)| {
+        candidates.sort_by_key(|c| (c.byte_start, c.byte_end));
+        // An overlapping interpretation is uncertain, so neither candidate can be accepted.
+        // Overlaps only happen inside one segment.
+        let ambiguous: BTreeSet<_> = (0..candidates.len())
+            .filter(|&index| {
+                let a = &candidates[index];
+                candidates.iter().enumerate().any(|(other, b)| {
                     index != other
-                        && a.segment_index == b.segment_index
                         && intersects((a.byte_start, a.byte_end), (b.byte_start, b.byte_end))
                 })
-                .then_some(index)
-        })
-        .collect();
-    Ok(candidates
-        .into_iter()
-        .enumerate()
-        .filter_map(|(i, c)| (!ambiguous.contains(&i)).then_some(c))
-        .collect())
+            })
+            .collect();
+        accepted.extend(
+            candidates
+                .into_iter()
+                .enumerate()
+                .filter_map(|(i, c)| (!ambiguous.contains(&i)).then_some(c)),
+        );
+        // A long meeting applies the earliest candidates instead of none.
+        if accepted.len() >= MAX_TERMINOLOGY_CANDIDATES {
+            accepted.truncate(MAX_TERMINOLOGY_CANDIDATES);
+            break;
+        }
+    }
+    Ok(accepted)
 }
 
 pub(crate) fn prepare(draft: &TerminologyDraft) -> Result<(Transcript, serde_json::Value)> {
@@ -600,6 +600,22 @@ mod tests {
         assert_eq!(
             result.segments[1].source_index,
             source.segments[1].source_index
+        );
+    }
+
+    #[test]
+    fn a_long_meeting_applies_the_earliest_candidates_instead_of_none() {
+        let p = profile();
+        let texts: Vec<String> = (0..200)
+            .map(|_| "설계 가상 도구 유지".to_string())
+            .collect();
+        let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+        let candidates = discover_candidates(&p, &transcript(&refs)).unwrap();
+        assert_eq!(candidates.len(), MAX_TERMINOLOGY_CANDIDATES);
+        assert_eq!(candidates[0].segment_index, 0);
+        assert_eq!(
+            candidates.last().unwrap().segment_index,
+            MAX_TERMINOLOGY_CANDIDATES - 1
         );
     }
 
