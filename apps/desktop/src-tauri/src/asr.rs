@@ -1,10 +1,11 @@
+use crate::processing::native_speech::{self, executable, Backend};
 use crate::processing::{cancelled, plain_file, Model, Processing};
 use crate::summary_failure::{Failure, FailureKind};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::AtomicBool;
 
 pub const MANIFEST: &str = include_str!("../../../../config/models/nemotron-asr.json");
@@ -14,23 +15,6 @@ const POLICY: &str = "whole-recording-stateful-v1";
 const COMPLETION: &str = "native-stream-finish-exit0-v1";
 const RESULT_LIMIT: u64 = 16 * 1024 * 1024;
 use crate::speech_audio::{audio_frames, digest, SAMPLE_RATE};
-
-pub fn executable(process: &Processing, gpu: bool) -> PathBuf {
-    process
-        .resources
-        .join("native/diarization")
-        .join(if gpu || cfg!(target_os = "macos") {
-            "gpu"
-        } else {
-            "cpu"
-        })
-        .join("bin")
-        .join(if cfg!(windows) {
-            "nemo-speech.exe"
-        } else {
-            "nemo-speech"
-        })
-}
 
 pub fn supported(process: &Processing) -> bool {
     (cfg!(all(target_os = "macos", target_arch = "aarch64"))
@@ -65,15 +49,7 @@ fn check_cancel(cancel: &AtomicBool) -> Result<(), Failure> {
 }
 
 fn backend(gpu: bool) -> &'static str {
-    if gpu {
-        if cfg!(target_os = "macos") {
-            "metal"
-        } else {
-            "vulkan"
-        }
-    } else {
-        "cpu"
-    }
+    Backend::for_gpu(gpu).name()
 }
 
 fn arguments(audio: &Path, model: &Path, output: &Path, gpu: bool) -> Vec<std::ffi::OsString> {
@@ -219,7 +195,7 @@ pub fn recognize(
         "native-cpu.json"
     });
     let run = |gpu: bool, output: &Path| {
-        crate::diarization::run(
+        native_speech::run(
             process,
             &executable(process, gpu),
             &arguments(audio, &model, output, gpu),
@@ -229,7 +205,7 @@ pub fn recognize(
             Some(audio),
             "transcribe",
         )
-        .map_err(|error| failure(error.kind))
+        .map_err(failure)
     };
     if let Err(error) = run(gpu, &output) {
         if !gpu || error.kind != FailureKind::BackendUnavailable {
@@ -263,6 +239,7 @@ pub fn recognize(
 mod tests {
     use super::*;
     use hound::{SampleFormat, WavSpec, WavWriter};
+    use std::path::PathBuf;
 
     #[test]
     #[ignore = "requires explicitly supplied local audio, shared models and packaged runtime"]

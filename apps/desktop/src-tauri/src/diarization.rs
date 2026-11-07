@@ -1,22 +1,19 @@
 //! Optional whole-recording speaker analysis. It never treats ASR-local tags as identities.
+use crate::processing::native_speech::{self, executable, library, Backend};
 use crate::processing::{
     cancelled, directory, invalidate_readiness, matches_file, plain_file, Model, Processing,
-    Progress, Worker,
+    Progress,
 };
 use crate::speech_audio::AnalysisAudio;
 use crate::summary_failure::{Failure, FailureKind};
 use nero_core::{
     CoreHandle, SpeakerAnalysisDraft, SpeakerPosterior, Transcript, TranscriptVersion,
 };
-use serde::Deserialize;
 use serde_json::{json, Value};
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::{atomic::AtomicBool, Arc};
-use std::thread;
-use std::time::Duration;
 
 pub const MANIFEST: &str = include_str!("../../models/diarization.json");
 use nero_core::speech_runtime::current as runtime;
@@ -32,23 +29,6 @@ pub(super) fn model_dir(process: &Processing) -> Result<PathBuf, String> {
         &process.root,
         &format!("models/Nemotron3-{}", model().revision),
     )
-}
-
-fn executable(process: &Processing, gpu: bool) -> PathBuf {
-    process
-        .resources
-        .join("native/diarization")
-        .join(if gpu || cfg!(target_os = "macos") {
-            "gpu"
-        } else {
-            "cpu"
-        })
-        .join("bin")
-        .join(if cfg!(windows) {
-            "nemo-speech.exe"
-        } else {
-            "nemo-speech"
-        })
 }
 
 pub fn availability(process: &Processing) -> (bool, bool, u64) {
@@ -117,20 +97,6 @@ fn record(path: &Path, value: &Value) -> Result<(), Failure> {
     file.sync_all().map_err(|_| failure(FailureKind::Storage))
 }
 
-pub(super) fn library(process: &Processing, gpu: bool) -> PathBuf {
-    let root = executable(process, gpu)
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_path_buf();
-    if cfg!(windows) {
-        root.join("bin/nemo_speech_asr_c.dll")
-    } else {
-        root.join("lib/libnemo_speech_asr_c.dylib")
-    }
-}
-
 fn worker_executable() -> Result<PathBuf, Failure> {
     // Acceptance tests run the built product executable, never the test harness.
     #[cfg(test)]
@@ -140,182 +106,10 @@ fn worker_executable() -> Result<PathBuf, Failure> {
     std::env::current_exe().map_err(|_| failure(FailureKind::EngineUnavailable))
 }
 
-#[derive(Deserialize)]
-struct WorkerError {
-    error: ErrorBody,
-}
-
-#[derive(Deserialize)]
-struct ErrorBody {
-    message: String,
-    r#type: String,
-    command: String,
-    exit_code: i32,
-    #[serde(default, rename = "failureKind")]
-    failure_kind: Option<FailureKind>,
-}
-
-#[cfg(test)]
-fn classify(log: &str, gpu: bool, exit_code: Option<i32>, input: Option<&Path>) -> FailureKind {
-    classify_operation(log, gpu, exit_code, input, "diarize")
-}
-
-fn classify_operation(
-    log: &str,
-    gpu: bool,
-    exit_code: Option<i32>,
-    input: Option<&Path>,
-    operation: &str,
-) -> FailureKind {
-    // A missing Windows loader dependency is different from inference/allocation failure.
-    if gpu && exit_code == Some(0xc0000135u32 as i32) {
-        return FailureKind::BackendUnavailable;
-    }
-    for line in log.lines().rev() {
-        let Ok(error) = serde_json::from_str::<WorkerError>(line) else {
-            continue;
-        };
-        let error = error.error;
-        if error.command != operation || Some(error.exit_code) != exit_code {
-            continue;
-        }
-        if operation == "diarize" && error.r#type == "nero_speaker_worker" {
-            if let Some(kind) = error.failure_kind {
-                return match kind {
-                    FailureKind::BackendUnavailable if !gpu => FailureKind::EngineUnavailable,
-                    FailureKind::BackendUnavailable
-                    | FailureKind::Allocation
-                    | FailureKind::ModelNotReady
-                    | FailureKind::Input
-                    | FailureKind::Output
-                    | FailureKind::Protocol
-                    | FailureKind::Storage
-                    | FailureKind::SourceChanged => kind,
-                    _ => FailureKind::EngineUnavailable,
-                };
-            }
-        }
-        if gpu
-            && (error.message == "use_gpu=true but no matching GPU device found (gpu_device_idx=0)"
-                || error.message
-                    == "--backend requested Metal, but this build has no Metal backend"
-                || error.message
-                    == "--backend requested Vulkan, but this build has no Vulkan backend")
-        {
-            return FailureKind::BackendUnavailable;
-        }
-        if error.r#type == "missing_model" {
-            return FailureKind::ModelNotReady;
-        }
-        if error.message == "std::bad_alloc"
-            || input.is_some_and(|input| {
-                error.message == format!("{}: std::bad_alloc", input.to_string_lossy())
-            })
-        {
-            return FailureKind::Allocation;
-        }
-        if error.r#type == "runtime_error" && input.is_some_and(|input| {
-            let prefix = format!("{}: ", input.to_string_lossy());
-            let message = error.message.strip_prefix(&prefix);
-            let message = message.map(|message| message.strip_prefix(&prefix).unwrap_or(message));
-            message.is_some_and(|message| message == "unsupported WAV encoding; convert with: ffmpeg -i INPUT -ac 1 -ar 16000 -c:a pcm_s16le output.wav")
-        }) {
-            return FailureKind::Input;
-        }
-        if error.message.starts_with("cannot write ")
-            || error.message.starts_with("cannot finish writing ")
-        {
-            return FailureKind::Storage;
-        }
-    }
-    FailureKind::EngineUnavailable
-}
-
-fn bounded_log(path: &Path) -> String {
-    let mut log = String::new();
-    if let Ok(file) = plain_file(path) {
-        let _ = file.take(RESULT_LIMIT).read_to_string(&mut log);
-    }
-    log
-}
-
-pub(super) fn run(
-    process: &Processing,
-    executable: &Path,
-    arguments: &[std::ffi::OsString],
-    log: &Path,
-    cancel: &AtomicBool,
-    gpu: bool,
-    input: Option<&Path>,
-    operation: &str,
-) -> Result<(), Failure> {
-    check_cancel(cancel)?;
-    let output = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(log)
-        .map_err(|_| failure(FailureKind::Storage))?;
-    let mut command = Command::new(executable);
-    command
-        .args(arguments)
-        .current_dir(log.parent().expect("worker log directory"))
-        .env("HF_HUB_OFFLINE", "1")
-        .env("TRANSFORMERS_OFFLINE", "1")
-        .stdout(Stdio::from(
-            output
-                .try_clone()
-                .map_err(|_| failure(FailureKind::Storage))?,
-        ))
-        .stderr(Stdio::from(output));
-    // Only app-owned CLI arguments configure this invocation, not a parent shell's NeMo profile.
-    for (name, _) in std::env::vars_os() {
-        if name
-            .to_str()
-            .is_some_and(|name| name.starts_with("NEMO_SPEECH_"))
-        {
-            command.env_remove(name);
-        }
-    }
-    let mut worker = Worker(
-        command
-            .spawn()
-            .map_err(|_| failure(FailureKind::EngineUnavailable))?,
-    );
-    loop {
-        if cancelled(cancel).is_err() {
-            worker.stop().map_err(|_| {
-                process.cleanup_failed();
-                failure(FailureKind::Cleanup)
-            })?;
-            return Err(failure(FailureKind::Cancelled));
-        }
-        match worker.0.try_wait() {
-            Ok(Some(status)) if status.success() => return Ok(()),
-            Ok(Some(status)) => {
-                return Err(failure(classify_operation(
-                    &bounded_log(log),
-                    gpu,
-                    status.code(),
-                    input,
-                    operation,
-                )))
-            }
-            Ok(None) => thread::sleep(Duration::from_millis(100)),
-            Err(_) => {
-                worker.stop().map_err(|_| {
-                    process.cleanup_failed();
-                    failure(FailureKind::Cleanup)
-                })?;
-                return Err(failure(FailureKind::EngineUnavailable));
-            }
-        }
-    }
-}
-
 fn configuration(gpu: bool) -> Value {
     json!({
         "scope": "recording", "fullAttention": false,
-        "backend": if gpu { if cfg!(target_os = "macos") { "metal" } else { "vulkan" } } else { "cpu" },
+        "backend": Backend::for_gpu(gpu),
         "geometry": {"spkcache":264,"fifo":40,"chunk":340,"updatePeriod":300,
             "leftContext":0,"rightContext":40},
         "postprocessingSource": "nvidia-v3-probability-v1",
@@ -488,7 +282,7 @@ pub(super) fn analyze_with_model(
             progress.phase = Some("diarizing".into());
             progress.message = "화자 구분 중".into();
         });
-        let result = run(
+        let result = native_speech::run(
             process,
             &worker_executable()?,
             &[
@@ -500,7 +294,8 @@ pub(super) fn analyze_with_model(
             gpu,
             Some(audio),
             "diarize",
-        );
+        )
+        .map_err(failure);
         record(
             &attempt_dir.join("outcome.json"),
             &match &result {
@@ -1115,200 +910,10 @@ mod tests {
         );
     }
 
-    fn worker_error(message: &str, kind: &str) -> String {
-        json!({"error": {"message": message, "type": kind, "command": "diarize", "exit_code": 1}})
-            .to_string()
-    }
-
     #[test]
-    fn cpu_fallback_requires_typed_gpu_absence_and_never_an_os_pressure_hint() {
-        let missing = worker_error(
-            "use_gpu=true but no matching GPU device found (gpu_device_idx=0)",
-            "runtime_error",
-        );
-        assert_eq!(
-            classify(&missing, true, Some(1), None),
-            FailureKind::BackendUnavailable
-        );
-        assert_eq!(
-            classify(&missing, false, Some(1), None),
-            FailureKind::EngineUnavailable
-        );
-        assert_eq!(
-            classify(&missing, true, Some(2), None),
-            FailureKind::EngineUnavailable
-        );
-        assert_eq!(
-            classify("memory warning", true, Some(1), None),
-            FailureKind::EngineUnavailable
-        );
-        assert_eq!(
-            classify(
-                "use_gpu=true but no matching GPU device found (gpu_device_idx=0)",
-                true,
-                Some(1),
-                None
-            ),
-            FailureKind::EngineUnavailable
-        );
-        assert_eq!(
-            classify(
-                &worker_error("std::bad_alloc", "runtime_error"),
-                true,
-                Some(1),
-                None
-            ),
-            FailureKind::Allocation
-        );
-        assert_eq!(
-            classify("", true, Some(0xc0000135u32 as i32), None),
-            FailureKind::BackendUnavailable
-        );
-        for kind in [
-            FailureKind::BackendUnavailable,
-            FailureKind::Allocation,
-            FailureKind::Protocol,
-        ] {
-            let error = json!({"error":{"message":"native operation failed",
-                "type":"nero_speaker_worker","command":"diarize","exit_code":1,"failureKind":kind}})
-            .to_string();
-            assert_eq!(classify(&error, true, Some(1), None), kind);
-            assert_eq!(
-                classify(&error, false, Some(1), None),
-                if kind == FailureKind::BackendUnavailable {
-                    FailureKind::EngineUnavailable
-                } else {
-                    kind
-                }
-            );
-            assert_eq!(
-                classify(&error, true, Some(2), None),
-                FailureKind::EngineUnavailable
-            );
-        }
-    }
-
-    #[test]
-    fn model_and_output_storage_failures_remain_distinct() {
-        assert_eq!(
-            classify(
-                &worker_error("missing pinned model", "missing_model"),
-                true,
-                Some(1),
-                None
-            ),
-            FailureKind::ModelNotReady
-        );
-        assert_eq!(
-            classify(
-                &worker_error("cannot write private/path", "runtime_error"),
-                true,
-                Some(1),
-                None
-            ),
-            FailureKind::Storage
-        );
+    fn native_storage_failures_do_not_echo_worker_paths() {
         assert!(!failure(FailureKind::Storage)
             .message
             .contains("private/path"));
-    }
-
-    #[test]
-    fn per_input_allocation_error_requires_the_invoked_path_and_typed_error_contract() {
-        let input = Path::new("example/whole.wav");
-        let error = worker_error("example/whole.wav: std::bad_alloc", "runtime_error");
-        assert_eq!(
-            classify(&error, true, Some(1), Some(input)),
-            FailureKind::Allocation
-        );
-        for actual_input in [None, Some(Path::new("other/whole.wav"))] {
-            assert_eq!(
-                classify(&error, true, Some(1), actual_input),
-                FailureKind::EngineUnavailable
-            );
-        }
-        assert_eq!(
-            classify(&error, true, Some(2), Some(input)),
-            FailureKind::EngineUnavailable
-        );
-        let mut wrong_command: Value = serde_json::from_str(&error).unwrap();
-        wrong_command["error"]["command"] = "transcribe".into();
-        assert_eq!(
-            classify(&wrong_command.to_string(), true, Some(1), Some(input)),
-            FailureKind::EngineUnavailable
-        );
-        assert_eq!(
-            classify(
-                "example/whole.wav: std::bad_alloc",
-                true,
-                Some(1),
-                Some(input)
-            ),
-            FailureKind::EngineUnavailable
-        );
-    }
-
-    #[test]
-    fn unsupported_wave_is_an_input_error_only_for_the_invoked_native_contract() {
-        let input = Path::new("private/recorded.wav");
-        let diagnostic = "unsupported WAV encoding; convert with: ffmpeg -i INPUT -ac 1 -ar 16000 -c:a pcm_s16le output.wav";
-        for message in [
-            format!("private/recorded.wav: {diagnostic}"),
-            format!("private/recorded.wav: private/recorded.wav: {diagnostic}"),
-        ] {
-            let log = worker_error(&message, "runtime_error");
-            assert_eq!(
-                classify(&log, true, Some(1), Some(input)),
-                FailureKind::Input
-            );
-            assert_eq!(
-                classify(&log, true, Some(2), Some(input)),
-                FailureKind::EngineUnavailable
-            );
-            assert_eq!(
-                classify(&log, true, Some(1), Some(Path::new("other.wav"))),
-                FailureKind::EngineUnavailable
-            );
-            assert_eq!(
-                classify(
-                    &worker_error(&message, "unknown"),
-                    true,
-                    Some(1),
-                    Some(input)
-                ),
-                FailureKind::EngineUnavailable
-            );
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn cancellation_reaps_the_single_worker_without_starting_a_cpu_retry() {
-        let temporary = tempfile::tempdir().unwrap();
-        let root = temporary.path().canonicalize().unwrap();
-        let process = Processing::new(root.clone(), root);
-        let cancel = Arc::new(AtomicBool::new(false));
-        let worker_cancel = cancel.clone();
-        let log = temporary.path().join("worker.log");
-        let started = std::time::Instant::now();
-        let worker = thread::spawn(move || {
-            run(
-                &process,
-                Path::new("/bin/sleep"),
-                &["30".into()],
-                &log,
-                &worker_cancel,
-                false,
-                None,
-                "diarize",
-            )
-        });
-        thread::sleep(Duration::from_millis(150));
-        cancel.store(true, std::sync::atomic::Ordering::Release);
-        assert_eq!(
-            worker.join().unwrap().unwrap_err().kind,
-            FailureKind::Cancelled
-        );
-        assert!(started.elapsed() < Duration::from_secs(3));
     }
 }

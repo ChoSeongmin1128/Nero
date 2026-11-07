@@ -16,6 +16,9 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use uuid::Uuid;
 
+#[path = "native_speech.rs"]
+pub(crate) mod native_speech;
+
 const MODEL_LABEL: &str = crate::asr::LABEL;
 
 fn platform_supported() -> bool {
@@ -3708,7 +3711,7 @@ mod tests {
             touch(&process.worker("AudioPrepare"));
             touch(&crate::qwen_asr::executable(&process.resources));
             touch(&process.resources.join("native/crispasr/runtime.json"));
-            touch(&crate::asr::executable(&process, true));
+            touch(&native_speech::executable(&process, true));
             (temporary, process)
         }
         // A sparse file of the pinned size plus the verified marker; hashes are not read.

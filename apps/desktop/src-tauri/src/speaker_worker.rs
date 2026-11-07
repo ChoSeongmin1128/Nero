@@ -1,3 +1,4 @@
+use crate::processing::native_speech::Backend;
 use crate::speech_library::SpeechLibrary;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -59,24 +60,6 @@ impl std::fmt::Display for WorkerError {
 impl std::error::Error for WorkerError {}
 
 type Result<T> = std::result::Result<T, WorkerError>;
-
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub(super) enum Backend {
-    Cpu,
-    Metal,
-    Vulkan,
-}
-
-impl Backend {
-    pub(super) fn gpu(self) -> i32 {
-        if matches!(self, Self::Cpu) {
-            -1
-        } else {
-            0
-        }
-    }
-}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

@@ -28,7 +28,7 @@ pub(super) fn prepare(
                 source.as_os_str().to_os_string(),
                 destination.as_os_str().to_os_string(),
             ];
-            return crate::diarization::run(
+            return crate::processing::native_speech::run(
                 process,
                 &process.worker("AudioPrepare"),
                 &arguments,
@@ -38,7 +38,7 @@ pub(super) fn prepare(
                 Some(source),
                 "prepare-audio",
             )
-            .map_err(|error| failure(error.kind));
+            .map_err(failure);
         }
     }
     let _ = (process, work);

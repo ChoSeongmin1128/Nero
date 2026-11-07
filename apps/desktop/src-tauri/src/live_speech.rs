@@ -1,10 +1,11 @@
 //! Recording follows its original writer. This consumer may block or fall
 //! behind on disk without backpressuring the device callback.
 use crate::process_tree::TreeChild as Child;
-use crate::processing::{directory, Processing};
+use crate::processing::{directory, native_speech, Processing};
 use crate::speech_audio::normalize::Normalizer;
 use crate::speech_choice::SpeechEngine;
 use nero_core::{CaptureReader, CoreHandle, SessionState, Snapshot};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File, OpenOptions};
@@ -348,17 +349,9 @@ fn run(
     } else {
         path.join("unused-speaker-model")
     };
-    let gpu = crate::diarization::library(&process, true).is_file();
-    let library = crate::diarization::library(&process, gpu);
-    let backend = json!(if gpu {
-        if cfg!(target_os = "macos") {
-            "metal"
-        } else {
-            "vulkan"
-        }
-    } else {
-        "cpu"
-    });
+    let gpu = native_speech::library(&process, true).is_file();
+    let library = native_speech::library(&process, gpu);
+    let backend = json!(native_speech::Backend::for_gpu(gpu));
     let speaker_path = path.join("speaker");
     if speaker_enabled {
         fs::create_dir(&speaker_path).map_err(|e| e.to_string())?;
@@ -650,10 +643,7 @@ impl Processing {
                     || receipt["meetingId"] != meeting
                     || receipt["sessionId"] != session
                     || receipt["sourceSha256"] != source_sha
-                    || !matches!(
-                        receipt["backend"].as_str(),
-                        Some("metal" | "vulkan" | "cpu")
-                    )
+                    || native_speech::Backend::deserialize(&receipt["backend"]).is_err()
                 {
                     return Err("Unrelated live artifact".into());
                 }
