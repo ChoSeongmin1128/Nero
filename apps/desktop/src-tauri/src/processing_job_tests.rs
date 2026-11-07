@@ -1128,7 +1128,7 @@ fn continuation_journal_failure_preserves_committed_text_and_blocks_reexecution(
 fn concurrent_retry_consumes_one_handoff_and_failed_scheduling_restores_notice() {
     let (_temporary, process) = setup();
     let core = CoreHandle::open(&process.root).unwrap();
-    let mut job = record("summary-model");
+    let mut job = record("speaker-model");
     job.status = JobStatus::Cancelled;
     let id = job.id.clone();
     process.save_job(job).unwrap();
@@ -1186,7 +1186,7 @@ fn concurrent_retry_consumes_one_handoff_and_failed_scheduling_restores_notice()
 fn retry_reservation_failure_never_schedules_work() {
     let (_temporary, process) = setup();
     let core = CoreHandle::open(&process.root).unwrap();
-    let mut job = record("summary-model");
+    let mut job = record("speaker-model");
     job.status = JobStatus::Cancelled;
     let id = job.id.clone();
     process.save_job(job).unwrap();
@@ -1257,7 +1257,7 @@ fn legacy_postprocessing_without_bound_continuation_never_repeats_recognition() 
 fn retry_without_a_created_successor_restores_the_original_notice() {
     let (_temporary, process) = setup();
     let core = CoreHandle::open(&process.root).unwrap();
-    let mut original = record("summary-model");
+    let mut original = record("speaker-model");
     original.status = JobStatus::Cancelled;
     let id = original.id.clone();
     process.save_job(original.clone()).unwrap();
@@ -1286,7 +1286,7 @@ fn retry_without_a_created_successor_restores_the_original_notice() {
 fn retry_failure_after_successor_publication_does_not_restore_the_predecessor() {
     let (_temporary, process) = setup();
     let core = CoreHandle::open(&process.root).unwrap();
-    let mut original = record("summary-model");
+    let mut original = record("speaker-model");
     original.status = JobStatus::Cancelled;
     let id = original.id.clone();
     process.save_job(original).unwrap();
@@ -1306,6 +1306,51 @@ fn retry_failure_after_successor_publication_does_not_restore_the_predecessor() 
     assert!(records
         .iter()
         .any(|value| Some(&value.id) == old.retry_successor_id.as_ref()));
+}
+
+#[test]
+fn the_job_list_offers_retry_exactly_when_retry_accepts_it() {
+    let (_temporary, process) = setup();
+    let core = CoreHandle::open(&process.root).unwrap();
+    let summary = crate::release_capabilities::LOCAL_SUMMARY_ENABLED;
+    for (kind, status, acknowledged, include_summary, expected) in [
+        ("speaker-model", JobStatus::Failed, false, false, true),
+        ("transcribe", JobStatus::Interrupted, false, false, true),
+        ("setup", JobStatus::Cancelled, false, false, true),
+        ("setup", JobStatus::Failed, false, true, summary),
+        ("summary-model", JobStatus::Failed, false, false, summary),
+        ("summary", JobStatus::Interrupted, false, false, summary),
+        ("import", JobStatus::Failed, false, false, false),
+        ("speaker-model", JobStatus::Completed, false, false, false),
+        ("speaker-model", JobStatus::NeedsReview, false, false, false),
+        ("speaker-model", JobStatus::Cancelled, true, false, false),
+    ] {
+        let mut job = record(kind);
+        job.status = status;
+        job.acknowledged = acknowledged;
+        job.include_summary = include_summary;
+        let id = job.id.clone();
+        let reason = retry_block_reason(&job);
+        process.save_job(job).unwrap();
+        let listed = process
+            .snapshot()
+            .jobs
+            .into_iter()
+            .find(|view| view.id == id)
+            .unwrap()
+            .retryable;
+        let result = process.retry_with(&core, &id, |previous, successor_id| {
+            let mut successor = previous.clone();
+            successor.id = successor_id.into();
+            successor.status = JobStatus::Queued;
+            process.save_job(successor)
+        });
+        assert_eq!(listed, expected, "{kind} {status:?}");
+        assert_eq!(result.is_ok(), expected, "{kind} {status:?}");
+        if !expected {
+            assert_eq!(result.err().as_deref(), reason);
+        }
+    }
 }
 
 #[test]

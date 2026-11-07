@@ -121,6 +121,25 @@ fn model_job(kind: &str) -> bool {
     matches!(kind, "setup" | "model" | "summary-model" | "speaker-model")
 }
 
+// Why a job cannot be retried, if it cannot. The job list and retry use the same rule.
+fn retry_block_reason(record: &JobRecord) -> Option<&'static str> {
+    if !crate::release_capabilities::LOCAL_SUMMARY_ENABLED
+        && (matches!(record.kind.as_str(), "summary" | "summary-model")
+            || (record.kind == "setup" && record.include_summary))
+    {
+        return Some(crate::release_capabilities::LOCAL_SUMMARY_MESSAGE);
+    }
+    if !matches!(
+        record.status,
+        JobStatus::Interrupted | JobStatus::Failed | JobStatus::Cancelled
+    ) || record.acknowledged
+        || record.kind == "import"
+    {
+        return Some("현재 작업은 다시 실행할 수 없습니다. 회의의 저장 결과를 먼저 확인해 주세요.");
+    }
+    None
+}
+
 fn now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -836,14 +855,7 @@ impl Processing {
                     created_at: record.created_at,
                     retry_successor_id: record.retry_successor_id.clone(),
                     failure_kind: record.failure_kind,
-                    retryable: matches!(
-                        record.status,
-                        JobStatus::Interrupted | JobStatus::Failed | JobStatus::Cancelled
-                    ) && record.kind != "import"
-                        && !record.acknowledged
-                        && (crate::release_capabilities::LOCAL_SUMMARY_ENABLED
-                            || !(matches!(record.kind.as_str(), "summary" | "summary-model")
-                                || (record.kind == "setup" && record.include_summary))),
+                    retryable: retry_block_reason(record).is_none(),
                 })
                 .collect();
             if records
@@ -2560,13 +2572,6 @@ impl Processing {
     }
 
     pub fn retry(self: &Arc<Self>, core: CoreHandle, id: &str) -> Result<Progress, String> {
-        if self.records.lock().unwrap().iter().any(|record| {
-            record.id == id
-                && (matches!(record.kind.as_str(), "summary" | "summary-model")
-                    || (record.kind == "setup" && record.include_summary))
-        }) {
-            crate::release_capabilities::require_local_summary()?;
-        }
         self.retry_with(&core, id, |record, successor_id| {
             self.schedule_retry(core.clone(), record, successor_id)
         })
@@ -2591,16 +2596,8 @@ impl Processing {
             .find(|r| r.id == id)
             .cloned()
             .ok_or("작업을 찾을 수 없습니다.")?;
-        if !matches!(
-            record.status,
-            JobStatus::Interrupted | JobStatus::Failed | JobStatus::Cancelled
-        ) || record.acknowledged
-            || record.kind == "import"
-        {
-            return Err(
-                "현재 작업은 다시 실행할 수 없습니다. 회의의 저장 결과를 먼저 확인해 주세요."
-                    .into(),
-            );
+        if let Some(reason) = retry_block_reason(&record) {
+            return Err(reason.into());
         }
         if let Some(meeting_id) = &record.meeting_id {
             if record.source_fingerprint.as_ref()
