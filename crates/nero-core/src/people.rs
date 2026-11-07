@@ -1,4 +1,4 @@
-use crate::{agent_control, engine::Engine, store, CoreError, CoreHandle, Meeting, Result};
+use crate::{engine::Engine, store, CoreError, CoreHandle, Meeting, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -132,9 +132,8 @@ impl People {
     }
 
     pub(crate) fn catalog(&self) -> Result<PeopleCatalog> {
-        let bytes = serde_json::to_vec(self).map_err(|e| CoreError::Storage(e.to_string()))?;
         Ok(PeopleCatalog {
-            edit_version: format!("sha256:{:x}", Sha256::digest(bytes)),
+            edit_version: crate::edit_version::fingerprint(self)?,
             people: self.people.clone(),
             groups: self.groups.clone(),
         })
@@ -176,11 +175,9 @@ impl Engine {
         expected_version: &str,
         attendees: Vec<MeetingAttendee>,
     ) -> Result<Meeting> {
-        self.require_active_meeting(id)?;
-        let meeting = &self.meetings[id].meeting;
-        if agent_control::meeting_edit_version(meeting)? != expected_version {
-            return Err(CoreError::EditConflict);
-        }
+        let meeting = &self
+            .require_meeting_version(id, expected_version, true)?
+            .meeting;
         validate_attendees(&attendees)?;
         for attendee in &attendees {
             if let Some(person_id) = &attendee.person_id {
@@ -220,12 +217,10 @@ impl Engine {
         attendee_id: &str,
         name: String,
     ) -> Result<PromotedAttendee> {
-        self.require_active_meeting(id)?;
+        self.require_meeting_version(id, expected_version, true)?;
         store::validate_id(attendee_id)?;
         validate_name(&name)?;
-        if agent_control::meeting_edit_version(&self.meetings[id].meeting)? != expected_version
-            || self.people_catalog()?.edit_version != expected_catalog_version
-        {
+        if self.people_catalog()?.edit_version != expected_catalog_version {
             return Err(CoreError::EditConflict);
         }
         let mut library = self.library.clone();
@@ -304,6 +299,7 @@ impl CoreHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent_control;
     use crate::{reader::LibraryReader, MeetingStatus};
     use serde_json::json;
 
@@ -327,7 +323,8 @@ mod tests {
         }
     }
     fn replace(engine: &mut Engine, id: &str, attendees: Vec<MeetingAttendee>) -> Meeting {
-        let version = agent_control::meeting_edit_version(&engine.meetings[id].meeting).unwrap();
+        let version =
+            crate::edit_version::meeting_edit_version(&engine.meetings[id].meeting).unwrap();
         engine
             .replace_meeting_attendees(id, &version, attendees)
             .unwrap()
@@ -364,7 +361,7 @@ mod tests {
             &meeting.id,
             vec![selected.clone(), attendee(None), attendee(None)],
         );
-        let original_version = agent_control::meeting_edit_version(&meeting).unwrap();
+        let original_version = crate::edit_version::meeting_edit_version(&meeting).unwrap();
         let mut renamed = first.clone();
         renamed.name = "Changed catalog name".into();
         let changed = engine
@@ -375,7 +372,8 @@ mod tests {
             meeting.attendees
         );
         assert_eq!(
-            agent_control::meeting_edit_version(&engine.meetings[&meeting.id].meeting).unwrap(),
+            crate::edit_version::meeting_edit_version(&engine.meetings[&meeting.id].meeting)
+                .unwrap(),
             original_version
         );
         let deleted = engine
@@ -393,7 +391,7 @@ mod tests {
         assert!(engine
             .replace_meeting_attendees(
                 &meeting.id,
-                &agent_control::meeting_edit_version(&updated).unwrap(),
+                &crate::edit_version::meeting_edit_version(&updated).unwrap(),
                 vec![new_link]
             )
             .is_err());
@@ -419,7 +417,7 @@ mod tests {
         let first = attendee(None);
         let meeting = replace(&mut engine, &meeting.id, vec![first.clone()]);
         assert_eq!(std::fs::read(&path).unwrap(), original);
-        let before = agent_control::meeting_edit_version(&meeting).unwrap();
+        let before = crate::edit_version::meeting_edit_version(&meeting).unwrap();
         let mut renamed = first.clone();
         renamed.name = Some("Local name".into());
         let changed = replace(&mut engine, &meeting.id, vec![renamed.clone()]);
@@ -453,7 +451,8 @@ mod tests {
         assert_eq!(read["meeting"]["attendees"], json!([renamed]));
         assert_eq!(
             read["editVersion"],
-            agent_control::meeting_edit_version(&engine.meetings[&meeting.id].meeting).unwrap()
+            crate::edit_version::meeting_edit_version(&engine.meetings[&meeting.id].meeting)
+                .unwrap()
         );
         assert_eq!(std::fs::read(root.join("library.json")).unwrap(), before);
         assert_eq!(std::fs::read(path).unwrap(), original);
@@ -467,7 +466,7 @@ mod tests {
             .unwrap();
         let local = attendee(None);
         let meeting = replace(&mut engine, &meeting.id, vec![local.clone()]);
-        let version = agent_control::meeting_edit_version(&meeting).unwrap();
+        let version = crate::edit_version::meeting_edit_version(&meeting).unwrap();
         let catalog = engine.people_catalog().unwrap();
         let current = engine
             .replace_people_catalog(&catalog.edit_version, vec![person("Existing")], Vec::new())
@@ -510,7 +509,7 @@ mod tests {
             library["meetingAttendees"][&meeting.id][0]["personId"],
             promoted.person.id
         );
-        let current_version = agent_control::meeting_edit_version(&promoted.meeting).unwrap();
+        let current_version = crate::edit_version::meeting_edit_version(&promoted.meeting).unwrap();
         assert!(engine
             .promote_meeting_attendee(
                 &meeting.id,
@@ -528,7 +527,7 @@ mod tests {
         let meeting = engine
             .create_meeting("Synthetic meeting".into(), String::new())
             .unwrap();
-        let version = agent_control::meeting_edit_version(&meeting).unwrap();
+        let version = crate::edit_version::meeting_edit_version(&meeting).unwrap();
         let one = person("Person");
         let catalog = engine.people_catalog().unwrap();
         assert!(engine
@@ -580,7 +579,7 @@ mod tests {
             true
         );
         let attendee = attendee(None);
-        let payload = json!({"meetingId":meeting.id,"expectedVersion":agent_control::meeting_edit_version(&meeting).unwrap(),"attendees":[attendee]});
+        let payload = json!({"meetingId":meeting.id,"expectedVersion":crate::edit_version::meeting_edit_version(&meeting).unwrap(),"attendees":[attendee]});
         let request =
             agent_control::Mutation::parse("meeting_attendees_set", payload.clone()).unwrap();
         let applied = agent_control::apply(&mut engine, request).unwrap();

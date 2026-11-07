@@ -111,14 +111,7 @@ impl Params {
         if params
             .expected_source_version
             .as_ref()
-            .is_some_and(|version| {
-                version.strip_prefix("sha256:").is_none_or(|digest| {
-                    digest.len() != 64
-                        || !digest
-                            .bytes()
-                            .all(|value| value.is_ascii_digit() || (b'a'..=b'f').contains(&value))
-                })
-            })
+            .is_some_and(|version| !crate::edit_version::valid(version))
         {
             return Err(CoreError::InvalidInput(
                 "expectedSourceVersion은 조회 응답의 sourceVersion 문자열이어야 합니다.".into(),

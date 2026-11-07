@@ -1,7 +1,6 @@
 use super::{validate_name, MeetingAttendee, PeopleCatalog, Person};
-use crate::{agent_control, engine::Engine, store, CoreError, CoreHandle, Meeting, Result};
+use crate::{engine::Engine, store, CoreError, CoreHandle, Meeting, Result};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -270,14 +269,13 @@ impl Engine {
             .get(id)
             .cloned()
             .unwrap_or_default();
-        let bytes = serde_json::to_vec(&(
-            agent_control::meeting_edit_version(&meeting)?,
+        let edit_version = crate::edit_version::fingerprint(&(
+            crate::edit_version::meeting_edit_version(&meeting)?,
             &self.library.google_identity,
             self.people_catalog()?.edit_version,
-        ))
-        .map_err(|error| CoreError::Storage(error.to_string()))?;
+        ))?;
         Ok(GoogleAttendeeRoster {
-            edit_version: format!("sha256:{:x}", Sha256::digest(bytes)),
+            edit_version,
             meeting,
             sources,
             identity_links: self.library.google_identity.links.clone(),
@@ -917,7 +915,7 @@ mod tests {
         assert_eq!(linked.sources[0].attendee_id, linked.sources[1].attendee_id);
         let mut edited = linked.meeting.attendees.clone();
         edited[0].name = Some("Manual meeting name".into());
-        let version = agent_control::meeting_edit_version(&linked.meeting).unwrap();
+        let version = crate::edit_version::meeting_edit_version(&linked.meeting).unwrap();
         engine
             .replace_meeting_attendees(&meeting.id, &version, edited.clone())
             .unwrap();
@@ -970,7 +968,7 @@ mod tests {
         let roster = import(&mut engine, &meeting.id, vec![source.clone()]);
         let retained = import(&mut engine, &meeting.id, vec![]);
         assert_eq!(retained.meeting.attendees, roster.meeting.attendees);
-        let version = agent_control::meeting_edit_version(&retained.meeting).unwrap();
+        let version = crate::edit_version::meeting_edit_version(&retained.meeting).unwrap();
         engine
             .replace_meeting_attendees(&meeting.id, &version, vec![])
             .unwrap();
@@ -1040,7 +1038,7 @@ mod tests {
             person_id: None,
             name: Some("Manual temporary name".into()),
         };
-        let version = agent_control::meeting_edit_version(&meeting).unwrap();
+        let version = crate::edit_version::meeting_edit_version(&meeting).unwrap();
         engine
             .replace_meeting_attendees(&meeting.id, &version, vec![target.clone()])
             .unwrap();
@@ -1091,7 +1089,7 @@ mod tests {
             person_id: Some(person.id.clone()),
             name: Some("Existing meeting name".into()),
         };
-        let version = agent_control::meeting_edit_version(&meeting).unwrap();
+        let version = crate::edit_version::meeting_edit_version(&meeting).unwrap();
         engine
             .replace_meeting_attendees(&meeting.id, &version, vec![target.clone()])
             .unwrap();

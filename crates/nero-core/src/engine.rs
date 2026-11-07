@@ -103,6 +103,24 @@ impl Engine {
         Ok(meeting)
     }
 
+    // The meeting as stored, when its edit version is still `expected`. `active`
+    // also refuses a trashed meeting.
+    pub(crate) fn require_meeting_version(
+        &self,
+        id: &str,
+        expected: &str,
+        active: bool,
+    ) -> Result<&StoredMeeting> {
+        if active {
+            self.require_active_meeting(id)?;
+        }
+        let stored = self.meetings.get(id).ok_or(CoreError::MeetingNotFound)?;
+        if crate::edit_version::meeting_edit_version(&stored.meeting)? != expected {
+            return Err(CoreError::EditConflict);
+        }
+        Ok(stored)
+    }
+
     pub(crate) fn require_active_meeting(&self, id: &str) -> Result<()> {
         store::validate_id(id)?;
         self.meetings
@@ -117,7 +135,7 @@ impl Engine {
         let stored = &self.meetings[id];
         let target = crate::DraftAttachmentTarget {
             meeting_id: id.into(),
-            expected_version: crate::agent_control::meeting_edit_version(&stored.meeting)?,
+            expected_version: crate::edit_version::meeting_edit_version(&stored.meeting)?,
         };
         self.require_draft_attachment(&target)?;
         Ok(target)
@@ -130,11 +148,8 @@ impl Engine {
         if self.quitting {
             return Err(CoreError::Unavailable);
         }
-        self.require_active_meeting(&target.meeting_id)?;
-        let stored = &self.meetings[&target.meeting_id];
-        if crate::agent_control::meeting_edit_version(&stored.meeting)? != target.expected_version {
-            return Err(CoreError::EditConflict);
-        }
+        let stored =
+            self.require_meeting_version(&target.meeting_id, &target.expected_version, true)?;
         if stored.meeting.status != MeetingStatus::Draft
             || stored.capture_id.is_some()
             || stored.meeting.audio.is_some()
@@ -231,7 +246,7 @@ impl Engine {
     }
 
     pub(crate) fn agent_library_version(&self) -> Result<String> {
-        crate::agent_control::library_edit_version(&self.library)
+        crate::edit_version::library_edit_version(&self.library)
     }
 
     pub fn folders(&self) -> Vec<Folder> {

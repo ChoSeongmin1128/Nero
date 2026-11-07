@@ -291,11 +291,7 @@ fn token(value: &str) -> bool {
             c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b'.' | b':' | b'@' | b'[' | b']')
         })
 }
-fn version(value: &str) -> bool {
-    value
-        .strip_prefix("sha256:")
-        .is_some_and(|hash| hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()))
-}
+use crate::edit_version::valid as version;
 fn transcript_version(value: &TranscriptVersion) -> bool {
     id(&value.id)
 }

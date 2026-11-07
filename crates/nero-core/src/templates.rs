@@ -537,12 +537,7 @@ fn validate_id(id: &str, builtins: &[Builtin]) -> Result<()> {
 }
 
 fn validate_revision(value: &str) -> Result<()> {
-    if value.strip_prefix("sha256:").is_some_and(|hash| {
-        hash.len() == 64
-            && hash
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    }) {
+    if crate::edit_version::valid(value) {
         Ok(())
     } else {
         Err(TemplateError::InvalidInput)

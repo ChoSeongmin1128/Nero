@@ -1,12 +1,8 @@
 use crate::agent_app::{self, AppRequest};
 use crate::engine::Engine;
-use crate::library::Library;
-use crate::{
-    store, CoreError, CoreHandle, ExternalSummaryProducer, Meeting, Result, SummaryContext,
-};
+use crate::{store, CoreError, CoreHandle, ExternalSummaryProducer, Result, SummaryContext};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddrV4, TcpListener, TcpStream};
@@ -434,11 +430,7 @@ impl ControlRequest {
     }
 }
 
-fn valid_version(version: &str) -> bool {
-    version
-        .strip_prefix("sha256:")
-        .is_some_and(|hash| hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()))
-}
+use crate::edit_version::valid as valid_version;
 
 impl Mutation {
     pub fn parse(method: &str, params: Value) -> std::result::Result<Self, ControlError> {
@@ -595,25 +587,8 @@ impl Mutation {
     }
 }
 
-fn fingerprint(value: &impl Serialize) -> Result<String> {
-    let bytes = serde_json::to_vec(value)
-        .map_err(|_| CoreError::InvalidState("수정 버전을 확인하지 못했습니다.".into()))?;
-    Ok(format!("sha256:{:x}", Sha256::digest(bytes)))
-}
-
-pub fn meeting_edit_version(meeting: &Meeting) -> Result<String> {
-    // These fields can be hydrated from a capture manifest without editing the
-    // meeting document. They must not invalidate a reader's metadata edit token.
-    // Keep source/audio identities, status and all editable fields protected.
-    let mut protected = meeting.clone();
-    protected.warning = None;
-    protected.capture_quality = None;
-    protected.recorded_at = None;
-    fingerprint(&protected)
-}
-pub(crate) fn library_edit_version(library: &Library) -> Result<String> {
-    fingerprint(library)
-}
+pub(crate) use crate::edit_version::library_edit_version;
+pub use crate::edit_version::meeting_edit_version;
 
 pub(crate) fn validate(engine: &Engine, mutation: &Mutation) -> Result<()> {
     if engine.quitting {
@@ -649,10 +624,7 @@ pub(crate) fn validate(engine: &Engine, mutation: &Mutation) -> Result<()> {
         }
         _ => {
             for (id, expected) in mutation.versions() {
-                let current = engine.meetings.get(id).ok_or(CoreError::MeetingNotFound)?;
-                if meeting_edit_version(&current.meeting)? != expected {
-                    return Err(CoreError::EditConflict);
-                }
+                engine.require_meeting_version(id, expected, false)?;
             }
         }
     }
@@ -1348,6 +1320,7 @@ impl Drop for Server {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Meeting;
     use std::sync::atomic::AtomicUsize;
 
     fn temporary_directory() -> tempfile::TempDir {

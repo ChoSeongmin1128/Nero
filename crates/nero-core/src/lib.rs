@@ -6,6 +6,7 @@ mod audio_playback;
 mod capture;
 mod diarization;
 pub mod disk_space;
+mod edit_version;
 mod engine;
 pub mod environment;
 pub mod identity;
@@ -592,14 +593,7 @@ impl CoreHandle {
     ) -> Result<Summary> {
         let (id, expected) = (id.to_owned(), expected_version.to_owned());
         self.call(move |engine| {
-            let meeting = engine
-                .meetings()
-                .into_iter()
-                .find(|meeting| meeting.id == id && meeting.deleted_at.is_none())
-                .ok_or(CoreError::MeetingNotFound)?;
-            if agent_control::meeting_edit_version(&meeting)? != expected {
-                return Err(CoreError::EditConflict);
-            }
+            engine.require_meeting_version(&id, &expected, true)?;
             engine.import_summary(&id, context, text, producer)
         })
     }
@@ -617,13 +611,9 @@ impl CoreHandle {
         );
         self.call(move |engine| {
             let current = engine
-                .meetings()
-                .into_iter()
-                .find(|meeting| meeting.id == id && meeting.deleted_at.is_none())
-                .ok_or(CoreError::MeetingNotFound)?;
-            if agent_control::meeting_edit_version(&current)? != expected {
-                return Err(CoreError::EditConflict);
-            }
+                .require_meeting_version(&id, &expected, true)?
+                .meeting
+                .clone();
             if let Some(context) = context {
                 engine.validate_summary_context(&id, &context)?;
             }
