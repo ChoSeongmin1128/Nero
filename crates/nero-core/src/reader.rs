@@ -478,9 +478,9 @@ impl<'a> Transaction<'a> {
         {
             return Ok(None);
         }
-        let relative = Path::new("meetings").join(id).join("meeting.json");
+        let relative = store::meeting_document(id);
         let Some(mut stored): Option<StoredMeeting> = self.document(&relative, true)? else {
-            if self.directory_presence(&Path::new("meetings").join(id).join("sessions"))? {
+            if self.directory_presence(&store::sessions_dir(id))? {
                 return Err(ReadError::InvalidDocument.into());
             }
             return Ok(None);
@@ -499,9 +499,7 @@ impl<'a> Transaction<'a> {
         if capture_details {
             if let Some(capture_id) = &stored.capture_id {
                 store::validate_id(capture_id).map_err(|_| ReadError::InvalidDocument)?;
-                let relative = Path::new("meetings")
-                    .join(id)
-                    .join("sessions")
+                let relative = store::sessions_dir(id)
                     .join(capture_id)
                     .join("manifest.json");
                 let manifest: store::Manifest = self
@@ -527,9 +525,7 @@ impl<'a> Transaction<'a> {
         let Some(id) = &meeting.transcript_id else {
             return Ok(None);
         };
-        let relative = Path::new("meetings")
-            .join(&meeting.id)
-            .join("transcripts")
+        let relative = store::transcripts_dir(&meeting.id)
             .join(id)
             .join("current.json");
         let document: Transcript = self

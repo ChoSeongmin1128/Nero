@@ -580,10 +580,7 @@ fn validate_speakers(speakers: &[TranscriptSpeaker], assignments: &[Option<Strin
 fn transcript_dir(meeting_id: &str, transcript_id: &str) -> Result<PathBuf> {
     store::validate_id(meeting_id)?;
     store::validate_id(transcript_id)?;
-    Ok(Path::new("meetings")
-        .join(meeting_id)
-        .join("transcripts")
-        .join(transcript_id))
+    Ok(store::transcripts_dir(meeting_id).join(transcript_id))
 }
 
 fn immutable_json(root: &Path, relative: &Path, value: &impl Serialize) -> Result<()> {
@@ -843,7 +840,7 @@ impl Engine {
     // It does not recover partial runs or reconstruct missing source associations.
     pub fn transcript_history(&self, id: &str) -> Result<TranscriptHistory> {
         self.require_active_meeting(id)?;
-        let relative = Path::new("meetings").join(id).join("transcripts");
+        let relative = store::transcripts_dir(id);
         let path = store::checked_path(&self.store.root, &relative)?;
         if !path.exists() {
             return Ok(TranscriptHistory::default());

@@ -310,7 +310,7 @@ pub(crate) fn is_stale(
 }
 fn location(id: &str) -> Result<PathBuf> {
     store::validate_id(id)?;
-    Ok(Path::new("meetings").join(id).join("summaries"))
+    Ok(store::summaries_dir(id))
 }
 
 fn validate_import_references(text: &str, count: usize) -> Result<()> {
@@ -500,9 +500,7 @@ impl Engine {
                 .as_ref()
                 .is_some_and(|source| crate::nemotron::is_word_projector(&source.projector_version))
             {
-                let raw_path = Path::new("meetings")
-                    .join(id)
-                    .join("transcripts")
+                let raw_path = store::transcripts_dir(id)
                     .join(&current.version.id)
                     .join("raw.json");
                 targets = crate::nemotron::direct_parent_citation_targets(

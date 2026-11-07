@@ -224,10 +224,7 @@ impl Manifest {
     }
 
     pub fn relative_dir(&self) -> PathBuf {
-        Path::new("meetings")
-            .join(&self.meeting_id)
-            .join("sessions")
-            .join(&self.session_id)
+        sessions_dir(&self.meeting_id).join(&self.session_id)
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -266,6 +263,20 @@ pub(crate) struct LoadedMeetings {
     // Meeting folders kept on disk but left out of the library because they could
     // not be read. Nothing may treat these IDs as deleted.
     pub unreadable: BTreeSet<String>,
+}
+
+// The library layout under the store root, shared by the writer and the reader.
+pub(crate) fn meeting_document(id: &str) -> PathBuf {
+    Path::new("meetings").join(id).join("meeting.json")
+}
+pub(crate) fn sessions_dir(id: &str) -> PathBuf {
+    Path::new("meetings").join(id).join("sessions")
+}
+pub(crate) fn transcripts_dir(id: &str) -> PathBuf {
+    Path::new("meetings").join(id).join("transcripts")
+}
+pub(crate) fn summaries_dir(id: &str) -> PathBuf {
+    Path::new("meetings").join(id).join("summaries")
 }
 
 pub(crate) fn hydrate_capture_metadata(meeting: &mut Meeting, manifest: &Manifest) {
@@ -354,11 +365,10 @@ impl Store {
                 "회의 폴더의 형식이 올바르지 않습니다.".into(),
             ));
         }
-        let relative = Path::new("meetings").join(id).join("meeting.json");
+        let relative = meeting_document(id);
         let path = checked_path(&self.root, &relative)?;
         if !path.exists() {
-            let sessions =
-                checked_path(&self.root, &Path::new("meetings").join(id).join("sessions"))?;
+            let sessions = checked_path(&self.root, &sessions_dir(id))?;
             if sessions.exists() {
                 return Err(CoreError::Storage(
                     "회의 정보가 없는 녹음 폴더가 있습니다.".into(),
@@ -439,9 +449,7 @@ impl Store {
 
     pub fn save(&self, stored: &StoredMeeting) -> Result<()> {
         validate_id(&stored.meeting.id)?;
-        let relative = Path::new("meetings")
-            .join(&stored.meeting.id)
-            .join("meeting.json");
+        let relative = meeting_document(&stored.meeting.id);
         let mut base = stored.clone();
         Library::unproject(&mut base.meeting);
         write_json(&self.root, &relative, &base)
@@ -449,9 +457,7 @@ impl Store {
 
     pub fn meeting_matches(&self, stored: &StoredMeeting) -> Result<bool> {
         validate_id(&stored.meeting.id)?;
-        let relative = Path::new("meetings")
-            .join(&stored.meeting.id)
-            .join("meeting.json");
+        let relative = meeting_document(&stored.meeting.id);
         let saved: StoredMeeting = read_json(&checked_path(&self.root, &relative)?)?;
         let mut expected = stored.clone();
         Library::unproject(&mut expected.meeting);
@@ -549,9 +555,7 @@ impl Store {
             }
             return Ok(None);
         };
-        let relative = Path::new("meetings")
-            .join(&stored.meeting.id)
-            .join("sessions")
+        let relative = sessions_dir(&stored.meeting.id)
             .join(&session_id)
             .join("manifest.json");
         let path = checked_path(&self.root, &relative)?;
