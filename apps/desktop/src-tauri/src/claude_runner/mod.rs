@@ -29,7 +29,7 @@ const TIMEOUT: Duration = Duration::from_secs(600);
 const ERROR: &str = "Claude Code 실행을 완료하지 못했습니다.";
 const CANCELLED: &str = "취소했습니다.";
 const MISSING: &str = "Claude Code를 실행하지 못했습니다. 실행 파일이 바뀌었거나 삭제되었다면 설정에서 Claude 연결을 다시 확인해 주세요.";
-const LOGIN_EXPIRED: &str =
+pub(crate) const LOGIN_EXPIRED: &str =
     "Claude 로그인이 만료되었습니다. 설정에서 Claude에 다시 로그인해 주세요.";
 const RATE_LIMITED: &str =
     "Claude 사용 한도에 도달했습니다. 한도가 초기화된 뒤 다시 시도해 주세요.";

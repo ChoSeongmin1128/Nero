@@ -345,11 +345,13 @@ impl ClaudeConnection {
         }
         drop(operation);
         let result = runner.reply(model, prompt, effort, cancel, delta);
-        if result.is_ok() {
-            *self.cached.lock().unwrap() = Some(Self::row(true));
-        } else {
-            *self.cached.lock().unwrap() = None;
-        }
+        // An expired login is known to be signed out, so the screen asks to log in
+        // again; other failures say nothing about the login.
+        *self.cached.lock().unwrap() = match &result {
+            Ok(_) => Some(Self::row(true)),
+            Err(message) if message == claude_runner::LOGIN_EXPIRED => Some(Self::row(false)),
+            Err(_) => None,
+        };
         result
     }
 }

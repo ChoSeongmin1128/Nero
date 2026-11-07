@@ -192,6 +192,9 @@ export function GlobalAiChat({ flow, onSettings = () => {}, onCitation = async (
   React.useLayoutEffect(() => { const node = composer.current; if (node) { node.style.height = 'auto'; node.style.height = `${Math.min(180, Math.max(64, node.scrollHeight))}px`; } }, [conversation.draft]);
   const reveal = async citation => { try { setCitationError(''); await onCitation(citation); } catch (error) { setCitationError(error?.message || '자료를 열지 못했습니다.'); } };
   const unavailable = account?.state === 'unavailable' || state.accountsLoaded && !account;
+  // Before Claude has answered once, its state is unknown and no models are listed yet:
+  // nothing can be sent until the person logs in.
+  const claudeLoginNeeded = state.provider === 'claude' && account?.state === 'unknown' && !state.modelsBusy && !state.models.length;
   const shown = conversationPath(conversation);
   // Up/Down walk through this conversation's sent questions, like a shell history. The
   // unsent draft comes back when walking past the newest question.
@@ -234,7 +237,7 @@ export function GlobalAiChat({ flow, onSettings = () => {}, onCitation = async (
     <div className="ai-chat-bottom">
       {(citationError || state.accountsError || state.modelError || conversation.error) && <p className="ai-chat-error" role="alert">{citationError || state.accountsError || state.modelError || conversation.error}</p>}
       {conversation.feedback && <p className="ai-chat-feedback" role="status">{conversation.feedback}</p>}
-      {!state.accountsBusy && !usableAccount(account) && <div className="ai-chat-connect"><span>{unavailable ? `${state.provider === 'claude' ? 'Claude' : 'ChatGPT'}를 사용할 수 없습니다.` : 'AI 계정에 로그인해 주세요.'}</span><button type="button" className="small" onClick={onSettings}>계정 설정</button></div>}
+      {!state.accountsBusy && (!usableAccount(account) || claudeLoginNeeded) && <div className="ai-chat-connect"><span>{unavailable ? `${state.provider === 'claude' ? 'Claude' : 'ChatGPT'}를 사용할 수 없습니다.` : 'AI 계정에 로그인해 주세요.'}</span><button type="button" className="small" onClick={onSettings}>계정 설정</button></div>}
       <form className="ai-chat-composer" onSubmit={event => { event.preventDefault(); if (choosing) choose(choices[chooserIndex] || choices[0]); else void flow.send(); }}>
         {(conversation.meetings.length > 0 || conversation.sources.length > 0) && <div className="ai-chat-sources" aria-label="포함된 자료">
           {conversation.meetings.map(meeting => <span className="ai-source-chip" key={meeting.id}><FileText size={14} aria-hidden="true" /><span title={meeting.title}>{meeting.title || '회의'}</span><button type="button" className="quiet small icon" aria-label={`${meeting.title || '회의'} 제외`} disabled={busy} onClick={() => flow.removeMeeting(meeting.id)}><X size={12} aria-hidden="true" /></button></span>)}
