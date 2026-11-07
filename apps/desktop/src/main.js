@@ -1327,6 +1327,12 @@ function renderTranscript(meeting) {
   });
 }
 
+function replaceTranscriptDraft(id, doc) {
+  state.transcriptDraft = { id, doc, savedTexts: doc?.segments.map(segment => segment.text) || [], dirty: false, saving: false, version: 0 };
+  state.transcriptEditing = null;
+  state.transcriptKey = '';
+}
+
 async function loadTranscript(id) {
   const request = ++state.transcriptLoadId;
   const startingDraft = state.transcriptDraft;
@@ -1336,9 +1342,7 @@ async function loadTranscript(id) {
     const doc = await bridge.readTranscript(id);
     if (!current()) return;
     state.transcriptLoaded = true; state.transcriptLoadError = false;
-    state.transcriptDraft = { id, doc, savedTexts: doc?.segments.map(segment => segment.text) || [], dirty: false, saving: false, version: 0 };
-    state.transcriptEditing = null;
-    state.transcriptKey = '';
+    replaceTranscriptDraft(id, doc);
     render();
   } catch (error) { if (current()) { state.transcriptLoaded = true; state.transcriptLoadError = true; showError(error); render(); } }
 }
@@ -1495,6 +1499,13 @@ byId('recording-quality').addEventListener('click', event => {
   const audioKey = `${meeting.id}:${meeting.audio.relativePath}:${meeting.audio.frames}`;
   if (Number.isFinite(seconds) && seconds >= 0) void run(async () => { await prepareAudio(meeting, false); if (state.selectedId === meeting.id && state.audioKey === audioKey) seekRecording(seconds); });
 });
+
+function highlightTranscriptRows(rows) {
+  byId('transcript-rows').querySelectorAll('[data-citation-active]').forEach(node => node.removeAttribute('data-citation-active'));
+  rows.forEach(row => row.setAttribute('data-citation-active', 'true'));
+  rows[0]?.scrollIntoView({ block: 'center', behavior: globalThis.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches ? 'instant' : 'smooth' });
+  rows[0]?.focus({ preventScroll: true });
+}
 
 function seekRecording(seconds) {
   const player = byId('audio-player');
@@ -1700,10 +1711,7 @@ aiChat = mountAiChat({
       await detail.select('transcript');
       const row = byId('transcript-rows').querySelector(`[data-transcript-row="${index}"]`);
       if (!row) throw new Error('현재 음성 기록에서 이 발언을 찾을 수 없습니다.');
-      byId('transcript-rows').querySelectorAll('[data-citation-active]').forEach(node => node.removeAttribute('data-citation-active'));
-      row.setAttribute('data-citation-active', 'true');
-      row.scrollIntoView({ block: 'center', behavior: globalThis.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches ? 'instant' : 'smooth' });
-      row.focus({ preventScroll: true });
+      highlightTranscriptRows([row]);
     });
   },
 });
@@ -1713,7 +1721,7 @@ aiLibrary = mountAiChatLibrary({ node: byId('ai-library-screen'), flow: aiChat.f
 summaryEvidence = mountSummaryEvidence({
   container: byId('summary-content'), panel: byId('summary-evidence'),
   onOpen: () => detail.select('transcript'),
-  onReset: () => byId('transcript-rows').querySelectorAll('[data-citation-active]').forEach(node => node.removeAttribute('data-citation-active')),
+  onReset: () => highlightTranscriptRows([]),
   getContext: () => ({ meetingId: state.selectedId, summaryId: state.summary?.document?.id, currentVersion: state.transcriptDraft?.doc?.version, dirty: Boolean(state.transcriptDraft?.dirty), canPlay: Boolean(byId('audio-player').getAttribute('src')) }),
   loadCitations: bridge.readSummaryCitations,
   onError: error => console.warn('Summary evidence unavailable', error),
@@ -1730,9 +1738,7 @@ summaryEvidence = mountSummaryEvidence({
       return byId('transcript-rows').querySelector(`[data-transcript-row="${index}"]`);
     });
     if (rows.some(row => !row)) return false;
-    byId('transcript-rows').querySelectorAll('[data-citation-active]').forEach(node => node.removeAttribute('data-citation-active'));
-    rows.forEach(row => row.setAttribute('data-citation-active', 'true'));
-    rows[0].scrollIntoView({ block: 'center', behavior: globalThis.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches ? 'instant' : 'smooth' }); rows[0].focus({ preventScroll: true });
+    highlightTranscriptRows(rows);
     return true;
   },
   onPlay(entry, response, context) {
@@ -1751,8 +1757,8 @@ const transcriptActions = mountTranscriptActions({ byId, bridge, finishEditing, 
   onRebuild: async meetingId => acceptProcessing(await bridge.transcribeAudio(meetingId)),
   async onRestored(doc, meetingId) {
     if (state.selectedId === meetingId) {
-      state.transcriptDraft = { id: meetingId, doc, savedTexts: doc.segments.map(segment => segment.text), dirty: false, saving: false, version: 0 };
-      state.transcriptEditing = null; state.transcriptKey = ''; state.summaryKey = ''; render();
+      replaceTranscriptDraft(meetingId, doc);
+      state.summaryKey = ''; render();
       await loadSummary(meetingId);
     }
     acceptSnapshot(await bridge.readSnapshot()); refreshMeetingSearch();
@@ -1793,7 +1799,7 @@ const speakers = mountSpeakers({ confirmDiscard: () => speakerConfirmation.confi
     seekRecording(seconds);
   }, onProcessing: acceptProcessing, onUpdated(doc, meetingId) {
   if (state.selectedId !== meetingId) return;
-  if (state.transcriptDraft) { state.transcriptDraft.doc = doc; state.transcriptDraft.savedTexts = doc.segments.map(segment => segment.text); state.transcriptDraft.dirty = false; state.transcriptEditing = null; state.transcriptKey = ''; state.summaryKey = ''; }
+  if (state.transcriptDraft) { replaceTranscriptDraft(meetingId, doc); state.summaryKey = ''; }
   render(); refreshMeetingSearch();
 } });
 const meetingSearch = createMeetingSearch({ search: bridge.searchMeetings, apply(result) {
