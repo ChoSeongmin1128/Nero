@@ -133,20 +133,24 @@ pub fn removal<T>(
     })?;
     let result = action();
     if permanent {
-        let remaining = state.core.list_meetings()?;
+        // The meetings are already gone, so leftover context files of one meeting
+        // must neither stop the others' cleanup nor report the removal as failed.
+        let Ok(remaining) = state.core.list_meetings() else {
+            return result;
+        };
+        let root = &app.state::<DesktopState>().processing.root;
         for id in ids
             .iter()
             .filter(|id| !remaining.iter().any(|m| &m.id == *id))
         {
-            state
-                .store
-                .delete(id)
-                .map_err(nero_core::CoreError::InvalidState)?;
-            let desktop = app.state::<DesktopState>();
-            crate::domain_glossary::delete(&desktop.processing.root, id)
-                .map_err(nero_core::CoreError::InvalidState)?;
-            crate::glossary_context::delete_meeting(&desktop.processing.root, id)
-                .map_err(nero_core::CoreError::InvalidState)?;
+            let cleanup = [
+                state.store.delete(id),
+                crate::domain_glossary::delete(root, id),
+                crate::glossary_context::delete_meeting(root, id),
+            ];
+            if cleanup.iter().any(Result::is_err) {
+                eprintln!("Nero: 삭제한 회의의 자료 일부를 정리하지 못했습니다.");
+            }
         }
     }
     result
