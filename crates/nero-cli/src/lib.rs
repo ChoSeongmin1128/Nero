@@ -220,6 +220,24 @@ fn query_library(root: &Path, method: &str, params: Value) -> Result<Value, Quer
     Ok(result)
 }
 
+// Failures reaching the running app read the same for every tool; the app's own refusals
+// and each tool's input errors keep their own wording.
+pub(crate) fn transport_message(code: &str) -> &'static str {
+    match code {
+        "app_feature_unsupported" => {
+            "실행 중인 Nero는 이 요청을 지원하지 않습니다. Nero를 업데이트한 뒤 다시 시도해 주세요."
+        }
+        "request_too_large" => {
+            "요청이 전송 한도 1MiB를 넘습니다. 본문이나 대상 개수를 줄여 주세요."
+        }
+        "mutation_result_unknown" => {
+            "Nero의 응답을 확인할 수 없습니다. 최신 상태를 조회해 결과를 먼저 확인하세요."
+        }
+        "unsafe_control_path" => "Nero 연결 파일의 권한을 확인해 주세요.",
+        _ => "Nero와 연결할 수 없습니다. 앱을 실행한 뒤 다시 시도해 주세요.",
+    }
+}
+
 pub fn canonical_data_dir(root: &Path) -> Result<PathBuf, QueryError> {
     let root = if root.is_absolute() {
         root.to_path_buf()
@@ -651,6 +669,33 @@ mod tests {
             assert_ne!(code, Some("unsupported_method"), "{}", tool.name);
         }
         assert!(!missing.exists());
+    }
+
+    #[test]
+    fn transport_failures_read_the_same_for_app_tools_and_bridge_writes() {
+        for code in [
+            "app_not_running",
+            "unsafe_control_path",
+            "mutation_result_unknown",
+            "request_too_large",
+            "app_feature_unsupported",
+        ] {
+            let expected = transport_message(code);
+            assert_eq!(app_tools::message(code), expected, "{code}");
+            assert_eq!(
+                mutations::message("meeting_update", code),
+                expected,
+                "{code}"
+            );
+        }
+        assert_eq!(
+            mutations::message("meeting_update", "unsafe_control_path"),
+            "Nero 연결 파일의 권한을 확인해 주세요."
+        );
+        assert_ne!(
+            app_tools::message("invalid_input"),
+            mutations::message("meeting_update", "invalid_input")
+        );
     }
 
     #[test]

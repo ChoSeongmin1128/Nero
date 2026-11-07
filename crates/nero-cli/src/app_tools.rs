@@ -222,20 +222,10 @@ pub(crate) fn dispatch(root: &Path, method: &str, params: Value) -> Result<Value
     })
 }
 
-fn message(code: &str) -> &'static str {
+pub(crate) fn message(code: &str) -> &'static str {
     match code {
         "invalid_input" => "요청 값을 확인해 주세요. 도움말의 형식과 각 값의 출처를 확인하세요.",
-        "app_feature_unsupported" => {
-            "실행 중인 Nero는 이 요청을 지원하지 않습니다. Nero를 업데이트한 뒤 다시 시도해 주세요."
-        }
-        "request_too_large" => {
-            "요청이 전송 한도 1MiB를 넘습니다. 본문이나 대상 개수를 줄여 주세요."
-        }
-        "mutation_result_unknown" => {
-            "Nero의 응답을 확인할 수 없습니다. 최신 상태를 조회해 결과를 먼저 확인하세요."
-        }
-        "unsafe_control_path" => "Nero 연결 파일의 권한을 확인해 주세요.",
-        _ => "Nero와 연결할 수 없습니다. 앱을 실행한 뒤 다시 시도해 주세요.",
+        _ => crate::transport_message(code),
     }
 }
 

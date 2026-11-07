@@ -18,8 +18,7 @@ pub(crate) fn dispatch(root: &Path, params: Value) -> Result<Value, QueryError> 
             "app_update_failed" => "업데이트 요청을 완료하지 못했습니다. update status와 Nero의 업데이트 화면을 확인해 주세요.",
             "app_not_ready" => "Nero의 편집 저장 또는 유휴 상태를 확인하지 못했습니다. 앱에서 저장 상태와 녹음/처리 작업을 확인해 주세요.",
             "mutation_result_unknown" => "업데이트 응답을 확인하지 못했습니다. 같은 요청을 반복하지 말고 update status와 실행 중인 앱 버전을 먼저 확인해 주세요.",
-            "unsafe_control_path" => "Nero 연결 파일의 권한을 확인해 주세요.",
-            _ => "Nero와 연결할 수 없습니다. 앱을 실행한 뒤 다시 시도해 주세요.",
+            _ => crate::transport_message(error.code),
         };
         QueryError { code: error.code, message: message.into() }
     })
