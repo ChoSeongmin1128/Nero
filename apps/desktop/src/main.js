@@ -908,10 +908,11 @@ async function onAgentWriteRequest({ requestId, kind } = {}) {
     const prepare = kind === 'appUpdate' ? prepareAppLeave : finishEditing;
     const completed = await prepare(async () => {
       ready = true;
+      // Resolves after the agent's write; a transcript edit does not show in the snapshot.
       await bridge.agentWriteReady(requestId);
       acceptSnapshot(await bridge.readSnapshot());
       await peopleSettings.refreshIfClean?.();
-      if (currentMeeting()) await loadSummary(state.selectedId);
+      if (currentMeeting()) { await loadTranscript(state.selectedId); await loadSummary(state.selectedId); }
       refreshMeetingSearch();
     });
     if (completed === false && !ready) {

@@ -1812,6 +1812,22 @@ test('agent summary writes reload the open summary before releasing edit ownersh
 });
 
 
+test('agent transcript writes reload the open transcript so later edits start from its version', async () => {
+  const page = await openApp(transcriptDocument());
+  assert.equal(page.app.state.transcriptDraft.doc.version.revision, 0);
+  const written = { ...transcriptDocument(), version: { id: 'transcript-a', revision: 1 }, segments: [{ ...transcriptDocument().segments[0], text: '에이전트 수정' }] };
+  page.bridge.agentWriteReady = async () => { page.bridge.readTranscript = async id => id === 'a' ? structuredClone(written) : null; };
+  await page.app.onAgentWriteRequest({ requestId: '11111111-1111-4111-8111-111111111111', kind: 'meetingMutation' });
+  assert.deepEqual(page.app.state.transcriptDraft.doc.version, written.version);
+  assert.match(page.element('transcript-rows').innerHTML, /에이전트 수정/);
+  page.editTranscript('사람 수정');
+  const saving = page.app.saveTranscript();
+  await tick();
+  assert.deepEqual(page.transcriptUpdates[0].expected, written.version);
+  page.transcriptUpdates[0].pending.resolve();
+  await saving;
+});
+
 test('a fresh meeting keeps summary hidden through inspector navigation until text is available', async () => {
   const page = await openApp();
   assert.equal(page.element('summary-section').hidden, true);
