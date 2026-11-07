@@ -1136,7 +1136,6 @@ impl AiChat {
                 .core
                 .import_summary_checked(
                     meeting_id,
-                    &target.meeting_version,
                     context,
                     text,
                     context::producer(
@@ -1459,6 +1458,85 @@ mod tests {
         );
         let unrelated = chat.core.create_meeting("관련 없음", "").unwrap();
         assert!(chat.append_note(&id, &answer, &unrelated.id).is_err());
+    }
+    fn transcribed_meeting(chat: &AiChat, root: &std::path::Path) -> String {
+        let input = root.join("synthetic-input.wav");
+        let data_size = 16000u32 * 2;
+        let mut wav = Vec::from(b"RIFF".as_slice());
+        wav.extend_from_slice(&(36 + data_size).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&16000u32.to_le_bytes());
+        wav.extend_from_slice(&32000u32.to_le_bytes());
+        wav.extend_from_slice(&2u16.to_le_bytes());
+        wav.extend_from_slice(&16u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data_size.to_le_bytes());
+        wav.resize(wav.len() + data_size as usize, 0);
+        std::fs::write(&input, wav).unwrap();
+        let meeting = chat
+            .core
+            .import_audio("Synthetic meeting", &input, &input)
+            .unwrap();
+        let raw = serde_json::to_vec(&json!({
+            "model":"OpenMOSS-Team/MOSS-Transcribe-Diarize",
+            "segments":[{"start":0.0,"end":1.0,"text":"원문","speaker_id":"S1"}],
+            "hitTokenLimit":false,"hasUnparsedText":false,
+            "processedAudioFrames":16000,"inputAudioFrames":16000,"audioDurationSeconds":1.0
+        }))
+        .unwrap();
+        chat.core.commit_transcript(&meeting.id, None, raw).unwrap();
+        meeting.id
+    }
+    fn answered(chat: &AiChat, meeting: &str, text: &str) -> (String, String) {
+        let (id, _, answer) = seed(chat, &[meeting.into()], "completed");
+        let store = chat.store.lock().unwrap();
+        let mut value = store.read(&id).unwrap();
+        value.messages[0].text = text.into();
+        store.write(&value).unwrap();
+        (id, answer)
+    }
+    fn current_summary(chat: &AiChat, meeting: &str) -> String {
+        chat.core.summary(meeting).unwrap().unwrap().document.id
+    }
+    #[test]
+    fn only_source_changes_make_an_answer_stale_for_saving() {
+        let (root, chat) = service();
+        let meeting = transcribed_meeting(&chat, root.path());
+        let (first, first_answer) = answered(&chat, &meeting, "결정 [1]");
+        let (second, second_answer) = answered(&chat, &meeting, "다른 결정 [1]");
+        let (third, third_answer) = answered(&chat, &meeting, "세 번째 결정 [1]");
+        let notes = chat
+            .core
+            .list_meetings()
+            .unwrap()
+            .into_iter()
+            .find(|m| m.id == meeting)
+            .unwrap()
+            .notes;
+        chat.core
+            .update_meeting(&meeting, "바뀐 제목", &notes)
+            .unwrap();
+        let folder = chat.core.create_folder("제품").unwrap();
+        chat.core
+            .move_meetings(vec![meeting.clone()], Some(folder.id))
+            .unwrap();
+        chat.core
+            .set_meeting_date(&meeting, Some("2026-10-29".into()))
+            .unwrap();
+        let saved = chat.save_summary(&first, &first_answer, &meeting).unwrap();
+        assert_eq!(saved["summaryId"], current_summary(&chat, &meeting));
+        // Another answer saved after it replaces it; a new summary is not a source change.
+        let replaced = chat
+            .save_summary(&second, &second_answer, &meeting)
+            .unwrap();
+        assert_eq!(replaced["summaryId"], current_summary(&chat, &meeting));
+        chat.append_note(&second, &second_answer, &meeting).unwrap();
+        // The appended note changed the notes the third answer read.
+        assert!(chat.save_summary(&third, &third_answer, &meeting).is_err());
+        assert_eq!(replaced["summaryId"], current_summary(&chat, &meeting));
     }
     #[test]
     fn copying_free_chat_requires_no_meeting_and_never_mutates_the_conversation() {

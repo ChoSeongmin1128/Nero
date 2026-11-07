@@ -600,17 +600,20 @@ impl CoreHandle {
             Ok((meeting, input))
         })
     }
+    /// Saves an in-app AI answer as the meeting's current summary. Only a change to the
+    /// transcript, notes or attendees captured in `context` makes the answer stale; a new
+    /// title, folder, date or calendar link does not, and the answer replaces whichever
+    /// summary is current.
     pub fn import_summary_checked(
         &self,
         id: &str,
-        expected_version: &str,
         context: SummaryContext,
         text: String,
         producer: ExternalSummaryProducer,
     ) -> Result<Summary> {
-        let (id, expected) = (id.to_owned(), expected_version.to_owned());
+        let id = id.to_owned();
         self.call(move |engine| {
-            engine.require_meeting_version(&id, &expected, true)?;
+            let context = engine.answer_context(&id, context)?;
             engine.import_summary(&id, context, text, producer)
         })
     }
@@ -627,13 +630,19 @@ impl CoreHandle {
             addition.to_owned(),
         );
         self.call(move |engine| {
-            let current = engine
-                .require_meeting_version(&id, &expected, true)?
-                .meeting
-                .clone();
-            if let Some(context) = context {
-                engine.validate_summary_context(&id, &context)?;
-            }
+            // A captured source context decides staleness, as for a saved answer; without
+            // one, the whole meeting version does.
+            let current = match context {
+                Some(context) => {
+                    let context = engine.answer_context(&id, context)?;
+                    engine.validate_summary_context(&id, &context)?;
+                    engine.meetings[&id].meeting.clone()
+                }
+                None => engine
+                    .require_meeting_version(&id, &expected, true)?
+                    .meeting
+                    .clone(),
+            };
             let notes = if current.notes.is_empty() {
                 addition
             } else {

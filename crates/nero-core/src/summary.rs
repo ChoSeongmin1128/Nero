@@ -352,6 +352,20 @@ impl Engine {
         })
     }
 
+    // The context an in-app answer is saved with: the transcript, notes and attendees it
+    // read, over whichever summary is current now.
+    pub(crate) fn answer_context(
+        &self,
+        id: &str,
+        context: SummaryContext,
+    ) -> Result<SummaryContext> {
+        let summary_id = self.summary_input(id)?.expected_id;
+        Ok(SummaryContext {
+            summary_id,
+            ..context
+        })
+    }
+
     pub(crate) fn validate_summary_context(
         &self,
         id: &str,
