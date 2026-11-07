@@ -641,6 +641,11 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
       const id = state.conversation.id, requestId = state.conversation.activeRequestId;
       if (!requestId || state.conversation.stopping) return;
       updateConversation(id, { stopping: true, error: '' });
+      // The app only knows a request once its preparation has finished; a stop pressed
+      // before that waits for it instead of being ignored.
+      const starting = pendingStarts.get(id);
+      if (starting?.requestId === requestId) await starting.done;
+      if (conversations.get(id)?.activeRequestId !== requestId) { updateConversation(id, { stopping: false }); return; }
       try { await bridge.cancel(requestId); }
       catch (error) { updateConversation(id, { stopping: false, error: errorMessage(error, '중지를 확인하지 못했습니다. 다시 시도해 주세요.') }); }
     },

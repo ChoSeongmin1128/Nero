@@ -156,6 +156,16 @@ test('a model whose default reasoning level is unknown waits for a chosen level'
   app.flow.dispose();
 });
 
+test('a stop pressed while the question is being prepared cancels it once it starts', async () => {
+  const pending = deferred();
+  const app = await harness({ send: async request => { await pending.promise; return { conversationId: request.conversationId, questionId: 'question' }; } });
+  app.flow.edit('Question'); const sending = app.flow.send(); await tick();
+  const stopping = app.flow.stop(); await tick();
+  assert.equal(app.calls.some(call => call[0] === 'cancel'), false);
+  pending.resolve(); await sending; await stopping;
+  assert.equal(app.calls.some(call => call[0] === 'cancel'), true); app.flow.dispose();
+});
+
 test('a refused question returns to the input so it can be shortened', async () => {
   const app = await harness({ send: async () => { throw new Error('질문이 너무 깁니다.'); } });
   app.flow.edit('아주 긴 질문'); assert.equal(await app.flow.send(), false);
