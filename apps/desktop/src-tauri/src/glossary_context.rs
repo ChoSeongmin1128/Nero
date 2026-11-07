@@ -203,8 +203,10 @@ pub fn capture_context(
     choice: Option<&crate::speech_choice::SessionChoice>,
 ) -> Result<Context, String> {
     match choice {
+        // A snapshot that failed at the start (the recording went on) is taken now,
+        // on resume or after stopping, instead of failing every later transcription.
         Some(choice) if choice.glossary_snapshot_required => {
-            load_session(root, session, meeting_id)?.ok_or_else(invalid)
+            freeze_session(root, session, meeting_id)
         }
         Some(_) => Context::new(meeting_id, domain_glossary::Snapshot::default()),
         None => {
@@ -284,8 +286,9 @@ mod tests {
             .unwrap()
             .prompt()
             .is_empty());
-        assert!(capture_context(&root, session, meeting, Some(&required)).is_err());
-        let frozen = freeze_session(&root, session, meeting).unwrap();
+        // A snapshot missed at the start is taken on first use and then kept.
+        let frozen = capture_context(&root, session, meeting, Some(&required)).unwrap();
+        assert_eq!(freeze_session(&root, session, meeting).unwrap(), frozen);
         assert_eq!(
             capture_context(&root, session, meeting, Some(&required)).unwrap(),
             frozen
