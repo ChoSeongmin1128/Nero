@@ -296,7 +296,7 @@ impl Conversation {
         Ok(())
     }
 }
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationSummary {
     pub id: String,
@@ -311,10 +311,15 @@ pub struct ConversationSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deleted_at: Option<u64>,
 }
+// A conversation file's size and modification time, to reuse its list row.
+type FileStamp = (u64, std::time::SystemTime);
 pub struct Store {
     root: PathBuf,
     recovered: Mutex<HashMap<String, Conversation>>,
     legacy_imported: AtomicBool,
+    // List rows of unchanged files. The list is read after every answer; a file can
+    // be megabytes, so only new or changed conversations are parsed again.
+    rows: Mutex<HashMap<String, (FileStamp, ConversationSummary)>>,
 }
 impl Store {
     pub fn new(root: PathBuf) -> Self {
@@ -322,6 +327,7 @@ impl Store {
             root,
             recovered: Mutex::new(HashMap::new()),
             legacy_imported: AtomicBool::new(false),
+            rows: Mutex::new(HashMap::new()),
         }
     }
     fn directory(&self, create: bool) -> Result<Option<PathBuf>, String> {
@@ -365,33 +371,10 @@ impl Store {
             if path.extension().and_then(|s| s.to_str()) != Some("json") || id(value).is_err() {
                 continue;
             }
-            let conversation = self.read(value)?;
-            if conversation.deleted_at.is_some() != trash {
-                continue;
+            let row = self.row(value, &path)?;
+            if row.deleted_at.is_some() == trash {
+                result.push(row);
             }
-            let shown = conversation.path();
-            let meeting_ids = shown
-                .iter()
-                .map(|&index| &conversation.messages[index])
-                .filter(|message| message.role == "user")
-                .flat_map(|message| &message.attachments)
-                .filter(|attachment| attachment.kind == "meeting")
-                .filter_map(|attachment| attachment.meeting_id.clone())
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect();
-            result.push(ConversationSummary {
-                id: value.into(),
-                title: conversation.title,
-                created_at: conversation.created_at,
-                updated_at: conversation.updated_at,
-                provider: conversation.provider,
-                model_id: conversation.model_id,
-                message_count: shown.len(),
-                active_request_id: conversation.active_request_id,
-                meeting_ids,
-                deleted_at: conversation.deleted_at,
-            });
         }
         result.sort_by(|a, b| {
             b.updated_at
@@ -399,6 +382,49 @@ impl Store {
                 .then_with(|| b.id.cmp(&a.id))
         });
         Ok(result)
+    }
+    fn row(&self, value: &str, path: &Path) -> Result<ConversationSummary, String> {
+        let recovered = self.recovered.lock().unwrap().contains_key(value);
+        let stamp = std::fs::symlink_metadata(path)
+            .ok()
+            .filter(|meta| meta.is_file() && !recovered)
+            .and_then(|meta| Some((meta.len(), meta.modified().ok()?)));
+        if let Some((cached, row)) = self.rows.lock().unwrap().get(value) {
+            if Some(*cached) == stamp {
+                return Ok(row.clone());
+            }
+        }
+        let conversation = self.read(value)?;
+        let shown = conversation.path();
+        let meeting_ids = shown
+            .iter()
+            .map(|&index| &conversation.messages[index])
+            .filter(|message| message.role == "user")
+            .flat_map(|message| &message.attachments)
+            .filter(|attachment| attachment.kind == "meeting")
+            .filter_map(|attachment| attachment.meeting_id.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let row = ConversationSummary {
+            id: value.into(),
+            title: conversation.title,
+            created_at: conversation.created_at,
+            updated_at: conversation.updated_at,
+            provider: conversation.provider,
+            model_id: conversation.model_id,
+            message_count: shown.len(),
+            active_request_id: conversation.active_request_id,
+            meeting_ids,
+            deleted_at: conversation.deleted_at,
+        };
+        if let Some(stamp) = stamp {
+            self.rows
+                .lock()
+                .unwrap()
+                .insert(value.into(), (stamp, row.clone()));
+        }
+        Ok(row)
     }
     pub fn create(&self) -> Result<Conversation, String> {
         let value = Conversation::empty(&uuid::Uuid::new_v4().to_string());
@@ -420,6 +446,7 @@ impl Store {
         id(conversation_id)?;
         value.validate(conversation_id)?;
         let directory = self.directory(false)?.ok_or_else(invalid)?;
+        self.rows.lock().unwrap().remove(conversation_id);
         atomic_json(&directory.join(format!("{conversation_id}.json")), value)?;
         self.recovered.lock().unwrap().remove(conversation_id);
         Ok(())
@@ -459,6 +486,7 @@ impl Store {
         id(conversation_id)?;
         let directory = self.directory(false)?.ok_or_else(invalid)?;
         let path = directory.join(format!("{conversation_id}.json"));
+        self.rows.lock().unwrap().remove(conversation_id);
         if plain(&path, false)? {
             std::fs::remove_file(&path).map_err(|_| invalid())?;
         }
@@ -595,6 +623,37 @@ mod tests {
         let mut expected = vec![meeting_a, meeting_b];
         expected.sort();
         assert_eq!(store.list(false).unwrap()[0].meeting_ids, expected);
+    }
+    #[test]
+    fn listing_reuses_rows_of_unchanged_files_and_rereads_written_ones() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::new(root.path().into());
+        let mut value = store.create().unwrap();
+        let id = value.id.clone().unwrap();
+        value.title = "처음 제목".into();
+        store.write(&value).unwrap();
+        assert_eq!(store.list(false).unwrap()[0].title, "처음 제목");
+        // Same size and time but unreadable content: an unchanged file is not parsed again.
+        let path = root
+            .path()
+            .join("ai-conversations")
+            .join(format!("{id}.json"));
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let length = std::fs::metadata(&path).unwrap().len() as usize;
+        std::fs::write(&path, vec![b' '; length]).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+        assert_eq!(store.list(false).unwrap()[0].title, "처음 제목");
+        value.title = "바뀐 제목".into();
+        store.write(&value).unwrap();
+        assert_eq!(store.list(false).unwrap()[0].title, "바뀐 제목");
+        store.trash(&id).unwrap();
+        assert!(store.list(false).unwrap().is_empty());
+        assert_eq!(store.list(true).unwrap()[0].title, "바뀐 제목");
     }
     #[test]
     fn deleted_conversation_is_not_recreated_by_late_write() {

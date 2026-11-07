@@ -6,7 +6,6 @@ pub use skills::catalog as composer_catalog;
 mod store;
 use crate::ai_accounts::{AiAccounts, Provider};
 use crate::notion_context::NotionContextService;
-#[cfg(test)]
 use context::Binding;
 pub use context::SourceOrigin;
 use nero_core::CoreHandle;
@@ -154,6 +153,20 @@ fn question_context(
         .clone()
         .unwrap_or_else(|| store::ROOT.into());
     Ok((parent, shown[..position].to_vec()))
+}
+// Attached text identical to an earlier answer's (the same input hash) is kept once per
+// conversation; a later answer's binding refers to it by `input_sha256`.
+fn share_input_snapshot(conversation: &Conversation, binding: &mut Binding) {
+    if conversation
+        .messages
+        .iter()
+        .filter_map(|message| message.binding.as_ref())
+        .any(|earlier| {
+            earlier.input_sha256 == binding.input_sha256 && !earlier.input_snapshot.is_null()
+        })
+    {
+        binding.input_snapshot = Value::Null;
+    }
 }
 fn request_fingerprint(request: &SendRequest) -> Result<String, String> {
     let bytes = serde_json::to_vec(request).map_err(|_| "대화 요청을 확인하지 못했습니다.")?;
@@ -785,6 +798,8 @@ impl AiChat {
             summary_receipts: Default::default(),
             note_receipts: Default::default(),
         });
+        let mut stored = prepared.binding.clone();
+        share_input_snapshot(&conversation, &mut stored);
         conversation.messages.push(Message {
             parent_id: Some(question_id.clone()),
             effort: request.effort.clone(),
@@ -803,7 +818,7 @@ impl AiChat {
             template: prepared.binding.template_selection.clone(),
             skill_id: request.skill_id.clone(),
             summary_target_id: request.summary_target_id.clone(),
-            binding: Some(prepared.binding.clone()),
+            binding: Some(stored),
             saved_summary_id: None,
             note_saved: false,
             attachments: prepared.binding.attachments(),
@@ -1564,6 +1579,28 @@ mod tests {
             chat.core.summary(&meeting).unwrap().unwrap().document.text,
             "결정 [1]"
         );
+    }
+    #[test]
+    fn identical_attached_text_is_stored_once_per_conversation() {
+        let (_root, chat) = service();
+        let meeting = chat.core.create_meeting("첨부 회의", "원래 메모").unwrap();
+        let (id, _, _) = seed(&chat, &[meeting.id.clone()], "completed");
+        let conversation = chat.read(&id).unwrap();
+        let mut same =
+            context::prepare(&chat.core, &chat.root, &[meeting.id.clone()], vec![], None)
+                .unwrap()
+                .binding;
+        share_input_snapshot(&conversation, &mut same);
+        assert!(same.input_snapshot.is_null());
+        assert!(!same.attachments().is_empty());
+        chat.core
+            .update_meeting(&meeting.id, "첨부 회의", "바뀐 메모")
+            .unwrap();
+        let mut changed = context::prepare(&chat.core, &chat.root, &[meeting.id], vec![], None)
+            .unwrap()
+            .binding;
+        share_input_snapshot(&conversation, &mut changed);
+        assert_eq!(changed.input_snapshot["meetings"][0]["notes"], "바뀐 메모");
     }
     #[test]
     fn copying_free_chat_requires_no_meeting_and_never_mutates_the_conversation() {
