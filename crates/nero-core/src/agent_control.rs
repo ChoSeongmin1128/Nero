@@ -395,8 +395,10 @@ fn valid_engine_id(engine: &str) -> bool {
     (1..=64).contains(&engine.len()) && engine.bytes().all(|byte| byte.is_ascii_alphanumeric())
 }
 
+// Read by CLIs of other versions: a field added later must not make an older CLI
+// report a running app as unreachable.
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct AppMetadata {
     pub version: String,
     pub build: String,
@@ -771,7 +773,7 @@ pub(crate) fn apply(engine: &mut Engine, mutation: Mutation) -> Result<Value> {
 }
 
 #[derive(Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 struct Descriptor {
     protocol: u32,
     address: SocketAddrV4,
@@ -820,8 +822,13 @@ fn read_descriptor(root: &Path) -> std::result::Result<Descriptor, ControlError>
     }
     let value: Descriptor =
         serde_json::from_slice(&bytes).map_err(|_| ControlError::unavailable())?;
-    if value.protocol != PROTOCOL
-        || *value.address.ip() != Ipv4Addr::LOCALHOST
+    if value.protocol != PROTOCOL {
+        return Err(ControlError::new(
+            "protocol_mismatch",
+            "실행 중인 Nero와 CLI의 연결 방식이 다릅니다. Nero 앱과 CLI를 최신 버전으로 업데이트해 주세요.",
+        ));
+    }
+    if *value.address.ip() != Ipv4Addr::LOCALHOST
         || value.address.port() == 0
         || value.secret.len() != 64
         || !value.secret.bytes().all(|byte| byte.is_ascii_hexdigit())
