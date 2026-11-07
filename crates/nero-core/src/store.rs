@@ -443,9 +443,7 @@ impl Store {
             .join(&stored.meeting.id)
             .join("meeting.json");
         let mut base = stored.clone();
-        base.meeting.attendees.clear();
-        base.meeting.folder_id = None;
-        base.meeting.deleted_at = None;
+        Library::unproject(&mut base.meeting);
         write_json(&self.root, &relative, &base)
     }
 
@@ -456,9 +454,7 @@ impl Store {
             .join("meeting.json");
         let saved: StoredMeeting = read_json(&checked_path(&self.root, &relative)?)?;
         let mut expected = stored.clone();
-        expected.meeting.attendees.clear();
-        expected.meeting.folder_id = None;
-        expected.meeting.deleted_at = None;
+        Library::unproject(&mut expected.meeting);
         Ok(saved == expected)
     }
 

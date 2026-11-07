@@ -123,6 +123,21 @@ impl Library {
         meeting.deleted_at = placement.and_then(|entry| entry.deleted_at);
     }
 
+    // The fields `project` fills belong to this document, not to meeting.json.
+    pub fn unproject(meeting: &mut Meeting) {
+        meeting.attendees.clear();
+        meeting.folder_id = None;
+        meeting.deleted_at = None;
+    }
+
+    // A purged meeting keeps nothing here except its pending purge.
+    pub fn forget_meeting(&mut self, id: &str) {
+        self.placements.remove(id);
+        self.meeting_attendees.remove(id);
+        self.google_identity.meetings.remove(id);
+        self.pending_purges.insert(id.to_owned());
+    }
+
     pub fn folders(&self) -> Vec<Folder> {
         let mut folders: Vec<_> = self.folders.values().cloned().collect();
         folders.sort_by(|a, b| {

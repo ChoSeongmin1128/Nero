@@ -464,10 +464,7 @@ impl Engine {
         self.store.validate_purge(&ids)?;
         let mut library = self.library.clone();
         for id in &ids {
-            library.placements.remove(id);
-            library.meeting_attendees.remove(id);
-            library.google_identity.meetings.remove(id);
-            library.pending_purges.insert(id.clone());
+            library.forget_meeting(id);
         }
         self.commit_library(library)?;
         self.store.cleanup_purges(&self.library).map_err(|_| CoreError::Storage(
