@@ -2347,6 +2347,39 @@ mod tests {
     }
 
     #[test]
+    fn a_crash_after_stopping_recovers_a_completed_recording() {
+        let (_temporary, mut engine) = engine();
+        let meeting = engine.create_meeting("회의".into(), String::new()).unwrap();
+        let mut manifest = Manifest::new(
+            &meeting.id,
+            "synthetic",
+            "시험 입력",
+            1000,
+            1,
+            Encoding::F32,
+        );
+        let mut raw = engine.store.prepare_capture(&manifest).unwrap();
+        raw.write_all(&[0.25_f32.to_le_bytes(); 100].concat())
+            .unwrap();
+        raw.sync_all().unwrap();
+        drop(raw);
+        manifest.phase = CapturePhase::Completed;
+        manifest.saved_frames = 100;
+        store::write_manifest(&engine.store.root, &manifest).unwrap();
+        let stored = engine.meetings.get_mut(&meeting.id).unwrap();
+        stored.capture_id = Some(manifest.session_id.clone());
+        stored.meeting.status = MeetingStatus::Recording;
+        engine.store.save(stored).unwrap();
+        let root = engine.store.root.clone();
+        drop(engine);
+        let reopened = Engine::open(root).unwrap();
+        let recovered = &reopened.meetings[&meeting.id].meeting;
+        assert_eq!(recovered.status, MeetingStatus::Completed);
+        assert!(recovered.error.is_none());
+        assert!(reopened.audio_path(&meeting.id).is_ok());
+    }
+
+    #[test]
     fn a_completed_meeting_gets_its_missing_playback_file_back() {
         let (_temporary, engine, id, _source) = crate::transcript::tests::setup();
         let path = engine.audio_path(&id).unwrap();

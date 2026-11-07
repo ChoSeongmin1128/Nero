@@ -626,6 +626,19 @@ impl Store {
                 "회의와 녹음 정보가 일치하지 않습니다.".into(),
             ));
         }
+        // The person stopped a complete capture, but the playback file or the meeting
+        // save was cut off: it is a completed recording, not an interrupted one.
+        if manifest.phase == CapturePhase::Completed
+            && matches!(
+                stored.meeting.status,
+                MeetingStatus::Recording | MeetingStatus::Paused
+            )
+        {
+            hydrate_capture_metadata(&mut stored.meeting, &manifest);
+            stored.meeting.status = MeetingStatus::Completed;
+            stored.meeting.error = None;
+            return Ok(Recovered::RewritePlayback(manifest));
+        }
         let unfinished = matches!(
             manifest.phase,
             CapturePhase::Prepared | CapturePhase::Recording | CapturePhase::Paused

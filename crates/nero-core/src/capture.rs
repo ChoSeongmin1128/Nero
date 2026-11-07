@@ -1079,6 +1079,11 @@ fn writer_loop(
         }
         None
     } else {
+        // The PCM is synced; recording that the person stopped a complete capture
+        // lets a crash while the playback file is written recover it as completed.
+        if manifest.phase == CapturePhase::Completed {
+            let _ = store::write_manifest(&root, &manifest);
+        }
         match store::finalize_audio(&root, &mut manifest) {
             Ok(audio) => audio,
             Err(error) => {
