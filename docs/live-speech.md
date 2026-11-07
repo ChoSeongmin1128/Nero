@@ -87,8 +87,11 @@ the input PCM SHA-256. Core validation still checks the native final duration an
 word ranges. A valid final ASR artifact can survive a subsequent child failure;
 ASR completion does not claim successful speaker analysis.
 
-Whisper uses `whisper-context-windows-v1`, `native-token-span-terminal-context-v2` and
-`whisper-cli-windows-exit0-v1` (windows of audio on either platform). The envelope
+Whisper uses `whisper-context-windows-v2`, `native-token-span-terminal-context-v2` and
+`whisper-cli-windows-exit0-v1` (windows of audio on either platform). v2 keeps the
+centre ownership of v1 and also drops a word that runs backward from the word kept
+before it, or that overlaps the last word an earlier window kept: the same speech
+recognized by both windows. Artifacts written under v1 remain valid. The envelope
 binds the full PCM hash/frame count, pinned model/runtime/target, window input and
 owned ranges, native-output hash, exit status, word ranges and backend evidence.
 Windows explicitly disables GPU. macOS requires positive Metal initialization;

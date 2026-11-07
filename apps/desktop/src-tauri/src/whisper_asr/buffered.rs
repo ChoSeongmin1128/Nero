@@ -169,12 +169,21 @@ impl Buffered {
         let begin = self.words.len();
         let mut terminal_contexts = Vec::new();
         for word in projected {
-            let center = ((word["start"].as_f64().ok_or_else(failure)? * RATE as f64).round()
-                + (word["end"].as_f64().ok_or_else(failure)? * RATE as f64).round())
-                * 0.5;
+            let start = word["start"].as_f64().ok_or_else(failure)?;
+            let end = word["end"].as_f64().ok_or_else(failure)?;
+            let center = ((start * RATE as f64).round() + (end * RATE as f64).round()) * 0.5;
+            let previous = match self.words.last() {
+                Some(last) => Some((
+                    last["start"].as_f64().ok_or_else(failure)?,
+                    last["end"].as_f64().ok_or_else(failure)?,
+                    self.words.len() == begin,
+                )),
+                None => None,
+            };
             let retained = center >= self.owned as f64
                 && (center < owned_end as f64
-                    || (owned_end == self.received && center == owned_end as f64));
+                    || (owned_end == self.received && center == owned_end as f64))
+                && !repeats_previous(previous, start, end);
             if let Some(native_end) = word.get("nativeSegmentEndFrame") {
                 terminal_contexts.push(json!({"nativeSegmentEndFrame":native_end,
                     "sourceContextStartFrame":(word["start"].as_f64().ok_or_else(failure)?*RATE as f64).round() as u64,
@@ -237,10 +246,37 @@ impl Buffered {
         Ok(
             json!({"schemaVersion":if cfg!(windows){2}else{1},"model":model["repository"],"modelRevision":model["revision"],"modelSha256":self.model_sha,
             "runtime":runtime["identity"],"target":if cfg!(windows){"windows-x64"}else{"macos-arm64"},
-            "processingPolicy":"whisper-context-windows-v1","completionEvidence":"whisper-cli-windows-exit0-v1",
+            "processingPolicy":nero_core::WHISPER_PROCESSING_POLICY,"completionEvidence":"whisper-cli-windows-exit0-v1",
             "tokenTimestampPolicy":"native-token-span-terminal-context-v2","completed":true,"inputAudioFrames":frames,
             "audioSampleRate":16000,"audioDurationSeconds":frames as f64/RATE as f64,"inputPcmSha256":pcm_sha,
             "windows":self.windows,"words":self.words}),
         )
+    }
+}
+
+// A word that runs backward from the word kept before it, or that overlaps the last
+// word an earlier window kept, is the same speech recognized twice at the boundary.
+// `previous` is (start, end, kept by an earlier window).
+fn repeats_previous(previous: Option<(f64, f64, bool)>, start: f64, end: f64) -> bool {
+    previous.is_some_and(|(previous_start, previous_end, earlier_window)| {
+        start < previous_start || end < previous_end || (earlier_window && start < previous_end)
+    })
+}
+
+#[cfg(test)]
+mod boundary_tests {
+    use super::repeats_previous;
+
+    #[test]
+    fn only_boundary_repeats_and_backward_words_are_dropped() {
+        assert!(!repeats_previous(None, 1.0, 1.2));
+        // Next word in the same window, even touching or slightly overlapping.
+        assert!(!repeats_previous(Some((1.0, 1.4, false)), 1.3, 1.6));
+        // The first word of a new window overlapping the last kept word.
+        assert!(repeats_previous(Some((10.0, 10.4, true)), 10.3, 10.9));
+        assert!(!repeats_previous(Some((10.0, 10.4, true)), 10.4, 10.9));
+        // Running backward never reaches the transcript.
+        assert!(repeats_previous(Some((10.0, 10.4, true)), 9.9, 11.0));
+        assert!(repeats_previous(Some((10.0, 10.4, false)), 10.1, 10.3));
     }
 }

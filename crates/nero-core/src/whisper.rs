@@ -5,7 +5,10 @@ use serde::Deserialize;
 
 pub(crate) const MODEL: &str = "ggerganov/whisper.cpp";
 pub(crate) const PROJECTOR_VERSION: &str = "whisper-native-token-sentences-v1";
-pub(crate) const POLICY: &str = "whisper-context-windows-v1";
+// v2 also drops a word that overlaps or runs backward from the word kept before it
+// at a window boundary (the same spoken word recognized by both windows).
+pub const POLICY: &str = "whisper-context-windows-v2";
+const POLICY_V1: &str = "whisper-context-windows-v1";
 const COMPLETION: &str = "whisper-cli-windows-exit0-v1";
 const SAMPLE_RATE: u64 = 16000;
 
@@ -100,7 +103,7 @@ pub(crate) fn decode_asr(raw: &[u8], duration: f64, session: &str, id: &str) -> 
         || !model_valid
         || Some(output.runtime.as_str()) != runtime["identity"].as_str()
         || !matches!(output.target.as_str(), "windows-x64" | "macos-arm64")
-        || output.processing_policy != POLICY
+        || !matches!(output.processing_policy.as_str(), POLICY | POLICY_V1)
         || output.completion_evidence != COMPLETION
         || !matches!(
             output.token_timestamp_policy.as_str(),
@@ -172,6 +175,13 @@ pub(crate) fn decode_asr(raw: &[u8], duration: f64, session: &str, id: &str) -> 
             || !execution_valid
             || window.word_start != next_word
             || stop > output.words.len()
+        {
+            return Err(invalid());
+        }
+        if output.processing_policy == POLICY
+            && next_word > 0
+            && stop > next_word
+            && output.words[next_word].start < output.words[next_word - 1].end
         {
             return Err(invalid());
         }
@@ -295,6 +305,28 @@ pub(crate) mod tests {
         metal["windows"][0]["actualBackend"] = "metal".into();
         metal["windows"][0]["backendEvidence"] = "metal-backend-initialized".into();
         assert!(decode(&metal).is_ok());
+    }
+
+    #[test]
+    fn v2_refuses_a_boundary_repeat_that_v1_artifacts_may_keep() {
+        let mut v = value();
+        v["windows"] = json!([
+            {"index":0,"inputStartFrame":0,"inputEndFrame":32000,"ownedStartFrame":0,"ownedEndFrame":16000,
+             "inputPcmSha256":"a".repeat(64),"nativeResultSha256":"b".repeat(64),"nativeExitCode":0,
+             "actualBackend":"cpu","backendEvidence":"explicit-no-gpu","wordStart":0,"wordCount":1},
+            {"index":1,"inputStartFrame":0,"inputEndFrame":32000,"ownedStartFrame":16000,"ownedEndFrame":32000,
+             "inputPcmSha256":"a".repeat(64),"nativeResultSha256":"b".repeat(64),"nativeExitCode":0,
+             "actualBackend":"cpu","backendEvidence":"explicit-no-gpu","wordStart":1,"wordCount":1}]);
+        v["words"] = json!([
+            {"word":"예시","start":0.7,"end":1.05,"confidence":null},
+            {"word":"문장.","start":1.0,"end":1.5,"confidence":null}]);
+        let decode = |v: &Value| decode_asr(&serde_json::to_vec(v).unwrap(), 2.0, "session", "id");
+        assert!(decode(&v).is_err());
+        v["processingPolicy"] = POLICY_V1.into();
+        assert!(decode(&v).is_ok());
+        v["processingPolicy"] = POLICY.into();
+        v["words"][1]["start"] = 1.05.into();
+        assert!(decode(&v).is_ok());
     }
 
     fn one_second_value() -> Value {

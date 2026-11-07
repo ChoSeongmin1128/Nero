@@ -40,6 +40,7 @@ pub use transcript::{
     SpeakerNameOrigin, Transcript, TranscriptHistory, TranscriptHistoryEntry, TranscriptSegment,
     TranscriptSource, TranscriptSpeaker, TranscriptUpgradeReport, TranscriptVersion,
 };
+pub use whisper::POLICY as WHISPER_PROCESSING_POLICY;
 
 use engine::Engine;
 use serde::{Deserialize, Serialize};
