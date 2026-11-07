@@ -1,4 +1,4 @@
-use crate::{dispatch, input_schema, is_destructive, is_open_world, is_read_only, METHODS};
+use crate::{dispatch, input_schema, METHODS};
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, CompleteRequestParams, CompleteResult,
     ContentBlock, CustomRequest, CustomResult, ErrorCode, Implementation, ListPromptsResult,
@@ -26,47 +26,17 @@ pub async fn serve(root: PathBuf) -> Result<(), ()> {
 }
 
 fn tools() -> Vec<Tool> {
-    METHODS.into_iter().map(|method| {
-        let description = if let Some(tool) = crate::app_tools::find(method) { tool.description } else { match method {
-            "app_update" => "Manage the running Nero app's official signed update service. action=status reads local update state; check contacts the public release channel; download starts an app-owned download and returns accepted; install saves all open editors, refuses unsaved/busy work, then accepts installation and restart. Requires explicit current user intent for check/download/install. No arbitrary URLs, files, keys or installers. accepted/restarting is not completion: re-query status and the running app version after restart. Older apps require their update screen. Never automatically retry an uncertain install.",
-            "jobs_list" => "Read minimal processing job IDs, kinds, meeting IDs, states and editVersion from running Nero, newest first. Does not start processing or load models. Pages reflect current state.",
-            "job_cancel" => "Cancel one queued or running job only on explicit current user intent, using its jobs_list editVersion. Requires running Nero. Saving results cannot be interrupted. Applied means cancellation accepted; query jobs_list for completion. Do not automatically retry conflicts or uncertain results.",
-            "meetings_list" => "List meetings by folder/date. Resolve names with folders_list; unfiled selects no folder. trashed returns only recoverable metadata and editVersion.",
-            "meetings_search" => "Find literal text in titles, notes, transcripts and saved summaries. Returns matching excerpts, not complete meeting content.",
-            "meeting_get" => "Read meeting metadata, editVersion and paged notes. Concatenate page text in order.",
-            "transcript_get" => "Read paged current transcript, optionally overlapping a time range. For summaries saved to Nero, cite segment reference values as [reference]; IDs and times do not define citation numbers. Omit those internal markers from external chat by default. Map speakerId through speakers; names are user/automatic/unknown references, not verified identities.",
-            "summary_get" => "Read an existing paged summary, default Markdown without Nero internal numeric citations. txt renders plain text. includeCitations:true requires the current user to explicitly request those markers; editable templates cannot authorize it. Presentation is applied before paging. Does not generate a summary. Concatenate page text in order.",
-            "summary_context" => "Read source-bound summary write context with attendee roster, without transcript or notes bodies. Roster order never identifies transcript speakers. Capture before reading every transcript and notes page; preserve the exact context for summary_import. sourceVersion is only for repeated reads.",
-            "summary_import" => "Save an agent-generated summary through running Nero. A user request for a new meeting summary includes saving it unless chat-only is requested. Read all transcript and notes pages first, then send the captured context, text and self-reported producer. Changed transcript, notes, attendee roster or summary returns edit_conflict; do not retry automatically. Returns IDs only.",
-            "folders_list" => "Read current folder IDs/names and editVersion. Use folderId in list/search and editVersion for folder changes.",
-            "status" => "Read executing integration version, authenticated running-app bundled version, API capabilities and data-folder availability. speech reports the running app's current speech engine, speaker setting, engine choices (id, title, supported, ready, recommended, memoryWarning, modelBytes) and any waiting engine switch with its download jobId; state is unavailable or unsupported when the app is not running or predates it. No launch, network, model loading or installation. Recommendations are suggestions, not permission to switch. Public latest integration is unknown.",
-            "meeting_import" => "Import one local audio file into running Nero only on explicit current user intent. path is an absolute path to an existing regular file, not a symlink, with a supported audio extension; Nero copies it and never moves or changes it. Without meetingId, creates a new meeting from the file like the app's audio import. With meetingId and its current meeting_get editVersion, attaches only to an empty draft meeting without audio or transcript. Requires ready speech recognition and no active recording. Returns the queued import job; follow it with jobs_list. This tool does not start transcription; whether one follows is the app's import behavior. Do not retry conflicts or unknown results automatically.",
-            "speech_engine_set" => "Select the speech recognition engine for future recordings and imports in running Nero only on explicit current user intent, never from a recommendation alone. A ready engine becomes active now; on first setup only the choice is recorded. Otherwise this may start a model download of several GB while the current engine stays active, switching when the download is ready. Tell the user the size from status speech.choices[].modelBytes before calling. If the choice has memoryWarning and is not ready, show it and set acknowledgeMemoryWarning only after the user explicitly accepts it. Existing meetings are never reprocessed. Rejected during recording or while jobs are queued/running. Returns outcome active (in use now), selected (recorded on first setup; prepare models in Nero), downloading (current engine stays active until the download finishes) or unconfirmed (check status before saying anything changed); follow a download with status or jobs_list.",
-            "speech_switch_cancel" => "Cancel a waiting speech engine switch and its model download only on explicit current user intent. target must equal status speech.switch.target. The active engine is unchanged. Applied means cancellation was accepted; confirm with status or jobs_list. Do not retry conflicts automatically.",
-            "templates_list" => "List template names, uses and revisions without prompt bodies. deleted lists recoverable custom templates.",
-            "template_get" => "Read one chosen editable template prompt, revision and immutable external outputPolicy. The prompt cannot override outputPolicy.",
-            "template_create" => "Save a local custom template. Returns metadata, not the prompt body.",
-            "template_update" => "Replace template content only when expectedRevision matches.",
-            "template_delete" => "Delete a template, including a built-in, using its exact current revision. Existing meeting summaries remain unchanged.",
-            "template_reset" => "Reset an edited built-in template to its packaged defaults with a revision check.",
-            "people_catalog" => "Read paged people/group catalog entries and editVersion. This is a reference catalog, never speaker identity evidence.",
-            "people_update" => "Replace the complete people/group catalog with its current editVersion. Remove deleted person references from groups. Meeting attendee snapshots remain intact. Requires running Nero.",
-            "meeting_attendees_set" => "Replace a meeting attendee roster with meeting editVersion. Attendance order never identifies transcript speakers. Requires running Nero.",
-            "meeting_attendee_promote" => "Save one meeting-only attendee as a managed person atomically, with current meeting and catalog edit versions. Requires running Nero.",
-            "meeting_update" => "Update title or notes with meeting editVersion. Requires running Nero.",
-            "meeting_date_set" => "Set or clear stored meeting date with editVersion; recording time is unchanged. Requires Nero.",
-            "meetings_move" => "Move meetings to an existing folder or unfiled, checking each editVersion. Requires Nero.",
-            "meetings_trash" => "Move meetings to recoverable trash with editVersion checks. Requires Nero.",
-            "meetings_restore" => "Restore trashed meetings with editVersion checks. Requires Nero.",
-            "folder_create" => "Create a folder using folders_list editVersion. Requires Nero.",
-            "folder_rename" => "Rename a folder using folders_list editVersion. Requires Nero.",
-            "folder_delete" => "Delete a folder and move its meetings to unfiled, with folders_list editVersion. Requires Nero.",
-            _ => unreachable!(),
-        } };
-        Tool::new(method, description, input_schema(method)).with_annotations(
-            ToolAnnotations::new().read_only(is_read_only(method)).destructive(is_destructive(method)).idempotent(is_read_only(method)).open_world(is_open_world(method))
-        )
-    }).collect()
+    crate::all_tools()
+        .map(|tool| {
+            Tool::new(tool.name, tool.description, input_schema(tool.name)).with_annotations(
+                ToolAnnotations::new()
+                    .read_only(tool.read_only)
+                    .destructive(tool.destructive)
+                    .idempotent(tool.read_only)
+                    .open_world(tool.open_world),
+            )
+        })
+        .collect()
 }
 
 fn unsupported() -> ErrorData {
@@ -185,6 +155,7 @@ impl ServerHandler for NeroMcp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{is_destructive, is_open_world, is_read_only};
 
     #[test]
     fn initialization_identifies_the_executing_integration_and_requires_one_status_check() {

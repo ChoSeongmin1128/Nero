@@ -39,8 +39,10 @@ for (const [target, platform, binary] of [
     assert.deepEqual(claude.server.mcp_config.env, {});
     assert.deepEqual(claude.compatibility, { platforms: [platform] });
     assert.equal(claude.user_config, undefined);
+    // METHODS is the CLI's own tool table followed by the app tool table.
     const cli = await readFile(join(root, 'crates/nero-cli/src/lib.rs'), 'utf8');
-    const methods = [...cli.match(/pub const METHODS[^=]*=\s*\[([^\]]+)\]/s)[1].matchAll(/"([a-z_]+)"/g)].map(match => match[1]);
+    const appTools = await readFile(join(root, 'crates/nero-cli/src/app_tools.rs'), 'utf8');
+    const methods = [...cli.matchAll(/ToolInfo \{ name: "([a-z_]+)"/g), ...appTools.matchAll(/AppTool \{ name: "([a-z_]+)"/g)].map(match => match[1]);
     assert.deepEqual(claude.tools.map(tool => tool.name), methods);
     const portable = await json(join(destination, 'codex-plugin.json'));
     assert.equal(portable.$schema, 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json');

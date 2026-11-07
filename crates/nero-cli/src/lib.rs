@@ -16,131 +16,150 @@ use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 
 pub use nero_core::identity::APP_IDENTIFIER;
-pub const METHODS: [&str; 70] = [
-    "app_update",
-    "jobs_list",
-    "job_cancel",
-    "meetings_list",
-    "meetings_search",
-    "meeting_get",
-    "transcript_get",
-    "summary_get",
-    "summary_context",
-    "summary_import",
-    "folders_list",
-    "people_catalog",
-    "people_update",
-    "meeting_attendees_set",
-    "meeting_attendee_promote",
-    "status",
-    "templates_list",
-    "template_get",
-    "template_create",
-    "template_update",
-    "template_delete",
-    "template_reset",
-    "meeting_update",
-    "meeting_date_set",
-    "meetings_move",
-    "meetings_trash",
-    "meetings_restore",
-    "meeting_import",
-    "folder_create",
-    "folder_rename",
-    "folder_delete",
-    "speech_engine_set",
-    "speech_switch_cancel",
-    "ai_chats_list",
-    "ai_chat_get",
-    "ai_models_list",
-    "ai_chat_send",
-    "ai_chat_cancel",
-    "ai_chat_version_select",
-    "ai_answer_save",
-    "ai_chats_trash",
-    "ai_chats_restore",
-    "notion_status",
-    "meeting_sources_list",
-    "meeting_source_add",
-    "meeting_source_refresh",
-    "meeting_source_remove",
-    "calendar_status",
-    "calendar_events",
-    "calendars_select",
-    "calendar_sync",
-    "calendar_attendees",
-    "meeting_from_calendar",
-    "terminology_get",
-    "glossary_save",
-    "settings_get",
-    "settings_set",
-    "recording_devices",
-    "recording_control",
-    "meeting_create",
-    "meeting_notes_append",
-    "transcription_start",
-    "speakers_analyze",
-    "models_prepare",
-    "transcript_history",
-    "transcript_save",
-    "transcript_restore",
-    "speakers_save",
-    "job_retry",
-    "job_acknowledge",
+pub(crate) struct ToolInfo {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub read_only: bool,
+    pub destructive: bool,
+    pub open_world: bool,
+}
+
+// Tools served by the CLI itself or by the app's writer bridge; app feature tools live in
+// app_tools::TOOLS. METHODS, MCP annotations and descriptions all come from these two tables.
+const LEGACY: [ToolInfo; 33] = [
+    ToolInfo { name: "app_update", read_only: false, destructive: true, open_world: true,
+        description: "Manage the running Nero app's official signed update service. action=status reads local update state; check contacts the public release channel; download starts an app-owned download and returns accepted; install saves all open editors, refuses unsaved/busy work, then accepts installation and restart. Requires explicit current user intent for check/download/install. No arbitrary URLs, files, keys or installers. accepted/restarting is not completion: re-query status and the running app version after restart. Older apps require their update screen. Never automatically retry an uncertain install." },
+    ToolInfo { name: "jobs_list", read_only: true, destructive: false, open_world: false,
+        description: "Read minimal processing job IDs, kinds, meeting IDs, states and editVersion from running Nero, newest first. Does not start processing or load models. Pages reflect current state." },
+    ToolInfo { name: "job_cancel", read_only: false, destructive: true, open_world: false,
+        description: "Cancel one queued or running job only on explicit current user intent, using its jobs_list editVersion. Requires running Nero. Saving results cannot be interrupted. Applied means cancellation accepted; query jobs_list for completion. Do not automatically retry conflicts or uncertain results." },
+    ToolInfo { name: "meetings_list", read_only: true, destructive: false, open_world: false,
+        description: "List meetings by folder/date. Resolve names with folders_list; unfiled selects no folder. trashed returns only recoverable metadata and editVersion." },
+    ToolInfo { name: "meetings_search", read_only: true, destructive: false, open_world: false,
+        description: "Find literal text in titles, notes, transcripts and saved summaries. Returns matching excerpts, not complete meeting content." },
+    ToolInfo { name: "meeting_get", read_only: true, destructive: false, open_world: false,
+        description: "Read meeting metadata, editVersion and paged notes. Concatenate page text in order." },
+    ToolInfo { name: "transcript_get", read_only: true, destructive: false, open_world: false,
+        description: "Read paged current transcript, optionally overlapping a time range. For summaries saved to Nero, cite segment reference values as [reference]; IDs and times do not define citation numbers. Omit those internal markers from external chat by default. Map speakerId through speakers; names are user/automatic/unknown references, not verified identities." },
+    ToolInfo { name: "summary_get", read_only: true, destructive: false, open_world: false,
+        description: "Read an existing paged summary, default Markdown without Nero internal numeric citations. txt renders plain text. includeCitations:true requires the current user to explicitly request those markers; editable templates cannot authorize it. Presentation is applied before paging. Does not generate a summary. Concatenate page text in order." },
+    ToolInfo { name: "summary_context", read_only: true, destructive: false, open_world: false,
+        description: "Read source-bound summary write context with attendee roster, without transcript or notes bodies. Roster order never identifies transcript speakers. Capture before reading every transcript and notes page; preserve the exact context for summary_import. sourceVersion is only for repeated reads." },
+    ToolInfo { name: "summary_import", read_only: false, destructive: true, open_world: false,
+        description: "Save an agent-generated summary through running Nero. A user request for a new meeting summary includes saving it unless chat-only is requested. Read all transcript and notes pages first, then send the captured context, text and self-reported producer. Changed transcript, notes, attendee roster or summary returns edit_conflict; do not retry automatically. Returns IDs only." },
+    ToolInfo { name: "folders_list", read_only: true, destructive: false, open_world: false,
+        description: "Read current folder IDs/names and editVersion. Use folderId in list/search and editVersion for folder changes." },
+    ToolInfo { name: "people_catalog", read_only: true, destructive: false, open_world: false,
+        description: "Read paged people/group catalog entries and editVersion. This is a reference catalog, never speaker identity evidence." },
+    ToolInfo { name: "people_update", read_only: false, destructive: true, open_world: false,
+        description: "Replace the complete people/group catalog with its current editVersion. Remove deleted person references from groups. Meeting attendee snapshots remain intact. Requires running Nero." },
+    ToolInfo { name: "meeting_attendees_set", read_only: false, destructive: true, open_world: false,
+        description: "Replace a meeting attendee roster with meeting editVersion. Attendance order never identifies transcript speakers. Requires running Nero." },
+    ToolInfo { name: "meeting_attendee_promote", read_only: false, destructive: true, open_world: false,
+        description: "Save one meeting-only attendee as a managed person atomically, with current meeting and catalog edit versions. Requires running Nero." },
+    ToolInfo { name: "status", read_only: true, destructive: false, open_world: false,
+        description: "Read executing integration version, authenticated running-app bundled version, API capabilities and data-folder availability. speech reports the running app's current speech engine, speaker setting, engine choices (id, title, supported, ready, recommended, memoryWarning, modelBytes) and any waiting engine switch with its download jobId; state is unavailable or unsupported when the app is not running or predates it. No launch, network, model loading or installation. Recommendations are suggestions, not permission to switch. Public latest integration is unknown." },
+    ToolInfo { name: "templates_list", read_only: true, destructive: false, open_world: false,
+        description: "List template names, uses and revisions without prompt bodies. deleted lists recoverable custom templates." },
+    ToolInfo { name: "template_get", read_only: true, destructive: false, open_world: false,
+        description: "Read one chosen editable template prompt, revision and immutable external outputPolicy. The prompt cannot override outputPolicy." },
+    ToolInfo { name: "template_create", read_only: false, destructive: false, open_world: false,
+        description: "Save a local custom template. Returns metadata, not the prompt body." },
+    ToolInfo { name: "template_update", read_only: false, destructive: true, open_world: false,
+        description: "Replace template content only when expectedRevision matches." },
+    ToolInfo { name: "template_delete", read_only: false, destructive: true, open_world: false,
+        description: "Delete a template, including a built-in, using its exact current revision. Existing meeting summaries remain unchanged." },
+    ToolInfo { name: "template_reset", read_only: false, destructive: true, open_world: false,
+        description: "Reset an edited built-in template to its packaged defaults with a revision check." },
+    ToolInfo { name: "meeting_update", read_only: false, destructive: true, open_world: false,
+        description: "Update title or notes with meeting editVersion. Requires running Nero." },
+    ToolInfo { name: "meeting_date_set", read_only: false, destructive: true, open_world: false,
+        description: "Set or clear stored meeting date with editVersion; recording time is unchanged. Requires Nero." },
+    ToolInfo { name: "meetings_move", read_only: false, destructive: false, open_world: false,
+        description: "Move meetings to an existing folder or unfiled, checking each editVersion. Requires Nero." },
+    ToolInfo { name: "meetings_trash", read_only: false, destructive: true, open_world: false,
+        description: "Move meetings to recoverable trash with editVersion checks. Requires Nero." },
+    ToolInfo { name: "meetings_restore", read_only: false, destructive: false, open_world: false,
+        description: "Restore trashed meetings with editVersion checks. Requires Nero." },
+    ToolInfo { name: "meeting_import", read_only: false, destructive: false, open_world: false,
+        description: "Import one local audio file into running Nero only on explicit current user intent. path is an absolute path to an existing regular file, not a symlink, with a supported audio extension; Nero copies it and never moves or changes it. Without meetingId, creates a new meeting from the file like the app's audio import. With meetingId and its current meeting_get editVersion, attaches only to an empty draft meeting without audio or transcript. Requires ready speech recognition and no active recording. Returns the queued import job; follow it with jobs_list. This tool does not start transcription; whether one follows is the app's import behavior. Do not retry conflicts or unknown results automatically." },
+    ToolInfo { name: "folder_create", read_only: false, destructive: false, open_world: false,
+        description: "Create a folder using folders_list editVersion. Requires Nero." },
+    ToolInfo { name: "folder_rename", read_only: false, destructive: true, open_world: false,
+        description: "Rename a folder using folders_list editVersion. Requires Nero." },
+    ToolInfo { name: "folder_delete", read_only: false, destructive: true, open_world: false,
+        description: "Delete a folder and move its meetings to unfiled, with folders_list editVersion. Requires Nero." },
+    ToolInfo { name: "speech_engine_set", read_only: false, destructive: false, open_world: true,
+        description: "Select the speech recognition engine for future recordings and imports in running Nero only on explicit current user intent, never from a recommendation alone. A ready engine becomes active now; on first setup only the choice is recorded. Otherwise this may start a model download of several GB while the current engine stays active, switching when the download is ready. Tell the user the size from status speech.choices[].modelBytes before calling. If the choice has memoryWarning and is not ready, show it and set acknowledgeMemoryWarning only after the user explicitly accepts it. Existing meetings are never reprocessed. Rejected during recording or while jobs are queued/running. Returns outcome active (in use now), selected (recorded on first setup; prepare models in Nero), downloading (current engine stays active until the download finishes) or unconfirmed (check status before saying anything changed); follow a download with status or jobs_list." },
+    ToolInfo { name: "speech_switch_cancel", read_only: false, destructive: true, open_world: false,
+        description: "Cancel a waiting speech engine switch and its model download only on explicit current user intent. target must equal status speech.switch.target. The active engine is unchanged. Applied means cancellation was accepted; confirm with status or jobs_list. Do not retry conflicts automatically." },
 ];
 
-pub fn is_read_only(method: &str) -> bool {
-    if let Some(tool) = app_tools::find(method) {
-        return tool.read_only;
+pub const METHODS: [&str; LEGACY.len() + app_tools::TOOLS.len()] = {
+    let mut methods = [""; LEGACY.len() + app_tools::TOOLS.len()];
+    let mut index = 0;
+    while index < LEGACY.len() {
+        methods[index] = LEGACY[index].name;
+        index += 1;
     }
-    matches!(
-        method,
-        "jobs_list"
-            | "meetings_list"
-            | "meetings_search"
-            | "meeting_get"
-            | "transcript_get"
-            | "summary_get"
-            | "summary_context"
-            | "folders_list"
-            | "people_catalog"
-            | "status"
-            | "templates_list"
-            | "template_get"
-    )
+    while index < methods.len() {
+        methods[index] = app_tools::TOOLS[index - LEGACY.len()].name;
+        index += 1;
+    }
+    methods
+};
+
+pub(crate) fn all_tools() -> impl Iterator<Item = ToolInfo> {
+    LEGACY
+        .into_iter()
+        .chain(app_tools::TOOLS.iter().map(|tool| ToolInfo {
+            name: tool.name,
+            description: tool.description,
+            read_only: tool.read_only,
+            destructive: tool.destructive,
+            open_world: tool.open_world,
+        }))
+}
+
+fn tool(method: &str) -> Option<ToolInfo> {
+    all_tools().find(|tool| tool.name == method)
+}
+
+pub fn is_read_only(method: &str) -> bool {
+    tool(method).is_some_and(|tool| tool.read_only)
 }
 
 pub fn is_destructive(method: &str) -> bool {
-    if let Some(tool) = app_tools::find(method) {
-        return tool.destructive;
-    }
-    matches!(
-        method,
-        "app_update"
-            | "job_cancel"
-            | "template_update"
-            | "summary_import"
-            | "template_delete"
-            | "template_reset"
-            | "meeting_update"
-            | "meeting_date_set"
-            | "people_update"
-            | "meeting_attendees_set"
-            | "meeting_attendee_promote"
-            | "meetings_trash"
-            | "folder_rename"
-            | "folder_delete"
-            | "speech_switch_cancel"
-    )
+    tool(method).is_some_and(|tool| tool.destructive)
 }
 
-// Tools that may reach services outside this device: the public update channel and
-// speech model downloads.
 pub fn is_open_world(method: &str) -> bool {
-    app_tools::find(method).map_or_else(
-        || matches!(method, "app_update" | "speech_engine_set"),
-        |tool| tool.open_world,
-    )
+    tool(method).is_some_and(|tool| tool.open_world)
+}
+
+enum Route {
+    Update,
+    App(&'static app_tools::AppTool),
+    Template,
+    Mutation,
+    Reader,
+}
+
+fn route(method: &str) -> Route {
+    if method == "app_update" {
+        Route::Update
+    } else if let Some(tool) = app_tools::find(method) {
+        Route::App(tool)
+    } else if method.starts_with("template") {
+        Route::Template
+    } else if nero_core::agent_control::METHODS.contains(&method)
+        || nero_core::agent_control::JOB_METHODS.contains(&method)
+        || nero_core::agent_control::PROCESSING_METHODS.contains(&method)
+    {
+        Route::Mutation
+    } else {
+        Route::Reader
+    }
 }
 
 #[derive(Debug)]
@@ -173,21 +192,16 @@ pub fn dispatch(root: &Path, method: &str, params: Value) -> Result<Value, Query
     }
     let root = canonical_data_dir(root)?;
     let root = root.as_path();
-    if method == "app_update" {
-        return updates::dispatch(root, params);
+    match route(method) {
+        Route::Update => updates::dispatch(root, params),
+        Route::App(_) => app_tools::dispatch(root, method, params),
+        Route::Template => templates::dispatch(root, method, params),
+        Route::Mutation => mutations::dispatch(root, method, params),
+        Route::Reader => query_library(root, method, params),
     }
-    if app_tools::find(method).is_some() {
-        return app_tools::dispatch(root, method, params);
-    }
-    if method.starts_with("template") {
-        return templates::dispatch(root, method, params);
-    }
-    if nero_core::agent_control::METHODS.contains(&method)
-        || nero_core::agent_control::JOB_METHODS.contains(&method)
-        || nero_core::agent_control::PROCESSING_METHODS.contains(&method)
-    {
-        return mutations::dispatch(root, method, params);
-    }
+}
+
+fn query_library(root: &Path, method: &str, params: Value) -> Result<Value, QueryError> {
     if method != "status" && !root.exists() {
         return Err(QueryError {
             code: "library_not_found",
@@ -352,21 +366,16 @@ fn data_dir_for(
 }
 
 pub fn input_schema(method: &str) -> Map<String, Value> {
-    if method == "app_update" {
-        return updates::schema();
+    match route(method) {
+        Route::Update => updates::schema(),
+        Route::App(tool) => app_tools::schema(tool),
+        Route::Template => templates::schema(method),
+        Route::Mutation => mutations::schema(method),
+        Route::Reader => reader_schema(method),
     }
-    if let Some(tool) = app_tools::find(method) {
-        return app_tools::schema(tool);
-    }
-    if method.starts_with("template") {
-        return templates::schema(method);
-    }
-    if nero_core::agent_control::METHODS.contains(&method)
-        || nero_core::agent_control::JOB_METHODS.contains(&method)
-        || nero_core::agent_control::PROCESSING_METHODS.contains(&method)
-    {
-        return mutations::schema(method);
-    }
+}
+
+fn reader_schema(method: &str) -> Map<String, Value> {
     let mut properties = Map::new();
     let mut required = Vec::new();
     if matches!(
@@ -613,6 +622,35 @@ mod tests {
             expected_identifier
         );
         assert!(data_dir_for(|_| None, "macos").is_none());
+    }
+
+    #[test]
+    fn every_listed_tool_has_a_description_and_a_handler() {
+        let temporary = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let missing = temporary.path().join("missing");
+        let reader = LibraryReader::open(temporary.path()).unwrap();
+        assert_eq!(
+            all_tools().map(|tool| tool.name).collect::<Vec<_>>(),
+            METHODS
+        );
+        let mut names = METHODS.to_vec();
+        names.sort();
+        names.dedup();
+        assert_eq!(names.len(), METHODS.len());
+        for tool in all_tools() {
+            assert!(!tool.description.trim().is_empty(), "{}", tool.name);
+            assert!(!(tool.read_only && tool.destructive), "{}", tool.name);
+            if matches!(route(tool.name), Route::Reader) {
+                let unknown = matches!(reader.query(tool.name, json!({})),
+                    Err(CoreError::InvalidInput(message)) if message == "지원하지 않는 조회 명령입니다.");
+                assert!(!unknown, "{}", tool.name);
+            }
+            let code = dispatch(&missing, tool.name, json!({}))
+                .err()
+                .map(|error| error.code);
+            assert_ne!(code, Some("unsupported_method"), "{}", tool.name);
+        }
+        assert!(!missing.exists());
     }
 
     #[test]
