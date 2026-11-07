@@ -304,8 +304,13 @@ pub(super) async fn run_with_template(
         attendees,
     };
     if let Some(template) = template {
+        // The template stage sends the template together with the notes; checking them
+        // apart lets a combination that cannot fit run every earlier stage first.
         if !session
-            .fits(&crate::summary_template::instruction(template, true))
+            .fits(&with_reference_notes(
+                crate::summary_template::instruction(template, true),
+                notes,
+            ))
             .await?
         {
             return Err(Failure::new(
