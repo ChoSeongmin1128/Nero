@@ -6,8 +6,9 @@ This is a source contract, not an installed-app or hardware acceptance receipt.
 
 Rust core owns capture, original audio, placement and versioned results. Processing owns
 one execution slot and a bounded request queue. A recording start keeps model downloads,
-but cancels and joins an active inference before capture starts. Requested inference waits
-until recording/current processing ends. Changing the selected meeting does not change
+but cancels and joins an active inference before capture starts. That inference is queued
+again as a retry of the same request, so it reruns from the start once recording ends unless
+its inputs changed. Requested inference waits until recording/current processing ends. Changing the selected meeting does not change
 job ownership. Folder movement changes placement, never original paths or job ownership.
 
 New recording also owns one isolated live speech child. It reads already saved

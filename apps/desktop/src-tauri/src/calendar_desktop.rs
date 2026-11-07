@@ -1,5 +1,5 @@
 use crate::calendar::{self, CalendarService, CalendarSnapshot, Occurrence};
-use crate::{microphone_permission, DesktopState};
+use crate::DesktopState;
 use nero_core::{CalendarReference, Meeting, SessionState, Snapshot};
 use std::path::PathBuf;
 use std::sync::{atomic::Ordering, Arc};
@@ -594,41 +594,21 @@ pub async fn start_calendar_recording(
         );
         return Ok(current);
     }
-    microphone_permission::ensure_authorized(&app).await?;
-    let transition = state.lifecycle.begin_transition()?;
-    let core = state.core.clone();
-    let processing = state.processing.clone();
     let recording_calendar = service.clone();
-    let recording_app = app.clone();
-    let (meeting, snapshot) = tauri::async_runtime::spawn_blocking(move || {
-        let _transition = transition;
-        processing.recording_start(|| {
-            let current = core.snapshot().map_err(|error| error.to_string())?;
-            if recording_busy(&current) {
-                return Err("진행 중인 녹음을 마친 뒤 시작해 주세요.".into());
-            }
-            let selected = core
-                .devices()
-                .map_err(|error| error.to_string())?
-                .into_iter()
-                .find(|device| device.is_default)
-                .map(|device| device.id)
-                .unwrap_or_default();
-            let result =
-                recording_calendar.with_current_reminder(&ticket, calendar::now_ms(), |event| {
-                    core.create_calendar_recording(
-                        calendar_reference(event, jiff::tz::TimeZone::system())?,
-                        &selected,
-                    )
-                    .map_err(|error| error.to_string())
-                })?;
-            crate::publish(&recording_app, &result.1);
-            crate::start_live_speech(&recording_app, &result.1);
-            Ok(result)
+    let (meeting, snapshot) = crate::start_capture(&app, None, move |core, device| {
+        let current = core.snapshot().map_err(|error| error.to_string())?;
+        if recording_busy(&current) {
+            return Err("진행 중인 녹음을 마친 뒤 시작해 주세요.".into());
+        }
+        recording_calendar.with_current_reminder(&ticket, calendar::now_ms(), |event| {
+            core.create_calendar_recording(
+                calendar_reference(event, jiff::tz::TimeZone::system())?,
+                device,
+            )
+            .map_err(|error| error.to_string())
         })
     })
-    .await
-    .map_err(|_| "녹음을 시작하지 못했습니다.".to_string())??;
+    .await?;
     let _ = service.dismiss(&key);
     let _ = service.tick(calendar::now_ms(), true);
     sync_windows(&app, &service);

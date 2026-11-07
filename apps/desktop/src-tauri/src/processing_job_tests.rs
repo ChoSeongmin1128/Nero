@@ -195,6 +195,27 @@ fn recording_preemption_never_promotes_a_user_cancel_to_interrupted() {
     assert_eq!(status(&process, &id), JobStatus::Cancelled);
     assert_eq!(process.snapshot().status, "cancelled");
     assert!(!process.interrupted_jobs.lock().unwrap().contains(&id));
+    assert!(process.requeue.lock().unwrap().is_empty());
+}
+
+#[test]
+fn work_interrupted_by_a_recording_start_is_queued_for_retry() {
+    let (_temporary, process) = setup();
+    let (started, started_rx) = mpsc::channel();
+    let id = launch(
+        &process,
+        pending(record("transcribe"), move |_, cancel, _| {
+            started.send(()).map_err(message)?;
+            while !cancel.load(Ordering::Acquire) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err("취소됨".into())
+        }),
+    );
+    started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    process.recording_start(|| Ok::<_, String>(())).unwrap();
+    assert_eq!(status(&process, &id), JobStatus::Interrupted);
+    assert_eq!(*process.requeue.lock().unwrap(), [id]);
 }
 
 #[test]

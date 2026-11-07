@@ -1101,16 +1101,32 @@ pub(crate) async fn begin_recording(
     meeting_id: String,
     device_id: Option<String>,
 ) -> Result<Snapshot, String> {
+    start_capture(&app, device_id, move |core, device| {
+        let snapshot = core.start(&meeting_id, device).map_err(|e| e.to_string())?;
+        Ok(((), snapshot))
+    })
+    .await
+    .map(|(_, snapshot)| snapshot)
+}
+
+// Every recording start, from the screen or a calendar reminder, goes through
+// the same readiness, permission, processing and live-speech steps.
+pub(crate) async fn start_capture<T: Send + 'static>(
+    app: &tauri::AppHandle,
+    device_id: Option<String>,
+    start: impl FnOnce(&CoreHandle, &str) -> Result<(T, Snapshot), String> + Send + 'static,
+) -> Result<(T, Snapshot), String> {
     let state = app.state::<DesktopState>();
     state.processing.require_meeting_models()?;
-    microphone_permission::ensure_authorized(&app).await?;
+    microphone_permission::ensure_authorized(app).await?;
     let transition = state.lifecycle.begin_transition()?;
     let processing = state.processing.clone();
     let core = state.core.clone();
+    let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let _transition = transition;
         processing.recording_start(|| {
-            let selected = match device_id {
+            let device = match device_id {
                 Some(id) => id,
                 None => core
                     .devices()
@@ -1120,12 +1136,10 @@ pub(crate) async fn begin_recording(
                     .map(|device| device.id)
                     .unwrap_or_default(),
             };
-            let snapshot = core
-                .start(&meeting_id, &selected)
-                .map_err(|e| e.to_string())?;
+            let (value, snapshot) = start(&core, &device)?;
             publish(&app, &snapshot);
             start_live_speech(&app, &snapshot);
-            Ok(snapshot)
+            Ok((value, snapshot))
         })
     })
     .await

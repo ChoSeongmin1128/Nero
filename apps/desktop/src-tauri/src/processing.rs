@@ -228,6 +228,8 @@ pub struct Processing {
     retry_gate: Mutex<()>,
     pub(super) recording: AtomicBool,
     interrupted_jobs: Mutex<HashSet<String>>,
+    // Work that a recording start interrupted; queued again as retries.
+    requeue: Mutex<Vec<String>>,
     revision: AtomicU64,
     recording_transcription: Mutex<RecordingTranscription>,
     shutting_down: AtomicBool,
@@ -442,6 +444,7 @@ impl Processing {
             retry_gate: Mutex::new(()),
             recording: AtomicBool::new(false),
             interrupted_jobs: Mutex::new(HashSet::new()),
+            requeue: Mutex::new(Vec::new()),
             revision: AtomicU64::new(0),
             recording_transcription: Mutex::new(RecordingTranscription::default()),
             shutting_down: AtomicBool::new(false),
@@ -1066,6 +1069,10 @@ impl Processing {
     }
 
     pub fn drive(self: &Arc<Self>, core: &CoreHandle) -> Result<(), String> {
+        // A job that finished anyway, or whose meeting changed, keeps its retry action.
+        for id in std::mem::take(&mut *self.requeue.lock().unwrap()) {
+            let _ = self.retry(core.clone(), &id);
+        }
         let mut running = self.running.lock().unwrap();
         self.synchronize_recording(core)?;
         if running.as_ref().is_some_and(|r| !r.handle.is_finished())
@@ -1826,15 +1833,16 @@ impl Processing {
         self.shutting_down.store(false, Ordering::Release);
     }
 
-    fn mark_interrupted(&self, job: &Running) {
+    fn mark_interrupted(&self, job: &Running) -> bool {
         if job.handle.is_finished()
             || self.records.lock().unwrap().iter().any(|r| {
                 r.id == job.id && matches!(r.status, JobStatus::Cancelled | JobStatus::Cancelling)
             })
         {
-            return;
+            return false;
         }
         self.interrupted_jobs.lock().unwrap().insert(job.id.clone());
+        true
     }
     pub(super) fn start(
         self: &Arc<Self>,
@@ -2615,11 +2623,14 @@ impl Processing {
         let downloading = model_job(&self.progress.lock().unwrap().kind);
         if !downloading {
             if let Some(job) = running.take() {
-                self.mark_interrupted(&job);
+                let interrupted = self.mark_interrupted(&job);
                 job.cancel.store(true, Ordering::Release);
                 job.handle
                     .join()
                     .map_err(|_| "처리 작업의 종료를 확인하지 못했습니다.")?;
+                if interrupted {
+                    self.requeue.lock().unwrap().push(job.id.clone());
+                }
             }
         }
         self.worker_ready()?;
