@@ -761,19 +761,12 @@ impl CalendarService {
         if primary_calendar(&calendars)?.id.as_str() != account.as_str() {
             return Err("Google 계정 연결이 변경되었습니다. 다시 연결해 주세요.".into());
         }
-        let choices = selected
+        let available = available_selection(selected, &calendars)?;
+        let choices = calendars
             .iter()
-            .map(|id| {
-                calendars
-                    .iter()
-                    .find(|calendar| &calendar.id == id)
-                    .cloned()
-                    .ok_or(
-                        "선택한 캘린더에 접근할 수 없습니다. 캘린더를 다시 선택해 주세요."
-                            .to_owned(),
-                    )
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+            .filter(|calendar| available.contains(&calendar.id))
+            .cloned()
+            .collect();
         Ok((calendars, choices))
     }
 
@@ -806,6 +799,11 @@ impl CalendarService {
             return Err("캘린더 선택이나 연결이 변경되었습니다.".into());
         }
         let mut next = inner.state.clone();
+        let selected = available_selection(&next.selected, &calendars)?;
+        if selected != next.selected {
+            self.generation.fetch_add(1, Ordering::AcqRel);
+            next.selected = selected;
+        }
         next.calendars = calendars;
         next.events = events;
         next.last_synced_at = Some(synced_at);
@@ -1078,6 +1076,8 @@ fn connected_state(
     if next.account.as_deref() != Some(account) {
         next.selected = vec![primary.id.clone()];
         next.notices.clear();
+    } else {
+        next.selected = available_selection(&next.selected, &calendars)?;
     }
     next.account = Some(account.into());
     next.meet_authorized = include_meet;
@@ -1088,6 +1088,23 @@ fn connected_state(
     }
     next.revision += 1;
     Ok(next)
+}
+
+// Selected calendars the account still lists. A calendar that was deleted or
+// unshared is dropped instead of failing every sync; if all were, the primary.
+fn available_selection(
+    selected: &[String],
+    calendars: &[CalendarChoice],
+) -> Result<Vec<String>, String> {
+    let available = selected
+        .iter()
+        .filter(|id| calendars.iter().any(|calendar| &calendar.id == *id))
+        .cloned()
+        .collect::<Vec<_>>();
+    if available.is_empty() && !selected.is_empty() {
+        return Ok(vec![primary_calendar(calendars)?.id.clone()]);
+    }
+    Ok(available)
 }
 
 fn primary_calendar(calendars: &[CalendarChoice]) -> Result<&CalendarChoice, String> {
@@ -1903,6 +1920,26 @@ mod tests {
         );
         assert!(service.reminder("current").is_some());
         assert!(!temp.path().join("calendar").exists());
+    }
+
+    #[test]
+    fn a_vanished_calendar_leaves_the_selection_instead_of_failing_sync() {
+        let calendar = |id: &str, primary: bool| CalendarChoice {
+            id: id.into(),
+            name: id.into(),
+            primary,
+        };
+        let listed = vec![calendar("primary-id", true), calendar("team", false)];
+        let keep = |selected: &[&str]| {
+            available_selection(
+                &selected.iter().map(|id| id.to_string()).collect::<Vec<_>>(),
+                &listed,
+            )
+            .unwrap()
+        };
+        assert_eq!(keep(&["team", "deleted"]), vec!["team"]);
+        assert_eq!(keep(&["deleted"]), vec!["primary-id"]);
+        assert!(keep(&[]).is_empty());
     }
 
     #[test]
