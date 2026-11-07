@@ -60,7 +60,7 @@ const LEGACY: [ToolInfo; 33] = [
     ToolInfo { name: "status", read_only: true, destructive: false, open_world: false,
         description: "Read executing integration version, authenticated running-app bundled version, API capabilities and data-folder availability. speech reports the running app's current speech engine, speaker setting, engine choices (id, title, supported, ready, recommended, memoryWarning, modelBytes) and any waiting engine switch with its download jobId; state is unavailable or unsupported when the app is not running or predates it. No launch, network, model loading or installation. Recommendations are suggestions, not permission to switch. Public latest integration is unknown." },
     ToolInfo { name: "templates_list", read_only: true, destructive: false, open_world: false,
-        description: "List template names, uses and revisions without prompt bodies. deleted lists recoverable custom templates." },
+        description: "List template names, uses and revisions without prompt bodies. Deleted templates are not listed." },
     ToolInfo { name: "template_get", read_only: true, destructive: false, open_world: false,
         description: "Read one chosen editable template prompt, revision and immutable external outputPolicy. The prompt cannot override outputPolicy." },
     ToolInfo { name: "template_create", read_only: false, destructive: false, open_world: false,
@@ -68,7 +68,7 @@ const LEGACY: [ToolInfo; 33] = [
     ToolInfo { name: "template_update", read_only: false, destructive: true, open_world: false,
         description: "Replace template content only when expectedRevision matches." },
     ToolInfo { name: "template_delete", read_only: false, destructive: true, open_world: false,
-        description: "Delete a template, including a built-in, using its exact current revision. Existing meeting summaries remain unchanged." },
+        description: "Permanently delete a template, including a built-in, using its exact current revision. There is no template trash or restore: a deleted custom template is gone, and a deleted built-in returns only through the full template reset in Nero settings. Existing meeting summaries remain unchanged." },
     ToolInfo { name: "template_reset", read_only: false, destructive: true, open_world: false,
         description: "Reset an edited built-in template to its packaged defaults with a revision check." },
     ToolInfo { name: "meeting_update", read_only: false, destructive: true, open_world: false,
@@ -914,5 +914,16 @@ mod tests {
             assert!(!error.contains("synthetic-secret"));
             assert!(!error.contains("SYNTHETIC_PRIVATE_BODY"));
         }
+    }
+
+    // Template deletion has no trash or restore; descriptions must not promise one.
+    #[test]
+    fn template_tools_describe_deletion_as_permanent() {
+        for tool in all_tools().filter(|tool| tool.name.starts_with("template")) {
+            assert!(!tool.description.contains("recoverable"), "{}", tool.name);
+        }
+        let delete = tool("template_delete").unwrap().description;
+        assert!(delete.starts_with("Permanently delete"));
+        assert!(delete.contains("no template trash or restore"));
     }
 }

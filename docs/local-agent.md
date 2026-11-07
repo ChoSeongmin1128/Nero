@@ -227,7 +227,7 @@ SHA-256이다. 원문, 메모, 참석 명단 또는 기존 요약이 바뀌면 `
 | `job_cancel` | 명시적으로 요청한 작업을 editVersion 검사 후 취소 |
 | `templates_list`, `template_get` | 템플릿 목록/선택한 프롬프트 조회 |
 | `template_create`, `template_update` | 로컬 템플릿 생성/편집 |
-| `template_delete`, `template_reset` | 사용자 템플릿 삭제, 기본 템플릿 초기화 |
+| `template_delete`, `template_reset` | 기본/사용자 템플릿 영구 삭제(휴지통과 복원 없음), 기본 템플릿 초기화 |
 | `meeting_update`, `meeting_date_set` | 회의 제목/메모와 별도 회의 날짜 편집 |
 | `meetings_move`, `meetings_trash`, `meetings_restore` | 폴더 이동과 휴지통/복원 |
 | `folder_create`, `folder_rename`, `folder_delete` | 폴더 관리 |
