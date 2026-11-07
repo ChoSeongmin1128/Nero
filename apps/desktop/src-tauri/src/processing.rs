@@ -1105,7 +1105,7 @@ impl Processing {
     pub(super) fn cleanup_failed(&self) {
         self.worker_cleanup_failed.store(true, Ordering::Release);
     }
-    fn worker_ready(&self) -> Result<(), String> {
+    pub(crate) fn worker_ready(&self) -> Result<(), String> {
         if self.worker_cleanup_failed.load(Ordering::Acquire) {
             return Err("이전 음성 처리의 종료를 확인하지 못했습니다.".into());
         }

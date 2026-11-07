@@ -732,6 +732,12 @@ pub(crate) async fn prepare_install(app: tauri::AppHandle) -> Result<InstallPlan
     if desktop.lifecycle.exiting() {
         return Err("앱을 종료하고 있습니다.".into());
     }
+    // A speech worker that did not stop stays that way until restart; waiting would
+    // keep offering "다시 시작해 업데이트" for nothing.
+    desktop
+        .processing
+        .worker_ready()
+        .map_err(|error| format!("{error} Nero를 다시 연 뒤 업데이트를 설치해 주세요."))?;
     let lease = desktop
         .lifecycle
         .begin_exit(crate::lifecycle::ExitKind::Update)?;
