@@ -198,20 +198,29 @@ impl CalendarService {
         self.snapshot_inner(&inner)
     }
     fn snapshot_inner(&self, inner: &Inner) -> CalendarSnapshot {
+        let restoring = self.config.is_some()
+            && inner.state.account.is_some()
+            && !inner.auth_ready
+            && inner.error.is_none()
+            && inner.connecting_id.is_none();
+        // Once the first check at launch fails for now (offline, say), a linked account
+        // stays connected with its error and retry; only a revoked or blocked
+        // credential, or a link that never synced, reads as disconnected.
+        let connected = inner.state.account.is_some()
+            && (inner.auth_ready
+                || (!restoring
+                    && inner.credential_blocked.is_none()
+                    && inner.state.last_synced_at.is_some()));
         CalendarSnapshot {
             revision: inner.state.revision,
             configured: self.config.is_some()
                 && cfg!(any(target_os = "macos", target_os = "windows")),
-            connected: inner.state.account.is_some() && inner.auth_ready,
+            connected,
             meet_connected: inner.state.meet_authorized
                 && inner.state.account.is_some()
                 && inner.auth_ready,
             connecting: inner.connecting_id.is_some(),
-            restoring: self.config.is_some()
-                && inner.state.account.is_some()
-                && !inner.auth_ready
-                && inner.error.is_none()
-                && inner.connecting_id.is_none(),
+            restoring,
             account_label: inner.state.account.clone(),
             calendars: inner.state.calendars.clone(),
             selected_calendars: inner.state.selected.clone(),
@@ -1920,6 +1929,27 @@ mod tests {
         );
         assert!(service.reminder("current").is_some());
         assert!(!temp.path().join("calendar").exists());
+    }
+
+    #[test]
+    fn a_failing_sync_keeps_a_previously_synced_account_connected() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = CalendarService::new(temp.path().into()).unwrap();
+        {
+            let mut inner = service.inner.lock().unwrap();
+            inner.state.account = Some("primary-id".into());
+            inner.state.last_synced_at = Some(1);
+            inner.auth_ready = false;
+            inner.error = Some("네트워크".into());
+        }
+        assert!(service.snapshot().connected);
+        service.inner.lock().unwrap().credential_blocked = Some("blocked".into());
+        assert!(!service.snapshot().connected);
+        let mut inner = service.inner.lock().unwrap();
+        inner.credential_blocked = None;
+        inner.state.last_synced_at = None;
+        drop(inner);
+        assert!(!service.snapshot().connected);
     }
 
     #[test]
