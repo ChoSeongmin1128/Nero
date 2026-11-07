@@ -174,7 +174,24 @@ impl Drop for SyncGuard<'_> {
 impl CalendarService {
     pub fn new(root: PathBuf) -> Result<Self, String> {
         let directory = root.join("calendar");
-        let mut state = load(&directory)?;
+        // A damaged state file must not lock every calendar action, disconnecting
+        // included: it is kept aside and the calendar starts disconnected, saying so.
+        let (mut state, startup_error) = match load(&directory) {
+            Ok(state) => (state, None),
+            Err(Load::Damaged) => {
+                let path = directory.join("state.json");
+                std::fs::rename(
+                    &path,
+                    directory.join(format!("state.json.damaged-{}", now_ms())),
+                )
+                .map_err(|_| "캘린더 저장 정보가 올바르지 않습니다.")?;
+                (
+                    State::default(),
+                    Some("캘린더 저장 정보가 손상되어 따로 보관하고 연결을 초기화했습니다. 다시 연결해 주세요.".to_string()),
+                )
+            }
+            Err(Load::Refused(message)) => return Err(message),
+        };
         if state.schema_version == 0 {
             state.schema_version = 1;
         }
@@ -209,7 +226,7 @@ impl CalendarService {
                 rejections: 0,
                 last_attempt: None,
                 last_tick: None,
-                error: None,
+                error: startup_error,
             }),
             generation: AtomicU64::new(0),
             connection_epoch: AtomicU64::new(0),
@@ -1191,7 +1208,21 @@ fn checked_directory(directory: &Path) -> Result<bool, String> {
         Err(_) => Err("캘린더 저장 폴더를 읽지 못했습니다.".into()),
     }
 }
-fn load(directory: &Path) -> Result<State, String> {
+enum Load {
+    Damaged,
+    Refused(String),
+}
+impl From<String> for Load {
+    fn from(message: String) -> Self {
+        Self::Refused(message)
+    }
+}
+impl From<&str> for Load {
+    fn from(message: &str) -> Self {
+        Self::Refused(message.into())
+    }
+}
+fn load(directory: &Path) -> Result<State, Load> {
     if !checked_directory(directory)? {
         return Ok(State::default());
     }
@@ -1209,8 +1240,15 @@ fn load(directory: &Path) -> Result<State, String> {
         Err(_) => return Err("캘린더 저장 정보를 읽지 못했습니다.".into()),
     }
     let bytes = std::fs::read(path).map_err(|_| "캘린더 저장 정보를 읽지 못했습니다.")?;
-    let state: State =
-        serde_json::from_slice(&bytes).map_err(|_| "캘린더 저장 정보가 올바르지 않습니다.")?;
+    let state: State = serde_json::from_slice(&bytes).map_err(|error| {
+        // Fields from a newer Nero are an update to make, not damage to set aside.
+        let message = error.to_string();
+        if message.contains("unknown field") || message.contains("unknown variant") {
+            Load::Refused("지원하지 않는 캘린더 저장 형식입니다. Nero를 업데이트해 주세요.".into())
+        } else {
+            Load::Damaged
+        }
+    })?;
     if state.schema_version != 1 {
         return Err("지원하지 않는 캘린더 저장 형식입니다.".into());
     }
@@ -1604,8 +1642,29 @@ mod tests {
         std::fs::create_dir(&directory).unwrap();
         let path = directory.join("state.json");
         std::fs::write(&path, b"synthetic corrupt state").unwrap();
+        // The damaged file is kept aside unchanged and the calendar still opens.
+        let service = CalendarService::new(temp.path().into()).unwrap();
+        assert!(service.snapshot().error.is_some());
+        assert!(!path.exists());
+        let kept: Vec<_> = std::fs::read_dir(&directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("state.json.damaged-")
+            })
+            .collect();
+        assert_eq!(std::fs::read(&kept[0]).unwrap(), b"synthetic corrupt state");
+        // A field from a newer version is refused, not set aside.
+        std::fs::write(
+            &path,
+            br#"{"schemaVersion":1,"revision":0,"addedLater":true}"#,
+        )
+        .unwrap();
         assert!(CalendarService::new(temp.path().into()).is_err());
-        assert_eq!(std::fs::read(path).unwrap(), b"synthetic corrupt state");
+        assert!(path.exists());
     }
     #[test]
     fn failed_account_state_commit_preserves_the_active_grant_in_either_slot() {

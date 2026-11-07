@@ -32,6 +32,8 @@ replace the current view. `calendarConnectionView` selects labels/actions separa
 - Approval pending: progress, reopen the same browser request, cancel.
 - Failed or expired attempt: retry after previous cancellation settles.
 - Successful completion: clear previous browser errors and show the connected account.
+- Damaged `calendar/state.json`: kept aside as `state.json.damaged-<time>`, the calendar
+  starts disconnected and says so. A file with fields from a newer Nero is refused unchanged.
 
 Automated checks cover recorded positions, diagnostic severity, interruption recovery,
 late begin/finish results, cancellation failure, reopening and the rendered Calendar controls.
