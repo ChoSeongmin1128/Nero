@@ -9,8 +9,6 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use nero_core::speech_runtime::pin as runtime_pin;
-const MODEL_SHA256: &str = "08456d9e22cd9a323c0364d98375f3746d6e68507ebb705cd46438c534c7a3a1";
-const MODEL_BYTES: u64 = 107_012_128;
 const SAMPLE_RATE: u32 = 16_000;
 const SLOTS: usize = 8;
 const MAX_REQUEST_BYTES: u64 = 64 * 1024;
@@ -646,9 +644,11 @@ struct Prepared {
 }
 
 fn prepare(request: &Request) -> Result<Prepared> {
+    let model = crate::diarization::model();
+    let pin = &model.files[0];
     if request.schema_version != 1
         || request.runtime_pin != runtime_pin()
-        || request.model_sha256 != MODEL_SHA256
+        || request.model_sha256 != pin.sha256
         || std::mem::size_of::<usize>() != 8
         || std::mem::size_of::<ModelConfig>() != 56
     {
@@ -673,19 +673,15 @@ fn prepare(request: &Request) -> Result<Prepared> {
     if fs::metadata(&request.model)
         .map_err(|error| WorkerError::new(WorkerFailureKind::ModelNotReady, error.to_string()))?
         .len()
-        != MODEL_BYTES
+        != pin.bytes
     {
         return Err(WorkerError::new(
             WorkerFailureKind::ModelNotReady,
             "Model byte size does not match the pin",
         ));
     }
-    let model_sha = hash(
-        &request.model,
-        MODEL_BYTES,
-        WorkerFailureKind::ModelNotReady,
-    )?;
-    if model_sha != MODEL_SHA256 {
+    let model_sha = hash(&request.model, pin.bytes, WorkerFailureKind::ModelNotReady)?;
+    if model_sha != pin.sha256 {
         return Err(WorkerError::new(
             WorkerFailureKind::ModelNotReady,
             "Model SHA256 does not match the pin",
@@ -867,7 +863,7 @@ fn finish_export(
         (
             &request.model,
             &input.model_sha,
-            MODEL_BYTES,
+            crate::diarization::model().files[0].bytes,
             WorkerFailureKind::SourceChanged,
         ),
         (

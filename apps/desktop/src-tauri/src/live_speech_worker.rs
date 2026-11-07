@@ -71,9 +71,7 @@ pub(super) fn entry(path: &Path) -> Result<ExitPolicy> {
     } else {
         String::new()
     };
-    if request.speaker_enabled
-        && speaker_sha != "08456d9e22cd9a323c0364d98375f3746d6e68507ebb705cd46438c534c7a3a1"
-    {
+    if request.speaker_enabled && speaker_sha != crate::diarization::model().files[0].sha256 {
         return Err("Speaker model does not match its pin".into());
     }
     let library_sha = digest(&request.asr_library)?;
