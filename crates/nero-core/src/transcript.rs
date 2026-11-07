@@ -1617,17 +1617,18 @@ impl Engine {
                 .map(|previous| previous.name_origin)
                 .unwrap_or(Some(SpeakerNameOrigin::User));
         }
-        if doc.speakers == speakers
-            && doc
-                .segments
-                .iter()
-                .map(|segment| &segment.speaker_id)
-                .eq(assignments.iter())
-        {
+        let reassigned = !doc
+            .segments
+            .iter()
+            .map(|segment| &segment.speaker_id)
+            .eq(assignments.iter());
+        if doc.speakers == speakers && !reassigned {
             return Ok(doc);
         }
         doc.speakers = speakers;
-        if let Some(analysis) = &mut doc.speaker_analysis {
+        // A rename already protects that speaker through its user name origin. Marking
+        // the assignments as edited would make the next analysis keep every segment.
+        if let Some(analysis) = doc.speaker_analysis.as_mut().filter(|_| reassigned) {
             analysis.assignments_edited = true;
         }
         for (segment, assignment) in doc.segments.iter_mut().zip(assignments) {
@@ -4314,7 +4315,11 @@ pub(crate) mod tests {
         let edited = engine
             .edit_speakers(&id, result.version, names, vec![assignment])
             .unwrap();
-        assert!(edited.speaker_analysis.as_ref().unwrap().assignments_edited);
+        assert!(!edited.speaker_analysis.as_ref().unwrap().assignments_edited);
+        assert_eq!(
+            edited.speakers[0].name_origin,
+            Some(SpeakerNameOrigin::User)
+        );
         drop(engine);
         let reopened = Engine::open(temp.path().canonicalize().unwrap().join("store")).unwrap();
         let current = reopened.transcript(&id).unwrap().unwrap();
