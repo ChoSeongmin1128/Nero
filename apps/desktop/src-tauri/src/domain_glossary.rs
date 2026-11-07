@@ -303,6 +303,28 @@ fn reusable_entries(
     }
     result
 }
+// A term picked before the meeting's source was refreshed names the earlier revision of a
+// page that is still attached. It stays allowed while that revision can be read, so the
+// edits being made when the refresh happened can still be saved.
+fn earlier_revisions(
+    entries: &[Entry],
+    allowed: &BTreeSet<String>,
+    pages: &BTreeSet<String>,
+    readable: impl Fn(&str) -> bool,
+) -> Vec<String> {
+    entries
+        .iter()
+        .map(|entry| &entry.source_id)
+        .filter(|id| !allowed.contains(*id))
+        .filter(|id| {
+            id.split(':')
+                .nth(1)
+                .is_some_and(|page| pages.contains(page))
+        })
+        .filter(|id| readable(id))
+        .cloned()
+        .collect()
+}
 // The glossary screen and agent requests share these; they block, so screens run them
 // off the async runtime.
 pub(crate) fn view(app: &AppHandle, meeting_id: &str) -> Result<View, String> {
@@ -385,6 +407,10 @@ pub(crate) fn save_entries(
             .into_iter()
             .map(|e| e.source_id),
     );
+    let earlier = earlier_revisions(&entries, &allowed, &pages, |id| {
+        notion.read_sources(vec![id.to_owned()]).is_ok()
+    });
+    allowed.extend(earlier);
     crate::meeting_context_desktop::with_meeting(app, meeting_id, || {
         if MeetingContextStore::new(root.clone())?.list(meeting_id)? != references {
             return Err("회의 자료가 변경되었습니다. 다시 불러와 주세요.".into());
@@ -474,5 +500,39 @@ mod tests {
             .unwrap()
             .entries
             .is_empty());
+    }
+    #[test]
+    fn terms_picked_before_a_source_refresh_can_still_be_saved() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let meeting = "a0000000-0000-4000-8000-000000000001";
+        let page = "b0000000-0000-4000-8000-000000000001";
+        let earlier = format!("notion:{page}:{}", "a".repeat(64));
+        let refreshed = format!("notion:{page}:{}", "b".repeat(64));
+        let other = format!(
+            "notion:b0000000-0000-4000-8000-000000000002:{}",
+            "c".repeat(64)
+        );
+        let allowed = BTreeSet::from([refreshed.clone()]);
+        let pages = BTreeSet::from([page.to_string()]);
+        let entry = |term: &str, source_id: &str| Entry {
+            term: term.into(),
+            source_id: source_id.into(),
+        };
+        let entries = vec![entry("제품명", &earlier), entry("새 용어", &refreshed)];
+        let mut extended = allowed.clone();
+        extended.extend(earlier_revisions(&entries, &allowed, &pages, |_| true));
+        assert_eq!(
+            save(&root, meeting, 0, entries, &extended)
+                .unwrap()
+                .revision,
+            1
+        );
+        // A detached page or an unreadable revision stays refused.
+        let detached = vec![entry("다른 용어", &other)];
+        assert!(earlier_revisions(&detached, &allowed, &pages, |_| true).is_empty());
+        let unreadable = vec![entry("제품명", &earlier)];
+        assert!(earlier_revisions(&unreadable, &allowed, &pages, |_| false).is_empty());
+        assert!(save(&root, meeting, 1, detached, &allowed).is_err());
     }
 }
