@@ -1099,7 +1099,8 @@ function renderTranscript(meeting) {
   else if (state.transcriptLoadError) message = '음성 기록을 불러오지 못했습니다.';
   else if (draft?.dirty) message = '저장되지 않은 수정이 있습니다.';
   else if (ownJob) message = job.kind === 'diarize' || job.phase === 'diarizing' ? '' : processingFeedback(job).title;
-  else if (liveRows.length) message = activeSession()?.meetingId === meeting.id ? '초안' : '';
+  // Preview rows are never the final transcript, also after the final recognition failed.
+  else if (liveRows.length) message = activeSession()?.meetingId === meeting.id ? '초안' : '최종 변환 전 초안';
   else if (!draft?.doc && !meeting.audio) message = '음성 기록을 준비하고 있습니다.';
   else if (!draft?.doc && !job.supported) message = '이 환경에서는 음성 기록을 변환할 수 없습니다.';
   else if (!draft?.doc && !job.modelReady) message = '음성 인식 모델을 먼저 준비해 주세요.';
