@@ -437,5 +437,5 @@ export function mountSpeakers({ bridge, getState, finishEditing, onUpdated, onPr
     } catch (error) { message(error instanceof Error ? error.message : String(error), true); }
   });
 
-  return { render, open, reset, syncPlayback, beforeLeave: requestClose, label: segment => speakerLabel(current()?.doc, segment) };
+  return { render, open, reset, syncPlayback, beforeLeave: requestClose, label: (segment, doc = current()?.doc) => speakerLabel(doc, segment) };
 }
