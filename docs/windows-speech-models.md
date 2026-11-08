@@ -42,7 +42,9 @@ macOS builds the same release without patches. Earlier base artifacts and target
 identities remain readable without changing their historical provenance.
 
 Nemotron GPU preference and error handling are unchanged. A confirmed unavailable GPU
-backend permits CPU operation. Allocation or generic engine failures retain the
+backend permits CPU operation for the file recognition after recording. Live recognition
+during recording uses the GPU library whenever it is present and does not retry on CPU;
+when it cannot open, the preview stops and the whole recording is processed afterwards. Allocation or generic engine failures retain the
 recording and failed job; they do not silently choose another backend or model.
 The CPU source package requires the pinned AVX2/FMA/F16C instruction set.
 
