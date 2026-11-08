@@ -242,6 +242,11 @@ fn retry_block_reason(record: &JobRecord) -> Option<&'static str> {
     {
         return Some("현재 작업은 다시 실행할 수 없습니다. 회의의 저장 결과를 먼저 확인해 주세요.");
     }
+    // Stopped after its transcript was saved (during terminology correction with speaker
+    // analysis off): the meeting has changed since, so a retry would only be refused.
+    if record.kind == "transcribe" && record.phase.as_deref() == Some("postprocessing") {
+        return Some("음성 기록은 이미 저장되었습니다. 다시 변환하려면 회의에서 변환을 새로 시작해 주세요.");
+    }
     None
 }
 

@@ -1575,3 +1575,12 @@ fn live_scheduler_allows_its_completion_but_not_competing_inference() {
     assert!(!live.running.load(Ordering::Acquire));
     assert!(process.recording.load(Ordering::Acquire));
 }
+
+#[test]
+fn a_transcription_stopped_after_its_transcript_saved_is_not_offered_a_retry() {
+    let mut stopped = record("transcribe");
+    stopped.status = JobStatus::Cancelled;
+    assert!(retry_block_reason(&stopped).is_none());
+    stopped.phase = Some("postprocessing".into());
+    assert!(retry_block_reason(&stopped).is_some());
+}
