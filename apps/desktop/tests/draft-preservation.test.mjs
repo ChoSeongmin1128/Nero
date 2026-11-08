@@ -558,6 +558,25 @@ test('a quit request trusts its own session when this screen has not caught up',
   page.exits[0].pending.resolve();
 });
 
+test('a quit during another action waits for it instead of being dropped', async () => {
+  const page = await openApp();
+  await page.setDevices([{id:'usb',name:'USB',isDefault:true}]);
+  const blocking = deferred();
+  page.bridge.listDevices = () => blocking.promise;
+  page.bridge.startRecording = async () => page.bridge.readSnapshot();
+  const busy = page.element('recording-controls').listeners.get('click')({target:{closest:()=>({dataset:{action:'start'}})}});
+  await tick();
+  assert.equal(page.app.state.busy, true);
+  const leaving = page.app.onQuitRequest({});
+  await tick();
+  assert.equal(page.exits.length, 0);
+  blocking.resolve([]);
+  await busy; await tick(); await tick();
+  assert.equal(page.exits[0]?.type, 'quit');
+  page.exits[0].pending.resolve();
+  await leaving;
+});
+
 test('quit commits an active transcript composition before requesting native exit', async () => {
   const page = await openApp(transcriptDocument());
   const input = page.element('segment-input');

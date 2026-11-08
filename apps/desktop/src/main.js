@@ -679,8 +679,22 @@ async function refreshDevices() {
   render();
 }
 
-async function run(action) {
-  if (state.busy) return;
+let currentRun = Promise.resolve();
+// A quit must not be dropped because another action (a drop import, a file dialog)
+// holds the screen: it waits for that action, then runs.
+async function runAfterCurrent(action) {
+  for (let waited; state.busy && currentRun !== waited;) {
+    waited = currentRun;
+    await waited.catch(() => {});
+  }
+  return run(action);
+}
+function run(action) {
+  if (state.busy) return Promise.resolve();
+  currentRun = runNow(action);
+  return currentRun;
+}
+async function runNow(action) {
   const focusedId = document.activeElement?.id;
   const focusedAction = document.activeElement?.dataset.action;
   const focusedField = document.activeElement?.dataset.field;
@@ -1424,7 +1438,7 @@ const stayOpen = () => bridge.cancelQuit().catch(() => {});
 // snapshot can be a moment behind.
 async function onQuitRequest({ sessionId = null } = {}) {
   if (!sessionId) {
-    await run(() => prepareAppLeave(() => bridge.requestQuit(null)));
+    await runAfterCurrent(() => prepareAppLeave(() => bridge.requestQuit(null)));
     await stayOpen();
     return;
   }
@@ -1445,7 +1459,7 @@ byId('quit-dialog').addEventListener('click', (event) => {
     const { sessionId } = quitQuestion;
     quitQuestion = null;
     byId('quit-dialog').close();
-    void run(() => finishEditing(() => bridge.requestQuit(sessionId))).finally(stayOpen);
+    void runAfterCurrent(() => finishEditing(() => bridge.requestQuit(sessionId))).finally(stayOpen);
   }
 });
 // Closing without confirming (button, Escape) keeps the app open.
