@@ -517,6 +517,12 @@ function saveDraft() {
   const title = draft.title.trim() || '제목 없는 회의';
   const notes = draft.notes;
   const notesChanged = notes !== draft.savedNotes;
+  // The library search reads every transcript; this save can change only whether
+  // this meeting's title or notes contain the query.
+  const query = byId('search').value.trim().toLowerCase();
+  const matches = (savedTitle, savedNotes) => Boolean(query) && `${savedTitle}\n${savedNotes}`.toLowerCase().includes(query);
+  const matchedBefore = matches(draft.savedTitle, draft.savedNotes);
+  let matchedAfter = matchedBefore;
   draft.saving = true;
   renderSaveState();
   const task = state.saveQueue.catch(() => {}).then(async () => {
@@ -536,6 +542,7 @@ function saveDraft() {
     }
     draft.savedTitle = saved.title;
     draft.savedNotes = saved.notes;
+    matchedAfter = matches(saved.title, saved.notes);
     // Text appended meanwhile (an AI answer) came back after this edit.
     if (saved.notes !== notes && draft.version === version && state.draft === draft) {
       draft.notes = saved.notes;
@@ -548,7 +555,7 @@ function saveDraft() {
     if (draft.version === version) draft.dirty = false;
   });
   state.saveQueue = task.catch(() => {});
-  return task.then(() => { clearError(true); refreshMeetingSearch(); }).catch((error) => { showError(error, true); throw error; }).finally(() => {
+  return task.then(() => { clearError(true); if (matchedAfter !== matchedBefore) refreshMeetingSearch(); }).catch((error) => { showError(error, true); throw error; }).finally(() => {
     if (draft.version === version) draft.saving = false;
     renderSaveState();
   });
