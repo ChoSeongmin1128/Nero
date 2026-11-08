@@ -91,9 +91,12 @@ pub async fn item(
                 .open(&partial)
                 .map_err(message)?
         };
+        // reqwest's own text is English; the partial file stays, so preparing again resumes.
         while let Some(chunk) = interruptible(cancel, response.chunk())
             .await?
-            .map_err(message)?
+            .map_err(|_| {
+                "모델을 받는 중 연결이 끊겼습니다. 다시 준비하면 이어받습니다.".to_string()
+            })?
         {
             bytes += chunk.len() as u64;
             if bytes > spec.bytes {
