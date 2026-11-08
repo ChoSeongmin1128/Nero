@@ -26,7 +26,7 @@ export function literalOffsets(text, query) {
   return [...text.matchAll(new RegExp(escaped, 'giu'))].map(match => match.index);
 }
 
-export function mountDocumentSearch({ byId, selectView, renderContent, ready = () => true, prepare = () => true, onError = () => {} }) {
+export function mountDocumentSearch({ byId, selectView, renderContent, ready = () => true, prepare = () => true, onError = () => {}, delay = 0, schedule = setTimeout, clear = clearTimeout }) {
   const field = byId('document-query'), container = byId('document-search');
   let opened = false, query = '', matches = [], current = -1, generation = 0;
   function refresh() {
@@ -105,15 +105,22 @@ export function mountDocumentSearch({ byId, selectView, renderContent, ready = (
   byId('document-search-toggle').addEventListener('click', toggle);
   byId('inspector-search-toggle')?.addEventListener('click', toggle);
   byId('document-search-close').addEventListener('click', () => close());
-  byId('document-search-prev').addEventListener('click', () => { void step(-1); });
-  byId('document-search-next').addEventListener('click', () => { void step(1); });
+  byId('document-search-prev').addEventListener('click', () => { void Promise.resolve(settle()).then(() => step(-1)); });
+  byId('document-search-next').addEventListener('click', () => { void Promise.resolve(settle()).then(() => step(1)); });
   field.addEventListener('compositionstart', () => { field.composing = true; });
   field.addEventListener('compositionend', () => { field.composing = false; change(); });
-  field.addEventListener('input', change);
+  // Each change re-renders the transcript, summary and notes; typing settles first.
+  let typing = null;
+  const settle = () => { if (typing == null) return null; clear(typing); typing = null; return change(); };
+  field.addEventListener('input', () => {
+    if (!delay) return change();
+    if (typing != null) clear(typing);
+    typing = schedule(() => { typing = null; void change(); }, delay);
+  });
   field.addEventListener('keydown', event => {
     if (event.isComposing || field.composing) return;
-    if (event.key === 'Escape') { event.preventDefault(); close(); }
-    if (event.key === 'Enter') { event.preventDefault(); void step(event.shiftKey ? -1 : 1); }
+    if (event.key === 'Escape') { event.preventDefault(); if (typing != null) { clear(typing); typing = null; } close(); }
+    if (event.key === 'Enter') { event.preventDefault(); const pending = settle(); void (pending ? pending.then(() => step(event.shiftKey ? -1 : 1)) : step(event.shiftKey ? -1 : 1)); }
   });
   return {
     query: () => opened ? query : '', refresh,

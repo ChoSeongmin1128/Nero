@@ -1575,7 +1575,7 @@ summaryEvidence = mountSummaryEvidence({
   },
 });
 for (const view of ['transcript', 'notes']) byId(`detail-${view}-open`).addEventListener('click', () => { state.pendingSearchIntent = null; summaryEvidence?.reset(); });
-const documentSearch = mountDocumentSearch({ byId, prepare: () => finishEditing(() => true), onError: showError, selectView: view => detail.select(view), ready: () => state.summaryLoaded && state.transcriptLoaded, renderContent() {
+const documentSearch = mountDocumentSearch({ byId, delay: 250, prepare: () => finishEditing(() => true), onError: showError, selectView: view => detail.select(view), ready: () => state.summaryLoaded && state.transcriptLoaded, renderContent() {
   const meeting = currentMeeting(); if (meeting) { renderTranscript(meeting); renderSummary(meeting); renderNotesSearch(); }
 } });
 const transcriptActions = mountTranscriptActions({ byId, bridge, finishEditing, showError, escape,

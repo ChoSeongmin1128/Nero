@@ -9,7 +9,7 @@ const UI = createRequire(import.meta.url)('../../../design-system/components.js'
 const tick = () => new Promise(setImmediate);
 function deferred() { let resolve; const promise = new Promise(yes => { resolve = yes; }); return { promise, resolve }; }
 
-function documentPage({ transcript = [{ row: '0', text: 'Alpha 하나' }, { row: '3', text: 'alpha 둘 alpha 셋' }], summary = ['Alpha 요약'], notes = 'alpha 메모 alpha', select, prepare, ready: initialReady = true } = {}) {
+function documentPage({ transcript = [{ row: '0', text: 'Alpha 하나' }, { row: '3', text: 'alpha 둘 alpha 셋' }], summary = ['Alpha 요약'], notes = 'alpha 메모 alpha', select, prepare, ready: initialReady = true, searchOptions = {} } = {}) {
   const nodes = new Map(), visits = [], scrolls = [];
   let ready = initialReady, focused = null, renders = 0, controller;
   let transcriptMarks = [], summaryMarks = [], notesMarks = [];
@@ -51,7 +51,7 @@ function documentPage({ transcript = [{ row: '0', text: 'Alpha 하나' }, { row:
     node('meeting-notes').hidden = Boolean(controller.query());
     node('notes-search-preview').hidden = !controller.query();
   }
-  controller = mountDocumentSearch({ byId: node, ready: () => ready, renderContent, prepare,
+  controller = mountDocumentSearch({ byId: node, ready: () => ready, renderContent, prepare, ...searchOptions,
     async selectView(view) {
       visits.push(view);
       const accepted = select ? await select(view) : true;
@@ -330,4 +330,20 @@ test('reset cancels a pending view transition and a rejected view change never s
   assert.equal(await blocked.controller.find('alpha', { view: 'summary' }), false);
   assert.equal(blocked.scrolls.length, 0);
   assert.equal(blocked.node('document-search').hidden, false);
+});
+
+test('typing settles before the document is searched and Enter searches at once', async () => {
+  const timers = [];
+  const page = documentPage({ searchOptions: { delay: 250, schedule: task => { timers.push(task); return timers.length; }, clear() {} } });
+  page.open(); await tick();
+  const before = page.renderCount();
+  for (const value of ['a', 'al', 'alp']) { page.node('document-query').value = value; page.node('document-query').events.input(); }
+  await tick();
+  assert.equal(page.renderCount(), before);
+  timers.at(-1)(); await tick(); await tick();
+  assert.ok(page.renderCount() > before);
+  assert.equal(page.controller.query(), 'alp');
+  page.node('document-query').value = 'alpha'; page.node('document-query').events.input();
+  await page.key('Enter'); await tick();
+  assert.equal(page.controller.query(), 'alpha');
 });
