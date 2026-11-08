@@ -727,11 +727,13 @@ async function createMeeting({ record = false } = {}) {
 async function startSelectedRecording() {
   if (activeSession()) return selectMeeting(activeSession().meetingId);
   if (!modelsReady()) return openSetup();
+  // The meeting the button was pressed on; another selected while devices load is not it.
+  const meetingId = state.selectedId;
   await saveDraft();
   await refreshDevices();
-  if (microphoneIssue()) return;
+  if (microphoneIssue() || state.selectedId !== meetingId) return;
   if (activeSession()) return selectMeeting(activeSession().meetingId);
-  acceptSnapshot(await bridge.startRecording(state.selectedId, state.deviceId));
+  acceptSnapshot(await bridge.startRecording(meetingId, state.deviceId));
 }
 
 function onEdit() {

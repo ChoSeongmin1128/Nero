@@ -1001,6 +1001,22 @@ test('settings storage failure preserves the microphone choice and reports recov
   assert.equal(page.element('settings-microphone').value, '');
 });
 
+test('a recording started on one meeting never lands on another chosen while devices load', async () => {
+  const page = await openApp();
+  let started = null;
+  page.bridge.startRecording = async (meetingId, deviceId) => { started = {meetingId,deviceId}; return page.bridge.readSnapshot(); };
+  await page.setDevices([{id:'usb',name:'USB',isDefault:true}]);
+  page.app.state.deviceId = 'usb';
+  const devices = deferred();
+  page.bridge.listDevices = () => devices.promise;
+  const click = page.element('recording-controls').listeners.get('click')({target:{closest:()=>({dataset:{action:'start'}})}});
+  await tick();
+  page.app.state.selectedId = 'b';
+  devices.resolve([{id:'usb',name:'USB',isDefault:true}]);
+  await click; await tick();
+  assert.equal(started, null);
+});
+
 test('starting a recording rechecks device availability and uses the saved preference', async () => {
   const page = await openApp();
   let started = null;
