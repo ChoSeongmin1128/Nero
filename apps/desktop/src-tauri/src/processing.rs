@@ -245,7 +245,9 @@ fn retry_block_reason(record: &JobRecord) -> Option<&'static str> {
     // Stopped after its transcript was saved (during terminology correction with speaker
     // analysis off): the meeting has changed since, so a retry would only be refused.
     if record.kind == "transcribe" && record.phase.as_deref() == Some("postprocessing") {
-        return Some("음성 기록은 이미 저장되었습니다. 다시 변환하려면 회의에서 변환을 새로 시작해 주세요.");
+        return Some(
+            "음성 기록은 이미 저장되었습니다. 다시 변환하려면 회의에서 변환을 새로 시작해 주세요.",
+        );
     }
     None
 }
@@ -3231,19 +3233,37 @@ impl Processing {
                     .map_err(message)?
                     .ok_or("음성 기록을 찾을 수 없습니다.")?;
                 this.verify_speaker_continuation(&core, &meeting_id, &source)?;
-                if let Some(live) = live
+                let live_draft = live
                     .as_ref()
                     .filter(|live| live.speaker.join("receipt.json").is_file())
-                {
-                    let draft = crate::diarization::completed_live(
-                        &this,
-                        source,
-                        prepared.path(),
-                        &live.speaker,
-                        &live.backend,
-                        &cancel,
-                    )
-                    .map_err(|e| e.message)?;
+                    .map(|live| {
+                        crate::diarization::completed_live(
+                            &this,
+                            source.clone(),
+                            prepared.path(),
+                            &live.speaker,
+                            &live.backend,
+                            &cancel,
+                        )
+                    });
+                // A live speaker result that does not verify is set aside and the whole
+                // recording is analyzed instead; cancelling, a changed source or a storage
+                // failure would fail that analysis too.
+                let live_draft = match live_draft {
+                    Some(Err(error))
+                        if matches!(
+                            error.kind,
+                            crate::failure::FailureKind::Cancelled
+                                | crate::failure::FailureKind::SourceChanged
+                                | crate::failure::FailureKind::Storage
+                        ) =>
+                    {
+                        return Err(error.message);
+                    }
+                    Some(Ok(draft)) => Some(draft),
+                    _ => None,
+                };
+                if let Some(draft) = live_draft {
                     prepared.verify(&audio, &cancel).map_err(|e| e.message)?;
                     this.commit_transcript_result(&cancel, || {
                         core.apply_diarization(&meeting_id, draft).map_err(message)
