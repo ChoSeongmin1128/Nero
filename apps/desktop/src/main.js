@@ -1112,10 +1112,11 @@ function renderTranscript(meeting) {
   const key = `${transcriptRenderKey()}:${liveRows.length ? JSON.stringify(liveRows) : ''}`;
   if (key !== state.transcriptKey) {
     state.transcriptKey = key;
-    const scroll = byId('transcript-scroll').scrollTop;
+    // The detail body is what scrolls; the transcript box itself does not.
+    const scroll = byId('detail-body-scroll').scrollTop;
     byId('transcript-rows').innerHTML = liveRows.length ? liveRows.map((row,index)=>globalThis.NeroUI.transcriptRow({ index, time:row.start == null ? '' : duration(row.start*1000),start:row.start ?? 0,text:row.text,originalText:row.text,editing:false,speaker:row.speaker ? `화자 ${row.speaker}` : '미지정',speakerVisible:row.speaker != null,searchQuery:'',disabled:true })).join('') : (draft?.doc?.segments || []).map((segment,index) => globalThis.NeroUI.transcriptRow({ index, time: duration(segment.start * 1000), start: segment.start, text: segment.text, originalText: segment.originalText, editing: state.transcriptEditing === index, speaker: speakers.label(segment), speakerVisible: true, searchQuery: documentSearch.query(), disabled: ownJob || state.editLocks > 0 })).join('');
     byId('transcript-rows').querySelectorAll('textarea').forEach(resizeTranscriptEditor);
-    byId('transcript-scroll').scrollTop = scroll;
+    byId('detail-body-scroll').scrollTop = scroll;
   }
   byId('transcript-rows').querySelectorAll('textarea').forEach((input) => { input.readOnly = ownJob || state.editLocks > 0; });
   byId('transcript-rows').querySelectorAll('[data-transcript-edit], [data-transcript-done], [data-transcript-cancel], [data-speaker-edit]').forEach(input => { input.disabled = liveRows.length > 0 || ownJob || state.editLocks > 0; });
