@@ -811,14 +811,14 @@ impl Processing {
     // Records the existing-user offer decision first, so a failed start never leaves an
     // unrecorded switch running. Accepting then starts the same flow as selecting.
     pub fn respond_speech_offer(self: &Arc<Self>, accept: bool) -> Result<Progress, String> {
-        self.decide_speech_offer(if accept {
-            crate::speech_switch::Decision::Accepted
-        } else {
-            crate::speech_switch::Decision::Declined
-        })?;
         if accept {
-            return self.request_speech_engine(SpeechEngine::QwenKo);
+            // The offer is used up only once the switch has started; a refused switch
+            // (no space, the same work already queued) leaves it to accept again.
+            let progress = self.request_speech_engine(SpeechEngine::QwenKo)?;
+            self.decide_speech_offer(crate::speech_switch::Decision::Accepted)?;
+            return Ok(progress);
         }
+        self.decide_speech_offer(crate::speech_switch::Decision::Declined)?;
         Ok(self.snapshot())
     }
     fn decide_speech_offer(&self, decision: crate::speech_switch::Decision) -> Result<(), String> {
@@ -3950,6 +3950,11 @@ mod tests {
                 offer.download_bytes,
                 manifest.files.iter().map(|file| file.bytes).sum::<u64>()
             );
+            // A switch that cannot start keeps the offer to accept again.
+            *process.platform_supported_override.lock().unwrap() = Some(false);
+            assert!(process.respond_speech_offer(true).is_err());
+            *process.platform_supported_override.lock().unwrap() = Some(true);
+            assert!(process.snapshot().speech_offer.is_some());
             process.respond_speech_offer(false).unwrap();
             assert_eq!(process.snapshot().speech_offer, None);
             assert_eq!(process.speech_engine(), SpeechEngine::Nemotron);
