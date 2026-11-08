@@ -337,7 +337,8 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
       .sort((a, b) => (b.recordedAt ?? b.createdAt ?? 0) - (a.recordedAt ?? a.createdAt ?? 0) || a.id.localeCompare(b.id));
     const disabled = Boolean(state().libraryBusy || !state().connected);
     const activeId = state().libraryOpen ? null : state().selectedId;
-    const key = JSON.stringify([view, query(), disabled, activeId, snapshot.folders, meetings]);
+    // Only what the rows show: notes and attendees change on every autosave.
+    const key = JSON.stringify([view, query(), disabled, activeId, snapshot.folders, meetings.map(meeting => [meeting.id, meeting.title, meeting.folderId, meeting.recordedAt, meeting.createdAt, meeting.audio?.frames, meeting.audio?.sampleRate, meeting.deletedAt])]);
     if (key === previewKey) return;
     previewKey = key;
     const focused = owner.activeElement?.closest?.('[data-recent-row]')?.dataset.recentRow;
