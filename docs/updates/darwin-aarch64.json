@@ -1,9 +1,9 @@
 {
-  "version": "0.0.3+64",
+  "version": "0.0.4+65",
   "platforms": {
     "darwin-aarch64": {
-      "url": "https://github.com/ChoSeongmin1128/Nero/releases/download/v0.0.3/Nero-0.0.3.app.tar.gz",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUQXp2bmUvYXgwNmtNVTVDU1lDRWFxSUtSeGcrdDJyRUxFMXJESUluL3RIUVNsZXkyK1hYOHkzZnlzMWVWb242RjIvQlBXeHpaUWhBRko3dDM1MDNBWEFKdmhjUnplbHdVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk0MzcwMTcwCWZpbGU6TmVyby0wLjAuMy5hcHAudGFyLmd6CXZlcnNpb246MC4wLjMrNjQKWGVKMmVMMzAyUlRlSW9ibTZjdTMrcE95ZG12Umk5WFpqbm1ST3FBbGN0T05OVGVIMGZ1cGxjdDdMUDVEbG9SVnVoclQxbWc4cU1DR3VTRDRyMDhyQkE9PQo="
+      "url": "https://github.com/ChoSeongmin1128/Nero/releases/download/v0.0.4/Nero-0.0.4.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUQXp2bmUvYXgwNmxRWlc5SGc2TzBYRndrRkNkTnpCUmN4ZkM5RzgxRVdkRkYwdk53c21Cd295ek9rT2VMVnVYczBGa1dNSU9LRW5JWWw0dlIyUUlTT2VXK0U2VXdjeFFjPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk0Mzg0OTU1CWZpbGU6TmVyby0wLjAuNC5hcHAudGFyLmd6CXZlcnNpb246MC4wLjQrNjUKVFE1Y3F3aWk5TndJL2JrT1Q2aWNTMlIydkoyWTZwRjF4RlMrMldsUU9KYmlEUW44NTcvWGl1bE5kbUFZQ2JteC93YlR1QWhURW9Iekw5UFVwcGZiREE9PQo="
     }
   }
 }
