@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
@@ -74,4 +75,44 @@ test('meeting, folder and non-clock session changes remain visible', () => {
 test('empty folders and absent sessions retain their existing normalized identity', () => {
   const initial = snapshotSignatures({ meetings: [] });
   assert.deepEqual(compareSnapshotSignatures(initial, snapshotSignatures({ revision: 9, meetings: [], folders: [], session: null })), { changed: false, timerOnly: true });
+});
+
+// Tauri delivers an event to a listener registered without a target whatever window it
+// was emitted to (`match_any_or_filter`), so each window must listen to its own event name.
+test('each window keeps only the snapshot published for it', async () => {
+  const main = await readFile(new URL('../src-tauri/src/main.rs', import.meta.url), 'utf8');
+  const publish = main.slice(main.indexOf('fn publish('), main.indexOf('\n}\n', main.indexOf('fn publish(')));
+  const emits = [...publish.matchAll(/emit_to\(\s*"([^"]+)",\s*"([^"]+)"/g)].map(([, label, event]) => ({ label, event }));
+  assert.deepEqual(emits.map(emit => emit.label), ['main', 'recorder']);
+  const stub = 'export const isTauri = () => true; export const convertFileSrc = value => value; export const invoke = async () => { throw new Error("unexpected native call"); }; export const listen = async (name, handler, options) => globalThis.testListen(name, handler, options);';
+  const bundle = await build({ entryPoints: [fileURLToPath(new URL('../src/bridge.js', import.meta.url))], bundle: true, write: false, format: 'esm', plugins: [{ name: 'tauri-targets', setup(builder) {
+    builder.onResolve({ filter: /^@tauri-apps\/api\// }, args => ({ path: args.path, namespace: 'tauri-targets' }));
+    builder.onLoad({ filter: /.*/, namespace: 'tauri-targets' }, () => ({ contents: stub }));
+  } }] });
+  const webviews = {};
+  async function open(label, subscribe) {
+    const listeners = webviews[label] = [];
+    globalThis.testListen = async (name, handler, options) => { listeners.push({ name, handler, target: options?.target ?? { kind: 'Any' } }); return () => {}; };
+    const bridge = await import(`data:text/javascript;base64,${Buffer.from(`${bundle.outputFiles[0].text}\n// ${label}`).toString('base64')}`);
+    const received = [];
+    await bridge[subscribe](snapshot => received.push(snapshot));
+    return received;
+  }
+  const emitTo = (label, name, payload) => {
+    for (const listeners of Object.values(webviews)) {
+      for (const listener of listeners) {
+        const targeted = listener.target.kind === 'Any' || listener.target.label === label;
+        if (listener.name === name && targeted) listener.handler({ payload });
+      }
+    }
+  };
+  const mainReceived = await open('main', 'subscribeSnapshots');
+  const recorderReceived = await open('recorder', 'subscribeRecorderSnapshots');
+  delete globalThis.testListen;
+  const full = { revision: 7, meetings: [{ id: 'a', title: 'A', notes: 'Private' }, { id: 'b', title: 'B', notes: '' }], folders: [{ id: 'f', name: 'Folder' }], session: null };
+  const reduced = { revision: 7, meetings: [], folders: [], session: null };
+  for (const { label, event } of emits) emitTo(label, event, label === 'main' ? full : reduced);
+  assert.deepEqual(mainReceived.at(-1), full);
+  assert.ok(mainReceived.every(snapshot => snapshot.meetings.length === 2));
+  assert.deepEqual(recorderReceived, [reduced]);
 });

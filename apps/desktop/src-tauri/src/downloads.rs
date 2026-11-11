@@ -28,7 +28,7 @@ pub async fn item(
             )
             .map_err(message)?;
         } else {
-            let mut buffer = [0u8; 1024 * 1024];
+            let mut buffer = vec![0u8; 1024 * 1024];
             loop {
                 cancelled(cancel)?;
                 let n = prior.read(&mut buffer).map_err(message)?;
@@ -146,6 +146,45 @@ pub async fn item(
 mod tests {
     use super::*;
     use std::net::TcpListener;
+    // Model jobs run on threads with a 2 MiB stack; 0.0.3 kept a 1 MiB read buffer on the
+    // stack in both of these nested calls and aborted the app on every model check.
+    #[test]
+    fn model_checks_fit_a_small_thread_stack() {
+        std::thread::Builder::new()
+            .stack_size(512 * 1024)
+            .spawn(|| {
+                let temp = tempfile::tempdir().unwrap();
+                let cancel = AtomicBool::new(false);
+                let spec = ModelFile {
+                    name: "model.bin".into(),
+                    bytes: 5,
+                    sha256: format!("{:x}", Sha256::digest(b"model")),
+                };
+                let destination = temp.path().join("model.bin");
+                fs::write(temp.path().join("model.bin.part"), b"model").unwrap();
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                runtime.block_on(async {
+                    assert!(!crate::processing::matches_file(&destination, &spec, &cancel));
+                    item(
+                        &reqwest::Client::new(),
+                        "http://unused",
+                        temp.path(),
+                        &spec,
+                        &cancel,
+                        |_| {},
+                    )
+                    .await
+                    .unwrap();
+                    assert!(crate::processing::matches_file(&destination, &spec, &cancel));
+                });
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
     #[test]
     fn range_resume_checks_full_hash_and_preserves_invalid_bytes() {
         let temp = tempfile::tempdir().unwrap();

@@ -155,6 +155,36 @@ pub struct SummaryCitations {
     pub audio_available: bool,
     pub entries: Vec<SummaryCitation>,
 }
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SummaryCitationTimes {
+    pub summary_id: String,
+    // Index is the one-based citation reference minus one.
+    pub starts: Vec<Option<f64>>,
+}
+// Zero-length and context-only utterances carry no time of their own: a context
+// segment spans its whole recognition chunk, so its start is not when it was said.
+fn citation_starts(source: &Transcript) -> Vec<Option<f64>> {
+    let context = source
+        .source
+        .as_ref()
+        .and_then(|source| source.recognition_report.as_ref())
+        .map(|report| report.timing_context_segments.as_slice())
+        .unwrap_or_default();
+    source
+        .segments
+        .iter()
+        .map(|segment| {
+            let timed = segment.start.is_finite()
+                && segment.start >= 0.0
+                && segment.end > segment.start
+                && !segment
+                    .source_index
+                    .is_some_and(|index| context.contains(&index));
+            timed.then_some(segment.start)
+        })
+        .collect()
+}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SummaryArchive {
@@ -444,20 +474,12 @@ impl Engine {
         )?;
         Ok(Some(SummaryView { document, stale }))
     }
-    pub fn summary_citations(
+    // The active summary and its frozen source, read without writes.
+    fn citation_archive(
         &self,
         id: &str,
         summary_id: &str,
-        references: &[u32],
-    ) -> Result<SummaryCitations> {
-        self.require_active_meeting(id)?;
-        store::validate_id(id)?;
-        store::validate_id(summary_id)?;
-        if references.is_empty() || references.len() > MAX_SUMMARY_CITATION_REFERENCES {
-            return Err(CoreError::InvalidInput(
-                "근거 번호는 1개 이상 32개 이하로 요청해 주세요.".into(),
-            ));
-        }
+    ) -> Result<(PathBuf, Vec<u8>, Summary, SummaryArchive)> {
         let directory = location(id)?;
         let active_bytes = citation_bytes(&self.store.root, &directory.join("current.json"))?;
         let active: Summary =
@@ -474,6 +496,37 @@ impl Engine {
                 &directory.join(summary_id).join("run.json"),
             )?,
         )?;
+        Ok((directory, active_bytes, active, archive))
+    }
+    pub fn summary_citation_times(
+        &self,
+        id: &str,
+        summary_id: &str,
+    ) -> Result<SummaryCitationTimes> {
+        self.require_active_meeting(id)?;
+        store::validate_id(id)?;
+        store::validate_id(summary_id)?;
+        let (_, _, active, archive) = self.citation_archive(id, summary_id)?;
+        Ok(SummaryCitationTimes {
+            summary_id: active.id,
+            starts: citation_starts(&archive.source),
+        })
+    }
+    pub fn summary_citations(
+        &self,
+        id: &str,
+        summary_id: &str,
+        references: &[u32],
+    ) -> Result<SummaryCitations> {
+        self.require_active_meeting(id)?;
+        store::validate_id(id)?;
+        store::validate_id(summary_id)?;
+        if references.is_empty() || references.len() > MAX_SUMMARY_CITATION_REFERENCES {
+            return Err(CoreError::InvalidInput(
+                "근거 번호는 1개 이상 32개 이하로 요청해 주세요.".into(),
+            ));
+        }
+        let (directory, active_bytes, active, archive) = self.citation_archive(id, summary_id)?;
         if references
             .iter()
             .any(|reference| *reference == 0 || *reference as usize > archive.source.segments.len())
@@ -1313,6 +1366,70 @@ mod tests {
         let value = serde_json::to_value(result).unwrap();
         assert!(value.get("sourceVersion").is_some());
         assert!(value["entries"][0].get("currentSegmentIds").is_some());
+    }
+
+    #[test]
+    fn citation_times_follow_the_frozen_source_without_writes() {
+        let (_temp, mut engine, id, _) = setup();
+        let source = engine.commit_transcript(&id, None, output()).unwrap();
+        let summary = engine
+            .commit_summary(&id, draft(source.clone(), None, "요약 [1]"))
+            .unwrap();
+        let archive = archived_run(&engine, &id, &summary);
+        let before = std::fs::read(&archive).unwrap();
+        let times = engine.summary_citation_times(&id, &summary.id).unwrap();
+        assert_eq!(times.summary_id, summary.id);
+        assert_eq!(times.starts.len(), source.segments.len());
+        assert_eq!(times.starts[0], Some(source.segments[0].start));
+        assert_eq!(std::fs::read(archive).unwrap(), before);
+        assert!(matches!(
+            engine.summary_citation_times(&id, &Uuid::new_v4().to_string()),
+            Err(CoreError::InvalidState(_))
+        ));
+        let value = serde_json::to_value(times).unwrap();
+        assert!(value.get("summaryId").is_some() && value["starts"].is_array());
+    }
+
+    #[test]
+    fn context_only_and_zero_length_utterances_have_no_citation_time() {
+        let segment = |start: f64, end: f64, index: u32| TranscriptSegment {
+            id: Uuid::new_v4().to_string(),
+            start,
+            end,
+            original_text: "원문".into(),
+            text: "원문".into(),
+            speaker_id: None,
+            source_index: Some(index),
+        };
+        let (_temp, mut engine, id, _) = setup();
+        let mut source = engine.commit_transcript(&id, None, output()).unwrap();
+        source.segments = vec![
+            segment(754.2, 756.0, 0),
+            segment(800.0, 800.0, 1),
+            segment(780.0, 840.0, 2),
+            segment(f64::NAN, 1.0, 3),
+            segment(-1.0, 1.0, 4),
+        ];
+        source.source = Some(crate::TranscriptSource {
+            raw_sha256: "a".repeat(64),
+            projector_version: "test".into(),
+            association: "test".into(),
+            speaker_scope: None,
+            chunking_policy: None,
+            recognition_report: Some(crate::RecognitionReport {
+                sample_rate: 16_000,
+                input_frames: 0,
+                chunks: Vec::new(),
+                timing_context_segments: vec![2],
+                normalized_end_segments: Vec::new(),
+            }),
+        });
+        assert_eq!(
+            citation_starts(&source),
+            vec![Some(754.2), None, None, None, None]
+        );
+        source.source = None;
+        assert_eq!(citation_starts(&source)[2], Some(780.0));
     }
 
     #[test]

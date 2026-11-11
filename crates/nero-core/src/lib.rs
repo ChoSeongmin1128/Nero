@@ -32,8 +32,9 @@ pub use library::{Folder, FolderDeleteRequest, FolderMeetingState};
 pub use presentation::{DocumentFormat, DocumentKind, ExportedDocument};
 pub use store::{CaptureQuality, CaptureQualityEvent, CaptureQualityEventKind};
 pub use summary::{
-    ExternalSummaryProducer, Summary, SummaryCitation, SummaryCitations, SummaryContext,
-    SummaryDraft, SummaryInput, SummaryProvenance, SummaryView, MAX_SUMMARY_CITATION_REFERENCES,
+    ExternalSummaryProducer, Summary, SummaryCitation, SummaryCitationTimes, SummaryCitations,
+    SummaryContext, SummaryDraft, SummaryInput, SummaryProvenance, SummaryView,
+    MAX_SUMMARY_CITATION_REFERENCES,
 };
 pub use terminology::{
     discover_candidates, TerminologyCandidate, TerminologyDecision, TerminologyDraft,
@@ -587,6 +588,14 @@ impl CoreHandle {
     ) -> Result<ExportedDocument> {
         let id = meeting_id.to_owned();
         self.call(move |engine| engine.export_document(&id, kind, format, include_citations))
+    }
+    pub fn summary_citation_times(
+        &self,
+        id: &str,
+        summary_id: &str,
+    ) -> Result<SummaryCitationTimes> {
+        let (id, summary_id) = (id.to_owned(), summary_id.to_owned());
+        self.call(move |engine| engine.summary_citation_times(&id, &summary_id))
     }
     pub fn summary_citations(
         &self,

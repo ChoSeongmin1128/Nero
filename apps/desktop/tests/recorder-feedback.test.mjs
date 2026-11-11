@@ -11,7 +11,7 @@ const bundled = await build({
   entryPoints: [root + 'src/recorder.js'], bundle: true, write: false, format: 'iife',
   plugins: [{ name: 'recorder-native-boundary', setup(builder) {
     builder.onResolve({ filter: /^\.\/bridge\.js$/ }, () => ({ path: 'bridge', namespace: 'test-bridge' }));
-    builder.onLoad({ filter: /.*/, namespace: 'test-bridge' }, () => ({ contents: ['subscribeSnapshots', 'readSnapshot', 'openMeeting', 'pauseRecording', 'resumeRecording', 'stopRecording', 'dragRecorder', 'hideRecorder'].map(name => `export const ${name} = (...args) => globalThis.testBridge.${name}(...args);`).join('\n') }));
+    builder.onLoad({ filter: /.*/, namespace: 'test-bridge' }, () => ({ contents: ['subscribeRecorderSnapshots', 'readSnapshot', 'openMeeting', 'pauseRecording', 'resumeRecording', 'stopRecording', 'dragRecorder', 'hideRecorder'].map(name => `export const ${name} = (...args) => globalThis.testBridge.${name}(...args);`).join('\n') }));
     builder.onLoad({ filter: /[\\/]src[\\/]recorder\.js$/ }, () => ({ contents: source.match(/^import .*;$/gm).join('\n') + '\nglobalThis.recorderBoot = (async () => {\n' + source.replace(/^import .*;\r?\n/gm, '') + '\n})();' }));
   } }],
 });
@@ -29,7 +29,7 @@ async function open(t, initial) {
   const calls = [];
   const subscriptions = [];
   window.testBridge = {
-    subscribeSnapshots: async callback => { accept = callback; subscriptions.push(callback); },
+    subscribeRecorderSnapshots: async callback => { accept = callback; subscriptions.push(callback); },
     readSnapshot: async () => initial,
     openMeeting: async (...args) => calls.push(['open', ...args]),
     pauseRecording: async id => { calls.push(['pause', id]); return { ...initial, revision: 2, session: { ...initial.session, state: 'paused' } }; },

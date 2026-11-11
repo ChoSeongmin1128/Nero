@@ -142,6 +142,25 @@ test('summary groups adjacent comma and bounded range citations without altering
   assert.doesNotMatch(UI.summaryDocument('`[1]` \\[2] [3](url) ![4](url) [5][name]'), /<button/);
 });
 
+test('summary citations show the first timed utterance and keep numbers only without a time', () => {
+  const starts = [754.9, null, 3723.2, 90];
+  const citationTime = reference => starts[reference - 1] ?? null;
+  globalThis.NeroIcons = name => `<svg data-icon="${name}"></svg>`;
+  const html = UI.summaryDocument('결정 [1]. 묶음 [2, 4]. 시각 없음 [2]. 긴 회의 [3]. 범위 밖 [9]', { citationTime, searchQuery: '1' });
+  delete globalThis.NeroIcons;
+  const labels = [...html.matchAll(/class="source-reference-label" aria-hidden="true">([\s\S]*?)<\/span><span class="sr-only">/g)].map(match => match[1].replace('<svg data-icon="play"></svg>', '▷').replace(/<\/?span>/g, ''));
+  assert.deepEqual(labels, ['▷12:34', '▷01:30', '[1]', '▷1:02:03', '[2]']);
+  assert.match(html, /title="12:34 발언 확인" aria-label="12:34 발언 확인"/);
+  assert.match(html, /aria-label="01:30 발언 외 1개 확인"/);
+  assert.match(html, /aria-label="2번 발언 확인"/);
+  assert.equal((html.match(/source-reference has-time/g) || []).length, 3);
+  assert.match(html, /data-summary-citations="2,4"/);
+  assert.match(html, /<span class="sr-only">\[<mark class="search-match"[^>]*>1<\/mark>\]<\/span>/);
+  assert.equal(UI.summaryDocument('결정 [1]'), UI.summaryDocument('결정 [1]', { citationTime: null }));
+  assert.doesNotMatch(UI.summaryDocument('결정 [1]', { citationTime: () => -1 }), /has-time/);
+  assert.doesNotMatch(UI.summaryDocument('결정 [1]', { citationTime: () => Number.NaN }), /has-time/);
+});
+
 test('summary keeps repeated references with their separate claims instead of global deduplication', () => {
   const html = UI.summaryDocument('첫 주장 [2]. 다른 주장 [2].\n\n- 항목 [1] [1, 3]\n- 다른 항목 [3]');
   assert.equal((html.match(/data-summary-citations="2"/g) || []).length, 2);

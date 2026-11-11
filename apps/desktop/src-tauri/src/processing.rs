@@ -484,7 +484,7 @@ pub(super) fn matches_file(path: &Path, item: &ModelFile, cancel: &AtomicBool) -
         return false;
     }
     let mut hash = Sha256::new();
-    let mut buffer = [0u8; 1024 * 1024];
+    let mut buffer = vec![0u8; 1024 * 1024];
     loop {
         if cancel.load(Ordering::Acquire) {
             return false;
@@ -533,6 +533,8 @@ impl Drop for Worker {
 
 impl Processing {
     pub fn new(root: PathBuf, resources: PathBuf) -> Arc<Self> {
+        let speech_file = root.join("preferences/speech.json");
+        let preference_unset = !speech_file.exists() && !speech_file.is_symlink();
         let (speech_engine, speaker_enabled, apple_speech_variant, speech_preference_error) =
             match crate::speech_choice::load(&root) {
                 Ok(preference) => (
@@ -627,6 +629,23 @@ impl Processing {
             live: Mutex::new(None),
             live_completed: Mutex::new(HashMap::new()),
         });
+        // Earlier releases kept the Nemotron default implicit and wrote speech.json only for
+        // an explicit choice. A library that already prepared it keeps it, pinned once, so a
+        // newer default never sends an existing user back to setup.
+        if preference_unset
+            && process.speech_engine() != SpeechEngine::Nemotron
+            && !process.model_ready_for(process.speech_engine())
+            && process.model_ready_for(SpeechEngine::Nemotron)
+            && crate::speech_choice::save(
+                &process.root,
+                SpeechEngine::Nemotron,
+                process.speaker_enabled(),
+                None,
+            )
+            .is_ok()
+        {
+            *process.speech_engine.lock().unwrap() = SpeechEngine::Nemotron;
+        }
         let working = process.speech_preference_error.lock().unwrap().is_none()
             && process.model_ready_for(process.speech_engine());
         process.offer_eligible.store(working, Ordering::Release);
@@ -813,18 +832,29 @@ impl Processing {
         self: &Arc<Self>,
         engine: SpeechEngine,
     ) -> Result<Progress, String> {
+        self.request_speech_engine_from(engine, false)
+    }
+    fn request_speech_engine_from(
+        self: &Arc<Self>,
+        engine: SpeechEngine,
+        from_offer: bool,
+    ) -> Result<Progress, String> {
         if !engine.offered() && engine != self.speech_engine() {
             return Err("이전 전사 모델은 새로 선택할 수 없습니다. MOSS, Qwen 또는 macOS 기본 전사를 선택해 주세요.".into());
         }
         let _switch = self.speech_switch_gate.lock().unwrap();
         let speaker_enabled = self.speaker_enabled();
-        let variant = (engine == SpeechEngine::AppleSpeech)
-            .then(|| self.apple_speech_variant())
-            .flatten();
-        if engine == SpeechEngine::AppleSpeech {
-            *self.apple_speech.lock().unwrap() =
-                crate::apple_speech::probe(&self.resources, variant);
-        }
+        // Someone moving from another engine has no saved variant; the probe resolves the
+        // supported one, which the waiting switch and its setup job then freeze.
+        let variant = if engine == SpeechEngine::AppleSpeech {
+            let saved = self.apple_speech_variant();
+            let status = crate::apple_speech::probe(&self.resources, saved);
+            let variant = saved.or(status.variant);
+            *self.apple_speech.lock().unwrap() = status;
+            variant
+        } else {
+            None
+        };
         let pending = crate::speech_switch::Pending::new(engine, speaker_enabled, variant);
         let previous = *self.speech_switch.lock().unwrap();
         let preparing = self
@@ -859,7 +889,8 @@ impl Processing {
         let working = self.speech_preference_error.lock().unwrap().is_none()
             && self.model_ready_for(self.speech_engine());
         // A deliberate move to another engine, with Qwen listed as recommended, answers the offer.
-        let answers_offer = engine != SpeechEngine::QwenKo && engine != self.speech_engine();
+        let answers_offer =
+            !from_offer && engine != SpeechEngine::QwenKo && engine != self.speech_engine();
         *self.speech_switch_error.lock().unwrap() = None;
         if !working || (self.model_ready_for(engine) && self.speakers_ready(speaker_enabled)) {
             self.set_speech_selection(engine, speaker_enabled, variant)?;
@@ -929,7 +960,7 @@ impl Processing {
         if accept {
             // The offer is used up only once the switch has started; a refused switch
             // (no space, the same work already queued) leaves it to accept again.
-            let progress = self.request_speech_engine(SpeechEngine::Moss)?;
+            let progress = self.request_speech_engine_from(SpeechEngine::Moss, true)?;
             self.decide_speech_offer(crate::speech_switch::Decision::Accepted)?;
             return Ok(progress);
         }
@@ -2439,8 +2470,11 @@ impl Processing {
         let this = self.clone();
         let job_id = id.clone();
         let preparation = model_job(&job.record.kind);
+        // Jobs run whole download and recognition futures on this thread; the default
+        // 2 MiB left no margin, and an overflow aborts the app instead of failing the job.
         let handle = thread::Builder::new()
             .name(format!("nero-job-{id}"))
+            .stack_size(8 * 1024 * 1024)
             .spawn(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     if let Some(validate) = job.validate {
@@ -4467,6 +4501,126 @@ mod tests {
             process.cancel_speech_switch().unwrap();
             assert_eq!(process.snapshot().speech_switch, None);
             assert_eq!(process.speech_engine(), SpeechEngine::Nemotron);
+        }
+
+        #[test]
+        fn an_implicit_earlier_nemotron_default_stays_after_the_default_changes() {
+            let (_temporary, process) = qwen_device();
+            if SpeechEngine::fresh_default() == SpeechEngine::Nemotron
+                || !process.supported_for(SpeechEngine::Nemotron)
+            {
+                return;
+            }
+            // A library from an earlier release that never saved an explicit choice.
+            let speech = process.root.join("preferences/speech.json");
+            let _ = fs::remove_file(&speech);
+            let fresh = Processing::new(process.root.clone(), process.resources.clone());
+            assert_eq!(fresh.speech_engine(), SpeechEngine::fresh_default());
+            assert!(!speech.exists());
+            ready(&process, SpeechEngine::Nemotron);
+            let upgraded = Processing::new(process.root.clone(), process.resources.clone());
+            *upgraded.platform_supported_override.lock().unwrap() = Some(true);
+            assert_eq!(upgraded.speech_engine(), SpeechEngine::Nemotron);
+            let saved = crate::speech_choice::load(&process.root).unwrap();
+            assert_eq!(saved.engine, SpeechEngine::Nemotron);
+            assert!(saved.speaker_enabled);
+            assert!(upgraded.snapshot().model_ready);
+            if upgraded.supported_for(SpeechEngine::Moss) {
+                assert_eq!(
+                    upgraded.snapshot().speech_offer.map(|offer| offer.engine),
+                    Some(SpeechEngine::Moss)
+                );
+            }
+            // A prepared default that was never saved is kept as well.
+            let _ = fs::remove_file(&speech);
+            ready(&process, SpeechEngine::fresh_default());
+            let prepared = Processing::new(process.root.clone(), process.resources.clone());
+            assert_eq!(prepared.speech_engine(), SpeechEngine::fresh_default());
+            assert!(!speech.exists());
+            // An explicit choice saved since is never replaced.
+            upgraded
+                .set_speech_selection(SpeechEngine::Moss, true, None)
+                .ok();
+            let explicit = crate::speech_choice::load(&process.root).unwrap().engine;
+            let reopened = Processing::new(process.root.clone(), process.resources.clone());
+            assert_eq!(reopened.speech_engine(), explicit);
+        }
+
+        #[test]
+        fn accepting_the_offer_is_recorded_as_accepted() {
+            let (_temporary, process) = qwen_device();
+            if !process.supported_for(SpeechEngine::Moss) {
+                return;
+            }
+            ready(&process, SpeechEngine::Nemotron);
+            process
+                .set_speech_selection(SpeechEngine::Nemotron, false, None)
+                .unwrap();
+            let process = Processing::new(process.root.clone(), process.resources.clone());
+            *process.platform_supported_override.lock().unwrap() = Some(true);
+            assert!(process.snapshot().speech_offer.is_some());
+            process.respond_speech_offer(true).unwrap();
+            let offers: serde_json::Value = serde_json::from_slice(
+                &fs::read(process.root.join("preferences/speech-offers.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                offers["decisions"][crate::speech_switch::MOSS_OFFER]["decision"],
+                "accepted"
+            );
+            process.cancel_speech_switch().unwrap();
+        }
+
+        #[test]
+        fn moving_to_macos_transcription_freezes_the_supported_variant() {
+            use std::os::unix::fs::PermissionsExt;
+            let (_temporary, process) = qwen_device();
+            if !process.supported_for(SpeechEngine::Nemotron) {
+                return;
+            }
+            let helper = process
+                .resources
+                .join("native/apple-speech/nero-apple-speech");
+            fs::create_dir_all(helper.parent().unwrap()).unwrap();
+            let availability = serde_json::json!({"supported":true,"ready":false,"locale":"ko-KR","assetStatus":"supported",
+                "message":"Synthetic asset","variant":"speechTranscriber","speechAvailable":true,
+                "speechLocaleSupported":true,"dictationLocaleSupported":true});
+            fs::write(
+                &helper,
+                format!("#!/bin/sh\ncase \"$1\" in\nstatus) printf '%s' '{availability}' ;;\n*) exit 23 ;;\nesac\n"),
+            )
+            .unwrap();
+            fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).unwrap();
+            if !crate::apple_speech::installed(&process.resources) {
+                return;
+            }
+            ready(&process, SpeechEngine::Nemotron);
+            process
+                .set_speech_selection(SpeechEngine::Nemotron, false, None)
+                .unwrap();
+            process
+                .request_speech_engine(SpeechEngine::AppleSpeech)
+                .unwrap();
+            let pending = process.speech_switch.lock().unwrap().unwrap();
+            assert_eq!(pending.target, SpeechEngine::AppleSpeech);
+            assert_eq!(
+                pending.apple_speech_variant,
+                Some(AppleVariant::SpeechTranscriber)
+            );
+            let setup = process
+                .records
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|record| record.kind == "setup")
+                .cloned()
+                .unwrap();
+            assert_eq!(
+                setup.apple_speech_variant,
+                Some(AppleVariant::SpeechTranscriber)
+            );
+            assert_eq!(process.speech_engine(), SpeechEngine::Nemotron);
+            process.cancel_speech_switch().unwrap();
         }
 
         #[test]

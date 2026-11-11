@@ -50,10 +50,13 @@ export const exportText = (suggestedName, contents) => call('export_text', { sug
 export const writeClipboardText = contents => call('write_clipboard_text', { contents });
 export const exportDocument = (meetingId, kind, format, includeCitations = false) => call('export_document', { meetingId, kind, format, includeCitations });
 
-export async function subscribeSnapshots(callback) {
+export const subscribeSnapshots = callback => subscribeSnapshotEvent('nero://snapshot', callback);
+export const subscribeRecorderSnapshots = callback => subscribeSnapshotEvent('nero://recorder-snapshot', callback);
+
+async function subscribeSnapshotEvent(name, callback) {
   if (!isTauri()) return () => {};
   const stops = await Promise.all([
-    listen('nero://snapshot', (event) => {
+    listen(name, (event) => {
       const snapshot = event.payload;
       if (latestSnapshot && snapshot.revision < latestSnapshot.revision) return;
       callback(accept(snapshot));
@@ -118,6 +121,7 @@ export const prepareSummaryModel = () => call('prepare_summary_model');
 export const summarizeMeeting = (meetingId, template = null) => call('summarize_meeting', { meetingId, template });
 export const readSummary = (meetingId) => call('read_summary', { meetingId });
 export const readSummaryCitations = (meetingId, summaryId, references) => call('read_summary_citations', { meetingId, summaryId, references });
+export const readSummaryCitationTimes = (meetingId, summaryId) => call('read_summary_citation_times', { meetingId, summaryId });
 
 export async function subscribeProcessingError(callback) {
   if (!isTauri()) return () => {};

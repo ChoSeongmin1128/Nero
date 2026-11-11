@@ -98,7 +98,7 @@ byId('recorder-controls').addEventListener('click', (event) => {
 });
 
 try {
-  await bridge.subscribeSnapshots(acceptSnapshot);
+  await bridge.subscribeRecorderSnapshots(acceptSnapshot);
   acceptSnapshot(await bridge.readSnapshot());
 } catch (error) { showError(error); }
 render();

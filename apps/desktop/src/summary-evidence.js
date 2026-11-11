@@ -5,8 +5,8 @@ const referencesFor = anchor => {
 };
 const clock = value => {
   if (!Number.isFinite(value) || value < 0) return '';
-  const seconds = Math.floor(value), hours = Math.floor(seconds / 3600);
-  return [hours || null, Math.floor(seconds / 60) % 60, seconds % 60].filter(value => value !== null).map(value => String(value).padStart(2, '0')).join(':');
+  const seconds = Math.floor(value), minutes = String(Math.floor(seconds / 60) % 60).padStart(2, '0'), rest = String(seconds % 60).padStart(2, '0');
+  return seconds >= 3600 ? `${Math.floor(seconds / 3600)}:${minutes}:${rest}` : `${minutes}:${rest}`;
 };
 
 export function mountSummaryEvidence({ container, panel, getContext, loadCitations, onOpen, onNavigate, onPlay, onReset = () => {}, onError = () => {} }) {

@@ -69,8 +69,8 @@ mod whisper_asr;
 mod window_position;
 use nero_core::{
     CoreHandle, Device, DocumentFormat, DocumentKind, ExportedDocument, Meeting, Snapshot,
-    SummaryCitations, SummaryView, Transcript, TranscriptHistory, TranscriptSpeaker,
-    TranscriptVersion,
+    SummaryCitationTimes, SummaryCitations, SummaryView, Transcript, TranscriptHistory,
+    TranscriptSpeaker, TranscriptVersion,
 };
 use processing::{Processing, Progress};
 use serde::Serialize;
@@ -339,10 +339,12 @@ async fn on_core<T: Send + 'static>(
 }
 
 fn publish(app: &tauri::AppHandle, snapshot: &Snapshot) {
+    // Separate names: a listener without a target receives every window's events, so a
+    // shared name let the recorder's reduced snapshot replace the main window's library.
     let _ = app.emit_to("main", "nero://snapshot", snapshot);
     let _ = app.emit_to(
         "recorder",
-        "nero://snapshot",
+        "nero://recorder-snapshot",
         recorder_window::recorder_snapshot(snapshot),
     );
     recorder_window::sync(app, snapshot);
@@ -1784,6 +1786,20 @@ async fn read_summary(
 }
 
 #[tauri::command]
+async fn read_summary_citation_times(
+    window: WebviewWindow,
+    state: tauri::State<'_, DesktopState>,
+    meeting_id: String,
+    summary_id: String,
+) -> Result<SummaryCitationTimes, String> {
+    require_main(&window)?;
+    on_core(state.core.clone(), move |core| {
+        core.summary_citation_times(&meeting_id, &summary_id)
+    })
+    .await
+}
+
+#[tauri::command]
 async fn read_summary_citations(
     window: WebviewWindow,
     state: tauri::State<'_, DesktopState>,
@@ -2113,6 +2129,7 @@ fn main() {
             diarize_meeting,
             summarize_meeting,
             read_summary,
+            read_summary_citation_times,
             read_summary_citations
         ])
         .setup(|app| {

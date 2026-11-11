@@ -1207,6 +1207,9 @@ button.danger:hover:not(:disabled), button.danger-text:hover:not(:disabled) { co
 /* Linked evidence remains within the transcript workspace. */
 .summary-document .source-reference { display: inline-flex; align-items: center; justify-content: center; vertical-align: baseline; min-height: 18px; min-width: 0; max-width: 100%; width: auto; padding: 0 3px; position: relative; margin-inline: 2px; border: 0; border-radius: 3px; color: var(--text-secondary); background: transparent; font-size: var(--text-aux-size); font-weight: var(--weight-regular); line-height: 1.5; white-space: normal; }
 .summary-document .source-reference-label { font-variant-numeric: tabular-nums; }
+.summary-document .source-reference.has-time { padding: 0 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-secondary); white-space: nowrap; }
+.summary-document .source-reference.has-time .source-reference-label { display: inline-flex; align-items: center; gap: 3px; }
+.summary-document .source-reference.has-time .source-reference-label > svg { width: 11px; height: 11px; flex: none; }
 .summary-document .source-reference:hover, .summary-document .source-reference[aria-pressed="true"] { color: var(--text); background: var(--hover); }
 .summary-document .source-reference:hover .source-reference-label { text-decoration: underline; text-underline-offset: 2px; }
 .summary-evidence { flex: none; min-width: 0; padding: 0 16px 12px; color: var(--text); overflow-wrap: anywhere; }

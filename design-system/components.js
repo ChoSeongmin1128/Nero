@@ -51,8 +51,13 @@
   function minutes(sections) {
     return `<article class="minutes-document">${sections.map(({ title, text, emptyText = "작성된 내용이 없습니다." }) => `<section><h3>${escape(title)}</h3><div class="minutes-text">${String(text || "").trim() ? escape(text) : `<span class="muted">${escape(emptyText)}</span>`}</div></section>`).join("")}</article>`;
   }
+  function clock(seconds) {
+    const total = Math.floor(seconds), minutes = String(Math.floor(total / 60) % 60).padStart(2, "0"), rest = String(total % 60).padStart(2, "0");
+    return total >= 3600 ? `${Math.floor(total / 3600)}:${minutes}:${rest}` : `${minutes}:${rest}`;
+  }
   // `citable`: when given, only groups whose numbers are all in it become citations.
-  function summaryDocument(value, { searchQuery = "", streaming = false, citable = null } = {}) {
+  // `citationTime`: maps a one-based reference to its utterance start in seconds, or null.
+  function summaryDocument(value, { searchQuery = "", streaming = false, citable = null, citationTime = null } = {}) {
     const parser = root.NeroMarkdown;
     if (!parser?.parse) throw new Error("Markdown parser is not loaded.");
     const headings = new Set(["회의 요약", "요약", "주요 내용", "논의 내용", "논의 사항", "결정 사항", "결정사항", "합의 사항", "다음 작업", "후속 작업", "할 일", "할일", "액션 아이템", "미결 사항", "확인 필요", "참고 사항"]);
@@ -116,14 +121,18 @@
         if (node.children) return `<${node.tag}>${node.children.map(render).join("")}</${node.tag}>`;
         const html = textHTML(node.text);
         if (!node.references) return html;
-        // Display group numbers are separate from the frozen one-based utterance IDs.
-        // Repeated groups share a label, while each claim keeps its original target IDs.
-        const key = [...node.references].sort((a, b) => a - b).join(",");
-        if (!citationLabels.has(key)) citationLabels.set(key, citationLabels.size + 1);
-        const label = `[${citationLabels.get(key)}]`;
-        // Search the saved reference text, never pretend that the display ordinal matched.
+        // A group shows its first timed utterance; untimed groups keep a display number,
+        // separate from the frozen one-based utterance IDs and shared by repeated groups.
+        const sorted = [...node.references].sort((a, b) => a - b);
+        const start = citationTime ? sorted.map(citationTime).find(seconds => Number.isFinite(seconds) && seconds >= 0) : undefined;
+        const time = start === undefined ? "" : clock(start);
+        const key = sorted.join(",");
+        if (!time && !citationLabels.has(key)) citationLabels.set(key, citationLabels.size + 1);
+        const label = time ? `${icon("play")}<span>${time}</span>` : `[${citationLabels.get(key)}]`;
+        const name = !time ? `${node.references.join(", ")}번 발언 확인` : node.references.length > 1 ? `${time} 발언 외 ${node.references.length - 1}개 확인` : `${time} 발언 확인`;
+        // Search the saved reference text, never pretend that the visible label matched.
         const content = `<span class="source-reference-label" aria-hidden="true">${label}</span><span class="sr-only">${html}</span>`;
-        return button({ html: content, className: "quiet source-reference", attrs: { "data-summary-citations": node.references.join(","), "aria-pressed": "false", "title": `${node.references.join(", ")}번 발언 확인`, "aria-label": `${node.references.join(", ")}번 발언 확인` } });
+        return button({ html: content, className: "quiet source-reference" + (time ? " has-time" : ""), attrs: { "data-summary-citations": node.references.join(","), "aria-pressed": "false", "title": name, "aria-label": name } });
       };
       return tokens.map(render).join("");
     };

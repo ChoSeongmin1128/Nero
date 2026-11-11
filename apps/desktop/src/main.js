@@ -91,7 +91,7 @@ function readMicrophonePreference() {
 }
 const microphonePreference = readMicrophonePreference();
 let sidebarViews = null, viewHistory = null;
-const state = { snapshot: { meetings: [], folders: [], session: null }, libraryOpen: false, libraryFilter: 'all', librarySelection: new Set(), libraryBusy: false, librarySearchIds: null, librarySearchHits: [], pendingSearchIntent: null, setupReturnId: null, librarySearchPending: false, librarySearchUnavailable: 0, selectedId: null, devices: [], devicesLoaded: false, deviceId: microphonePreference.id, deviceName: microphonePreference.name, settingsPanel: 'appearance', summaryFeatureError: '', settingsKey: '', settingsError: '', settingsReturnId: 'settings', setupFromSettings: false, autoRecorder: readAutoRecorder(), recorderSettingBusy: false, snapshotSignatures: null, processingKey: '', processingCancellingId: null, transcriptEditing: null, audioRequest: 0, audioLoading: null, dateSaving: null, dateKey: '', dateError: null, lastError: null, errorIsSave: false, connected: false, busy: false, composing: false, transcriptComposing: false, editLocks: 0, draft: null, saveTimer: null, saveQueue: Promise.resolve(), controlsKey: '', audioKey: '', processing: { status: 'idle', supported: false, modelReady: false, localSummaryEnabled: false }, transcriptDraft: null, transcriptKey: '', transcriptLoadId: 0, transcriptSaveQueue: Promise.resolve(), summary: null, summaryKey: '', summaryLoadId: 0, summaryLoaded: false, transcriptLoaded: false, summaryLoadError: false, transcriptLoadError: false, setupRequested: false };
+const state = { snapshot: { meetings: [], folders: [], session: null }, libraryOpen: false, libraryFilter: 'all', librarySelection: new Set(), libraryBusy: false, librarySearchIds: null, librarySearchHits: [], pendingSearchIntent: null, setupReturnId: null, librarySearchPending: false, librarySearchUnavailable: 0, selectedId: null, devices: [], devicesLoaded: false, deviceId: microphonePreference.id, deviceName: microphonePreference.name, settingsPanel: 'appearance', summaryFeatureError: '', settingsKey: '', settingsError: '', settingsReturnId: 'settings', setupFromSettings: false, autoRecorder: readAutoRecorder(), recorderSettingBusy: false, snapshotSignatures: null, processingKey: '', processingCancellingId: null, transcriptEditing: null, audioRequest: 0, audioLoading: null, dateSaving: null, dateKey: '', dateError: null, lastError: null, errorIsSave: false, connected: false, busy: false, composing: false, transcriptComposing: false, editLocks: 0, draft: null, saveTimer: null, saveQueue: Promise.resolve(), controlsKey: '', audioKey: '', processing: { status: 'idle', supported: false, modelReady: false, localSummaryEnabled: false }, transcriptDraft: null, transcriptKey: '', transcriptLoadId: 0, transcriptSaveQueue: Promise.resolve(), summary: null, citationTimes: null, summaryKey: '', summaryLoadId: 0, summaryLoaded: false, transcriptLoaded: false, summaryLoadError: false, transcriptLoadError: false, setupRequested: false };
 // Low-memory model preparation needs an explicit acknowledgement; it is not persisted.
 const speechMemoryAcknowledged = new Set();
 function acknowledgeSpeechMemory(engine, checked) {
@@ -1310,14 +1310,26 @@ function renderSummary(meeting) {
   byId('summary-recompose').hidden = localSummaryEnabled() || !hasTranscript || !state.summaryLoaded || Boolean(state.summaryLoadError) || Boolean(doc && !stale);
   byId('summary-recompose').disabled = state.busy || ownJob;
   setText('summary-recompose', doc ? '최신 내용으로 정리' : '네로로 요약');
-  const key = JSON.stringify([meeting.id, doc?.id, state.transcriptDraft?.doc?.version, Boolean(stale), documentSearch.query()]);
+  const starts = doc && state.citationTimes?.summaryId === doc.id ? state.citationTimes.starts : null;
+  const key = JSON.stringify([meeting.id, doc?.id, state.transcriptDraft?.doc?.version, Boolean(stale), documentSearch.query(), Boolean(starts)]);
   if (key !== state.summaryKey) {
     state.summaryKey = key;
     byId('summary-content').innerHTML = globalThis.NeroUI.summaryDocument(doc?.text || '', {
       searchQuery: documentSearch.query(),
+      citationTime: starts ? reference => starts[reference - 1] ?? null : null,
     });
   }
   summaryEvidence?.update();
+}
+// Times label the summary's citation buttons; without them the buttons keep numbers.
+async function loadCitationTimes(meetingId, summaryId) {
+  if (!summaryId || state.citationTimes?.summaryId === summaryId) return;
+  try {
+    const times = await bridge.readSummaryCitationTimes(meetingId, summaryId);
+    if (times?.summaryId !== summaryId || !Array.isArray(times.starts)) return;
+    state.citationTimes = { summaryId, starts: times.starts };
+    if (state.summary?.document?.id === summaryId) { state.summaryKey = ''; render(); }
+  } catch {}
 }
 async function loadSummary(id) {
   const request = ++state.summaryLoadId;
@@ -1332,6 +1344,7 @@ async function loadSummary(id) {
     if (!current()) return;
     state.summary = summary; state.summaryKey = ''; state.summaryLoaded = true; state.summaryLoadError = false;
     render();
+    void loadCitationTimes(id, summary?.document?.id);
   } catch (error) { if (current()) { state.summaryLoaded = true; state.summaryLoadError = true; showError(error); render(); } }
 }
 byId('retry-transcript-load').addEventListener('click', () => { if (state.selectedId) void loadTranscript(state.selectedId); });
