@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { Select as Primitive } from '@base-ui/react/select';
-import { Check, ChevronDown, ChevronUp } from 'lucide-react';
+import { Check, ChevronDown, ChevronUp } from '../../icons-react.jsx';
 import { cn } from './utils.js';
 
 export const Select = Primitive.Root;

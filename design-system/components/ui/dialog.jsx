@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { Dialog as Primitive } from '@base-ui/react/dialog';
-import { X } from 'lucide-react';
+import { X } from '../../icons-react.jsx';
 import { cn } from './utils.js';
 
 export const Dialog = Primitive.Root;

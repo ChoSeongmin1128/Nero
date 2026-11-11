@@ -15,6 +15,11 @@ struct MossOutputValidationTests {
             check(!MossOutputValidation.hasConfiguredEOS(terminationReason: reason, terminalTokenId: token, configuredEosTokenIds: configured, tokenizerEosTokenId: tokenizer), "PAD, mismatched configuration and other stops cannot complete generation")
         }
         check(!MossOutputValidation.hasConfiguredEOS(terminationReason: "eos", terminalTokenId: nil, configuredEosTokenIds: [151645], tokenizerEosTokenId: 151645), "missing terminal token is incomplete")
+        let singleVoice = MossOutputValidation.productSegments("[0]첫 문장[1][1]다음 문장[2]")
+        check(singleVoice?.count == 2, "product text does not require a speaker token")
+        check(singleVoice?.first?["speaker_id"] == nil, "missing speaker stays unknown")
+        check(MossOutputValidation.productSegments("[0]첫 문장[1] 잘린 꼬리") == nil, "product parser rejects unparsed tails")
+        check(MossOutputValidation.productSegments("[2]역전[1]") == nil, "product parser rejects inverted time")
         let first = segment(0, 1, "[S1] 첫 발언", "S1")
         let second = segment(2, 3, "[S2] 다음 발언", "S2")
         let raw = "[0][S1]첫 발언[1]\n[2][S2]다음 발언[3]"

@@ -2,11 +2,7 @@
 
 This is a source contract, not a microphone, target-laptop or macOS acceptance receipt.
 
-Nemotron and Whisper use the paths below; Qwen3-ASR-ko uses the Nemotron path for
-its preview and is described in its own section. Speaker analysis is optional and frozen
-with the selected engine at recording start. Disabling it keeps the ASR stream
-and skips the speaker stream and final analysis. macOS system transcription
-currently runs after recording ends and does not publish live previews.
+Legacy Nemotron and Whisper jobs use the paths below and retain their original preview contracts. MOSS, Qwen and macOS system transcription run after recording ends without a live ASR preview. Speaker analysis is optional and frozen with the selected engine at recording start. Disabling it skips speaker preparation and analysis.
 
 The recorder retains its device callback, bounded queue, original PCM writer and
 separate playback WAV. A background reader consumes only complete frames already
@@ -24,7 +20,7 @@ substitute for either hash. Older float32 playback files are unchanged. See
 `audio-import.md` for the persisted playback policy and recovery checks.
 
 The engine is captured at session start. One isolated child holds an independent
-Nemotron 3 speaker stream throughout capture. With the default engine it also
+Nemotron 3 speaker stream throughout capture. With the legacy Nemotron engine it also
 holds a Nemotron 3.5 Q8 ASR stream. Pause/resume retains both states. ASR
 endpointing is disabled. Publication does not reset the models. The integrated ASR
 diarizer is not used; the independent speaker stream exports probability frames
@@ -115,13 +111,7 @@ editable or exportable transcript.
 
 ## Qwen3-ASR-ko final transcript
 
-On Apple Silicon, the Qwen3-ASR-ko selection is frozen like the other engines. During
-recording the isolated child runs the Nemotron 3.5 ASR stream and the speaker stream
-exactly as above. Nemotron text remains a provisional preview and is never committed
-for a Qwen session. The ordinary job accepts the session-bound live artifact only for
-its analysis WAV and speaker stream, then recognizes that same analysis WAV with the
-packaged CrispASR CLI. A missing or rejected live artifact uses the finalized-file
-path, followed by whole-recording speaker analysis.
+On Apple Silicon, MOSS, Qwen3-ASR-ko and macOS transcription run after recording ends. They do not prepare or stream Nemotron ASR for previews. Qwen remains an explicit experimental selection and recognizes the finalized analysis WAV with the packaged CrispASR CLI. Optional whole-recording speaker analysis follows the durable ASR checkpoint. Historical preview artifacts remain source-validated and readable. MOSS uses the independent-chunk contract in [speech model selection](speech-model-selection.md).
 
 The recording is cut at the longest quiet run 15 to 33 seconds after each chunk start
 (20 ms energy frames). Chunks cover every frame without gaps or overlap. Each chunk

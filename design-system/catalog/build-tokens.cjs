@@ -3,7 +3,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 
 const root = path.resolve(__dirname, '..');
-const inputs = ['appearance.css', 'fonts.css', 'typography.css', 'components.css', 'style.css', 'controls.css', 'desktop-preview.css', 'windows-preview/windows.css', 'windows-preview/bridge.css', 'catalog/catalog.css', 'appearance.js', 'components.js', 'controls.js', 'windows-preview/windows.js', 'windows-preview/bridge.js'];
+const inputs = ['appearance.css', 'fonts.css', 'typography.css', 'components.css', 'navigation.css', 'style.css', 'controls.css', 'desktop-preview.css', 'windows-preview/windows.css', 'windows-preview/bridge.css', 'catalog/catalog.css', 'appearance.js', 'components.js', 'icons.js', 'navigation.mjs', 'navigation-width.mjs', 'controls.js', 'windows-preview/windows.js', 'windows-preview/bridge.js'];
 const output = path.join(__dirname, 'tokens.json');
 const normalize = (value) => value.replace(/\s+/g, ' ').trim();
 const hash = (value) => crypto.createHash('sha256').update(value).digest('hex');

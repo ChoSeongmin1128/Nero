@@ -11,21 +11,35 @@ const clock = value => {
 
 export function mountSummaryEvidence({ container, panel, getContext, loadCitations, onOpen, onNavigate, onPlay, onReset = () => {}, onError = () => {} }) {
   const doc = container.ownerDocument;
-  let anchor = null, sourceKey = '', generation = 0, navigation = 0, response = null, index = 0, destroyed = false;
+  let anchor = null, sourceKey = '', generation = 0, navigation = 0, response = null, index = 0, destroyed = false, focusPending = false;
   const active = ticket => !destroyed && ticket === generation && anchor?.isConnected && container.contains(anchor) && sourceKey === identity(getContext());
   const element = (tag, className, text) => { const node = doc.createElement(tag); node.className = className; if (text != null) node.textContent = text; return node; };
   const action = (label, name, disabled = false) => { const button = element('button', 'quiet small', label); button.type = 'button'; button.dataset.evidenceAction = name; button.disabled = disabled; return button; };
   function reset() {
     generation++; navigation++; onReset();
     anchor?.setAttribute('aria-pressed', 'false');
-    anchor = null; sourceKey = ''; response = null; panel.hidden = true; panel.replaceChildren();
+    anchor = null; sourceKey = ''; response = null; focusPending = false; panel.hidden = true; panel.replaceChildren();
   }
-  function status(text) { panel.hidden = false; const node = element('p', 'summary-evidence-message', text); node.setAttribute('role', 'status'); panel.replaceChildren(node); }
+  function focusFallback(node) {
+    if (!focusPending) return;
+    focusPending = false;
+    if (doc.activeElement && doc.activeElement !== doc.body && !container.contains(doc.activeElement) && !panel.contains(doc.activeElement)) return;
+    node.setAttribute('tabindex', '-1');
+    node.focus({ preventScroll: true });
+  }
+  function status(text, focus = false) {
+    panel.hidden = false;
+    const node = element('p', 'summary-evidence-message', text);
+    node.setAttribute('role', 'status'); panel.replaceChildren(node);
+    panel.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+    if (focus) focusFallback(node);
+  }
   async function reveal(ticket) {
     const move = ++navigation;
     if (!active(ticket)) return;
+    focusPending ||= panel.contains(doc.activeElement);
     const entry = response?.entries[index];
-    if (!entry) { status('연결된 발언을 찾을 수 없습니다.'); return; }
+    if (!entry) { status('연결된 발언을 찾을 수 없습니다.', true); return; }
     panel.replaceChildren(); panel.hidden = false;
     if (response.entries.length > 1) {
       const nav = element('div', 'summary-evidence-navigation');
@@ -34,30 +48,34 @@ export function mountSummaryEvidence({ container, panel, getContext, loadCitatio
     const context = getContext();
     const moved = !context.dirty && entry.currentSegmentIds?.length && await onNavigate(entry, response, { ...context });
     if (!active(ticket) || move !== navigation) return;
+    if (moved) focusPending = false;
     if (!moved) {
       const item = element('article', 'summary-evidence-entry');
       item.append(element('strong', '', '요약 당시 발언'), element('div', 'summary-evidence-meta', `${clock(entry.segment?.start)} ${entry.speakerName || '화자 미지정'}`), element('p', 'summary-evidence-text', entry.segment?.text || ''));
       if (response.audioAvailable && context.canPlay && Number.isFinite(entry.segment?.start) && entry.segment.start >= 0) item.append(action('재생', 'play'));
       panel.append(item);
+      focusFallback(item);
     }
     panel.hidden = panel.childElementCount === 0;
+    if (!moved && !panel.hidden) panel.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
   }
   async function open(target) {
     const refs = referencesFor(target), initial = getContext();
     if (!refs.length || !initial?.meetingId || !initial.summaryId) return;
+    const focused = target === doc.activeElement || target.contains(doc.activeElement);
     reset(); const ticket = generation;
     try {
       if (!await onOpen() || ticket !== generation || initial.meetingId !== getContext()?.meetingId || initial.summaryId !== getContext()?.summaryId) return;
       const context = getContext();
       if (!target.isConnected || !container.contains(target)) target = Array.from(container.querySelectorAll('[data-summary-citations]')).find(node => referencesFor(node).join(',') === refs.join(','));
       if (!target) return;
-      anchor = target; sourceKey = identity(context); target.setAttribute('aria-pressed', 'true'); status('불러오는 중');
+      anchor = target; sourceKey = identity(context); focusPending = focused; target.setAttribute('aria-pressed', 'true'); status('불러오는 중');
       const result = await loadCitations(context.meetingId, context.summaryId, refs);
       if (!active(ticket)) { if (ticket === generation) reset(); return; }
-      if (result?.summaryId !== context.summaryId) { status('발언을 불러오지 못했습니다.'); return; }
+      if (result?.summaryId !== context.summaryId) { status('발언을 불러오지 못했습니다.', true); return; }
       response = { ...result, entries: (Array.isArray(result.entries) ? result.entries : []).filter(entry => refs.includes(entry.reference)) }; index = 0;
       await reveal(ticket);
-    } catch (error) { if (active(ticket)) { status('발언을 불러오지 못했습니다.'); onError(error); } }
+    } catch (error) { if (active(ticket)) { status('발언을 불러오지 못했습니다.', true); onError(error); } }
   }
   const click = event => { const target = event.target.closest?.('[data-summary-citations]'); if (target && container.contains(target)) { event.preventDefault(); void open(target); } };
   const panelClick = async event => {

@@ -45,6 +45,8 @@ async function fixture(t, options = {}) {
 test('model picker lists connected providers and browses them without changing the selection', async t => {
   const app = await fixture(t);
   const trigger = app.button('AI 모델 선택');
+  assert.ok(trigger.closest('.ai-chat-composer .ai-chat-compose-actions'));
+  assert.equal(app.node('ai-chat-inspector').querySelector('.ai-chat-bottom > .ai-chat-models'), null);
   assert.ok(trigger.querySelector('img[src*="chatgpt"]')); assert.equal(trigger.querySelector('svg.lucide-bot'), null);
   trigger.click();
   await wait(() => app.window.document.querySelector('.ai-model-popover'));
@@ -138,6 +140,12 @@ test('real chat component streams, renders safe Markdown, navigates citations an
   await wait(() => app.node('ai-chat-inspector').querySelector('[aria-label="답변 중지"]'));
   assert.equal(app.button('요약 저장'), undefined);
   await wait(() => app.button('요약 저장'));
+  assert.equal(app.node('ai-chat-inspector').textContent.includes('example-actual-model'), false);
+  app.button('응답 정보').click();
+  await wait(() => app.window.document.querySelector('.ai-response-info'));
+  assert.match(app.window.document.querySelector('.ai-response-info').textContent, /example-actual-model/);
+  app.window.document.activeElement.dispatchEvent(new app.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await wait(() => !app.window.document.querySelector('.ai-response-info'));
   assert.ok(app.node('ai-chat-inspector').querySelector('.summary-document h3'));
   app.node('ai-chat-inspector').querySelector('[data-summary-citations]').click();
   await wait(() => app.calls.some(call => call[0] === 'citation'));
@@ -149,8 +157,8 @@ test('the global AI sidebar and meeting notes stay independently open and preser
   const app = await fixture(t);
   await wait(() => !app.node('notes-section').hidden && app.node('app-ai-sidebar').getAttribute('aria-hidden') === 'false');
   assert.equal(app.node('meeting-notes').value, '보존할 메모 초안');
-  assert.equal(app.node('summary-section').hidden, false); assert.equal(app.node('transcript-section').hidden, false);
-  app.button('AI 닫기').click(); await wait(() => app.node('app-ai-sidebar').getAttribute('aria-hidden') === 'true');
+  assert.equal(app.node('summary-section').hidden, false); assert.equal(app.node('transcript-section').hidden, true);
+  app.button('네로 패널 닫기').click(); await wait(() => app.node('app-ai-sidebar').getAttribute('aria-hidden') === 'true');
   assert.equal(app.node('notes-section').hidden, false);
   assert.equal(app.node('meeting-notes').value, '보존할 메모 초안');
   assert.equal(app.window.document.activeElement, app.node('ai-chat-open'));
@@ -160,23 +168,49 @@ test('the global AI sidebar and meeting notes stay independently open and preser
   assert.equal(app.node('meeting-notes').value, '보존할 메모 초안');
 });
 
-test('navigating to another meeting shows its own new chat and coming back restores the draft', async t => {
+test('opening selected history preserves its sources while the meeting toggle restores the current meeting once', async t => {
+  const app = await fixture(t);
+  app.ui.flow.edit('Saved question'); await app.ui.flow.send();
+  await wait(() => app.button('AI 답변 복사'));
+  const id = app.ui.flow.getSnapshot().conversation.id;
+  app.ui.flow.edit('Preserved draft');
+  app.ui.close();
+  app.ui.setMeeting({ id: 'example-meeting-2', title: '다음 회의' });
+  assert.equal(await app.ui.flow.selectConversation(id), true);
+  await app.ui.open();
+  assert.deepEqual(Array.from(app.ui.flow.getSnapshot().conversation.meetings, item => item.id), ['example-meeting']);
+  assert.equal(app.ui.flow.getSnapshot().conversation.draft, 'Preserved draft');
+  for (let index = 0; index < 2; index++) {
+    app.ui.close();
+    app.node('ai-chat-open').click();
+    await wait(() => app.ui.flow.getSnapshot().conversation.meetings.length === 2);
+    assert.deepEqual(Array.from(app.ui.flow.getSnapshot().conversation.meetings, item => item.id), ['example-meeting', 'example-meeting-2']);
+  }
+  assert.equal(app.ui.flow.getSnapshot().conversation.draft, 'Preserved draft');
+  assert.deepEqual(Array.from(app.ui.flow.getSnapshot().conversation.messages[0].attachments, item => item.meetingId), ['example-meeting']);
+  assert.equal(app.calls.filter(call => call[0] === 'send').length, 1);
+});
+
+test('central meeting navigation preserves the selected chat input and sources', async t => {
   const app = await fixture(t);
   const textarea = () => app.node('ai-chat-inspector').querySelector('textarea');
   app.ui.flow.edit('첫 회의 질문');
+  const selected = app.ui.flow.getSnapshot().conversation.id;
   const next = { id: 'example-meeting-2', title: '다음 회의' };
   app.ui.setMeeting(next);
   app.detail.update({ id: next.id, showSummary: true, hasTranscript: true, summaryLoaded: true, transcriptLoaded: true });
-  await wait(() => app.button('다음 회의 제외') && textarea().value === '');
-  assert.equal(app.button('예시 회의 제외'), undefined);
-  app.ui.flow.edit('다음 회의 질문');
+  await wait(() => textarea().value === '첫 회의 질문');
+  assert.equal(app.ui.flow.getSnapshot().conversation.id, selected);
+  assert.ok(app.button('예시 회의 제외'));
+  assert.equal(app.button('다음 회의 제외'), undefined);
   app.ui.setMeeting({ id: 'example-meeting', title: '예시 회의' });
-  await wait(() => textarea().value === '첫 회의 질문' && app.button('예시 회의 제외'));
   app.ui.setMeeting(next);
-  await wait(() => textarea().value === '다음 회의 질문' && app.button('다음 회의 제외'));
+  await wait(() => textarea().value === '첫 회의 질문');
+  assert.ok(app.button('예시 회의 제외'));
+  assert.equal(app.button('다음 회의 제외'), undefined);
   app.node('ai-chat-inspector').querySelector('[aria-label="질문 보내기"]').click();
   await wait(() => app.calls.some(call => call[0] === 'send'));
-  assert.deepEqual(Array.from(app.calls.find(call => call[0] === 'send')[1].meetingIds), ['example-meeting-2']);
+  assert.deepEqual(Array.from(app.calls.find(call => call[0] === 'send')[1].meetingIds), ['example-meeting']);
 });
 
 test('new chat and history navigate independent conversations without changing meeting notes', async t => {
@@ -184,6 +218,9 @@ test('new chat and history navigate independent conversations without changing m
   app.ui.flow.edit('첫 번째 질문'); await app.ui.flow.send();
   await wait(() => app.button('AI 답변 복사'));
   await wait(() => app.button('대화 기록').textContent.includes('첫 번째 질문'));
+  const header=app.node('ai-chat-inspector').querySelector('.ai-chat-header');
+  assert.equal(header.querySelector('.ai-chat-brand, .nero-logo, img'), null);
+  assert.equal(app.button('대화 기록').parentElement,header);
   const original = app.ui.flow.getSnapshot().conversation.id;
   app.button('새 대화').click();
   await wait(() => app.ui.flow.getSnapshot().conversation.id === null && !app.node('ai-chat-inspector').querySelector('.ai-chat-message'));
@@ -294,6 +331,64 @@ test('opening settings for a ready account does not load models', async t => {
   assert.equal(app.ui.flow.getSnapshot().modelId, null);
 });
 
+test('saved login appears automatically without clicking a login button', async t => {
+  const app = await fixture(t, { scenario: 'unknown', prepareModels: false,
+    accountCheck: async (_retry, snapshot) => ({ ...snapshot, checked: true, accounts: snapshot.accounts.map(account => account.provider === 'chatgpt' ? { ...account, state: 'ready' } : account) }),
+  });
+  app.ui.setSettingsActive(true);
+  await wait(() => app.node('ai-account-settings').textContent.includes('로그인됨'));
+  const row = [...app.node('ai-account-settings').querySelectorAll('.settings-client-row')].find(node => node.querySelector('.settings-client-name')?.textContent === 'ChatGPT');
+  assert.equal(row.querySelector('button').textContent, '로그아웃');
+  assert.equal(JSON.stringify(app.calls.filter(call => call[0] === 'checkAccounts')), JSON.stringify([['checkAccounts', false]]));
+  assert.equal(app.calls.some(call => call[0] === 'connect' || call[0] === 'models'), false);
+});
+
+test('account check errors leave the account visible and retry the actual check', async t => {
+  const app = await fixture(t, { prepareModels: false,
+    accountCheck: async (retry, snapshot) => ({ ...snapshot, checkErrors: { chatgpt: retry ? null : '예시 확인 오류' } }),
+  });
+  app.ui.setSettingsActive(true);
+  await wait(() => app.node('ai-account-settings').textContent.includes('예시 확인 오류'));
+  const recovery = app.node('ai-chat-inspector').querySelector('.ai-account-recovery');
+  assert.match(recovery.textContent, /예시 확인 오류/);
+  assert.equal([...recovery.querySelectorAll('button')].some(button => button.textContent === '계정 설정'), true);
+  const retry = [...app.node('ai-account-settings').querySelectorAll('button')].find(button => button.textContent === '다시 확인');
+  retry.click();
+  await wait(() => !app.node('ai-account-settings').textContent.includes('예시 확인 오류'));
+  assert.equal(JSON.stringify(app.calls.filter(call => call[0] === 'checkAccounts').map(call => call[1])), '[false,false,true]');
+  assert.equal(app.ui.flow.getSnapshot().accounts[0].state, 'ready');
+  assert.equal(app.calls.filter(call => call[0] === 'checkAccounts').at(-1)[2], 'chatgpt');
+});
+
+test('returning focus checks only an open account surface and removes listeners on disposal', async t => {
+  const app = await fixture(t, { prepareModels: false });
+  const original = app.ui.flow.checkAccounts; let calls = 0;
+  app.ui.flow.checkAccounts = (...args) => { calls++; return original(...args); };
+  app.window.dispatchEvent(new app.window.Event('focus')); assert.equal(calls, 1);
+  app.ui.close();
+  app.window.dispatchEvent(new app.window.Event('focus')); assert.equal(calls, 1);
+  app.ui.setSettingsActive(true); assert.equal(calls, 2);
+  app.window.dispatchEvent(new app.window.Event('focus')); assert.equal(calls, 3);
+  app.ui.dispose();
+  app.window.dispatchEvent(new app.window.Event('focus')); assert.equal(calls, 3);
+});
+
+test('returning from external approval silently retries the failed account without waiting for the success cooldown', async t => {
+  let approved = false;
+  const app = await fixture(t, { prepareModels: false, accountCheck: async (retry, snapshot) => {
+    assert.equal(retry, false);
+    return { ...snapshot, checkErrors: { chatgpt: approved ? null : '저장소 승인 필요' } };
+  } });
+  assert.equal(app.ui.flow.getSnapshot().accountErrors.chatgpt, '저장소 승인 필요');
+  approved = true;
+  app.window.dispatchEvent(new app.window.Event('focus'));
+  await wait(() => !app.ui.flow.getSnapshot().accountErrors.chatgpt);
+  assert.equal(app.calls.filter(call => call[0] === 'checkAccounts').length, 2);
+  app.window.dispatchEvent(new app.window.Event('focus')); await app.window.happyDOM.whenAsyncComplete();
+  assert.equal(app.calls.filter(call => call[0] === 'checkAccounts').length, 2);
+  assert.equal(app.calls.some(call => call[0] === 'connect'), false);
+});
+
 test('explicit source addition selects a Notion link and creates a removable attachment', async t => {
   const app = await fixture(t); app.button('자료 추가').click();
   await wait(() => [...app.window.document.querySelectorAll('.ai-source-popover button')].some(node => node.textContent === 'Notion 링크'));
@@ -355,6 +450,12 @@ test('IME Enter does not submit a question', async t => {
   await wait(() => !app.node('ai-chat-inspector').querySelector('[aria-label="질문 보내기"]').disabled);
   const input = app.node('ai-chat-inspector').querySelector('textarea');
   input.dispatchEvent(new app.window.KeyboardEvent('keydown', { key: 'Enter', isComposing: true, bubbles: true }));
+  const confirming=new app.window.KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true});
+  Object.defineProperty(confirming,'keyCode',{value:229});
+  input.dispatchEvent(confirming);
+  const newline=new app.window.KeyboardEvent('keydown',{key:'Enter',shiftKey:true,bubbles:true,cancelable:true});
+  input.dispatchEvent(newline);
+  assert.equal(newline.defaultPrevented,false);
   await new Promise(resolve => setTimeout(resolve, 20)); assert.equal(app.calls.some(call => call[0] === 'send'), false);
 });
 
@@ -368,6 +469,10 @@ test('account login completes automatically and cancellation stays enabled while
   await wait(() => app.calls.some(call => call[0] === 'finishConnect'));
   assert.match(chatgpt.textContent, /로그인 대기/); assert.doesNotMatch(chatgpt.textContent, /연결 확인/);
   assert.equal([...chatgpt.querySelectorAll('button')].find(node => node.textContent === '취소').disabled, false);
+  [...chatgpt.querySelectorAll('button')].find(node => node.textContent === '브라우저 다시 열기').click();
+  await wait(() => app.calls.some(call => call[0] === 'reopenConnect'));
+  assert.deepEqual(JSON.parse(JSON.stringify(app.calls.find(call => call[0] === 'reopenConnect'))), ['reopenConnect', 'example-attempt']);
+  assert.equal(app.calls.filter(call => call[0] === 'connect').length, 1);
   app.completeLogin(); await wait(() => chatgpt.textContent.includes('로그인됨'));
   assert.equal([...chatgpt.querySelectorAll('button')].some(node => node.textContent === '취소'), false);
 });
@@ -490,6 +595,12 @@ test('IME Enter does not select a slash option or send', async t => {
   input.dispatchEvent(new app.window.Event('input', { bubbles: true }));
   await wait(() => app.node('ai-chat-inspector').querySelector('[role="listbox"]'));
   input.dispatchEvent(new app.window.KeyboardEvent('keydown', { key: 'Enter', isComposing: true, bubbles: true, cancelable: true }));
+  const confirming=new app.window.KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true});
+  Object.defineProperty(confirming,'keyCode',{value:229});
+  input.dispatchEvent(confirming);
+  const newline=new app.window.KeyboardEvent('keydown',{key:'Enter',shiftKey:true,bubbles:true,cancelable:true});
+  input.dispatchEvent(newline);
+  assert.equal(newline.defaultPrevented,false);
   assert.equal(app.ui.flow.getSnapshot().conversation.skillId, null);
   assert.equal(app.calls.some(call => call[0] === 'send'), false);
 });
@@ -578,7 +689,7 @@ test('meeting history filters saved question attachments without switching the a
 test('a sent question is recalled with the arrow keys and edited into a new version', async t => {
   const app = await fixture(t);
   const inspector = () => app.node('ai-chat-inspector');
-  const composer = () => inspector().querySelector('textarea[aria-label="AI에게 질문"]');
+  const composer = () => inspector().querySelector('textarea[aria-label="네로에게 질문"]');
   const press = (node, key) => node.dispatchEvent(new app.window.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
   const type = (node, value) => { Object.getOwnPropertyDescriptor(app.window.HTMLTextAreaElement.prototype, 'value').set.call(node, value); node.dispatchEvent(new app.window.Event('input', { bubbles: true })); };
   app.ui.flow.edit('첫 질문'); await app.ui.flow.send();

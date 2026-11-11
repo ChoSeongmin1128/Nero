@@ -21,6 +21,10 @@ npm run tauri -- build --bundles app --ci -- --locked
 
 첫 번째는 디버그 개발 빌드, 두 번째는 릴리스 최적화 개발 빌드, 세 번째는 일반 운영 빌드입니다. Windows에서는 `app` 대신 `nsis`를 사용합니다. 래퍼는 개발 프로파일에 개발 설정과 기능을 함께 적용하고 모순되는 `NERO_BUILD_ENV`나 사용자 지정 설정을 거부합니다. 개발용 에이전트는 별도로 빌드하며 서명된 운영 에이전트를 재사용하지 않습니다.
 
+macOS의 개발용 `--bundles app` 빌드는 유효한 `Apple Development` 인증서가 하나 있으면 완성된 Nero Dev 번들을 그 인증서로 서명합니다. 여러 인증서가 있거나 다른 로컬 인증서를 쓸 때는 해당 실행에 `NERO_DEV_SIGN_IDENTITY`를 지정합니다. 앱 식별자는 개발용으로 고정하고, 패키지 작업자와 검증 영수증의 바이트는 변경하지 않습니다. 운영 배포 서명/공증은 별도 절차입니다. `--no-sign`과 명시적인 임시 서명(`-`) 선택도 존중합니다. 인증서가 없으면 기존 임시 서명을 유지하고 경고합니다. 인증서를 만들거나 시스템 신뢰/키체인 접근 제어를 변경하지 않습니다.
+
+키체인 실기 검사는 이 서명된 Dev 번들에서 수행합니다. 임시 서명의 코드 해시가 바뀌면 이전 앱의 키체인 허용이 새 빌드에 이어지지 않을 수 있습니다. 인증서 기반 서명으로 처음 전환할 때는 OS에서 한 번 접근 허용이 필요할 수 있습니다. 이후에도 인증서나 앱 식별자를 바꾸면 다시 승인해야 할 수 있습니다. `tauri dev`의 번들 없는 실행과 서명하지 않은 테스트 실행은 이 보존을 보장하지 않습니다.
+
 공식 Claude Code를 통한 외부 로그인은 같은 운영체제 사용자의 Claude Code 계정을 공유합니다. Nero는 이 자격 증명을 복사하거나 임의의 `HOME`으로 전환하지 않습니다. 이 외부 로그인은 개발 앱과 운영 앱 각각의 데이터 및 Nero 전용 비밀 저장소와 별개입니다.
 
 ## Windows 검증
@@ -40,3 +44,7 @@ Windows용 빌드와 설치 검사는 Windows의 MSVC/WebView2 및 `--bundles ns
 SignPath 신청과 GitHub 신뢰 빌드 연결, 수동 승인 정책을 먼저 설정해야 합니다. 저장소 secret `SIGNPATH_API_TOKEN`에는 해당 정책의 제출 권한이 있는 토큰을, repository variables `SIGNPATH_ORGANIZATION_ID`, `SIGNPATH_PROJECT_SLUG`, `SIGNPATH_SIGNING_POLICY_SLUG`, `SIGNPATH_CERTIFICATE_THUMBPRINT`에는 승인된 설정과 서명 인증서의 SHA-1 지문을 넣습니다. 인증서 변경 시 지문을 함께 갱신합니다. SignPath 기본 artifact configuration은 업로드 ZIP의 `Nero-setup.exe`에 Authenticode 서명을 적용하고 제품명과 버전 메타데이터 제한 및 수동 승인 조건을 강제해야 합니다. Foundation 가입 조건과 정책은 실제 신청 전에 확인해야 합니다.
 
 워크플로는 서명 결과의 Windows 신뢰 상태, 인증서 지문, 타임스탬프를 확인하고 `windows-signed-installer` artifact로만 보관합니다. 이는 NSIS 설치 프로그램 서명이며 설치 파일에 포함된 개별 실행 파일 서명을 의미하지 않습니다. 릴리스나 업데이트 피드를 게시하지 않습니다. 배포에 사용하려면 최종 서명된 바이트로 updater `.sig`를 새로 생성하고 별도의 업데이트 검증을 완료해야 합니다.
+
+### 공통 모델 재사용
+
+Dev 검증은 모델을 복사하지 않고 명시적 읽기 전용 경로를 주입할 수 있다. Dev 데이터의 `preferences/model-source.json`에 `{"schemaVersion":1,"root":"/absolute/existing-library"}`를 두면 로컬 준비 모델이 없는 경우 그 경로의 고정 전사/화자 모델 디렉터리를 조회한다. 요약 모델은 이 경로 주입 대상이 아니다. 해당 보관함을 열거나 자격 증명을 읽지 않으며 공통 모델의 검증 표시/가중치/설정을 쓰거나 정리하지 않는다. 실제 사용 전 파일 해시를 검사한다. 이 옵션은 development 프로필에서만 읽으며 일반 사용자의 자동 모델 탐색이나 설치 정책이 아니다.

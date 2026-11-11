@@ -153,7 +153,10 @@ impl Processing {
             )?
         };
         self.cancel_live()?;
-        if choice.engine == SpeechEngine::AppleSpeech {
+        if matches!(
+            choice.engine,
+            SpeechEngine::AppleSpeech | SpeechEngine::QwenKo | SpeechEngine::Moss
+        ) {
             self.update(|progress| progress.live_transcript = None);
             return Ok(());
         }
@@ -343,11 +346,13 @@ fn run(
         process: process.clone(),
     };
     let asr = Processing::model_for(engine);
-    let model_path = process.model_dir_for(engine)?.join(&asr.files[0].name);
+    let model_path = process
+        .read_model_dir(crate::processing::ModelSpec::speech(engine))?
+        .join(&asr.files[0].name);
     let speaker_model = crate::diarization::model();
     let speaker_weights = if speaker_enabled {
         process
-            .model_dir_of(crate::diarization::SPEAKER_MODEL)?
+            .read_model_dir(crate::diarization::SPEAKER_MODEL)?
             .join(&speaker_model.files[0].name)
     } else {
         path.join("unused-speaker-model")
@@ -555,7 +560,7 @@ fn publish_asr(
             SpeechEngine::Nemotron => {
                 result["streamFramesFed"] != frames || result["nativeStreamFinished"] != true
             }
-            SpeechEngine::AppleSpeech | SpeechEngine::QwenKo => {
+            SpeechEngine::AppleSpeech | SpeechEngine::QwenKo | SpeechEngine::Moss => {
                 return Err("이 전사 방식은 녹음 종료 후 처리합니다.".into())
             }
             SpeechEngine::WhisperTurbo | SpeechEngine::WhisperLargeV3 => {

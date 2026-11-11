@@ -11,34 +11,28 @@ export function mountMeetingDetail({ byId, finishEditing, onReveal = () => {}, o
   const controls = new Map(views.map(view => [view, byId(`detail-${view}-open`)]));
   const memories = new Map();
   let meetingId = null, renderedId = null, request = 0, ready = false, pendingRestore = true;
-  let summaryVisible = true, transcriptVisible = false, jumping = false, jumpTimer = null;
+  let summaryVisible = true, transcriptVisible = false;
   const memory = () => memories.get(meetingId);
   function rememberScroll() {
     if (!meetingId || renderedId !== meetingId || pendingRestore || !ready) return;
-    Object.assign(memory(), { scroll: body.scrollTop, notesScroll: editor.scrollTop });
+    const current = memory();
+    current.scroll[current.section] = body.scrollTop;
+    current.notesScroll = editor.scrollTop;
   }
-  function endJump() { jumping = false; clearTimeout(jumpTimer); }
-  function settleJump() { clearTimeout(jumpTimer); jumpTimer = setTimeout(endJump, 160); }
-  // Both sections share one scroll body, so the pressed button follows what is being read.
-  function sectionInView() {
-    if (summary.hidden || transcript.hidden) return transcript.hidden ? 'summary' : 'transcript';
-    if (body.scrollTop <= 1) return 'summary';
-    const view = body.getBoundingClientRect(), top = transcript.getBoundingClientRect().top;
-    const atEnd = body.scrollTop + body.clientHeight >= body.scrollHeight - 2;
-    return top <= view.top + body.clientHeight / 3 || atEnd && top < view.bottom ? 'transcript' : 'summary';
-  }
-  function followScroll() {
-    if (jumping) { settleJump(); return; }
-    if (!meetingId || renderedId !== meetingId || pendingRestore || !ready) return;
-    const current = memory(), view = sectionInView();
-    if (current.section === view) return;
-    current.section = view;
-    for (const name of ['summary', 'transcript']) controls.get(name)?.setAttribute('aria-pressed', String(name === view));
+  function displayDocumentActions(section){
+    for(const kind of ['summary','transcript']){const node=byId(`${kind}-document-actions`);if(node)node.hidden=section!==kind;}
   }
   function display() {
     const current = memory(), notesOpen = Boolean(current?.notesOpen);
-    summary.hidden = !meetingId || !summaryVisible;
-    transcript.hidden = !meetingId || !transcriptVisible;
+    if (current) {
+      const previous = current.section;
+      if (current.section === 'summary' && !summaryVisible && transcriptVisible) current.section = 'transcript';
+      else if (current.section === 'transcript' && !transcriptVisible && summaryVisible) current.section = 'summary';
+      if (current.section !== previous) pendingRestore = true;
+    }
+    summary.hidden = !meetingId || !summaryVisible || current?.section !== 'summary';
+    transcript.hidden = !meetingId || !transcriptVisible || current?.section !== 'transcript';
+    displayDocumentActions(!meetingId?null:current?.section==='transcript'&&!transcript.hidden?'transcript':!summary.hidden?'summary':null);
     byId('result-transcript-home').hidden = transcript.hidden;
     inspector.hidden = !meetingId || !notesOpen;
     width.update(!inspector.hidden);
@@ -54,20 +48,23 @@ export function mountMeetingDetail({ byId, finishEditing, onReveal = () => {}, o
     }
     renderedId = meetingId;
     if (current && ready && pendingRestore) {
-      body.scrollTop = current.scroll;
+      body.scrollTop = current.scroll[current.section];
       editor.scrollTop = current.notesScroll;
       pendingRestore = false;
     }
   }
   function update({ id, recording = false, summaryLoaded = false, transcriptLoaded = false, hasTranscript = false, hasPreview = false, hasAudio = false, showSummary = true }) {
-    if (id !== meetingId) { meetingId = id; request++; pendingRestore = true; endJump(); }
-    if (id && !memories.has(id)) memories.set(id, { section: 'summary', notesOpen: false, explicitNotes: false, recordingSeen: false, scroll: 0, notesScroll: 0 });
+    if (id !== meetingId) { meetingId = id; request++; pendingRestore = true; }
+    if (id && !memories.has(id)) memories.set(id, { section: 'summary', notesOpen: false, explicitNotes: false, recordingSeen: false, scroll: { summary: 0, transcript: 0 }, notesScroll: 0 });
     summaryVisible = showSummary;
     transcriptVisible = hasAudio || hasTranscript || hasPreview || recording;
     ready = summaryLoaded && transcriptLoaded;
     const current = memory();
     if (current && recording && !current.recordingSeen) {
+      rememberScroll();
       current.recordingSeen = true;
+      current.section = 'transcript';
+      pendingRestore = true;
       if (!current.explicitNotes) current.notesOpen = true;
     }
     display();
@@ -78,17 +75,15 @@ export function mountMeetingDetail({ byId, finishEditing, onReveal = () => {}, o
     try {
       return Boolean(await finishEditing(() => {
         if (id !== meetingId || intent !== request) return false;
+        if (view === 'summary' && !summaryVisible || view === 'transcript' && !transcriptVisible) return false;
         rememberScroll();
         const current = memory();
         if (view === 'notes') { current.notesOpen = toggle ? !current.notesOpen : true; current.explicitNotes = true; }
-        else current.section = view;
+        else if (current.section !== view) { current.section = view; pendingRestore = true; }
         display();
         onReveal(view);
         if (view !== 'notes') {
           const section = view === 'summary' ? summary : transcript;
-          const reduced = body.ownerDocument?.defaultView?.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
-          jumping = true; settleJump();
-          section.scrollIntoView?.({ block: 'start', behavior: reduced ? 'instant' : 'smooth' });
           if (focus) section.focus({ preventScroll: true });
         } else if (focus) {
           const preview = byId('notes-search-preview');
@@ -100,8 +95,6 @@ export function mountMeetingDetail({ byId, finishEditing, onReveal = () => {}, o
     } catch (error) { onError(error); return false; }
   }
   body.addEventListener('scroll', rememberScroll);
-  body.addEventListener('scroll', followScroll);
-  for (const type of ['wheel', 'touchstart', 'keydown']) body.addEventListener(type, endJump, { passive: true });
   editor.addEventListener('scroll', rememberScroll);
   for (const [view, control] of controls) control?.addEventListener('click', () => { void select(view, { focus: true, toggle: view === 'notes' }); });
   close.addEventListener('click', () => { if (memory()?.notesOpen) void select('notes', { toggle: true, focus: true }); });

@@ -5,8 +5,6 @@ const GIB: u64 = 1024 * 1024 * 1024;
 // Product headroom policy: OpenAI's unquantized large model lists about 10 GB
 // VRAM. Recommend the optional full model only at 16 GiB unified memory; this
 // is a conservative recommendation, not a measured Q5 minimum or quality claim.
-const LARGE_RECOMMENDED_MEMORY: u64 = 16 * GIB;
-const COMPACT_MEMORY: u64 = 8 * GIB;
 // Measured peak memory footprint of one CrispASR Qwen + aligner process (M4 Pro, 2026-11-04).
 const QWEN_PEAK: u64 = 4_475_539_632;
 const QWEN_RECOMMENDED_MEMORY: u64 = 16 * GIB;
@@ -56,39 +54,15 @@ fn recommend(choices: &mut [SpeechChoice], apple_silicon: bool, memory: Option<u
             .iter()
             .any(|choice| choice.id == engine && choice.supported)
     };
-    let preferred = if apple_silicon
-        && memory.is_some_and(|bytes| bytes >= QWEN_RECOMMENDED_MEMORY)
-        && supported(SpeechEngine::QwenKo)
-    {
+    let preferred = if apple_silicon && supported(SpeechEngine::Moss) {
         Some((
-            SpeechEngine::QwenKo,
-            "녹음이 끝난 뒤 한국어 정확도가 높은 전사를 저장합니다.",
+            SpeechEngine::Moss,
+            "녹음 종료 후 구간별로 전사하는 기본 모델입니다.",
         ))
-    } else if apple_silicon
-        && memory.is_some_and(|bytes| bytes >= LARGE_RECOMMENDED_MEMORY)
-        && supported(SpeechEngine::WhisperLargeV3)
-    {
-        Some((
-            SpeechEngine::WhisperLargeV3,
-            "이 Mac의 메모리에서는 정확도 우선 모델을 선택할 수 있습니다.",
-        ))
-    } else if apple_silicon
-        && memory.is_some_and(|bytes| bytes <= COMPACT_MEMORY)
-        && supported(SpeechEngine::AppleSpeech)
-    {
-        Some((
-            SpeechEngine::AppleSpeech,
-            "별도 전사 모델 없이 macOS의 음성 인식을 사용할 수 있습니다.",
-        ))
-    } else if supported(SpeechEngine::Nemotron) {
+    } else if !apple_silicon && supported(SpeechEngine::Nemotron) {
         Some((
             SpeechEngine::Nemotron,
-            "녹음 중 음성 기록을 준비하는 기본 모델입니다.",
-        ))
-    } else if supported(SpeechEngine::WhisperTurbo) {
-        Some((
-            SpeechEngine::WhisperTurbo,
-            "이 기기에서 사용할 수 있는 다국어 전사 모델입니다.",
+            "이 기기에서 사용할 수 있는 기본 전사 모델입니다.",
         ))
     } else {
         None
@@ -145,51 +119,33 @@ mod tests {
             .collect()
     }
     #[test]
-    fn recommendation_uses_memory_and_support_without_changing_selection() {
+    fn mac_always_recommends_moss_and_never_qwen() {
         let mut rows = choices();
-        recommend(&mut rows, true, Some(32 * GIB));
-        assert_eq!(
-            rows.iter().find(|row| row.recommended).unwrap().id,
-            SpeechEngine::QwenKo
-        );
+        for memory in [None, Some(8 * GIB), Some(16 * GIB), Some(64 * GIB)] {
+            recommend(&mut rows, true, memory);
+            assert_eq!(
+                rows.iter().find(|r| r.recommended).unwrap().id,
+                SpeechEngine::Moss
+            );
+            assert!(
+                !rows
+                    .iter()
+                    .find(|r| r.id == SpeechEngine::QwenKo)
+                    .unwrap()
+                    .recommended
+            );
+        }
         rows.iter_mut()
-            .find(|row| row.id == SpeechEngine::QwenKo)
+            .find(|r| r.id == SpeechEngine::Moss)
             .unwrap()
             .supported = false;
-        recommend(&mut rows, true, Some(32 * GIB));
-        assert_eq!(
-            rows.iter().find(|row| row.recommended).unwrap().id,
-            SpeechEngine::WhisperLargeV3
-        );
-        rows.iter_mut()
-            .find(|row| row.id == SpeechEngine::WhisperLargeV3)
-            .unwrap()
-            .supported = false;
-        recommend(&mut rows, true, Some(32 * GIB));
-        assert_eq!(
-            rows.iter().find(|row| row.recommended).unwrap().id,
-            SpeechEngine::Nemotron
-        );
-        recommend(&mut rows, true, Some(8 * GIB));
-        assert_eq!(
-            rows.iter().find(|row| row.recommended).unwrap().id,
-            SpeechEngine::AppleSpeech
-        );
-        recommend(&mut rows, true, None);
-        assert_eq!(
-            rows.iter().find(|row| row.recommended).unwrap().id,
-            SpeechEngine::Nemotron
-        );
+        recommend(&mut rows, true, Some(64 * GIB));
+        assert!(!rows.iter().any(|r| r.recommended));
         recommend(&mut rows, false, Some(64 * GIB));
         assert_eq!(
-            rows.iter().find(|row| row.recommended).unwrap().id,
+            rows.iter().find(|r| r.recommended).unwrap().id,
             SpeechEngine::Nemotron
         );
-        for row in &mut rows {
-            row.supported = false;
-        }
-        recommend(&mut rows, true, Some(64 * GIB));
-        assert!(!rows.iter().any(|row| row.recommended));
     }
 }
 

@@ -1,9 +1,6 @@
 # Native MOSS worker
 
-This is the standalone headless MOSS worker retained for historical output validation
-and explicit research/evaluation. The current Nero product uses its shared native
-speech package; this harness is not an automatic ASR fallback and does not authorize
-launching the retired Swift app. See [model evaluation](../model-evaluation/README.md).
+This standalone worker supplies the Mac product MOSS route and retains independent historical/diagnostic entry points. It is not an automatic fallback and does not authorize launching the retired Swift app. See [model evaluation](../model-evaluation/README.md).
 It loads explicitly supplied local weights, does not download models or upload recordings,
 and keeps machine output separate from human corrections.
 
@@ -26,10 +23,9 @@ cannot be saved through the desktop's new-recognition path.
 ## Runtime and model resources
 
 The retained dependency lock pins MLXAudio 0.1.3 and MLX Swift 0.31.6.
-The runtime identity is `mlx-audio-swift-v0.1.3+nero-moss-whole-v2`; its processing
-policy remains `whole-recording-v1`. The app's expected model snapshot is configured
+The runtime identity is `mlx-audio-swift-v0.1.3+nero-moss-whole-v2`; its retained default invocation keeps `whole-recording-v1`. The explicit product invocation uses `moss-independent-chunks-v1`. The historical model snapshot is configured
 separately in the [shared MOSS manifest](../../crates/nero-core/resources/models/moss.json),
-which the desktop processing route and core also consume.
+which Core also uses for new product chunks.
 Use the matching model/tokenizer/configuration files and do not substitute unpinned weights.
 
 Inference requires the Metal resources produced by the matching Xcode Release build.
@@ -124,8 +120,7 @@ not silently normalize resource layouts or remove an input resource.
 The desktop preparation/build paths use the same staged-package verifier. Static
 verification does not execute the worker, so a build host does not need to run the
 macOS 26 worker just to compare package inputs. A present partial, stale or modified
-package fails; an absent optional package leaves this MOSS route unavailable without
-changing the product's independent Nemotron/Whisper/system choices. Windows
+package fails; an absent optional package is permitted. Production Mac builds require the matching package for their default MOSS route. Windows
 builds do not require this macOS-only runtime.
 
 ```bash
@@ -159,3 +154,10 @@ Validate resource discovery after relocation, cancellation and incomplete-output
 with synthetic fixtures and separately authorized local test data. Keep all recording-derived
 parity reports, scores, timing, and memory observations out of public documents.
 Helper packaging alone is not a full-app smoke test or a notarized release.
+
+## Product chunks
+
+`MossHarness --product-info` reports the explicit product capability.
+`MossHarness --product-chunks REQUEST_JSON` loads the pinned local model once and processes only the caller-selected 60-second ranges. Each result is a separately synchronized, non-overwriting `chunk-N.json`, retaining exact native output and generation evidence. Malformed output does not stop subsequent ranges. The caller validates input identity, reuses completed ranges and exposes partial coverage; process exit alone never establishes full completion. Product speaker labels are chunk-local and are not joined across chunks.
+
+The product `moss-independent-chunks-v1` contract is separate from the retained whole-recording entry point and does not relax it. Core's `moss-independent-chunks-projector-v2` preserves the native start and clamps a validated terminal overrun of at most 320 input samples (20ms) to the actual chunk/audio end. Exact worker bytes remain unchanged. `normalizedEndSegments` records corrected source indices, without requiring review/retry; speaker analysis uses the corrected interval with its existing overlap/coverage rules. Larger overruns, inverted times and ranges emptied by clamping fail that chunk. Stored v1 context projections retain their original reader policy.

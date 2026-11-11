@@ -21,6 +21,15 @@ struct MossHarness {
     }
 
     private static func run() async throws {
+        if CommandLine.arguments.count == 2, CommandLine.arguments[1] == "--product-info" {
+            FileHandle.standardOutput.write(try JSONSerialization.data(withJSONObject: ProductMoss.information(), options: [.sortedKeys]))
+            FileHandle.standardOutput.write(Data("\n".utf8))
+            return
+        }
+        if CommandLine.arguments.count == 3, CommandLine.arguments[1] == "--product-chunks" {
+            try await ProductMoss.run(URL(fileURLWithPath: CommandLine.arguments[2]))
+            return
+        }
         if CommandLine.arguments.count == 2, CommandLine.arguments[1] == "--runtime-info" {
             let data = try JSONSerialization.data(withJSONObject: [
                 "runtime": "mlx-audio-swift-v0.1.3+nero-moss-whole-v2",
@@ -89,22 +98,7 @@ struct MossHarness {
             let offset = Double(startFrame) / 16_000
             let metadata = model.generationMetadata
             generationCount += metadata.count
-            let evidence: [[String: Any]] = metadata.map { item in
-                ["promptTokens": item.promptTokens, "maxTokens": item.requestedMaxTokens,
-                 "effectiveMaxTokens": item.effectiveMaxTokens, "contextSize": item.contextSize,
-                 "generationTokens": item.generatedTokens, "terminationReason": item.terminationReason,
-                 "terminalTokenId": item.terminalTokenId.map { $0 as Any } ?? NSNull(),
-                 "configuredEosTokenIds": item.configuredEosTokenIds,
-                 "tokenizerEosTokenId": item.tokenizerEosTokenId,
-                 "inputAudioSamples": item.inputAudioSamples,
-                 "featureChunkCount": item.featureChunkCount,
-                 "featureTokenLengths": item.featureTokenLengths,
-                 "audioTokenCount": item.audioTokenCount,
-                 "audioEmbeddingCount": item.audioEmbeddingCount,
-                 "metadataSchemaVersion": 2,
-                 "eosPolicy": "model-generation-config+tokenizer-v1",
-                 "samplingPolicy": item.samplingPolicy]
-            }
+            let evidence = ProductMoss.generationEvidence(metadata)
             generationEvidence.append(contentsOf: evidence)
             let capped = metadata.contains { $0.terminationReason == "length" }
             let validatedSegments = MossOutputValidation.validatedSegments(output.text, segments: output.segments ?? [])

@@ -184,6 +184,7 @@ jobs:
         run: npm run version:check
       - name: Check shared design system and native consumers
         run: |
+          node scripts/build-icon-registry.mjs --check
           node design-system/checks/check-design-contracts.cjs
           node --test design-system/checks/check-components.cjs
           node design-system/checks/check-windows-bridge.cjs

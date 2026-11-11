@@ -11,6 +11,7 @@ let lastMeetingId = null;
 let localError = '';
 
 byId('hide-recorder').innerHTML = icon('x');
+byId('recorder-drag').innerHTML = icon('grip-vertical-inline');
 
 function control(text, action, iconName, className = '') {
   return ui.button({ html: icon(iconName), action, className: `desktop-button ${className}`, disabled: busy, attrs: { title: text, 'aria-label': text } });

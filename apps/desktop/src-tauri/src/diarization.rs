@@ -184,7 +184,7 @@ fn analyze(
     cancel: &AtomicBool,
 ) -> Result<SpeakerAnalysisDraft, Failure> {
     let directory = process
-        .model_dir_of(SPEAKER_MODEL)
+        .read_model_dir(SPEAKER_MODEL)
         .map_err(|_| failure(FailureKind::Storage))?;
     analyze_with_model(process, source, audio, path, cancel, &directory)
 }
@@ -200,7 +200,7 @@ pub(super) fn completed_live(
     let spec = model();
     let item = &spec.files[0];
     let weights = process
-        .model_dir_of(SPEAKER_MODEL)
+        .read_model_dir(SPEAKER_MODEL)
         .map_err(|_| failure(FailureKind::Storage))?
         .join(&item.name);
     let gpu = backend != "cpu";
@@ -231,7 +231,12 @@ pub(super) fn analyze_with_model(
 ) -> Result<SpeakerAnalysisDraft, Failure> {
     let spec = model();
     let item = &spec.files[0];
-    verify_model_files(directory, &spec, cancel).map_err(|error| failure(error.kind))?;
+    if directory.starts_with(&process.root) {
+        verify_model_files(directory, &spec, cancel).map_err(|error| failure(error.kind))?;
+    } else {
+        crate::processing::verify_model_files_read_only(directory, &spec, cancel)
+            .map_err(|error| failure(error.kind))?;
+    }
     plain_file(audio).map_err(|_| failure(FailureKind::Input))?;
     let mut gpu = executable(process, true).is_file() && library(process, true).is_file();
     let mut attempt = 0u8;

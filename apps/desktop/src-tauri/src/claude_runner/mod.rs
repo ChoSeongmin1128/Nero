@@ -116,11 +116,26 @@ fn command(binary: &Path) -> Command {
 
 // A bounded channel drains both pipes while the caller processes stdout.
 fn run(
-    mut command: Command,
+    command: Command,
     input: Vec<u8>,
     timeout: Duration,
     cancel: &AtomicBool,
     mut stdout_chunk: impl FnMut(&[u8]) -> Result<(), String>,
+) -> Result<(), String> {
+    run_output(command, input, timeout, cancel, |stdout, bytes| {
+        if stdout {
+            stdout_chunk(bytes)
+        } else {
+            Ok(())
+        }
+    })
+}
+fn run_output(
+    mut command: Command,
+    input: Vec<u8>,
+    timeout: Duration,
+    cancel: &AtomicBool,
+    mut output_chunk: impl FnMut(bool, &[u8]) -> Result<(), String>,
 ) -> Result<(), String> {
     if input.len() > MAX_INPUT || cancel.load(Ordering::Acquire) {
         return Err("요청이 너무 크거나 취소되었습니다.".into());
@@ -185,9 +200,7 @@ fn run(
                     let _ = child.wait();
                     return Err("Claude 응답이 너무 큽니다.".into());
                 }
-                if is_stdout {
-                    stdout_chunk(&chunk)?;
-                }
+                output_chunk(is_stdout, &chunk)?;
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => disconnected = true,
             Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -238,6 +251,38 @@ mod tests {
         let mut cmd = command(Path::new("/bin/sh"));
         cmd.args(["-c", script]);
         cmd
+    }
+    #[test]
+    fn auth_check_accepts_subscription_and_explicit_signed_out_output() {
+        let cancel = AtomicBool::new(false);
+        assert!(capture_auth_status(
+            shell("printf '%s' '{\"loggedIn\":true,\"authMethod\":\"claude.ai\"}'"),
+            &cancel
+        )
+        .unwrap());
+        assert!(
+            !capture_auth_status(shell("printf '%s' '{\"loggedIn\":false}'; exit 1"), &cancel)
+                .unwrap()
+        );
+        assert!(!capture_auth_status(
+            shell("printf '%s' '{\"loggedIn\":true,\"authMethod\":\"api_key\"}'"),
+            &cancel
+        )
+        .unwrap());
+    }
+    #[test]
+    fn auth_check_does_not_turn_execution_or_parse_failures_into_sign_out() {
+        let cancel = AtomicBool::new(false);
+        for script in [
+            "exit 1",
+            "printf '%s' '{\"error\":\"fixture\"}'; exit 1",
+            "printf '%s' '{\"loggedIn\":true,\"authMethod\":\"claude.ai\"}'; exit 1",
+            "printf '%s' '{\"loggedIn\":true}'",
+        ] {
+            assert!(capture_auth_status(shell(script), &cancel).is_err());
+        }
+        cancel.store(true, Ordering::Release);
+        assert!(capture_auth_status(shell("printf '%s' '{\"loggedIn\":false}'"), &cancel).is_err());
     }
     #[test]
     fn parses_only_matching_supported_model_metadata() {
@@ -425,21 +470,35 @@ impl Runner {
     pub fn auth_status(&self, cancel: &AtomicBool) -> Result<bool, String> {
         let mut cmd = command(&self.binary);
         cmd.args(["auth", "status"]);
-        let output = match capture(cmd, vec![], Duration::from_secs(20), cancel) {
-            Ok(v) => v,
-            Err(e) if e == ERROR => return Ok(false),
-            Err(e) => return Err(e),
-        };
-        let json: Value = serde_json::from_slice(&output)
-            .map_err(|_| "Claude 인증 상태를 확인하지 못했습니다.")?;
-        Ok(json.get("loggedIn").and_then(Value::as_bool) == Some(true)
-            && json.get("authMethod").and_then(Value::as_str) == Some("claude.ai"))
+        capture_auth_status(cmd, cancel)
     }
     /// Claude Code opens its own browser flow. No terminal or credential transfer.
-    pub fn login(&self, cancel: &AtomicBool) -> Result<(), String> {
+    pub fn login(
+        &self,
+        cancel: &AtomicBool,
+        mut browser_url: impl FnMut(String),
+    ) -> Result<(), String> {
         let mut cmd = command(&self.binary);
         cmd.args(["auth", "login"]);
-        capture(cmd, vec![], Duration::from_secs(300), cancel)?;
+        let mut output = [Vec::new(), Vec::new()];
+        let mut reported = false;
+        run_output(
+            cmd,
+            vec![],
+            Duration::from_secs(300),
+            cancel,
+            |stdout, bytes| {
+                let buffer = &mut output[usize::from(stdout)];
+                buffer.extend_from_slice(bytes);
+                if !reported {
+                    if let Some(url) = login_browser_url(buffer) {
+                        browser_url(url);
+                        reported = true;
+                    }
+                }
+                Ok(())
+            },
+        )?;
         if !self.auth_status(cancel)? {
             return Err("Claude 구독 인증을 확인하지 못했습니다.".into());
         }
@@ -521,6 +580,61 @@ impl Runner {
         let work = tempfile::tempdir().map_err(|_| ERROR)?;
         let cmd = reply_command(&self.binary, work.path(), model, effort);
         stream_reply(cmd, prompt, &cancel, &mut delta)
+    }
+}
+
+fn login_browser_url(bytes: &[u8]) -> Option<String> {
+    let end = bytes.iter().rposition(u8::is_ascii_whitespace)?;
+    String::from_utf8_lossy(&bytes[..=end])
+        .split_whitespace()
+        .find_map(|part| {
+            let part = &part[part.find("https://")?..];
+            let value = part
+                .trim_matches(|c: char| matches!(c, '"' | '\'' | '(' | ')'))
+                .split('\u{1b}')
+                .next()?;
+            if value.len() > 8192 {
+                return None;
+            }
+            let url = reqwest::Url::parse(value).ok()?;
+            (url.scheme() == "https"
+                && url.username().is_empty()
+                && url.password().is_none()
+                && url.port_or_known_default() == Some(443)
+                && url.fragment().is_none()
+                && matches!(url.host_str(), Some("claude.ai" | "auth.anthropic.com"))
+                && url.path() == "/oauth/authorize"
+                && url
+                    .query_pairs()
+                    .any(|(key, value)| key == "state" && !value.is_empty())
+                && url
+                    .query_pairs()
+                    .any(|(key, value)| key == "code_challenge" && !value.is_empty()))
+            .then(|| url.into())
+        })
+}
+
+fn capture_auth_status(cmd: Command, cancel: &AtomicBool) -> Result<bool, String> {
+    let mut output = Vec::new();
+    let result = run(cmd, vec![], Duration::from_secs(20), cancel, |chunk| {
+        output.extend_from_slice(chunk);
+        Ok(())
+    });
+    if let Err(error) = &result {
+        if error != ERROR {
+            return Err(error.clone());
+        }
+    }
+    let failure = "Claude 인증 상태를 확인하지 못했습니다.";
+    let json: Value = serde_json::from_slice(&output).map_err(|_| failure)?;
+    match json.get("loggedIn").and_then(Value::as_bool) {
+        Some(false) => Ok(false),
+        Some(true) if result.is_ok() => json
+            .get("authMethod")
+            .and_then(Value::as_str)
+            .map(|method| method == "claude.ai")
+            .ok_or_else(|| failure.into()),
+        _ => Err(failure.into()),
     }
 }
 
@@ -764,6 +878,33 @@ impl ReplyStream {
 
 #[cfg(test)]
 mod service_verification {
+    #[test]
+    fn login_browser_url_accepts_only_complete_official_authorization_urls() {
+        let url = "https://claude.ai/oauth/authorize?state=fixture&code_challenge=fixture";
+        assert_eq!(
+            super::login_browser_url(format!("Open: {url}\n").as_bytes()).as_deref(),
+            Some(url)
+        );
+        assert!(super::login_browser_url(url.as_bytes()).is_none());
+        for invalid in [
+            url.replace("claude.ai", "example.test"),
+            url.replace("claude.ai", "claude.ai.example.test"),
+            url.replace("claude.ai", "user@claude.ai"),
+            url.replace("claude.ai", "claude.ai:444"),
+            url.replace("https:", "http:"),
+            url.replace("/oauth/authorize", "/other"),
+            url.replace("state=fixture", "state="),
+            url.replace("code_challenge=fixture", "code_challenge="),
+            format!("{url}#fragment"),
+            format!("{url}&extra={}", "a".repeat(8192)),
+        ] {
+            assert!(super::login_browser_url(format!("{invalid}\n").as_bytes()).is_none());
+        }
+        assert_eq!(
+            super::login_browser_url(format!("\u{1b}[4m{url}\u{1b}[0m\n").as_bytes()).as_deref(),
+            Some(url)
+        );
+    }
     #[tokio::test]
     #[ignore = "explicit official runtime download and code-signature verification"]
     async fn prepare_official_runtime_without_credentials() {

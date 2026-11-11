@@ -5,10 +5,10 @@ export function renderMeetingMenu(meeting, { escape, icon, disabled = false }) {
   return `<details class="meeting-menu document-export" data-meeting-menu="${escape(meeting.id)}"><summary aria-label="${escape(meeting.title)} 더보기" title="${escape(meeting.title)} 더보기">${icon('ellipsis')}</summary><div class="action-menu">${actions.map(([action, label]) => `<button type="button" class="${['trash', 'purge'].includes(action) ? 'danger-text' : ''}" aria-label="${escape(label)}" data-library-action="${action}" data-library-target="${escape(meeting.id)}"${disabled ? ' disabled' : ''}>${escape(label)}</button>`).join('')}</div></details>`;
 }
 
-export function recentMeetingRow({ id, title, metadata, active = false, disabled = false, menu = '', escape }) {
+export function recentMeetingRow({ id, title, metadata, active = false, disabled = false, menu = '', leadingIcon = '', durationLabel = '', escape }) {
   const [folder, timestamp, duration] = metadata;
   const description = [folder, timestamp].filter(Boolean);
-  return `<article class="navigation-recent-row" data-recent-row="${escape(id)}"><button type="button" class="quiet recent-meeting" data-recent-meeting="${escape(id)}" aria-label="${escape([title, ...description, duration ? `녹음 길이 ${duration}` : ''].filter(Boolean).join(', '))}"${active ? ' aria-current="page"' : ''}${disabled ? ' disabled' : ''}><span class="recent-title-line"><strong title="${escape(title)}">${escape(title)}</strong>${folder ? `<span class="recent-meeting-folder" title="${escape(folder)}">${escape(folder)}</span>` : ''}</span><span class="recent-meeting-meta"><span class="recent-meeting-timestamp" title="${escape(timestamp || '')}">${escape(timestamp || '')}</span>${duration ? `<span class="recent-meeting-duration" aria-label="녹음 길이 ${escape(duration)}">${escape(duration)}</span>` : ''}</span></button>${menu}</article>`;
+  return `<article class="navigation-recent-row" data-recent-row="${escape(id)}"><button type="button" class="quiet recent-meeting" data-recent-meeting="${escape(id)}" aria-label="${escape([title, ...description, duration ? `녹음 길이 ${durationLabel || duration}` : ''].filter(Boolean).join(', '))}"${active ? ' aria-current="page"' : ''}${disabled ? ' disabled' : ''}>${leadingIcon ? `<span class="recent-meeting-icon" aria-hidden="true">${leadingIcon}</span>` : ''}<span class="recent-title-line"><strong title="${escape(title)}">${escape(title)}</strong>${folder ? `<span class="recent-meeting-folder" title="${escape(folder)}">${escape(folder)}</span>` : ''}</span><span class="recent-meeting-meta"><span class="recent-meeting-timestamp" title="${escape(timestamp || '')}">${escape(timestamp || '')}</span>${duration ? `<span class="recent-meeting-duration" aria-label="녹음 길이 ${escape(durationLabel || duration)}">${escape(duration)}</span>` : ''}</span></button>${menu}</article>`;
 }
 
 export function mountNavigationSidebar({ shell, aside, content, trigger, backdrop, storage, storageKey = 'nero.sidebar.pinned', icons = globalThis.NeroIcons, relocate = [] }) {
@@ -35,7 +35,7 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
   handle.setAttribute('aria-orientation', 'vertical');
   if (aside.id) handle.setAttribute('aria-controls', aside.id);
   shell.append(handle);
-  const width = mountNavigationWidth({ shell, handle, storage: preferenceStorage, storageKey: `${storageKey}.width`, getMode: () => pinned ? 'pinned' : 'temporary', onDragging: active => { if (active) clearTimeout(timer); else hide(); } });
+  const width = mountNavigationWidth({ shell, handle, storage: preferenceStorage, storageKey: `${storageKey}.width`, getMode: () => pinned ? 'pinned' : previewView === 'ai' ? 'ai-temporary' : 'temporary', onDragging: active => { if (active) clearTimeout(timer); else hide(); } });
   const unavailable = () => shell.dataset.onboarding === 'true';
   function render() {
     if (unavailable()) temporary = false;
@@ -70,7 +70,7 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
     trigger.setAttribute('aria-expanded', String(open));
     trigger.setAttribute('aria-label', pinned ? '사이드바 접기' : temporary ? '사이드바 펼쳐두기' : '사이드바 열기');
     trigger.title = trigger.getAttribute('aria-label');
-    trigger.innerHTML = icons?.(pinned ? 'panel-left-close' : 'panel-left') || '';
+    trigger.innerHTML = icons?.(pinned ? 'panel-left-close' : temporary ? 'panel-left-peek' : 'panel-left') || '';
     if (backdrop) backdrop.hidden = true;
     aside.dispatchEvent(new document.defaultView.CustomEvent('nero:navigation-state', { detail: { expanded: open, pinned } }));
   }

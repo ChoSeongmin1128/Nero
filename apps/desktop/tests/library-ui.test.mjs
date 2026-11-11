@@ -54,6 +54,9 @@ function harness(overrides = {}, options = {}) {
     get innerHTML() { return this.id === 'folder-list' ? ['library-system-views', 'library-user-folders', 'library-ai-view', 'library-trash-view'].map(id => byId(id).innerHTML).join('') : this.html || ''; }
     querySelector(selector) {
       if (selector === '[autofocus]') return this.autofocus || null;
+      if (selector === '[data-new-destination]') return byId('library-new-destination');
+      if (selector === '[data-create-destination]') return byId('create-destination');
+      if (selector === '.library-folder-choices') return byId('folder-choices');
       if (selector === '[data-library-confirm]') return byId('confirm');
       if (selector.includes('library-destination')) return this.checkedRadio == null ? null : { value: this.checkedRadio };
       return null;

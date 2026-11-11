@@ -84,7 +84,7 @@ fn apple_file_processing_preserves_text_and_skips_all_speaker_work_when_disabled
             assert_eq!(saved.kind, "transcribe");
             assert_eq!(saved.status, JobStatus::Completed);
             assert!(
-                !fs::read_dir(root.join("models")).unwrap().any(|entry| entry
+                !root.join("models").exists() || !fs::read_dir(root.join("models")).unwrap().any(|entry| entry
                     .unwrap()
                     .file_name()
                     .to_string_lossy()

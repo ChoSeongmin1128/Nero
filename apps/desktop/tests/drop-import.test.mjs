@@ -60,3 +60,44 @@ test('file drags never reach the webview default, while in-app drags are left al
   assert.deepEqual(dropped, [['회의.m4a']]);
   assert.equal(overlay.hidden, true);
 });
+
+
+test('cancelling between upload chunks drains the chunk and cleans the staged file without finishing', async () => {
+  const controller = new AbortController(), calls = [];
+  const bridge = { dropImportBegin: async () => 'token',
+    dropImportChunk: async () => { calls.push('chunk'); controller.abort(); },
+    dropImportCancel: async () => { await Promise.resolve(); calls.push('cancel'); },
+    dropImportFinish: async () => assert.fail('cancelled upload cannot commit'),
+  };
+  await assert.rejects(uploadDroppedFile(bridge, file(DROP_CHUNK + 1), null, null, { signal: controller.signal }), { name: 'AbortError' });
+  assert.deepEqual(calls, ['chunk', 'cancel']);
+});
+
+test('cancellation before begin makes no native calls, while finish has an explicit commit fence', async () => {
+  const controller = new AbortController(); controller.abort();
+  await assert.rejects(uploadDroppedFile({}, file(1), null, null, { signal: controller.signal }), { name: 'AbortError' });
+  const calls = [];
+  const bridge = { dropImportBegin: async () => 'token', dropImportChunk: async () => {}, dropImportFinish: async () => { calls.push('finish'); return { id: 'job' }; } };
+  const result = await uploadDroppedFile(bridge, file(1), null, null, { onCommitting: () => calls.push('fence') });
+  assert.deepEqual(calls, ['fence', 'finish']); assert.equal(result.id, 'job');
+});
+
+test('failed cleanup is reported instead of claiming that cancellation completed', async () => {
+  const controller = new AbortController();
+  const bridge = { dropImportBegin: async () => 'token', dropImportChunk: async () => controller.abort(), dropImportCancel: async () => { throw Error('busy'); } };
+  await assert.rejects(uploadDroppedFile(bridge, file(1), null, null, { signal: controller.signal }), /임시 파일을 정리하지 못했습니다/);
+});
+
+test('the upload overlay exposes cancellation during copy and removes it at the commit fence', async t => {
+  const window = new Window(); t.after(() => window.happyDOM.abort());
+  const overlay = window.document.createElement('div'), message = window.document.createElement('p'), cancelButton = window.document.createElement('button');
+  let finish, control;
+  mountDropImport({ window, overlay, message, cancelButton, onDrop: async (_files, _progress, options) => { control = options; await new Promise(resolve => { finish = resolve; }); } });
+  const drop = () => { const event = new window.Event('drop', { cancelable: true }); event.dataTransfer = { types: ['Files'], files: [file(2)] }; window.dispatchEvent(event); };
+  drop(); assert.equal(cancelButton.hidden, false); cancelButton.click();
+  assert.equal(control.signal.aborted, true); assert.equal(cancelButton.disabled, true);
+  assert.match(message.textContent, /취소 중/); finish(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(overlay.hidden, true);
+  drop(); control.onCommitting(); assert.equal(cancelButton.hidden, true); cancelButton.click();
+  assert.equal(control.signal.aborted, false); finish(); await new Promise(resolve => setImmediate(resolve));
+});

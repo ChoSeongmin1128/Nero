@@ -7,9 +7,11 @@ function call(command, args = {}) {
 }
 export const composerCatalog = () => call('ai_chat_composer_catalog');
 export const accounts = () => call('ai_chat_accounts');
+export const checkAccounts = (retry = false, provider = null) => call('ai_chat_check_accounts', { retry, provider });
 export const connect = (provider, accountId = null) => call('ai_chat_connect', { provider, accountId });
 export const finishConnect = attemptId => call('ai_chat_finish_connect', { attemptId });
 export const cancelConnect = attemptId => call('ai_chat_cancel_connect', { attemptId });
+export const reopenConnect = attemptId => call('ai_chat_reopen_connect', { attemptId });
 export const disconnect = accountId => call('ai_chat_disconnect', { accountId });
 export const models = (accountId, refresh = true) => call('ai_chat_models', { accountId, refresh });
 export const list = (trash = false) => call('ai_chat_list', { trash });
@@ -29,6 +31,7 @@ export const notionSnapshot = () => call('notion_connection_snapshot');
 export const notionConnect = () => call('begin_notion_connect');
 export const notionFinish = attemptId => call('finish_notion_connect', { attemptId });
 export const notionCancel = attemptId => call('cancel_notion_connect', { attemptId });
+export const notionReopen = attemptId => call('reopen_notion_connect', { attemptId });
 export const notionDisconnect = () => call('disconnect_notion_context');
 export const fetchSources = request => call('fetch_notion_sources', request);
 export const cancelFetch = requestId => call('cancel_notion_fetch', { requestId });

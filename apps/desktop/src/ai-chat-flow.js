@@ -5,6 +5,7 @@ const emptyConversation = id => ({ id: id || null, key: id || DRAFT, title: '새
 const errorMessage = (error, fallback) => error?.message || fallback;
 const terminal = new Set(['completed', 'failed', 'cancelled']);
 const reconnectable = new Set(['signed_out', 'plan_disabled', 'unknown']);
+export const aiAccountError = (state, provider = state.provider) => state.accountErrors?.[provider] || state.accountsError || '';
 export const usableAccount = account => Boolean(account?.id) && ['ready', 'unknown'].includes(account.state);
 const cleanModel = item => ({ id: item.id, label: item.label, ...(item.previous === true ? { previous: true } : {}), ...(item.effort && typeof item.effort === 'object' ? { effort: { supported: typeof item.effort.supported === 'boolean' ? item.effort.supported : null, levels: Array.isArray(item.effort.levels) ? item.effort.levels.filter(level => typeof level === 'string') : [], default: typeof item.effort.default === 'string' ? item.effort.default : null } } : {}) });
 const allowedEffort = (models, modelId, effort) => effort && models.find(item => item.id === modelId)?.effort?.supported === true && models.find(item => item.id === modelId).effort.levels.includes(effort) ? effort : null;
@@ -21,10 +22,12 @@ export function selectAiAccount(accounts, provider, { selectedId = null, activeA
     || candidates[0];
 }
 
-export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved = async () => {}, getTemplate = async () => null, getMeetings = () => [], writeClipboard = text => navigator.clipboard.writeText(text), createId = () => crypto.randomUUID() }) {
-  let state = { meeting: null, conversation: emptyConversation(), conversationList: [], trashList: [], trashLoaded: false, trashError: '', listBusy: false, listLoaded: false, listError: '', provider: 'chatgpt', accountId: null, activeAccountId: null, modelId: null, effort: null, models: [], accounts: [], accountsLoaded: false, accountsBusy: false, accountsError: '', catalog: { skills: [], templates: [] }, catalogError: '', modelGroups: {}, modelsBusy: false, modelError: '', attempts: {}, connectionPhases: {}, notion: null, notionBusy: false, notionAttempt: null, notionError: '', fetching: false, sourceError: '', active: false, settingsActive: false };
+export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved = async () => {}, getTemplate = async () => null, getMeetings = () => [], writeClipboard = text => navigator.clipboard.writeText(text), createId = () => crypto.randomUUID(), now = Date.now }) {
+  let state = { meeting: null, conversation: emptyConversation(), conversationList: [], trashList: [], trashLoaded: false, trashError: '', listBusy: false, listLoaded: false, listError: '', provider: 'chatgpt', accountId: null, activeAccountId: null, modelId: null, effort: null, models: [], accounts: [], accountsLoaded: false, accountsBusy: false, accountsError: '', accountErrors: {}, catalog: { skills: [], templates: [] }, catalogError: '', modelGroups: {}, modelsBusy: false, modelError: '', attempts: {}, connectionPhases: {}, connectionReopening: {}, notion: null, notionBusy: false, notionAttempt: null, notionError: '', fetching: false, sourceError: '', active: false, settingsActive: false };
   let subscriptionReady = false, selectionInitialized = false, contextEpoch = 0, openEpoch = 0;
   let disposed = false, accountsPromise = null, listPromise = null, modelEpoch = 0, listEpoch = 0, sourceRequest = null, unsubscribe = null;
+  let accountCheckPromise = null, lastAccountCheck = null;
+  let preparingSummary = false;
   const conversations = new Map([[DRAFT, state.conversation]]), loads = new Map(), listeners = new Set(), connections = new Map(), eventBuffers = new Map(), pendingStarts = new Map(), contextLoads = new Map(), modelCache = new Map(), modelGenerations = new Map(), refreshedModels = new Set(), passiveModels = new Set();
   try {
     const saved = JSON.parse(globalThis.localStorage?.getItem('nero.ai.models.v1') || '{}');
@@ -143,8 +146,8 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
       }).catch(() => {});
     }
   };
-  const connectionError = (key, error, fallback) => publish({ [key === 'notion' ? 'notionError' : 'accountsError']: errorMessage(error, fallback) });
-  const connectionPhase = (key, phase) => publish({ connectionPhases: { ...state.connectionPhases, [key]: phase } });
+  const connectionError = (key, error, fallback) => publish(key === 'notion' ? { notionError: errorMessage(error, fallback) } : { accountErrors: { ...state.accountErrors, [key]: errorMessage(error, fallback) } });
+  const connectionPhase = (key, phase) => publish({ connectionPhases: { ...state.connectionPhases, [key]: phase }, ...(phase !== 'waiting' ? { connectionReopening: { ...state.connectionReopening, [key]: false } } : {}) });
   const connectionAttempt = (key, attemptId) => publish(key === 'notion' ? { notionAttempt: attemptId } : { attempts: { ...state.attempts, [key]: attemptId } });
   const acceptConnection = (key, result) => { if (key === 'notion') { if (result) publish({ notion: result }); } else if (result) acceptAccounts(result); };
   async function finishConnection(key) {
@@ -157,6 +160,7 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
       const result = await (key === 'notion' ? bridge.notionFinish(run.attemptId) : bridge.finishConnect(run.attemptId));
       if (disposed || connections.get(key) !== run || run.generation !== generation) return;
       acceptConnection(key, result);
+      connectionError(key, null, '');
       connections.delete(key);
       connectionAttempt(key, null);
       connectionPhase(key, null);
@@ -281,38 +285,6 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
     } catch (error) { updateConversation(id, { error: errorMessage(error, '저장하지 못했습니다. 다시 시도해 주세요.') }); return false; }
     finally { if (conversations.get(id)?.action === action) updateConversation(id, { action: null }); }
   }
-  // The panel follows the meeting on screen: its latest conversation, or a new one with the
-  // meeting attached. An unsent draft waits for its meeting to come back.
-  const meetingDrafts = new Map();
-  let followEpoch = 0;
-  async function followMeeting(meeting) {
-    const epoch = ++followEpoch;
-    const about = id => state.conversationList.find(item => item.id === id)?.meetingIds?.includes(meeting.id);
-    if (state.conversation.meetings.some(item => item.id === meeting.id) || about(state.conversation.id)) return;
-    // A draft being sent becomes its own conversation first; following waits for that.
-    await pendingStarts.get(DRAFT)?.done;
-    if (!state.listLoaded) await flow.loadList();
-    if (disposed || epoch !== followEpoch || state.meeting?.id !== meeting.id) return;
-    const match = state.conversationList.find(item => item.meetingIds?.includes(meeting.id));
-    if (match) { await flow.selectConversation(match.id); return; }
-    const waiting = conversations.get(DRAFT);
-    const restored = waiting && !waiting.action && (waiting.homeMeetingId ?? waiting.meetings?.[0]?.id) === meeting.id ? waiting : meetingDrafts.get(meeting.id);
-    meetingDrafts.delete(meeting.id);
-    openEpoch += 1; contextEpoch += 1;
-    if (sourceRequest) void flow.cancelSource();
-    const conversation = restored || { ...emptyConversation(), compositionInitialized: true, homeMeetingId: meeting.id };
-    replaceDraft(conversation);
-    publish({ conversation, sourceError: '', listError: '' });
-    if (!restored) flow.attachMeeting(meeting);
-  }
-  // An unsent draft is kept for the meeting it was started from before another takes its place.
-  const unsent = conversation => Boolean(conversation?.draft?.trim() || conversation?.sources?.length || conversation?.meetings?.length > 1);
-  function replaceDraft(next) {
-    const current = conversations.get(DRAFT);
-    const home = current?.homeMeetingId ?? current?.meetings?.[0]?.id;
-    if (current && current !== next && !current.action && home && unsent(current)) meetingDrafts.set(home, current);
-    conversations.set(DRAFT, next);
-  }
   async function ensureConversation(force = false, epoch = openEpoch) {
     if (selectionInitialized) { const id = state.conversation.id; if (id) await flow.loadConversation(force); return id; }
     await flow.loadList();
@@ -328,26 +300,30 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
   // A model that takes a reasoning level is sent with one: its default, or the
   // person's choice when the default is unknown.
   const effortReady = effort => state.models.find(item => item.id === state.modelId)?.effort?.supported !== true || Boolean(effectiveEffort(state.models, state.modelId, effort));
-  const canStart = (text, context = state.conversation, effort = state.effort) => Boolean(subscriptionReady && effortReady(effort) && state.conversation.key && state.conversation.loaded && ready() && state.modelId && !state.modelsBusy && !state.modelError && !state.conversation.loading && !state.conversation.contextBusy && !state.conversation.activeRequestId && !state.conversation.action && !state.fetching && (text.trim() || context.skillId) && (!context.skillId || (context.templateId && context.meetings.length === 1 && context.meetings[0].id === context.summaryTargetId)));
+  const canStart = (text, context = state.conversation, effort = state.effort) => Boolean(subscriptionReady && effortReady(effort) && state.conversation.key && state.conversation.loaded && ready() && !state.accountErrors[state.provider] && !connections.has(state.provider) && state.modelId && !state.modelsBusy && !state.modelError && !state.conversation.loading && !state.conversation.contextBusy && !state.conversation.activeRequestId && !state.conversation.action && !state.fetching && (text.trim() || context.skillId) && (!context.skillId || (context.templateId && context.meetings.length === 1 && context.meetings[0].id === context.summaryTargetId)));
   const flow = {
     getSnapshot: () => state,
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     receive,
     availableMeetings,
     canSend: () => canStart(state.conversation.draft),
+    // Central navigation updates the reopen target, never the selected chat or its sources.
     setMeeting(meeting) {
       const next = meetingChoice(meeting), previous = state.meeting;
       if (next?.id === previous?.id && next?.title === previous?.title) return;
       publish({ meeting: next });
-      if (next && next.id !== previous?.id && selectionInitialized) void followMeeting(next);
     },
-    async open(meeting = state.meeting) {
+    async open(meeting = state.meeting, { restoreCurrent = false } = {}) {
+      const restoreMeeting = restoreCurrent && selectionInitialized && !state.active;
       const epoch = ++openEpoch;
       flow.setMeeting(meeting);
       publish({ active: true });
-      void flow.loadAccounts();
+      void flow.checkAccounts({ activation: true });
       void flow.loadCatalog();
       await ensureConversation(true, epoch);
+      // Reopening from a meeting restores that explicit context once. Never let a
+      // delayed open attach an earlier meeting after a newer selection or close.
+      if (restoreMeeting && !disposed && state.active && epoch === openEpoch && state.meeting?.id === meeting?.id && meeting) flow.attachMeeting(meeting);
     },
     setActive(active) {
       if (active) return state.active ? undefined : flow.open();
@@ -505,6 +481,41 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
     },
     selectSummaryTarget(summaryTargetId) { if (state.conversation.meetings.length === 1 && state.conversation.meetings[0].id === summaryTargetId) updateConversation(state.conversation.key, { summaryTargetId }); },
     summaryPrompt() { selectionInitialized = true; const id = state.conversation.key; if (id) updateConversation(id, { draft: '첨부한 회의의 결정 사항과 할 일을 정리해 주세요.', useTemplate: true }); },
+    async prepareSummary(meeting) {
+      if (preparingSummary || !meetingChoice(meeting)) return false;
+      preparingSummary = true;
+      let epoch = openEpoch, targetKey = state.conversation.key;
+      const current = () => !disposed && epoch === openEpoch;
+      try {
+        await beforeWrite();
+        if (!current()) return false;
+        const opening = flow.open(meeting);
+        epoch = openEpoch;
+        await opening;
+        if (!current() || !state.active || state.meeting?.id !== meeting.id) return false;
+        const draft = conversations.get(DRAFT);
+        if (draft && (draft.draft.trim() || draft.skillId || draft.sources.length || draft.meetings.some(item => item.id !== meeting.id))) {
+          const created = await bridge.create();
+          if (!current() || !state.active || state.meeting?.id !== meeting.id) return false;
+          const conversation = { ...emptyConversation(created.id), ...created, loaded: true };
+          conversations.set(created.id, conversation);
+          selectionInitialized = true;
+          contextEpoch++; openEpoch++;
+          publish({ conversation, sourceError: '' });
+          void flow.loadList(true);
+        } else {
+          await flow.newConversation({ attachCurrent: false });
+          updateConversation(DRAFT, { ...emptyConversation(), compositionInitialized: true });
+        }
+        epoch = openEpoch;
+        targetKey = state.conversation.key;
+        flow.attachMeeting(meeting);
+        updateConversation(state.conversation.key, { skillId: 'meeting-summary', summaryTargetId: meeting.id, templateId: null, draft: '' });
+        await flow.ensureSkillTemplate();
+        return true;
+      } catch (error) { if (current()) updateConversation(targetKey, { error: errorMessage(error, '요약할 대화를 준비하지 못했습니다.') }); return false; }
+      finally { preparingSummary = false; }
+    },
     attachMeeting(meeting) {
       const next = meetingChoice(meeting), id = state.conversation.key;
       if (!id || !next || state.conversation.action === 'deleting' || state.conversation.meetings.some(item => item.id === next.id)) return false;
@@ -670,7 +681,7 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
     setSettingsActive(settingsActive) {
       if (settingsActive === state.settingsActive) return;
       publish({ settingsActive });
-      if (settingsActive) { void flow.loadAccounts(true); void flow.loadNotion(); }
+      if (settingsActive) { void flow.checkAccounts({ activation: true }); void flow.loadNotion(); }
     },
     async loadAccounts(force = false) {
       if ([...connections.keys()].some(key => key !== 'notion')) return;
@@ -683,6 +694,25 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
         finally { accountsPromise = null; publish({ accountsBusy: false }); }
       })();
       return accountsPromise;
+    },
+    async checkAccounts({ retry = false, provider = null, activation = false } = {}) {
+      const force = activation && Boolean(state.accountsError || Object.values(state.accountErrors).some(Boolean));
+      if (disposed || [...connections.keys()].some(key => key !== 'notion')) return;
+      if (accountCheckPromise) return retry ? accountCheckPromise.then(() => flow.checkAccounts({ retry: true, provider })) : accountCheckPromise;
+      if (!retry && !force && state.accountsLoaded && lastAccountCheck !== null && now() - lastAccountCheck < 60_000) return;
+      accountCheckPromise = (async () => {
+        await flow.loadAccounts();
+        if (disposed || typeof bridge.checkAccounts !== 'function' || [...connections.keys()].some(key => key !== 'notion')) return;
+        if (!retry && !force && lastAccountCheck !== null && now() - lastAccountCheck < 60_000) return;
+        lastAccountCheck = now();
+        publish({ accountsBusy: true, accountsError: '' });
+        try {
+          const result = await bridge.checkAccounts(retry, provider);
+          if (!disposed) { acceptAccounts(result); publish({ accountsError: '', accountErrors: { ...state.accountErrors, ...result.checkErrors } }); }
+        } catch (error) { publish({ accountsError: errorMessage(error, 'AI 계정을 확인하지 못했습니다.') }); }
+        finally { publish({ accountsBusy: false }); }
+      })().finally(() => { accountCheckPromise = null; });
+      return accountCheckPromise;
     },
     async refreshModelGroup(provider, preferredAccountId = null) {
       const target = selectAiAccount(state.accounts, provider, { selectedId: preferredAccountId || (state.provider === provider ? state.accountId : null), activeAccountId: state.activeAccountId });
@@ -697,7 +727,7 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
       } catch (error) { if (!disposed && generation === (modelGenerations.get(accountId) || 0)) publish({ modelGroups: { ...state.modelGroups, [accountId]: { busy: false, error: errorMessage(error, '모델을 불러오지 못했습니다.') } } }); }
     },
     // Opening the model menu is the request: the cached list shows at once and each
-    // account is checked once per session. Nothing else touches credentials passively.
+    // account's list is refreshed once per session. Account checks keep this cache.
     ensureModels() {
       for (const provider of ['chatgpt', 'claude']) {
         if (connections.has(provider)) continue;
@@ -762,6 +792,22 @@ export function createAiChatFlow({ bridge, beforeWrite = async () => {}, onSaved
       const target = selectAiAccount(state.accounts, provider, { selectedId: state.accountId, activeAccountId: state.activeAccountId });
       if (state.accountsBusy || !target?.configured || !reconnectable.has(target.state)) return;
       return startConnection(provider);
+    },
+    async reopenConnect(provider) {
+      const run = connections.get(provider);
+      if (!run?.attemptId || state.connectionPhases[provider] !== 'waiting' || state.connectionReopening[provider]) return false;
+      const generation = run.generation;
+      publish({ connectionReopening: { ...state.connectionReopening, [provider]: true } });
+      try {
+        await (provider === 'notion' ? bridge.notionReopen(run.attemptId) : bridge.reopenConnect(run.attemptId));
+        if (connections.get(provider) === run && run.generation === generation) connectionError(provider, null, '');
+        return true;
+      } catch (error) {
+        if (connections.get(provider) === run && run.generation === generation) connectionError(provider, error, '브라우저를 다시 열지 못했습니다.');
+        return false;
+      } finally {
+        if (connections.get(provider) === run) publish({ connectionReopening: { ...state.connectionReopening, [provider]: false } });
+      }
     },
     retryConnect: async provider => { await cancelConnection(provider); if (!connections.has(provider)) await startConnection(provider); },
     cancelConnect: provider => cancelConnection(provider),

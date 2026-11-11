@@ -14,7 +14,7 @@
 #sidebar-app-update[data-update-phase="installing"] > [data-detail-icon] { display: none; }
 #sidebar-app-update[data-update-phase="checking"]::before,
 #sidebar-app-update[data-update-phase="downloading"]::before,
-#sidebar-app-update[data-update-phase="installing"]::before { content: ''; flex: none; width: 14px; height: 14px; border: 1.5px solid var(--border-control); border-top-color: currentColor; border-radius: 50%; animation: app-update-spin 800ms linear infinite; }
+#sidebar-app-update[data-update-phase="installing"]::before { content: ''; flex: none; width: 14px; height: 14px; border: 0; background: currentColor; -webkit-mask: url("/shared/assets/icons/native-quiet/activity-spinner.svg") center / contain no-repeat; mask: url("/shared/assets/icons/native-quiet/activity-spinner.svg") center / contain no-repeat; animation: app-update-spin 800ms linear infinite; }
 @keyframes app-update-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) {
   #sidebar-app-update[data-update-phase="checking"]::before,

@@ -6,12 +6,16 @@ export function mountSidebarViews({ aside, navigation, notifications, trigger, b
   const emptyTrash = find('sidebar-empty-trash'), newChat = find('sidebar-ai-new'), aiPreview = find('sidebar-ai-preview'), search = aside.querySelector('.search-field');
   const recentPreview = find('sidebar-recent-preview'), recentSection = find('recent-section'), recentList = find('recent-meetings');
   const compact = aside.parentElement.querySelector('[data-navigation-compact]');
+  const searchHome = document.getElementById('library-search-home');
+  const folderActions = document.getElementById('library-folder-actions');
+  const newFolder = document.getElementById('new-folder');
+  const folderActionHome = newFolder?.parentElement;
   // Each sidebar view names what it shows; previews are the views with a label.
   const views = {
     navigation: { library: true, search: true },
     folders: { label: '폴더', library: true, search: true, foldersOnly: true },
-    all: { label: '전체 목록', heading: true, search: true, meetings: true, open: 'all' },
-    ai: { label: 'AI 대화', heading: true, ai: true, open: 'ai', newChat: true },
+    all: { label: '전체 회의', heading: true, search: true, meetings: true, open: 'all' },
+    ai: { label: '대화 기록', heading: true, ai: true, open: 'ai', newChat: true },
     trash: { label: '휴지통', heading: true, search: true, meetings: true, open: 'trash', emptyTrash: true, noCreate: true },
     recent: { label: '최근 회의', heading: true, search: true, recent: true },
     notifications: {},
@@ -25,7 +29,19 @@ export function mountSidebarViews({ aside, navigation, notifications, trigger, b
     notifications.hidden = !opened;
     if (library) library.hidden = !config.library;
     if (aiPreview) aiPreview.hidden = !config.ai;
-    if (search) search.hidden = !config.search;
+    if (search) {
+      if (!scoped && !opened && searchHome) {
+        if (search.parentElement !== searchHome) searchHome.append(search);
+        search.hidden = false;
+      } else {
+        if (search.parentElement !== navigation) navigation.insertBefore(search, heading);
+        search.hidden = !config.search;
+      }
+    }
+    if (newFolder && folderActionHome && folderActions) {
+      const destination = !scoped && !opened ? folderActions : folderActionHome;
+      if (newFolder.parentElement !== destination) destination.append(newFolder);
+    }
     if (meetings) meetings.hidden = !config.meetings;
     if (recentPreview) recentPreview.hidden = !config.recent;
     if (recentList && recentSection && recentPreview) {
@@ -46,8 +62,9 @@ export function mountSidebarViews({ aside, navigation, notifications, trigger, b
       if (accessibleLabel) accessibleLabel.textContent = openView.getAttribute('aria-label');
     }
     for (const row of aside.querySelectorAll('#library-system-views .library-folder-item')) row.hidden = Boolean(config.foldersOnly) && Boolean(row.querySelector('[data-library-filter="all"]'));
+    for (const row of aside.querySelectorAll('.library-folder-overview')) row.hidden = Boolean(config.foldersOnly);
     for (const id of ['library-ai-view', 'library-trash-view']) { const section = find(id); if (section) section.hidden = Boolean(config.foldersOnly); }
-    const create = find('create-meeting'); if (create) create.hidden = opened || Boolean(config.noCreate);
+    const create = document.getElementById('create-meeting'); if (create) create.hidden = aside.contains(create) && (opened || scoped);
     trigger.setAttribute('aria-controls', notifications.id);
     trigger.setAttribute('aria-expanded', String(opened));
     trigger.setAttribute('aria-pressed', String(opened));

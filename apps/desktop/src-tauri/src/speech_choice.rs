@@ -11,32 +11,37 @@ pub enum SpeechEngine {
     WhisperLargeV3,
     AppleSpeech,
     QwenKo,
+    Moss,
 }
 
 impl SpeechEngine {
-    pub(super) const ALL: [Self; 5] = [
+    pub(super) const ALL: [Self; 6] = [
+        Self::Moss,
         Self::Nemotron,
         Self::QwenKo,
         Self::WhisperTurbo,
         Self::WhisperLargeV3,
         Self::AppleSpeech,
     ];
-    // Every engine whose models a selection needs, itself first. Qwen also needs the
-    // Nemotron model for its recording preview.
-    pub(super) fn requirements(self) -> Vec<Self> {
-        if self.live_asr() == self {
-            vec![self]
+    pub(super) fn fresh_default() -> Self {
+        if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+            Self::Moss
         } else {
-            vec![self, self.live_asr()]
+            Self::Nemotron
         }
     }
-    // The recognizer streamed during recording. Qwen previews with Nemotron and
-    // produces the saved transcript after recording ends.
-    pub(super) fn live_asr(self) -> Self {
-        match self {
-            Self::QwenKo => Self::Nemotron,
-            other => other,
+    pub(super) fn offered(self) -> bool {
+        if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+            matches!(self, Self::Moss | Self::QwenKo | Self::AppleSpeech)
+        } else {
+            matches!(self, Self::Nemotron | Self::WhisperTurbo)
         }
+    }
+    pub(super) fn requirements(self) -> Vec<Self> {
+        vec![self]
+    }
+    pub(super) fn live_asr(self) -> Self {
+        self
     }
     pub(super) fn manifest(self) -> &'static str {
         match self {
@@ -45,6 +50,7 @@ impl SpeechEngine {
             Self::WhisperLargeV3 => crate::whisper_asr::LARGE_MANIFEST,
             Self::AppleSpeech => crate::apple_speech::MANIFEST,
             Self::QwenKo => crate::qwen_asr::MANIFEST,
+            Self::Moss => crate::moss_asr::MANIFEST,
         }
     }
     pub(super) fn label(self) -> &'static str {
@@ -54,20 +60,23 @@ impl SpeechEngine {
             Self::WhisperLargeV3 => "WhisperLargeV3",
             Self::AppleSpeech => "AppleSpeech",
             Self::QwenKo => "QwenKo",
+            Self::Moss => "MOSS",
         }
     }
     pub(super) fn title(self) -> &'static str {
         match self {
-            Self::Nemotron => "Nemotron 3.5 · 기본",
+            Self::Nemotron => "Nemotron 3.5",
             Self::WhisperTurbo => "Whisper large-v3-turbo · 구간 처리",
             Self::WhisperLargeV3 => "Whisper large-v3 · 구간 처리",
             Self::AppleSpeech => "macOS 기본 전사",
-            Self::QwenKo => "Qwen3-ASR 한국어 · 녹음 후 전사",
+            Self::QwenKo => "Qwen3-ASR 한국어 (실험적)",
+            Self::Moss => "MOSS",
         }
     }
     pub(super) fn description(self) -> &'static str {
         match self {
-            Self::QwenKo => "녹음 중에는 Nemotron으로 미리 보여 주고, 녹음이 끝나면 한국어 모델로 다시 전사해 저장합니다. 녹음 종료 후 추가로 기다려야 하며 Nemotron 모델도 함께 준비합니다.",
+            Self::QwenKo => "직접 선택한 경우에만 준비하는 실험적 한국어 전사 모델입니다. 녹음 종료 후 처리하며 CPU/GPU와 메모리를 많이 사용할 수 있습니다.",
+            Self::Moss => "녹음 종료 후 구간별로 전사합니다. 처리 중 CPU/GPU와 메모리를 사용하며 실패 구간은 정상 결과를 보존한 채 다시 시도할 수 있습니다.",
             Self::AppleSpeech => "녹음 종료 후 macOS에서 한국어를 전사합니다. Nero 전용 음성 인식 모델이 필요하지 않습니다. 준비 시 시스템 언어 자산을 다운로드할 수 있습니다.",
             Self::Nemotron => "녹음과 함께 음성 기록을 준비합니다. 지원되는 GPU를 우선 사용하고 CPU로도 처리할 수 있습니다.",
             Self::WhisperLargeV3 => "고사양 Mac용 큰 모델입니다. 모델 다운로드와 구간별 처리에 더 많은 저장 공간과 메모리, 시간이 필요합니다.",
@@ -134,7 +143,7 @@ pub(super) fn load(root: &Path) -> Result<Preference, String> {
     if !file.exists() && !file.is_symlink() {
         return Ok(Preference {
             schema_version: 1,
-            engine: SpeechEngine::default(),
+            engine: SpeechEngine::fresh_default(),
             speaker_enabled: true,
             apple_speech_variant: None,
         });
@@ -197,7 +206,7 @@ mod tests {
     fn missing_preference_does_not_create_files_and_explicit_choices_persist() {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().join("absent");
-        assert_eq!(load(&root).unwrap().engine, SpeechEngine::Nemotron);
+        assert_eq!(load(&root).unwrap().engine, SpeechEngine::fresh_default());
         assert!(!root.exists());
         std::fs::create_dir(&root).unwrap();
         save(&root, SpeechEngine::WhisperTurbo, true, None).unwrap();

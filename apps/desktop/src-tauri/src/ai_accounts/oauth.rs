@@ -24,8 +24,10 @@ pub(super) struct Pending {
     pub redirect_uri: String,
     pub cancelled: Arc<AtomicBool>,
     pub completing: AtomicBool,
+    pub callback_received: AtomicBool,
     listener: TcpListener,
     pub state: String,
+    pub authorization_url: String,
     started: Instant,
     page: Arc<Mutex<Option<CallbackPage>>>,
 }
@@ -103,6 +105,7 @@ impl Pending {
         let account_id = selected_id
             .clone()
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let authorization_url: String = url.into();
         Ok((
             Self {
                 id: id.clone(),
@@ -116,16 +119,27 @@ impl Pending {
                 redirect_uri,
                 cancelled: Arc::new(AtomicBool::new(false)),
                 completing: AtomicBool::new(false),
+                callback_received: AtomicBool::new(false),
                 listener,
                 state,
+                authorization_url: authorization_url.clone(),
                 started: Instant::now(),
                 page: Arc::new(Mutex::new(None)),
             },
             SignInAttempt {
                 id,
-                authorization_url: url.into(),
+                authorization_url,
             },
         ))
+    }
+    pub fn reopen_url(&self) -> Result<String, String> {
+        if self.cancelled.load(Ordering::Acquire)
+            || self.callback_received.load(Ordering::Acquire)
+            || self.started.elapsed() >= crate::oauth_callback::CALLBACK_WINDOW
+        {
+            return Err("진행 중인 로그인 화면이 없습니다. 다시 로그인해 주세요.".into());
+        }
+        Ok(self.authorization_url.clone())
     }
     pub async fn receive(&self, external: Arc<AtomicBool>) -> Result<Authorization, String> {
         let listener = self
@@ -418,6 +432,35 @@ mod tests {
         assert_ne!(first.state, second.state);
         assert_ne!(request.authorization_url, second_request.authorization_url);
         assert!(first.redirect_uri.ends_with("/auth/callback"));
+    }
+    #[test]
+    fn reopening_preserves_the_attempt_and_rejects_expiry_cancellation_or_accepted_callback() {
+        let (mut pending, request) =
+            Pending::begin("urn:uuid:fixture", None, None, None, None, None).unwrap();
+        let identity = (
+            pending.state.clone(),
+            pending.nonce.clone(),
+            pending.verifier.clone(),
+        );
+        pending.completing.store(true, Ordering::Release);
+        assert_eq!(pending.reopen_url().unwrap(), request.authorization_url);
+        assert_eq!(pending.reopen_url().unwrap(), request.authorization_url);
+        assert_eq!(
+            identity,
+            (
+                pending.state.clone(),
+                pending.nonce.clone(),
+                pending.verifier.clone()
+            )
+        );
+        pending.callback_received.store(true, Ordering::Release);
+        assert!(pending.reopen_url().is_err());
+        pending.callback_received.store(false, Ordering::Release);
+        pending.cancelled.store(true, Ordering::Release);
+        assert!(pending.reopen_url().is_err());
+        pending.cancelled.store(false, Ordering::Release);
+        pending.started = Instant::now() - crate::oauth_callback::CALLBACK_WINDOW;
+        assert!(pending.reopen_url().is_err());
     }
     #[test]
     fn callback_binds_state_issued_client_and_exact_loopback_uri() {

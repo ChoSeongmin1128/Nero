@@ -173,30 +173,38 @@ test('a refused question returns to the input so it can be shortened', async () 
   assert.equal(app.state().conversation.error, '질문이 너무 깁니다.'); app.flow.dispose();
 });
 
-test('the panel follows the meeting on screen while other answers keep streaming in their own chat', async () => {
+test('central meeting navigation preserves the selected chat, draft and running answer', async () => {
   const app = await harness(); app.flow.edit('Question'); await app.flow.send();
-  app.flow.edit('Next question'); app.flow.setMeeting(exampleMeetings[1]); await tick(); await tick();
-  assert.equal(app.state().conversation.id, null);
-  assert.deepEqual(app.state().conversation.meetings.map(item => item.id), ['meeting-b']);
+  app.flow.edit('Next question'); app.flow.setMeeting(exampleMeetings[1]); await tick();
+  assert.equal(app.state().meeting.id, 'meeting-b');
+  assert.equal(app.state().conversation.id, 'conversation');
+  assert.equal(app.state().conversation.draft, 'Next question');
+  assert.deepEqual(app.state().conversation.meetings.map(item => item.id), ['meeting-a']);
   app.flow.setMeeting(null); await tick();
-  assert.deepEqual(app.state().conversation.meetings.map(item => item.id), ['meeting-b']);
+  assert.equal(app.state().conversation.id, 'conversation');
   app.emit({ type: 'completed', messageId: 'answer', text: 'Still here' });
-  app.flow.setMeeting(exampleMeetings[0]); await tick(); await tick(); await tick();
-  assert.equal(app.state().conversation.id, 'conversation'); assert.equal(app.state().conversation.draft, 'Next question');
   assert.equal(app.state().conversation.messages.at(-1).text, 'Still here');
+  app.flow.setMeeting(exampleMeetings[0]); await tick();
+  assert.equal(app.state().conversation.draft, 'Next question');
   app.flow.dispose();
 });
 
-test('a new meeting opens a new chat and an unsent draft waits for its meeting', async () => {
-  const app = await harness(); app.flow.edit('Draft'); app.flow.setMeeting(exampleMeetings[1]); await tick(); await tick();
-  assert.equal(app.state().conversation.id, null); assert.equal(app.state().conversation.draft, '');
-  app.flow.edit('Meeting B draft');
-  app.flow.setMeeting(exampleMeetings[0]); await tick(); await tick(); await tick();
-  assert.equal(app.state().conversation.id, 'conversation'); assert.equal(app.state().conversation.draft, 'Draft');
-  app.flow.setMeeting(exampleMeetings[1]); await tick(); await tick();
-  assert.equal(app.state().conversation.id, null); assert.equal(app.state().conversation.draft, 'Meeting B draft');
-  assert.deepEqual(app.state().conversation.meetings.map(item => item.id), ['meeting-b']);
-  await app.flow.send(); assert.deepEqual(app.calls.find(call => call[0] === 'send')[1].meetingIds, ['meeting-b']); app.flow.dispose();
+test('central navigation never adds a meeting or replaces explicitly selected sources', async () => {
+  const app = await harness(); app.flow.edit('Draft');
+  await app.flow.addSource('https://notion.so/example');
+  app.flow.removeMeeting('meeting-a');
+  const selected = app.state().conversation;
+  app.flow.setMeeting(exampleMeetings[1]); await tick();
+  app.flow.setMeeting(null); app.flow.setMeeting(exampleMeetings[0]); await tick();
+  assert.equal(app.state().conversation, selected);
+  assert.equal(app.state().conversation.draft, 'Draft');
+  assert.deepEqual(app.state().conversation.meetings, []);
+  assert.deepEqual(app.state().conversation.sources.map(item => item.sourceId), ['notion:page:revision']);
+  await app.flow.send();
+  const request = app.calls.find(call => call[0] === 'send')[1];
+  assert.deepEqual(request.meetingIds, []);
+  assert.deepEqual(request.sourceIds, ['notion:page:revision']);
+  app.flow.dispose();
 });
 
 test('new conversations and history switching keep independent streams and drafts', async () => {
@@ -212,15 +220,16 @@ test('new conversations and history switching keep independent streams and draft
   app.flow.edit('Another draft'); await app.flow.selectConversation('conversation'); await app.flow.selectConversation(second); assert.equal(app.state().conversation.draft, 'Another draft'); app.flow.dispose();
 });
 
-test('Notion loading survives library navigation and stops when another meeting takes the panel', async () => {
+test('Notion source loading survives central library and meeting navigation', async () => {
   let fetches = 0;
   const pending = deferred(), late = deferred(), app = await harness({ fetchSources: () => (++fetches === 1 ? pending.promise : late.promise) });
   const load = app.flow.addSource('https://notion.so/example'); app.flow.setMeeting(null); await tick();
   pending.resolve({ sources: [{ sourceId: 'notion:snapshot', title: 'Selected page' }] }); assert.equal(await load, true);
-  assert.equal(app.state().conversation.sources[0].sourceId, 'notion:snapshot'); assert.equal(app.calls.length, 0);
-  const next = app.flow.addSource('https://notion.so/other'); app.flow.setMeeting(exampleMeetings[1]); await tick(); await tick();
-  late.resolve({ sources: [{ sourceId: 'notion:late' }] }); assert.equal(await next, false);
-  assert.equal(app.calls.at(-1)[0], 'cancelSource'); app.flow.dispose();
+  const next = app.flow.addSource('https://notion.so/other'); app.flow.setMeeting(exampleMeetings[1]); await tick();
+  late.resolve({ sources: [{ sourceId: 'notion:late', pageId: 'other', title: 'Other page' }] }); assert.equal(await next, true);
+  assert.equal(app.state().conversation.id, 'conversation');
+  assert.deepEqual(app.state().conversation.sources.map(source => source.sourceId), ['notion:snapshot', 'notion:late']);
+  assert.equal(app.calls.some(call => call[0] === 'cancelSource'), false); app.flow.dispose();
 });
 
 test('switching conversations cancels source loading and discards its late result', async () => {
@@ -364,6 +373,73 @@ test('settings refresh only updates account state and preserves explicitly loade
   assert.equal(app.state().modelId, 'model');
   assert.deepEqual(app.state().models.map(model => model.id), ['model']);
   app.flow.dispose();
+});
+
+test('opening chat restores accounts automatically and merges settings and focus checks', async () => {
+  const pending = deferred(); let checks = 0, time = 1_000, signIns = 0;
+  const unknown = { ...readyAccount, state: 'unknown' };
+  const app = await harness({ accounts: async () => ({ accounts: [unknown], checked: false }),
+    checkAccounts: async () => { checks++; return pending.promise; },
+    connect: async () => { signIns++; },
+  }, { initialModels: false, now: () => time });
+  assert.equal(checks, 1); assert.equal(app.state().accountsBusy, true);
+  app.flow.setSettingsActive(true);
+  const focused = app.flow.checkAccounts();
+  pending.resolve({ accounts: [readyAccount], checked: true }); await focused;
+  assert.equal(checks, 1); assert.equal(app.state().accounts[0].state, 'ready');
+  assert.equal(app.state().accountsBusy, false); assert.equal(signIns, 0);
+  await app.flow.checkAccounts(); assert.equal(checks, 1);
+  time += 60_000; await app.flow.checkAccounts(); assert.equal(checks, 2);
+  app.flow.dispose();
+});
+
+test('automatic account failure preserves usable accounts and manual retry bypasses the interval', async () => {
+  let checks = 0; const flags = [];
+  const app = await harness({ checkAccounts: async retry => {
+    flags.push(retry);
+    if (++checks === 1) throw Error('Temporary account check error');
+    return { accounts: [readyAccount], checkError: null };
+  } }, { now: () => 1_000 });
+  assert.equal(app.state().accounts[0].state, 'ready');
+  assert.equal(app.state().accountsError, 'Temporary account check error');
+  await app.flow.checkAccounts(); assert.equal(checks, 1);
+  await app.flow.checkAccounts({ retry: true });
+  assert.deepEqual(flags, [false, true]); assert.equal(app.state().accountsError, '');
+  app.flow.dispose();
+});
+
+test('one provider check error does not discard a restored provider or fetch fresh models', async () => {
+  const claude = { id: 'claude-code', provider: 'claude', state: 'ready', configured: true };
+  const modelLoads = [];
+  const app = await harness({ accounts: async () => ({ accounts: [{ ...readyAccount, state: 'unknown' }] }),
+    checkAccounts: async () => ({ accounts: [readyAccount, claude], checkErrors: { claude: 'Unable to check' } }),
+    models: async (id, refresh) => { modelLoads.push([id, refresh]); return { models: [] }; },
+  }, { initialModels: false });
+  assert.equal(app.state().accounts.find(account => account.provider === 'chatgpt').state, 'ready');
+  assert.equal(app.state().accountErrors.claude, 'Unable to check');
+  assert.equal(app.state().accountsError, '');
+  assert.deepEqual(modelLoads, [['claude-code', false]]);
+  app.flow.dispose();
+});
+
+test('account checks do not interfere with an in-progress browser login', async () => {
+  let checks = 0; const completion = deferred();
+  const app = await harness({ accounts: async () => ({ accounts: [{ ...readyAccount, state: 'signed_out' }] }),
+    checkAccounts: async () => { checks++; return { accounts: [{ ...readyAccount, state: 'signed_out' }] }; },
+    connect: async () => ({ attemptId: 'login' }), finishConnect: () => completion.promise,
+  }, { initialModels: false });
+  const connecting = app.flow.connect('chatgpt'); await tick();
+  await app.flow.checkAccounts({ retry: true }); assert.equal(checks, 1);
+  completion.resolve({ accounts: [readyAccount] }); await connecting;
+  assert.equal(app.state().accounts[0].state, 'ready'); app.flow.dispose();
+});
+
+test('late account checks cannot publish after disposal', async () => {
+  const pending = deferred();
+  const app = await harness({ checkAccounts: () => pending.promise }, { initialModels: false });
+  const previous = app.state(); app.flow.dispose();
+  pending.resolve({ accounts: [{ ...readyAccount, state: 'signed_out' }] }); await tick();
+  assert.equal(app.state(), previous);
 });
 
 test('restored account completes without a finish attempt', async () => {
@@ -829,25 +905,25 @@ test('a refused edit returns the window to the stored version and keeps the earl
   app.flow.dispose();
 });
 
-test('drafts survive meeting moves through the library and never absorb a draft being sent', async () => {
+test('central navigation during lazy chat creation preserves the sent context and new draft', async () => {
   const created = deferred();
-  const app = await harness({ create: () => created.promise });
+  const app = await harness({ create: () => created.promise, send: async request => { app.calls.push(['send', request]); return { conversationId: request.conversationId, requestId: request.requestId }; } });
   const c = { id: 'meeting-c', title: 'C' }, d = { id: 'meeting-d', title: 'D' };
-  app.flow.setMeeting(c); await tick(); await tick();
-  app.flow.edit('C draft');
-  app.flow.setMeeting(null); await tick();
-  app.flow.setMeeting(d); await tick(); await tick();
-  assert.equal(app.state().conversation.draft, '');
-  app.flow.setMeeting(null); app.flow.setMeeting(c); await tick(); await tick();
-  assert.equal(app.state().conversation.draft, 'C draft');
-  const sending = app.flow.send();
-  app.flow.setMeeting(d); await tick();
+  await app.flow.newConversation({ attachCurrent: false });
+  app.flow.attachMeeting(c); app.flow.edit('C draft');
+  const sending = app.flow.send(); await tick();
+  app.flow.setMeeting(null); app.flow.setMeeting(d); await tick();
   created.resolve({ id: 'conversation-c', title: '새 대화', messages: [], activeRequestId: null });
-  await sending; await tick(); await tick(); await tick();
+  assert.equal(await sending, true);
+  app.flow.edit('Next question');
   assert.equal(app.state().meeting.id, 'meeting-d');
-  assert.equal(app.state().conversation.id, null);
-  assert.deepEqual(app.state().conversation.meetings.map(item => item.id), ['meeting-d']);
-  assert.equal(app.state().conversation.draft, '');
+  assert.equal(app.state().conversation.id, 'conversation-c');
+  assert.deepEqual(app.state().conversation.meetings.map(item => item.id), ['meeting-c']);
+  assert.equal(app.state().conversation.draft, 'Next question');
+  assert.deepEqual(app.calls.find(call => call[0] === 'send')[1].meetingIds, ['meeting-c']);
+  app.flow.setMeeting(c); await tick();
+  assert.equal(app.state().conversation.id, 'conversation-c');
+  assert.equal(app.state().conversation.draft, 'Next question');
   app.flow.dispose();
 });
 
@@ -863,5 +939,152 @@ test('an agent change reloads the list and attaches the shown conversation to th
   assert.ok(app.state().conversation.messages.some(message => message.text === '에이전트 질문'));
   app.emit({ requestId: 'agent', type: 'delta', sequence: 1, text: '답변', messageId: 'assistant:agent' });
   assert.equal(app.state().conversation.messages.find(message => message.id === 'assistant:agent').text, '답변');
+  app.flow.dispose();
+});
+
+
+test('reopening restores the current meeting once without clearing the conversation draft',async()=>{
+  const app=await harness();
+  app.flow.edit('이어 쓸 질문');
+  app.flow.removeMeeting('meeting-a');
+  assert.deepEqual(app.state().conversation.meetings,[]);
+  app.flow.setActive(false);
+  await app.flow.open(exampleMeetings[0], { restoreCurrent: true });
+  assert.deepEqual(app.state().conversation.meetings.map(item=>item.id),['meeting-a']);
+  assert.equal(app.state().conversation.draft,'이어 쓸 질문');
+  app.flow.setActive(false);
+  await app.flow.open(exampleMeetings[0], { restoreCurrent: true });
+  assert.deepEqual(app.state().conversation.meetings.map(item=>item.id),['meeting-a']);
+  app.flow.dispose();
+});
+
+test('reopening on the meeting list does not attach the previously shown meeting',async()=>{
+  const app=await harness();
+  app.flow.removeMeeting('meeting-a');
+  app.flow.setActive(false);
+  app.flow.setMeeting(null);
+  await app.flow.open(null, { restoreCurrent: true });
+  assert.deepEqual(app.state().conversation.meetings,[]);
+  app.flow.dispose();
+});
+
+test('reopening after central navigation adds only the current meeting to the same chat once', async () => {
+  const app = await harness();
+  app.flow.edit('Preserved draft');
+  await app.flow.addSource('https://notion.so/example');
+  const id = app.state().conversation.id;
+  app.flow.setMeeting(exampleMeetings[1]);
+  await app.flow.open(exampleMeetings[1], { restoreCurrent: true });
+  assert.deepEqual(app.state().conversation.meetings.map(item => item.id), ['meeting-a']);
+  app.flow.setActive(false);
+  await app.flow.open(exampleMeetings[1], { restoreCurrent: true });
+  assert.equal(app.state().conversation.id, id);
+  assert.equal(app.state().conversation.draft, 'Preserved draft');
+  assert.deepEqual(app.state().conversation.sources.map(item => item.sourceId), ['notion:page:revision']);
+  assert.deepEqual(app.state().conversation.meetings.map(item => item.id), ['meeting-a', 'meeting-b']);
+  app.flow.removeMeeting('meeting-b');
+  app.flow.setActive(false); await app.flow.open(exampleMeetings[1], { restoreCurrent: true });
+  app.flow.setActive(false); await app.flow.open(exampleMeetings[1], { restoreCurrent: true });
+  assert.deepEqual(app.state().conversation.meetings.map(item => item.id), ['meeting-a', 'meeting-b']);
+  app.flow.dispose();
+});
+
+for (const active of [false, true]) {
+  test(`explicit historical selection preserves its context with the panel ${active ? 'open' : 'closed'}`, async () => {
+    const app = await harness();
+    const stored = app.store.get('conversation');
+    stored.messages = [{ id: 'stored-question', role: 'user', status: 'completed', text: 'Earlier question', attachments: [{ kind: 'meeting', meetingId: 'meeting-a' }] }];
+    app.flow.edit('Preserved question');
+    app.flow.setMeeting(exampleMeetings[1]);
+    if (!active) app.flow.setActive(false);
+    assert.equal(await app.flow.selectConversation('conversation'), true);
+    await app.flow.open();
+    assert.deepEqual(app.state().conversation.meetings.map(item => item.id), ['meeting-a']);
+    assert.equal(app.state().conversation.draft, 'Preserved question');
+    assert.deepEqual(stored.messages[0].attachments.map(item => item.meetingId), ['meeting-a']);
+    app.flow.dispose();
+  });
+}
+
+
+test('account check failures are scoped to their provider and retry preserves other errors', async () => {
+  const claude = { id: 'claude-code', provider: 'claude', state: 'ready', configured: true };
+  const checked = [];
+  const app = await harness({ accounts: async () => ({ accounts: [readyAccount, claude] }),
+    checkAccounts: async (retry, provider) => { checked.push([retry, provider]); return { accounts: [readyAccount, claude], checkErrors: provider ? { [provider]: null } : { chatgpt: 'Access blocked', claude: null } }; },
+  });
+  app.flow.edit('Question'); assert.equal(app.flow.canSend(), false);
+  app.flow.selectProvider('claude', { explicit: true }); await tick();
+  assert.equal(app.flow.canSend(), true);
+  await app.flow.checkAccounts({ retry: true, provider: 'claude' });
+  assert.equal(app.state().accountErrors.chatgpt, 'Access blocked');
+  await app.flow.checkAccounts({ retry: true, provider: 'chatgpt' });
+  assert.equal(app.state().accountErrors.chatgpt, null);
+  assert.deepEqual(checked.slice(-2), [[true, 'claude'], [true, 'chatgpt']]);
+  app.flow.dispose();
+});
+
+test('summary preparation attaches only the chosen meeting and never sends', async () => {
+  const app = await harness({ composerCatalog: async () => ({ templates: [{ id: 'summary-template', name: '회의 요약' }], defaultTemplateId: 'summary-template', skills: [{ id: 'meeting-summary' }] }) });
+  assert.equal(await app.flow.prepareSummary(exampleMeetings[1]), true);
+  assert.deepEqual(app.state().conversation.meetings.map(item => item.id), ['meeting-b']);
+  assert.equal(app.state().conversation.skillId, 'meeting-summary');
+  assert.equal(app.state().conversation.templateId, 'summary-template');
+  assert.equal(app.calls.some(call => call[0] === 'send'), false);
+  app.flow.dispose();
+});
+
+test('summary preparation preserves the existing unsent draft and its attachments', async () => {
+  const app = await harness();
+  await app.flow.newConversation(); app.flow.edit('Keep this question');
+  assert.equal(await app.flow.prepareSummary(exampleMeetings[1]), true);
+  assert.ok(app.state().conversation.id);
+  await app.flow.newConversation({ attachCurrent: false });
+  assert.equal(app.state().conversation.draft, 'Keep this question');
+  assert.deepEqual(app.state().conversation.meetings.map(item => item.id), ['meeting-a']);
+  app.flow.dispose();
+});
+
+test('a delayed summary preparation does not replace a newer conversation selection', async () => {
+  const created = deferred();
+  const app = await harness({ create: () => created.promise });
+  await app.flow.newConversation(); app.flow.edit('Keep draft');
+  const preparing = app.flow.prepareSummary(exampleMeetings[1]); await tick();
+  await app.flow.selectConversation('conversation');
+  created.resolve({ id: 'late-summary', messages: [] });
+  assert.equal(await preparing, false);
+  assert.equal(app.state().conversation.id, 'conversation');
+  assert.equal(app.state().conversation.skillId, null);
+  app.flow.dispose();
+});
+
+test('reopening login keeps the same pending attempt and never starts a second sign-in', async () => {
+  const pending = deferred(), reopened = [];
+  let begins = 0;
+  const app = await harness({ accounts: async () => ({ accounts: [{ ...readyAccount, state: 'signed_out' }] }),
+    connect: async () => { begins++; return { attemptId: 'same-attempt' }; }, finishConnect: () => pending.promise,
+    reopenConnect: async id => { reopened.push(id); },
+  }, { initialModels: false });
+  const login = app.flow.connect('chatgpt'); await tick();
+  await app.flow.reopenConnect('chatgpt'); await app.flow.reopenConnect('chatgpt');
+  assert.deepEqual(reopened, ['same-attempt', 'same-attempt']); assert.equal(begins, 1);
+  assert.equal(app.state().connectionPhases.chatgpt, 'waiting');
+  pending.resolve({ accounts: [readyAccount] }); await login;
+  assert.equal(await app.flow.reopenConnect('chatgpt'), false);
+  app.flow.dispose();
+});
+
+test('a cancelled login cannot be replaced by a late reopen failure', async () => {
+  const pending = deferred(), reopen = deferred();
+  const app = await harness({ accounts: async () => ({ accounts: [{ ...readyAccount, state: 'signed_out' }] }),
+    connect: async () => ({ attemptId: 'cancelled' }), finishConnect: () => pending.promise,
+    reopenConnect: () => reopen.promise, cancelConnect: async () => ({ accounts: [readyAccount] }),
+  }, { initialModels: false });
+  const login = app.flow.connect('chatgpt'); await tick();
+  const reopening = app.flow.reopenConnect('chatgpt'); await app.flow.cancelConnect('chatgpt');
+  reopen.reject(Error('stale browser error')); await reopening;
+  pending.resolve({ accounts: [readyAccount] }); await login;
+  assert.equal(app.state().accountErrors.chatgpt || '', '');
+  assert.equal(app.state().connectionReopening.chatgpt, false);
   app.flow.dispose();
 });

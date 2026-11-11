@@ -1,4 +1,5 @@
-.navigation-shell { --navigation-width: 224px; --navigation-rail-width: 52px; --navigation-motion: 180ms; --navigation-ease: ease-out; position: relative; isolation: isolate; transition: grid-template-columns var(--navigation-motion) var(--navigation-ease); }
+:root { --navigation-rail-width: 44px; }
+.navigation-shell { --navigation-width: 224px; --navigation-motion: 180ms; --navigation-ease: ease-out; position: relative; isolation: isolate; transition: grid-template-columns var(--navigation-motion) var(--navigation-ease); }
 .navigation-shell > .navigation-sidebar { position: absolute; inset: 0 auto 0 calc(0px - var(--navigation-width)); width: var(--navigation-width); height: 100%; min-height: 0; max-height: 100%; z-index: 6; visibility: hidden; pointer-events: none; transition: left var(--navigation-motion) var(--navigation-ease), visibility 0s linear var(--navigation-motion); }
 .navigation-shell > .navigation-content { grid-column: 2; grid-row: 1; min-width: 0; }
 .navigation-shell.nav-pinned > [data-navigation-compact] { display: none; }
@@ -50,9 +51,13 @@
 .navigation-shell.nav-resizing, .navigation-shell.nav-resizing * { cursor: col-resize; user-select: none; }
 .application-shell { display: grid; grid-template-rows: 44px minmax(0, 1fr); }
 .application-toolbar { display: flex; align-items: center; min-width: 0; padding: 6px 12px; background: var(--surface-secondary); border-bottom: 1px solid var(--border); transition: padding-left var(--navigation-motion, 180ms) var(--navigation-ease, ease-out); }
+.application-toolbar > .navigation-breadcrumbs { flex: 1; justify-content: center; overflow: hidden; padding-inline: 12px; }
 .application-toolbar-actions { display: flex; align-items: center; gap: 4px; }
 .application-toolbar-actions > .navigation-history { display: flex; align-items: center; gap: 4px; }
 .application-toolbar-actions button { width: 32px; min-width: 32px; height: 32px; min-height: 32px; padding: 7px; }
 .application-toolbar-divider { width: 1px; height: 18px; margin-inline: 4px; background: var(--border); }
 [data-window-chrome="macos-overlay"]:not([data-window-fullscreen="true"]) .application-toolbar { padding-left: 88px; transition: none; }
 @media (prefers-reduced-motion: reduce) { .application-toolbar { transition: none; } }
+
+.application-toolbar .navigation-breadcrumbs > :not([aria-current="page"]) { display: none; }
+.application-toolbar .navigation-breadcrumbs > [aria-current="page"] { font-size: var(--text-aux-size); font-weight: var(--weight-medium); color: var(--text-secondary); }

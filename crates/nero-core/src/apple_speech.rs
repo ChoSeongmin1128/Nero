@@ -144,6 +144,7 @@ pub(crate) fn decode(raw: &[u8], duration: f64, session: &str, id: &str) -> Resu
             association: "direct".into(),
             speaker_scope: None,
             chunking_policy: Some(output.processing_policy),
+            recognition_report: None,
         }),
         speakers: Vec::new(),
         segments,

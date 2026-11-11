@@ -9,12 +9,11 @@ function harness({ read = async () => ({ available: true, enabled: true }), save
     if (!nodes.has(id)) nodes.set(id, { hidden: false, checked: false, disabled: false, open: id === 'settings-dialog', addEventListener() {} });
     return nodes.get(id);
   };
-  const state = { settingsPanel: 'recording' };
+  const state = { settingsPanel: 'transcription' };
   let reads = 0, running = false;
   const terminologySettings = mountTerminologySettings({ byId, isProcessing: () => running, onChange() {},
     bridge: { readTerminologySettings: () => { reads += 1; return read(); }, setTerminologyEnabled: save } });
-  // Stands in for main's renderSettings, which activates the panel while the recording tab is open.
-  const active = () => byId('settings-dialog').open && state.settingsPanel === 'recording';
+  const active = () => byId('settings-dialog').open && state.settingsPanel === 'transcription';
   const context = {
     loadTerminologySettings: () => active() ? terminologySettings.setActive(true) ?? terminologySettings.reload() : terminologySettings.setActive(false),
     resetTerminologySettings: () => terminologySettings.setActive(false),
@@ -24,12 +23,15 @@ function harness({ read = async () => ({ available: true, enabled: true }), save
   return { byId, state, terminologySettings, context, get reads() { return reads; }, set running(value) { running = value; } };
 }
 
-test('only reads in an open recording panel and hides unavailable profiles', async () => {
+test('only reads in an open transcription panel and hides unavailable profiles', async () => {
   const app = harness({ read: async () => ({ available: false, enabled: false }) });
   app.state.settingsPanel = 'appearance';
   await app.context.loadTerminologySettings();
   assert.equal(app.reads, 0);
   app.state.settingsPanel = 'recording';
+  await app.context.loadTerminologySettings();
+  assert.equal(app.reads, 0);
+  app.state.settingsPanel = 'transcription';
   await app.context.loadTerminologySettings();
   assert.equal(app.byId('settings-terminology-row').hidden, true);
   app.byId('settings-dialog').open = false;

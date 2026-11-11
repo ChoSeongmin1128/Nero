@@ -10,12 +10,13 @@ export function createMeetingContextFlow({ bridge, getMeeting, onChanged = () =>
   }
   async function load(meetingId, token) {
     publish({ loading: true, error: '' });
-    try {
-      const value = await bridge.meetingSources(meetingId);
-      if (current(meetingId, token)) publish({ revision: value.revision, sources: value.sources, loading: false });
-    } catch (error) {
-      if (current(meetingId, token)) publish({ loading: false, error: error?.message || '회의 자료를 불러오지 못했습니다.' });
-    }
+    const [sources, notion] = await Promise.allSettled([bridge.meetingSources(meetingId), bridge.notionSnapshot()]);
+    if (!current(meetingId, token)) return;
+    publish({ loading: false,
+      ...(sources.status === 'fulfilled' ? { revision: sources.value.revision, sources: sources.value.sources } : {}),
+      ...(notion.status === 'fulfilled' ? { notion: notion.value } : {}),
+      error: [sources.status === 'rejected' ? sources.reason?.message || '회의 자료를 불러오지 못했습니다.' : '', notion.status === 'rejected' ? 'Notion 연결 상태를 확인하지 못했습니다. 다시 시도해 주세요.' : ''].filter(Boolean).join(' '),
+    });
   }
   return {
     getSnapshot: () => state,
@@ -26,7 +27,6 @@ export function createMeetingContextFlow({ bridge, getMeeting, onChanged = () =>
       cancelRequest(); const token = ++epoch;
       publish({ open: true, meetingId, loading: true, busy: false, phase: null, revision: 0, sources: [], notion: null, error: '', link: '' });
       void load(meetingId, token);
-      void bridge.notionSnapshot().then(notion => { if (current(meetingId, token)) publish({ notion }); }).catch(() => { if (current(meetingId, token)) publish({ error: 'Notion 연결 상태를 확인하지 못했습니다. 닫은 뒤 다시 열어 주세요.' }); });
     },
     close() { epoch++; cancelRequest(); publish({ open: false, busy: false }); },
     setMeeting(meeting) {
@@ -41,6 +41,7 @@ export function createMeetingContextFlow({ bridge, getMeeting, onChanged = () =>
     },
     setLink(link) { publish({ link }); },
     async reload() {
+      if (state.busy || state.loading) return;
       const meetingId = getMeeting()?.id;
       if (!meetingId || state.meetingId !== meetingId) return;
       if (state.open) { await load(meetingId, epoch); return; }

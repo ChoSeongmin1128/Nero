@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const root = path.resolve(__dirname, '..');
 const read = (name) => fs.readFileSync(path.join(root, name), 'utf8');
-const { parseCSS } = require('../catalog/build-tokens.cjs');
+const { parseCSS, build } = require('../catalog/build-tokens.cjs');
 const desktopRoot = path.resolve(root, '../apps/desktop');
 const desktopRead = name => fs.readFileSync(path.join(desktopRoot, name), 'utf8');
 const layerRules = parseCSS(read('controls.css'), 'controls.css');
@@ -29,7 +29,7 @@ for (const [script, entry] of [['prototype/app.js', 'prototype/index.html'], ['c
 const typography = read('typography.css');
 assert.match(typography, /--font-ui:\s*"Pretendard Variable",/);
 const fonts = read('fonts.css');
-assert.match(fonts, /font-weight:\s*45 920/);
+assert.match(fonts, /font-weight:\s*100 900/);
 assert.ok(!/https?:|local\(/.test(fonts), 'App fonts must load from bundled assets, independent of the network and installed fonts');
 const fontPath = fonts.match(/url\("([^\"]+)"\)/)?.[1];
 assert.equal(fontPath, './vendor/pretendard/PretendardVariable.woff2');
@@ -63,7 +63,7 @@ for (const entry of ['src/index.html', 'src/recorder.html', 'src/calendar.html']
   assert.match(html, /data-appearance-storage="nero\.appearance\.v1"/, `${entry} must share the native appearance preference`);
   assert.ok(html.indexOf('/shared/appearance.js') > 0 && html.indexOf('/shared/appearance.js') < html.indexOf('/shared/appearance.css'), `${entry} must apply saved appearance before paint`);
 }
-for (const name of ['appearance', 'recording', 'agent', 'templates']) assert.ok(desktopHTML.includes(`id="settings-${name}-panel"`), `Native settings missing ${name}`);
+for (const name of ['appearance', 'recording', 'transcription', 'agent', 'templates']) assert.ok(desktopHTML.includes(`id="settings-${name}-panel"`), `Native settings missing ${name}`);
 assert.ok(!desktopHTML.includes('id="settings-models-panel"'), 'Optional feature preparation belongs in General settings');
 for (const [id, variant] of [['meeting-title', 'text-input--title'], ['meeting-notes', 'text-input'], ['search', 'text-input--compact']]) {
   const tag = [...desktopHTML.matchAll(/<(?:input|textarea)\b[^>]*>/g)].map(match => match[0]).find(tag => tag.includes(`id="${id}"`));
@@ -76,6 +76,22 @@ for (const declaration of desktopCSS) {
   if (/(?:#meeting-notes|\.meeting-title|\.search-field\s+input)(?![\w-])/.test(declaration.selector)) {
     assert.ok(!/^(?:border(?:-|$)|background(?:-|$)|padding(?:-|$)|outline(?:-|$))/.test(declaration.property),
       `${declaration.selector} overrides shared text-field appearance with ${declaration.property}`);
+  }
+}
+for (const rule of parseCSS(read('components.css'), 'components.css')) {
+  for (const match of rule.value.matchAll(/url\(["']?([^"')]+)["']?\)/g)) {
+    assert.ok(!match[1].startsWith('/'), 'Shared component assets must resolve relative to the shared CSS, including in previews');
+    assert.ok(fs.existsSync(path.resolve(root, match[1])), `Missing shared component asset: ${match[1]}`);
+  }
+}
+const luminance = hex => {
+  const channels = hex.slice(1).match(/../g).map(value => parseInt(value, 16) / 255).map(value => value <= .04045 ? value / 12.92 : ((value + .055) / 1.055) ** 2.4);
+  return channels.reduce((sum, value, index) => sum + value * [.2126, .7152, .0722][index], 0);
+};
+for (const theme of build().themes.resolved) {
+  for (const background of ['--surface', '--surface-secondary']) {
+    const values = [theme.resolvedValues['--text-secondary'], theme.resolvedValues[background]].map(luminance).sort((a, b) => b - a);
+    assert.ok((values[0] + .05) / (values[1] + .05) >= 4.5, `${theme.id}: active secondary text needs readable contrast on ${background}`);
   }
 }
 console.log('PASS: shared foundations, native consumers, text-field ownership, typography and platform fonts.');

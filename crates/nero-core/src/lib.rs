@@ -4,6 +4,8 @@ mod apple_speech;
 pub mod audio_normalize;
 mod audio_playback;
 mod capture;
+#[cfg(all(test, target_os = "macos"))]
+mod hardware_acceptance;
 mod diarization;
 pub mod disk_space;
 mod edit_version;
@@ -38,9 +40,20 @@ pub use terminology::{
     TerminologyKind, TerminologyOutcome, TerminologyProfile, TerminologyRule,
 };
 pub use transcript::{
-    SpeakerNameOrigin, Transcript, TranscriptHistory, TranscriptHistoryEntry, TranscriptSegment,
-    TranscriptSource, TranscriptSpeaker, TranscriptUpgradeReport, TranscriptVersion,
+    RecognitionChunk, RecognitionChunkState, RecognitionReport, SpeakerNameOrigin, Transcript,
+    TranscriptHistory, TranscriptHistoryEntry, TranscriptSegment, TranscriptSource,
+    TranscriptSpeaker, TranscriptUpgradeReport, TranscriptVersion,
 };
+pub use transcript::{MOSS_CHUNK_FRAMES, MOSS_CHUNK_POLICY};
+
+/// Validates a checkpoint through the same projector used by immutable stored transcripts.
+pub fn inspect_moss_chunk_transcript(
+    raw: &[u8],
+    source_frames: u64,
+    source_rate: u32,
+) -> Result<RecognitionReport> {
+    transcript::inspect_moss_chunks(raw, source_frames, source_rate)
+}
 pub use whisper::POLICY as WHISPER_PROCESSING_POLICY;
 
 use engine::Engine;
@@ -478,6 +491,16 @@ impl CoreHandle {
     ) -> Result<Transcript> {
         let id = id.to_owned();
         self.call(move |engine| engine.commit_whole_transcript(&id, expected, raw))
+    }
+
+    pub fn commit_moss_chunk_transcript(
+        &self,
+        id: &str,
+        expected: Option<TranscriptVersion>,
+        raw: Vec<u8>,
+    ) -> Result<Transcript> {
+        let id = id.to_owned();
+        self.call(move |engine| engine.commit_moss_chunk_transcript(&id, expected, raw))
     }
 
     pub fn commit_nemotron_transcript(

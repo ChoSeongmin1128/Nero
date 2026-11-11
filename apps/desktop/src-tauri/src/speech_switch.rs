@@ -9,7 +9,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 
 // The offer shown to existing users once: Qwen3-ASR-ko for the final transcript.
-pub(super) const QWEN_OFFER: &str = "qwen-ko-final-transcript-2026-11";
+pub(super) const MOSS_OFFER: &str = "moss-independent-chunks-2026-11";
 const PENDING_FILE: &str = "speech-switch.json";
 const OFFERS_FILE: &str = "speech-offers.json";
 
@@ -153,7 +153,10 @@ pub(super) fn load_pending(root: &Path) -> Result<Option<Pending>, String> {
     read_small(&directory.join(PENDING_FILE))?
         .map(|raw| {
             let pending: Pending = serde_json::from_slice(&raw).map_err(|_| invalid())?;
-            if pending.schema_version != 1 {
+            if pending.schema_version != 1
+                || (pending.target == SpeechEngine::AppleSpeech
+                    && pending.apple_speech_variant.is_none())
+            {
                 return Err(invalid());
             }
             Ok(pending)
@@ -237,7 +240,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().canonicalize().unwrap().join("absent");
         assert_eq!(load_pending(&root).unwrap(), None);
-        assert!(!load_offers(&root).unwrap().decided(QWEN_OFFER));
+        assert!(!load_offers(&root).unwrap().decided(MOSS_OFFER));
         clear_pending(&root).unwrap();
         assert!(!root.exists());
         std::fs::create_dir(&root).unwrap();
@@ -247,8 +250,8 @@ mod tests {
         clear_pending(&root).unwrap();
         assert_eq!(load_pending(&root).unwrap(), None);
         let mut offers = load_offers(&root).unwrap();
-        decide(&root, &mut offers, QWEN_OFFER, Decision::Declined, 7).unwrap();
-        assert!(load_offers(&root).unwrap().decided(QWEN_OFFER));
+        decide(&root, &mut offers, MOSS_OFFER, Decision::Declined, 7).unwrap();
+        assert!(load_offers(&root).unwrap().decided(MOSS_OFFER));
     }
 
     #[test]
@@ -260,7 +263,7 @@ mod tests {
         std::fs::write(&speech, br#"{"schemaVersion":1,"engine":"nemotron"}"#).unwrap();
         save_pending(root, &Pending::new(SpeechEngine::QwenKo, true, None)).unwrap();
         let mut offers = Offers::default();
-        decide(root, &mut offers, QWEN_OFFER, Decision::Accepted, 1).unwrap();
+        decide(root, &mut offers, MOSS_OFFER, Decision::Accepted, 1).unwrap();
         assert_eq!(
             std::fs::read(&speech).unwrap(),
             br#"{"schemaVersion":1,"engine":"nemotron"}"#
@@ -276,5 +279,17 @@ mod tests {
         std::fs::write(&path, b"{\"schemaVersion\":1,\"target\":\"unknown\"}").unwrap();
         assert!(load_pending(root).is_err());
         assert!(path.exists());
+    }
+
+    #[test]
+    fn a_pending_apple_switch_requires_its_frozen_transcription_variant() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        std::fs::create_dir(root.join("preferences")).unwrap();
+        let path = root.join("preferences").join(PENDING_FILE);
+        let raw = br#"{"schemaVersion":1,"target":"appleSpeech","speakerEnabled":false}"#;
+        std::fs::write(&path, raw).unwrap();
+        assert!(load_pending(root).is_err());
+        assert_eq!(std::fs::read(path).unwrap(), raw);
     }
 }

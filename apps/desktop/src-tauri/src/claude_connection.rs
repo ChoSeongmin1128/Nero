@@ -14,6 +14,7 @@ struct Login {
     id: String,
     cancel: Arc<AtomicBool>,
     result: Mutex<Option<Result<(), String>>>,
+    browser_url: Mutex<Option<String>>,
     done: Notify,
 }
 struct Refresh {
@@ -126,6 +127,7 @@ impl ClaudeConnection {
             id: uuid::Uuid::new_v4().to_string(),
             cancel: Arc::new(AtomicBool::new(false)),
             result: Mutex::new(None),
+            browser_url: Mutex::new(None),
             done: Notify::new(),
         });
         *pending = Some(run.clone());
@@ -139,6 +141,7 @@ impl ClaudeConnection {
                     Err(_) => claude_runner::prepare(&this.root, run.cancel.clone()).await?,
                 };
                 let cancel = run.cancel.clone();
+                let browser = run.clone();
                 let connection = this.clone();
                 tauri::async_runtime::spawn_blocking(move || {
                     let _operation = lock_operation(&connection.model_operation, &cancel)?;
@@ -147,7 +150,10 @@ impl ClaudeConnection {
                         return Err("취소했습니다.".into());
                     }
                     if !runner.auth_status(&cancel)? {
-                        runner.login(&cancel)?;
+                        runner.login(&cancel, |url| {
+                            *browser.browser_url.lock().unwrap() = Some(url);
+                            browser.done.notify_waiters();
+                        })?;
                     }
                     Ok(())
                 })
@@ -174,6 +180,34 @@ impl ClaudeConnection {
             .unwrap()
             .as_ref()
             .is_some_and(|run| run.id == id)
+    }
+    pub async fn reopen_url(&self, id: &str) -> Result<String, String> {
+        let run = self
+            .login
+            .lock()
+            .unwrap()
+            .as_ref()
+            .filter(|run| run.id == id)
+            .cloned()
+            .ok_or("진행 중인 로그인 화면이 없습니다.")?;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let notified = run.done.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                if run.cancel.load(Ordering::Acquire) || run.result.lock().unwrap().is_some() {
+                    return Err("진행 중인 로그인 화면이 없습니다.".into());
+                }
+                if let Some(url) = run.browser_url.lock().unwrap().clone() {
+                    return Ok(url);
+                }
+                notified.await;
+            }
+        })
+        .await
+        .map_err(|_| {
+            "로그인 주소를 아직 확인하지 못했습니다. 잠시 후 다시 시도해 주세요.".to_string()
+        })?
     }
     pub async fn finish(&self, id: &str) -> Result<(), String> {
         let run = self
@@ -261,6 +295,60 @@ impl ClaudeConnection {
     }
     pub fn models(&self) -> Vec<claude_runner::SupportedModel> {
         self.models.lock().unwrap().clone()
+    }
+    pub fn check_auth(&self) -> Result<(), String> {
+        if claude_runner::installation_state(&self.root) == "missing" {
+            return Ok(());
+        }
+        self.check_auth_with(|cancel| {
+            let runner =
+                claude_runner::discover_prepared_cancelled(&self.root, cancel).or_else(|_| {
+                    if cancel.load(Ordering::Acquire) {
+                        Err("취소했습니다.".into())
+                    } else {
+                        claude_runner::discover()
+                    }
+                })?;
+            runner.auth_status(cancel)
+        })
+    }
+    fn check_auth_with(
+        &self,
+        check: impl FnOnce(&AtomicBool) -> Result<bool, String>,
+    ) -> Result<(), String> {
+        let run = Arc::new(Refresh {
+            cancel: AtomicBool::new(false),
+            completed: AtomicBool::new(false),
+            done: Notify::new(),
+        });
+        {
+            let mut state = self.refresh.lock().unwrap();
+            if state.stopping {
+                return Err("Claude 연결을 종료하고 있습니다.".into());
+            }
+            if state
+                .active
+                .as_ref()
+                .is_some_and(|active| !active.completed.load(Ordering::Acquire))
+                || self
+                    .login
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .is_some_and(|login| login.result.lock().unwrap().is_none())
+            {
+                return Ok(());
+            }
+            state.active = Some(run.clone());
+        }
+        let _guard = RefreshGuard(run.clone());
+        let _operation = lock_operation(&self.model_operation, &run.cancel)?;
+        let ready = check(&run.cancel)?;
+        if run.cancel.load(Ordering::Acquire) {
+            return Err("취소했습니다.".into());
+        }
+        *self.cached.lock().unwrap() = Some(Self::row(ready));
+        Ok(())
     }
     pub fn refresh_models(&self) -> Result<Vec<claude_runner::SupportedModel>, String> {
         let run = Arc::new(Refresh {
@@ -365,6 +453,7 @@ mod tests {
             id: "fixture".into(),
             cancel: Arc::new(AtomicBool::new(false)),
             result: Mutex::new(None),
+            browser_url: Mutex::new(None),
             done: Notify::new(),
         });
         *connection.login.lock().unwrap() = Some(run.clone());
@@ -471,6 +560,72 @@ mod tests {
         }
     }
 
+    #[test]
+    fn auth_check_preserves_state_and_models_on_failure() {
+        let connection = ClaudeConnection::new(PathBuf::from("unused"));
+        *connection.cached.lock().unwrap() = Some(ClaudeConnection::row(true));
+        let before = connection.cached.lock().unwrap().clone();
+        assert!(connection
+            .check_auth_with(|_| Err("temporary failure".into()))
+            .is_err());
+        assert_eq!(*connection.cached.lock().unwrap(), before);
+        assert!(connection.models().is_empty());
+        connection.check_auth_with(|_| Ok(false)).unwrap();
+        assert_eq!(
+            connection.cached.lock().unwrap().as_ref().unwrap()["state"],
+            "signed_out"
+        );
+        connection.check_auth_with(|_| Ok(true)).unwrap();
+        assert_eq!(
+            connection.cached.lock().unwrap().as_ref().unwrap()["state"],
+            "ready"
+        );
+    }
+
+    #[test]
+    fn auth_check_skips_running_login_or_refresh_and_rejects_shutdown() {
+        let connection = Arc::new(ClaudeConnection::new(PathBuf::from("unused")));
+        let run = attempt(&connection);
+        connection
+            .check_auth_with(|_| panic!("login already running"))
+            .unwrap();
+        *run.result.lock().unwrap() = Some(Ok(()));
+        let refresh = Arc::new(Refresh {
+            cancel: AtomicBool::new(false),
+            completed: AtomicBool::new(false),
+            done: Notify::new(),
+        });
+        connection.refresh.lock().unwrap().active = Some(refresh);
+        connection
+            .check_auth_with(|_| panic!("refresh already running"))
+            .unwrap();
+        connection.refresh.lock().unwrap().stopping = true;
+        assert!(connection
+            .check_auth_with(|_| panic!("shutdown in progress"))
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn shutdown_cancels_auth_check_without_publishing_its_result() {
+        let connection = Arc::new(ClaudeConnection::new(PathBuf::from("unused")));
+        let checking = connection.clone();
+        let (entered, waiting) = tokio::sync::oneshot::channel();
+        let task = tokio::task::spawn_blocking(move || {
+            checking.check_auth_with(|cancel| {
+                entered.send(()).unwrap();
+                while !cancel.load(Ordering::Acquire) {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Ok(true)
+            })
+        });
+        waiting.await.unwrap();
+        let guard = connection.prepare_shutdown().await.unwrap();
+        assert!(task.await.unwrap().is_err());
+        assert!(connection.cached.lock().unwrap().is_none());
+        drop(guard);
+    }
+
     #[tokio::test]
     async fn cancel_waits_for_login_to_stop_before_acknowledging() {
         let connection = Arc::new(ClaudeConnection::new(PathBuf::from("unused")));
@@ -514,5 +669,29 @@ mod tests {
                 .unwrap_err(),
             "fixture failure"
         );
+    }
+    #[tokio::test]
+    async fn reopening_uses_the_same_live_attempt_and_does_not_complete_login() {
+        let connection = Arc::new(ClaudeConnection::new(PathBuf::from("unused")));
+        let run = attempt(&connection);
+        let waiting = connection.clone();
+        let finish = tokio::spawn(async move { waiting.finish("fixture").await });
+        let reopening = connection.clone();
+        let task = tokio::spawn(async move { reopening.reopen_url("fixture").await });
+        tokio::task::yield_now().await;
+        let url = "https://claude.ai/oauth/authorize?state=fixture&code_challenge=fixture";
+        *run.browser_url.lock().unwrap() = Some(url.into());
+        run.done.notify_waiters();
+        assert_eq!(task.await.unwrap().unwrap(), url);
+        assert_eq!(connection.reopen_url("fixture").await.unwrap(), url);
+        assert!(!finish.is_finished());
+        assert!(connection.reopen_url("stale").await.is_err());
+        run.cancel.store(true, Ordering::Release);
+        assert!(connection.reopen_url("fixture").await.is_err());
+        run.cancel.store(false, Ordering::Release);
+        *run.result.lock().unwrap() = Some(Ok(()));
+        run.done.notify_waiters();
+        assert!(finish.await.unwrap().is_ok());
+        assert!(connection.reopen_url("fixture").await.is_err());
     }
 }

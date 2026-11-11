@@ -273,6 +273,7 @@ pub(crate) fn project_words(
             association: "direct".into(),
             speaker_scope: None,
             chunking_policy: Some(projection.policy),
+            recognition_report: None,
         }),
         speakers: Vec::new(),
         segments,
@@ -762,6 +763,7 @@ fn decode_derived(raw: &[u8], duration: f64, session: &str, id: &str) -> Result<
         association: "direct".into(),
         speaker_scope: Some("recording".into()),
         chunking_policy: Some(words.processing_policy),
+        recognition_report: None,
     });
     Ok(transcript)
 }

@@ -571,6 +571,28 @@ fn missing_storage_reads_do_not_initialize_any_library_or_reuse_another_clients_
 }
 
 #[test]
+fn reopening_notion_uses_only_the_current_live_attempt_and_never_sends_http() {
+    let (_temp, service, http, _) = fixture(vec![]);
+    let url = "https://mcp.notion.com/authorize?state=synthetic";
+    let cancellation = Cancellation::new(Duration::from_secs(600));
+    {
+        let mut inner = service.inner.lock().unwrap();
+        inner.connecting_id = Some("current".into());
+        inner.browser_url = Some(url.into());
+        inner.cancellation = Some(cancellation.clone());
+    }
+    assert!(service.reopen_connect("stale").is_err());
+    assert_eq!(service.reopen_connect("current").unwrap(), url);
+    assert_eq!(service.reopen_connect("current").unwrap(), url);
+    assert!(http.recorded().is_empty());
+    cancellation.cancel();
+    assert!(service.reopen_connect("current").is_err());
+    service.cancel_connect(Some("current"));
+    assert!(service.inner.lock().unwrap().browser_url.is_none());
+    assert!(service.reopen_connect("current").is_err());
+}
+
+#[test]
 fn control_characters_in_a_title_become_spaces() {
     let result =
         json!({"content":[],"structuredContent":{"id":PAGE,"title":"A\tB\nC","text":"body"}});

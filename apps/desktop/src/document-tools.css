@@ -1,4 +1,4 @@
-.document-search { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 8px 0; flex: 0 0 auto; }
+.document-search { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 6px 0; flex: 0 0 auto; }
 .document-search label { flex: 1 1 150px; min-width: 0; }
 .document-search input { width: 100%; }
 .document-search [role="status"] { min-width: 56px; text-align: center; }
@@ -7,3 +7,7 @@
 .meeting-item-match > span { color: var(--text-secondary); }
 
 .notes-search-preview { flex: 1; min-height: 0; overflow: auto; padding: 12px; border: 1px solid var(--border-control); border-radius: 7px; background: var(--surface-secondary); white-space: pre-wrap; font-size: var(--text-body-size); line-height: var(--leading-reading); scroll-padding: 12px; }
+
+.document-actions > button, .document-actions > [data-slot="popover-trigger"] { width: 28px; min-width: 28px; height: 28px; min-height: 28px; padding: 5px; }
+.document-search > button { min-width: 28px; min-height: 28px; padding: 5px; }
+.document-search [role="status"] { font-size: var(--text-caption-size); font-variant-numeric: tabular-nums; }

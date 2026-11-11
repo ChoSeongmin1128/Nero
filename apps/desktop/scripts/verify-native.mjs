@@ -47,7 +47,7 @@ if (process.platform === 'darwin' && (!target || target.includes('apple-darwin')
   ], { cwd: root, stdio: 'inherit', env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' } });
   execFileSync(process.env.PYTHON || 'python3', [
     resolve(root, 'scripts/native-moss-harness/verify_worker_package.py'),
-    'verify-staged', resolve(root, 'apps/desktop/.generated/native/moss'), '--optional',
+    'verify-staged', resolve(root, 'apps/desktop/.generated/native/moss'), ...(process.env.NERO_BUILD_ENV === 'production' ? [] : ['--optional']),
   ], { cwd: root, stdio: 'inherit', env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' } });
 } else {
   console.log('MOSS package verification skipped: this target does not use the macOS worker.');

@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { createRoot } from 'react-dom/client';
-import { Plus, Pencil, Trash2, UserPlus, X, Search, Users, UserRound } from 'lucide-react';
+import { Plus, Pencil, Trash2, UserPlus, X, Search, Users, UserRound } from '../../../design-system/icons-react.jsx';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '../../../design-system/components/ui/dialog.jsx';
 import { Tabs } from '@base-ui/react/tabs';
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '../../../design-system/components/ui/select.jsx';
@@ -83,7 +83,7 @@ function PeopleSettings({ flow, container, controls }) {
   return <div className="people-settings" data-nero-ui-owned="" aria-busy={state.busy}>
     <h3 className="settings-panel-title">참석자</h3>
     <Tabs.Root value={tab} onValueChange={value => { void switchTab(value); }} className="people-tabs">
-      <Tabs.List className="content-tabs" aria-label="참석자 관리"><Tabs.Tab value="person" disabled={state.writing}>사람 <span className="muted">{catalog?.people.length || 0}</span></Tabs.Tab><Tabs.Tab value="group" disabled={state.writing}>그룹 <span className="muted">{catalog?.groups.length || 0}</span></Tabs.Tab></Tabs.List>
+      <Tabs.List className="content-tabs" aria-label="참석자 관리"><Tabs.Tab value="person" disabled={state.writing}>사람{Boolean(catalog?.people.length) && <span className="muted"> {catalog.people.length}</span>}</Tabs.Tab><Tabs.Tab value="group" disabled={state.writing}>그룹{Boolean(catalog?.groups.length) && <span className="muted"> {catalog.groups.length}</span>}</Tabs.Tab></Tabs.List>
       {['person', 'group'].map(kind => <Tabs.Panel key={kind} value={kind} className="people-tab-panel">
         {draft ? <form className="people-editor" onSubmit={event => { event.preventDefault(); void flow.save(); }}>
       <h4 className="type-label">{draft.kind === 'person' ? '사람' : '그룹'} 편집</h4>
@@ -98,11 +98,11 @@ function PeopleSettings({ flow, container, controls }) {
     </form> : catalog && (() => {
       const items = kind === 'person' ? filterPeople(catalog, query, filter) : catalog.groups.filter(group => group.name.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
       return <>
-        <div className="people-list-tools"><label className="people-search"><Search size={15} aria-hidden="true" /><input type="search" aria-label={kind === 'person' ? '사람 검색' : '그룹 검색'} placeholder={kind === 'person' ? '이름 또는 소속 그룹 검색' : '그룹 검색'} value={query} disabled={state.busy} onChange={event => setQuery(event.target.value)} /></label>
-          {kind === 'person' && <Select value={filter} onValueChange={setGroupId} disabled={state.busy}><SelectTrigger aria-label="소속 그룹 필터"><SelectValue>{filter === 'ungrouped' ? '그룹 없음' : selectedGroup?.name || '전체 그룹'}</SelectValue></SelectTrigger><SelectContent container={container}><SelectItem value="">전체 그룹</SelectItem><SelectItem value="ungrouped">그룹 없음</SelectItem>{catalog.groups.map(group => <SelectItem key={group.id} value={group.id}>{group.name}</SelectItem>)}</SelectContent></Select>}
-        </div>
+        {(kind === 'person' ? catalog.people.length > 0 : catalog.groups.length > 0) && <div className="people-list-tools"><label className="people-search"><Search size={15} aria-hidden="true" /><input type="search" aria-label={kind === 'person' ? '사람 검색' : '그룹 검색'} placeholder={kind === 'person' ? '이름 또는 소속 그룹 검색' : '그룹 검색'} value={query} disabled={state.busy} onChange={event => setQuery(event.target.value)} /></label>
+          {kind === 'person' && catalog.groups.length > 0 && <Select value={filter} onValueChange={setGroupId} disabled={state.busy}><SelectTrigger aria-label="소속 그룹 필터"><SelectValue>{filter === 'ungrouped' ? '그룹 없음' : selectedGroup?.name || '전체 그룹'}</SelectValue></SelectTrigger><SelectContent container={container}><SelectItem value="">전체 그룹</SelectItem><SelectItem value="ungrouped">그룹 없음</SelectItem>{catalog.groups.map(group => <SelectItem key={group.id} value={group.id}>{group.name}</SelectItem>)}</SelectContent></Select>}
+        </div>}
         <QuickAdd kind={kind} group={kind === 'person' ? selectedGroup : null} state={state} flow={flow} />
-        <div className="people-list-count muted type-caption" role="status">{items.length}{kind === 'person' ? '명' : '개 그룹'}{query || filter ? ' 검색됨' : ''}</div>
+        {Boolean(query || filter) && <div className="people-list-count muted type-caption" role="status">{items.length}{kind === 'person' ? '명' : '개 그룹'}{query || filter ? ' 검색됨' : ''}</div>}
         <div className="settings-group people-catalog-list">{items.length ? items.map(item => {
           const details = kind === 'person' ? personGroups(catalog, item.id).map(group => group.name).join(', ') || '그룹 없음' : catalog.people.filter(person => item.personIds.includes(person.id)).map(person => person.name).join(', ') || '등록된 사람이 없습니다';
           return <div className="people-row" key={item.id}><div className="people-row-copy"><span className="people-name">{item.name}{kind === 'group' && <span className="muted type-caption">{item.personIds.length}명</span>}</span><span className="people-memberships type-caption" title={details}>{details}</span></div><button type="button" className="small quiet icon" disabled={state.busy} aria-label={`${item.name} 편집`} title="편집" onClick={() => { void edit(kind, item); }}><Pencil size={15} aria-hidden="true" /></button><button type="button" className="small quiet icon danger" disabled={state.busy} aria-label={`${item.name} 삭제`} title="삭제" onClick={() => { void remove(kind, item); }}><Trash2 size={15} aria-hidden="true" /></button></div>;
@@ -150,6 +150,20 @@ function AttendeeDialog({ flow, container, origin, controls }) {
   };
   controls.current = { beforeLeave: close };
   const searchInput = React.useRef(null);
+  const focusOnReady = React.useRef(false);
+  React.useEffect(() => {
+    focusOnReady.current = state.open;
+    if (!state.open) return;
+    const moved = () => { focusOnReady.current = false; };
+    container.addEventListener('pointerdown', moved);
+    container.addEventListener('keydown', moved);
+    return () => { container.removeEventListener('pointerdown', moved); container.removeEventListener('keydown', moved); };
+  }, [state.open, container]);
+  React.useEffect(() => {
+    if (!state.open || state.loading) return;
+    if (focusOnReady.current) searchInput.current?.focus({ preventScroll: true });
+    focusOnReady.current = false;
+  }, [state.open, state.loading, container]);
   const selected = new Set(state.attendees.map(item => item.personId).filter(Boolean));
   const matches = item => item.name.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
   const matchingGroups = state.catalog?.groups.filter(group => matches(group) && group.personIds.some(id => !selected.has(id))) || [];
@@ -189,7 +203,7 @@ function AttendeeDialog({ flow, container, origin, controls }) {
             </section>
           </>}
         </div>
-        <DialogFooter><button type="button" disabled={state.busy && !state.loading} onClick={() => { void close(); }}>취소</button><button type="button" className="primary" disabled={state.busy || state.googleConnecting || !state.meeting} onClick={async () => { if (await flow.save()) flow.close(); }}>적용</button></DialogFooter>
+        <DialogFooter><button type="button" disabled={state.busy && !state.loading} onClick={() => { void close(); }}>취소</button><button type="button" className="primary" disabled={state.busy || state.googleConnecting || !state.meeting || !flow.isDirty()} onClick={async () => { if (await flow.save()) flow.close(); }}>적용</button></DialogFooter>
       </DialogContent>
     </Dialog>
     <Dialog open={Boolean(promoting)} onOpenChange={open => { if (!open && !state.busy) setPromoting(null); }}>

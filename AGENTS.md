@@ -23,7 +23,7 @@ This file applies to the entire repository.
   not this new format. Never discard original PCM after playback conversion.
 - The native app provides meetings, notes, microphone recording and playback. With
   packaged workers, Apple silicon/macOS 26 supports native file import and local
-  Nemotron 3.5 Q8 speech recognition. Explicit setup prepares the pinned ASR model
+  MOSS transcription by default. Qwen is an explicit experimental selection; macOS system transcription is the no-Nero-ASR-model option. Explicit setup prepares the pinned ASR model
   and, when speaker analysis is enabled, the smaller Nemotron 3 speaker model; speech readiness gates new meetings,
   recording and import. Packaged llama.cpp enables on-demand Gemma 4 E4B Q4 summaries
   with separately stored source revisions; summary preparation remains optional.
@@ -35,13 +35,13 @@ This file applies to the entire repository.
   on explicit request. Preserve native phrase ranges, exact input/finalize evidence
   and OS/provider identity; do not invent word times. This path runs after recording
   ends and does not provide live previews. See `scripts/apple-speech/README.md`.
-- Default recognition sends the complete recording through one stateful
+- Legacy Nemotron recognition sends the complete recording through one stateful
   NeMo-Speech.cpp stream with endpointing disabled, then finishes the stream at EOF.
   `commit_nemotron_transcript` requires pinned model/runtime identity, full input-frame
   identity, successful native completion evidence and valid word timestamps. Preserve
   native output, the execution receipt and original audio; completion evidence does
   not prove that every spoken word was recognized. Never silently switch to chunk ASR.
-- Explicit selection also supports pinned Whisper large-v3-turbo Q5 through the
+- Windows selection and frozen legacy Mac jobs support pinned Whisper large-v3-turbo Q5 through the
   packaged CLI with bounded PCM windows and contextual overlap. Preserve native
   token bytes before UTF-8 validation, actual time anchors, window/EOF evidence
   and separate provider generations. Never interpolate word times or confidence.
@@ -51,23 +51,15 @@ This file applies to the entire repository.
   never pass it off as word timing or relax arbitrary input bounds. Selection
   applies to future work, is frozen per job/session and never silently switches
   models or reprocesses old meetings. See `docs/windows-speech-models.md`.
-- Apple Silicon also supports Qwen3-ASR-ko through the separately pinned CrispASR CLI
-  (`scripts/native-crispasr`). Recording previews stay on the Nemotron stream; the
-  saved transcript is recognized after recording from the same analysis WAV, and the
-  live speaker stream is reused. Keep the pause-chunk, gain and aligner-unit rules in
-  `docs/live-speech.md`; never commit Nemotron preview text for a Qwen session or
-  interpolate aligner times. Memory warnings are advisory and need explicit user
-  acknowledgement before preparation.
-- Apple Silicon also supports separately pinned Whisper large-v3 Q5. Keep the full
-  model's hash/revision and native 32-layer validation distinct from Turbo's 4-layer
-  output. Hardware recommendations are suggestions, not automatic downloads or
-  preference changes. See `docs/speech-model-selection.md`.
+- Mac new selections are MOSS (default/recommended), Qwen3-ASR-ko (explicit experimental preparation with resource acknowledgement), and macOS system transcription. These run after recording ends without a Nemotron ASR preview. Keep old preferences and frozen jobs unchanged until an explicit prepared transition. Do not reinterpret missing legacy JobRecord engines as MOSS. Windows retains its supported legacy engines until a supported replacement exists.
+- Product MOSS uses `moss-independent-chunks-v1`, separate from historical whole-recording validation. Preserve exact native bytes, input frames/hash, generation/EOS/feature evidence, missing ranges and timing context. The v2 projector clamps only a validated terminal overrun of at most 320 input samples (20ms) to the exact chunk/audio end, retaining the native start and raw output. Record normalized segment indices separately; these bounded corrections do not require review/retry and use normal independent speaker rules. Reject an empty range after clamping, larger overruns or invalid ordering. Stored v1 context projections remain readable without rewriting. Save verified normal text even when another chunk fails, expose partial coverage and retry only missing/failed chunks. A retry must never overwrite user edits; retain refused new generations in history. Context-only times do not establish precise playback or automatic speaker assignments. See `docs/speech-model-selection.md`.
+- After a supported replacement is prepared and explicitly selected, retire only unused Mac Nemotron ASR/Whisper Turbo/Whisper large-v3 weights and owned residue. Preserve MOSS, installed Qwen, independent speaker/summary/OS assets, shared runtimes, and active/queued/retry references. Old retirement receipts never authorize deleting newly protected engines. Dev may explicitly reference shared models read-only without opening that library or copying its weights/credentials.
 - Notion-derived glossary terms require explicit user review. Freeze approved
   terms and source revisions per capture/job; Whisper may use the bounded prompt,
   while unsupported engines must report it unused. Reuse across meetings requires
   explicit selection and a matching connected Notion page. Preserve prior job
   snapshots and do not create correction rules or speaker identities implicitly.
-- During new recording, a background saved-PCM reader may feed one persistent ASR
+- During legacy Nemotron/Whisper recording, a background saved-PCM reader may feed one persistent ASR
   stream and an independent speaker stream. Publish provisional replacements at
   60–180 seconds without resetting models, finish only after successful capture EOF,
   and bind the exact fed PCM hash/frame count to the finalized analysis WAV.
@@ -273,7 +265,7 @@ behavior. Separate implemented behavior, proposals and unverified platform suppo
 
 - Current desktop contracts use Nero package, event, UI, storage and build names.
 - Previous identifiers remain only in explicit migration boundaries and tests, immutable old transcript provenance, release receipts and the retired `legacy/swift` source archive. Do not rewrite signed release metadata or measured evidence.
-- The macOS converter is compiled from `scripts/audio-prepare`; the retained MOSS metadata is `crates/nero-core/resources/models/moss.json`. The independent optional `scripts/native-moss-harness` is not the retired root Swift app.
+- The macOS converter is compiled from `scripts/audio-prepare`; the retained MOSS metadata is `crates/nero-core/resources/models/moss.json`. The standalone `scripts/native-moss-harness` supplies the product and historical worker and is not the retired root Swift app.
 - The native macOS app and Windows package must be validated separately. macOS tests and the browser prototype do not establish Windows capture, imports or model execution.
 
 ## Git and verification

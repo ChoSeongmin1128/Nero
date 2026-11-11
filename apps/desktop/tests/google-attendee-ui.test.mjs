@@ -69,6 +69,32 @@ test('Google accounts link to existing temporary or saved attendees inside one s
   assert.equal(f.writes[0].draft.attendees[0].name, '기존 임시');
 });
 
+test('attendee search receives focus after delayed loading and unchanged Apply stays disabled', async t => {
+  let later = false, finish;
+  const roster = { editVersion: 'v1', meeting: { id: 'meeting', attendees: [{ id: 'manual', name: '기존 임시' }] }, catalog: { people: [], groups: [] }, sources: [], identityLinks: [] };
+  const f = await fixture(t, { readGoogleAttendeeRoster: () => later ? new Promise(resolve => { finish = resolve; }) : Promise.resolve(clone(roster)) });
+  assert.equal([...f.window.document.querySelectorAll('button')].find(button => button.textContent.trim() === '적용').disabled, true);
+  f.button('취소').click(); await wait(() => !f.window.document.querySelector('.people-dialog'));
+  later = true; const opening = f.editor.open('meeting', f.window.document.querySelector('#origin'));
+  await wait(() => finish && f.window.document.querySelector('.people-dialog'));
+  finish(clone(roster)); await opening;
+  await wait(() => f.window.document.activeElement === f.window.document.querySelector('.people-dialog input[type="search"]'));
+  assert.equal(f.writes.length, 0);
+});
+
+test('loading attendees does not steal focus after keyboard interaction', async t => {
+  let later = false, finish;
+  const roster = { editVersion: 'v1', meeting: { id: 'meeting', attendees: [{ id: 'manual', name: '기존 임시' }] }, catalog: { people: [], groups: [] }, sources: [], identityLinks: [] };
+  const f = await fixture(t, { readGoogleAttendeeRoster: () => later ? new Promise(resolve => { finish = resolve; }) : Promise.resolve(clone(roster)) });
+  f.button('취소').click(); await wait(() => !f.window.document.querySelector('.people-dialog'));
+  later = true; const opening = f.editor.open('meeting', f.window.document.querySelector('#origin'));
+  await wait(() => finish && f.window.document.querySelector('.people-dialog'));
+  const cancel = f.button('취소'); cancel.focus();
+  cancel.dispatchEvent(new f.window.KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
+  finish(clone(roster)); await opening; await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(f.window.document.activeElement, cancel);
+});
+
 test('promotion cancel and parent discard preserve the stored roster and person catalog', async t => {
   const f = await fixture(t);
   f.window.document.querySelector('[aria-label="기존 임시 인원 목록에 저장"]').click();

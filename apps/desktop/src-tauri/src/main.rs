@@ -36,6 +36,8 @@ mod meeting_context;
 mod meeting_context_desktop;
 mod memory;
 mod microphone_permission;
+mod moss_asr;
+mod model_source;
 mod native_speech;
 mod notion_context;
 mod oauth_callback;
@@ -1556,6 +1558,18 @@ fn cancel_speech_switch(
     state.processing.cancel_speech_switch()
 }
 #[tauri::command]
+async fn retry_speech_model_cleanup(
+    window: WebviewWindow,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<Progress, String> {
+    require_main(&window)?;
+    let snapshot = on_core(state.core.clone(), |core| core.snapshot()).await?;
+    if active_session(&snapshot).is_some() {
+        return Err("녹음을 마친 뒤 이전 모델 파일을 정리해 주세요.".into());
+    }
+    state.processing.retry_speech_model_cleanup()
+}
+#[tauri::command]
 async fn respond_speech_offer(
     window: WebviewWindow,
     state: tauri::State<'_, DesktopState>,
@@ -1963,9 +1977,11 @@ fn main() {
             domain_glossary::domain_glossary_save,
             write_clipboard_text,
             ai_chat_desktop::ai_chat_accounts,
+            ai_chat_desktop::ai_chat_check_accounts,
             ai_chat_desktop::ai_chat_connect,
             ai_chat_desktop::ai_chat_finish_connect,
             ai_chat_desktop::ai_chat_cancel_connect,
+            ai_chat_desktop::ai_chat_reopen_connect,
             ai_chat_desktop::ai_chat_disconnect,
             ai_chat_desktop::ai_chat_models,
             ai_chat_desktop::ai_chat_composer_catalog,
@@ -1987,6 +2003,7 @@ fn main() {
             ai_chat_desktop::begin_notion_connect,
             ai_chat_desktop::finish_notion_connect,
             ai_chat_desktop::cancel_notion_connect,
+            ai_chat_desktop::reopen_notion_connect,
             ai_chat_desktop::disconnect_notion_context,
             ai_chat_desktop::fetch_notion_sources,
             ai_chat_desktop::cancel_notion_fetch,
@@ -2072,6 +2089,7 @@ fn main() {
             prepare_meeting_models,
             request_speech_engine,
             cancel_speech_switch,
+            retry_speech_model_cleanup,
             respond_speech_offer,
             draft_attachment_target,
             import_audio,

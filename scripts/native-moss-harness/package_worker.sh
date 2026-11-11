@@ -36,6 +36,7 @@ for dependency in "$checkouts"/*; do
     if [[ -f "$dependency/$notice" ]]; then
       mkdir -p "$destination/Licenses/$name"
       cp "$dependency/$notice" "$destination/Licenses/$name/$notice"
+      chmod 644 "$destination/Licenses/$name/$notice"
     fi
   done
 done

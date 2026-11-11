@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { DayPicker, getDefaultClassNames } from 'react-day-picker';
 import { ko } from 'react-day-picker/locale';
-import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { ChevronLeft, ChevronRight } from '../../icons-react.jsx';
 import { cn } from './utils.js';
 
 export function Calendar({ className, classNames, components, labels, formatters, ...props }) {

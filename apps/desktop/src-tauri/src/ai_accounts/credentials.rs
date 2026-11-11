@@ -16,6 +16,9 @@ pub(super) enum Error {
 impl Error {
     pub fn message(self) -> String {
         match self {
+            Self::InteractionRequired => {
+                "운영체제에서 AI 계정 저장소 접근을 허용해 주세요. 승인 후 자동으로 다시 확인합니다."
+            }
             Self::LegacyInteractionRequired => {
                 "기존 AI 계정에 접근할 수 없습니다. 기존 계정 정보는 보존됩니다."
             }

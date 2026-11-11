@@ -10,7 +10,7 @@ class Node {
   removeEventListener(name, listener) { this.listeners.get(name)?.delete(listener); }
   emit(name, values = {}) { const event = { target: this, relatedTarget: null, preventDefault() {}, stopPropagation() {}, ...values }; return Promise.all([...this.listeners.get(name) || []].map(listener => listener(event))); }
   append(...children) { for (const child of children) { child.parentNode = this; this.children.push(child); } }
-  replaceChildren(...children) { for (const child of this.children) child.parentNode = null; this.children = []; this.append(...children); }
+  replaceChildren(...children) { if (this.children.some(child => child.contains(this.ownerDocument?.activeElement))) this.ownerDocument.activeElement = this.ownerDocument.body; for (const child of this.children) child.parentNode = null; this.children = []; this.append(...children); }
   contains(other) { for (let item = other; item; item = item.parentNode) if (item === this) return true; return false; }
   get isConnected() { return this.ownerDocument?.body?.contains(this) ?? false; }
   get childElementCount() { return this.children.length; }
@@ -24,7 +24,7 @@ class Node {
   remove() { this.parentNode.children = this.parentNode.children.filter(item => item !== this); this.parentNode = null; }
   getBoundingClientRect() { return this.tag === 'button' ? { left: 290, top: 240, right: 310, bottom: 264, width: 20, height: 24 } : { width: 300, height: 200 }; }
 }
-function page(loader) {
+function page(loader, { hideSummary = false } = {}) {
   const doc = new Node('document');
   const win = new Node('window'); Object.assign(win, { innerWidth: 320, innerHeight: 280, setTimeout, clearTimeout });
   doc.defaultView = win; doc.createElement = tag => new Node(tag, doc); doc.body = doc.createElement('body');
@@ -34,7 +34,7 @@ function page(loader) {
   const calls = [], navigations = [], plays = [], errors = [];
   const result = () => ({ summaryId: 's1', sourceVersion: { id: 'old', revision: 0 }, currentVersion: context.currentVersion, sourceSessionId: 'recording-1', audioAvailable: true, entries: [{ reference: 1, segment: { id: 'old-row', start: 62, end: 66, text: '<img src=x> frozen' }, speakerName: '요약 당시 이름', currentSegmentIds: ['current-row'] }] });
   const panel = doc.createElement('section'); panel.hidden = true; doc.body.append(panel);
-  const controller = mountSummaryEvidence({ container, panel, onOpen: async () => true, getContext: () => context, loadCitations: (...args) => { calls.push(args); return loader ? loader(...args) : Promise.resolve(result()); }, onNavigate: (...args) => { navigations.push(args); return true; }, onPlay: (...args) => plays.push(args), onError: error => errors.push(error) });
+  const controller = mountSummaryEvidence({ container, panel, onOpen: async () => { if (hideSummary) { container.hidden = true; if (container.contains(doc.activeElement)) doc.activeElement = doc.body; } return true; }, getContext: () => context, loadCitations: (...args) => { calls.push(args); return loader ? loader(...args) : Promise.resolve(result()); }, onNavigate: (...args) => { navigations.push(args); return true; }, onPlay: (...args) => plays.push(args), onError: error => errors.push(error) });
   const all = root => [root, ...root.children.flatMap(all)];
   return { doc, win, container, anchor, panel, controller, calls, navigations, plays, errors, result, all, context: values => { context = { ...context, ...values }; }, button: action => all(panel).find(item => item.dataset.evidenceAction === action), open: async (pin = false) => { await container.emit('click', { target: anchor, detail: 1 }); await tick(); } };
 }
@@ -57,4 +57,35 @@ test('multiple links navigate one at a time and never expose unrequested referen
 });
 test('hover and focus do not open a transient evidence mode', async () => {
   const app=page(); await app.container.emit('pointerover',{target:app.anchor}); await app.container.emit('focusin',{target:app.anchor}); await tick(); assert.equal(app.calls.length,0);
+});
+
+test('keyboard activation focuses frozen evidence after the summary becomes hidden', async () => {
+  const app = page(async () => ({ summaryId: 's1', entries: [{ reference: 1, segment: { start: 62, text: 'frozen' }, currentSegmentIds: [] }] }), { hideSummary: true });
+  app.anchor.focus(); await app.open();
+  const entry = app.all(app.panel).find(node => node.className === 'summary-evidence-entry');
+  assert.equal(app.container.hidden, true);
+  assert.equal(app.doc.activeElement, entry);
+  assert.equal(entry.attributes.tabindex, '-1');
+  assert.equal(app.plays.length, 0);
+});
+
+test('keyboard activation focuses an unavailable evidence message without reopening the summary', async () => {
+  const app = page(async () => { throw Error('synthetic read failure'); }, { hideSummary: true });
+  app.anchor.focus(); await app.open();
+  const message = app.panel.children[0];
+  assert.equal(message.textContent, '발언을 불러오지 못했습니다.');
+  assert.equal(message.attributes.role, 'status');
+  assert.equal(message.attributes.tabindex, '-1');
+  assert.equal(app.doc.activeElement, message);
+  assert.equal(app.container.hidden, true);
+});
+
+test('delayed frozen evidence does not steal focus after the user moves to another control', async () => {
+  const pending = deferred(), app = page(() => pending.promise, { hideSummary: true });
+  app.anchor.focus(); await app.open();
+  const other = app.doc.createElement('button'); app.doc.body.append(other); other.focus();
+  pending.resolve({ summaryId: 's1', entries: [{ reference: 1, segment: { text: 'frozen' }, currentSegmentIds: [] }] });
+  await tick();
+  assert.equal(app.doc.activeElement, other);
+  assert.equal(app.panel.hidden, false);
 });

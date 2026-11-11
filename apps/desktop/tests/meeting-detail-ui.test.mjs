@@ -13,18 +13,24 @@ function page(t, finishEditing = async action => action()) {
   const controller = mountMeetingDetail({ byId: node, finishEditing, onError: error => errors.push(error), onReveal: view => reveals.push(view) });
   return { window, node, controller, errors, reveals, update: values => controller.update({ id: 'a', summaryLoaded: true, transcriptLoaded: true, hasTranscript: true, ...values }) };
 }
-test('summary and transcript share a permanent body while notes are independent', async t => {
-  const app = page(t); app.update({ hasSummary: true });
+test('document tabs show one document while notes remain independent', async t => {
+  const app = page(t); app.update();
   const body = app.node('detail-body-scroll');
   assert.ok(body.contains(app.node('summary-section'))); assert.ok(body.contains(app.node('transcript-section')));
-  for (const view of ['notes', 'transcript', 'summary']) {
+  assert.equal(app.node('summary-section').hidden, false);
+  assert.equal(app.node('transcript-section').hidden, true);
+  await app.controller.select('notes');
+  for (const view of ['transcript', 'summary']) {
     assert.equal(await app.controller.select(view), true);
-    assert.equal(app.node('summary-section').hidden, false); assert.equal(app.node('transcript-section').hidden, false);
-    assert.ok(body.contains(app.node('transcript-section')));
+    assert.equal(app.node('summary-section').hidden, view !== 'summary');
+    assert.equal(app.node('transcript-section').hidden, view !== 'transcript');
+    assert.equal(app.node('summary-document-actions').hidden, view !== 'summary');
+    assert.equal(app.node('transcript-document-actions').hidden, view !== 'transcript');
     assert.equal(app.controller.notesOpen(), true);
   }
   app.node('detail-inspector-close').click(); await tick();
-  assert.equal(app.controller.notesOpen(), false); assert.equal(app.node('transcript-section').hidden, false);
+  assert.equal(app.controller.notesOpen(), false);
+  assert.equal(app.node('summary-section').hidden, false);
   assert.equal(app.window.document.activeElement, app.node('detail-notes-open'));
 });
 test('pending saves block notes closing without losing visible text', async t => {
@@ -53,7 +59,7 @@ test('recording reveals notes once and never displaces the shared transcript', a
 test('empty and completed meetings keep stable navigation entries and contextual availability', t => {
   const app = page(t); app.update({ hasTranscript: false, showSummary: false });
   assert.equal(app.node('detail-transcript-open').hidden, false); assert.equal(app.node('detail-transcript-open').disabled, true);
-  app.update({ hasAudio: true }); assert.equal(app.node('detail-transcript-open').disabled, false);
+  app.update({ hasAudio: true, showSummary: false }); assert.equal(app.node('detail-transcript-open').disabled, false);
   assert.equal(app.node('transcript-section').hidden, false);
 });
 test('narrow notes layout keeps body present and transcript maintenance is secondary', async t => {
@@ -64,29 +70,40 @@ test('narrow notes layout keeps body present and transcript maintenance is secon
   assert.equal(app.node('detail-primary')?.hidden ?? false, false);
   assert.equal(app.node('notes-section').parentElement, app.node('detail-inspector'));
 });
-function geometry(app) {
-  const body = app.node('detail-body-scroll'); let transcriptTop = 0;
-  Object.defineProperty(body, 'clientHeight', { configurable: true, value: 600 });
-  Object.defineProperty(body, 'scrollHeight', { configurable: true, value: 3000 });
-  body.getBoundingClientRect = () => ({ top: 0, bottom: 600 });
-  app.node('transcript-section').getBoundingClientRect = () => ({ top: transcriptTop, bottom: transcriptTop + 1500 });
-  const pressed = view => app.node(`detail-${view}-open`).getAttribute('aria-pressed');
-  return { pressed, scrollTo(scrollTop, top) { body.scrollTop = scrollTop; transcriptTop = top; body.dispatchEvent(new app.window.Event('scroll')); } };
-}
-test('section buttons follow the part of the shared body being read', t => {
-  const app = page(t); app.update(); const { scrollTo, pressed } = geometry(app);
-  scrollTo(500, 150); assert.equal(app.controller.active(), 'transcript'); assert.equal(pressed('transcript'), 'true'); assert.equal(pressed('summary'), 'false');
-  scrollTo(300, 350); assert.equal(app.controller.active(), 'summary'); assert.equal(pressed('summary'), 'true'); assert.equal(pressed('transcript'), 'false');
-  scrollTo(2400, 450); assert.equal(app.controller.active(), 'transcript', 'a short transcript is current at the end of the body');
-  scrollTo(0, 100); assert.equal(app.controller.active(), 'summary', 'a short summary is current at the start of the body');
-  app.update({ showSummary: false }); scrollTo(300, 350); assert.equal(app.controller.active(), 'transcript');
+test('scrolling a document never changes the selected tab', async t => {
+  const app = page(t); app.update(); const body = app.node('detail-body-scroll');
+  for (const view of ['summary', 'transcript']) {
+    await app.controller.select(view);
+    body.scrollTop = 500; body.dispatchEvent(new app.window.Event('scroll'));
+    assert.equal(app.controller.active(), view);
+    assert.equal(app.node(`detail-${view}-open`).getAttribute('aria-pressed'), 'true');
+  }
 });
-test('a section chosen from its button stays pressed while the body scrolls to it', async t => {
-  const app = page(t); app.update(); const { scrollTo, pressed } = geometry(app);
-  await app.controller.select('transcript'); scrollTo(200, 400);
-  assert.equal(app.controller.active(), 'transcript'); assert.equal(pressed('transcript'), 'true');
-  await new Promise(resolve => setTimeout(resolve, 200)); scrollTo(100, 500);
+test('each document keeps its reading position across tabs and meetings', async t => {
+  const app = page(t); app.update(); const body = app.node('detail-body-scroll');
+  body.scrollTop = 480; app.controller.rememberScroll();
+  await app.controller.select('transcript'); assert.equal(body.scrollTop, 0);
+  body.scrollTop = 1200; app.controller.rememberScroll();
+  await app.controller.select('summary'); assert.equal(body.scrollTop, 480);
+  await app.controller.select('transcript'); assert.equal(body.scrollTop, 1200);
+  app.update({ id: 'b' }); body.scrollTop = 150; app.controller.rememberScroll();
+  app.update({ id: 'a' }); assert.equal(app.controller.active(), 'transcript'); assert.equal(body.scrollTop, 1200);
+  await app.controller.select('summary'); assert.equal(body.scrollTop, 480);
+});
+test('failed draft save prevents document switch and preserves the current tab', async t => {
+  let block = false; const app = page(t, async action => { if (block) throw Error('save'); return action(); }); app.update();
+  app.node('meeting-notes').value = '입력 중인 내용'; block = true;
+  assert.equal(await app.controller.select('transcript'), false);
   assert.equal(app.controller.active(), 'summary');
-  await app.controller.select('transcript'); app.node('detail-body-scroll').dispatchEvent(new app.window.Event('wheel')); scrollTo(200, 400);
-  assert.equal(app.controller.active(), 'summary', 'scrolling by hand ends the jump at once');
+  assert.equal(app.node('summary-section').hidden, false);
+  assert.equal(app.node('meeting-notes').value, '입력 중인 내용');
+});
+
+test('transcript-only meetings select their available document actions',async t=>{
+  const app=page(t);app.update({showSummary:false,hasTranscript:true});
+  assert.equal(app.node('summary-section').hidden,true);
+  assert.equal(app.node('detail-transcript-open').getAttribute('aria-pressed'),'true');
+  assert.equal(app.node('summary-document-actions').hidden,true);
+  assert.equal(app.node('transcript-document-actions').hidden,false);
+  assert.equal(await app.controller.select('summary'),false);
 });

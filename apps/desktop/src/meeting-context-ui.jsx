@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { createRoot } from 'react-dom/client';
-import { Link2, RefreshCw, X } from 'lucide-react';
+import { Link2, RefreshCw, X } from '../../../design-system/icons-react.jsx';
 import { Popover, PopoverTrigger, PopoverContent, PopoverTitle } from '../../../design-system/components/ui/popover.jsx';
 import { createMeetingContextFlow } from './meeting-context-flow.js';
 import { DomainGlossary } from './domain-glossary-ui.jsx';
@@ -24,7 +24,7 @@ function MeetingContext({ flow, onSettings, bridge }) {
         {state.phase === 'fetching' ? <button type="button" className="small" onClick={() => flow.cancel()}>취소</button> : state.busy ? <button type="button" className="small" disabled>처리 중</button> : state.notion && !state.notion.connected ? <button type="button" className="small" onClick={() => { flow.close(); onSettings(); }}>Notion 연결</button> : <button type="submit" className="small" disabled={state.loading || !state.link.trim() || !state.notion}>추가</button>}
       </form>
       {state.meetingId && <DomainGlossary meetingId={state.meetingId} sourcesRevision={state.revision} bridge={bridge} />}
-      {state.error && <div className="meeting-context-error" role="alert"><span>{state.error}</span><button type="button" className="quiet small" disabled={state.busy} onClick={() => { void flow.reload(); }}>목록 다시 불러오기</button></div>}
+      {state.error && <div className="meeting-context-error" role="alert"><span>{state.error}</span><button type="button" className="quiet small" disabled={state.busy || state.loading} onClick={() => { void flow.reload(); }}>다시 시도</button></div>}
     </PopoverContent>
   </Popover>;
 }

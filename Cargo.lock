@@ -2582,7 +2582,7 @@ dependencies = [
 
 [[package]]
 name = "nero-cli"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "fs2",
  "jiff",
@@ -2595,7 +2595,7 @@ dependencies = [
 
 [[package]]
 name = "nero-core"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "cpal",
  "fs2",
@@ -2614,7 +2614,7 @@ dependencies = [
 
 [[package]]
 name = "nero-desktop"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "base64 0.22.1",
  "block2",

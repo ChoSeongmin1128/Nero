@@ -1,0 +1,516 @@
+{
+  "family": "Native Quiet",
+  "stroke": 1.25,
+  "entries": [
+    {
+      "id": "activity-spinner",
+      "asset": "activity-spinner.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "app-update-spinner",
+      "asset": "app-update-spinner.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "arrow-left",
+      "asset": "arrow-left.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "arrow-right",
+      "asset": "arrow-right.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "arrow-up",
+      "asset": "arrow-up.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "arrow-up-down",
+      "asset": "arrow-up-down.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "arrow-up-right",
+      "asset": "arrow-up-right.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "audio-lines",
+      "asset": "audio-lines.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "bell",
+      "asset": "bell.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "book-open",
+      "asset": "book-open.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "calendar-check",
+      "asset": "calendar-check.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "calendar-days",
+      "asset": "calendar-days.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "check",
+      "asset": "check.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "check-check",
+      "asset": "check-check.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "chevron-down",
+      "asset": "chevron-down.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "chevron-left",
+      "asset": "chevron-left.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "chevron-right",
+      "asset": "chevron-right.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "chevron-up",
+      "asset": "chevron-up.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "chevrons-left",
+      "asset": "chevrons-left.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "chevrons-right",
+      "asset": "chevrons-right.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "circle",
+      "asset": "circle.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "circle-check",
+      "asset": "circle-check.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "circle-pause",
+      "asset": "circle-pause.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "circle-slash",
+      "asset": "circle-slash.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "clock",
+      "asset": "clock.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "connected-check",
+      "asset": "connected-check.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "copy",
+      "asset": "copy.svg",
+      "kind": "stroke",
+      "source": "Nero original geometry"
+    },
+    {
+      "id": "download",
+      "asset": "download.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "ellipsis",
+      "asset": "ellipsis.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "external-link",
+      "asset": "external-link.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "file-text",
+      "asset": "file-text.svg",
+      "kind": "stroke",
+      "source": "Nero original geometry"
+    },
+    {
+      "id": "folder",
+      "asset": "folder.svg",
+      "kind": "stroke",
+      "source": "Nero original geometry"
+    },
+    {
+      "id": "folder-input",
+      "asset": "folder-input.svg",
+      "kind": "stroke",
+      "source": "Nero original geometry"
+    },
+    {
+      "id": "folder-open",
+      "asset": "folder-open.svg",
+      "kind": "stroke",
+      "source": "Nero original geometry"
+    },
+    {
+      "id": "grip-vertical-inline",
+      "asset": "grip-vertical-inline.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "headphones",
+      "asset": "headphones.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "history",
+      "asset": "history.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "inbox",
+      "asset": "inbox.svg",
+      "kind": "stroke",
+      "source": "Nero original geometry"
+    },
+    {
+      "id": "inline-calendar-close",
+      "asset": "inline-calendar-close.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "link",
+      "asset": "link.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "link-2",
+      "asset": "link-2.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "list",
+      "asset": "list.svg",
+      "kind": "stroke",
+      "source": "Nero original geometry"
+    },
+    {
+      "id": "list-filter",
+      "asset": "list-filter.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "message-circle",
+      "asset": "message-circle.svg",
+      "kind": "stroke",
+      "source": "Lucide original geometry"
+    },
+    {
+      "id": "messages-square",
+      "asset": "messages-square.svg",
+      "kind": "stroke",
+      "source": "Lucide original geometry"
+    },
+    {
+      "id": "mic",
+      "asset": "mic.svg",
+      "kind": "stroke",
+      "source": "Nero original geometry"
+    },
+    {
+      "id": "moon",
+      "asset": "moon.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "notebook-pen",
+      "asset": "notebook-pen.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "notebook-tabs",
+      "asset": "notebook-tabs.svg",
+      "kind": "stroke",
+      "source": "Nero original geometry"
+    },
+    {
+      "id": "panel-left",
+      "asset": "panel-left.svg",
+      "kind": "stroke",
+      "source": "Nero original geometry"
+    },
+    {
+      "id": "panel-left-close",
+      "asset": "panel-left-close.svg",
+      "kind": "stroke",
+      "source": "Nero original geometry"
+    },
+    {
+      "id": "pause",
+      "asset": "pause.svg",
+      "kind": "stroke",
+      "source": "Nero original geometry"
+    },
+    {
+      "id": "pencil",
+      "asset": "pencil.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "picture-in-picture-2",
+      "asset": "picture-in-picture-2.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "pin",
+      "asset": "pin.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "play",
+      "asset": "play.svg",
+      "kind": "stroke",
+      "source": "Nero original geometry"
+    },
+    {
+      "id": "plus",
+      "asset": "plus.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "refresh-cw",
+      "asset": "refresh-cw.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "rotate-ccw",
+      "asset": "rotate-ccw.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "search",
+      "asset": "search.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "send",
+      "asset": "send.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "settings",
+      "asset": "settings.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "settings-2",
+      "asset": "settings-2.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "setup-audio-inline",
+      "asset": "setup-audio-inline.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "setup-check",
+      "asset": "setup-check.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "setup-document-inline",
+      "asset": "setup-document-inline.svg",
+      "kind": "stroke",
+      "source": "Nero original geometry"
+    },
+    {
+      "id": "sparkles",
+      "asset": "../../../../apps/desktop/brand/logo/nero-symbol-light.svg",
+      "kind": "brand",
+      "source": "Nero approved brand symbol"
+    },
+    {
+      "id": "square",
+      "asset": "square.svg",
+      "kind": "stroke",
+      "source": "Nero original geometry"
+    },
+    {
+      "id": "square-pen",
+      "asset": "square-pen.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "state-dot",
+      "asset": "state-dot.svg",
+      "kind": "solid",
+      "source": "Lucide original geometry"
+    },
+    {
+      "id": "state-square",
+      "asset": "state-square.svg",
+      "kind": "solid",
+      "source": "Lucide original geometry"
+    },
+    {
+      "id": "sun",
+      "asset": "sun.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "theme-check",
+      "asset": "theme-check.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "trash-2",
+      "asset": "trash-2.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "triangle-alert",
+      "asset": "triangle-alert.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "undo-2",
+      "asset": "undo-2.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "unread-dot",
+      "asset": "unread-dot.svg",
+      "kind": "solid",
+      "source": "Lucide original geometry"
+    },
+    {
+      "id": "upload",
+      "asset": "upload.svg",
+      "kind": "stroke",
+      "source": "Nero original geometry"
+    },
+    {
+      "id": "user-plus",
+      "asset": "user-plus.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "user-round",
+      "asset": "user-round.svg",
+      "kind": "stroke",
+      "source": "Tabler, rounded outline adaptation"
+    },
+    {
+      "id": "users",
+      "asset": "users.svg",
+      "kind": "stroke",
+      "source": "Tabler, rounded outline adaptation"
+    },
+    {
+      "id": "volume-2",
+      "asset": "volume-2.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "volume-x",
+      "asset": "volume-x.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "x",
+      "asset": "x.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
+      "id": "panel-left-peek",
+      "asset": "panel-left-peek.svg",
+      "kind": "stroke",
+      "source": "Nero original geometry"
+    }
+  ]
+}

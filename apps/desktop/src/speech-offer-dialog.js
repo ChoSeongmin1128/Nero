@@ -1,4 +1,5 @@
 import { formatBytes } from './processing-state.js';
+import { qwenResourceNotice, mossResourceNotice } from './speech-resource-notice.js';
 
 // One-time offer to existing users. Only the buttons record a decision; closing with
 // Escape leaves the offer for the next launch.
@@ -10,7 +11,7 @@ export function mountSpeechOfferDialog({ dialog, onAccept, onDecline }) {
     if (text) node.textContent = text;
     return node;
   };
-  const title = element('h2', '', '새 한국어 전사 모델');
+  const title = element('h2', '', '기본 전사 모델 변경');
   title.id = 'speech-offer-title';
   const intro = element('p');
   const facts = element('ul', 'speech-offer-facts');
@@ -63,12 +64,13 @@ export function mountSpeechOfferDialog({ dialog, onAccept, onDecline }) {
         if (dialog.open && !busy) dialog.close();
         return;
       }
-      intro.textContent = `녹음이 끝나면 ${current.title.split(' · ')[0]} 모델로 녹음 전체를 다시 전사해 저장합니다. 녹음 중에는 지금처럼 바로 보이는 미리보기 전사가 나옵니다.`;
+      accept.textContent = current.downloadBytes > 0 ? '다운로드 후 전환' : '이 모델로 전환';
+      intro.textContent = `${current.title.split(' · ')[0]} 모델로 전환합니다. 녹음 종료 후 전사하며 녹음 중 미리보기는 제공하지 않습니다.`;
       const items = [
         current.downloadBytes > 0 ? `받을 크기: 약 ${formatBytes(current.downloadBytes)}. 받는 동안에는 지금 모델을 계속 사용합니다.` : '필요한 모델이 이미 준비되어 있습니다.',
-        '녹음을 마친 뒤 저장까지 기다리는 시간이 늘어납니다. 23분 회의 기준 약 4분(측정값)입니다.',
+        current.engine === 'qwenKo' ? qwenResourceNotice : mossResourceNotice,
         '기존 회의의 음성 기록은 바뀌지 않습니다.',
-        '설정 > 녹음 > 음성 처리 모델에서 언제든 바꿀 수 있습니다.',
+        '설정 > 음성 인식 > 전사 모델에서 언제든 바꿀 수 있습니다.',
       ];
       facts.replaceChildren(...items.map(text => element('li', '', text)));
       memoryText.textContent = current.memoryWarning || '';

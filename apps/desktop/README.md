@@ -229,7 +229,7 @@ packaged source revision; an unshipped source change is not an installed update.
   and refresh the device list to enable it. Existing recording controls stay available.
 - Pause/resume/stop and use a separate compact control window.
 - Preserve raw PCM and prepare a separate WAV for playback.
-- During new recordings, consume saved PCM in the background with persistent ASR
+- During legacy Nemotron/Whisper recordings, consume saved PCM in the background with persistent ASR
   and independent speaker states. Publish provisional text every 60–180 seconds of
   processed audio; pauses retain state and stop drains/finalizes once. Reuse completed
   ASR and speaker evidence through the existing source-bound publication path.
@@ -238,7 +238,7 @@ packaged source revision; an unshipped source change is not an installed update.
 - Recover complete stored frames after interruption; retain originals on failure.
 - On Apple silicon with macOS 26 or later and packaged workers, import local audio
   through the native file picker, retaining the original bytes and separate playback WAV.
-- Explicitly prepare pinned Nemotron 3.5 Q8 ASR and recognize each finalized recording
+- Retained Nemotron jobs prepare pinned Nemotron 3.5 Q8 ASR and recognize each finalized recording
   through one stateful NeMo-Speech.cpp stream over the complete prepared WAV, with
   endpointing disabled and a finish call at EOF. Native output and execution evidence
   are retained; saving checks pinned identity, full input-frame identity, completion
@@ -248,10 +248,7 @@ packaged source revision; an unshipped source change is not an installed update.
 - On macOS 26, the system speech option transcribes Korean after recording ends.
   It uses system language assets instead of a Nero ASR model; asset preparation may
   download data. Availability depends on the system. Speaker analysis remains optional.
-- Apple Silicon can also explicitly select the separately pinned Whisper large-v3
-  Q5 model. Hardware recommendations do not change the user's selected engine or
-  download models. See [speech model selection](../../docs/speech-model-selection.md)
-  for selection, memory policy and reviewed meeting glossary context.
+- New Apple Silicon/macOS 26 selections are MOSS (default/recommended), Qwen3-ASR Korean (explicit experimental preparation), and macOS system transcription. MOSS/Qwen run after recording ends without Nemotron ASR previews. Frozen legacy jobs remain executable. See [speech model selection](../../docs/speech-model-selection.md) for partial-result, retry, resource and retirement policy.
 - Optional machine-local terminology profiles create a separate correction revision
   after recognition. Uncertain names remain unchanged; an absent optional contextual
   model does not block recognition. See [terminology correction](../../docs/terminology.md).
@@ -299,7 +296,7 @@ connection stores its grant in the platform credential store.
 
 New meetings, new recordings and file import require speech recognition to be
 prepared. Setup selects a supported engine and separately enables or disables speaker
-analysis. Nemotron or Whisper preparation verifies that ASR model and, when enabled,
+analysis. MOSS or explicitly chosen Qwen preparation verifies the selected ASR model and, when enabled,
 the smaller Nemotron speaker model. macOS system transcription prepares supported
 language assets instead of a Nero ASR model. Local automatic summary preparation and
 generation are currently gated off; existing summaries and AI/agent summary saving
@@ -463,9 +460,9 @@ bundle in its own data directory. Preparation starts only from the app's explici
 model action. The downloader retains interrupted partial files, resumes verified Range
 responses and checks the complete file SHA256 before publishing a readiness marker.
 
-Retained MOSS packaging remains available through
+Product and historical MOSS packaging are provided through
 `scripts/native-moss-harness/README.md` and the three-argument `prepare-native.sh` route.
-It does not replace the shared speech package or make MOSS the default ASR. Stored
+MOSS is the Mac default; the shared native speech package separately supplies optional speaker analysis and legacy engines. Stored
 MOSS whole-input output keeps its EOS/budget/complete-input validation and versioned
 history; loading it does not start recognition or download a model.
 

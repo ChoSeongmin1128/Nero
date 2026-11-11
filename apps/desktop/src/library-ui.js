@@ -35,7 +35,11 @@ export function formatRecentDuration(milliseconds) {
   if (!Number.isFinite(milliseconds) || milliseconds < 0) return '';
   const seconds = Math.floor(milliseconds / 1000);
   const hours = Math.floor(seconds / 3600), minutes = Math.floor(seconds % 3600 / 60), remainder = seconds % 60;
-  return `${hours ? `${hours}시간` : ''}${minutes ? `${minutes}분` : ''}${remainder || !hours && !minutes ? `${remainder}초` : ''}`;
+  return `${hours ? `${hours}:` : ''}${hours ? String(minutes).padStart(2, '0') : minutes}:${String(remainder).padStart(2, '0')}`;
+}
+function recentDurationLabel(milliseconds) {
+  const total = Math.floor(milliseconds / 1000), hours = Math.floor(total / 3600), minutes = Math.floor(total % 3600 / 60), seconds = total % 60;
+  return `${hours ? `${hours}시간` : ''}${minutes ? `${minutes}분` : ''}${seconds || !hours && !minutes ? `${seconds}초` : ''}`;
 }
 const recentDate = new Intl.DateTimeFormat('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
 const listDate = new Intl.DateTimeFormat('ko-KR', { month: 'numeric', day: 'numeric' });
@@ -55,7 +59,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
   const readPreference = key => { try { return storage?.getItem(key); } catch { return null; } };
   const savePreference = (key, value) => { try { storage?.setItem(key, value); } catch {} };
   const shell = owner.querySelector?.('.workspace');
-  const sidebar = shell ? mountNavigationSidebar({ shell, aside: byId('navigation-sidebar'), content: owner.querySelector('.main-content'), trigger: byId('navigation-toggle'), storage, icons: icon, relocate: [['settings', 'sidebar-settings-expanded', 'sidebar-settings-collapsed'], ['sidebar-app-update', 'sidebar-update-expanded', 'sidebar-update-collapsed']].map(([node, expanded, compact]) => ({ node: byId(node), expanded: byId(expanded), compact: byId(compact) })).filter(item => item.node && item.expanded && item.compact) }) : null;
+  const sidebar = shell ? mountNavigationSidebar({ shell, aside: byId('navigation-sidebar'), content: owner.querySelector('.main-content'), trigger: byId('navigation-toggle'), storage, icons: icon, relocate: [['create-meeting', 'sidebar-create-expanded', 'sidebar-create-collapsed'], ['settings', 'sidebar-settings-expanded', 'sidebar-settings-collapsed'], ['sidebar-app-update', 'sidebar-update-expanded', 'sidebar-update-collapsed']].map(([node, expanded, compact]) => ({ node: byId(node), expanded: byId(expanded), compact: byId(compact) })).filter(item => item.node && item.expanded && item.compact) }) : null;
   const savedView = getState().libraryView || readPreference('nero.library.view');
   getState().libraryView = ['folders', 'all'].includes(savedView) ? savedView : 'folders';
   const recents = byId('recent-section');
@@ -162,6 +166,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     const submit = dialogBody.querySelector('[data-library-confirm]');
     if (submit) {
       submit.innerHTML = busy ? '<span class="activity-spinner" aria-hidden="true"></span><span>처리 중</span>' : escape(pending?.confirm || '저장');
+      submit.disabled = busy || Boolean(pending?.canConfirm && !pending.canConfirm());
     }
   }
   function closeDialog() {
@@ -180,16 +185,17 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     if (target?.closest?.('.navigation-sidebar')?.inert || target?.closest?.('.recent-section')?.inert || target?.closest?.('#sidebar-library-navigation[hidden],#sidebar-meeting-list[hidden],#sidebar-recent-preview[hidden]')) target = byId('navigation-toggle');
     target?.focus({ preventScroll: true });
   }
-  function openDialog({ title, content, confirm = '저장', destructive = false, action, detach = false }) {
+  function openDialog({ title, content, confirm = '저장', destructive = false, action, detach = false, canConfirm = null }) {
     if (state().libraryBusy) return;
     returnFocus = dialog.ownerDocument?.activeElement;
     returnRecentId = returnFocus?.closest?.('[data-recent-row]')?.dataset.recentRow || null;
-    pending = { confirm, action, detach };
+    pending = { confirm, action, detach, canConfirm };
     dialogBody.innerHTML = `<form class="library-form"><header class="dialog-header"><h2 id="library-dialog-title">${escape(title)}</h2><button type="button" class="quiet icon-button" data-library-close aria-label="닫기">${icon('x')}</button></header><div class="library-dialog-content">${content}<p id="library-dialog-error" class="field-error" role="alert" hidden></p></div><footer class="dialog-actions"><button type="button" data-library-close>취소</button><button type="submit" class="${destructive ? 'danger' : 'primary'}" data-library-confirm>${escape(confirm)}</button></footer></form>`;
     dialog.dataset.size = destructive ? 'compact' : '';
     dialog.setAttribute('aria-labelledby', 'library-dialog-title');
     dialog.setAttribute('role', destructive ? 'alertdialog' : 'dialog');
     if (!dialog.open) dialog.showModal();
+    if (canConfirm) dialogBody.querySelector('[data-library-confirm]').disabled = !canConfirm();
     const input = dialogBody.querySelector('[autofocus]');
     if (input) { input.focus(); input.select?.(); }
     else if (destructive) dialogBody.querySelector('footer [data-library-close]')?.focus();
@@ -275,14 +281,45 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     const sources = sourcesForMove(ids);
     if (!sources.length) return;
     let folderId = ids.every(id => current(id)?.folderId === current(ids[0])?.folderId) ? current(ids[0])?.folderId || '' : null;
-    const folders = [{ id: '', name: '미분류' }, ...(state().snapshot.folders || [])];
-    openDialog({ title: '폴더로 이동', content: `<p class="muted">${escape(description(ids))}</p><div class="library-folder-choices" role="radiogroup" aria-label="이동할 폴더">${folders.map(folder => `<label class="library-folder-choice"><input type="radio" name="library-destination" value="${escape(folder.id)}"${folderId === folder.id ? ' checked' : ''}><span>${icon(folder.id ? 'folder' : 'inbox')}${escape(folder.name)}</span></label>`).join('')}</div>`, confirm: '이동', action: () => {
+    const choices = () => [{ id: '', name: '미분류' }, ...(state().snapshot.folders || [])].map(folder => `<label class="library-folder-choice"><input type="radio" name="library-destination" value="${escape(folder.id)}"${folderId === folder.id ? ' checked' : ''}><span>${icon(folder.id ? 'folder' : 'inbox')}${escape(folder.name)}</span></label>`).join('');
+    const canConfirm = () => { const chosen = dialogBody.querySelector('input[name="library-destination"]:checked')?.value; return chosen !== undefined && !dialogBody.querySelector('[data-new-destination]')?.value.trim() && !sources.every(source => source.folderId === (chosen || null)); };
+    openDialog({ title: '폴더로 이동', content: `<p class="muted">${escape(description(ids))}</p><div class="library-folder-choices" role="radiogroup" aria-label="이동할 폴더">${choices()}</div><div class="library-new-destination"><label class="sr-only" for="library-new-destination">새 폴더 이름</label><input id="library-new-destination" data-new-destination type="text" class="text-input" maxlength="120" placeholder="새 폴더 이름" autocomplete="off"><button type="button" data-create-destination class="small" disabled>폴더 만들기</button></div>`, confirm: '이동', canConfirm, action: () => {
       const chosen = dialogBody.querySelector('input[name="library-destination"]:checked');
       if (!chosen) throw new Error('이동할 폴더를 선택해 주세요.');
       const destination = moveDestination(chosen.value || 'unfiled');
       if (!destination) throw new Error('대상 폴더를 찾을 수 없습니다.');
       return moveChecked(sources, destination);
     } });
+    const name = dialogBody.querySelector('[data-new-destination]');
+    const create = dialogBody.querySelector('[data-create-destination]');
+    const sync = () => {
+      create.disabled = state().libraryBusy || !name.value.trim();
+      dialogBody.querySelector('[data-library-confirm]').disabled = state().libraryBusy || !canConfirm();
+    };
+    dialogBody.querySelector('.library-folder-choices').addEventListener('change', event => { folderId = event.target.value; sync(); });
+    name.addEventListener('input', sync);
+    create.addEventListener('click', async () => {
+      const title = name.value.trim();
+      if (!title || state().libraryBusy) return;
+      const before = new Set(state().snapshot.folders.map(folder => folder.id));
+      state().libraryBusy = true; setDialogBusy(true); renderApp();
+      try {
+        await finishEditing(() => {});
+        const snapshot = await bridge.createFolder(title);
+        acceptSnapshot(snapshot?.meetings ? snapshot : await bridge.readSnapshot());
+        const added = state().snapshot.folders.filter(folder => !before.has(folder.id) && folder.name === title);
+        folderId = added.length === 1 ? added[0].id : null;
+        dialogBody.querySelector('.library-folder-choices').innerHTML = choices();
+        name.value = '';
+        byId('library-dialog-error').hidden = true;
+        if (!folderId) report(new Error('폴더를 만들었습니다. 이동할 폴더를 선택해 주세요.'));
+      } catch (error) { report(error); }
+      finally {
+        state().libraryBusy = false; renderApp(); setDialogBusy(false); sync();
+        (dialogBody.querySelector('input[name="library-destination"]:checked') || name).focus();
+      }
+    });
+    name.addEventListener('keydown', event => { if (event.key === 'Enter' && !event.isComposing && event.keyCode !== 229) { event.preventDefault(); create.click(); } });
   }
   function trashDialog(ids) {
     if (!ids.length) return;
@@ -322,7 +359,9 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     const folders = state().snapshot.folders || [];
     return meetings.map(meeting => recentMeetingRow({
       id: meeting.id, title: meeting.title, active: activeId === meeting.id, disabled, escape,
-      metadata: [folders.find(folder => folder.id === meeting.folderId)?.name || '미분류', recentDate.format(meeting.recordedAt ?? meeting.createdAt ?? 0), meeting.audio?.sampleRate ? formatRecentDuration(meeting.audio.frames / meeting.audio.sampleRate * 1000) : ''],
+      leadingIcon: icon('audio-lines'),
+      durationLabel: meeting.audio?.sampleRate ? recentDurationLabel(meeting.audio.frames / meeting.audio.sampleRate * 1000) : '',
+      metadata: [folders.find(folder => folder.id === meeting.folderId)?.name || '', recentDate.format(meeting.recordedAt ?? meeting.createdAt ?? 0), meeting.audio?.sampleRate ? formatRecentDuration(meeting.audio.frames / meeting.audio.sampleRate * 1000) : ''],
       menu: renderMeetingMenu(meeting, { escape, icon, disabled }),
     })).join('');
   }
@@ -407,14 +446,15 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     if (!selection().size || !visibleIds.has(selectionAnchor)) selectionAnchor = null;
     const filter = state().libraryFilter;
     const disabled = Boolean(state().libraryBusy || !state().connected);
-    const navigation = [{ id: 'all', name: '전체 목록', icon: 'list' }, { id: 'unfiled', name: '미분류', icon: 'inbox' }, { id: 'ai', name: 'AI 대화', icon: 'sparkles' }, ...folders.map(folder => ({ ...folder, icon: 'folder' })), { id: 'trash', name: '휴지통', icon: 'trash-2' }];
-    const key = JSON.stringify([filter, state().libraryOpen, folders, disabled, snapshot.meetings.map(meeting => [meeting.id, meeting.folderId, meeting.deletedAt])]);
+    const navigation = [{ id: 'all', name: '전체 회의', icon: 'list' }, { id: 'unfiled', name: '미분류', icon: 'inbox' }, { id: 'ai', name: '네로에게 물어보기', icon: 'sparkles' }, ...folders.map(folder => ({ ...folder, icon: 'folder' })), { id: 'trash', name: '휴지통', icon: 'trash-2' }];
+    const key = JSON.stringify([filter, state().libraryOpen, state().libraryView, folders, disabled, snapshot.meetings.map(meeting => [meeting.id, meeting.folderId, meeting.deletedAt])]);
     if (key !== folderKey) {
       clearDropTarget();
       folderKey = key;
       const focused = dialog.ownerDocument?.activeElement?.dataset?.libraryFilter;
-      const renderNavigation = items => items.map(item => `<div class="library-folder-item"><button type="button" class="quiet library-folder-link" data-library-filter="${escape(item.id)}" aria-label="${escape(item.name)}" title="${escape(item.name)}"${state().libraryOpen && filter === item.id ? ' aria-current="page"' : ''}${disabled ? ' disabled' : ''}>${icon(item.icon)}<span class="library-folder-name" title="${escape(item.name)}">${escape(item.name)}</span><span class="library-folder-count">${item.id === 'ai' ? '' : countInView(item.id)}</span></button>${folders.some(folder => folder.id === item.id) ? `<details class="library-folder-menu"><summary aria-label="${escape(item.name)} 폴더 메뉴">${icon('ellipsis')}</summary><div class="action-menu"><button type="button" data-folder-rename="${escape(item.id)}"${disabled ? ' disabled' : ''}>이름 변경</button><button type="button" class="danger" data-folder-delete="${escape(item.id)}"${disabled ? ' disabled' : ''}>폴더 삭제</button></div></details>` : ''}</div>`).join('');
-      byId('library-system-views').innerHTML = renderNavigation(navigation.filter(item => ['all', 'unfiled'].includes(item.id)));
+      const renderNavigation = items => items.map(item => `<div class="library-folder-item"><button type="button" class="quiet library-folder-link" data-library-filter="${escape(item.id)}" aria-label="${escape(item.name)}" title="${escape(item.name)}"${state().libraryOpen && filter === item.id && (item.id !== 'all' || !folderOverview()) ? ' aria-current="page"' : ''}${disabled ? ' disabled' : ''}>${icon(item.icon)}<span class="library-folder-name" title="${escape(item.name)}">${escape(item.name)}</span><span class="library-folder-count">${item.id === 'ai' ? '' : countInView(item.id)}</span></button>${folders.some(folder => folder.id === item.id) ? `<details class="library-folder-menu"><summary aria-label="${escape(item.name)} 폴더 메뉴">${icon('ellipsis')}</summary><div class="action-menu"><button type="button" data-folder-rename="${escape(item.id)}"${disabled ? ' disabled' : ''}>이름 변경</button><button type="button" class="danger" data-folder-delete="${escape(item.id)}"${disabled ? ' disabled' : ''}>폴더 삭제</button></div></details>` : ''}</div>`).join('');
+      const folderOverviewLink = `<div class="library-folder-item library-folder-overview"><button type="button" class="quiet library-folder-link" data-library-overview aria-label="폴더" title="폴더"${state().libraryOpen && folderOverview() ? ' aria-current="page"' : ''}${disabled ? ' disabled' : ''}>${icon('folder')}<span class="library-folder-name">폴더</span><span class="library-folder-chevron" aria-hidden="true">${icon('chevron-right')}</span></button></div>`;
+      byId('library-system-views').innerHTML = renderNavigation(navigation.filter(item => ['all', 'unfiled'].includes(item.id))) + folderOverviewLink;
       byId('library-user-folders').innerHTML = renderNavigation(navigation.filter(item => folders.some(folder => folder.id === item.id)));
       byId('library-ai-view').innerHTML = renderNavigation(navigation.filter(item => item.id === 'ai'));
       byId('library-trash-view').innerHTML = renderNavigation(navigation.filter(item => item.id === 'trash'));
@@ -435,17 +475,19 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
       if (menus.active?.isConnected === false) closeMenu();
     }
     const overview = folderOverview();
-    byId('library-view').hidden = filter !== 'all';
+    const folderActions = byId('library-folder-actions');
+    if (folderActions) folderActions.hidden = !overview;
+    byId('library-view').hidden = filter !== 'all' || Boolean(query());
     byId('library-view').querySelectorAll('[data-library-view]').forEach(button => {
       button.setAttribute('aria-pressed', String(button.dataset.libraryView === state().libraryView));
       button.disabled = disabled;
     });
     byId('library-folders').hidden = !overview || !folders.length;
-    byId('library-unfiled-heading').hidden = !overview || !folders.length;
+    byId('library-unfiled-heading').hidden = !overview;
     const nextCardsKey = JSON.stringify([folders, disabled, snapshot.meetings.map(meeting => [meeting.id, meeting.folderId, meeting.deletedAt])]);
     if (cardsKey !== nextCardsKey) {
       cardsKey = nextCardsKey;
-      byId('library-folders').innerHTML = folders.map(folder => `<button type="button" class="library-folder-card" data-library-filter="${escape(folder.id)}"${disabled ? ' disabled' : ''}>${icon('folder')}<span><strong title="${escape(folder.name)}">${escape(folder.name)}</strong><small>${countInView(folder.id)}개 회의</small></span>${icon('chevron-right')}</button>`).join('');
+      byId('library-folders').innerHTML = folders.map(folder => `<article class="library-folder-card-entry"><button type="button" class="library-folder-card" data-library-filter="${escape(folder.id)}"${disabled ? ' disabled' : ''}>${icon('folder')}<span><strong title="${escape(folder.name)}">${escape(folder.name)}</strong><small>${countInView(folder.id)}개 회의</small></span>${icon('chevron-right')}</button><details class="library-folder-menu"><summary aria-label="${escape(folder.name)} 폴더 메뉴">${icon('ellipsis')}</summary><div class="action-menu"><button type="button" data-folder-rename="${escape(folder.id)}"${disabled ? ' disabled' : ''}>이름 변경</button><button type="button" class="danger-text" data-folder-delete="${escape(folder.id)}"${disabled ? ' disabled' : ''}>폴더 삭제</button></div></details></article>`).join('');
     }
     const selectedMeeting = state().libraryOpen || state().notificationsOpen ? null : current(state().selectedId);
     const parent = selectedMeeting ? selectedMeeting.folderId || 'unfiled' : filter;
@@ -457,7 +499,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     }
     const nextNavigationKey = `${state().notificationsOpen}:${state().libraryOpen}:${state().selectedId}:${filter}`;
     if (navigationKey !== nextNavigationKey) { navigationKey = nextNavigationKey; sidebar?.navigate(); }
-    byId('library-title').textContent = navigation.find(item => item.id === filter)?.name || '회의';
+    byId('library-title').textContent = query() ? '검색 결과' : overview ? '폴더' : navigation.find(item => item.id === filter)?.name || '회의';
     byId('library-count').innerHTML = state().libraryBusy ? '<span class="activity-spinner" aria-hidden="true"></span><span role="status">처리 중</span>' : `${overview ? countInView('all') : visible.length}개`;
     const count = selection().size;
     byId('library-batch').hidden = !count;
@@ -518,7 +560,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
   owner?.addEventListener?.('dragend', clearDrag);
   dialog.addEventListener('submit', event => {
     event.preventDefault();
-    if (!pending || state().libraryBusy) return;
+    if (!pending || state().libraryBusy || pending.canConfirm && !pending.canConfirm()) return;
     const intent = pending;
     void mutate(intent.action, () => { resetSelection(); if (state().snapshot.meetings.every(meeting => meeting.id !== state().selectedId || meeting.deletedAt != null)) state().libraryOpen = true; }, { detach: intent.detach });
   });
@@ -527,10 +569,12 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
   byId('new-folder').addEventListener('click', () => folderDialog());
   for (const id of ['library-empty-trash', 'sidebar-empty-trash']) byId(id).addEventListener('click', () => emptyTrashDialog(byId(id)));
   byId('folder-list').addEventListener('click', event => {
+    const overview = event.target.closest('[data-library-overview]');
     const filter = event.target.closest('[data-library-filter]');
     const rename = event.target.closest('[data-folder-rename]');
     const remove = event.target.closest('[data-folder-delete]');
-    if (filter) void show(filter.dataset.libraryFilter);
+    if (overview && !overview.disabled) void show('all', { beforeCommit: () => { state().libraryView = 'folders'; savePreference('nero.library.view', 'folders'); } });
+    if (filter) void show(filter.dataset.libraryFilter, { beforeCommit: () => { if (filter.dataset.libraryFilter === 'all') { state().libraryView = 'all'; savePreference('nero.library.view', 'all'); } } });
     if (rename) folderDialog(rename.dataset.folderRename);
     if (remove) deleteFolder(remove.dataset.folderDelete);
     if (rename || remove) event.target.closest('details')?.removeAttribute('open');
@@ -538,6 +582,11 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
   for (const id of ['library-folders', 'navigation-breadcrumbs']) byId(id).addEventListener('click', event => {
     const button = event.target.closest('[data-library-filter]');
     if (button && !button.disabled) void show(button.dataset.libraryFilter);
+    const rename = event.target.closest('[data-folder-rename]');
+    const remove = event.target.closest('[data-folder-delete]');
+    if (rename && !rename.disabled) folderDialog(rename.dataset.folderRename);
+    if (remove && !remove.disabled) deleteFolder(remove.dataset.folderDelete);
+    if (rename || remove) event.target.closest('details')?.removeAttribute('open');
   });
   byId('library-view').addEventListener('click', event => {
     const button = event.target.closest('[data-library-view]');

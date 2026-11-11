@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 import { buildControls } from './build-controls.mjs';
 import { buildMarkdown } from './build-markdown.mjs';
 import { npmProjectDirectory } from './npm-project-directory.mjs';
+import { buildIconRegistry } from '../../../scripts/build-icon-registry.mjs';
 
 const app = fileURLToPath(new URL('..', import.meta.url));
 const source = resolve(app, '../../design-system');
@@ -14,6 +15,7 @@ if ((await lstat(publicDirectory)).isSymbolicLink()) throw new Error('Public ass
 const target = resolve(publicDirectory, 'shared');
 await mkdir(target, { recursive: true });
 if ((await lstat(target)).isSymbolicLink()) throw new Error('Shared asset output must not be a symlink.');
+await buildIconRegistry();
 for (const name of ['appearance.css', 'appearance.js', 'fonts.css', 'typography.css', 'components.css', 'controls.css', 'desktop-preview.css', 'components.js', 'icons.js']) {
   await copyFile(resolve(source, name), resolve(target, name));
 }
@@ -44,6 +46,8 @@ for (const folder of runtimePackages) {
 await writeFile(resolve(licenses, 'manifest.json'), JSON.stringify(licenseManifest, null, 2) + '\n');
 await cp(resolve(source, 'assets/brands'), resolve(target, 'assets/brands'), { recursive: true });
 await cp(resolve(source, 'vendor/lucide'), resolve(target, 'vendor/lucide'), { recursive: true });
+await cp(resolve(source, 'vendor/native-quiet'), resolve(target, 'vendor/native-quiet'), { recursive: true });
+await cp(resolve(source, 'assets/icons/native-quiet'), resolve(target, 'assets/icons/native-quiet'), { recursive: true });
 await cp(resolve(source, 'vendor/pretendard'), resolve(target, 'vendor/pretendard'), { recursive: true });
 
 await mkdir(resolve(app, '.generated/native'), { recursive: true });

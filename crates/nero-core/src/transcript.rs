@@ -7,6 +7,20 @@ use std::collections::BTreeSet;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
+mod moss_chunks;
+pub use moss_chunks::{RecognitionChunk, RecognitionChunkState, RecognitionReport};
+pub use moss_chunks::{CHUNK_FRAMES as MOSS_CHUNK_FRAMES, POLICY as MOSS_CHUNK_POLICY};
+
+pub(crate) fn inspect_moss_chunks(
+    raw: &[u8],
+    source_frames: u64,
+    source_rate: u32,
+) -> Result<RecognitionReport> {
+    moss_chunks::decode(raw, source_frames, source_rate, "checkpoint", "checkpoint")?
+        .source
+        .and_then(|source| source.recognition_report)
+        .ok_or_else(|| CoreError::InvalidInput("MOSS 구간 결과가 아닙니다.".into()))
+}
 
 const PROJECTOR_VERSION: &str = "moss-chunk-speakers-v1";
 const RECORDING_PROJECTOR_VERSION: &str = "moss-recording-speakers-v1";
@@ -65,6 +79,8 @@ pub struct TranscriptSource {
     pub speaker_scope: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chunking_policy: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recognition_report: Option<RecognitionReport>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -241,6 +257,7 @@ enum MossValidationPolicy {
 enum TranscriptCommitPolicy {
     Moss,
     WholeMoss,
+    MossChunks,
     Nemotron,
     Whisper,
     Qwen,
@@ -532,6 +549,7 @@ impl MossOutput {
                 association: "direct".into(),
                 speaker_scope: recording_scope.then(|| "recording".into()),
                 chunking_policy: recording_scope.then(|| WHOLE_RECORDING_POLICY.into()),
+                recognition_report: None,
             }),
             speakers,
             segments,
@@ -947,7 +965,8 @@ impl Engine {
         let valid_source = (matches!(
             source.projector_version.as_str(),
             PROJECTOR_VERSION | RECORDING_PROJECTOR_VERSION
-        ) || crate::nemotron::is_projector(&source.projector_version))
+        ) || moss_chunks::is_projector(&source.projector_version)
+            || crate::nemotron::is_projector(&source.projector_version))
             && source.raw_sha256 == sha256(&raw)
             && match source.association.as_str() {
                 "direct" => initial.source.as_ref() == Some(source),
@@ -962,14 +981,25 @@ impl Engine {
             || initial.source_session_id != document.source_session_id
             || initial.model != document.model
             || initial.model_revision != document.model_revision
-            || document.segments.is_empty()
+            || (document.segments.is_empty()
+                && !(moss_chunks::is_projector(&source.projector_version)
+                    && moss_chunks::can_publish(&document)))
             || initial.segments.len() != document.segments.len()
         {
             return Err(CoreError::Storage(
                 "음성 기록의 원본 연결을 확인할 수 없습니다.".into(),
             ));
         }
-        let projection = if crate::nemotron::is_projector(&source.projector_version) {
+        let projection = if moss_chunks::is_projector(&source.projector_version) {
+            moss_chunks::decode_with_projector(
+                &raw,
+                audio.frames,
+                audio.sample_rate,
+                &audio.session_id,
+                transcript_id,
+                &source.projector_version,
+            )?
+        } else if crate::nemotron::is_projector(&source.projector_version) {
             crate::nemotron::decode(&raw, duration, &audio.session_id, transcript_id)?
         } else {
             MossOutput::decode_with_policy(
@@ -981,14 +1011,16 @@ impl Engine {
             )?
         };
         if projection.model != initial.model
-            || (crate::nemotron::is_projector(&source.projector_version)
+            || ((crate::nemotron::is_projector(&source.projector_version)
+                || moss_chunks::is_projector(&source.projector_version))
                 && projection.model_revision != initial.model_revision)
             || projection.segments.len() != initial.segments.len()
             || (source.association == "direct" && projection.source.as_ref() != Some(source))
             || (source.association == LEGACY_ASSOCIATION
                 && (source.projector_version != PROJECTOR_VERSION
                     || source.speaker_scope.is_some()
-                    || source.chunking_policy.is_some()))
+                    || source.chunking_policy.is_some()
+                    || source.recognition_report.is_some()))
         {
             return Err(CoreError::Storage(
                 "모델 원본과 발언의 연결을 확인할 수 없습니다.".into(),
@@ -1276,6 +1308,7 @@ impl Engine {
             association: LEGACY_ASSOCIATION.into(),
             speaker_scope: None,
             chunking_policy: None,
+            recognition_report: None,
         });
         self.save_transcript_revision(
             id,
@@ -1305,6 +1338,15 @@ impl Engine {
         raw: Vec<u8>,
     ) -> Result<Transcript> {
         self.commit_transcript_with_policy(id, expected, raw, TranscriptCommitPolicy::WholeMoss)
+    }
+
+    pub fn commit_moss_chunk_transcript(
+        &mut self,
+        id: &str,
+        expected: Option<TranscriptVersion>,
+        raw: Vec<u8>,
+    ) -> Result<Transcript> {
+        self.commit_transcript_with_policy(id, expected, raw, TranscriptCommitPolicy::MossChunks)
     }
 
     pub fn commit_nemotron_transcript(
@@ -1374,6 +1416,21 @@ impl Engine {
         file.sync_all()?;
         let duration = audio.frames as f64 / audio.sample_rate as f64;
         let document = match policy {
+            TranscriptCommitPolicy::MossChunks => {
+                let document = moss_chunks::decode(
+                    &raw,
+                    audio.frames,
+                    audio.sample_rate,
+                    &audio.session_id,
+                    &transcript_id,
+                )?;
+                if !moss_chunks::can_publish(&document) {
+                    return Err(CoreError::InvalidInput(
+                        "인식된 본문이 없습니다. 실패 범위와 원본 결과는 보관했습니다.".into(),
+                    ));
+                }
+                document
+            }
             TranscriptCommitPolicy::Nemotron => {
                 crate::nemotron::decode_asr(&raw, duration, &audio.session_id, &transcript_id)?
             }

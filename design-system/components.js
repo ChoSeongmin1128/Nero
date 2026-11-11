@@ -59,6 +59,7 @@
     const term = String(searchQuery ?? "").trim();
     const pattern = term ? new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "giu") : null;
     let searchGroup = 0;
+    const citationLabels = new Map();
     const references = (text, defined = new Set()) => {
       const tokens = [];
       let cursor = 0;
@@ -113,14 +114,16 @@
         if (node.br) { textHTML(node.text); return "<br>"; }
         if (node.href) return `<a class="summary-link" href="${escape(node.href)}" title="${escape(node.href)}" draggable="false" data-summary-link="">${node.children.map(render).join("")}</a>`;
         if (node.children) return `<${node.tag}>${node.children.map(render).join("")}</${node.tag}>`;
-        const start = offset;
         const html = textHTML(node.text);
         if (!node.references) return html;
-        const label = node.references.length > 1 ? `근거 ${node.references.length}` : "근거";
-        const matches = ranges.filter(range => range.start < offset && range.end > start);
-        const visibleLabel = matches.length ? `<mark class="search-match" data-search-group="${matches[0].group}">${label}</mark>` : label;
-        const content = `<span aria-hidden="true">${icon("messages-square")}</span><span class="sr-only">${visibleLabel}${html}</span>`;
-        return button({ html: content, className: "quiet source-reference", attrs: { "data-summary-citations": node.references.join(","), "aria-pressed": "false", "title": "음성 기록에서 발언 확인", "aria-label": `${node.references.join(", ")}번 발언 확인` } });
+        // Display group numbers are separate from the frozen one-based utterance IDs.
+        // Repeated groups share a label, while each claim keeps its original target IDs.
+        const key = [...node.references].sort((a, b) => a - b).join(",");
+        if (!citationLabels.has(key)) citationLabels.set(key, citationLabels.size + 1);
+        const label = `[${citationLabels.get(key)}]`;
+        // Search the saved reference text, never pretend that the display ordinal matched.
+        const content = `<span class="source-reference-label" aria-hidden="true">${label}</span><span class="sr-only">${html}</span>`;
+        return button({ html: content, className: "quiet source-reference", attrs: { "data-summary-citations": node.references.join(","), "aria-pressed": "false", "title": `${node.references.join(", ")}번 발언 확인`, "aria-label": `${node.references.join(", ")}번 발언 확인` } });
       };
       return tokens.map(render).join("");
     };

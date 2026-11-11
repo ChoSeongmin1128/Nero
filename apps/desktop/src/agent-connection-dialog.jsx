@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { createRoot } from 'react-dom/client';
-import { Copy, Check } from 'lucide-react';
+import { Copy, Check } from '../../../design-system/icons-react.jsx';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '../../../design-system/components/ui/dialog.jsx';
 import { bindConnectionDialogKeys, createAgentConnectionFlow } from './agent-connection-flow.js';
 

@@ -58,13 +58,14 @@ fn main() {
             println!("cargo:rerun-if-changed={}", root.join(path).display());
         }
         let python = std::env::var("PYTHON").unwrap_or_else(|_| "python3".into());
-        let checked = std::process::Command::new(python)
+        let mut check = std::process::Command::new(python);
+        check
             .arg(root.join("scripts/native-moss-harness/verify_worker_package.py"))
             .arg("verify-staged")
             .arg(root.join("apps/desktop/.generated/native/moss"))
-            .arg("--optional")
-            .env("PYTHONDONTWRITEBYTECODE", "1")
-            .output()
+            .env("PYTHONDONTWRITEBYTECODE", "1");
+        if std::env::var("NERO_BUILD_ENV").as_deref() != Ok("production") { check.arg("--optional"); }
+        let checked = check.output()
             .expect("Python is required to verify a packaged macOS worker");
         assert!(
             checked.status.success(),

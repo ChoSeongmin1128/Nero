@@ -1,4 +1,5 @@
 import { requestAudioPlayback } from './audio-playback.js';
+import { connectAudioWaveform } from './audio-waveform.js';
 const playbackRates = [0.75, 1, 1.25, 1.5, 2];
 
 export function formatAudioTime(seconds) {
@@ -17,6 +18,7 @@ export function connectAudioPlayer(document, icons = globalThis.NeroIcons, contr
   const audio = get('audio-player');
   if (!audio) return;
   const toggle = get('audio-toggle'), seek = get('audio-seek'), mute = get('audio-mute'), speed = get('audio-speed');
+  connectAudioWaveform(audio, get('audio-waveform'), seek);
   const status = get('audio-player-status'), inspectorToggle = get('inspector-audio-toggle'), inspectorStatus = get('inspector-audio-status');
   let metadataReady = audio.readyState >= 1, generation = 0, lastIcon;
   function clearStatus() { status.textContent = ''; status.hidden = true; if (inspectorStatus) { inspectorStatus.textContent = ''; inspectorStatus.hidden = true; } }

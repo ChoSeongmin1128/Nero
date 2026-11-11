@@ -419,6 +419,12 @@ pub(crate) fn project_with_source_assignments(
         })
         .map(|speaker| (speaker.id.clone(), speaker.clone()))
         .collect();
+    let timing_context = after
+        .source
+        .as_ref()
+        .and_then(|s| s.recognition_report.as_ref())
+        .map(|report| report.timing_context_segments.clone())
+        .unwrap_or_default();
     for segment in &mut after.segments {
         let start = sample(segment.start, duration, samples)?;
         let end = sample(segment.end, duration, samples)?;
@@ -439,7 +445,12 @@ pub(crate) fn project_with_source_assignments(
                 }
             }
         }
-        let (slot, reason) = if end == start {
+        let (slot, reason) = if segment
+            .source_index
+            .is_some_and(|index| timing_context.contains(&index))
+        {
+            (None, "timing_context")
+        } else if end == start {
             (None, "zero_duration")
         } else if covered.is_empty() {
             (None, "no_activity")
@@ -726,6 +737,42 @@ mod tests {
             half.speaker_analysis.unwrap().review_causes["insufficient_coverage"],
             1
         );
+    }
+
+    #[test]
+    fn normalized_moss_end_uses_the_short_range_and_still_rejects_speaker_overlap() {
+        for (activity, assigned) in [
+            (
+                serde_json::json!([{"start":59.5,"end":60.0,"speaker":2}]),
+                true,
+            ),
+            (
+                serde_json::json!([{"start":59.5,"end":60.0,"speaker":2},{"start":59.7,"end":59.8,"speaker":3}]),
+                false,
+            ),
+        ] {
+            let mut request = draft(serde_json::json!([utterance(59.5, 60.0)]), activity);
+            request.source.source = Some(serde_json::from_value(serde_json::json!({
+                "rawSha256":"a".repeat(64), "projectorVersion":"moss-independent-chunks-projector-v2", "association":"direct",
+                "recognitionReport":{"sampleRate":16000,"inputFrames":960000,"chunks":[{"index":0,"startFrame":0,"endFrame":960000,"state":"complete"}],"timingContextSegments":[],"normalizedEndSegments":[0]}
+            })).unwrap());
+            let source = request.source.source.clone();
+            let (after, evidence) = project(request, 960000, 16000).unwrap();
+            assert_eq!(after.source, source);
+            assert_eq!(
+                (after.segments[0].start, after.segments[0].end),
+                (59.5, 60.0)
+            );
+            assert_eq!(after.segments[0].speaker_id.is_some(), assigned);
+            assert_eq!(
+                evidence.document["decisions"][0]["reason"],
+                if assigned {
+                    "assigned"
+                } else {
+                    "multiple_speakers"
+                }
+            );
+        }
     }
 
     #[test]

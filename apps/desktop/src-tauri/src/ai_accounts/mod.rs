@@ -216,7 +216,6 @@ impl AiAccounts {
         }
         Ok(self.read_projection().unwrap_or_else(Self::unchecked_view))
     }
-    #[cfg(test)]
     pub fn resolve_accounts(&self) -> Result<AccountsSnapshot, String> {
         self.resolve_accounts_inner(false)
     }
@@ -252,6 +251,17 @@ impl AiAccounts {
         }
         if interactive {
             self.retry_credentials();
+        } else {
+            // An OS approval can change while this process stays open. Explicit silent
+            // resolution may recheck that denial without ever displaying a prompt.
+            // Passive snapshots, sends and corrupt/unavailable stores remain latched.
+            let mut failure = self
+                .credential_failure
+                .lock()
+                .map_err(|_| "AI 연결 상태를 확인하지 못했습니다.")?;
+            if *failure == Some(credentials::Error::InteractionRequired) {
+                *failure = None;
+            }
         }
         let state = if interactive {
             self.read_credentials_interactive()
@@ -561,6 +571,7 @@ impl AiAccounts {
         cancel: &Arc<AtomicBool>,
     ) -> Result<AccountSnapshot, String> {
         let callback = pending.receive(cancel.clone()).await?;
+        pending.callback_received.store(true, Ordering::Release);
         let _operation = with_cancel(self.operation.lock(), &pending.cancelled, cancel).await?;
         self.ensure_open()?;
         let _file = self.file_guard()?;
@@ -691,6 +702,16 @@ impl AiAccounts {
             self.save(&current)?;
         }
         Ok(snapshot)
+    }
+    pub fn reopen_sign_in(&self, id: &str) -> Result<String, String> {
+        self.ensure_open()?;
+        self.pending
+            .lock()
+            .map_err(|_| "로그인 화면을 확인하지 못했습니다.")?
+            .as_ref()
+            .filter(|pending| pending.id == id)
+            .ok_or("진행 중인 로그인 화면이 없습니다.")?
+            .reopen_url()
     }
     pub fn cancel_sign_in(&self, id: &str) -> Result<(), String> {
         let mut current = self
@@ -2152,7 +2173,7 @@ mod tests {
         assert!(manager.begin_sign_in(Provider::ChatGpt, None).is_err());
     }
     #[test]
-    fn cancelled_interactive_v2_is_latched_without_reprompting() {
+    fn cancelled_interactive_v2_can_recheck_silently_without_reprompting() {
         struct DeniedV2 {
             silent: AtomicUsize,
             interactive: AtomicUsize,
@@ -2191,8 +2212,65 @@ mod tests {
         assert!(manager.resolve_accounts().is_err());
         assert!(manager.begin_sign_in(Provider::ChatGpt, None).is_err());
         manager.snapshot().unwrap();
-        assert_eq!(store.silent.load(Ordering::Relaxed), 1);
+        assert_eq!(store.silent.load(Ordering::Relaxed), 2);
         assert_eq!(store.interactive.load(Ordering::Relaxed), 1);
+    }
+    #[test]
+    fn external_approval_recovers_on_silent_resolution_without_prompting_or_writing() {
+        struct ApprovedStore {
+            denied: AtomicBool,
+            reads: AtomicUsize,
+            state: Vec<u8>,
+        }
+        impl credentials::Credentials for ApprovedStore {
+            fn format(&self) -> credentials::Format {
+                credentials::Format::Single
+            }
+            fn read(&self, name: &str) -> Result<Option<Vec<u8>>, credentials::Error> {
+                assert_eq!(name, "credential-state-v2");
+                self.reads.fetch_add(1, Ordering::Relaxed);
+                if self.denied.load(Ordering::Relaxed) {
+                    return Err(credentials::Error::InteractionRequired);
+                }
+                Ok(Some(self.state.clone()))
+            }
+            fn read_interactive(&self, _: &str) -> Result<Option<Vec<u8>>, credentials::Error> {
+                panic!("silent recovery must never prompt")
+            }
+            fn write(&self, _: &str, _: &[u8]) -> Result<(), credentials::Error> {
+                panic!("existing grant must not be rewritten")
+            }
+            fn delete(&self, _: &str) -> Result<(), credentials::Error> {
+                panic!("existing grant must not be removed")
+            }
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let store = Arc::new(ApprovedStore {
+            denied: AtomicBool::new(true),
+            reads: AtomicUsize::new(0),
+            state: serde_json::to_vec(&SavedState {
+                host_id: None,
+                active_account_id: Some("fixture".into()),
+                accounts: vec![record("fixture", "fixture-client")],
+            })
+            .unwrap(),
+        });
+        let manager = AiAccounts::with_store(
+            temp.path().canonicalize().unwrap().join("ai"),
+            store.clone(),
+        )
+        .unwrap();
+        assert!(manager.resolve_accounts().is_err());
+        for _ in 0..5 {
+            assert!(!manager.snapshot().unwrap().checked);
+        }
+        assert_eq!(store.reads.load(Ordering::Relaxed), 1);
+        store.denied.store(false, Ordering::Relaxed);
+        let restored = manager.resolve_accounts().unwrap();
+        assert!(restored.checked);
+        assert_eq!(restored.active_account_id.as_deref(), Some("fixture"));
+        assert!(manager.resolve_accounts().unwrap().checked);
+        assert_eq!(store.reads.load(Ordering::Relaxed), 2);
     }
     #[test]
     fn projection_survives_restart_without_secrets_or_claiming_authentication() {
@@ -2221,7 +2299,7 @@ mod tests {
         assert_eq!(store.reads.load(Ordering::Relaxed), before);
     }
     #[test]
-    fn credential_denial_is_latched_until_explicit_retry() {
+    fn credential_denial_keeps_passive_snapshots_cheap_and_silent_resolution_can_recover() {
         let temp = tempfile::tempdir().unwrap();
         let store = Arc::new(Memory::default());
         let manager = AiAccounts::with_store(
@@ -2233,14 +2311,53 @@ mod tests {
         assert!(manager.resolve_accounts().is_err());
         let reads = store.reads.load(Ordering::Relaxed);
         for _ in 0..5 {
-            assert!(manager.resolve_accounts().is_err());
             assert!(!manager.snapshot().unwrap().checked);
         }
         assert_eq!(store.reads.load(Ordering::Relaxed), reads);
         store.fail_read.store(false, Ordering::Relaxed);
-        manager.retry_credentials();
         assert!(manager.resolve_accounts().unwrap().checked);
         assert!(store.reads.load(Ordering::Relaxed) > reads);
+    }
+    #[test]
+    fn unavailable_or_corrupt_stores_remain_latched_until_explicit_retry() {
+        struct FailedStore {
+            error: credentials::Error,
+            reads: AtomicUsize,
+        }
+        impl credentials::Credentials for FailedStore {
+            fn read(&self, _: &str) -> Result<Option<Vec<u8>>, credentials::Error> {
+                self.reads.fetch_add(1, Ordering::Relaxed);
+                Err(self.error)
+            }
+            fn read_interactive(&self, _: &str) -> Result<Option<Vec<u8>>, credentials::Error> {
+                panic!("not an authorization failure")
+            }
+            fn write(&self, _: &str, _: &[u8]) -> Result<(), credentials::Error> {
+                panic!("failed store must be preserved")
+            }
+            fn delete(&self, _: &str) -> Result<(), credentials::Error> {
+                panic!("failed store must be preserved")
+            }
+        }
+        for error in [credentials::Error::Unavailable, credentials::Error::Corrupt] {
+            let temp = tempfile::tempdir().unwrap();
+            let store = Arc::new(FailedStore {
+                error,
+                reads: AtomicUsize::new(0),
+            });
+            let manager = AiAccounts::with_store(
+                temp.path().canonicalize().unwrap().join("ai"),
+                store.clone(),
+            )
+            .unwrap();
+            for _ in 0..5 {
+                assert!(manager.resolve_accounts().is_err());
+            }
+            assert_eq!(store.reads.load(Ordering::Relaxed), 1);
+            manager.retry_credentials();
+            assert!(manager.resolve_accounts().is_err());
+            assert_eq!(store.reads.load(Ordering::Relaxed), 2);
+        }
     }
     #[test]
     fn concurrent_explicit_loads_share_one_read() {

@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { createRoot } from 'react-dom/client';
-import { Check, Copy, Download } from 'lucide-react';
+import { Check, Copy, Download } from '../../../design-system/icons-react.jsx';
 import { Popover, PopoverTrigger, PopoverContent, PopoverTitle } from '../../../design-system/components/ui/popover.jsx';
 import { createDocumentActionsFlow } from './document-actions-flow.js';
 

@@ -1,6 +1,6 @@
 import { byteProgress, modelKinds } from './processing-state.js';
 
-export const canRetryProcessing = job => job?.acknowledged !== true && !job?.retrySuccessorId && job?.retryable === true && ['interrupted', 'failed', 'cancelled'].includes(job?.status);
+export const canRetryProcessing = job => job?.acknowledged !== true && !job?.retrySuccessorId && job?.retryable === true && ['interrupted', 'failed', 'cancelled', 'needsReview'].includes(job?.status);
 export const canDismissProcessing = job => job?.acknowledged !== true && !job?.retrySuccessorId && ['completed', 'interrupted', 'failed', 'cancelled', 'needsReview'].includes(job?.status);
 const jobTitles = {
   cleanup: '임시 파일 정리',
@@ -87,7 +87,7 @@ export function processingFeedback(job = {}, { cancelling = false } = {}) {
   if (job.status === 'cancelled' && ['취소했습니다.', '취소됨'].includes(message)) message = '';
   if (job.status === 'queued') message = message || '앞선 작업이나 녹음이 끝나면 실행합니다.';
   if (job.status === 'interrupted') message = message || '기존 녹음과 결과는 유지됩니다.';
-  if (job.status === 'needsReview') message = '회의를 열어 저장된 결과를 확인해 주세요.';
+  if (job.status === 'needsReview' && !['mossPartial', 'mossTimingContext'].includes(job.phase)) message = '회의를 열어 저장된 결과를 확인해 주세요.';
   if (speakerPhase) message = '';
   if (active && job.kind === 'transcribe' && !cancelRequested) { heading = '음성 기록 처리 중'; message = ''; }
   if (job.kind === 'diarize' && job.status === 'failed') {

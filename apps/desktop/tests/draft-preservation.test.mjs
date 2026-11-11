@@ -1,3 +1,4 @@
+import { recognitionCoverage } from '../src/recognition-coverage.js';
 import { mountBrandIcons } from '../src/brand-icons.js';
 import { markdownSource as buildMarkdownSource } from '../scripts/build-markdown.mjs';
 import { requestAudioPlayback } from '../src/audio-playback.js';
@@ -147,7 +148,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
   bridge.writeClipboardText = async text => { copied.push(text); };
   const aiBridge = { appendNote: async () => {}, saveSummary: async () => {}, openSource: async () => {} };
   const templateSettings = { setActive() {}, beforeLeave: async () => true, isConfirming: () => false, hide() {} };
-  const context = vm.createContext({ mountBrandIcons, snapshotSignatures, compareSnapshotSignatures, requestAudioPlayback, createIntegrationMonitor, liveTranscriptRows, meetingResultPreview, renderMeetingMenu, testMountNotificationCenter: mountNotificationCenter,
+  const context = vm.createContext({ recognitionCoverage, mountBrandIcons, snapshotSignatures, compareSnapshotSignatures, requestAudioPlayback, createIntegrationMonitor, liveTranscriptRows, meetingResultPreview, renderMeetingMenu, testMountNotificationCenter: mountNotificationCenter,
     navigator: { clipboard: { writeText: async text => { copied.push(text); } } },
     document, testBridge: bridge, testAiBridge: aiBridge, testAiLifecycle: aiLifecycle, testAgentDialogCalls: agentDialogCalls, testTemplateSettings: templateSettings, localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
     NeroControls: { enhanceAll() {} },
@@ -188,6 +189,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
         setMeeting(meeting) { testAiLifecycle.push(['meeting', meeting?.id || null]); },
         open(meeting) { testAiLifecycle.push(['open', meeting?.id || null]); },
         close() { testAiLifecycle.push(['close']); },
+        prepareSummary(meeting) { testAiLifecycle.push(['summary', meeting?.id || null]); },
         setSettingsActive(active) { testAiLifecycle.push(['settings', active]); },
         dispose() {},
       };
@@ -196,7 +198,8 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     const mountTemplateSettings = () => testTemplateSettings;
     const mountAppUpdateRecovery = () => ({ update() {} });
     const mountAppUpdateView = () => ({ start: async () => {}, perform: async () => false });
-    const mountSpeechModelPicker = () => ({update(){}});
+    const speechPickerOptions = [];
+    const mountSpeechModelPicker = options => { speechPickerOptions.push(options); return {update(){}}; };
     const speechTitle = choice => choice?.label || '';
     const mountSpeechOfferDialog = () => ({update(){}});
     const mountDropImport = () => {};
@@ -219,7 +222,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     const bridge = testBridge;
     const { ui, icon, escape, button, duration, recordingStatus, statusMarkup, sessionControls, applySystemAppearance } = testUI;
     ${executable}
-    return { state, detail, documentSearch, summaryEvidenceOptions, aiChatOptions, appLeaveEditors: [templateSettings, peopleSettings, meetingAttendees, speakers], restoreTranscript: restoreForTest, selectMeeting, saveDraft, finishEditing, onEdit, onQuitRequest, onAgentWriteRequest, refreshDevices, acceptSnapshot, saveTranscript, loadTranscript, acceptProcessing, loadSummary, renderSummary, createMeeting, openSetup, openSettings, changeMicrophone, changeMeetingDate, render, prepareAudio, exportDocument, editTranscriptRow, completeTranscriptRow, cancelTranscriptRow, processingAction };
+    return { state, detail, documentSearch, summaryEvidenceOptions, aiChatOptions, speechPickerOptions, appLeaveEditors: [templateSettings, peopleSettings, meetingAttendees, speakers], restoreTranscript: restoreForTest, selectMeeting, saveDraft, finishEditing, onEdit, onQuitRequest, onAgentWriteRequest, refreshDevices, acceptSnapshot, saveTranscript, loadTranscript, acceptProcessing, loadSummary, renderSummary, createMeeting, openSetup, openSettings, changeMicrophone, changeMeetingDate, render, prepareAudio, exportDocument, editTranscriptRow, completeTranscriptRow, cancelTranscriptRow, processingAction };
   })()`, context);
   await tick();
   return {
@@ -774,11 +777,16 @@ for (const summaryReady of [false, true]) {
     assert.equal(page.element('summarize').hidden, true);
     assert.equal(page.element('prepare-summary').hidden, true);
     assert.equal(page.element('summary-template-choice').hidden, true);
-    assert.equal(page.element('summary-message').textContent, message);
+    assert.equal(page.element('summary-message').textContent, '');
+    assert.equal(page.element('summary-recompose').hidden, false);
+    await page.element('summary-recompose').listeners.get('click')();
+    await tick();
+    assert.ok(page.aiLifecycle.some(entry => entry[0] === 'summary' && entry[1] === 'a'));
     await page.app.openSettings();
     assert.equal(page.element('models').hidden, true);
     assert.equal(page.element('settings-summary-progress').hidden, true);
-    assert.equal(page.element('settings-summary-state').textContent, message);
+    assert.equal(page.element('settings-local-summary').hidden, true);
+    assert.equal(page.element('setup-local-summary').hidden, true);
     assert.equal(page.element('setup-summary-choice').hidden, true);
     assert.equal(page.element('setup-download-summary').hidden, true);
     for (const id of ['summarize', 'prepare-summary', 'models', 'setup-download-summary']) {
@@ -1018,6 +1026,79 @@ test('settings storage failure preserves the microphone choice and reports recov
   assert.equal(page.app.state.deviceId, null);
   assert.match(page.element('settings-message').textContent, /저장하지 못했습니다/);
   assert.equal(page.element('settings-microphone').value, '');
+});
+
+test('transcription settings own model and speaker controls while setup keeps its shared composition', async () => {
+  const page = await openApp();
+  const setup = page.app.speechPickerOptions.find(options => options.node.id === 'setup-speech-picker');
+  const settings = page.app.speechPickerOptions.find(options => options.node.id === 'settings-speech-picker');
+  assert.equal(setup.speakerNode, undefined);
+  assert.equal(setup.legend, undefined);
+  assert.equal(settings.legend, '전사 모델');
+  assert.equal(settings.speakerNode, page.element('settings-speaker-options'));
+  const progress = { ...page.app.state.processing, speechSwitch: { target: 'whisperTurbo', preparing: true } };
+  page.app.state.processing = progress;
+  await page.app.openSettings('transcription');
+  assertSettingsSelection(page, page.element('settings-transcription-tab'));
+  page.element('settings-recording-tab').listeners.get('click')();
+  await tick();
+  assertSettingsSelection(page, page.element('settings-recording-tab'));
+  assert.equal(page.app.state.processing, progress);
+  assert.equal(page.app.state.processing.speechSwitch.preparing, true);
+});
+
+test('terminology reads and errors belong to transcription settings instead of recording settings', async () => {
+  const page = await openApp();
+  let reads = 0;
+  page.bridge.readTerminologySettings = async () => { reads++; return { available: true, enabled: true }; };
+  await page.app.openSettings('recording');
+  assert.equal(reads, 0);
+  assert.match(page.element('settings-message').textContent, /마이크/);
+  page.element('settings-transcription-tab').listeners.get('click')();
+  await tick();
+  assertSettingsSelection(page, page.element('settings-transcription-tab'));
+  assert.equal(reads, 1);
+  assert.equal(page.element('settings-terminology-row').hidden, false);
+  assert.equal(page.element('settings-message').hidden, true);
+  page.element('settings-recording-tab').listeners.get('click')();
+  await tick();
+  page.bridge.readTerminologySettings = async () => { throw Error('synthetic read failure'); };
+  page.element('settings-transcription-tab').listeners.get('click')();
+  await tick();
+  assert.match(page.element('settings-message').textContent, /용어 설정을 불러오지 못했습니다/);
+  page.element('settings-recording-tab').listeners.get('click')();
+  await tick();
+  assert.doesNotMatch(page.element('settings-message').textContent, /용어/);
+  assert.match(page.element('settings-message').textContent, /마이크/);
+});
+
+test('leaving transcription settings invalidates a pending terminology read without leaking its error', async () => {
+  const page = await openApp();
+  const read = deferred();
+  page.bridge.readTerminologySettings = () => read.promise;
+  await page.app.openSettings('transcription');
+  page.element('settings-recording-tab').listeners.get('click')();
+  await tick();
+  read.reject(Error('late synthetic failure'));
+  await tick();
+  assertSettingsSelection(page, page.element('settings-recording-tab'));
+  assert.equal(page.element('settings-terminology-row').hidden, true);
+  assert.doesNotMatch(page.element('settings-message').textContent, /용어/);
+});
+
+test('returning from model setup opens transcription settings and preserves the settings return target', async () => {
+  const page = await openApp();
+  await page.app.openSetup(true, 'settings');
+  page.element('setup-back').listeners.get('click')();
+  await tick();
+  assert.equal(page.app.state.setupRequested, false);
+  assert.equal(page.app.state.setupFromSettings, false);
+  assertSettingsSelection(page, page.element('settings-transcription-tab'));
+  assert.equal(page.focused(), 'settings-transcription-tab');
+  page.element('settings-close').listeners.get('click')();
+  await tick();
+  assert.equal(page.element('settings-dialog').open, false);
+  assert.equal(page.focused(), 'settings');
 });
 
 test('a recording started on one meeting never lands on another chosen while devices load', async () => {
@@ -1592,9 +1673,15 @@ test('a long transcript does not need scrolling to reveal the summary and loadin
   assert.equal(page.app.detail.notesOpen(), true);
   await page.app.detail.select('summary');
   assert.equal(page.element('summary-section').hidden, false);
-  assert.equal(page.element('transcript-section').hidden, false);
+  assert.equal(page.element('transcript-section').hidden, true);
   assert.match(page.element('summary-content').innerHTML, /결정 사항/);
   assert.match(page.element('transcript-rows').innerHTML, /발언 300/);
+  await page.app.detail.select('transcript');
+  assert.equal(page.element('transcript-section').hidden, false);
+  assert.equal(page.element('summary-section').hidden, true);
+  await page.app.detail.select('summary');
+  assert.equal(page.element('summary-section').hidden, false);
+  assert.equal(page.element('transcript-section').hidden, true);
 });
 
 test('summary evidence navigates by verified segment ID without playing and returns to summary', async () => {
@@ -1693,7 +1780,7 @@ test('summary retry and failure retain the existing summary stale-source notice'
   }
 });
 
-test('meeting switching preserves shared body and independent notes positions', async () => {
+test('meeting switching preserves selected document and independent notes positions', async () => {
   const page = await openApp(transcriptDocument());
   await page.app.detail.select('transcript');
   page.element('detail-body-scroll').scrollTop = 1200;
@@ -2136,4 +2223,84 @@ test('summary and answer links open through the app, never inside the window', a
   assert.equal(dispatch('click', plain).defaultPrevented, false);
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(opened, ['https://example.test/doc']);
+});
+
+
+test('a cross-meeting AI citation waits for the target transcript before locating its segment', async () => {
+  const page = await openApp(transcriptDocument());
+  const pending = deferred(), target = transcriptDocument();
+  target.segments[0].id = 'meeting-b-segment';
+  const originalRead = page.bridge.readTranscript;
+  page.bridge.readTranscript = id => id === 'b' ? pending.promise : originalRead(id);
+  let highlighted = false, settled = false;
+  page.element('transcript-rows').querySelector = () => ({ setAttribute() { highlighted = true; }, scrollIntoView() {}, focus() {} });
+  const opening = page.app.aiChatOptions.onCitation({ kind: 'meeting', meetingId: 'b', segmentId: 'meeting-b-segment' });
+  opening.then(() => { settled = true; }, () => { settled = true; });
+  await tick(); await tick();
+  assert.equal(page.app.state.selectedId, 'b');
+  assert.equal(page.app.state.transcriptLoaded, false);
+  assert.equal(settled, false);
+  assert.equal(highlighted, false);
+  pending.resolve(target); await opening;
+  assert.equal(page.app.detail.active(), 'transcript');
+  assert.equal(page.app.state.transcriptDraft.doc.segments[0].id, 'meeting-b-segment');
+  assert.equal(highlighted, true);
+});
+
+test('a delayed AI citation never highlights another meeting after central navigation', async () => {
+  const baseline = transcriptDocument(), page = await openApp(baseline);
+  const pending = deferred(), target = transcriptDocument(); target.segments[0].id = 'meeting-b-segment';
+  const originalRead = page.bridge.readTranscript;
+  page.bridge.readTranscript = id => id === 'b' ? pending.promise : originalRead(id);
+  let highlighted = false;
+  page.element('transcript-rows').querySelector = () => ({ setAttribute() { highlighted = true; }, scrollIntoView() {}, focus() {} });
+  const opening = page.app.aiChatOptions.onCitation({ kind: 'meeting', meetingId: 'b', segmentId: 'meeting-b-segment' });
+  await tick(); await tick();
+  await page.app.selectMeeting('a'); await tick();
+  pending.resolve(target); await opening;
+  assert.equal(page.app.state.selectedId, 'a');
+  assert.equal(page.app.state.transcriptDraft.doc.segments[0].id, baseline.segments[0].id);
+  assert.equal(highlighted, false);
+});
+
+test('rapid AI citations share the meeting read and only the latest segment is highlighted', async () => {
+  const page = await openApp(transcriptDocument());
+  const pending = deferred(), target = transcriptDocument();
+  target.segments = [
+    { ...target.segments[0], id: 'b-first' },
+    { ...target.segments[0], id: 'b-latest', start: 1, end: 2 },
+  ];
+  const originalRead = page.bridge.readTranscript;
+  let reads = 0;
+  page.bridge.readTranscript = id => id === 'b' ? (reads++, pending.promise) : originalRead(id);
+  const highlighted = [];
+  page.element('transcript-rows').querySelector = selector => ({
+    setAttribute() { highlighted.push(selector); }, scrollIntoView() {}, focus() {},
+  });
+  const first = page.app.aiChatOptions.onCitation({ kind: 'meeting', meetingId: 'b', segmentId: 'b-first' });
+  await tick(); await tick();
+  const latest = page.app.aiChatOptions.onCitation({ kind: 'meeting', meetingId: 'b', segmentId: 'b-latest' });
+  await tick(); await tick();
+  assert.equal(reads, 1);
+  pending.resolve(target);
+  await Promise.all([first, latest]);
+  assert.deepEqual(highlighted, ['[data-transcript-row="1"]']);
+  assert.equal(page.app.detail.active(), 'transcript');
+  assert.equal(page.app.state.lastError, null);
+});
+
+test('explicit transcript refresh supersedes a reused citation read without adopting its stale result', async () => {
+  const page = await openApp(transcriptDocument());
+  const pending = deferred(), refreshed = transcriptDocument();
+  refreshed.segments[0].text = 'newly committed transcript';
+  let reads = 0;
+  page.bridge.readTranscript = () => ++reads === 1 ? pending.promise : Promise.resolve(refreshed);
+  const loading = page.app.loadTranscript('a');
+  const reused = page.app.loadTranscript('a', { reuse: true });
+  assert.equal(reads, 1);
+  await page.app.loadTranscript('a');
+  assert.equal(reads, 2);
+  pending.resolve(transcriptDocument());
+  await Promise.all([loading, reused]);
+  assert.equal(page.app.state.transcriptDraft.doc.segments[0].text, 'newly committed transcript');
 });

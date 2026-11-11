@@ -203,6 +203,8 @@ async fn open(url: String) -> Result<(), String> {
             url.host_str(),
             Some(
                 "auth.openai.com"
+                    | "claude.ai"
+                    | "auth.anthropic.com"
                     | "mcp.notion.com"
                     | "www.notion.so"
                     | "notion.so"
@@ -226,6 +228,46 @@ pub async fn ai_chat_accounts(
 ) -> Result<Value, String> {
     require_main(&window)?;
     account_snapshot(&state).await
+}
+#[tauri::command]
+pub async fn ai_chat_check_accounts(
+    window: WebviewWindow,
+    state: State<'_, AiDesktop>,
+    retry: Option<bool>,
+    provider: Option<Provider>,
+) -> Result<Value, String> {
+    require_main(&window)?;
+    let accounts = state.accounts()?;
+    let claude = state.chat()?.claude.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut errors = serde_json::Map::new();
+        if provider != Some(Provider::Claude) {
+            let restored = if retry.unwrap_or(false) {
+                accounts.resolve_accounts_interactive()
+            } else {
+                accounts.resolve_accounts()
+            };
+            errors.insert(
+                "chatgpt".into(),
+                restored.err().map(Value::String).unwrap_or(Value::Null),
+            );
+        }
+        if provider != Some(Provider::ChatGpt) {
+            errors.insert(
+                "claude".into(),
+                claude
+                    .check_auth()
+                    .err()
+                    .map(Value::String)
+                    .unwrap_or(Value::Null),
+            );
+        }
+        let mut snapshot = account_view(&accounts, &claude)?;
+        snapshot["checkErrors"] = Value::Object(errors);
+        Ok(snapshot)
+    })
+    .await
+    .map_err(|_| "AI 계정을 확인하지 못했습니다.".to_string())?
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -316,6 +358,21 @@ pub async fn ai_chat_cancel_connect(
     let accounts = state.accounts()?;
     accounts.cancel_sign_in(&attempt_id)?;
     account_snapshot(&state).await
+}
+#[tauri::command]
+pub async fn ai_chat_reopen_connect(
+    window: WebviewWindow,
+    state: State<'_, AiDesktop>,
+    attempt_id: String,
+) -> Result<(), String> {
+    require_main(&window)?;
+    let claude = state.chat()?.claude.clone();
+    let url = if claude.owns(&attempt_id) {
+        claude.reopen_url(&attempt_id).await?
+    } else {
+        state.accounts()?.reopen_sign_in(&attempt_id)?
+    };
+    open(url).await
 }
 #[tauri::command]
 pub async fn ai_chat_disconnect(
@@ -664,6 +721,19 @@ pub fn cancel_notion_connect(
     let service = state.notion()?;
     service.cancel_connect(attempt_id.as_deref());
     Ok(service.snapshot())
+}
+#[tauri::command]
+pub async fn reopen_notion_connect(
+    window: WebviewWindow,
+    state: State<'_, AiDesktop>,
+    attempt_id: String,
+) -> Result<(), String> {
+    require_main(&window)?;
+    let url = state
+        .notion()?
+        .reopen_connect(&attempt_id)
+        .map_err(|error| error.to_string())?;
+    open(url).await
 }
 #[tauri::command]
 pub async fn disconnect_notion_context(

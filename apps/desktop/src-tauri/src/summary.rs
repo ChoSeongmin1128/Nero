@@ -1403,6 +1403,9 @@ impl Processing {
         let notes = input.notes;
         let attendees = input.attendees;
         let expected = input.expected_id;
+        if source.source.as_ref().and_then(|s|s.recognition_report.as_ref()).is_some_and(|report| !report.text_complete()) {
+            return Err("누락된 전사 구간을 먼저 확인해 주세요. 네로에게 질문할 때에는 부분 전사임을 함께 전달합니다.".into());
+        }
         if source.segments.iter().all(|s| s.text.trim().is_empty()) {
             return Err("요약할 음성 기록이 없습니다.".into());
         }

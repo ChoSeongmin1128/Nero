@@ -2,6 +2,7 @@ import * as bridge from './calendar-bridge.js';
 import { reminderCountdown } from './calendar-settings-flow.js';
 
 const byId = id => document.getElementById(id);
+if (globalThis.NeroIcons) byId('calendar-dismiss').innerHTML = globalThis.NeroIcons('inline-calendar-close');
 let event = null;
 let busy = false;
 let error = '';

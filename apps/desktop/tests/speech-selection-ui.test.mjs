@@ -5,6 +5,7 @@ import test from 'node:test';
 import { build } from 'esbuild';
 import { Window } from 'happy-dom';
 import { markdownSource } from '../scripts/build-markdown.mjs';
+import { mountSpeechModelPicker } from '../src/speech-model-picker.js';
 const markdownBundle = await markdownSource();
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -39,6 +40,7 @@ async function fixture(t,{select,toggle,ready=true,session=null,supported=true,d
     readTranscript:()=>null,readSummary:()=>null,
     requestSpeechEngine:async engine=>select?select(engine):({...progress,revision:++progress.revision,speechEngine:engine,modelReady:false}),
     cancelSpeechSwitch:async()=>({...progress,revision:++progress.revision,speechSwitch:null}),
+    retrySpeechModelCleanup:async()=>({...progress,revision:++progress.revision,speechCleanup:null}),
     respondSpeechOffer:async accept=>({...progress,revision:++progress.revision,speechOffer:null}),
     setSpeakerEnabled:async enabled=>toggle?toggle(enabled):({...progress,revision:++progress.revision,speakerEnabled:enabled}),
     prepareMeetingModels:()=>({...progress,revision:++progress.revision,status:'running',kind:'setup',id:'download',bytes:10,totalBytes:100}),
@@ -59,7 +61,7 @@ test('onboarding and settings share both choices and wait for native selection b
   const f=await fixture(t,{ready:false,select:()=>pending});
   for(const place of ['setup','settings']){
     assert.equal(f.get(`${place}-speech-picker`).querySelectorAll('input[type=radio]').length,2);
-    assert.match(f.get(`${place}-speech-picker`).textContent,/음성 처리 모델/);
+    assert.equal(f.get(`${place}-speech-picker`).querySelector('legend').textContent, place === 'setup' ? '음성 처리 모델' : '전사 모델');
     assert.doesNotMatch(f.get(`${place}-speech-picker`).textContent,/모델 파일|MB|GB|GPU|CPU/);
     assert.match(f.get(`${place}-speech-picker`).textContent,/속도와 정확도 균형/);
   }
@@ -92,6 +94,20 @@ test('native selection rejection preserves the old choice in both views and disp
     assert.equal(f.radio(place,'whisperTurbo').checked,false);
   }
   assert.equal(f.calls.some(call=>call.name==='prepareMeetingModels'||call.name==='transcribeAudio'),false);
+});
+
+test('a downloaded model also stages the same explicit switch and cancel preserves the working model', async t => {
+  const f = await fixture(t, { speech: { speechChoices: choices.map(choice => ({ ...choice, ready: true })) } });
+  f.radio('settings', 'whisperTurbo').click();
+  assert.equal(f.calls.some(call => call.name === 'requestSpeechEngine'), false);
+  assert.equal(f.get('settings-speech-picker-confirm').textContent, '이 모델로 전환');
+  assert.match(f.get('settings-speech-picker').textContent, /기존.*파일|사용하지 않는/);
+  [...f.get('settings-speech-picker').querySelectorAll('.speech-model-confirm button')].find(button => button.textContent === '취소').click();
+  assert.equal(f.radio('settings', 'nemotron').checked, true);
+  assert.equal(f.calls.some(call => call.name === 'requestSpeechEngine'), false);
+  f.radio('settings', 'whisperTurbo').click(); f.get('settings-speech-picker-confirm').click();
+  await wait(() => f.calls.some(call => call.name === 'requestSpeechEngine'));
+  assert.equal(f.calls.filter(call => call.name === 'requestSpeechEngine').length, 1);
 });
 
 test('unsupported choices and recording lock selection without invoking a change',async t=>{
@@ -162,6 +178,7 @@ test('Apple speech prepares system assets only after an explicit prepare action'
   } });
   assert.equal(f.radio('setup', 'appleSpeech').checked, true);
   assert.match(f.get('setup-speech-picker').textContent, /언어 데이터 준비 필요/);
+  assert.match(f.radio('setup', 'appleSpeech').closest('label').textContent, /시스템 한국어 언어 데이터가 필요할 수 있음/);
   assert.equal(f.get('setup-download').textContent, '준비');
   assert.doesNotMatch(f.get('setup-speech-picker').textContent, /MB|GB|GPU|CPU/);
   assert.equal(f.calls.some(call => call.name === 'prepareMeetingModels'), false);
@@ -176,8 +193,13 @@ test('hardware recommendation shows the optional full model without changing or 
     assert.equal(f.radio(place, 'nemotron').checked, true);
     assert.equal(f.radio(place, 'whisperLargeV3').checked, false);
     assert.match(f.get(`${place}-speech-picker`).textContent, /Whisper large-v3 \(추천\)/);
-    assert.match(f.get(`${place}-speech-picker`).textContent, /정확도 우선 모델/);
+    assert.equal(f.radio(place, 'whisperLargeV3').closest('label').querySelector('.speech-model-reason').hidden, true);
   }
+  assert.equal(f.calls.some(call => ['requestSpeechEngine', 'prepareMeetingModels', 'transcribeAudio'].includes(call.name)), false);
+  f.radio('settings', 'whisperLargeV3').click();
+  const reason = f.radio('settings', 'whisperLargeV3').closest('label').querySelector('.speech-model-reason');
+  assert.equal(reason.hidden, false);
+  assert.match(reason.textContent, /정확도 우선 모델/);
   assert.equal(f.calls.some(call => ['requestSpeechEngine', 'prepareMeetingModels', 'transcribeAudio'].includes(call.name)), false);
 });
 
@@ -205,11 +227,20 @@ test('Qwen on a low-memory Mac stays selectable but needs an explicit acknowledg
   await wait(() => f.calls.some(call => call.name === 'prepareMeetingModels'));
 });
 
-test('a ready or sufficiently large Mac shows no memory acknowledgement', async t => {
-  const qwen = { id: 'qwenKo', label: 'Qwen3-ASR 한국어', modelBytes: 4_400_000_000, ready: false, supported: true, recommended: true, recommendationReason: '녹음이 끝난 뒤 한국어 정확도가 높은 전사를 저장합니다.' };
+test('selected Qwen explains resource use while a sufficiently large Mac needs no extra acknowledgement', async t => {
+  const qwen = { id: 'qwenKo', label: 'Qwen3-ASR 한국어', modelBytes: 4_400_000_000, ready: false, supported: true, recommended: true, recommendationReason: '녹음이 끝난 뒤 한국어 전사 모델로 음성 기록을 저장합니다.' };
   const f = await fixture(t, { ready: false, speech: { speechEngine: 'qwenKo', speechChoices: [...choices, qwen] } });
   assert.equal(f.get('setup-speech-picker-memory-acknowledged').closest('.speech-memory-warning').hidden, true);
-  assert.match(f.get('setup-speech-picker').textContent, /Qwen3-ASR 한국어 \(추천\)/);
+  assert.match(f.get('setup-speech-picker').textContent, /Qwen3-ASR 한국어 \(실험적\) \(추천\)/);
+  for(const place of ['setup','settings']){
+    const notice=f.radio(place,'qwenKo').closest('label').querySelector('.speech-resource-notice');
+    assert.equal(notice.hidden,false);
+    assert.match(notice.textContent,/CPU\/GPU와 메모리/);
+    assert.match(notice.textContent,/16GB 이상이어도/);
+    assert.equal(f.get(`${place}-speech-picker-memory-acknowledged`).checked,false);
+  }
+  assert.equal(f.get('setup-download').disabled,false);
+  assert.equal(f.radio('setup', 'qwenKo').closest('label').querySelector('.speech-model-reason').hidden, true);
 });
 
 
@@ -220,8 +251,8 @@ test('a waiting switch shows download progress in Settings and cancelling it kee
     jobs:[{id:'download',kind:'setup',status:'running',speechEngine:'qwenKo'}]}});
   const picker=f.get('settings-speech-picker');
   assert.equal(f.radio('settings','qwenKo').checked,true);
-  assert.match(picker.textContent,/다운로드 중, 끝나면 전환/);
-  assert.match(picker.textContent,/전환 전까지 사용 중/);
+  assert.equal(f.radio('settings', 'qwenKo').closest('label').querySelector('.speech-model-metadata').textContent, '준비 중');
+  assert.equal(f.radio('settings', 'nemotron').closest('label').querySelector('.speech-model-metadata').textContent, '사용 중');
   assert.match(picker.textContent,/25% · 1\.10 GB \/ 4\.40 GB/);
   assert.equal(picker.querySelector('fieldset').disabled,false);
   assert.equal(f.radio('settings','whisperTurbo').disabled,true);
@@ -236,7 +267,7 @@ test('staged low-memory downloads need the acknowledgement and confirm before th
     memoryWarning:'이 Mac 메모리 8GB 중 약 4.5GB, 절반 이상을 쓸 수 있어 처리 중 느려지거나 실패할 수 있습니다.'};
   const f=await fixture(t,{speech:{speechChoices:[...choices,qwen]}});
   f.radio('settings','qwenKo').click();
-  assert.match(f.get('settings-speech-picker').textContent,/받는 동안에는 지금 모델을 계속 사용합니다/);
+  assert.match(f.get('settings-speech-picker').textContent,/준비하는 동안에는 지금 모델을 계속 사용합니다/);
   assert.equal(f.get('settings-speech-picker-confirm').disabled,true);
   const box=f.get('settings-speech-picker-memory-acknowledged');
   box.checked=true; box.dispatchEvent(new f.window.Event('change'));
@@ -253,8 +284,110 @@ test('existing users get the switch offer once and only the buttons record a dec
   await wait(()=>dialog.open);
   assert.match(dialog.textContent,/약 4\.40 GB/);
   assert.match(dialog.textContent,/기존 회의의 음성 기록은 바뀌지 않습니다/);
+  assert.match(dialog.textContent,/CPU\/GPU와 메모리/);
+  assert.match(dialog.textContent,/16GB 이상이어도/);
+  assert.equal(dialog.querySelector('[data-action="accept-speech-offer"]').disabled,false);
   dialog.querySelector('[data-action="accept-speech-offer"]').click();
   await wait(()=>f.calls.some(call=>call.name==='respondSpeechOffer'));
   assert.deepEqual(f.calls.find(call=>call.name==='respondSpeechOffer').args,[true]);
   await wait(()=>!dialog.open);
+});
+
+
+test('staged preparation distinguishes total speech files from separate speaker files without downloading', async t => {
+  const f = await fixture(t, { speech: { speakerEnabled: true, speakerSupported: true, speakerReady: false, speakerBytes: 107_012_128 } });
+  f.radio('settings', 'whisperTurbo').click();
+  const panel = f.get('settings-speech-picker-confirm').closest('.speech-model-confirm');
+  assert.equal(panel.hidden, false);
+  assert.match(panel.textContent, /전사 모델 전체 크기:.*이미 준비된 파일은 다시 받지 않습니다/);
+  assert.match(panel.textContent, /화자 구분 모델.*별도로 준비합니다/);
+  assert.doesNotMatch(panel.textContent, /받을 크기/);
+  assert.equal(f.calls.some(call => ['requestSpeechEngine', 'prepareMeetingModels'].includes(call.name)), false);
+});
+
+test('disabling speaker analysis excludes its optional files from staged preparation', async t => {
+  const f = await fixture(t, { speech: { speakerEnabled: false, speakerSupported: true, speakerReady: false, speakerBytes: 107_012_128 } });
+  f.radio('settings', 'whisperTurbo').click();
+  const panel = f.get('settings-speech-picker-confirm').closest('.speech-model-confirm');
+  assert.match(panel.textContent, /전사 모델 전체 크기/);
+  assert.doesNotMatch(panel.textContent, /화자 구분 모델/);
+  assert.equal(f.calls.some(call => ['requestSpeechEngine', 'prepareMeetingModels'].includes(call.name)), false);
+});
+
+test('cleanup failure retains the selected working model and retries only file cleanup', async t => {
+  const f = await fixture(t, { speech: { speechEngine: 'whisperTurbo',
+    speechChoices: choices.map(choice => ({ ...choice, ready: true })),
+    speechCleanup: { pending: true, error: '파일 접근 권한을 확인해 주세요.' } } });
+  const panel = f.get('settings-speech-picker-cleanup-retry').closest('.speech-model-cleanup');
+  assert.equal(panel.hidden, false);
+  assert.match(panel.textContent, /이전 전사 모델 파일을 정리하지 못했습니다/);
+  assert.doesNotMatch(panel.textContent, /전환하지 못했습니다/);
+  assert.equal(f.radio('settings', 'whisperTurbo').checked, true);
+  f.get('settings-speech-picker-cleanup-retry').click();
+  await wait(() => f.calls.some(call => call.name === 'retrySpeechModelCleanup') && panel.hidden);
+  assert.equal(f.radio('settings', 'whisperTurbo').checked, true);
+  assert.equal(f.calls.some(call => ['requestSpeechEngine', 'prepareMeetingModels', 'transcribeAudio'].includes(call.name)), false);
+});
+
+test('referenced old models show pending cleanup without claiming deletion or triggering a retry', async t => {
+  const f = await fixture(t, { speech: { speechCleanup: { pending: true, error: null } } });
+  const button = f.get('settings-speech-picker-cleanup-retry'), panel = button.closest('.speech-model-cleanup');
+  assert.equal(panel.hidden, false);
+  assert.match(panel.textContent, /정리 대기 중/);
+  assert.equal(button.hidden, true);
+  assert.equal(f.calls.some(call => call.name === 'retrySpeechModelCleanup'), false);
+});
+
+test('settings separates the shared speaker switch from the model list with the same control row geometry', async t => {
+  const f = await fixture(t);
+  const speaker = f.get('settings-speech-picker-speaker-enabled');
+  const row = speaker.closest('.settings-row');
+  const host = f.get('settings-speaker-options');
+  assert.equal(host.contains(speaker), true);
+  assert.equal(f.get('settings-speech-picker').contains(speaker), false);
+  assert.equal(host.querySelector('.settings-group').contains(row), true);
+  assert.equal(row.querySelector('strong'), null);
+  assert.equal(f.get('setup-speech-picker').contains(f.get('setup-speech-picker-speaker-enabled')), true);
+  const style = f.window.document.createElement('style');
+  style.textContent = await readFile(new URL('../../../design-system/components.css', import.meta.url), 'utf8')
+    + await readFile(new URL('../src/speech-model-picker.css', import.meta.url), 'utf8');
+  f.window.document.head.append(style);
+  const speakerStyle = f.window.getComputedStyle(row);
+  const recordingStyle = f.window.getComputedStyle(f.get('auto-recorder').closest('.settings-row'));
+  for (const property of ['minHeight', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft']) {
+    assert.equal(speakerStyle[property], recordingStyle[property], property);
+  }
+  assert.equal(speakerStyle.minHeight, '44px');
+});
+
+test('the model picker can omit its visual legend while preserving an accessible group name', t => {
+  const window = new Window(); t.after(() => window.happyDOM.abort());
+  const node = window.document.createElement('section'), speakerNode = window.document.createElement('section');
+  node.id = 'standalone-models'; window.document.body.append(node, speakerNode);
+  const picker = mountSpeechModelPicker({ node, speakerNode, legend: '', onSelect() {}, onSpeakerChange() {} });
+  picker.update({ disabled: false, progress: { speechEngine: 'nemotron', speechChoices: choices, speakerEnabled: true } });
+  assert.equal(node.querySelector('legend'), null);
+  assert.equal(node.querySelector('fieldset').getAttribute('aria-label'), '음성 처리 모델');
+  assert.equal(speakerNode.querySelector('[role="switch"]').checked, true);
+});
+
+test('Qwen resource details appear for a staged or switching selection without expanding every model row', async t => {
+  const qwen = { id: 'qwenKo', label: 'Qwen3-ASR 한국어', ready: false, supported: true, recommended: true,
+    recommendationReason: '녹음이 끝난 뒤 한국어 전사 모델로 음성 기록을 저장합니다.' };
+  const f = await fixture(t, { speech: { speechChoices: [...choices, qwen] } });
+  const notice = place => f.radio(place, 'qwenKo').closest('label').querySelector('.speech-resource-notice');
+  for (const place of ['setup', 'settings']) assert.equal(notice(place).hidden, true);
+  f.radio('settings', 'qwenKo').click();
+  assert.equal(notice('settings').hidden, false);
+  assert.match(notice('settings').textContent, /16GB 이상이어도/);
+  assert.equal(f.get('settings-speech-picker-confirm').closest('.speech-model-confirm').hidden, false);
+  assert.equal(f.radio('settings', 'qwenKo').closest('label').querySelector('.speech-model-reason').textContent, '');
+  assert.equal(f.calls.some(call => ['requestSpeechEngine', 'prepareMeetingModels'].includes(call.name)), false);
+  f.get('settings-speech-picker-confirm').closest('.speech-model-confirm').querySelectorAll('button')[1].click();
+  assert.equal(notice('settings').hidden, true);
+  f.subscriptions.subscribeProcessing({ ...f.progress, revision: 2, speechSwitch: { target: 'qwenKo', preparing: true },
+    kind: 'setup', id: 'waiting-qwen', status: 'running', jobs: [{ id: 'waiting-qwen', kind: 'setup', status: 'running', speechEngine: 'qwenKo' }] });
+  await wait(() => !notice('settings').hidden && !notice('setup').hidden);
+  assert.equal(f.radio('settings', 'nemotron').closest('label').querySelector('.speech-model-metadata').parentElement,
+    f.radio('settings', 'nemotron').closest('label'));
 });

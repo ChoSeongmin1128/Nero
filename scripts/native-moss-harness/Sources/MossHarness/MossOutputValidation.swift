@@ -51,6 +51,30 @@ enum MossOutputValidation {
         return actual == expected
     }
 
+    static func productSegments(_ raw: String) -> [[String: Any]]? {
+        let pattern = #"\[(\d+(?:[\.,]\d+)?)\](?:\[(S\d+)\])?(.*?)\[(\d+(?:[\.,]\d+)?)\]"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]) else { return nil }
+        let source = raw as NSString
+        let range = NSRange(location: 0, length: source.length)
+        let remainder = regex.stringByReplacingMatches(in: raw, range: range, withTemplate: "")
+        guard remainder.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        var result: [[String: Any]] = []
+        for match in regex.matches(in: raw, range: range) {
+            guard let start = timestamp(source.substring(with: match.range(at: 1))),
+                  let end = timestamp(source.substring(with: match.range(at: 4))), end >= start else { return nil }
+            let body = source.substring(with: match.range(at: 3)).trimmingCharacters(in: .whitespacesAndNewlines)
+            if body.isEmpty { continue }
+            var segment: [String: Any] = ["start": start, "end": end, "text": body]
+            if match.range(at: 2).location != NSNotFound {
+                let speaker = source.substring(with: match.range(at: 2))
+                segment["speaker_id"] = speaker
+                segment["text"] = "[\(speaker)] \(body)"
+            }
+            result.append(segment)
+        }
+        return result
+    }
+
     private static func timestamp(_ value: String) -> Double? {
         guard let number = Double(value.replacingOccurrences(of: ",", with: ".")), number.isFinite else { return nil }
         return number

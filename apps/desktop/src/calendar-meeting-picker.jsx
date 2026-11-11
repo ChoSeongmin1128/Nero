@@ -4,7 +4,7 @@ import { createRoot } from 'react-dom/client';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '../../../design-system/components/ui/dialog.jsx';
 import { Calendar } from '../../../design-system/components/ui/calendar.jsx';
 import { Popover, PopoverTrigger, PopoverContent, PopoverClose } from '../../../design-system/components/ui/popover.jsx';
-import { CalendarDays, ChevronLeft, ChevronRight, Copy, Check } from 'lucide-react';
+import { CalendarDays, ChevronLeft, ChevronRight, Copy, Check } from '../../../design-system/icons-react.jsx';
 import { createCalendarMeetingFlow, calendarOccurrenceTime, calendarJoinUrls, calendarDay, parseCalendarDay, moveCalendarDay } from './calendar-meeting-flow.js';
 import './calendar-meeting-picker.css';
 

@@ -1,3 +1,4 @@
+import { recognitionCoverage } from './recognition-coverage.js';
 import { mountBrandIcons } from './brand-icons.js';
 import { mountSidebarViews } from './sidebar-views.js';
 import { snapshotSignatures, compareSnapshotSignatures } from './snapshot-update.js';
@@ -106,10 +107,10 @@ function preparationView(kinds) {
   return requested && ['queued', 'running'].includes(view.state) ? { ...view, state: 'cancelling', stage: '취소 중', cancellable: false } : view;
 }
 const pickerOptions = { onSelect: selectSpeechEngine, onSpeakerChange: selectSpeakerEnabled, onAcknowledge: acknowledgeSpeechMemory,
-  onCancelJob: id => { if (id) processingAction('cancel', id).catch(showError); }, onCancelSwitch: cancelSpeechSwitch };
+  onCancelJob: id => { if (id) processingAction('cancel', id).catch(showError); }, onCancelSwitch: cancelSpeechSwitch, onRetryCleanup: retrySpeechModelCleanup };
 const speechPickers = [
   mountSpeechModelPicker({ node: byId('setup-speech-picker'), ...pickerOptions }),
-  mountSpeechModelPicker({ node: byId('settings-speech-picker'), onPrepare: prepareSpeechModels, ...pickerOptions }),
+  mountSpeechModelPicker({ node: byId('settings-speech-picker'), speakerNode: byId('settings-speaker-options'), legend: '전사 모델', onPrepare: prepareSpeechModels, ...pickerOptions }),
 ];
 const setupProgress = bindPreparationProgress({ region: byId('setup-progress-region'), bar: byId('setup-progress'), spinner: byId('setup-spinner'),
   stage: byId('setup-progress-stage'), size: byId('setup-progress-bytes'), cancel: byId('setup-cancel') });
@@ -133,6 +134,7 @@ let selectionRequest = 0;
 function beginNavigation(history = false) { if (!history) viewHistory?.cancel(); const request = ++selectionRequest; return () => request === selectionRequest; }
 let speakerReplay = null;
 let summaryEvidence = null;
+let transcriptLoading = null, citationRequest = 0;
 let aiChat = null, aiLibrary = null, aiSidebar = null, meetingContext = null;
 let lastLiveTranscript = null;
 const processingActions = new Map();
@@ -155,7 +157,7 @@ document.querySelectorAll('[data-ui-icon]').forEach(node => paintIconButton(node
 document.querySelectorAll('[data-detail-icon]').forEach(node => { node.innerHTML = icon(node.dataset.detailIcon); });
 
 byId('welcome-create').innerHTML = `${icon('plus')}<span>새 회의</span>`;
-byId('library-create').innerHTML = `${icon('plus')}<span>새 회의 만들기</span>`;
+byId('library-create').innerHTML = `${icon('plus')}<span>새 회의</span>`;
 document.querySelector('.welcome-icon').innerHTML = icon('notebook-pen');
 byId('recording-icon').innerHTML = icon('mic');
 
@@ -282,6 +284,7 @@ function displayProcessing() {
   return { ...withoutRetry(state.processing), jobs: state.processing.jobs?.map(withoutRetry) };
 }
 function renderSetup() {
+  byId('setup-local-summary').hidden = !localSummaryEnabled();
   const ready = modelsReady();
   const preparation = pendingJob(state.processing, { models: true });
   const job = preparation && preparation.kind !== 'speaker-model' ? { ...state.processing, ...preparation } : state.processing;
@@ -343,6 +346,13 @@ function cancelSpeechSwitch() {
     speechSelectionError = '';
     try { await acceptProcessing(await bridge.cancelSpeechSwitch()); }
     catch (error) { speechSelectionError = error.message || '전환을 취소하지 못했습니다.'; }
+  });
+}
+function retrySpeechModelCleanup() {
+  return run(async () => {
+    speechSelectionError = '';
+    try { await acceptProcessing(await bridge.retrySpeechModelCleanup()); }
+    catch (error) { speechSelectionError = error.message || '이전 모델 파일을 정리하지 못했습니다.'; }
   });
 }
 function selectSpeakerEnabled(enabled) {
@@ -435,6 +445,9 @@ function renderNotesSearch() {
 }
 
 function renderMeetingDates(meeting) {
+  const seconds = meeting.audio?.sampleRate ? meeting.audio.frames / meeting.audio.sampleRate : 0;
+  byId('meeting-length').hidden = !(seconds > 0);
+  setText('meeting-length-value', seconds >= 60 ? `${Math.round(seconds / 60)}분` : `${Math.round(seconds)}초`);
   byId('recorded-at').hidden = !meeting.recordedAt;
   setText('recorded-at', meeting.recordedAt ? `녹음 ${fullDate.format(meeting.recordedAt)}` : '');
   const issue = state.dateError?.id === meeting.id ? state.dateError.message : '';
@@ -605,8 +618,9 @@ function microphoneIssue() {
 function renderSettings() {
   const dialog = byId('settings-dialog');
   const recording = state.settingsPanel === 'recording';
+  const transcription = state.settingsPanel === 'transcription';
   agentSettings.setActive(dialog.open && state.settingsPanel === 'agent');
-  terminologySettings.setActive(dialog.open && recording);
+  terminologySettings.setActive(dialog.open && transcription);
   templateSettings.setActive(dialog.open && state.settingsPanel === 'templates');
   calendarSettings.setActive(dialog.open && state.settingsPanel === 'agent');
   aiChat?.setSettingsActive(dialog.open && state.settingsPanel === 'agent');
@@ -642,8 +656,10 @@ function renderSettings() {
   byId('settings-summary-state').textContent = !localSummaryEnabled() ? localSummaryMessage() : !state.connected ? '확인 중' : !job.summarySupported ? '지원되지 않음' : job.summaryReady ? '추가됨' : featureJob ? '다운로드 중' : '';
   byId('models').hidden = !localSummaryEnabled() || job.summaryReady || !job.summarySupported || Boolean(featureJob);
   byId('models').disabled = !state.connected || state.busy || Boolean(pendingJob(job, { models: true }));
+  byId('settings-local-summary').hidden = !localSummaryEnabled();
   summaryProgress.update(localSummaryEnabled() ? preparationView(summaryModelKinds) : { state: 'idle' });
-  const message = recording ? terminologySettings.error || state.settingsError || (!activeSession() && state.devicesLoaded ? microphoneIssue() : '') : '';
+  const message = transcription ? terminologySettings.error
+    : recording ? state.settingsError || (!activeSession() && state.devicesLoaded ? microphoneIssue() : '') : '';
   byId('settings-message').textContent = message;
   byId('settings-message').hidden = !message;
   if (dialog.open) {
@@ -840,7 +856,7 @@ byId('models').addEventListener('click', () => run(async () => {
   }
 }));
 byId('settings-feature-cancel').addEventListener('click', () => { const job = pendingJob(state.processing, { kind: 'summary-model' }); if (job?.id) processingAction('cancel', job.id).catch(showError); });
-byId('setup-back').addEventListener('click', () => { const settings = state.setupFromSettings, returnId = state.setupReturnId; state.setupRequested = false; state.setupFromSettings = false; render(); if (settings) void openSettings('appearance'); else { const origin = byId(returnId || 'settings'); const fallback = !byId('summarize').hidden && !byId('summarize').disabled ? byId('summarize') : byId('detail-transcript-open'); (origin && !origin.hidden && !origin.disabled ? origin : fallback)?.focus({ preventScroll: true }); } });
+byId('setup-back').addEventListener('click', () => { const settings = state.setupFromSettings, returnId = state.setupReturnId; state.setupRequested = false; state.setupFromSettings = false; render(); if (settings) void openSettings('transcription', returnId || 'settings'); else { const origin = byId(returnId || 'settings'); const fallback = !byId('summarize').hidden && !byId('summarize').disabled ? byId('summarize') : byId('detail-transcript-open'); (origin && !origin.hidden && !origin.disabled ? origin : fallback)?.focus({ preventScroll: true }); } });
 byId('setup-download').addEventListener('click', () => run(async () => { if (speechMemoryBlocked()) return; state.setupRequested = true; await acceptProcessing(await bridge.prepareMeetingModels(localSummaryEnabled() && Boolean(byId('setup-summary-option').checked) && !state.processing.summaryReady)); }));
 byId('setup-download-summary').addEventListener('click', () => run(async () => { if (!localSummaryEnabled()) return; state.setupRequested = true; await acceptProcessing(await bridge.prepareSummaryModel()); }));
 byId('setup-cancel').addEventListener('click', () => { const id = byId('setup-cancel').dataset.jobId; if (id) processingAction('cancel', id).catch(showError); });
@@ -1101,6 +1117,10 @@ function renderTranscript(meeting) {
   const ownJob = Boolean(pendingJob(job, { meetingId: meeting.id }));
   const draft = state.transcriptDraft;
   const liveRows = !draft?.doc ? resultPreview(meeting).rows : [];
+  const coverage = recognitionCoverage(draft?.doc, duration);
+  const coverageNode = byId('transcript-coverage');
+  coverageNode.textContent = coverage.message;
+  coverageNode.hidden = !coverage.message;
   const loaded = state.transcriptLoaded && !state.transcriptLoadError;
   const recognizable = Boolean(meeting.audio) && job.supported && job.modelReady && !ownJob && !state.busy;
   const failedHere = ['failed', 'cancelled'].includes(job.status) && job.kind === 'transcribe' && job.meetingId === meeting.id;
@@ -1138,7 +1158,7 @@ function renderTranscript(meeting) {
     state.transcriptKey = key;
     // The detail body is what scrolls; the transcript box itself does not.
     const scroll = byId('detail-body-scroll').scrollTop;
-    byId('transcript-rows').innerHTML = liveRows.length ? liveRows.map((row,index)=>globalThis.NeroUI.transcriptRow({ index, time:row.start == null ? '' : duration(row.start*1000),start:row.start ?? 0,text:row.text,originalText:row.text,editing:false,speaker:row.speaker ? `화자 ${row.speaker}` : '미지정',speakerVisible:row.speaker != null,searchQuery:'',disabled:true })).join('') : (draft?.doc?.segments || []).map((segment,index) => globalThis.NeroUI.transcriptRow({ index, time: duration(segment.start * 1000), start: segment.start, text: segment.text, originalText: segment.originalText, editing: state.transcriptEditing === index, speaker: speakers.label(segment, draft.doc), speakerVisible: true, searchQuery: documentSearch.query(), disabled: ownJob || state.editLocks > 0 })).join('');
+    byId('transcript-rows').innerHTML = liveRows.length ? liveRows.map((row,index)=>globalThis.NeroUI.transcriptRow({ index, time:row.start == null ? '' : duration(row.start*1000),start:row.start ?? 0,text:row.text,originalText:row.text,editing:false,speaker:row.speaker ? `화자 ${row.speaker}` : '미지정',speakerVisible:row.speaker != null,searchQuery:'',disabled:true })).join('') : (draft?.doc?.segments || []).map((segment,index) => globalThis.NeroUI.transcriptRow({ index, time: `${duration(segment.start * 1000)}${coverage.timing.has(segment.sourceIndex) ? ' 구간' : ''}`, start: segment.start, text: segment.text, originalText: segment.originalText, editing: state.transcriptEditing === index, speaker: speakers.label(segment, draft.doc), speakerVisible: true, searchQuery: documentSearch.query(), disabled: ownJob || state.editLocks > 0 })).join('');
     byId('transcript-rows').querySelectorAll('textarea').forEach(resizeTranscriptEditor);
     byId('detail-body-scroll').scrollTop = scroll;
   }
@@ -1157,18 +1177,25 @@ function replaceTranscriptDraft(id, doc) {
   state.transcriptKey = '';
 }
 
-async function loadTranscript(id) {
+async function loadTranscript(id, { reuse = false } = {}) {
+  if (reuse && transcriptLoading?.id === id && transcriptLoading.current()) return transcriptLoading.promise;
   const request = ++state.transcriptLoadId;
   const startingDraft = state.transcriptDraft;
   const startingVersion = JSON.stringify(startingDraft?.doc?.version);
   const current = () => request === state.transcriptLoadId && state.selectedId === id && state.transcriptDraft === startingDraft && JSON.stringify(state.transcriptDraft?.doc?.version) === startingVersion && !state.transcriptDraft?.dirty;
-  try {
-    const doc = await bridge.readTranscript(id);
-    if (!current()) return;
-    state.transcriptLoaded = true; state.transcriptLoadError = false;
-    replaceTranscriptDraft(id, doc);
-    render();
-  } catch (error) { if (current()) { state.transcriptLoaded = true; state.transcriptLoadError = true; showError(error); render(); } }
+  const loading = { id, current, promise: null };
+  transcriptLoading = loading;
+  loading.promise = (async () => {
+    try {
+      const doc = await bridge.readTranscript(id);
+      if (!current()) return;
+      state.transcriptLoaded = true; state.transcriptLoadError = false;
+      replaceTranscriptDraft(id, doc);
+      render();
+    } catch (error) { if (current()) { state.transcriptLoaded = true; state.transcriptLoadError = true; showError(error); render(); } }
+    finally { if (transcriptLoading === loading) transcriptLoading = null; }
+  })();
+  return loading.promise;
 }
 
 function saveTranscript() {
@@ -1259,7 +1286,7 @@ function renderSummary(meeting) {
   if (!state.summaryLoaded) message = '불러오는 중';
   else if (state.summaryLoadError) message = '요약을 불러오지 못했습니다.';
   else if (doc && stale) message = '이전 내용으로 만든 요약';
-  else if (!doc && !localSummaryEnabled()) message = localSummaryMessage();
+  else if (!doc && !localSummaryEnabled()) message = hasTranscript ? '' : '음성 기록을 준비하면 네로로 요약할 수 있습니다.';
   else if (ownJob || failed) message = '';
   else if (!doc && result.busy) message = '음성 기록을 처리하고 있습니다.';
   else if (!doc && !state.transcriptLoaded) message = '불러오는 중';
@@ -1273,6 +1300,9 @@ function renderSummary(meeting) {
   const loading = !state.summaryLoaded || (localSummaryEnabled() && !doc && (result.busy || !state.transcriptLoaded));
   if (loading && message) setHTML('summary-message', '<span class="activity-spinner" aria-hidden="true"></span> ' + escape(message));
   else setText('summary-message', message);
+  byId('summary-recompose').hidden = localSummaryEnabled() || !hasTranscript || !state.summaryLoaded || Boolean(state.summaryLoadError) || Boolean(doc && !stale);
+  byId('summary-recompose').disabled = state.busy || ownJob;
+  setText('summary-recompose', doc ? '최신 내용으로 정리' : '네로로 요약');
   const key = JSON.stringify([meeting.id, doc?.id, state.transcriptDraft?.doc?.version, Boolean(stale), documentSearch.query()]);
   if (key !== state.summaryKey) {
     state.summaryKey = key;
@@ -1301,6 +1331,7 @@ byId('retry-transcript-load').addEventListener('click', () => { if (state.select
 byId('retry-summary-load').addEventListener('click', () => { if (state.selectedId) void loadSummary(state.selectedId); });
 byId('prepare-summary').addEventListener('click', () => run(() => { if (localSummaryEnabled()) return openSetup(false, 'prepare-summary'); }));
 byId('summarize').addEventListener('click', () => run(() => { if (localSummaryEnabled()) return finishEditing(async () => acceptProcessing(await bridge.summarizeMeeting(state.selectedId, await summaryTemplatePicker.selected()))); }));
+byId('summary-recompose').addEventListener('click', () => { const meeting = currentMeeting(); if (meeting) void run(() => aiChat.prepareSummary(meeting)); });
 async function exportDocument(kind, format, copy = false, includeCitations = false, expectedId = state.selectedId) {
   return finishEditing(async () => {
     const meeting = currentMeeting();
@@ -1475,8 +1506,8 @@ byId('quit-dialog').addEventListener('close', () => {
   quitQuestion = null;
 });
 const dropConfirmation = mountConfirmDialog({ container: byId('drop-dialog') });
-mountDropImport({ window: globalThis, overlay: byId('drop-overlay'), message: byId('drop-overlay-message'),
-  onDrop: (files, onProgress) => run(() => finishEditing(async () => {
+mountDropImport({ window: globalThis, overlay: byId('drop-overlay'), message: byId('drop-overlay-message'), cancelButton: byId('drop-overlay-cancel'),
+  onDrop: (files, onProgress, control) => run(() => finishEditing(async () => {
     if (files.length !== 1) { showError('음성 파일은 한 번에 하나씩 끌어 놓아 주세요.'); return; }
     if (activeSession()) { showError('녹음을 마친 뒤 음성을 가져와 주세요.'); return; }
     if (!modelsReady()) { await openSetup(); return; }
@@ -1488,7 +1519,8 @@ mountDropImport({ window: globalThis, overlay: byId('drop-overlay'), message: by
       description: meeting.audio ? '이 회의에는 이미 음성이 있습니다. 끌어 놓은 파일로 새 회의를 만들고, 지금 회의의 음성과 기록은 그대로 둡니다.'
         : '이 회의에는 음성을 연결할 수 없습니다. 끌어 놓은 파일로 새 회의를 만듭니다.',
       action: '새 회의로 가져오기' })) return;
-    await acceptProcessing(await uploadDroppedFile(bridge, files[0], target, onProgress));
+    try { await acceptProcessing(await uploadDroppedFile(bridge, files[0], target, onProgress, control)); }
+    catch (error) { if (error?.name !== 'AbortError') throw error; }
   })) });
 const speechOffer = mountSpeechOfferDialog({ dialog: byId('speech-offer-dialog'),
   onAccept: async () => { speechNotice = ''; await acceptProcessing(await bridge.respondSpeechOffer(true)); },
@@ -1502,7 +1534,7 @@ const detail = mountMeetingDetail({ byId, finishEditing, onError: showError, onR
 } });
 meetingContext = mountMeetingContext({ node: byId('meeting-context-control'), bridge: aiChatBridge, getMeeting: () => state.libraryOpen ? null : currentMeeting(), onSettings: () => { void openSettings('agent', 'meeting-context-control').catch(showError); } });
 // Opening a conversation keeps the shown meeting; its meeting link moves the main view.
-async function openAiConversation(id) { await aiChat.flow.selectConversation(id); aiChat.open(); }
+async function openAiConversation(id) { if (await aiChat.flow.selectConversation(id)) await aiChat.open(); }
 async function openAiMeeting(meetingId) {
   if (!state.snapshot.meetings.some(meeting => meeting.id === meetingId && !meeting.deletedAt)) throw new Error('이 회의를 열 수 없습니다.');
   if (state.selectedId !== meetingId || state.libraryOpen) await selectMeeting(meetingId);
@@ -1527,14 +1559,20 @@ aiChat = mountAiChat({
   onSettings: () => { void openSettings('agent', 'ai-chat-open').catch(showError); },
   onSaved: async (kind, meetingId) => { if (state.selectedId === meetingId) { if (kind === 'summary') await loadSummary(meetingId); render(); } },
   async onCitation(citation) {
+    const intent = ++citationRequest;
     if (citation.kind === 'notion') { await aiChatBridge.openSource(citation.url); return; }
     if (citation.kind !== 'meeting' || !citation.meetingId || !citation.segmentId || !state.snapshot.meetings.some(meeting => meeting.id === citation.meetingId && !meeting.deletedAt)) throw new Error('이 회의의 출처를 열 수 없습니다.');
     if (state.selectedId !== citation.meetingId || state.libraryOpen) await selectMeeting(citation.meetingId);
+    const navigation = selectionRequest;
+    const current = () => intent === citationRequest && navigation === selectionRequest && citation.meetingId === state.selectedId && !state.libraryOpen;
+    if (!current()) return;
+    if (!state.transcriptLoaded) await loadTranscript(citation.meetingId, { reuse: true });
+    if (!current()) return;
     await finishEditing(async () => {
-      if (citation.meetingId !== state.selectedId) return;
+      if (!current()) return;
       const index = state.transcriptDraft?.doc?.segments.findIndex(segment => segment.id === citation.segmentId) ?? -1;
       if (index < 0) throw new Error('현재 음성 기록에서 이 발언을 찾을 수 없습니다.');
-      await detail.select('transcript');
+      if (!await detail.select('transcript') || !current()) return;
       const row = byId('transcript-rows').querySelector(`[data-transcript-row="${index}"]`);
       if (!row) throw new Error('현재 음성 기록에서 이 발언을 찾을 수 없습니다.');
       highlightTranscriptRows([row]);

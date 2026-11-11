@@ -4,10 +4,12 @@
 
 | 소스 | 책임 |
 | --- | --- |
-| `../appearance.css` | 중립색, 녹색 강조와 light/dark의 의미 색상 |
+| `../appearance.css` | 중립색과 light/dark의 의미 색상 |
 | `../typography.css` | 공통 글꼴과 글자 역할 |
 | `../components.css`, `../components.js` | 공통 컨트롤 스타일과 반복 뷰 |
 | `../controls.css`, `../controls.js` | 선택 메뉴와 날짜/시간 |
+| `../navigation.css`, `../navigation.mjs`, `../navigation-width.mjs` | 공통 사이드바의 배치, 상태와 크기 조절 |
+| `../assets/icons/native-quiet/`, `../icons.js`, `../icons-react.jsx` | 선택한 SVG 원본과 같은 도형을 쓰는 DOM/React 아이콘 |
 | `../style.css`, `../prototype/` | 제품 배치/기능 상태/이벤트 |
 | `../desktop-preview.css`, `../desktop-preview-view.js` | macOS 노치/부유 녹음/알림 예제 |
 | `../windows-preview/` | Windows 창/트레이/부유 녹음과 공통 iframe 연결 |
@@ -18,12 +20,15 @@
 ## 생성
 
 ```sh
+node scripts/build-icon-registry.mjs
 node design-system/catalog/build-tokens.cjs
 node design-system/catalog/build-tokens.cjs --check
 node design-system/catalog/check-tokens.cjs
 ```
 
 같은 입력은 같은 결과를 만든다. 주석을 포함한 입력의 해시도 비교하므로 소스 변경 후 다시 생성한다. 제품 저장소/설치 앱의 기능 완료나 배포를 뜻하지 않는다.
+
+아이콘 원본과 레지스트리의 일치는 `node scripts/build-icon-registry.mjs --check`로 확인한다. 앱과 표준 프리뷰 준비 단계는 같은 생성기를 호출하며, 토큰 스냅샷은 생성된 레지스트리와 탐색 소스의 변경도 포함한다.
 
 ## 역할
 

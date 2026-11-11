@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { createRoot } from 'react-dom/client';
 import { flushSync } from 'react-dom';
-import { CalendarDays } from 'lucide-react';
+import { CalendarDays } from './icons-react.jsx';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './components/ui/select.jsx';
 import { Popover, PopoverClose, PopoverContent, PopoverTrigger } from './components/ui/popover.jsx';
 import { Calendar } from './components/ui/calendar.jsx';
@@ -83,11 +83,11 @@ function NativeSelect({ record }) {
   const selectedLabel = state.options.find(option => option.value === state.value)?.label ?? '선택';
   return <Select items={options} value={state.value} open={record.open} disabled={state.disabled} modal={false}
     onOpenChange={open => setOpen(record, open)} onValueChange={value => { if (value !== null) commit(record, value); }}>
-    <SelectTrigger aria-label={`${state.label}: ${selectedLabel}`}
+    <SelectTrigger data-control-id={record.input.id || undefined} aria-label={`${state.label}: ${selectedLabel}`}
       aria-invalid={state.invalid || undefined} aria-describedby={state.describedBy} data-field={record.input.dataset.field}>
       <SelectValue>{selectedLabel}</SelectValue>
     </SelectTrigger>
-    <SelectContent container={portal(record)} aria-label={state.label}>
+    <SelectContent container={portal(record)} data-control-id={record.input.id || undefined} aria-label={state.label}>
       {options.map((option, index) => <SelectItem key={`${option.value}-${index}`} value={option.value} disabled={option.disabled}>{option.label}</SelectItem>)}
     </SelectContent>
   </Select>;

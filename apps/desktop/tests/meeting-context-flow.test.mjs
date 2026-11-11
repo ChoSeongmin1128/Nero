@@ -104,3 +104,23 @@ test('갱신 충돌이나 취소 시 기존 참조를 유지합니다', async ()
   assert.equal(flow.getSnapshot().error, '변경 충돌');
   assert.equal(flow.getSnapshot().sources[0].sourceId, source.sourceId);
 });
+
+
+test('연결 상태 재시도는 기존 자료와 링크를 보존하며 같은 자리에서 복구합니다', async () => {
+  let attempts = 0;
+  const { flow, source, select } = setup({ notionSnapshot: async () => { if (++attempts === 1) throw Error('unavailable'); return { connected: true }; } });
+  select({ id: 'one' }); flow.open(); await tick(); flow.setLink('https://notion.so/keep');
+  assert.match(flow.getSnapshot().error, /Notion 연결/);
+  assert.deepEqual(flow.getSnapshot().sources, [source]);
+  await flow.reload();
+  assert.equal(flow.getSnapshot().notion.connected, true); assert.equal(flow.getSnapshot().error, '');
+  assert.equal(flow.getSnapshot().link, 'https://notion.so/keep'); assert.equal(attempts, 2);
+});
+
+test('닫은 자료 창에 늦은 연결 재시도가 상태를 덮어쓰지 않습니다', async () => {
+  const pending = deferred();
+  const { flow, select } = setup({ notionSnapshot: () => pending.promise });
+  select({ id: 'one' }); flow.open(); flow.close();
+  pending.resolve({ connected: true }); await tick();
+  assert.equal(flow.getSnapshot().open, false); assert.equal(flow.getSnapshot().notion, null);
+});

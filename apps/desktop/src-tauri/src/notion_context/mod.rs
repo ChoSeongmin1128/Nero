@@ -203,6 +203,7 @@ pub struct NotionContextBundle {
 struct Inner {
     connection: Connection,
     pending: Option<Pending>,
+    browser_url: Option<String>,
     connecting_id: Option<String>,
     cancellation: Option<Cancellation>,
     error: Option<String>,
@@ -252,6 +253,7 @@ impl NotionContextService {
             inner: Arc::new(Mutex::new(Inner {
                 connection,
                 pending: None,
+                browser_url: None,
                 connecting_id: None,
                 cancellation: None,
                 error: None,
@@ -303,16 +305,31 @@ impl NotionContextService {
                     attempt_id: id,
                     authorization_url: pending.authorization_url.clone(),
                 };
+                inner.browser_url = Some(pending.authorization_url.clone());
                 inner.pending = Some(pending);
                 Ok(request)
             }
             Err(error) => {
                 inner.connecting_id = None;
+                inner.browser_url = None;
                 inner.cancellation = None;
                 inner.error = Some(error.to_string());
                 Err(error)
             }
         }
+    }
+    pub fn reopen_connect(&self, attempt_id: &str) -> Result<String> {
+        self.lifecycle.check_open()?;
+        let inner = self.inner.lock().unwrap();
+        if inner.connecting_id.as_deref() != Some(attempt_id) {
+            return Err(Error::InvalidRequest);
+        }
+        inner
+            .cancellation
+            .as_ref()
+            .ok_or(Error::InvalidRequest)?
+            .check()?;
+        inner.browser_url.clone().ok_or(Error::InvalidRequest)
     }
     pub fn cancel_connect(&self, attempt_id: Option<&str>) {
         let mut inner = self.inner.lock().unwrap();
@@ -325,6 +342,7 @@ impl NotionContextService {
         }
         inner.pending = None;
         inner.connecting_id = None;
+        inner.browser_url = None;
     }
     pub async fn finish_connect(&self, attempt_id: &str) -> Result<NotionConnectionSnapshot> {
         self.lifecycle.check_open()?;
@@ -344,6 +362,7 @@ impl NotionContextService {
             && inner.connecting_id.as_deref() == Some(attempt_id)
         {
             inner.connecting_id = None;
+            inner.browser_url = None;
             inner.cancellation = None;
             if let Err(error) = &result {
                 inner.error = Some(error.to_string());
@@ -355,6 +374,12 @@ impl NotionContextService {
     }
     async fn complete_connect(&self, pending: &Pending, generation: u64) -> Result<()> {
         let code = pending.receive().await?;
+        {
+            let mut inner = self.inner.lock().unwrap();
+            if generation == self.generation.load(Ordering::Acquire) {
+                inner.browser_url = None;
+            }
+        }
         let gate = pending
             .cancelled
             .run(async { Ok(self.credential_gate.clone().lock_owned().await) })

@@ -41,6 +41,7 @@ function main() {
   const output = realDestination(args[1]);
   const relativeOutput = path.relative(source, output);
   if (!relativeOutput || (!relativeOutput.startsWith(`..${path.sep}`) && relativeOutput !== '..' && !path.isAbsolute(relativeOutput))) throw new Error('Output must be outside the canonical source directory.');
+  execFileSync(process.execPath, [path.join(source, '../scripts/build-icon-registry.mjs')], { stdio: 'inherit' });
   const currentTokens = build();
   const savedTokens = JSON.parse(fs.readFileSync(path.join(source, 'catalog/tokens.json'), 'utf8'));
   assert.deepEqual(savedTokens, currentTokens, 'Token source drift. Review changes and run node design-system/catalog/build-tokens.cjs first.');

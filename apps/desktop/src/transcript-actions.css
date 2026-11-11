@@ -1,8 +1,8 @@
 /* Feature layout only. Controls, typography and colors use the shared system. */
 .transcript-actions-dialog { max-height: calc(100dvh - 32px); padding: 0; overflow: hidden; }
 .transcript-actions-form { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; max-height: min(680px, calc(100dvh - 48px)); }
-.transcript-actions-header { padding: 18px 20px; border-bottom: 1px solid var(--border); }
-.transcript-actions-content { min-height: 0; overflow: auto; padding: 18px 20px; }
+.transcript-actions-header { padding: 16px 20px; border-bottom: 1px solid var(--border); }
+.transcript-actions-content { min-height: 0; overflow: auto; padding: 16px 20px; }
 .transcript-actions-content:focus-visible { outline-offset: -3px; }
 .transcript-actions-description { line-height: var(--leading-reading); }
 .transcript-actions-dialog p:first-child { margin-top: 0; }
@@ -10,7 +10,7 @@
 .transcript-actions-empty, .transcript-actions-unavailable { color: var(--text-secondary); font-size: var(--text-caption-size); }
 .transcript-history-list { min-width: 0; padding: 0; margin: 14px 0 0; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
 .transcript-history-list:first-child { margin-top: 0; }
-.transcript-actions-dialog .transcript-history-choice { display: grid; grid-template-columns: 18px minmax(0, 1fr); align-items: center; gap: 12px; margin: 0; padding: 12px 14px; cursor: pointer; }
+.transcript-actions-dialog .transcript-history-choice { display: grid; grid-template-columns: 18px minmax(0, 1fr); align-items: center; gap: 10px; margin: 0; padding: 10px 12px; cursor: pointer; }
 .transcript-history-choice + .transcript-history-choice { border-top: 1px solid var(--border); }
 .transcript-history-choice:has(input:checked) { background: var(--accent-subtle); }
 .transcript-history-choice.is-current { background: var(--surface-secondary); cursor: default; }

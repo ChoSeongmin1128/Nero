@@ -38,7 +38,7 @@ function fakeFlow() {
     getSnapshot: () => state,
     loadList: async () => { calls.push(['loadList']); },
     loadTrash: async () => { calls.push(['loadTrash']); },
-    selectConversation: async id => { calls.push(['select', id]); },
+    selectConversation: async id => { calls.push(['select', id]); return true; },
     trashConversations: record('trash'), restoreConversations: record('restore'), purgeConversations: record('purge'),
   };
 }
@@ -60,7 +60,7 @@ test('the AI list opens a chat, trashes selections, old and all chats, and manag
   const confirm = async label => { await wait(() => last(label), 'confirm'); last(label).click(); await settled(); };
   await wait(() => window.document.querySelectorAll('.ai-library-row').length === 3);
   const text = window.document.querySelector('.ai-library-list').textContent;
-  assert.match(text, /주간 회의/); assert.match(text, /회의 없이 나눈 대화/); assert.match(text, /삭제된 회의/);
+  assert.match(text, /주간 회의/); assert.doesNotMatch(text, /회의 없이 나눈 대화/); assert.match(text, /삭제된 회의/);
   assert.equal(window.document.querySelector('[aria-current="true"] .ai-library-title').textContent, '이번 주 정리');
   window.document.querySelectorAll('.ai-library-open')[1].click();
   await wait(() => opened.length === 1);
@@ -72,15 +72,19 @@ test('the AI list opens a chat, trashes selections, old and all chats, and manag
   await wait(() => flow.calls.some(call => call[0] === 'trash'));
   assert.deepEqual(flow.calls.filter(call => call[0] === 'trash').at(-1), ['trash', ['old']]);
 
+  const openCleanup = async () => { window.document.querySelector('[aria-label="대화 정리"]').click(); await wait(() => button('휴지통'), 'cleanup menu'); };
+  await openCleanup();
   assert.equal(button('1개 정리').disabled, false);
   button('1개 정리').click(); await confirm('휴지통으로 이동');
   await wait(() => flow.calls.filter(call => call[0] === 'trash').length === 2);
   assert.deepEqual(flow.calls.filter(call => call[0] === 'trash').at(-1), ['trash', ['old']]);
 
+  await openCleanup();
   button('전체 삭제').click(); await confirm('모두 휴지통으로');
   await wait(() => flow.calls.filter(call => call[0] === 'trash').length === 3);
   assert.deepEqual(flow.calls.filter(call => call[0] === 'trash').at(-1), ['trash', ['old', 'recent']]);
 
+  await openCleanup();
   button('휴지통').click();
   await wait(() => flow.calls.some(call => call[0] === 'loadTrash') && window.document.querySelectorAll('.ai-library-row').length === 1);
   assert.equal(window.document.querySelector('.ai-library-open').disabled, true);
@@ -88,9 +92,9 @@ test('the AI list opens a chat, trashes selections, old and all chats, and manag
   await wait(() => !button('선택 복원').disabled);
   button('선택 복원').click(); await confirm('복원');
   await wait(() => flow.calls.some(call => call[0] === 'restore'));
+  await openCleanup();
   button('휴지통 비우기').click();
-  await wait(() => [...window.document.querySelectorAll('button')].filter(node => node.textContent.trim() === '휴지통 비우기').length === 2);
-  [...window.document.querySelectorAll('button')].filter(node => node.textContent.trim() === '휴지통 비우기').at(-1).click();
+  await confirm('휴지통 비우기');
   await wait(() => flow.calls.some(call => call[0] === 'purge'));
   assert.deepEqual(flow.calls.find(call => call[0] === 'purge'), ['purge', ['trashed']]);
 });
@@ -111,7 +115,13 @@ test('the sidebar lists chats, opens one in the AI panel and links to its meetin
   const rows = [...window.document.querySelectorAll('.sidebar-ai-row')];
   assert.equal(rows[0].querySelector('[data-navigation-item]').getAttribute('aria-current'), 'page');
   assert.match(rows[0].textContent, /이번 주 정리/); assert.match(rows[0].textContent, /주간 회의/);
-  assert.match(rows[1].textContent, /회의 없이 나눈 대화/);
+  const timestamp = rows[0].querySelector('time');
+  assert.ok(timestamp.textContent.length <= 9);
+  assert.doesNotMatch(timestamp.textContent, /:/);
+  assert.equal(timestamp.getAttribute('datetime'), new Date(now - DAY).toISOString());
+  assert.ok(timestamp.title.length > timestamp.textContent.length);
+  assert.equal(rows[1].querySelector('.sidebar-ai-note'),null);
+  assert.equal(rows[1].querySelector('.sidebar-ai-meeting'),null);
   assert.match(rows[2].textContent, /답변 중/); assert.match(rows[2].textContent, /삭제된 회의/);
   assert.equal(rows[2].querySelector('.sidebar-ai-meeting'), null);
   rows[1].querySelector('[data-navigation-item]').click();
@@ -119,3 +129,51 @@ test('the sidebar lists chats, opens one in the AI panel and links to its meetin
   await wait(() => opened.length === 2);
   assert.deepEqual(opened, [['chat', 'old'], ['meeting', 'm1', 'recent']]);
 });
+
+for (const scenario of [
+  { trash: false, action: 'trash', label: '선택 삭제', confirm: '휴지통으로 이동' },
+  { trash: true, action: 'restore', label: '선택 복원', confirm: '복원' },
+  { trash: true, action: 'purge', label: '선택 완전히 삭제', confirm: '완전히 삭제' },
+]) {
+  test(`search changes clear hidden selections before ${scenario.action}`, async t => {
+    const window = new Window({ url: 'http://nero.test', settings: { enableJavaScriptEvaluation: true, suppressInsecureJavaScriptEnvironmentWarning: true } });
+    window.document.body.innerHTML = '<section id="host"></section>';
+    window.eval(bundle.outputFiles[0].text);
+    const flow = fakeFlow();
+    flow.publish({ trashList: [{ id: 'trashed', title: '버린 대화', updatedAt: now }, { id: 'other-trash', title: '다른 기록', updatedAt: now }] });
+    const view = window.AiLibrary.mountAiChatLibrary({ node: window.document.getElementById('host'), flow, getMeetings: () => meetings, onOpen: () => {}, container: window.document.body });
+    t.after(() => { view.dispose(); window.happyDOM.abort(); });
+    view.show();
+    const wait = async predicate => { for (let index = 0; index < 100; index++) { if (predicate()) return; await new Promise(resolve => setTimeout(resolve, 5)); } assert.fail('Expected filtered selection state'); };
+    const button = label => [...window.document.querySelectorAll('button')].find(node => node.textContent.trim() === label);
+    await wait(() => window.document.querySelectorAll('.ai-library-row').length === 3);
+    if (scenario.trash) {
+      window.document.querySelector('[aria-label="대화 정리"]').click();
+      await wait(() => button('휴지통'));
+      button('휴지통').click();
+      await wait(() => window.document.querySelectorAll('.ai-library-row').length === 2);
+    }
+    const oldLabel = scenario.trash ? '버린 대화' : '석 달 전 질문';
+    const currentLabel = scenario.trash ? '다른 기록' : '이번 주 정리';
+    const term = scenario.trash ? '다른' : '이번';
+    window.document.querySelector(`[aria-label="${oldLabel} 선택"]`).click();
+    await wait(() => button(scenario.label));
+    const search = window.document.querySelector('input[type="search"]');
+    const type = value => { Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(search, value); search.dispatchEvent(new window.Event('input', { bubbles: true })); };
+    type(term);
+    await wait(() => window.document.querySelectorAll('.ai-library-row').length === 1 && !button(scenario.label));
+    type('');
+    await wait(() => window.document.querySelector(`[aria-label="${oldLabel} 선택"]`));
+    assert.equal(window.document.querySelector(`[aria-label="${oldLabel} 선택"]`).checked, false);
+    type(term);
+    await wait(() => window.document.querySelectorAll('.ai-library-row').length === 1);
+    window.document.querySelector(`[aria-label="${currentLabel} 선택"]`).click();
+    await wait(() => button(scenario.label));
+    assert.match(window.document.querySelector('.ai-library-actions').textContent, /^1개 선택/);
+    button(scenario.label).click();
+    await wait(() => window.document.querySelector('[data-slot="dialog-content"]'));
+    [...window.document.querySelectorAll('[data-slot="dialog-content"] button')].find(node => node.textContent.trim() === scenario.confirm).click();
+    await wait(() => flow.calls.some(call => call[0] === scenario.action));
+    assert.deepEqual(flow.calls.find(call => call[0] === scenario.action), [scenario.action, [scenario.trash ? 'other-trash' : 'recent']]);
+  });
+}

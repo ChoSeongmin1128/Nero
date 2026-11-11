@@ -15,6 +15,9 @@ use std::sync::{
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use uuid::Uuid;
+mod model_retirement;
+#[cfg(test)]
+mod moss_pipeline_tests;
 
 fn platform_supported() -> bool {
     static SUPPORTED: OnceLock<bool> = OnceLock::new();
@@ -48,6 +51,14 @@ impl Model {
     pub(super) fn bytes(&self) -> u64 {
         self.files.iter().map(|file| file.bytes).sum()
     }
+}
+
+fn model_set_aside_file(model: &Model, name: &str) -> bool {
+    name.starts_with("verified.invalid-")
+        || model.files.iter().any(|file| {
+            name.starts_with(&format!("{}.invalid-", file.name))
+                || name.starts_with(&format!("{}.partial-", file.name))
+        })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -104,6 +115,21 @@ pub(super) fn verify_model_files(
     model: &Model,
     cancel: &AtomicBool,
 ) -> Result<(), crate::failure::Failure> {
+    verify_model_files_with_marker(directory, model, cancel, true)
+}
+pub(super) fn verify_model_files_read_only(
+    directory: &Path,
+    model: &Model,
+    cancel: &AtomicBool,
+) -> Result<(), crate::failure::Failure> {
+    verify_model_files_with_marker(directory, model, cancel, false)
+}
+fn verify_model_files_with_marker(
+    directory: &Path,
+    model: &Model,
+    cancel: &AtomicBool,
+    invalidate: bool,
+) -> Result<(), crate::failure::Failure> {
     use crate::failure::{Failure, FailureKind};
     let cancelled = |cancel: &AtomicBool| {
         cancelled(cancel).map_err(|message| Failure::new(FailureKind::Cancelled, message))
@@ -113,8 +139,10 @@ pub(super) fn verify_model_files(
         let matches = matches_file(&directory.join(&item.name), item, cancel);
         cancelled(cancel)?;
         if !matches {
-            invalidate_readiness(directory)
-                .map_err(|message| Failure::new(FailureKind::Storage, message))?;
+            if invalidate {
+                invalidate_readiness(directory)
+                    .map_err(|message| Failure::new(FailureKind::Storage, message))?;
+            }
             return Err(Failure::new(
                 FailureKind::ModelNotReady,
                 "모델 파일을 다시 준비해 주세요.",
@@ -163,6 +191,7 @@ pub struct Progress {
     pub live_transcript: Option<serde_json::Value>,
     pub speech_switch: Option<crate::speech_switch::SwitchView>,
     pub speech_offer: Option<crate::speech_switch::OfferView>,
+    pub speech_cleanup: Option<model_retirement::View>,
 }
 
 #[derive(Clone, Serialize, Default, PartialEq, Eq)]
@@ -237,7 +266,9 @@ fn retry_block_reason(record: &JobRecord) -> Option<&'static str> {
     if !matches!(
         record.status,
         JobStatus::Interrupted | JobStatus::Failed | JobStatus::Cancelled
-    ) || record.acknowledged
+    ) && !(record.status == JobStatus::NeedsReview
+        && record.phase.as_deref() == Some("mossPartial"))
+        || record.acknowledged
         || record.kind == "import"
     {
         return Some("현재 작업은 다시 실행할 수 없습니다. 회의의 저장 결과를 먼저 확인해 주세요.");
@@ -313,9 +344,12 @@ pub struct Processing {
     apple_speech_variant: Mutex<Option<AppleVariant>>,
     apple_speech: Mutex<crate::apple_speech::Availability>,
     speech_preference_error: Mutex<Option<String>>,
+    speech_switch_gate: Mutex<()>,
     speech_switch: Mutex<Option<crate::speech_switch::Pending>>,
     speech_offers: Mutex<crate::speech_switch::Offers>,
     speech_switch_error: Mutex<Option<String>>,
+    model_cleanup: Mutex<Option<model_retirement::View>>,
+    model_cleanup_ready: AtomicBool,
     // A setup that already worked at startup; first-time setups are not offered a switch.
     offer_eligible: AtomicBool,
     pub(super) root: PathBuf,
@@ -545,10 +579,13 @@ impl Processing {
                 crate::apple_speech::Availability::default()
             }),
             speech_preference_error: Mutex::new(speech_preference_error),
+            speech_switch_gate: Mutex::new(()),
             speech_switch: Mutex::new(speech_switch),
             speech_offers: Mutex::new(speech_offers),
             offer_eligible: AtomicBool::new(false),
             speech_switch_error: Mutex::new(None),
+            model_cleanup: Mutex::new(model_retirement::initial(&root)),
+            model_cleanup_ready: AtomicBool::new(false),
             root,
             resources,
             progress: Mutex::new(Progress::default()),
@@ -614,15 +651,24 @@ impl Processing {
     pub(super) fn model_dir(&self) -> Result<PathBuf, String> {
         self.model_dir_for(self.speech_engine())
     }
+    #[cfg(test)]
     pub(super) fn model_dir_for(&self, engine: SpeechEngine) -> Result<PathBuf, String> {
         self.model_dir_of(ModelSpec::speech(engine))
     }
     pub(super) fn model_dir_of(&self, spec: ModelSpec) -> Result<PathBuf, String> {
         directory(&self.root, &spec.relative_dir())
     }
+    pub(super) fn read_model_dir(&self, spec: ModelSpec) -> Result<PathBuf, String> {
+        let own = self.root.join(spec.relative_dir());
+        crate::path_safety::safe_ancestors(&own).map_err(message)?;
+        if own.join("verified.json").is_file() {
+            return Ok(own);
+        }
+        Ok(crate::model_source::shared(&self.root, spec)?.unwrap_or(own))
+    }
     // The verified marker matches the manifest and every file has its pinned size.
     pub(super) fn model_ready(&self, spec: ModelSpec) -> bool {
-        let Ok(path) = self.model_dir_of(spec) else {
+        let Ok(path) = self.read_model_dir(spec) else {
             return false;
         };
         let marker = plain_file(&path.join("verified.json"))
@@ -645,10 +691,14 @@ impl Processing {
         spec: ModelSpec,
         cancel: &AtomicBool,
     ) -> Result<PathBuf, crate::failure::Failure> {
-        let directory = self.model_dir_of(spec).map_err(|message| {
+        let directory = self.read_model_dir(spec).map_err(|message| {
             crate::failure::Failure::new(crate::failure::FailureKind::Storage, message)
         })?;
-        verify_model_files(&directory, &spec.model(), cancel)?;
+        if directory.starts_with(&self.root) {
+            verify_model_files(&directory, &spec.model(), cancel)?;
+        } else {
+            verify_model_files_read_only(&directory, &spec.model(), cancel)?;
+        }
         Ok(directory)
     }
     pub(super) fn worker(&self, name: &str) -> PathBuf {
@@ -683,6 +733,7 @@ impl Processing {
             && crate::speech_audio::supported(self)
             && match engine {
                 SpeechEngine::Nemotron => crate::asr::supported(self),
+                SpeechEngine::Moss => crate::moss_asr::supported(&self.resources),
                 SpeechEngine::WhisperTurbo => crate::whisper_asr::supported(&self.resources),
                 SpeechEngine::WhisperLargeV3 => {
                     cfg!(all(target_os = "macos", target_arch = "aarch64"))
@@ -690,9 +741,7 @@ impl Processing {
                 }
                 SpeechEngine::AppleSpeech => apple_supported,
                 // Qwen needs the Nemotron stream for its recording preview.
-                SpeechEngine::QwenKo => {
-                    crate::qwen_asr::supported(&self.resources) && crate::asr::supported(self)
-                }
+                SpeechEngine::QwenKo => crate::qwen_asr::supported(&self.resources),
             }
     }
     // (supported, ready) before starting work with `engine`. Apple Speech is probed
@@ -745,6 +794,10 @@ impl Processing {
         self: &Arc<Self>,
         engine: SpeechEngine,
     ) -> Result<Progress, String> {
+        if !engine.offered() && engine != self.speech_engine() {
+            return Err("이전 전사 모델은 새로 선택할 수 없습니다. MOSS, Qwen 또는 macOS 기본 전사를 선택해 주세요.".into());
+        }
+        let _switch = self.speech_switch_gate.lock().unwrap();
         let speaker_enabled = self.speaker_enabled();
         let variant = (engine == SpeechEngine::AppleSpeech)
             .then(|| self.apple_speech_variant())
@@ -752,6 +805,37 @@ impl Processing {
         if engine == SpeechEngine::AppleSpeech {
             *self.apple_speech.lock().unwrap() =
                 crate::apple_speech::probe(&self.resources, variant);
+        }
+        let pending = crate::speech_switch::Pending::new(engine, speaker_enabled, variant);
+        let previous = *self.speech_switch.lock().unwrap();
+        let preparing = self
+            .records
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|record| {
+                record.kind == "setup"
+                    && matches!(
+                        record.status,
+                        JobStatus::Queued | JobStatus::Running | JobStatus::Cancelling
+                    )
+            })
+            .cloned();
+        if let Some(preparing) = preparing {
+            if previous == Some(pending)
+                && preparing.speech_engine == engine
+                && preparing.speaker_enabled == speaker_enabled
+                && preparing.apple_speech_variant == variant
+                && preparing.status != JobStatus::Cancelling
+            {
+                return Ok(self.snapshot());
+            }
+            return Err(
+                "이미 모델 준비가 진행 중입니다. 현재 전환을 취소한 뒤 다시 선택해 주세요.".into(),
+            );
+        }
+        if previous.is_some_and(|previous| previous != pending) {
+            return Err("대기 중인 모델 전환을 취소한 뒤 다시 선택해 주세요.".into());
         }
         let working = self.speech_preference_error.lock().unwrap().is_none()
             && self.model_ready_for(self.speech_engine());
@@ -769,7 +853,6 @@ impl Processing {
         if !self.supported_for(engine) {
             return Err("이 기기에 선택한 음성 인식 실행기가 준비되지 않았습니다.".into());
         }
-        let pending = crate::speech_switch::Pending::new(engine, speaker_enabled, variant);
         crate::speech_switch::save_pending(&self.root, &pending)?;
         *self.speech_switch.lock().unwrap() = Some(pending);
         if let Err(error) = self.prepare_meeting_models_with_id(
@@ -779,7 +862,12 @@ impl Processing {
             Some(speaker_enabled),
             variant,
         ) {
-            self.forget_speech_switch()?;
+            if previous.is_none() {
+                self.forget_speech_switch()?;
+            } else {
+                *self.speech_switch_error.lock().unwrap() = Some(error.clone());
+                self.update(|_| ());
+            }
             return Err(error);
         }
         if answers_offer {
@@ -789,6 +877,7 @@ impl Processing {
     }
     // Drops a waiting switch and cancels its download. The active engine is unchanged.
     pub fn cancel_speech_switch(&self) -> Result<Progress, String> {
+        let _switch = self.speech_switch_gate.lock().unwrap();
         *self.speech_switch_error.lock().unwrap() = None;
         let target = self
             .speech_switch
@@ -810,18 +899,18 @@ impl Processing {
                 .map(|record| record.id.clone())
                 .collect();
             for id in downloads {
-                self.cancel(&id)?;
+                self.cancel_checked_inner(&id, None)
+                    .map_err(|error| error.message)?;
             }
         }
         Ok(self.snapshot())
     }
-    // Records the existing-user offer decision first, so a failed start never leaves an
-    // unrecorded switch running. Accepting then starts the same flow as selecting.
+    // Accepting uses the same switch flow; a refused start leaves the offer available.
     pub fn respond_speech_offer(self: &Arc<Self>, accept: bool) -> Result<Progress, String> {
         if accept {
             // The offer is used up only once the switch has started; a refused switch
             // (no space, the same work already queued) leaves it to accept again.
-            let progress = self.request_speech_engine(SpeechEngine::QwenKo)?;
+            let progress = self.request_speech_engine(SpeechEngine::Moss)?;
             self.decide_speech_offer(crate::speech_switch::Decision::Accepted)?;
             return Ok(progress);
         }
@@ -830,13 +919,13 @@ impl Processing {
     }
     fn decide_speech_offer(&self, decision: crate::speech_switch::Decision) -> Result<(), String> {
         let mut offers = self.speech_offers.lock().unwrap();
-        if offers.decided(crate::speech_switch::QWEN_OFFER) {
+        if offers.decided(crate::speech_switch::MOSS_OFFER) {
             return Ok(());
         }
         crate::speech_switch::decide(
             &self.root,
             &mut offers,
-            crate::speech_switch::QWEN_OFFER,
+            crate::speech_switch::MOSS_OFFER,
             decision,
             now(),
         )?;
@@ -849,13 +938,16 @@ impl Processing {
         if pending.is_some() {
             crate::speech_switch::clear_pending(&self.root)?;
             *pending = None;
-            drop(pending);
-            self.update(|_| ());
+            self.revision.fetch_add(1, Ordering::AcqRel);
         }
         Ok(())
     }
     // Called by `drive` with the `running` lock held and no job running.
     fn reconcile_speech_switch(&self, running: &Option<Running>) {
+        // Requests take this gate before `running`; drive already holds `running`.
+        let Ok(_switch) = self.speech_switch_gate.try_lock() else {
+            return;
+        };
         let Some(pending) = *self.speech_switch.lock().unwrap() else {
             return;
         };
@@ -867,10 +959,32 @@ impl Processing {
         {
             return;
         }
+        let failed = self
+            .records
+            .lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|record| record.kind == "setup" && record.speech_engine == pending.target)
+            .filter(|record| matches!(record.status, JobStatus::Failed | JobStatus::Cancelled))
+            .cloned();
+        if let Some(failed) = failed {
+            *self.speech_switch_error.lock().unwrap() = Some(failed.message);
+            self.update(|_| ());
+            return;
+        }
         if self.speech_preference_error.lock().unwrap().is_none()
             && self.speech_engine() == pending.target
         {
-            let _ = self.forget_speech_switch();
+            if let Err(error) = self.forget_speech_switch() {
+                *self.speech_switch_error.lock().unwrap() = Some(error);
+                self.update(|_| ());
+            }
+            return;
+        }
+        if let Err(error) = self.queue_model_retirement(pending.target) {
+            *self.speech_switch_error.lock().unwrap() = Some(error);
+            self.update(|_| ());
             return;
         }
         match self.apply_speech_selection(
@@ -879,7 +993,11 @@ impl Processing {
             pending.apple_speech_variant,
         ) {
             Ok(()) => {
-                let _ = self.forget_speech_switch();
+                self.retire_models_locked(running);
+                if let Err(error) = self.forget_speech_switch() {
+                    *self.speech_switch_error.lock().unwrap() = Some(error);
+                    self.update(|_| ());
+                }
             }
             Err(error) => {
                 *self.speech_switch_error.lock().unwrap() = Some(error);
@@ -906,14 +1024,14 @@ impl Processing {
     // Offered only to setups that already worked when this process started, and only
     // while nothing is running: snapshot runs on every progress tick.
     fn offer_view(&self, progress: &Progress) -> Option<crate::speech_switch::OfferView> {
-        let engine = SpeechEngine::QwenKo;
+        let engine = SpeechEngine::Moss;
         let current = progress.speech_engine?;
         if !self.offer_eligible.load(Ordering::Acquire)
             || self
                 .speech_offers
                 .lock()
                 .unwrap()
-                .decided(crate::speech_switch::QWEN_OFFER)
+                .decided(crate::speech_switch::MOSS_OFFER)
             || current == engine
             || progress.speech_switch.is_some()
             || progress
@@ -935,7 +1053,7 @@ impl Processing {
             0
         };
         Some(crate::speech_switch::OfferView {
-            id: crate::speech_switch::QWEN_OFFER,
+            id: crate::speech_switch::MOSS_OFFER,
             engine,
             title: engine.title(),
             description: engine.description(),
@@ -948,9 +1066,17 @@ impl Processing {
         })
     }
     pub fn set_speech_engine(&self, engine: SpeechEngine) -> Result<Progress, String> {
+        let _switch = self.speech_switch_gate.lock().unwrap();
+        if self.speech_switch.lock().unwrap().is_some() {
+            return Err("대기 중인 모델 전환을 취소한 뒤 다시 선택해 주세요.".into());
+        }
         self.set_speech_selection(engine, self.speaker_enabled(), None)
     }
     pub fn set_speaker_enabled(&self, enabled: bool) -> Result<Progress, String> {
+        let _switch = self.speech_switch_gate.lock().unwrap();
+        if self.speech_switch.lock().unwrap().is_some() {
+            return Err("대기 중인 모델 전환을 취소한 뒤 화자 구분을 변경해 주세요.".into());
+        }
         self.set_speech_selection(self.speech_engine(), enabled, self.apple_speech_variant())
     }
     // True when nothing could observe a selection change: no job, queue, capture or live child.
@@ -977,7 +1103,9 @@ impl Processing {
         if !self.idle_locked(&running) {
             return Err("녹음과 처리 작업을 마친 뒤 음성 인식 모델을 변경해 주세요.".into());
         }
+        self.queue_model_retirement(engine)?;
         self.apply_speech_selection(engine, speaker_enabled, preferred_variant)?;
+        self.retire_models_locked(&running);
         drop(running);
         Ok(self.snapshot())
     }
@@ -1058,6 +1186,7 @@ impl Processing {
             .then(|| self.speech_engine());
         progress.speech_choices = SpeechEngine::ALL
             .into_iter()
+            .filter(|engine| engine.offered())
             .map(|engine| SpeechChoice {
                 id: engine,
                 label: engine.title(),
@@ -1095,6 +1224,7 @@ impl Processing {
             .is_some_and(|engine| self.model_ready_for(engine));
         progress.speech_switch = self.switch_view();
         progress.speech_offer = self.offer_view(&progress);
+        progress.speech_cleanup = self.model_cleanup.lock().unwrap().clone();
         progress
     }
     pub(super) fn observe_memory(&self, state: crate::memory::MemoryState) -> bool {
@@ -1262,6 +1392,7 @@ impl Processing {
             core.snapshot().map_err(message)?.active_session().is_some(),
             Ordering::Release,
         );
+        self.model_cleanup_ready.store(true, Ordering::Release);
         Ok(())
     }
 
@@ -1284,6 +1415,7 @@ impl Processing {
         }
         self.job_ready()?;
         self.reconcile_speech_switch(&running);
+        self.reconcile_model_retirement(&running);
         let mut queue = self.pending.lock().unwrap();
         let index = queue.iter().position(|job| {
             (!self.recording.load(Ordering::Acquire) || model_job(&job.record.kind))
@@ -1363,6 +1495,15 @@ impl Processing {
         id: &str,
         expected_version: Option<&str>,
     ) -> Result<(), nero_core::agent_control::ControlError> {
+        let _switch = self.speech_switch_gate.lock().unwrap();
+        self.cancel_checked_inner(id, expected_version)
+    }
+
+    fn cancel_checked_inner(
+        &self,
+        id: &str,
+        expected_version: Option<&str>,
+    ) -> Result<(), nero_core::agent_control::ControlError> {
         use nero_core::agent_control::ControlError;
         let invalid_state = |message: &str| ControlError::new("invalid_state", message);
         let storage_error = |message: String| ControlError::new("storage_error", message);
@@ -1374,6 +1515,8 @@ impl Processing {
         if let Some(index) = pending.iter().position(|job| job.record.id == id) {
             let mut record = pending[index].record.clone();
             check_agent_job_version(&record, expected_version)?;
+            self.cancel_switch_for_setup(&record)
+                .map_err(storage_error)?;
             record.status = JobStatus::Cancelled;
             record.message = "취소했습니다.".into();
             record.updated_at = now().max(record.updated_at);
@@ -1415,6 +1558,8 @@ impl Processing {
             if expected_version.is_some() && record.status != JobStatus::Running {
                 return Err(invalid_state("이미 취소되었거나 종료된 작업입니다."));
             }
+            self.cancel_switch_for_setup(&record)
+                .map_err(storage_error)?;
             record.status = JobStatus::Cancelling;
             record.updated_at = now().max(record.updated_at);
             record.message = "취소 요청을 받았습니다.".into();
@@ -1428,6 +1573,19 @@ impl Processing {
             .revision
             .fetch_add(1, Ordering::AcqRel)
             .saturating_add(1);
+        Ok(())
+    }
+
+    fn cancel_switch_for_setup(&self, record: &JobRecord) -> Result<(), String> {
+        let matching = record.kind == "setup"
+            && self
+                .speech_switch
+                .lock()
+                .unwrap()
+                .is_some_and(|pending| pending.target == record.speech_engine);
+        if matching {
+            self.forget_speech_switch()?;
+        }
         Ok(())
     }
 
@@ -2292,8 +2450,15 @@ impl Processing {
                         if meeting.is_some() {
                             p.meeting_id = meeting;
                         }
-                        p.status = "completed".into();
-                        p.message = "완료".into();
+                        if matches!(
+                            p.phase.as_deref(),
+                            Some("mossPartial" | "mossTimingContext")
+                        ) {
+                            p.status = "needsReview".into();
+                        } else {
+                            p.status = "completed".into();
+                            p.message = "완료".into();
+                        }
                     }
                     Err(error) => {
                         p.status = if p.phase.as_deref() == Some("saving") {
@@ -2514,6 +2679,9 @@ impl Processing {
         )
     }
     fn remaining_model_bytes(&self, spec: ModelSpec) -> Result<u64, String> {
+        if self.model_ready(spec) {
+            return Ok(0);
+        }
         let model = spec.model();
         let target = self.root.join(spec.relative_dir());
         let length = |path: PathBuf| {
@@ -2544,6 +2712,12 @@ impl Processing {
         total: u64,
     ) -> Result<u64, String> {
         let model = spec.model();
+        let input = self.read_model_dir(spec)?;
+        if !input.starts_with(&self.root) {
+            self.verified_model_dir(spec, cancel)
+                .map_err(|e| e.message)?;
+            return Ok(model.bytes());
+        }
         let target = self.model_dir_of(spec)?;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -2600,11 +2774,7 @@ impl Processing {
         if let Ok(entries) = fs::read_dir(&target) {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().into_owned();
-                let set_aside = name.starts_with("verified.invalid-")
-                    || model.files.iter().any(|file| {
-                        name.starts_with(&format!("{}.invalid-", file.name))
-                            || name.starts_with(&format!("{}.partial-", file.name))
-                    });
+                let set_aside = model_set_aside_file(&model, &name);
                 if set_aside && entry.file_type().is_ok_and(|kind| kind.is_file()) {
                     let _ = fs::remove_file(entry.path());
                 }
@@ -2723,8 +2893,16 @@ impl Processing {
             return Err(reason.into());
         }
         if let Some(meeting_id) = &record.meeting_id {
-            if record.source_fingerprint.as_ref()
-                != Some(&Self::source_fingerprint(&core, meeting_id, &record.kind)?)
+            if !(record.kind == "transcribe"
+                && record.speech_engine == SpeechEngine::Moss
+                && self
+                    .root
+                    .join("processing")
+                    .join(&record.id)
+                    .join("moss-request.json")
+                    .is_file())
+                && record.source_fingerprint.as_ref()
+                    != Some(&Self::source_fingerprint(&core, meeting_id, &record.kind)?)
             {
                 return Err("회의 내용이 변경되어 이전 작업을 다시 실행하지 않았습니다. 현재 회의에서 작업을 시작해 주세요.".into());
             }
@@ -2799,9 +2977,17 @@ impl Processing {
                 Some(successor_id.into()),
             )?,
             "transcribe" => self.transcribe_bound(
-                core,
+                core.clone(),
                 record.meeting_id.clone().ok_or("회의가 없습니다.")?,
-                record.source_fingerprint.clone(),
+                if record.speech_engine == SpeechEngine::Moss {
+                    Some(Self::source_fingerprint(
+                        &core,
+                        record.meeting_id.as_deref().ok_or("회의가 없습니다.")?,
+                        "transcribe",
+                    )?)
+                } else {
+                    record.source_fingerprint.clone()
+                },
                 Some(successor_id.into()),
                 None,
                 Some(record.speech_engine),
@@ -3002,6 +3188,21 @@ impl Processing {
         let job_id = requested_id
             .clone()
             .unwrap_or_else(|| Uuid::new_v4().to_string());
+        let previous_moss = (engine == SpeechEngine::Moss)
+            .then(|| {
+                self.records
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .find(|record| record.retry_successor_id.as_deref() == Some(&job_id))
+                    .map(|record| self.root.join("processing").join(&record.id))
+            })
+            .flatten();
+        let capture_expected = expected.clone();
+        let expected = match &previous_moss {
+            Some(path) => crate::moss_asr::baseline(path)?,
+            None => expected,
+        };
         let previous_job = self
             .records
             .lock()
@@ -3027,6 +3228,9 @@ impl Processing {
             None
         };
         let job_path = directory(&self.root, &format!("processing/{job_id}"))?;
+        if engine == SpeechEngine::Moss {
+            crate::moss_asr::save_baseline(&job_path, &expected)?;
+        }
         let glossary = crate::glossary_context::freeze_job(
             &self.root,
             &job_path,
@@ -3052,7 +3256,7 @@ impl Processing {
                         .transcript(&meeting_id)
                         .map_err(message)?
                         .map(|d| d.version)
-                        != expected
+                        != capture_expected
                 {
                     return Err("회의 내용이 변경되어 음성 인식을 시작하지 않았습니다.".into());
                 }
@@ -3116,6 +3320,7 @@ impl Processing {
                 let raw = match &live {
                     Some(live) if engine == live_engine => Ok(live.raw.clone()),
                     _ => match engine {
+                        SpeechEngine::Moss => crate::moss_asr::recognize(&this.resources, &prepared, &path, &cancel, &directory, previous_moss.as_deref()),
                         SpeechEngine::QwenKo => {
                             this.update(|p| {
                                 p.message =
@@ -3184,9 +3389,15 @@ impl Processing {
                     .verify(&audio, &cancel)
                     .map_err(|error| error.message)?;
                 cancelled(&cancel)?;
+                if engine == SpeechEngine::Moss {
+                    if this.verified_model_dir(ModelSpec::speech(engine), &cancel).map_err(|e|this.report(e))? != directory {
+                        return Err("모델 경로가 처리 중 변경됐습니다.".into());
+                    }
+                }
                 let source = this.checkpoint_transcript_following(
                     &cancel,
                     || match engine {
+                        SpeechEngine::Moss => core.commit_moss_chunk_transcript(&meeting_id, expected, raw),
                         SpeechEngine::AppleSpeech => {
                             core.commit_apple_transcript(&meeting_id, expected, raw)
                         }
@@ -3200,8 +3411,14 @@ impl Processing {
                             core.commit_qwen_transcript(&meeting_id, expected, raw)
                         }
                     },
-                    |progress, source| {
-                        if speaker_enabled {
+                    |progress, source: &nero_core::Transcript| {
+                        if engine == SpeechEngine::Moss {
+                            crate::moss_asr::save_baseline(&path, &Some(source.version.clone()))?;
+                            let mut record = this.records.lock().unwrap().iter().find(|r| Some(&r.id) == progress.id.as_ref()).cloned().ok_or("MOSS 작업을 찾을 수 없습니다.")?;
+                            record.source_fingerprint = Some(Self::source_fingerprint(&core, &meeting_id, "transcribe")?);
+                            this.save_job_or_keep(record)?;
+                        }
+                        if speaker_enabled && !source.segments.is_empty() && source.source.as_ref().and_then(|s| s.recognition_report.as_ref()).is_none_or(|report| report.text_complete()) {
                             this.bind_speaker_continuation(progress, &core, &meeting_id, source)
                         } else {
                             Ok(())
@@ -3214,6 +3431,22 @@ impl Processing {
                     .and_then(|live| tempfile::TempPath::try_from_path(&live.audio).ok());
                 this.update(|p| p.live_transcript = None);
                 this.wait_live(&meeting_id, &session_id, &cancel)?;
+                if source.segments.is_empty() { return Ok(Some(meeting_id)); }
+                if let Some(report) = source.source.as_ref().and_then(|source| source.recognition_report.as_ref()) {
+                    if !report.text_complete() {
+                        this.update(|p| {
+                            p.phase = Some("mossPartial".into());
+                            p.message = "일부 구간을 처리하지 못했습니다. 정상 결과는 저장했으며 실패 구간만 다시 시도할 수 있습니다.".into();
+                        });
+                        return Ok(Some(meeting_id));
+                    }
+                }
+                let timing_context = source.source.as_ref().and_then(|s|s.recognition_report.as_ref()).is_some_and(|r| !r.timing_context_segments.is_empty());
+                let finish_timing = || {
+                    if timing_context {
+                        this.update(|p| { p.phase = Some("mossTimingContext".into()); p.message = "전사를 저장했습니다. 일부 발언은 정확한 시각 대신 구간 범위로 표시합니다.".into(); });
+                    }
+                };
                 crate::terminology::correct(
                     &this,
                     &core,
@@ -3225,6 +3458,7 @@ impl Processing {
                 )?;
                 cancelled(&cancel)?;
                 if !speaker_enabled {
+                    finish_timing();
                     return Ok(Some(meeting_id));
                 }
                 // Recognition is already durable. A speaker-stage retry must never rerun ASR.
@@ -3273,7 +3507,7 @@ impl Processing {
                         &this,
                         &core,
                         &meeting_id,
-                        source,
+                        source.clone(),
                         &audio,
                         Some(&prepared),
                         &path,
@@ -3281,6 +3515,7 @@ impl Processing {
                     )
                     .map_err(|error| this.report(error))?;
                 }
+                finish_timing();
                 Ok(Some(meeting_id))
             },
         )
@@ -3780,6 +4015,7 @@ mod tests {
     fn setup() -> (tempfile::TempDir, Arc<Processing>) {
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path().canonicalize().unwrap();
+        crate::speech_choice::save(&root, SpeechEngine::Nemotron, true, None).unwrap();
         let process = Processing::new(root.clone(), root.clone());
         (temporary, process)
     }
@@ -3796,6 +4032,7 @@ mod tests {
             let (temporary, process) = setup();
             *process.platform_supported_override.lock().unwrap() = Some(true);
             touch(&process.worker("AudioPrepare"));
+            touch(&process.resources.join("native/moss/MossHarness"));
             touch(&crate::qwen_asr::executable(&process.resources));
             touch(&process.resources.join("native/crispasr/runtime.json"));
             touch(&crate::native_speech::executable(&process, true));
@@ -3811,6 +4048,221 @@ mod tests {
                     .unwrap();
             }
             fs::write(directory.join("verified.json"), engine.manifest()).unwrap();
+        }
+
+        fn waiting(process: &Processing) -> crate::speech_switch::Pending {
+            let pending = crate::speech_switch::Pending::new(SpeechEngine::QwenKo, false, None);
+            crate::speech_switch::save_pending(&process.root, &pending).unwrap();
+            *process.speech_switch.lock().unwrap() = Some(pending);
+            pending
+        }
+
+        fn setup_record(process: &Processing, status: JobStatus) -> JobRecord {
+            let record = JobRecord {
+                glossary_snapshot_required: false,
+                speech_engine: SpeechEngine::QwenKo,
+                speaker_enabled: false,
+                apple_speech_variant: None,
+                schema_version: 1,
+                id: Uuid::new_v4().to_string(),
+                kind: "setup".into(),
+                meeting_id: None,
+                source_fingerprint: None,
+                include_summary: false,
+                summary_template_ref: None,
+                acknowledged: false,
+                retry_successor_id: None,
+                failure_kind: None,
+                status,
+                phase: None,
+                message: "Synthetic setup state".into(),
+                created_at: 1,
+                updated_at: 1,
+            };
+            process.save_job(record.clone()).unwrap();
+            record
+        }
+
+        fn queued_setup(process: &Processing) -> String {
+            let record = setup_record(process, JobStatus::Queued);
+            let id = record.id.clone();
+            process.pending.lock().unwrap().push_back(Pending {
+                record,
+                action: Box::new(|_, _, _| panic!("synthetic setup must not execute")),
+                import_existing: None,
+                validate: None,
+            });
+            id
+        }
+
+        #[test]
+        fn duplicate_switch_requests_preserve_the_existing_setup_and_pending_file() {
+            let (_temporary, process) = qwen_device();
+            if !process.supported_for(SpeechEngine::QwenKo) {
+                return;
+            }
+            ready(&process, SpeechEngine::Nemotron);
+            process
+                .set_speech_selection(SpeechEngine::Nemotron, false, None)
+                .unwrap();
+            let pending = waiting(&process);
+            let id = queued_setup(&process);
+            let progress = process.request_speech_engine(SpeechEngine::QwenKo).unwrap();
+            assert_eq!(progress.speech_engine, Some(SpeechEngine::Nemotron));
+            assert_eq!(progress.speech_switch.unwrap().target, SpeechEngine::QwenKo);
+            let queue = process.pending.lock().unwrap();
+            assert_eq!(queue.len(), 1);
+            assert_eq!(queue[0].record.id, id);
+            drop(queue);
+            assert_eq!(
+                crate::speech_switch::load_pending(&process.root).unwrap(),
+                Some(pending)
+            );
+            assert!(process
+                .request_speech_engine(SpeechEngine::WhisperTurbo)
+                .is_err());
+            assert_eq!(
+                crate::speech_switch::load_pending(&process.root).unwrap(),
+                Some(pending)
+            );
+        }
+
+        #[test]
+        fn cancelling_a_queued_setup_with_ready_files_cannot_apply_its_switch_after_restart() {
+            let (_temporary, process) = qwen_device();
+            if !process.supported_for(SpeechEngine::QwenKo) {
+                return;
+            }
+            ready(&process, SpeechEngine::Nemotron);
+            ready(&process, SpeechEngine::QwenKo);
+            process
+                .set_speech_selection(SpeechEngine::Nemotron, false, None)
+                .unwrap();
+            waiting(&process);
+            let id = queued_setup(&process);
+            process.cancel(&id).unwrap();
+            process.reconcile_speech_switch(&None);
+            assert_eq!(process.speech_engine(), SpeechEngine::Nemotron);
+            assert_eq!(
+                crate::speech_switch::load_pending(&process.root).unwrap(),
+                None
+            );
+            let reopened = Processing::new(process.root.clone(), process.resources.clone());
+            *reopened.platform_supported_override.lock().unwrap() = Some(true);
+            reopened.reconcile_speech_switch(&None);
+            assert_eq!(reopened.speech_engine(), SpeechEngine::Nemotron);
+            assert_eq!(reopened.snapshot().speech_switch, None);
+        }
+
+        #[test]
+        fn cancelling_a_running_setup_retires_its_switch_before_the_worker_exits() {
+            let (_temporary, process) = qwen_device();
+            if !process.supported_for(SpeechEngine::QwenKo) {
+                return;
+            }
+            ready(&process, SpeechEngine::Nemotron);
+            ready(&process, SpeechEngine::QwenKo);
+            process
+                .set_speech_selection(SpeechEngine::Nemotron, false, None)
+                .unwrap();
+            waiting(&process);
+            let record = setup_record(&process, JobStatus::Running);
+            let cancel = Arc::new(AtomicBool::new(false));
+            let (release, wait) = std::sync::mpsc::channel();
+            *process.running.lock().unwrap() = Some(Running {
+                id: record.id.clone(),
+                cancel: cancel.clone(),
+                import_existing: None,
+                handle: thread::spawn(move || {
+                    let _ = wait.recv_timeout(Duration::from_secs(5));
+                }),
+            });
+            process.update(|progress| {
+                progress.id = Some(record.id.clone());
+                progress.kind = "setup".into();
+                progress.status = "running".into();
+            });
+            process.cancel(&record.id).unwrap();
+            assert!(cancel.load(Ordering::Acquire));
+            assert_eq!(
+                crate::speech_switch::load_pending(&process.root).unwrap(),
+                None
+            );
+            release.send(()).unwrap();
+            process
+                .running
+                .lock()
+                .unwrap()
+                .take()
+                .unwrap()
+                .handle
+                .join()
+                .unwrap();
+            process.reconcile_speech_switch(&None);
+            assert_eq!(process.speech_engine(), SpeechEngine::Nemotron);
+        }
+
+        #[test]
+        fn reconciliation_yields_to_an_in_progress_switch_command() {
+            let (_temporary, process) = qwen_device();
+            if !process.supported_for(SpeechEngine::QwenKo) {
+                return;
+            }
+            ready(&process, SpeechEngine::Nemotron);
+            ready(&process, SpeechEngine::QwenKo);
+            process
+                .set_speech_selection(SpeechEngine::Nemotron, false, None)
+                .unwrap();
+            waiting(&process);
+            let command = process.speech_switch_gate.lock().unwrap();
+            process.reconcile_speech_switch(&None);
+            assert_eq!(process.speech_engine(), SpeechEngine::Nemotron);
+            drop(command);
+            process.cancel_speech_switch().unwrap();
+            process.reconcile_speech_switch(&None);
+            assert_eq!(process.speech_engine(), SpeechEngine::Nemotron);
+        }
+
+        #[test]
+        fn waiting_switches_are_not_overwritten_by_direct_engine_or_speaker_settings() {
+            let (_temporary, process) = qwen_device();
+            if !process.supported_for(SpeechEngine::QwenKo) {
+                return;
+            }
+            ready(&process, SpeechEngine::Nemotron);
+            process
+                .set_speech_selection(SpeechEngine::Nemotron, false, None)
+                .unwrap();
+            let pending = waiting(&process);
+            assert!(process.set_speaker_enabled(true).is_err());
+            assert!(process.set_speech_engine(SpeechEngine::Nemotron).is_err());
+            assert_eq!(process.speech_engine(), SpeechEngine::Nemotron);
+            assert!(!process.speaker_enabled());
+            assert_eq!(
+                crate::speech_switch::load_pending(&process.root).unwrap(),
+                Some(pending)
+            );
+        }
+
+        #[test]
+        fn failed_setup_with_ready_files_waits_for_an_explicit_switch_retry() {
+            let (_temporary, process) = qwen_device();
+            if !process.supported_for(SpeechEngine::QwenKo) {
+                return;
+            }
+            ready(&process, SpeechEngine::Nemotron);
+            ready(&process, SpeechEngine::QwenKo);
+            process
+                .set_speech_selection(SpeechEngine::Nemotron, false, None)
+                .unwrap();
+            waiting(&process);
+            setup_record(&process, JobStatus::Failed);
+            process.reconcile_speech_switch(&None);
+            assert_eq!(process.speech_engine(), SpeechEngine::Nemotron);
+            assert!(process.snapshot().speech_switch.unwrap().error.is_some());
+            let retried = process.request_speech_engine(SpeechEngine::QwenKo).unwrap();
+            assert_eq!(retried.speech_engine, Some(SpeechEngine::QwenKo));
+            assert_eq!(retried.speech_switch, None);
         }
 
         #[test]
@@ -3956,7 +4408,7 @@ mod tests {
         #[test]
         fn existing_users_see_the_offer_once_and_a_decline_is_remembered() {
             let (_temporary, process) = qwen_device();
-            if !process.supported_for(SpeechEngine::QwenKo) {
+            if !process.supported_for(SpeechEngine::Moss) {
                 return;
             }
             assert_eq!(process.snapshot().speech_offer, None); // nothing set up yet
@@ -3969,8 +4421,8 @@ mod tests {
             let process = Processing::new(process.root.clone(), process.resources.clone());
             *process.platform_supported_override.lock().unwrap() = Some(true);
             let offer = process.snapshot().speech_offer.unwrap();
-            assert_eq!(offer.engine, SpeechEngine::QwenKo);
-            let manifest = Processing::model_for(SpeechEngine::QwenKo);
+            assert_eq!(offer.engine, SpeechEngine::Moss);
+            let manifest = Processing::model_for(SpeechEngine::Moss);
             assert_eq!(
                 offer.download_bytes,
                 manifest.files.iter().map(|file| file.bytes).sum::<u64>()

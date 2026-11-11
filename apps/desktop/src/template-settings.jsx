@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { createRoot } from 'react-dom/client';
-import { ArrowLeft, Plus, Trash2 } from 'lucide-react';
+import { ArrowLeft, Plus, Trash2 } from '../../../design-system/icons-react.jsx';
 import { ConfirmDialog } from '../../../design-system/components/ui/confirm-dialog.jsx';
 import { bindTemplateDialogKeys, createTemplateSettingsFlow } from './template-settings-flow.js';
 
@@ -34,7 +34,7 @@ function TemplateSettings({ flow, confirm, beforeLeave }) {
       <p className="template-settings-description">앱과 에이전트가 함께 사용합니다.</p>
       <div className="settings-group template-settings-list">
         {state.items.map(item => <div className="template-settings-row" key={item.id}>
-          <div className="template-settings-copy"><div className="template-settings-name"><strong>{item.name}</strong>{item.builtIn && <span>기본</span>}{item.customized && <span>수정됨</span>}</div><p title={item.description}>{item.description}</p></div>
+          <div className="template-settings-copy"><div className="template-settings-name"><strong>{item.name}</strong>{item.customized && <span>수정됨</span>}</div><p title={item.description}>{item.description}</p></div>
           <button type="button" className="small" disabled={state.busy} aria-label={`${item.name} 편집`} onClick={() => { void flow.open(item.id); }}>편집</button>
         </div>)}
       </div>

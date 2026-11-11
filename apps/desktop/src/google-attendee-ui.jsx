@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { X } from 'lucide-react';
+import { X } from '../../../design-system/icons-react.jsx';
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem, SelectGroup, SelectLabel } from '../../../design-system/components/ui/select.jsx';
 import { googleRows, personChoiceLabel } from './google-attendee-draft.js';
 import './google-attendee-ui.css';

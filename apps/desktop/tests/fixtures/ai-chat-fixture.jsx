@@ -5,7 +5,7 @@ import { mountActionMenus } from '../../../../design-system/action-menu.mjs';
 import { NeroControls } from '../../../../design-system/react-controls.jsx';
 import { mountMeetingDetail } from '../../src/meeting-detail-ui.js';
 
-export function mountAiChatFixture({ document, scenario = 'ready', delay = 20 }) {
+export function mountAiChatFixture({ document, scenario = 'ready', delay = 20, accountCheck = null }) {
   const byId = id => document.getElementById(id);
   const calls = [], timers = new Set();
   let receiver = null, ui = null, finishLogin = null, finishNotion = null, conversationCount = 0;
@@ -27,8 +27,10 @@ export function mountAiChatFixture({ document, scenario = 'ready', delay = 20 })
     meetingRemoveSource: async request => { meetingSources = meetingSources.filter(source => source.pageId !== request.pageId); return { revision: ++contextRevision, sources: structuredClone(meetingSources) }; },
     composerCatalog: async () => ({ skills: [{ id: 'meeting-summary', name: '회의 요약', aliases: ['회의요약', 'meeting-summary'] }], templates: [{ id: 'example-template', name: '기본 요약', revision: 'r1' }], defaultTemplateId: 'example-template' }),
     accounts: async () => accountSnapshot(),
+    checkAccounts: async (retry, provider) => { calls.push(['checkAccounts', retry, ...(provider ? [provider] : [])]); return accountCheck ? accountCheck(retry, accountSnapshot(), provider) : accountSnapshot(); },
     connect: async (provider, accountId) => { calls.push(['connect', provider, accountId]); return { attemptId: 'example-attempt' }; },
     finishConnect: async attemptId => { calls.push(['finishConnect', attemptId]); return new Promise(resolve => { finishLogin = resolve; }); },
+    reopenConnect: async attemptId => { calls.push(['reopenConnect', attemptId]); },
     cancelConnect: async attemptId => { calls.push(['cancelConnect', attemptId]); return accountSnapshot(); },
     notionConnect: async () => ({ attemptId: 'notion-attempt' }),
     notionFinish: async () => new Promise(resolve => { finishNotion = resolve; }),
@@ -59,7 +61,7 @@ export function mountAiChatFixture({ document, scenario = 'ready', delay = 20 })
         receiver?.({ requestId: value.requestId, conversationId: value.conversationId, sequence: message.sequence, attachments, saveTargets, ...body, text: body.type === 'delta' ? body.text : message.text });
       };
       if (scenario === 'failed') later(() => { if (requests.has(value.requestId)) event({ type: 'failed', error: '예시 연결 오류입니다.' }); });
-      else later(() => { if (!requests.has(value.requestId)) return; event({ type: 'delta', text: '## 결정 사항\n- 다음 회의에서 일정을 확인합니다. [1]\n' }); later(() => { if (!requests.has(value.requestId)) return; event({ type: 'completed', messageId: `answer-${value.requestId}`, citations: [{ reference: 1, kind: 'meeting', label: '일정 확인', meetingId: 'example-meeting', segmentId: 'example-segment' }] }); }); });
+      else later(() => { if (!requests.has(value.requestId)) return; event({ type: 'delta', text: '## 결정 사항\n- 다음 회의에서 일정을 확인합니다. [1]\n' }); later(() => { if (!requests.has(value.requestId)) return; event({ type: 'completed', actualModelId: 'example-actual-model', messageId: `answer-${value.requestId}`, citations: [{ reference: 1, kind: 'meeting', label: '일정 확인', meetingId: 'example-meeting', segmentId: 'example-segment' }] }); }); });
       return { conversationId: value.conversationId, requestId: value.requestId, questionId: `question-${value.requestId}` };
     },
     selectVersion: async (conversationId, messageId) => { calls.push(['selectVersion', messageId]); const conversation = conversations.get(conversationId); conversation.versions = { ...(conversation.versions || {}), [parentOf(conversation, messageId)]: messageId }; return structuredClone(conversation); },
