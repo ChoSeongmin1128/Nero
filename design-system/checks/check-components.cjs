@@ -6,6 +6,7 @@ const { execFileSync } = require('node:child_process');
 const markdown = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'nero-markdown-')), 'markdown.js');
 execFileSync(process.execPath, [path.resolve(__dirname, '../../apps/desktop/scripts/build-markdown.mjs'), markdown]);
 require(markdown);
+fs.rmSync(path.dirname(markdown), { recursive: true, force: true });
 const UI = require('../components.js');
 const { test } = require('node:test');
 

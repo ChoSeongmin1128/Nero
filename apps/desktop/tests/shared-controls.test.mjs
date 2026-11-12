@@ -1,15 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Window } from 'happy-dom';
 import { buildControls } from '../scripts/build-controls.mjs';
 import { dateAt, dateKey, dateValue, initialDate, parseDate } from '../../../design-system/control-values.mjs';
 
-const generated = join(await mkdtemp(join(tmpdir(), 'nero-controls-')), 'controls.js');
+const scratch = await mkdtemp(join(tmpdir(), 'nero-controls-'));
+const generated = join(scratch, 'controls.js');
 await buildControls(generated);
 const bundle = await readFile(generated, 'utf8');
+await rm(scratch, { recursive: true, force: true });
 
 function page(t, html) {
   const window = new Window({ url: 'http://nero.test', settings: { enableJavaScriptEvaluation: true, suppressInsecureJavaScriptEnvironmentWarning: true } });

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { copyFile, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -12,8 +12,9 @@ const tracked = [
   'crates/nero-cli/Cargo.toml',
 ];
 
-async function fixture() {
+async function fixture(t) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'nero-version-test-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
   const script = path.join(root, 'apps/desktop/scripts/version.mjs');
   await mkdir(path.dirname(script), { recursive: true });
   await copyFile(new URL('../scripts/version.mjs', import.meta.url), script);
@@ -39,8 +40,8 @@ async function fixture() {
   };
 }
 
-test('version CLI checks every product mirror and synchronizes release version without changing dependencies or identity', async () => {
-  const project = await fixture();
+test('version CLI checks every product mirror and synchronizes release version without changing dependencies or identity', async t => {
+  const project = await fixture(t);
   assert.equal(project.run('check').status, 0);
   const result = project.run('set', '0.0.2', '--build', '2');
   assert.equal(result.status, 0, result.stderr);
@@ -56,8 +57,8 @@ test('version CLI checks every product mirror and synchronizes release version w
   assert.match(files[6], /version = "0\.0\.2"/);
 });
 
-test('version CLI allows rebuilds but rejects malformed versions, rollback and reused build numbers before writing', async () => {
-  const project = await fixture();
+test('version CLI allows rebuilds but rejects malformed versions, rollback and reused build numbers before writing', async t => {
+  const project = await fixture(t);
   const before = await project.files();
   for (const args of [
     ['set', '0.0', '--build', '2'], ['set', '0.0.2-beta', '--build', '2'],
@@ -70,8 +71,8 @@ test('version CLI allows rebuilds but rejects malformed versions, rollback and r
   assert.equal(project.run('set', '0.0.1', '--build', '2').status, 0);
 });
 
-test('a mismatched late manifest blocks check and all release writes', async () => {
-  const project = await fixture();
+test('a mismatched late manifest blocks check and all release writes', async t => {
+  const project = await fixture(t);
   const target = path.join(project.root, 'Cargo.lock');
   await writeFile(target, (await readFile(target, 'utf8')).replace('name = "nero-core"\nversion = "0.0.1"', 'name = "nero-core"\nversion = "0.0.3"'));
   const before = await project.files();
