@@ -66,11 +66,17 @@ fn collect(value: &mut Value, output: &Path) -> Result<(), Failure> {
     {
         let file = output.join(format!("chunk-{}.json", chunk["index"]));
         if file.exists() {
-            chunk["rawBytes"] = json!(read(&file, 2 * 1024 * 1024)?);
+            let raw = json!(read(&file, 2 * 1024 * 1024)?);
+            // Resuming reads back the same whole-chunk output the checkpoint holds.
+            if chunk["rawBytes"] == raw && chunk["notProcessed"] == json!(false) {
+                continue;
+            }
+            chunk["rawBytes"] = raw;
             chunk["notProcessed"] = json!(false);
             // A chunk recognized again reads the whole analysis file.
             if let Some(chunk) = chunk.as_object_mut() {
                 chunk.remove("input");
+                chunk.remove("pieces");
             }
         }
     }
@@ -310,8 +316,9 @@ pub(super) fn recognize_wav(
     abort: &dyn Fn() -> bool,
 ) -> Result<Vec<(u32, Vec<u8>)>, Failure> {
     cancelled(cancel)?;
-    let chunks = frames / MOSS_CHUNK_FRAMES;
-    if chunks == 0 || frames % MOSS_CHUNK_FRAMES != 0 {
+    // Whole chunks while recording; a single shorter piece when a chunk is split.
+    let chunks = frames.div_ceil(MOSS_CHUNK_FRAMES);
+    if frames == 0 || (chunks > 1 && frames % MOSS_CHUNK_FRAMES != 0) {
         return Err(failure("MOSS 구간 길이가 올바르지 않습니다."));
     }
     let output = work.join("moss-chunks");
@@ -337,6 +344,92 @@ pub(super) fn recognize_wav(
         }
     }
     Ok(results)
+}
+
+// Shortest chunk worth splitting: each piece keeps at least a second of audio.
+const SPLIT_MINIMUM: u64 = 2 * 16_000;
+
+// The canonical WAV of `frames` samples of `audio` from `offset`, and its digest.
+fn piece_wav(audio: &Path, offset: u64, frames: u64, path: &Path) -> Result<String, Failure> {
+    let (data, total) = pcm_region(audio)?;
+    if offset.checked_add(frames).is_none_or(|end| end > total) {
+        return Err(failure("MOSS 입력 음성을 확인하지 못했습니다."));
+    }
+    let header = nero_core::moss_chunk_wav_header(frames).map_err(|e| e.to_string())?;
+    let mut bytes = vec![0_u8; (frames * 2) as usize];
+    let mut file = plain_file(audio)?;
+    std::io::Seek::seek(&mut file, std::io::SeekFrom::Start(data + offset * 2))
+        .map_err(|e| e.to_string())?;
+    file.read_exact(&mut bytes)
+        .map_err(|_| failure("MOSS 입력 음성을 확인하지 못했습니다."))?;
+    let mut digest = Sha256::new();
+    digest.update(header);
+    digest.update(&bytes);
+    let mut output = fs::File::create(path).map_err(|e| e.to_string())?;
+    std::io::Write::write_all(&mut output, &header)
+        .and_then(|()| std::io::Write::write_all(&mut output, &bytes))
+        .and_then(|()| output.sync_all())
+        .map_err(crate::storage_space::write_error)?;
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+// Every chunk that failed as a whole is recognized again as two halves, each from its
+// own WAV: the model is deterministic, so only a different input can change its
+// result. The pieces are recorded whatever their outcome, so a retry never repeats it.
+fn split_failed(
+    resources: &Path,
+    audio: &Path,
+    frames: u64,
+    work: &Path,
+    cancel: &AtomicBool,
+    model: &Path,
+    value: &mut Value,
+) -> Result<(), Failure> {
+    let report = nero_core::inspect_moss_chunk_transcript(
+        &serde_json::to_vec(&*value).map_err(|e| e.to_string())?,
+        frames,
+        16_000,
+    )
+    .map_err(|e| e.to_string())?;
+    for chunk in report.chunks {
+        let index = chunk.index as usize;
+        let length = chunk.end_frame - chunk.start_frame;
+        if chunk.state != RecognitionChunkState::Failed
+            || value["chunks"][index].get("pieces").is_some()
+            || value["chunks"][index].get("input").is_some()
+            || length < SPLIT_MINIMUM
+        {
+            continue;
+        }
+        cancelled(cancel)?;
+        let half = length / 2;
+        let mut pieces = Vec::new();
+        for (part, (offset, piece)) in [
+            (chunk.start_frame, half),
+            (chunk.start_frame + half, length - half),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let directory = work.join(format!("split-{index}-{part}"));
+            fs::create_dir(&directory).map_err(|e| e.to_string())?;
+            let wav = directory.join("piece.wav");
+            let sha256 = piece_wav(audio, offset, piece, &wav)?;
+            let outputs = recognize_wav(
+                resources, &wav, &sha256, piece, &directory, cancel, model, &|| false,
+            )?;
+            let _ = fs::remove_file(&wav);
+            let raw = outputs
+                .into_iter()
+                .find(|(index, _)| *index == 0)
+                .map(|(_, raw)| raw)
+                .unwrap_or_default();
+            pieces.push(json!({"rawBytes":raw,"input":{"sha256":sha256,"frames":piece,"offsetFrames":offset}}));
+        }
+        value["schemaVersion"] = json!(3);
+        value["chunks"][index]["pieces"] = json!(pieces);
+    }
+    Ok(())
 }
 
 pub(super) fn recognize(
@@ -374,10 +467,14 @@ pub(super) fn recognize(
         16_000,
     )
     .map_err(|e| e.to_string())?;
+    // A chunk already tried in pieces would give the same result again.
     let selected: Vec<u32> = report
         .chunks
         .iter()
-        .filter(|chunk| chunk.state != RecognitionChunkState::Complete)
+        .filter(|chunk| {
+            chunk.state != RecognitionChunkState::Complete
+                && value["chunks"][chunk.index as usize].get("pieces").is_none()
+        })
         .map(|chunk| chunk.index)
         .collect();
     let output = work.join("moss-chunks");
@@ -400,6 +497,9 @@ pub(super) fn recognize(
             &|| false,
         )?;
         collect(&mut value, &output)?;
+        save(&work.join("moss-checkpoint.json"), &value)?;
+        cancelled(cancel)?;
+        split_failed(resources, audio.path(), frames, work, cancel, model, &mut value)?;
         save(&work.join("moss-checkpoint.json"), &value)?;
         cancelled(cancel)?;
         if Sha256::digest(read(&cli, 256 * 1024 * 1024)?) != cli_hash {
@@ -521,12 +621,14 @@ import json, sys
 from pathlib import Path
 request=json.loads(Path(sys.argv[2]).read_text())
 flags=Path(request['modelDirectory'])
-with open(flags/'executed.log','a') as log: log.write(json.dumps(request['selectedChunks'])+'\n')
+with open(flags/'executed.log','a') as log: log.write(json.dumps([request['inputAudioFrames']]+request['selectedChunks'])+'\n')
+piece=request['inputAudioFrames']<960000
 for index in request['selectedChunks']:
  start=index*960000; end=min(start+960000,request['inputAudioFrames']); frames=end-start
  lengths=[(min(480000,frames-i)+1279)//1280 for i in range(0,frames,480000)]
+ failed=(flags/('fail-pieces' if piece else 'fail-whole-%d'%index)).exists()
  value={'index':index,'startFrame':start,'endFrame':end,'inputAudioSha256':request['inputAudioSha256'],
-  'rawText':'[0]합성 문장[0.5]','segments':[{'start':0,'end':0.5,'text':'합성 문장'}],'parsedCompletely':True,
+  'rawText':'[0]합성 문장[0.5]','segments':[{'start':0,'end':0.5,'text':'합성 문장'}],'parsedCompletely':not failed,
   'generationMetadata':[{'metadataSchemaVersion':2,'eosPolicy':'model-generation-config+tokenizer-v1','samplingPolicy':'greedy-argmax-v1',
    'terminationReason':'eos','terminalTokenId':151645,'configuredEosTokenIds':[151645],'tokenizerEosTokenId':151645,
    'inputAudioSamples':frames,'featureChunkCount':len(lengths),'featureTokenLengths':lengths,'audioTokenCount':sum(lengths),'audioEmbeddingCount':sum(lengths),
@@ -595,7 +697,10 @@ for index in request['selectedChunks']:
         let work = root.join("final");
         fs::create_dir(&work).unwrap();
         let raw = recognize(&root, &audio, &work, &cancel, &model, None, &seeds).unwrap();
-        assert_eq!(fs::read_to_string(model.join("executed.log")).unwrap(), "[2]\n");
+        assert_eq!(
+            fs::read_to_string(model.join("executed.log")).unwrap(),
+            format!("[{frames}, 2]\n")
+        );
         let report = nero_core::inspect_moss_chunk_transcript(&raw, frames, 16000).unwrap();
         assert!(report.text_complete());
         let value: Value = serde_json::from_slice(&raw).unwrap();
@@ -624,7 +729,7 @@ for index in request['selectedChunks']:
         let raw = recognize(&root, &audio, &work, &cancel, &model, None, &rejected).unwrap();
         assert_eq!(
             fs::read_to_string(model.join("executed.log")).unwrap(),
-            "[0, 1, 2]\n"
+            format!("[{frames}, 0, 1, 2]\n")
         );
         let value: Value = serde_json::from_slice(&raw).unwrap();
         assert!(value["chunks"]
@@ -632,6 +737,60 @@ for index in request['selectedChunks']:
             .unwrap()
             .iter()
             .all(|chunk| chunk.get("input").is_none()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_chunk_is_recognized_again_in_two_halves_and_never_repeated_after() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let model = fake_worker(&root);
+        fs::write(model.join("fail-whole-1"), b"fixture").unwrap();
+        let frames = 2 * MOSS_CHUNK_FRAMES + 16000;
+        let input = root.join("audio.wav");
+        let mut wav = hound::WavWriter::create(
+            &input,
+            hound::WavSpec {
+                channels: 1,
+                sample_rate: 16000,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            },
+        )
+        .unwrap();
+        for i in 0..frames {
+            wav.write_sample(((i * 13) % 997) as i16).unwrap();
+        }
+        wav.finalize().unwrap();
+        let cancel = AtomicBool::new(false);
+        let audio = AnalysisAudio::from_live(&input, &input, &cancel).unwrap();
+        let run = |name: &str, previous: Option<&Path>| {
+            let work = root.join(name);
+            fs::create_dir(&work).unwrap();
+            let _ = fs::remove_file(model.join("executed.log"));
+            let raw = recognize(&root, &audio, &work, &cancel, &model, previous, &[]).unwrap();
+            let log = fs::read_to_string(model.join("executed.log")).unwrap_or_default();
+            (work, raw, log)
+        };
+        let half = MOSS_CHUNK_FRAMES / 2;
+        let (_, raw, log) = run("split", None);
+        assert_eq!(log, format!("[{frames}, 0, 1, 2]\n[{half}, 0]\n[{half}, 0]\n"));
+        let report = nero_core::inspect_moss_chunk_transcript(&raw, frames, 16000).unwrap();
+        assert!(report.text_complete());
+        let value: Value = serde_json::from_slice(&raw).unwrap();
+        assert_eq!(value["schemaVersion"], 3);
+        assert_eq!(value["chunks"][1]["pieces"][1]["input"]["offsetFrames"], MOSS_CHUNK_FRAMES + half);
+        assert!(!value["chunks"][1]["rawBytes"].as_array().unwrap().is_empty());
+
+        fs::write(model.join("fail-pieces"), b"fixture").unwrap();
+        let (failed, raw, _) = run("unrecognized", None);
+        let report = nero_core::inspect_moss_chunk_transcript(&raw, frames, 16000).unwrap();
+        assert_eq!(report.chunks[1].state, RecognitionChunkState::Failed);
+        assert_eq!(report.chunks[1].issue.as_deref(), Some("splitFailed"));
+        // The same input gives the same result: a retry runs nothing again.
+        let (_, again, log) = run("retry", Some(&failed));
+        assert_eq!(log, "");
+        assert_eq!(again, raw);
     }
 
     #[test]

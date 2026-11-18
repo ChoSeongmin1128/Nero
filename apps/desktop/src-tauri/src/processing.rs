@@ -286,6 +286,10 @@ fn retry_block_reason(record: &JobRecord) -> Option<&'static str> {
     {
         return Some(crate::release_capabilities::LOCAL_SUMMARY_MESSAGE);
     }
+    // Every missing chunk was already tried again in pieces; the model would repeat it.
+    if record.phase.as_deref() == Some("mossUnrecognized") {
+        return Some("인식하지 못한 구간은 다시 시도해도 같은 결과가 나옵니다.");
+    }
     if !matches!(
         record.status,
         JobStatus::Interrupted | JobStatus::Failed | JobStatus::Cancelled
@@ -2684,7 +2688,7 @@ impl Processing {
                         }
                         if matches!(
                             p.phase.as_deref(),
-                            Some("mossPartial" | "mossTimingContext")
+                            Some("mossPartial" | "mossUnrecognized" | "mossTimingContext")
                         ) {
                             p.status = "needsReview".into();
                         } else {
@@ -3667,10 +3671,24 @@ impl Processing {
                     }
                 }
                 crate::job_control::pause_point(&cancel);
+                // A retry that produced exactly the stored result keeps that transcript
+                // instead of saving a copy of it.
+                let unchanged = (engine == SpeechEngine::Moss)
+                    .then(|| core.transcript(&meeting_id).ok().flatten())
+                    .flatten()
+                    .filter(|current| {
+                        Some(&current.version) == expected.as_ref()
+                            && current.source.as_ref().is_some_and(|source| {
+                                source.raw_sha256 == format!("{:x}", Sha256::digest(&raw))
+                            })
+                    });
                 let source = this.checkpoint_transcript_following(
                     &cancel,
                     || match engine {
-                        SpeechEngine::Moss => core.commit_moss_chunk_transcript(&meeting_id, expected, raw),
+                        SpeechEngine::Moss => match unchanged {
+                            Some(current) => Ok(current),
+                            None => core.commit_moss_chunk_transcript(&meeting_id, expected, raw),
+                        },
                         SpeechEngine::AppleSpeech => {
                             core.commit_apple_transcript(&meeting_id, expected, raw)
                         }
@@ -3691,7 +3709,9 @@ impl Processing {
                             record.source_fingerprint = Some(Self::source_fingerprint(&core, &meeting_id, "transcribe")?);
                             this.save_job_or_keep(record)?;
                         }
-                        if speaker_enabled && !source.segments.is_empty() && source.source.as_ref().and_then(|s| s.recognition_report.as_ref()).is_none_or(|report| report.text_complete()) {
+                        // Speaker analysis reads the whole recording, so missing chunks
+                        // only leave their range without speakers.
+                        if speaker_enabled && !source.segments.is_empty() {
                             this.bind_speaker_continuation(progress, &core, &meeting_id, source)
                         } else {
                             Ok(())
@@ -3708,21 +3728,40 @@ impl Processing {
                     .and_then(|live| tempfile::TempPath::try_from_path(&live.audio).ok());
                 this.update(|p| p.live_transcript = None);
                 this.wait_live(&meeting_id, &session_id, &cancel)?;
-                if source.segments.is_empty() { return Ok(Some(meeting_id)); }
-                if let Some(report) = source.source.as_ref().and_then(|source| source.recognition_report.as_ref()) {
-                    if !report.text_complete() {
-                        this.update(|p| {
-                            p.phase = Some("mossPartial".into());
-                            p.message = "일부 구간을 처리하지 못했습니다. 정상 결과는 저장했으며 실패 구간만 다시 시도할 수 있습니다.".into();
-                        });
-                        return Ok(Some(meeting_id));
+                let report = source.source.as_ref().and_then(|source| source.recognition_report.clone());
+                // Missing chunks no longer stop terminology and speaker analysis. Those
+                // already tried in pieces cannot change on retry (same input, same result).
+                let partial = report.as_ref().filter(|report| !report.text_complete()).map(|report| {
+                    let settled = report.chunks.iter().all(|chunk| {
+                        chunk.state == nero_core::RecognitionChunkState::Complete
+                            || chunk.issue.as_deref() == Some("splitFailed")
+                    });
+                    if settled {
+                        ("mossUnrecognized", "일부 구간을 인식하지 못했습니다. 나머지 기록과 화자 구분은 저장했습니다.")
+                    } else {
+                        ("mossPartial", "일부 구간을 처리하지 못했습니다. 정상 결과는 저장했으며 실패 구간만 다시 시도할 수 있습니다.")
                     }
+                });
+                if source.segments.is_empty() {
+                    if let Some((phase, message)) = partial {
+                        this.update(|p| { p.phase = Some(phase.into()); p.message = message.into(); });
+                    }
+                    return Ok(Some(meeting_id));
                 }
-                let timing_context = source.source.as_ref().and_then(|s|s.recognition_report.as_ref()).is_some_and(|r| !r.timing_context_segments.is_empty());
-                let finish_timing = || {
-                    if timing_context {
+                let timing_context = report.as_ref().is_some_and(|r| !r.timing_context_segments.is_empty());
+                let finish_timing = || -> Result<(), String> {
+                    // Terminology and speaker revisions are this job's own; a retry
+                    // continues from them instead of being refused as a user edit.
+                    if engine == SpeechEngine::Moss {
+                        let current = core.transcript(&meeting_id).map_err(message)?.map(|document| document.version);
+                        crate::moss_asr::save_baseline(&path, &current)?;
+                    }
+                    if let Some((phase, message)) = partial {
+                        this.update(|p| { p.phase = Some(phase.into()); p.message = message.into(); });
+                    } else if timing_context {
                         this.update(|p| { p.phase = Some("mossTimingContext".into()); p.message = "전사를 저장했습니다. 일부 발언은 정확한 시각 대신 구간 범위로 표시합니다.".into(); });
                     }
+                    Ok(())
                 };
                 crate::job_control::pause_point(&cancel);
                 crate::terminology::correct(
@@ -3737,7 +3776,7 @@ impl Processing {
                 cancelled(&cancel)?;
                 crate::job_control::pause_point(&cancel);
                 if !speaker_enabled {
-                    finish_timing();
+                    finish_timing()?;
                     return Ok(Some(meeting_id));
                 }
                 // Recognition is already durable. A speaker-stage retry must never rerun ASR.
@@ -3794,7 +3833,7 @@ impl Processing {
                     )
                     .map_err(|error| this.report(error))?;
                 }
-                finish_timing();
+                finish_timing()?;
                 Ok(Some(meeting_id))
             },
         )

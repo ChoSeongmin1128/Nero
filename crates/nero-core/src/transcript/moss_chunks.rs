@@ -3,12 +3,49 @@
 use super::*;
 
 pub const POLICY: &str = "moss-independent-chunks-v1";
-pub(crate) const PROJECTOR: &str = "moss-independent-chunks-projector-v2";
+pub(crate) const PROJECTOR: &str = "moss-independent-chunks-projector-v3";
+const PROJECTOR_V2: &str = "moss-independent-chunks-projector-v2";
 const STORED_PROJECTOR: &str = "moss-independent-chunks-projector-v1";
 pub const CHUNK_FRAMES: u64 = 60 * SOURCE_TIMEBASE;
 const MAX_RAW_BYTES: usize = 16 * 1024 * 1024;
-// Two centisecond units observed with the pinned model, expressed at the input rate.
-const TERMINAL_OVERRUN_FRAMES: u64 = 320;
+// v2: two centisecond units observed with the pinned model, at the input rate.
+const TERMINAL_OVERRUN_FRAMES_V2: u64 = 320;
+// v3: 100 ms, after 40 and 60 ms overruns were observed on real meetings.
+const TERMINAL_OVERRUN_FRAMES: u64 = 1600;
+
+// What each stored projector version accepts. Documents keep the version they were
+// projected with, so history re-decodes them with the same rules.
+#[derive(Clone, Copy)]
+struct Rules {
+    // Clamp a bounded terminal overrun to the input end instead of a context range.
+    normalize_end: bool,
+    overrun_frames: u64,
+    // Ignore what starts at or after the input end, and allow chunks split in pieces.
+    after_end: bool,
+}
+
+impl Rules {
+    fn of(projector: &str) -> Option<Self> {
+        Some(match projector {
+            PROJECTOR => Self {
+                normalize_end: true,
+                overrun_frames: TERMINAL_OVERRUN_FRAMES,
+                after_end: true,
+            },
+            PROJECTOR_V2 => Self {
+                normalize_end: true,
+                overrun_frames: TERMINAL_OVERRUN_FRAMES_V2,
+                after_end: false,
+            },
+            STORED_PROJECTOR => Self {
+                normalize_end: false,
+                overrun_frames: TERMINAL_OVERRUN_FRAMES_V2,
+                after_end: false,
+            },
+            _ => return None,
+        })
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -80,6 +117,17 @@ struct ChunkRecord {
     // meeting was still being captured.
     #[serde(default)]
     input: Option<ChunkInput>,
+    // Schema 3: after the whole chunk failed, its range recognized again as pieces,
+    // each from its own WAV. `raw_bytes` keeps the failed whole-chunk output.
+    #[serde(default)]
+    pieces: Option<Vec<ChunkPiece>>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ChunkPiece {
+    raw_bytes: Vec<u8>,
+    input: ChunkInput,
 }
 
 /// Where a chunk recognized from its own WAV sits in the recording. `sha256` is the
@@ -241,7 +289,161 @@ pub(super) fn decode(
 }
 
 pub(super) fn is_projector(version: &str) -> bool {
-    matches!(version, PROJECTOR | STORED_PROJECTOR)
+    Rules::of(version).is_some()
+}
+
+// The start of every timed span in native text, with whether it carries text. Only
+// called after `complete_text` accepted the text.
+fn span_starts(raw: &str) -> Vec<(f64, bool)> {
+    let mut spans = Vec::new();
+    let mut rest = raw.trim();
+    while let Some((start, mut body)) = timestamp(rest) {
+        if body.starts_with("[S") {
+            if let Some((_, tail)) = body[1..].split_once(']') {
+                body = tail;
+            }
+        }
+        let Some((offset, tail)) = body
+            .match_indices('[')
+            .find_map(|(i, _)| timestamp(&body[i..]).map(|(_, tail)| (i, tail)))
+        else {
+            break;
+        };
+        spans.push((start, !body[..offset].trim().is_empty()));
+        rest = tail.trim();
+    }
+    spans
+}
+
+struct Projected {
+    segments: Vec<TranscriptSegment>,
+    contexts: Vec<u32>,
+    normalized: Vec<u32>,
+    after_end: bool,
+}
+
+// One native output read from the input `[start, end)` of the recording. `None` when
+// the output does not form a complete, valid recognition of that input.
+#[allow(clippy::too_many_arguments)]
+fn project_native(
+    native: NativeChunk,
+    start: u64,
+    end: u64,
+    source_frames: u64,
+    source_rate: u32,
+    first_index: usize,
+    rules: Rules,
+) -> Result<Option<Projected>> {
+    if !(native.parsed_completely
+        && complete_text(&native.raw_text, &native.segments)
+        && native.generation_metadata.len() == 1
+        && generation_complete(&native.generation_metadata[0], end - start)
+        && (native.raw_text.trim().is_empty()
+            || native.generation_metadata[0]["generationTokens"]
+                .as_u64()
+                .is_some_and(|tokens| tokens > 0))
+        && native.raw_text.len() <= 1024 * 1024
+        && !native.raw_text.contains('\0'))
+    {
+        return Ok(None);
+    }
+    let duration = source_frames as f64 / source_rate as f64;
+    let local_duration = (end - start) as f64 / SOURCE_TIMEBASE as f64;
+    let offset = start as f64 / SOURCE_TIMEBASE as f64;
+    let playback_end = (end as f64 / SOURCE_TIMEBASE as f64).min(duration);
+    let end_limit = if rules.normalize_end {
+        // Subtract exact frame addresses before converting the final tail to seconds.
+        let source_local = u128::from(source_frames) * u128::from(SOURCE_TIMEBASE)
+            - u128::from(start) * u128::from(source_rate);
+        let source_limit = (source_local + u128::from(rules.overrun_frames) * u128::from(source_rate))
+            as f64
+            / (u128::from(source_rate) * u128::from(SOURCE_TIMEBASE)) as f64;
+        ((end - start + rules.overrun_frames) as f64 / SOURCE_TIMEBASE as f64).min(source_limit)
+    } else {
+        local_duration + 0.02
+    };
+    let mut projected = Projected {
+        segments: Vec::new(),
+        contexts: Vec::new(),
+        normalized: Vec::new(),
+        after_end: false,
+    };
+    for segment in native.segments {
+        // Text the model placed at or after the end of the audio it was given cannot
+        // be in that audio.
+        if rules.after_end && segment.start.is_finite() && segment.start >= local_duration {
+            projected.after_end = true;
+            continue;
+        }
+        if !segment.start.is_finite()
+            || !segment.end.is_finite()
+            || segment.start < 0.0
+            || segment.start > local_duration
+            || segment.end < segment.start
+            || segment.end > end_limit
+            || segment.text.len() > 1024 * 1024
+            || segment.text.contains('\0')
+        {
+            return Ok(None);
+        }
+        if segment.text.trim().is_empty() {
+            continue;
+        }
+        let label = model_speaker_id(segment.speaker_id.as_ref());
+        let text = label
+            .as_ref()
+            .and_then(|label| segment.text.strip_prefix(&format!("[{label}] ")))
+            .unwrap_or(&segment.text)
+            .trim()
+            .to_owned();
+        if text.is_empty() {
+            continue;
+        }
+        let source_index =
+            u32::try_from(first_index + projected.segments.len()).map_err(|_| invalid())?;
+        let overrun = segment.end > local_duration || offset + segment.end > duration;
+        let projected_start = offset + segment.start;
+        let projected_end = (offset + segment.end).min(playback_end);
+        if rules.normalize_end && overrun {
+            if projected_end <= projected_start {
+                return Ok(None);
+            }
+            projected.normalized.push(source_index);
+        }
+        let context = segment.start == segment.end || (!rules.normalize_end && overrun);
+        if context {
+            projected.contexts.push(source_index);
+        }
+        projected.segments.push(TranscriptSegment {
+            id: Uuid::new_v4().to_string(),
+            start: if context { offset } else { projected_start },
+            end: if context { playback_end } else { projected_end },
+            original_text: text.clone(),
+            text,
+            speaker_id: None,
+            source_index: Some(source_index),
+        });
+    }
+    // Empty output is silence only when both native forms are empty; from v3 a timed
+    // span that starts at or after the input end does not count.
+    let silent = if rules.after_end {
+        span_starts(&native.raw_text)
+            .iter()
+            .all(|(start, _)| *start >= local_duration)
+    } else {
+        native.raw_text.trim().is_empty()
+    };
+    if projected.segments.is_empty() && !silent {
+        return Ok(None);
+    }
+    if rules.after_end
+        && span_starts(&native.raw_text)
+            .iter()
+            .any(|(start, _)| *start >= local_duration)
+    {
+        projected.after_end = true;
+    }
+    Ok(Some(projected))
 }
 
 pub(super) fn decode_with_projector(
@@ -252,10 +454,7 @@ pub(super) fn decode_with_projector(
     id: &str,
     projector: &str,
 ) -> Result<Transcript> {
-    if !is_projector(projector) {
-        return Err(invalid());
-    }
-    let normalize_end = projector == PROJECTOR;
+    let rules = Rules::of(projector).ok_or_else(invalid)?;
     if raw.len() > MAX_RAW_BYTES {
         return Err(invalid());
     }
@@ -265,7 +464,8 @@ pub(super) fn decode_with_projector(
             .map_err(|_| invalid())?;
     let expected_frames =
         crate::audio_normalize::output_frames(source_frames, source_rate).map_err(|_| invalid())?;
-    if !matches!(output.schema_version, 1 | 2)
+    if !matches!(output.schema_version, 1 | 2 | 3)
+        || (output.schema_version == 3 && !rules.after_end)
         || output.model != manifest["repository"]
         || output.model_revision != manifest["revision"]
         || output.runtime != WHOLE_RECORDING_RUNTIME
@@ -279,7 +479,6 @@ pub(super) fn decode_with_projector(
         return Err(invalid());
     }
     let _ = output.glossary_context;
-    let duration = source_frames as f64 / source_rate as f64;
     let mut report = RecognitionReport {
         sample_rate: SOURCE_TIMEBASE as u32,
         input_frames: expected_frames,
@@ -296,7 +495,9 @@ pub(super) fn decode_with_projector(
             || record.end_frame != end
             || record.raw_bytes.len() > 2 * 1024 * 1024
             || (record.not_processed && !record.raw_bytes.is_empty())
-            || (record.input.is_some() && (output.schema_version != 2 || record.not_processed))
+            || (record.input.is_some() && (output.schema_version < 2 || record.not_processed))
+            || (record.pieces.is_some()
+                && (output.schema_version < 3 || record.not_processed || record.input.is_some()))
         {
             return Err(invalid());
         }
@@ -340,97 +541,96 @@ pub(super) fn decode_with_projector(
             if !identified {
                 return Err(invalid());
             }
-            if native.parsed_completely
-                && complete_text(&native.raw_text, &native.segments)
-                && native.generation_metadata.len() == 1
-                && generation_complete(&native.generation_metadata[0], end - start)
-                && (native.raw_text.trim().is_empty()
-                    || native.generation_metadata[0]["generationTokens"]
-                        .as_u64()
-                        .is_some_and(|tokens| tokens > 0))
-                && native.raw_text.len() <= 1024 * 1024
-                && !native.raw_text.contains('\0')
-            {
-                let local_duration = (end - start) as f64 / SOURCE_TIMEBASE as f64;
-                let offset = start as f64 / SOURCE_TIMEBASE as f64;
-                let playback_end = (end as f64 / SOURCE_TIMEBASE as f64).min(duration);
-                let end_limit = if normalize_end {
-                    // Subtract exact frame addresses before converting the final tail to seconds.
-                    let source_local = u128::from(source_frames) * u128::from(SOURCE_TIMEBASE)
-                        - u128::from(start) * u128::from(source_rate);
-                    let source_limit = (source_local
-                        + u128::from(TERMINAL_OVERRUN_FRAMES) * u128::from(source_rate))
-                        as f64
-                        / (u128::from(source_rate) * u128::from(SOURCE_TIMEBASE)) as f64;
-                    ((end - start + TERMINAL_OVERRUN_FRAMES) as f64 / SOURCE_TIMEBASE as f64)
-                        .min(source_limit)
-                } else {
-                    local_duration + 0.02
-                };
-                let mut projected = Vec::new();
-                let mut contexts = Vec::new();
-                let mut normalized = Vec::new();
-                let mut valid = true;
-                for segment in native.segments {
-                    if !segment.start.is_finite()
-                        || !segment.end.is_finite()
-                        || segment.start < 0.0
-                        || segment.start > local_duration
-                        || segment.end < segment.start
-                        || segment.end > end_limit
-                        || segment.text.len() > 1024 * 1024
-                        || segment.text.contains('\0')
-                    {
-                        valid = false;
-                        break;
-                    }
-                    if segment.text.trim().is_empty() {
-                        continue;
-                    }
-                    let label = model_speaker_id(segment.speaker_id.as_ref());
-                    let text = label
-                        .as_ref()
-                        .and_then(|label| segment.text.strip_prefix(&format!("[{label}] ")))
-                        .unwrap_or(&segment.text)
-                        .trim()
-                        .to_owned();
-                    if text.is_empty() {
-                        continue;
-                    }
-                    let source_index =
-                        u32::try_from(segments.len() + projected.len()).map_err(|_| invalid())?;
-                    let overrun = segment.end > local_duration || offset + segment.end > duration;
-                    let projected_start = offset + segment.start;
-                    let projected_end = (offset + segment.end).min(playback_end);
-                    if normalize_end && overrun {
-                        if projected_end <= projected_start {
-                            valid = false;
-                            break;
-                        }
-                        normalized.push(source_index);
-                    }
-                    let context = segment.start == segment.end || (!normalize_end && overrun);
-                    if context {
-                        contexts.push(source_index);
-                    }
-                    projected.push(TranscriptSegment {
-                        id: Uuid::new_v4().to_string(),
-                        start: if context { offset } else { projected_start },
-                        end: if context { playback_end } else { projected_end },
-                        original_text: text.clone(),
-                        text,
-                        speaker_id: None,
-                        source_index: Some(source_index),
-                    });
-                }
-                // Empty output is silence only when both native forms are empty.
-                if valid && (!projected.is_empty() || native.raw_text.trim().is_empty()) {
-                    report.timing_context_segments.extend(contexts);
-                    report.normalized_end_segments.extend(normalized);
-                    segments.extend(projected);
+            // A chunk split in pieces takes its result from them; the whole-chunk
+            // output stays as the evidence of the first attempt.
+            if record.pieces.is_none() {
+                if let Some(projected) = project_native(
+                    native,
+                    start,
+                    end,
+                    source_frames,
+                    source_rate,
+                    segments.len(),
+                    rules,
+                )? {
                     chunk.state = RecognitionChunkState::Complete;
-                    chunk.issue = None;
+                    chunk.issue = projected.after_end.then(|| "afterEndIgnored".into());
+                    report.timing_context_segments.extend(projected.contexts);
+                    report.normalized_end_segments.extend(projected.normalized);
+                    segments.extend(projected.segments);
                 }
+            }
+        }
+        if let Some(pieces) = record.pieces {
+            if pieces.len() < 2 {
+                return Err(invalid());
+            }
+            let mut at = start;
+            let mut parts = Vec::new();
+            for piece in pieces {
+                let input = &piece.input;
+                let piece_end = at.checked_add(input.frames).ok_or_else(invalid)?;
+                if !digest(&input.sha256)
+                    || input.offset_frames != at
+                    || input.frames == 0
+                    || piece_end > end
+                    || piece.raw_bytes.len() > 2 * 1024 * 1024
+                {
+                    return Err(invalid());
+                }
+                // Unreadable output is a failed piece, kept as evidence; output that
+                // claims another input is not this piece at all.
+                if let Ok(native) = serde_json::from_slice::<NativeChunk>(&piece.raw_bytes) {
+                    if native.index != 0
+                        || native.start_frame != 0
+                        || native.end_frame != input.frames
+                        || native.input_audio_sha256 != input.sha256
+                    {
+                        return Err(invalid());
+                    }
+                    parts.push(Some((native, at, piece_end)));
+                } else {
+                    parts.push(None);
+                }
+                at = piece_end;
+            }
+            if at != end {
+                return Err(invalid());
+            }
+            let mut pieced = Vec::new();
+            let mut complete = true;
+            let mut after_end = false;
+            for part in parts {
+                let projection = match part {
+                    Some((native, from, to)) => project_native(
+                        native,
+                        from,
+                        to,
+                        source_frames,
+                        source_rate,
+                        segments.len() + pieced.iter().map(|p: &Projected| p.segments.len()).sum::<usize>(),
+                        rules,
+                    )?,
+                    None => None,
+                };
+                match projection {
+                    Some(projected) => {
+                        after_end |= projected.after_end;
+                        pieced.push(projected);
+                    }
+                    None => complete = false,
+                }
+            }
+            if complete {
+                chunk.state = RecognitionChunkState::Complete;
+                chunk.issue = after_end.then(|| "afterEndIgnored".into());
+                for projected in pieced {
+                    report.timing_context_segments.extend(projected.contexts);
+                    report.normalized_end_segments.extend(projected.normalized);
+                    segments.extend(projected.segments);
+                }
+            } else {
+                chunk.issue = Some("splitFailed".into());
             }
         }
         // Only finished chunks are carried over from a separate WAV.
@@ -591,16 +791,18 @@ mod tests {
 
     #[test]
     fn terminal_allowance_has_a_hard_limit_and_cannot_create_a_playback_range() {
-        for (start, end, accepted) in [
-            (59.5, 60.0, true),
-            (59.5, 60.01, true),
-            (59.5, 60.02, true),
-            (59.5, 60.020001, false),
-            (59.5, 61.0, false),
-            (60.0, 60.01, false),
-            (60.01, 60.02, false),
-            (-0.01, 0.5, false),
-            (0.5, 0.4, false),
+        // (start, end, accepted, kept as a segment)
+        for (start, end, accepted, kept) in [
+            (59.5, 60.0, true, true),
+            (59.5, 60.04, true, true),
+            (59.5, 60.1, true, true),
+            (59.5, 60.100001, false, false),
+            (59.5, 61.0, false, false),
+            // Starting at or after the input end: not in this audio, ignored.
+            (60.0, 60.01, true, false),
+            (60.01, 60.06, true, false),
+            (-0.01, 0.5, false, false),
+            (0.5, 0.4, false, false),
         ] {
             let mut value = output(2 * CHUNK_FRAMES);
             set_time(&mut value, 0, start, end);
@@ -612,17 +814,143 @@ mod tests {
                 "{start}..{end}"
             );
             assert_eq!(report.chunks[1].state, RecognitionChunkState::Complete);
+            assert_eq!(doc.segments.len(), if kept { 2 } else { 1 }, "{start}..{end}");
             assert_eq!(doc.segments.last().unwrap().start, 60.0);
             assert_eq!(report.needs_review(), !accepted);
             assert_eq!(
-                report.normalized_end_segments,
-                if accepted && end > 60.0 {
-                    vec![0]
+                report.chunks[0].issue.as_deref(),
+                if !accepted {
+                    Some("nativeOutputInvalid")
+                } else if kept {
+                    None
                 } else {
-                    vec![]
+                    Some("afterEndIgnored")
                 }
             );
+            assert_eq!(
+                report.normalized_end_segments,
+                if kept && end > 60.0 { vec![0] } else { vec![] }
+            );
         }
+        // Documents projected with v2 keep its 20 ms limit.
+        let mut value = output(2 * CHUNK_FRAMES);
+        set_time(&mut value, 0, 59.5, 60.04);
+        let raw = serde_json::to_vec(&value).unwrap();
+        let v2 = decode_with_projector(&raw, 2 * CHUNK_FRAMES, 16000, "s", "g", PROJECTOR_V2)
+            .unwrap();
+        assert!(v2.source.unwrap().recognition_report.unwrap().needs_review());
+    }
+
+    // The four ways real 60 s chunks failed on a 305-minute meeting.
+    #[test]
+    fn observed_end_of_chunk_failures_keep_their_text_and_a_repetition_still_fails() {
+        let mut value = output(5 * CHUNK_FRAMES);
+        // Text, then a punctuation span starting exactly at the end.
+        change(&mut value, 0, |native| {
+            native["rawText"] = json!("[3.84][S01]문장.[5.12][60.00][S02]...[60.02]");
+            native["segments"] = json!([
+                {"start":3.84,"end":5.12,"text":"[S01] 문장.","speaker_id":"S01"},
+                {"start":60.0,"end":60.02,"text":"[S02] ...","speaker_id":"S02"}]);
+        });
+        // The last segment ends 40 ms past the end.
+        change(&mut value, 1, |native| {
+            native["rawText"] = json!("[58.44][S02]마지막 문장[60.04]");
+            native["segments"] =
+                json!([{"start":58.44,"end":60.04,"text":"[S02] 마지막 문장","speaker_id":"S02"}]);
+        });
+        // Only an empty span after the end.
+        change(&mut value, 2, |native| {
+            native["rawText"] = json!("[60.00][S01][60.06]");
+            native["segments"] = json!([]);
+        });
+        // A repetition stopped by the model's guard.
+        change(&mut value, 3, |native| {
+            native["rawText"] = json!("[0.00][S01] 응 응 응 \u{fffd}");
+            native["segments"] = json!([]);
+            native["parsedCompletely"] = json!(false);
+            native["generationMetadata"][0]["terminationReason"] = json!("repetition");
+        });
+        let doc = project(&value).unwrap();
+        let report = doc.source.unwrap().recognition_report.unwrap();
+        let states: Vec<_> = report.chunks.iter().map(|chunk| chunk.state.clone()).collect();
+        assert_eq!(
+            states,
+            [
+                RecognitionChunkState::Complete,
+                RecognitionChunkState::Complete,
+                RecognitionChunkState::Complete,
+                RecognitionChunkState::Failed,
+                RecognitionChunkState::Complete
+            ]
+        );
+        assert_eq!(report.chunks[0].issue.as_deref(), Some("afterEndIgnored"));
+        assert_eq!(report.chunks[2].issue.as_deref(), Some("afterEndIgnored"));
+        let texts: Vec<_> = doc.segments.iter().map(|s| (s.start, s.end, s.text.as_str())).collect();
+        assert_eq!(texts[0], (3.84, 5.12, "문장."));
+        assert_eq!(texts[1], (60.0 + 58.44, 120.0, "마지막 문장"));
+        assert_eq!(texts.len(), 3);
+        assert_eq!(report.normalized_end_segments, vec![1]);
+    }
+
+    fn piece(start: u64, frames: u64, sha: &str, action: impl FnOnce(&mut Value)) -> Value {
+        let mut raw = native(0, 0, frames);
+        raw["inputAudioSha256"] = json!(sha);
+        action(&mut raw);
+        json!({"rawBytes":serde_json::to_vec(&raw).unwrap(),"input":{"sha256":sha,"frames":frames,"offsetFrames":start}})
+    }
+
+    #[test]
+    fn a_failed_chunk_split_in_two_pieces_takes_their_text_at_their_places() {
+        let frames = 2 * CHUNK_FRAMES;
+        let half = CHUNK_FRAMES / 2;
+        let mut value = output(frames);
+        value["schemaVersion"] = json!(3);
+        change(&mut value, 1, |native| native["parsedCompletely"] = json!(false));
+        let pieces = |second: Box<dyn FnOnce(&mut Value)>| {
+            json!([
+                piece(CHUNK_FRAMES, half, &"b".repeat(64), |_| {}),
+                piece(CHUNK_FRAMES + half, half, &"c".repeat(64), second)
+            ])
+        };
+        value["chunks"][1]["pieces"] = pieces(Box::new(|_| {}));
+        let doc = project(&value).unwrap();
+        let report = doc.source.as_ref().unwrap().recognition_report.as_ref().unwrap();
+        assert!(report.text_complete());
+        let starts: Vec<_> = doc.segments.iter().map(|s| (s.start, s.source_index)).collect();
+        assert_eq!(starts, [(0.0, Some(0)), (60.0, Some(1)), (90.0, Some(2))]);
+        // The whole-chunk output is still the first attempt's evidence.
+        assert_eq!(report.chunks[1].issue, None);
+
+        let mut failed = value.clone();
+        failed["chunks"][1]["pieces"] =
+            pieces(Box::new(|raw| raw["parsedCompletely"] = json!(false)));
+        let doc = project(&failed).unwrap();
+        let report = doc.source.unwrap().recognition_report.unwrap();
+        assert_eq!(report.chunks[1].state, RecognitionChunkState::Failed);
+        assert_eq!(report.chunks[1].issue.as_deref(), Some("splitFailed"));
+        assert_eq!(doc.segments.len(), 1);
+
+        let mut cases: Vec<Box<dyn Fn(&mut Value)>> = vec![
+            Box::new(|v| v["schemaVersion"] = json!(2)),
+            Box::new(|v| v["chunks"][1]["pieces"][1]["input"]["offsetFrames"] = json!(CHUNK_FRAMES + half + 1)),
+            Box::new(|v| v["chunks"][1]["pieces"][1]["input"]["frames"] = json!(half - 1)),
+            Box::new(|v| v["chunks"][1]["pieces"][1]["input"]["sha256"] = json!("d".repeat(64))),
+            Box::new(|v| {
+                let first = v["chunks"][1]["pieces"][0].clone();
+                v["chunks"][1]["pieces"] = json!([first]);
+            }),
+            Box::new(|v| v["chunks"][1]["input"] = json!({"sha256":"b".repeat(64),"frames":CHUNK_FRAMES,"offsetFrames":CHUNK_FRAMES})),
+        ];
+        cases.push(Box::new(move |v| {
+            v["chunks"][1]["pieces"][0] = piece(CHUNK_FRAMES, half, &"b".repeat(64), |raw| raw["index"] = json!(1));
+        }));
+        for (case, mutate) in cases.into_iter().enumerate() {
+            let mut broken = value.clone();
+            mutate(&mut broken);
+            assert!(project(&broken).is_err(), "case {case}");
+        }
+        let raw = serde_json::to_vec(&value).unwrap();
+        assert!(decode_with_projector(&raw, frames, 16000, "s", "g", PROJECTOR_V2).is_err());
     }
 
     #[test]
@@ -639,7 +967,7 @@ mod tests {
         let report = doc.source.unwrap().recognition_report.unwrap();
         assert!(!report.needs_review());
         assert_eq!(report.normalized_end_segments, vec![1]);
-        set_time(&mut value, 1, 2.5, 3.021);
+        set_time(&mut value, 1, 2.5, 3.11);
         let doc = decode(
             &serde_json::to_vec(&value).unwrap(),
             source_frames,

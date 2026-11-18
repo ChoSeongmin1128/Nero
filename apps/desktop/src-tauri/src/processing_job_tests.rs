@@ -1762,3 +1762,17 @@ fn a_recording_that_transcribes_its_own_chunks_puts_the_current_meeting_first() 
     assert_eq!(status(&process, &id), JobStatus::Interrupted);
     assert_eq!(*process.requeue.lock().unwrap(), [id]);
 }
+
+#[test]
+fn a_partial_moss_result_is_retryable_until_its_chunks_were_tried_in_pieces() {
+    let mut partial = engine_record("transcribe", SpeechEngine::Moss);
+    partial.status = JobStatus::NeedsReview;
+    partial.phase = Some("mossPartial".into());
+    assert_eq!(retry_block_reason(&partial), None);
+    let mut settled = partial.clone();
+    settled.phase = Some("mossUnrecognized".into());
+    assert_eq!(
+        retry_block_reason(&settled),
+        Some("인식하지 못한 구간은 다시 시도해도 같은 결과가 나옵니다.")
+    );
+}

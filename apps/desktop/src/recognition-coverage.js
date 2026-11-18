@@ -10,7 +10,10 @@ export function recognitionCoverage(document, clock) {
     else ranges.push({ start: chunk.startFrame, end: chunk.endFrame });
   }
   const spans = ranges.map(range => `${clock(range.start * 1000 / report.sampleRate)} - ${clock(range.end * 1000 / report.sampleRate)}`);
-  const message = missing.length ? `일부 구간이 누락되었습니다: ${spans.join(', ')}. 정상 결과는 보존되어 있으며 작업 목록에서 실패 구간만 다시 시도할 수 있습니다.`
+  // Chunks already tried again in pieces give the same result on retry.
+  const settled = missing.length > 0 && missing.every(chunk => chunk.issue === 'splitFailed');
+  const message = settled ? `일부 구간을 인식하지 못했습니다: ${spans.join(', ')}. 나머지 기록은 보존되어 있습니다.`
+    : missing.length ? `일부 구간이 누락되었습니다: ${spans.join(', ')}. 정상 결과는 보존되어 있으며 작업 목록에서 실패 구간만 다시 시도할 수 있습니다.`
     : timing.size ? '일부 발언은 정확한 시각 대신 해당 구간 범위로 표시합니다.' : '';
   return { message, timing };
 }

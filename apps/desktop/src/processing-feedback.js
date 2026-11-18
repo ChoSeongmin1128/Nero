@@ -88,7 +88,7 @@ export function processingFeedback(job = {}, { cancelling = false, waitingForMod
   // Native reports every queued job as '대기 중', which only repeats the heading.
   if (job.status === 'queued') message = waitingForModel ? '모델 다운로드가 끝나면 시작합니다.' : message && message !== '대기 중' ? message : job.runsWhileRecording ? '앞선 작업이 끝나면 실행합니다.' : '앞선 작업이나 녹음이 끝나면 실행합니다.';
   if (job.status === 'interrupted') message = message || '기존 녹음과 결과는 유지됩니다.';
-  if (job.status === 'needsReview' && !['mossPartial', 'mossTimingContext'].includes(job.phase)) message = '회의를 열어 저장된 결과를 확인해 주세요.';
+  if (job.status === 'needsReview' && !['mossPartial', 'mossUnrecognized', 'mossTimingContext'].includes(job.phase)) message = '회의를 열어 저장된 결과를 확인해 주세요.';
   if (speakerPhase) message = '';
   if (active && job.kind === 'transcribe' && !cancelRequested) { heading = '음성 기록 처리 중'; message = ''; }
   // A pause is shown only while the job runs; the worker or a stage boundary holds it.
