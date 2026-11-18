@@ -217,6 +217,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     const mountAgentConnectionDialog = () => ({ open(...args) { testAgentDialogCalls.push(args); }, update() {}, close() {}, isOpen: () => false });
     const mountLibrary = () => ({ render() {}, resetSelection() {}, show: async () => {} });
     const mountConfirmDialog = () => ({confirm:async()=>false});
+    const mountStorageSettings = () => ({ compact: async () => {}, setActive() {} });
     const mountSpeakers = ({getState}) => ({beforeLeave:async()=>true,render() {}, reset() {}, open: async () => {}, label: segment => getState().transcriptDraft?.doc?.speakers?.find(speaker=>speaker.id === segment.speakerId)?.name || '화자 미지정'});
 
     const returnFocusTarget = (origin, fallback) => origin || fallback;

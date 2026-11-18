@@ -4,20 +4,21 @@ This is a source contract, not a microphone, target-laptop or macOS acceptance r
 
 Legacy Nemotron and Whisper jobs use the paths below and retain their original preview contracts. MOSS, Qwen and macOS system transcription run after recording ends without a live ASR preview. Speaker analysis is optional and frozen with the selected engine at recording start. Disabling it skips speaker preparation and analysis.
 
-The recorder retains its device callback, bounded queue, original PCM writer and
+The recorder retains its device callback, bounded queue, capture PCM writer and
 separate playback WAV. A background reader consumes only complete frames already
 written to disk. Saved PCM is the backlog when inference falls behind; inference
-never waits inside the device callback. Original audio is retained.
+never waits inside the device callback. The capture PCM is deleted after the
+recording's playback WAV is saved; a reader that still holds it open keeps reading.
 
-Native capture frames/rate/channels remain the time coordinates even when a
-native float32 playback WAV would exceed RIFF. Such recordings keep the original
-PCM and publish a separately described mono/16kHz/PCM16 playback WAV. Core playback,
+Native capture frames/rate/channels remain the time coordinates. A finished
+recording publishes a separately described mono/16kHz/PCM16 playback WAV. Core playback,
 this saved-PCM reader and file analysis share the same bounded normalizer and
 native-sample downmix. The canonical playback's PCM therefore matches the live
 analysis PCM, including rounding, resampler delay and EOF frames. Source and
 analysis file hashes remain separate identities; a matching duration is not a
-substitute for either hash. Older float32 playback files are unchanged. See
-`audio-import.md` for the persisted playback policy and recovery checks.
+substitute for either hash. Older float32 playback files are unchanged until the
+person compacts them. See `audio-import.md` for the persisted playback policy and
+recovery checks.
 
 The engine is captured at session start. One isolated child holds an independent
 Nemotron 3 speaker stream throughout capture. With the legacy Nemotron engine it also

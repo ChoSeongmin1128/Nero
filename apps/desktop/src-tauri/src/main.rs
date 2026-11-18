@@ -1310,6 +1310,7 @@ fn poll(
     // Both read or remove whole folders, so they run here instead of before the
     // window opens, and before any job can pick up work they still need to settle.
     processing.cleanup_removed_meeting_jobs(&core);
+    processing.remove_leftover_analysis_audio(&core);
     processing.upgrade_transcript_sources(&core);
     let mut previous: Option<Snapshot> = None;
     let mut previous_progress = None;
@@ -1558,6 +1559,27 @@ fn cancel_speech_switch(
 ) -> Result<Progress, String> {
     require_main(&window)?;
     state.processing.cancel_speech_switch()
+}
+#[tauri::command]
+async fn storage_usage(
+    window: WebviewWindow,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<processing::storage::StorageUsage, String> {
+    require_main(&window)?;
+    let processing = state.processing.clone();
+    on_core(state.core.clone(), move |core| processing.storage_usage(&core)).await
+}
+#[tauri::command]
+async fn compact_recordings(
+    window: WebviewWindow,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<processing::storage::Compacted, String> {
+    require_main(&window)?;
+    let processing = state.processing.clone();
+    on_core(state.core.clone(), move |core| {
+        processing.compact_recordings(&core)
+    })
+    .await
 }
 #[tauri::command]
 async fn retry_speech_model_cleanup(
@@ -2106,6 +2128,8 @@ fn main() {
             request_speech_engine,
             cancel_speech_switch,
             retry_speech_model_cleanup,
+            storage_usage,
+            compact_recordings,
             respond_speech_offer,
             draft_attachment_target,
             import_audio,

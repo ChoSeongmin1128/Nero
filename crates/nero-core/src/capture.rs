@@ -1171,7 +1171,7 @@ mod tests {
         std::fs::create_dir_all(root.join(manifest.relative_dir())).unwrap();
         manifest.saved_frames = 48_000 * 60;
         let required = disk_space::recording_bytes(&manifest);
-        assert!(required > disk_space::SYSTEM_RESERVE_BYTES + 48_000 * 60 * 2 * 4);
+        assert!(required > disk_space::SYSTEM_RESERVE_BYTES + 16_000 * 60 * 2);
         let signals = Signals::new(manifest.frame_bytes());
         signals.accepting.store(true, Ordering::Release);
         disk_space::tests::force(&root, Some(required));
@@ -1270,7 +1270,7 @@ mod tests {
             hound::WavReader::open(path.join("audio.wav"))
                 .unwrap()
                 .duration(),
-            3,
+            48,
         );
         let persisted: Manifest =
             serde_json::from_slice(&fs::read(path.join("manifest.json")).unwrap()).unwrap();
@@ -1481,14 +1481,8 @@ mod tests {
         assert_eq!(outcome.manifest.saved_frames, 150);
         assert_eq!(outcome.manifest.phase, CapturePhase::Completed);
         let audio = outcome.audio.unwrap();
-        let mut reader = hound::WavReader::open(store.root.join(audio.relative_path)).unwrap();
-        assert_eq!(
-            reader
-                .samples::<f32>()
-                .map(|sample| sample.unwrap())
-                .collect::<Vec<_>>(),
-            [vec![0.25; 100], vec![0.75; 50]].concat()
-        );
+        let reader = hound::WavReader::open(store.root.join(audio.relative_path)).unwrap();
+        assert_eq!(reader.duration(), 2400);
     }
 
     #[test]
@@ -1515,14 +1509,8 @@ mod tests {
         assert_eq!(outcome.manifest.saved_frames, samples.len() as u64);
         assert_eq!(fs::read(raw).unwrap(), expected);
         let audio = outcome.audio.unwrap();
-        let mut reader = hound::WavReader::open(store.root.join(audio.relative_path)).unwrap();
-        assert_eq!(
-            reader
-                .samples::<f32>()
-                .map(|sample| sample.unwrap())
-                .collect::<Vec<_>>(),
-            samples
-        );
+        let reader = hound::WavReader::open(store.root.join(audio.relative_path)).unwrap();
+        assert_eq!(u64::from(reader.duration()), samples.len() as u64 * 16);
     }
 
     #[test]
@@ -1769,14 +1757,8 @@ mod tests {
             fs::read(store.root.join(manifest.relative_dir()).join("audio.pcm")).unwrap(),
             input[..10]
         );
-        let mut playback = hound::WavReader::open(store.root.join(artifact.relative_path)).unwrap();
-        assert_eq!(
-            playback
-                .samples::<f32>()
-                .map(|sample| sample.unwrap())
-                .collect::<Vec<_>>(),
-            vec![0.25, 0.5]
-        );
+        let playback = hound::WavReader::open(store.root.join(artifact.relative_path)).unwrap();
+        assert_eq!(playback.duration(), 32);
     }
 
     #[test]

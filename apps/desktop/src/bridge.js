@@ -89,6 +89,8 @@ export const processingStatus = () => call('processing_status');
 export const requestSpeechEngine = engine => call('request_speech_engine', { engine });
 export const cancelSpeechSwitch = () => call('cancel_speech_switch');
 export const retrySpeechModelCleanup = () => call('retry_speech_model_cleanup');
+export const storageUsage = () => call('storage_usage');
+export const compactRecordings = () => call('compact_recordings');
 export const respondSpeechOffer = accept => call('respond_speech_offer', { accept });
 export const setSpeakerEnabled = enabled => call('set_speaker_enabled', { enabled });
 export const prepareMeetingModels = (includeSummary = false) => call('prepare_meeting_models', { includeSummary });

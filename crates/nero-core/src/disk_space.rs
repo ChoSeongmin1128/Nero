@@ -110,9 +110,10 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn wav_estimate_matches_the_float_playback_and_keeps_the_reserve() {
+    fn wav_estimate_matches_the_speech_playback_and_keeps_the_reserve() {
         let playback = Playback::for_capture(48_000, 48_000, 2).unwrap();
-        assert!(playback.wav_bytes() >= 48_000 * 2 * 4);
-        assert!(playback_bytes(&playback) > SYSTEM_RESERVE_BYTES + 48_000 * 2 * 4);
+        assert!(playback.wav_bytes() >= 16_000 * 2);
+        assert!(playback.wav_bytes() < 48_000 * 2 * 4);
+        assert!(playback_bytes(&playback) > SYSTEM_RESERVE_BYTES + 16_000 * 2);
     }
 }

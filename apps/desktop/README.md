@@ -228,7 +228,7 @@ packaged source revision; an unshipped source change is not an installed update.
 - When no input device is available, recording stays disabled; connect a microphone
   and refresh the device list to enable it. Existing recording controls stay available.
 - Pause/resume/stop and use a separate compact control window.
-- Preserve raw PCM and prepare a separate WAV for playback.
+- Write raw PCM while recording, then keep one mono/16kHz/PCM16 WAV for playback and analysis.
 - During legacy Nemotron/Whisper recordings, consume saved PCM in the background with persistent ASR
   and independent speaker states. Publish provisional text every 60–180 seconds of
   processed audio; pauses retain state and stop drains/finalizes once. Reuse completed

@@ -806,6 +806,15 @@ impl CoreHandle {
         let meeting_id = meeting_id.to_owned();
         self.call(move |engine| engine.audio_path(&meeting_id))
     }
+
+    pub fn reducible_recordings(&self) -> Result<Vec<(String, u64)>> {
+        self.call(|engine| Ok(engine.reducible_recordings()))
+    }
+
+    pub fn compact_recording(&self, meeting_id: &str) -> Result<u64> {
+        let meeting_id = meeting_id.to_owned();
+        self.call(move |engine| engine.compact_recording(&meeting_id))
+    }
 }
 
 #[cfg(test)]

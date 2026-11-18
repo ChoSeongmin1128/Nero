@@ -53,10 +53,144 @@ fn finalize_speech(
     artifact
 }
 
+fn finalize_legacy(store: &Store, manifest: &mut Manifest) -> AudioArtifact {
+    let playback =
+        Playback::with_native_limit(4099, manifest.sample_rate, manifest.channels, u64::MAX)
+            .unwrap();
+    finalize_audio_with_playback(&store.root, manifest, Some(playback))
+        .unwrap()
+        .unwrap()
+}
+
 #[test]
-fn ordinary_capture_keeps_native_float_playback_bytes_and_legacy_geometry() {
-    let (_temporary, store, mut stored, mut manifest, original) = fixture(96_000, 2);
+fn new_capture_saves_speech_playback_and_releases_pcm_once_the_meeting_names_it() {
+    let (_temporary, store, mut stored, mut manifest, original) = fixture(48_000, 2);
+    let pcm = store.root.join(manifest.relative_dir()).join("audio.pcm");
     let artifact = finalize_audio(&store.root, &mut manifest).unwrap().unwrap();
+    let playback = artifact.playback.as_ref().unwrap();
+    assert_eq!((playback.sample_rate, playback.channels), (SAMPLE_RATE, 1));
+    assert_eq!(playback.frames, 1366);
+    assert_eq!((artifact.frames, artifact.sample_rate), (4099, 48_000));
+    let reader = hound::WavReader::open(store.root.join(&artifact.relative_path)).unwrap();
+    assert_eq!(reader.spec().bits_per_sample, 16);
+    assert_eq!(reader.duration(), 1366);
+    // Nothing is released while the meeting does not name the playback file.
+    assert_eq!(store.release_raw(&stored).unwrap(), 0);
+    assert_eq!(fs::read(&pcm).unwrap(), original);
+    assert_eq!(store.reducible_bytes(&stored), 0);
+    stored.meeting.audio = Some(artifact);
+    store.save(&stored).unwrap();
+    assert_eq!(store.reducible_bytes(&stored), original.len() as u64);
+    assert_eq!(store.release_raw(&stored).unwrap(), original.len() as u64);
+    assert!(!pcm.exists());
+    assert_eq!(store.release_raw(&stored).unwrap(), 0);
+    assert_eq!(store.reducible_bytes(&stored), 0);
+    assert!(store.audio_path(&stored.meeting).is_ok());
+}
+
+#[test]
+fn a_pcm_that_does_not_match_the_saved_audio_is_not_released() {
+    let (_temporary, store, mut stored, mut manifest, original) = fixture(48_000, 1);
+    let pcm = store.root.join(manifest.relative_dir()).join("audio.pcm");
+    stored.meeting.audio = finalize_audio(&store.root, &mut manifest).unwrap();
+    store.save(&stored).unwrap();
+    fs::write(&pcm, &original[..original.len() - 4]).unwrap();
+    assert_eq!(store.release_raw(&stored).unwrap(), 0);
+    assert!(pcm.exists());
+    fs::write(&pcm, &original).unwrap();
+    let wav = store.audio_path(&stored.meeting).unwrap();
+    fs::write(&wav, b"broken").unwrap();
+    assert!(store.release_raw(&stored).is_err());
+    assert_eq!(fs::read(&pcm).unwrap(), original);
+}
+
+#[test]
+fn a_playback_file_that_reads_back_differently_keeps_its_name_free() {
+    let bytes = {
+        let mut cursor = Cursor::new(Vec::new());
+        let spec = Playback::for_capture(3, 16_000, 1).unwrap().spec;
+        let mut writer = hound::WavWriter::new(&mut cursor, spec).unwrap();
+        for sample in [1_i16, 2, 3] {
+            writer.write_sample(sample).unwrap();
+        }
+        writer.finalize().unwrap();
+        cursor.into_inner()
+    };
+    let saved = crate::audio_playback::stored_digest(Cursor::new(&bytes)).unwrap();
+    let mut changed = bytes.clone();
+    *changed.last_mut().unwrap() ^= 1;
+    assert_ne!(
+        crate::audio_playback::stored_digest(Cursor::new(&changed)).unwrap(),
+        saved
+    );
+    let expected: [u8; 32] = Sha256::digest([1, 0, 2, 0, 3, 0]).into();
+    assert_eq!(saved, expected);
+}
+
+#[test]
+fn compacting_a_legacy_recording_matches_a_new_recording_of_the_same_pcm() {
+    let (_temporary, store, mut stored, mut manifest, original) = fixture(96_000, 2);
+    let legacy = finalize_legacy(&store, &mut manifest);
+    assert!(legacy.playback.is_none());
+    stored.meeting.audio = Some(legacy);
+    store.save(&stored).unwrap();
+    let wav = store.audio_path(&stored.meeting).unwrap();
+    let pcm = wav.with_file_name("audio.pcm");
+    let float_bytes = fs::metadata(&wav).unwrap().len();
+    // A legacy meeting is left alone until it is compacted.
+    assert_eq!(store.release_raw(&stored).unwrap(), 0);
+    assert!(store.reducible_bytes(&stored) > original.len() as u64);
+    let root = store.root.clone();
+    drop(store);
+    let mut engine = Engine::open(root.clone()).unwrap();
+    assert_eq!(fs::metadata(&wav).unwrap().len(), float_bytes);
+    assert_eq!(fs::read(&pcm).unwrap(), original);
+    assert_eq!(engine.reducible_recordings().len(), 1);
+    let freed = engine.compact_recording(&stored.meeting.id).unwrap();
+    assert!(freed > original.len() as u64);
+    assert!(!pcm.exists());
+    assert!(engine.reducible_recordings().is_empty());
+    assert_eq!(engine.compact_recording(&stored.meeting.id).unwrap(), 0);
+    let artifact = engine.meetings[&stored.meeting.id].meeting.audio.clone().unwrap();
+    assert_eq!((artifact.frames, artifact.sample_rate, artifact.channels), (4099, 96_000, 2));
+    assert_eq!(artifact.playback.as_ref().unwrap().frames, 683);
+    assert_eq!(engine.audio_path(&stored.meeting.id).unwrap(), wav);
+    let compacted = fs::read(&wav).unwrap();
+    drop(engine);
+    // The same PCM recorded by this build gives the same playback bytes.
+    let (_other, fresh, _stored, mut fresh_manifest, same) = fixture(96_000, 2);
+    assert_eq!(same, original);
+    let fresh_artifact = finalize_audio(&fresh.root, &mut fresh_manifest)
+        .unwrap()
+        .unwrap();
+    assert_eq!(fs::read(fresh.root.join(fresh_artifact.relative_path)).unwrap(), compacted);
+    let reopened = Engine::open(root).unwrap();
+    assert_eq!(reopened.meetings[&stored.meeting.id].meeting.audio, Some(artifact));
+    assert!(reopened.audio_path(&stored.meeting.id).is_ok());
+}
+
+#[test]
+fn a_compaction_cut_off_before_the_meeting_is_saved_restores_the_legacy_playback() {
+    let (_temporary, store, mut stored, mut manifest, original) = fixture(48_000, 1);
+    stored.meeting.audio = Some(finalize_legacy(&store, &mut manifest));
+    store.save(&stored).unwrap();
+    let wav = store.audio_path(&stored.meeting).unwrap();
+    let legacy = fs::read(&wav).unwrap();
+    let mut converted = stored.clone();
+    store.convert_playback(&mut converted).unwrap();
+    assert_ne!(fs::read(&wav).unwrap(), legacy);
+    let root = store.root.clone();
+    drop(store);
+    let engine = Engine::open(root).unwrap();
+    assert_eq!(engine.meetings[&stored.meeting.id].meeting.audio, stored.meeting.audio);
+    assert_eq!(fs::read(engine.audio_path(&stored.meeting.id).unwrap()).unwrap(), legacy);
+    assert_eq!(fs::read(wav.with_file_name("audio.pcm")).unwrap(), original);
+}
+
+#[test]
+fn legacy_capture_repair_keeps_native_float_playback_bytes_and_geometry() {
+    let (_temporary, store, mut stored, mut manifest, original) = fixture(96_000, 2);
+    let artifact = finalize_legacy(&store, &mut manifest);
     assert!(artifact.playback.is_none());
     assert_eq!(artifact.frames, 4099);
     assert_eq!(artifact.sample_rate, 96_000);
@@ -150,8 +284,8 @@ fn bounded_playback_matches_live_pcm_hash_frames_and_native_coordinates_after_re
 }
 
 #[test]
-fn interrupted_playback_repair_reuses_saved_policy_without_changing_raw_pcm() {
-    let (_temporary, store, mut stored, mut manifest, original) = fixture(96_000, 4);
+fn interrupted_playback_repair_reuses_saved_policy_and_then_releases_the_pcm() {
+    let (_temporary, store, mut stored, mut manifest, _original) = fixture(96_000, 4);
     let artifact = finalize_speech(&store, &mut stored, &mut manifest);
     let path = store.audio_path(&stored.meeting).unwrap();
     let expected = fs::read(&path).unwrap();
@@ -171,10 +305,7 @@ fn interrupted_playback_repair_reuses_saved_policy_without_changing_raw_pcm() {
         fs::read(engine.audio_path(&stored.meeting.id).unwrap()).unwrap(),
         expected
     );
-    assert_eq!(
-        fs::read(root.join(manifest.relative_dir()).join("audio.pcm")).unwrap(),
-        original
-    );
+    assert!(!root.join(manifest.relative_dir()).join("audio.pcm").exists());
     let repaired: Manifest =
         read_json(&root.join(manifest.relative_dir()).join("manifest.json")).unwrap();
     assert_eq!(repaired.saved_frames, 4099);
@@ -498,13 +629,28 @@ fn a_non_finite_sample_becomes_silence_in_playback_and_live_reads() {
     bytes[4..8].copy_from_slice(&f32::INFINITY.to_le_bytes());
     fs::write(&pcm, &bytes).unwrap();
     let artifact = finalize_audio(&store.root, &mut manifest).unwrap().unwrap();
-    let mut reader = hound::WavReader::open(store.root.join(&artifact.relative_path)).unwrap();
-    let samples: Vec<f32> = reader
-        .samples::<f32>()
-        .take(2)
-        .map(|sample| sample.unwrap())
-        .collect();
-    assert_eq!(samples, vec![0.0, 0.0]);
+    let mut clean = original.clone();
+    clean[..8].fill(0);
+    let (_other, silent, _stored, mut silent_manifest, _) = fixture(48_000, 1);
+    fs::write(
+        silent.root.join(silent_manifest.relative_dir()).join("audio.pcm"),
+        &clean,
+    )
+    .unwrap();
+    let expected = finalize_audio(&silent.root, &mut silent_manifest)
+        .unwrap()
+        .unwrap();
+    let samples = |root: &Path, artifact: &AudioArtifact| -> Vec<i16> {
+        hound::WavReader::open(root.join(&artifact.relative_path))
+            .unwrap()
+            .samples::<i16>()
+            .map(|sample| sample.unwrap())
+            .collect()
+    };
+    assert_eq!(
+        samples(&store.root, &artifact),
+        samples(&silent.root, &expected)
+    );
     let mono =
         crate::audio_playback::read_native_mono(&mut Cursor::new(bytes), Encoding::F32, 1, 2)
             .unwrap();

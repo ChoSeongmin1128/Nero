@@ -63,10 +63,14 @@ impl Engine {
             if self.store.repair_playback(&mut stored).is_err() {
                 continue;
             }
+            let mut saved = true;
             if stored.meeting != before {
                 stored.meeting.updated_at = store::now();
                 // A full disk must not lose the repaired state; the next launch saves it.
-                let _ = self.store.save(&stored);
+                saved = self.store.save(&stored).is_ok();
+            }
+            if saved {
+                let _ = self.store.release_raw(&stored);
             }
             self.meetings.insert(id, stored);
         }
@@ -811,6 +815,10 @@ impl Engine {
             stored.meeting.error = Some(message.clone());
             last.state = SessionState::Interrupted;
             last.error = Some(message);
+        } else {
+            // The meeting now names the playback file; a PCM that cannot be removed
+            // only keeps its space until the recordings are compacted.
+            let _ = self.store.release_raw(&stored);
         }
         self.meetings.insert(stored.meeting.id.clone(), stored);
         self.last_session = Some(last);
@@ -873,6 +881,52 @@ impl Engine {
                 .map(capture_snapshot)
                 .or_else(|| self.last_session.clone()),
         }
+    }
+
+    /// Bytes each finished recording still holds beyond its speech playback file.
+    pub fn reducible_recordings(&self) -> Vec<(String, u64)> {
+        let recording = self
+            .capture
+            .as_ref()
+            .map(|capture| capture.manifest.meeting_id.clone());
+        self.meetings
+            .values()
+            .filter(|stored| Some(&stored.meeting.id) != recording.as_ref())
+            .map(|stored| (stored.meeting.id.clone(), self.store.reducible_bytes(stored)))
+            .filter(|(_, bytes)| *bytes != 0)
+            .collect()
+    }
+
+    /// Keeps only the speech playback file of a finished recording and returns the
+    /// bytes freed. The capture PCM cannot be brought back afterwards.
+    pub fn compact_recording(&mut self, meeting_id: &str) -> Result<u64> {
+        if self.quitting {
+            return Err(CoreError::Unavailable);
+        }
+        if self
+            .capture
+            .as_ref()
+            .is_some_and(|capture| capture.manifest.meeting_id == meeting_id)
+        {
+            return Err(CoreError::RecordingBusy);
+        }
+        let mut stored = self
+            .meetings
+            .get(meeting_id)
+            .ok_or(CoreError::MeetingNotFound)?
+            .clone();
+        let before = self.store.reducible_bytes(&stored);
+        if stored
+            .meeting
+            .audio
+            .as_ref()
+            .is_some_and(|artifact| artifact.playback.is_none())
+        {
+            self.store.convert_playback(&mut stored)?;
+            self.commit_meeting(stored.clone())?;
+        }
+        self.store.release_raw(&stored)?;
+        Ok(before.saturating_sub(self.store.reducible_bytes(&stored)))
     }
 
     pub fn audio_path(&self, meeting_id: &str) -> Result<PathBuf> {
@@ -1531,9 +1585,13 @@ mod tests {
             .join(engine.capture.as_ref().unwrap().manifest.relative_dir());
         assert!(matches!(engine.play_capture(), Err(CoreError::Audio(_))));
         assert!(engine.capture.is_none());
+        // The saved part became the playback file, so its PCM is released.
+        assert!(!session_path.join("audio.pcm").exists());
         assert_eq!(
-            fs::read(session_path.join("audio.pcm")).unwrap(),
-            first_callback
+            hound::WavReader::open(session_path.join("audio.wav"))
+                .unwrap()
+                .duration(),
+            160
         );
         let saved: StoredMeeting = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(saved.capture_id.as_deref(), Some(session_id.as_str()));
@@ -2161,14 +2219,11 @@ mod tests {
             hound::WavReader::open(restored.audio_path(&meeting.id).unwrap())
                 .unwrap()
                 .duration(),
-            123
+            1968
         );
-        assert_eq!(
-            fs::metadata(root.join(manifest.relative_dir()).join("audio.pcm"))
-                .unwrap()
-                .len(),
-            494
-        );
+        // The recovered frames are in the playback file; the PCM and its cut-off
+        // last frame are released with it.
+        assert!(!root.join(manifest.relative_dir()).join("audio.pcm").exists());
         drop(restored);
         drop(temporary);
     }
@@ -2310,7 +2365,6 @@ mod tests {
                 .join(&corrected.version.id);
             let paths = [
                 session.join("source.wav"),
-                session.join("audio.pcm"),
                 session.join("audio.wav"),
                 transcript.join("raw.json"),
                 transcript.join("initial.json"),
@@ -2380,20 +2434,46 @@ mod tests {
     }
 
     #[test]
-    fn a_completed_meeting_gets_its_missing_playback_file_back() {
+    fn a_completed_meeting_that_still_has_its_pcm_gets_a_missing_playback_file_back() {
         let (_temporary, engine, id, _source) = crate::transcript::tests::setup();
         let path = engine.audio_path(&id).unwrap();
         let before = engine.meetings[&id].meeting.clone();
+        let expected = std::fs::read(&path).unwrap();
+        // A PCM whose removal failed is still there on the next launch.
+        let pcm: Vec<u8> = hound::WavReader::open(&path)
+            .unwrap()
+            .samples::<i16>()
+            .flat_map(|sample| sample.unwrap().to_le_bytes())
+            .collect();
+        std::fs::write(path.with_file_name("audio.pcm"), pcm).unwrap();
         std::fs::remove_file(&path).unwrap();
         let root = engine.store.root.clone();
         drop(engine);
         let reopened = Engine::open(root).unwrap();
         assert_eq!(reopened.audio_path(&id).unwrap(), path);
+        assert_eq!(std::fs::read(&path).unwrap(), expected);
+        assert!(!path.with_file_name("audio.pcm").exists());
         assert_eq!(
             reopened.meetings[&id].meeting.status,
             MeetingStatus::Completed
         );
         assert_eq!(reopened.meetings[&id].meeting.error, before.error);
+    }
+
+    #[test]
+    fn a_released_meeting_keeps_naming_a_playback_file_that_went_missing() {
+        let (_temporary, engine, id, _source) = crate::transcript::tests::setup();
+        let path = engine.audio_path(&id).unwrap();
+        assert!(!path.with_file_name("audio.pcm").exists());
+        assert!(path.with_file_name("source.wav").exists());
+        let before = engine.meetings[&id].clone();
+        std::fs::remove_file(&path).unwrap();
+        let root = engine.store.root.clone();
+        drop(engine);
+        let reopened = Engine::open_without_playback(root).unwrap();
+        assert!(reopened.pending_playback.is_empty());
+        assert_eq!(reopened.meetings[&id], before);
+        assert!(reopened.audio_path(&id).is_err());
     }
 
     #[test]
@@ -2500,10 +2580,7 @@ mod tests {
         assert_eq!(repaired.notes, "직접 쓴 메모");
         assert_eq!(repaired.audio.as_ref().unwrap().frames, 20);
         assert!(restored.audio_path(&meeting.id).unwrap().exists());
-        assert_eq!(
-            fs::metadata(wav.with_file_name("audio.pcm")).unwrap().len(),
-            80
-        );
+        assert!(!wav.with_file_name("audio.pcm").exists());
     }
 
     #[test]
@@ -2515,7 +2592,9 @@ mod tests {
         engine.shutdown();
         let wav = engine.audio_path(&meeting.id).unwrap();
         let raw = wav.with_file_name("audio.pcm");
-        let original = fs::read(&raw).unwrap();
+        // The PCM is still there when its removal failed at the end of the recording.
+        let original = [0.5_f32.to_le_bytes(); 20].concat();
+        fs::write(&raw, &original).unwrap();
         fs::write(&wav, b"invalid playback").unwrap();
         let root = engine.store.root.clone();
         drop(sink);
@@ -2531,7 +2610,7 @@ mod tests {
             20
         );
         assert!(restored.audio_path(&meeting.id).unwrap().exists());
-        assert_eq!(fs::read(raw).unwrap(), original);
+        assert!(!raw.exists());
         let backup = fs::read_dir(wav.parent().unwrap())
             .unwrap()
             .filter_map(|entry| entry.ok())
@@ -2553,9 +2632,11 @@ mod tests {
         sink.write(&[0.5_f32.to_le_bytes(); 8].concat());
         engine.shutdown();
         let wav = engine.audio_path(&meeting.id).unwrap();
-        let raw = wav.with_file_name("audio.pcm");
-        fs::rename(&raw, raw.with_file_name("held.pcm")).unwrap();
         fs::rename(&wav, wav.with_file_name("held.wav")).unwrap();
+        // The recording never reached a saved playback file.
+        let stored = engine.meetings.get_mut(&meeting.id).unwrap();
+        stored.meeting.audio = None;
+        engine.store.save(stored).unwrap();
         let root = engine.store.root.clone();
         drop(sink);
         drop(engine);

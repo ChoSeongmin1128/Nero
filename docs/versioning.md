@@ -80,7 +80,7 @@
 | 회의 `meeting.json` / 녹음 `manifest.json` | `store.rs`의 `SCHEMA_VERSION = 1`; 다른 schemaVersion은 현재 읽기 거부 |
 | 음성 기록/회의록 | 별도 schemaVersion 필드 없음. `Transcript`, `TranscriptSegment`, `Summary`의 JSON 구조가 현재 계약이며, 수정 회차/원문 해시는 별도로 저장 |
 | 추가된 선택 필드 | `meetingDate`, `recordedAt`, `warning`, 녹음 `quality`, 저장 기본 제목 출처 `generatedTitle`, 일정 시작일 `startDate`는 없는 기존 데이터를 기본값으로 읽음 |
-| 원본 | 녹음 PCM, 가져온 원본, 모델 원출력을 보존. 수정본/회의록은 별도 결과로 저장 |
+| 원본 | 녹음의 재생/분석용 WAV, 가져온 원본, 모델 원출력을 보존. 수정본/회의록은 별도 결과로 저장 |
 
 데이터를 쓰는 경로는 `CoreHandle`의 직렬 처리와 `Store` 잠금을 통한다. CLI 등 새 진입점을 추가해도 별도 저장소 writer를 만들지 않는다. JSON 교체는 완전한 임시 파일을 쓴 뒤 수행하는 기존 경로를 사용한다.
 

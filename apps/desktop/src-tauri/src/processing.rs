@@ -16,6 +16,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use uuid::Uuid;
 mod model_retirement;
+pub mod storage;
 #[cfg(test)]
 mod moss_pipeline_tests;
 

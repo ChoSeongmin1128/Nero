@@ -171,6 +171,16 @@
               </div>
               <label class="settings-row"><span>녹음 제어창 자동 표시</span><input id="auto-recorder" type="checkbox" role="switch" checked></label>
             </div>
+            <section id="settings-storage" class="settings-feature-section" aria-labelledby="settings-storage-title">
+              <h4 id="settings-storage-title" class="settings-subtitle">저장 공간</h4>
+              <div class="settings-group">
+                <div class="settings-row"><span>회의 녹음과 기록</span><span id="storage-meetings" class="muted type-caption"></span></div>
+                <div class="settings-row"><span>음성 인식 작업 기록</span><span id="storage-processing" class="muted type-caption"></span></div>
+                <div class="settings-row"><span>모델</span><span id="storage-models" class="muted type-caption"></span></div>
+                <div id="storage-compact-row" class="settings-row" hidden><div><span>이전 형식 녹음 줄이기</span><p id="storage-compact-hint" class="muted type-caption"></p></div><button id="storage-compact" type="button" class="small">줄이기</button></div>
+              </div>
+              <p id="storage-message" class="muted type-caption" role="status" hidden></p>
+            </section>
           </section>
           <section id="settings-transcription-panel" role="tabpanel" aria-labelledby="settings-transcription-tab" hidden>
             <h3 class="settings-panel-title">음성 인식</h3>

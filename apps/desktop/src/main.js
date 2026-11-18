@@ -44,6 +44,7 @@ import { mountSummaryEvidence } from './summary-evidence.js';
 import { mountAgentConnectionDialog } from './agent-connection-dialog.jsx';
 import { mountAgentSettings } from './agent-settings.js';
 import { mountTerminologySettings } from './terminology-settings.js';
+import { mountStorageSettings } from './storage-settings.js';
 import { mountTemplateSettings } from './template-settings.jsx';
 import { mountSpeechModelPicker, speechTitle } from './speech-model-picker.js';
 import { bindPreparationProgress } from './model-preparation-progress.js';
@@ -70,6 +71,8 @@ let appUpdateNotices = [];
 const integrationMonitor = createIntegrationMonitor({ bridge, onChange(notices) { integrationNotices = notices; render(); } });
 const agentSettings = mountAgentSettings({ byId, bridge, dialog: agentConnectionDialog, integrationMonitor });
 const terminologySettings = mountTerminologySettings({ byId, bridge, isProcessing: () => processingActive(), onChange: () => renderSettings() });
+const storageConfirmation = mountConfirmDialog({ container: byId('settings-dialog') });
+const storageSettings = mountStorageSettings({ byId, bridge, confirm: options => storageConfirmation.confirm(options) });
 const calendarSettings = mountCalendarSettings({ panel: byId('calendar-settings'), bridge, onSnapshot: value => integrationMonitor.acceptCalendar(value) });
 const calendarReference = mountCalendarMeetingReference({ container: byId('calendar-meeting-reference'), bridge });
 const calendarPicker = mountCalendarMeetingPicker({ container: document.body, bridge,
@@ -628,6 +631,7 @@ function renderSettings() {
   const transcription = state.settingsPanel === 'transcription';
   agentSettings.setActive(dialog.open && state.settingsPanel === 'agent');
   terminologySettings.setActive(dialog.open && transcription);
+  storageSettings.setActive(dialog.open && recording);
   templateSettings.setActive(dialog.open && state.settingsPanel === 'templates');
   calendarSettings.setActive(dialog.open && state.settingsPanel === 'agent');
   aiChat?.setSettingsActive(dialog.open && state.settingsPanel === 'agent');

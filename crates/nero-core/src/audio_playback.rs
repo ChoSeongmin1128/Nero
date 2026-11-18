@@ -2,9 +2,9 @@ use crate::audio_normalize::{output_frames, Normalizer, BLOCK_FRAMES, SAMPLE_RAT
 use crate::store::{Encoding, Manifest};
 use crate::{AudioArtifact, AudioPlayback, CoreError, Result};
 use hound::{SampleFormat, WavSpec, WavWriter};
+use sha2::{Digest, Sha256};
 use std::io::{Read, Seek, Write};
 
-const NATIVE_SAMPLE_LIMIT: u64 = (u32::MAX as u64 - 1024) / 4;
 const PCM16_FRAME_LIMIT: u64 = (u32::MAX as u64 - 36) / 2;
 const SPEECH_POLICY: &str = "native-pcm-speech-playback-v1";
 
@@ -18,8 +18,10 @@ fn invalid() -> CoreError {
 }
 
 impl Playback {
+    // Every new playback file is the speech form that recognition reads. Only a
+    // meeting saved without playback metadata keeps its native float file.
     pub fn for_capture(frames: u64, rate: u32, channels: u16) -> Result<Self> {
-        Self::with_native_limit(frames, rate, channels, NATIVE_SAMPLE_LIMIT)
+        Self::with_native_limit(frames, rate, channels, 0)
     }
 
     pub(super) fn with_native_limit(
@@ -45,7 +47,7 @@ impl Playback {
         let frames = output_frames(frames, rate).map_err(|_| invalid())?;
         if frames == 0 || frames > PCM16_FRAME_LIMIT {
             return Err(CoreError::Storage(
-                "재생 WAV 파일 크기 한도를 넘었습니다. 원본 녹음은 보관되어 있습니다.".into(),
+                "재생 WAV 파일 크기 한도를 넘었습니다. 녹음 원본은 그대로 있습니다.".into(),
             ));
         }
         Ok(Self {
@@ -99,12 +101,14 @@ impl Playback {
         })
     }
 
+    /// Writes the playback samples and, for the speech form, returns the digest of
+    /// the PCM16 bytes it wrote so the saved file can be read back against it.
     pub fn write(
         &self,
         input: &mut impl Read,
         writer: &mut WavWriter<impl Write + Seek>,
         manifest: &Manifest,
-    ) -> Result<()> {
+    ) -> Result<Option<[u8; 32]>> {
         if self.metadata().is_none() {
             let count = manifest.saved_frames * u64::from(manifest.channels);
             let mut sample = [0_u8; 8];
@@ -117,8 +121,9 @@ impl Playback {
                     .write_sample(if value.is_finite() { value } else { 0.0 })
                     .map_err(|error| CoreError::Storage(error.to_string()))?;
             }
-            return Ok(());
+            return Ok(None);
         }
+        let mut digest = Sha256::new();
         let mut normalizer = Normalizer::new(manifest.sample_rate).map_err(|_| invalid())?;
         let mut remaining = manifest.saved_frames;
         let mut written = 0_u64;
@@ -128,6 +133,7 @@ impl Playback {
             let output = normalizer.push(&mono, false).map_err(|_| invalid())?;
             written += output.len() as u64;
             for sample in output {
+                digest.update(sample.to_le_bytes());
                 writer
                     .write_sample(sample)
                     .map_err(|error| CoreError::Storage(error.to_string()))?;
@@ -137,6 +143,7 @@ impl Playback {
         let tail = normalizer.push(&[], true).map_err(|_| invalid())?;
         written += tail.len() as u64;
         for sample in tail {
+            digest.update(sample.to_le_bytes());
             writer
                 .write_sample(sample)
                 .map_err(|error| CoreError::Storage(error.to_string()))?;
@@ -144,8 +151,18 @@ impl Playback {
         if written != self.frames {
             return Err(invalid());
         }
-        Ok(())
+        Ok(Some(digest.finalize().into()))
     }
+}
+
+/// The digest of a PCM16 WAV's samples as stored, in the form `Playback::write` returns.
+pub(crate) fn stored_digest(file: impl Read) -> Result<[u8; 32]> {
+    let mut reader = hound::WavReader::new(file).map_err(|_| invalid())?;
+    let mut digest = Sha256::new();
+    for sample in reader.samples::<i16>() {
+        digest.update(sample.map_err(|_| invalid())?.to_le_bytes());
+    }
+    Ok(digest.finalize().into())
 }
 
 pub(crate) fn read_native_mono(
@@ -180,14 +197,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn native_riff_boundary_selects_playback_before_conversion() {
-        let last = NATIVE_SAMPLE_LIMIT / 2;
-        let native = Playback::for_capture(last, 96_000, 2).unwrap();
-        assert!(native.metadata().is_none());
-        assert_eq!(native.frames, last);
-        let normalized = Playback::for_capture(last + 1, 96_000, 2).unwrap();
-        assert!(normalized.metadata().is_some());
-        assert_eq!(normalized.frames, output_frames(last + 1, 96_000).unwrap());
+    fn every_new_capture_gets_speech_playback_whatever_its_length() {
+        for (frames, rate, channels) in [(2, 48_000, 1), (48_000, 48_000, 2), (16_000, 16_000, 1)] {
+            let playback = Playback::for_capture(frames, rate, channels).unwrap();
+            assert!(playback.metadata().is_some());
+            assert_eq!(playback.frames, output_frames(frames, rate).unwrap());
+        }
     }
 
     #[test]
@@ -203,8 +218,6 @@ mod tests {
             assert_eq!(playback.frames * 2, 345_600_000);
             assert!(playback.frames <= PCM16_FRAME_LIMIT);
         }
-        let normal = Playback::for_capture(48_000 * 3 * 60 * 60, 48_000, 2).unwrap();
-        assert!(normal.metadata().is_none());
     }
 
     #[test]

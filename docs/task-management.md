@@ -23,7 +23,9 @@ Shutdown/removal terminates and joins the live child. See [live speech](live-spe
 
 New jobs append immutable generations at `processing/<job-id>/job-state/<generation>.json`.
 Existing owner metadata, worker evidence and meeting files are preserved. A job's converted
-analysis WAV is removed when the job ends; a retry converts the original audio again. An
+analysis WAV is removed when the job ends; a retry converts the original audio again. One
+left by a job that did not end normally is removed at the next launch, before any job
+starts; a live recording's analysis WAV stays until that meeting's transcript is saved. An
 import's staged copy of the selected file is removed when the import ends, since Core keeps
 its own copy and imports are not retried. A request refused before its first record leaves
 no job folder. Writes use

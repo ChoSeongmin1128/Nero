@@ -15,12 +15,15 @@ This file applies to the entire repository.
   packages. Use `npm run tauri -- dev`; see `docs/development.md`. Do not copy models
   or production credentials into development. Production identity changes require the explicit installer migration and strict completed receipt. Ordinary reads must not migrate or initialize a library. Never open the separately archived original Swift library implicitly. The old installed app and data are archived
   outside active application locations; do not launch the archive during validation.
-- New capture preserves native PCM and creates a separate float32 WAV for playback
-  when its native geometry fits RIFF. Larger captures use a separately identified
-  mono/16kHz/PCM16 playback WAV through the shared bounded ASR normalizer. Keep
-  original frames/rate/channels separate from playback geometry and retain PCM.
-  The legacy AAC/M4A and model rules in `legacy/swift/AGENTS.md` apply to the retired implementation,
-  not this new format. Never discard original PCM after playback conversion.
+- Capture writes native PCM for crash recovery. A finished recording keeps one
+  mono/16kHz/PCM16 WAV made by the shared bounded ASR normalizer: playback, recognition
+  and speaker analysis all read it. Keep original frames/rate/channels separate from
+  playback geometry. The capture PCM is deleted only after that WAV was read back
+  against the conversion and the meeting document naming it is saved; an imported
+  file's `source.<ext>` copy is always kept. Meetings saved earlier with a native
+  float32 WAV and their PCM stay as they are until the person compacts them in
+  Settings; never convert or delete them implicitly. The legacy AAC/M4A and model rules
+  in `legacy/swift/AGENTS.md` apply to the retired implementation, not this format.
 - The native app provides meetings, notes, microphone recording and playback. With
   packaged workers, Apple silicon/macOS 26 supports native file import and local
   MOSS transcription by default. Qwen is an explicit experimental selection; macOS system transcription is the no-Nero-ASR-model option. Explicit setup prepares the pinned ASR model

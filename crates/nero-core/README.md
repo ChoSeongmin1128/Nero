@@ -20,7 +20,7 @@ once per second and on pause/stop. Queue overflow, stream errors, invalid frame
 boundaries and storage errors stop acceptance and mark the recording interrupted.
 A partial file-write failure permanently fences that queue from being written again:
 the complete prefix is recovered, while the ambiguous queued batch is never replayed.
-The original PCM remains available even when playback-file creation fails.
+The capture PCM remains available when playback-file creation fails.
 
 The queue holds up to two seconds at the selected device format, capped at 8 MiB to
 bound allocation even for unusual multichannel devices. This is a capacity bound,
@@ -44,7 +44,7 @@ A UI host should call them off its event/render thread.
 | `pause(session_id)`, `resume(session_id)`, `stop(session_id)` | `Snapshot` |
 | `snapshot()` | `Snapshot` |
 | `audio_path(meeting_id)` | Validated `PathBuf` for finalized playback |
-| `import_audio(title, original, prepared_wav)` | `Meeting`; original plus mono 16 kHz PCM/playback |
+| `import_audio(title, original, prepared_wav)` | `Meeting`; original plus mono 16 kHz PCM16 playback |
 | `transcript(meeting_id)` | `Option<Transcript>` |
 | `commit_transcript(meeting_id, expected_version, raw)` | `Transcript`; retained MOSS output contract |
 | `commit_whole_transcript(meeting_id, expected_version, raw)` | `Transcript`; MOSS whole-input EOS/budget/completeness contract |
@@ -76,7 +76,7 @@ revisions and speaker scope; ordinary reads never rerun recognition. All recogni
 commits reject stale expected versions and preserve raw output even when it cannot
 become the active transcript. Corrections preserve segment identities, times and
 original text; optimistic versions reject stale edits.
-Import retains the original file and its hash separately from normalized PCM/playback.
+Import retains the original file and its hash separately from the normalized playback.
 The host owns format conversion, model preparation and worker cancellation.
 
 When speaker analysis is enabled, after durable ASR and optional terminology correction,
@@ -110,7 +110,7 @@ root/
       sessions/
         <session UUID>/
           manifest.json
-          audio.pcm
+          audio.pcm   (while recording, and for meetings saved before compaction)
           audio.wav
 ```
 
@@ -125,14 +125,15 @@ location and scope renderer asset access to finalized meeting audio.
 
 The manifest records format, native rate/channels, owner IDs, durable checkpoint
 frames and state. On reopen, a previously active capture becomes interrupted. Complete
-raw frames are retained, including a partial final write's complete prefix. Interrupted
-captures with missing or invalid playback are retried on reopen, including failures
-that happened after stop. Invalid derived WAV files are preserved as
-`audio.invalid.<UUID>.wav` before regeneration. An unreadable source is reported as a
-recovery failure rather than a successful repair. Completed, valid recordings are not
-reprocessed. Partial
-trailing bytes are preserved in the raw file and omitted from playback. An incomplete
-or invalid manifest is reported instead of guessing an audio format or deleting it.
+raw frames are recovered, including a partial final write's complete prefix. Interrupted
+captures with missing or invalid playback are retried on reopen while their PCM is
+kept, including failures that happened after stop. Invalid derived WAV files are
+preserved as `audio.invalid.<UUID>.wav` before regeneration. An unreadable source is
+reported as a recovery failure rather than a successful repair. Completed, valid
+recordings are not reprocessed. Partial trailing bytes are omitted from playback. An
+incomplete or invalid manifest is reported instead of guessing an audio format or
+deleting it. Once a recording's PCM is released, a playback file that later goes
+missing cannot be rebuilt: the meeting keeps naming it and playback reports the error.
 
 ## Audio format
 
@@ -141,14 +142,16 @@ supported device defaults are little-endian F32/F64/I16/I32. It requests input d
 only and does not resample, downmix, denoise, identify speakers, or silently switch to
 another microphone. Unsupported formats fail while the meeting remains a draft.
 
-`audio.pcm` preserves bytes from the callback in the manifest's source format.
-`audio.wav` is a separate playback artifact. Native-rate/channel 32-bit float output
-is used while it fits the guarded RIFF sample limit. Larger native captures use the
-shared bounded normalizer to produce mono/16 kHz/PCM16 playback and record its geometry
-separately from original frames/rate/channels. The converted playback is not a
-bit-exact replacement for the source. PCM is never deleted after conversion. If the
-normalized playback also exceeds RIFF limits, the original remains preserved and an
-explicit error is returned. RF64 and segmented playback are not implemented. See
+`audio.pcm` holds bytes from the callback in the manifest's source format while a
+recording runs. `audio.wav` is the stored audio: the shared bounded normalizer produces
+mono/16 kHz/PCM16 and its geometry is recorded separately from original
+frames/rate/channels. It is the file playback, recognition and speaker analysis read,
+not a bit-exact replacement for the source. The saved file is read back against the
+conversion before it is published, and `release_raw` deletes the PCM only after the
+meeting document names that file. If the playback exceeds RIFF limits, the PCM stays
+and an explicit error is returned. RF64 and segmented playback are not implemented.
+A meeting without playback metadata keeps its native 32-bit float WAV and PCM until
+`compact_recording` converts it. See
 [audio import and playback](../../docs/audio-import.md) and `audio_playback.rs`.
 
 The legacy app's ADTS AAC/M4A contract continues to apply to legacy recordings. No

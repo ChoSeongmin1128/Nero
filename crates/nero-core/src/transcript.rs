@@ -823,6 +823,8 @@ impl Engine {
             } else {
                 self.store.save(&stored)?;
             }
+            // The playback file holds the same samples; the source copy stays.
+            let _ = self.store.release_raw(&stored);
             Ok(())
         })();
         // A failed import never becomes audio: its session (a full source copy and a
