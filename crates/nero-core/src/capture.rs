@@ -299,7 +299,7 @@ impl Signals {
         self.callbacks.fetch_add(1, Ordering::SeqCst);
         match error.kind() {
             cpal::ErrorKind::Xrun => {
-                if self.saved_bytes.load(Ordering::Acquire) == 0 {
+                if cfg!(target_os = "macos") && self.saved_bytes.load(Ordering::Acquire) == 0 {
                     self.startup_xruns.fetch_add(1, Ordering::AcqRel);
                 }
                 self.record_event(CaptureQualityEventKind::Xrun)
@@ -1384,6 +1384,11 @@ mod tests {
             events: vec![event(1, 0)],
             ..CaptureQuality::default()
         };
+        if !cfg!(target_os = "macos") {
+            assert_eq!(startup.startup_xruns(), 0);
+            assert!(startup.warning().is_some());
+            return;
+        }
         assert_eq!(startup.startup_xruns(), 1);
         assert_eq!(startup.warning(), None);
         let later = CaptureQuality {

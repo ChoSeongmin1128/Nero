@@ -982,12 +982,12 @@ impl Engine {
         if self.quitting {
             return Err(CoreError::Unavailable);
         }
-        if self
-            .capture
-            .as_ref()
-            .is_some_and(|capture| capture.manifest.meeting_id == meeting_id)
-        {
-            return Err(CoreError::RecordingBusy);
+        // Converting runs on this actor; while any recording runs it would hold up its
+        // pause and stop.
+        if self.capture.is_some() {
+            return Err(CoreError::InvalidState(
+                "녹음을 마친 뒤 녹음 파일을 줄여 주세요.".into(),
+            ));
         }
         let mut stored = self
             .meetings
@@ -995,14 +995,22 @@ impl Engine {
             .ok_or(CoreError::MeetingNotFound)?
             .clone();
         let before = self.store.reducible_bytes(&stored);
-        if stored
-            .meeting
-            .audio
-            .as_ref()
-            .is_some_and(|artifact| artifact.playback.is_none())
-        {
-            self.store.convert_playback(&mut stored)?;
-            self.commit_meeting(stored.clone())?;
+        if before == 0 {
+            return Ok(0);
+        }
+        let original = stored.clone();
+        self.store.convert_playback(&mut stored)?;
+        if stored.meeting.audio != original.meeting.audio {
+            if let Err(error) = self.commit_meeting(stored.clone()) {
+                // The saved document still names the old file: put it back so the
+                // meeting plays now, not only after the next launch repairs it.
+                if self.meetings.get(meeting_id).map(|kept| &kept.meeting.audio)
+                    == Some(&original.meeting.audio)
+                {
+                    let _ = self.store.restore_playback(&original);
+                }
+                return Err(error);
+            }
         }
         self.store.release_raw(&stored)?;
         Ok(before.saturating_sub(self.store.reducible_bytes(&stored)))

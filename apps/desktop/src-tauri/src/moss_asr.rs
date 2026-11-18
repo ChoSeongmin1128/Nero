@@ -404,6 +404,7 @@ fn split_failed(
         cancelled(cancel)?;
         let half = length / 2;
         let mut pieces = Vec::new();
+        let mut ran = true;
         for (part, (offset, piece)) in [
             (chunk.start_frame, half),
             (chunk.start_frame + half, length - half),
@@ -419,15 +420,26 @@ fn split_failed(
                 resources, &wav, &sha256, piece, &directory, cancel, model, &|| false,
             )?;
             let _ = fs::remove_file(&wav);
-            let raw = outputs
+            // No output means the worker did not finish (time limit, crash), which says
+            // nothing about this input; the chunk stays open for a later retry.
+            let Some(raw) = outputs
                 .into_iter()
                 .find(|(index, _)| *index == 0)
                 .map(|(_, raw)| raw)
-                .unwrap_or_default();
+            else {
+                ran = false;
+                break;
+            };
             pieces.push(json!({"rawBytes":raw,"input":{"sha256":sha256,"frames":piece,"offsetFrames":offset}}));
+        }
+        if !ran {
+            continue;
         }
         value["schemaVersion"] = json!(3);
         value["chunks"][index]["pieces"] = json!(pieces);
+        // Each chunk's pieces are kept as soon as both ran, so a stop later in this
+        // pass does not repeat them.
+        save(&work.join("moss-checkpoint.json"), value)?;
     }
     Ok(())
 }

@@ -661,13 +661,21 @@ pub(super) fn decode_with_projector(
     })
 }
 
+// An empty transcript is saved once nothing more can be recognized: every chunk is
+// complete, or failed again in pieces, so its missing ranges are on record instead of
+// a retry that would repeat the same result.
 pub(super) fn can_publish(document: &Transcript) -> bool {
     !document.segments.is_empty()
         || document
             .source
             .as_ref()
             .and_then(|source| source.recognition_report.as_ref())
-            .is_some_and(RecognitionReport::text_complete)
+            .is_some_and(|report| {
+                report.chunks.iter().all(|chunk| {
+                    chunk.state == RecognitionChunkState::Complete
+                        || chunk.issue.as_deref() == Some("splitFailed")
+                })
+            })
 }
 
 #[cfg(test)]
@@ -1187,6 +1195,12 @@ mod tests {
         value["chunks"][0]["notProcessed"] = json!(true);
         let missing = project(&value).unwrap();
         assert!(!can_publish(&missing));
+        // A chunk that already failed in pieces is never tried again, so the empty
+        // transcript is recorded rather than left waiting for a retry.
+        let mut settled = missing.clone();
+        let report = settled.source.as_mut().unwrap().recognition_report.as_mut().unwrap();
+        report.chunks[0].issue = Some("splitFailed".into());
+        assert!(can_publish(&settled));
         assert_eq!(
             missing.source.unwrap().recognition_report.unwrap().chunks[0].state,
             RecognitionChunkState::NotProcessed

@@ -81,13 +81,24 @@ impl Processing {
     }
 
     pub fn compact_recordings(&self, core: &CoreHandle) -> nero_core::Result<Compacted> {
+        if core.snapshot()?.active_session().is_some() {
+            return Err(nero_core::CoreError::InvalidState(
+                "녹음을 마친 뒤 녹음 파일을 줄여 주세요.".into(),
+            ));
+        }
         let mut result = Compacted::default();
         for (id, _) in core.reducible_recordings()? {
-            if self.holds_recording(&id) {
-                continue;
-            }
-            match core.compact_recording(&id) {
-                Ok(freed) => {
+            // The same gate new jobs take, so none starts reading the file while it
+            // is being replaced.
+            let compacted = self.meeting_idle(&id, || {
+                if self.holds_recording(&id) {
+                    return Ok(None);
+                }
+                core.compact_recording(&id).map(Some)
+            });
+            match compacted {
+                Ok(None) => {}
+                Ok(Some(freed)) => {
                     result.freed_bytes += freed;
                     result.meetings += 1;
                 }

@@ -262,6 +262,21 @@ fn rejection_phase(kind: crate::failure::FailureKind) -> Option<&'static str> {
     }
 }
 
+// A MOSS chunk that is missing and has not yet been tried in pieces; recognizing it
+// again may still fill its range.
+fn retryable_missing(transcript: &nero_core::Transcript) -> bool {
+    transcript
+        .source
+        .as_ref()
+        .and_then(|source| source.recognition_report.as_ref())
+        .is_some_and(|report| {
+            report.chunks.iter().any(|chunk| {
+                chunk.state != nero_core::RecognitionChunkState::Complete
+                    && chunk.issue.as_deref() != Some("splitFailed")
+            })
+        })
+}
+
 fn model_job(kind: &str) -> bool {
     matches!(kind, "setup" | "model" | "summary-model" | "speaker-model")
 }
@@ -3710,8 +3725,13 @@ impl Processing {
                             this.save_job_or_keep(record)?;
                         }
                         // Speaker analysis reads the whole recording, so missing chunks
-                        // only leave their range without speakers.
-                        if speaker_enabled && !source.segments.is_empty() {
+                        // only leave their range without speakers. While a chunk can
+                        // still be recognized again, the job stays a transcription so
+                        // its retry recognizes that chunk rather than only speakers.
+                        if speaker_enabled
+                            && !source.segments.is_empty()
+                            && !retryable_missing(source)
+                        {
                             this.bind_speaker_continuation(progress, &core, &meeting_id, source)
                         } else {
                             Ok(())
@@ -3749,12 +3769,13 @@ impl Processing {
                     return Ok(Some(meeting_id));
                 }
                 let timing_context = report.as_ref().is_some_and(|r| !r.timing_context_segments.is_empty());
-                let finish_timing = || -> Result<(), String> {
-                    // Terminology and speaker revisions are this job's own; a retry
-                    // continues from them instead of being refused as a user edit.
+                // `own` is the last version this job committed itself. Terminology and
+                // speaker revisions are the job's own, so a retry continues from them;
+                // the current transcript is never read here, as a person may have
+                // edited it meanwhile and a retry must not replace that edit.
+                let finish_timing = |own: nero_core::TranscriptVersion| -> Result<(), String> {
                     if engine == SpeechEngine::Moss {
-                        let current = core.transcript(&meeting_id).map_err(message)?.map(|document| document.version);
-                        crate::moss_asr::save_baseline(&path, &current)?;
+                        crate::moss_asr::save_baseline(&path, &Some(own))?;
                     }
                     if let Some((phase, message)) = partial {
                         this.update(|p| { p.phase = Some(phase.into()); p.message = message.into(); });
@@ -3764,6 +3785,7 @@ impl Processing {
                     Ok(())
                 };
                 crate::job_control::pause_point(&cancel);
+                let mut own = source.version.clone();
                 crate::terminology::correct(
                     &this,
                     &core,
@@ -3773,10 +3795,13 @@ impl Processing {
                     &path,
                     &cancel,
                 )?;
+                if let Some(version) = crate::terminology::committed_version(&path) {
+                    own = version;
+                }
                 cancelled(&cancel)?;
                 crate::job_control::pause_point(&cancel);
                 if !speaker_enabled {
-                    finish_timing()?;
+                    finish_timing(own)?;
                     return Ok(Some(meeting_id));
                 }
                 // Recognition is already durable. A speaker-stage retry must never rerun ASR.
@@ -3784,7 +3809,15 @@ impl Processing {
                     .transcript(&meeting_id)
                     .map_err(message)?
                     .ok_or("음성 기록을 찾을 수 없습니다.")?;
-                this.verify_speaker_continuation(&core, &meeting_id, &source)?;
+                if retryable_missing(&source) {
+                    // Not bound as a speaker continuation; the transcript must still be
+                    // the version this job saved.
+                    if source.version != own {
+                        return Err("음성 기록이 변경되어 화자 구분을 시작하지 않았습니다. 현재 기록을 확인해 주세요.".into());
+                    }
+                } else {
+                    this.verify_speaker_continuation(&core, &meeting_id, &source)?;
+                }
                 let live_draft = live
                     .as_ref()
                     .filter(|live| live.speaker.join("receipt.json").is_file())
@@ -3817,11 +3850,13 @@ impl Processing {
                 };
                 if let Some(draft) = live_draft {
                     prepared.verify(&audio, &cancel).map_err(|e| e.message)?;
-                    this.commit_transcript_result(&cancel, || {
-                        core.apply_diarization(&meeting_id, draft).map_err(message)
-                    })?;
+                    own = this
+                        .commit_transcript_result(&cancel, || {
+                            core.apply_diarization(&meeting_id, draft).map_err(message)
+                        })?
+                        .version;
                 } else {
-                    crate::diarization::analyze_recording(
+                    own = crate::diarization::analyze_recording(
                         &this,
                         &core,
                         &meeting_id,
@@ -3833,7 +3868,7 @@ impl Processing {
                     )
                     .map_err(|error| this.report(error))?;
                 }
-                finish_timing()?;
+                finish_timing(own)?;
                 Ok(Some(meeting_id))
             },
         )

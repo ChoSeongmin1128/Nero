@@ -368,7 +368,7 @@ pub(super) fn analyze_recording(
     prepared: Option<&AnalysisAudio>,
     path: &Path,
     cancel: &AtomicBool,
-) -> Result<(), Failure> {
+) -> Result<nero_core::TranscriptVersion, Failure> {
     check_cancel(cancel)?;
     check_source(core, meeting_id, &source, audio)?;
     if !availability(process).1 {
@@ -395,7 +395,7 @@ pub(super) fn analyze_recording(
     check_cancel(cancel)?;
     check_source(core, meeting_id, &draft.source, audio)?;
     let mut commit_failure = None;
-    process
+    let committed = process
         .commit_transcript_result(cancel, || {
             core.apply_diarization(meeting_id, draft).map_err(|error| {
                 commit_failure = Some(core_failure(&error));
@@ -411,7 +411,7 @@ pub(super) fn analyze_recording(
                 }
             }))
         })?;
-    Ok(())
+    Ok(committed.version)
 }
 
 impl Processing {

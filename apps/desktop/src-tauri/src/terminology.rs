@@ -314,6 +314,15 @@ fn write_json(path: &Path, value: &Value) -> Result<(), String> {
     fs::write(path, serde_json::to_vec(value).map_err(message)?).map_err(message)
 }
 
+/// The transcript version this job's terminology correction committed, from its own
+/// audit; none when it committed nothing or the audit could not be written.
+pub(super) fn committed_version(path: &Path) -> Option<nero_core::TranscriptVersion> {
+    let audit: Value = serde_json::from_slice(&fs::read(path.join("terminology/audit.json")).ok()?).ok()?;
+    (audit["status"] == "committed")
+        .then(|| serde_json::from_value(audit["resultVersion"].clone()).ok())
+        .flatten()
+}
+
 pub(super) fn correct(
     process: &Processing,
     core: &CoreHandle,
@@ -486,6 +495,27 @@ pub(super) fn correct(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_committed_correction_names_the_jobs_own_version() {
+        let temporary = tempfile::tempdir().unwrap();
+        assert_eq!(committed_version(temporary.path()), None);
+        let folder = temporary.path().join("terminology");
+        fs::create_dir(&folder).unwrap();
+        let version = nero_core::TranscriptVersion { id: "t".into(), revision: 2 };
+        fs::write(
+            folder.join("audit.json"),
+            serde_json::to_vec(&json!({"status":"committed","resultVersion":version})).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(committed_version(temporary.path()), Some(version.clone()));
+        fs::write(
+            folder.join("audit.json"),
+            serde_json::to_vec(&json!({"status":"stale_source_preserved","resultVersion":version})).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(committed_version(temporary.path()), None);
+    }
 
     fn profile() -> TerminologyProfile {
         serde_json::from_value(json!({

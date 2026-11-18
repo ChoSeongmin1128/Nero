@@ -9,11 +9,12 @@ const policies = {
 };
 const priority = { info: 0, warning: 1, error: 2 };
 
-// An overload notice before any audio was saved is the device starting its input
-// (macOS sends one); it stays in the record but is not shown.
-const startupXrun = event => event.kind === 'xrun' && event.lastSavedFrame === 0;
+// On macOS an overload notice before any audio was saved is the device starting its
+// input; it stays in the record but is not shown. Other platforms show every notice.
+const macHost = () => /Macintosh|Mac OS X/.test(globalThis.navigator?.userAgent || '');
 
-export function recordingQuality(quality, sampleRate, frames) {
+export function recordingQuality(quality, sampleRate, frames, { startupNotice = macHost() } = {}) {
+  const startupXrun = event => startupNotice && event.kind === 'xrun' && event.lastSavedFrame === 0;
   const all = (quality?.events || []).filter(event => Object.hasOwn(policies, event.kind));
   const startup = all.filter(startupXrun).reduce((sum, event) => sum + (Number.isSafeInteger(event.count) ? event.count : 0), 0);
   const events = all.filter(event => !startupXrun(event));

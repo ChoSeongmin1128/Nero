@@ -105,6 +105,40 @@ fn a_pcm_that_does_not_match_the_saved_audio_is_not_released() {
 }
 
 #[test]
+fn a_pcm_is_kept_until_the_meeting_document_on_disk_names_the_wav() {
+    let (_temporary, store, mut stored, mut manifest, original) = fixture(48_000, 1);
+    let pcm = store.root.join(manifest.relative_dir()).join("audio.pcm");
+    let saved_without_audio = stored.clone();
+    store.save(&saved_without_audio).unwrap();
+    // The WAV exists and memory names it, but saving the meeting failed.
+    stored.meeting.audio = finalize_audio(&store.root, &mut manifest).unwrap();
+    assert_eq!(store.release_raw(&stored).unwrap(), 0);
+    assert_eq!(fs::read(&pcm).unwrap(), original);
+    store.save(&stored).unwrap();
+    assert_eq!(store.release_raw(&stored).unwrap(), original.len() as u64);
+    assert!(!pcm.exists());
+}
+
+#[test]
+fn a_speech_file_with_changed_samples_is_written_again_before_its_pcm_goes() {
+    let (_temporary, store, mut stored, mut manifest, original) = fixture(48_000, 1);
+    let pcm = store.root.join(manifest.relative_dir()).join("audio.pcm");
+    stored.meeting.audio = finalize_audio(&store.root, &mut manifest).unwrap();
+    store.save(&stored).unwrap();
+    let wav = store.audio_path(&stored.meeting).unwrap();
+    let good = fs::read(&wav).unwrap();
+    let mut damaged = good.clone();
+    *damaged.last_mut().unwrap() ^= 0x40;
+    fs::write(&wav, &damaged).unwrap();
+    let before = stored.meeting.audio.clone();
+    store.convert_playback(&mut stored).unwrap();
+    assert_eq!(stored.meeting.audio, before);
+    assert_eq!(fs::read(&wav).unwrap(), good);
+    assert_eq!(fs::read(&pcm).unwrap(), original);
+    assert_eq!(store.release_raw(&stored).unwrap(), original.len() as u64);
+}
+
+#[test]
 fn a_playback_file_that_reads_back_differently_keeps_its_name_free() {
     let bytes = {
         let mut cursor = Cursor::new(Vec::new());

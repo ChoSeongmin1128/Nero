@@ -122,7 +122,11 @@ pub struct CaptureQuality {
 impl CaptureQuality {
     /// Overload notices from before the first audio was saved. macOS reports one as
     /// the device starts its input; it says nothing about the recording's content.
+    /// Other platforms count every notice.
     pub fn startup_xruns(&self) -> u64 {
+        if !cfg!(target_os = "macos") {
+            return 0;
+        }
         self.events
             .iter()
             .filter(|event| {
@@ -719,6 +723,15 @@ impl Store {
         if artifact.playback.is_none() || &artifact.session_id != session_id {
             return Ok(0);
         }
+        // Only the meeting document on disk makes the WAV durable; a meeting whose
+        // save failed still needs the PCM to rebuild it on the next launch.
+        let saved: StoredMeeting = read_json(&checked_path(
+            &self.root,
+            &meeting_document(&stored.meeting.id),
+        )?)?;
+        if saved.meeting.audio.as_ref() != Some(artifact) || saved.capture_id != stored.capture_id {
+            return Ok(0);
+        }
         self.audio_path(&stored.meeting)?;
         let manifest: Manifest = read_json(&checked_path(
             &self.root,
@@ -746,12 +759,12 @@ impl Store {
     /// Replaces the native float playback file of a meeting saved before speech
     /// playback became the stored form, converting from the PCM it still keeps.
     /// The caller saves the meeting; until then the next launch restores the old file.
+    /// A meeting that already has the speech form gets the same file written again: a
+    /// file saved before playback was read back may differ from its PCM in samples
+    /// alone, and the PCM must not go before the file is known to be right.
     pub(crate) fn convert_playback(&self, stored: &mut StoredMeeting) -> Result<()> {
         let unavailable = || CoreError::InvalidState("줄일 수 있는 녹음이 아닙니다.".into());
         let artifact = stored.meeting.audio.as_ref().ok_or_else(unavailable)?;
-        if artifact.playback.is_some() {
-            return Ok(());
-        }
         if stored.capture_id.as_ref() != Some(&artifact.session_id) {
             return Err(unavailable());
         }
@@ -773,11 +786,34 @@ impl Store {
         }
         manifest.saved_frames = frames;
         let playback = Playback::for_capture(frames, manifest.sample_rate, manifest.channels)?;
+        if artifact.playback.is_some() && artifact.playback != playback.metadata() {
+            return Err(unavailable());
+        }
         publish_playback(&self.root, &manifest, &playback, raw, true)?;
         if let Some(artifact) = stored.meeting.audio.as_mut() {
             artifact.playback = playback.metadata();
         }
         Ok(())
+    }
+
+    /// Writes back the playback file `stored` names, in its own form, from the PCM it
+    /// still keeps. Used when a converted meeting could not be saved.
+    pub(crate) fn restore_playback(&self, stored: &StoredMeeting) -> Result<()> {
+        let unavailable = || CoreError::InvalidState("녹음 재생 파일을 복구하지 못했습니다.".into());
+        let artifact = stored.meeting.audio.as_ref().ok_or_else(unavailable)?;
+        let mut manifest: Manifest = read_json(&checked_path(
+            &self.root,
+            &sessions_dir(&stored.meeting.id)
+                .join(&artifact.session_id)
+                .join("manifest.json"),
+        )?)?;
+        manifest.validate()?;
+        let raw = open_read(&self.raw_path(&manifest)?)?;
+        manifest.saved_frames = raw.metadata()?.len() / manifest.frame_bytes() as u64;
+        if manifest.saved_frames != artifact.frames {
+            return Err(unavailable());
+        }
+        publish_playback(&self.root, &manifest, &Playback::from_artifact(artifact)?, raw, true)
     }
 
     /// Bytes `compact` would free for this meeting: its kept PCM, plus what a native
