@@ -925,6 +925,25 @@ async fn start_recording(
     begin_recording(app, meeting_id, device_id).await
 }
 
+// Records into a new meeting on the occurrence of `meeting_id`, for a calendar
+// meeting that continues after its first recording ended.
+#[tauri::command]
+async fn continue_calendar_recording(
+    app: tauri::AppHandle,
+    window: WebviewWindow,
+    meeting_id: String,
+    device_id: Option<String>,
+) -> Result<Snapshot, String> {
+    require_main(&window)?;
+    let (meeting, snapshot) = start_capture(&app, device_id, move |core, device| {
+        core.record_calendar_continuation(&meeting_id, device)
+            .map_err(|e| e.to_string())
+    })
+    .await?;
+    let _ = show_meeting(&app, meeting.id, None);
+    Ok(snapshot)
+}
+
 // The recording screen and agent requests start capture through the same checks.
 pub(crate) async fn begin_recording(
     app: tauri::AppHandle,
@@ -2106,6 +2125,7 @@ fn main() {
             purge_meetings,
             list_devices,
             start_recording,
+            continue_calendar_recording,
             pause_recording,
             resume_recording,
             stop_recording,

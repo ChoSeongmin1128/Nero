@@ -18,6 +18,7 @@ import { mountNotificationCenter } from './notification-center.js';
 import './notification-center.css';
 import { returnFocusTarget } from './focus-return.js';
 import { mountCalendarMeetingPicker, mountCalendarMeetingReference } from './calendar-meeting-picker.jsx';
+import { calendarMeetingCount } from './calendar-meeting-flow.js';
 import { mountSummaryTemplatePicker } from './summary-template-picker.js';
 import { mountCalendarSettings } from './calendar-settings.jsx';
 import { recordingQuality } from './recording-quality.js';
@@ -74,8 +75,12 @@ const terminologySettings = mountTerminologySettings({ byId, bridge, isProcessin
 const storageConfirmation = mountConfirmDialog({ container: byId('settings-dialog') });
 const storageSettings = mountStorageSettings({ byId, bridge, confirm: options => storageConfirmation.confirm(options) });
 const calendarSettings = mountCalendarSettings({ panel: byId('calendar-settings'), bridge, onSnapshot: value => integrationMonitor.acceptCalendar(value) });
-const calendarReference = mountCalendarMeetingReference({ container: byId('calendar-meeting-reference'), bridge });
+const calendarReference = mountCalendarMeetingReference({ container: byId('calendar-meeting-reference'), bridge,
+  onContinue: meetingId => run(() => continueCalendarRecording(meetingId)),
+  onOpenMeeting: meetingId => selectMeeting(meetingId),
+});
 const calendarPicker = mountCalendarMeetingPicker({ container: document.body, bridge,
+  meetingCount: key => calendarMeetingCount(key, state.snapshot.meetings),
   onPrepared: async meeting => {
     acceptSnapshot(await bridge.readSnapshot());
     if (meeting.deletedAt != null) { await library.show('trash'); throw Error('휴지통에 있는 회의입니다. 복원 후 열어 주세요.'); }
@@ -405,7 +410,7 @@ function render() {
   renderSettings();
   renderProcessing();
   const meeting = currentMeeting();
-  calendarReference.render(meeting);
+  calendarReference.render(meeting, { meetings: state.snapshot.meetings, enabled: state.connected && !state.busy && !activeSession() && modelsReady() });
   aiChat?.setMeeting(state.libraryOpen || setupVisible ? null : meeting);
   meetingContext?.setMeeting(state.libraryOpen || setupVisible ? null : meeting);
   byId('ai-chat-open').disabled = !state.connected;
@@ -782,6 +787,18 @@ async function startSelectedRecording() {
   if (microphoneIssue() || state.selectedId !== meetingId) return;
   if (activeSession()) return selectMeeting(activeSession().meetingId);
   acceptSnapshot(await bridge.startRecording(meetingId, state.deviceId));
+}
+
+// A calendar meeting that continues after its recording ended records into a new
+// meeting on the same occurrence; Core creates it and starts capture together.
+async function continueCalendarRecording(meetingId) {
+  if (activeSession()) return selectMeeting(activeSession().meetingId);
+  if (!modelsReady()) return openSetup();
+  await saveDraft();
+  await refreshDevices();
+  if (microphoneIssue() || activeSession()) return;
+  acceptSnapshot(await bridge.continueCalendarRecording(meetingId, state.deviceId));
+  if (activeSession()) await selectMeeting(activeSession().meetingId);
 }
 
 function onEdit() {

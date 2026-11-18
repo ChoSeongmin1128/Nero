@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createCalendarMeetingFlow, calendarJoinUrls, calendarOccurrenceTime, calendarDay, parseCalendarDay, moveCalendarDay } from '../src/calendar-meeting-flow.js';
+import { createCalendarMeetingFlow, calendarJoinUrls, calendarOccurrenceTime, calendarDay, parseCalendarDay, moveCalendarDay, calendarSiblings, calendarMeetingCount, calendarContinuable } from '../src/calendar-meeting-flow.js';
 
 const flush = () => new Promise(resolve => setImmediate(resolve));
 const event = { key: 'one', title: 'Synthetic schedule', startAt: 1_000_000, endAt: 2_000_000, calendarName: 'Synthetic', joinUrls: [] };
@@ -100,4 +100,25 @@ test('attaching an occurrence freezes the explicit draft target without leaking 
   assert.deepEqual(calls[0].target, target);
   flow.open(); await flush(); flow.select('one'); await flow.prepare();
   assert.equal(calls[1].target, undefined);
+});
+
+test('meetings on one occurrence list each other, count only active ones, and continue only after audio', () => {
+  const reference = key => ({ occurrenceKey: key, title: 'Synthetic schedule' });
+  const first = { id: 'b', createdAt: 1, status: 'completed', audio: {}, calendarReference: reference('one') };
+  const second = { id: 'a', createdAt: 2, status: 'draft', audio: null, calendarReference: reference('one') };
+  const trashed = { id: 'c', createdAt: 3, status: 'completed', audio: {}, deletedAt: 9, calendarReference: reference('one') };
+  const other = { id: 'd', createdAt: 0, status: 'completed', audio: {}, calendarReference: reference('two') };
+  const plain = { id: 'e', createdAt: 0, status: 'completed', audio: {} };
+  const meetings = [trashed, second, other, first, plain];
+  assert.deepEqual(calendarSiblings(second, meetings).map(item => item.id), ['b']);
+  assert.deepEqual(calendarSiblings(first, meetings).map(item => item.id), ['a']);
+  assert.deepEqual(calendarSiblings(plain, meetings), []);
+  assert.equal(calendarMeetingCount('one', meetings), 2);
+  assert.equal(calendarMeetingCount('three', meetings), 0);
+  assert.equal(calendarContinuable(first), true);
+  assert.equal(calendarContinuable(second), false);
+  assert.equal(calendarContinuable(trashed), false);
+  assert.equal(calendarContinuable(plain), false);
+  assert.equal(calendarContinuable({ ...second, status: 'interrupted' }), false);
+  assert.equal(calendarContinuable({ ...second, status: 'interrupted', audio: {} }), true);
 });

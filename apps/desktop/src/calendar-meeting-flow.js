@@ -98,3 +98,21 @@ export function calendarJoinUrls(reference) {
     catch { return false; }
   });
 }
+
+// Other active meetings on the same calendar occurrence, oldest first.
+export function calendarSiblings(meeting, meetings = []) {
+  const key = meeting?.calendarReference?.occurrenceKey;
+  if (!key) return [];
+  return meetings
+    .filter(item => item.id !== meeting.id && item.deletedAt == null && item.calendarReference?.occurrenceKey === key)
+    .sort((a, b) => (a.createdAt - b.createdAt) || a.id.localeCompare(b.id));
+}
+
+export function calendarMeetingCount(key, meetings = []) {
+  return meetings.filter(item => item.deletedAt == null && item.calendarReference?.occurrenceKey === key).length;
+}
+
+// A meeting that already took audio continues in a new meeting; an empty one records directly.
+export function calendarContinuable(meeting) {
+  return Boolean(meeting?.calendarReference && meeting.deletedAt == null && meeting.audio);
+}

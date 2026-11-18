@@ -548,43 +548,8 @@ pub async fn start_calendar_recording(
     service.sync_after(calendar::now_ms()).await?;
     service.tick(calendar::now_ms(), false)?;
     let ticket = service.reminder_ticket(&key, calendar::now_ms())?;
-    let existing_core = state.core.clone();
-    let existing_calendar = service.clone();
-    let existing_ticket = service.reminder_ticket(&key, calendar::now_ms())?;
-    let existing = tauri::async_runtime::spawn_blocking(move || {
-        existing_calendar.with_current_reminder(&existing_ticket, calendar::now_ms(), |event| {
-            let current = existing_core
-                .snapshot()
-                .map_err(|error| error.to_string())?;
-            Ok(current
-                .meetings
-                .iter()
-                .find(|meeting| {
-                    meeting
-                        .calendar_reference
-                        .as_ref()
-                        .is_some_and(|reference| reference.occurrence_key == event.key)
-                        && (meeting.deleted_at.is_some()
-                            || meeting.status != nero_core::MeetingStatus::Draft
-                            || meeting.audio.is_some())
-                })
-                .cloned()
-                .map(|meeting| (meeting, current)))
-        })
-    })
-    .await
-    .map_err(|_| "회의를 확인하지 못했습니다.".to_string())??;
-    if let Some((meeting, current)) = existing {
-        let _ = service.dismiss(&key);
-        sync_windows(&app, &service);
-        crate::publish(&app, &current);
-        let error = meeting
-            .deleted_at
-            .is_some()
-            .then(|| "휴지통에 있는 회의입니다. 복원 후 열어 주세요.".to_string());
-        let _ = crate::show_meeting(&app, meeting.id.clone(), error);
-        return Ok(current);
-    }
+    // An occurrence whose meetings already have audio or are in the trash records
+    // into a new meeting on the same occurrence; an empty one is reused by Core.
     let recording_calendar = service.clone();
     let (meeting, snapshot) = crate::start_capture(&app, None, move |core, device| {
         let current = core.snapshot().map_err(|error| error.to_string())?;

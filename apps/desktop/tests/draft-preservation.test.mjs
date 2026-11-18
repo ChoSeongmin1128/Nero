@@ -212,6 +212,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     const mountCalendarSettings = () => ({ setActive() {} });
     const mountCalendarMeetingPicker = () => ({open(){}, close(){}, isOpen(){return false;}});
     const mountCalendarMeetingReference = () => ({render(){}});
+    const calendarMeetingCount = () => 0;
     const mountSummaryTemplatePicker = () => ({reload:async()=>{},isAvailable:()=>true,selected:async()=>({id:'meeting',revision:'test'})});
     const mountDocumentActions = () => ({ update() {}, close() {} });
     const mountAgentConnectionDialog = () => ({ open(...args) { testAgentDialogCalls.push(args); }, update() {}, close() {}, isOpen: () => false });

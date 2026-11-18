@@ -30,6 +30,7 @@ export const updateMeeting = (id, base, title, notes) => call('update_meeting', 
 export const setMeetingDate = (id, meetingDate) => call('set_meeting_date', { id, meetingDate });
 export const listDevices = () => call('list_devices');
 export const startRecording = (meetingId, deviceId = null) => call('start_recording', { meetingId, deviceId }).then(accept);
+export const continueCalendarRecording = (meetingId, deviceId = null) => call('continue_calendar_recording', { meetingId, deviceId }).then(accept);
 export const pauseRecording = (sessionId) => call('pause_recording', { sessionId }).then(accept);
 export const resumeRecording = (sessionId) => call('resume_recording', { sessionId }).then(accept);
 export const stopRecording = (sessionId) => call('stop_recording', { sessionId }).then(accept);

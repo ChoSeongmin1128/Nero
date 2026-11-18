@@ -747,17 +747,26 @@ impl CoreHandle {
             if engine.capture.is_some() {
                 return Err(CoreError::RecordingBusy);
             }
-            let meeting = engine.create_meeting_from_calendar(reference)?;
-            if meeting.deleted_at.is_some() {
-                return Err(CoreError::InvalidState(
-                    "휴지통에 있는 회의입니다. 복원 후 열어 주세요.".into(),
-                ));
+            let meeting = engine.meeting_for_calendar_recording(reference)?;
+            let snapshot = engine.start(&meeting.id, &device_id)?;
+            Ok((meeting, snapshot))
+        })
+    }
+
+    /// Records into a new meeting on the same calendar occurrence as `meeting_id`,
+    /// without a gap between the busy check, creation and capture start.
+    pub fn record_calendar_continuation(
+        &self,
+        meeting_id: &str,
+        device_id: &str,
+    ) -> Result<(Meeting, Snapshot)> {
+        let (meeting_id, device_id) = (meeting_id.to_owned(), device_id.to_owned());
+        self.call(move |engine| {
+            if engine.capture.is_some() {
+                return Err(CoreError::RecordingBusy);
             }
-            let snapshot = if meeting.status == MeetingStatus::Draft && meeting.audio.is_none() {
-                engine.start(&meeting.id, &device_id)?
-            } else {
-                engine.snapshot()
-            };
+            let meeting = engine.create_calendar_continuation(&meeting_id)?;
+            let snapshot = engine.start(&meeting.id, &device_id)?;
             Ok((meeting, snapshot))
         })
     }

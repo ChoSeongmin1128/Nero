@@ -5,7 +5,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { Calendar } from '../../../design-system/components/ui/calendar.jsx';
 import { Popover, PopoverTrigger, PopoverContent, PopoverClose } from '../../../design-system/components/ui/popover.jsx';
 import { CalendarDays, ChevronLeft, ChevronRight, Copy, Check } from '../../../design-system/icons-react.jsx';
-import { createCalendarMeetingFlow, calendarOccurrenceTime, calendarJoinUrls, calendarDay, parseCalendarDay, moveCalendarDay } from './calendar-meeting-flow.js';
+import { createCalendarMeetingFlow, calendarOccurrenceTime, calendarJoinUrls, calendarDay, parseCalendarDay, moveCalendarDay, calendarSiblings, calendarContinuable } from './calendar-meeting-flow.js';
 import './calendar-meeting-picker.css';
 
 function CalendarLinks({ reference, onOpen }) {
@@ -59,7 +59,7 @@ function CalendarDateControls({ flow, state, container }) {
   </div>;
 }
 
-function CalendarMeetingPicker({ flow, container, finalFocus, onOpenLink }) {
+function CalendarMeetingPicker({ flow, container, finalFocus, onOpenLink, meetingCount }) {
   const state = React.useSyncExternalStore(flow.subscribe, flow.getSnapshot);
   const selected = state.occurrences.find(event => event.key === state.selectedKey);
   const busy = state.loading || state.creating;
@@ -75,7 +75,7 @@ function CalendarMeetingPicker({ flow, container, finalFocus, onOpenLink }) {
         {!state.loading && calendar?.connected && calendar.selectedCalendars.length > 0 && !state.occurrences.length && !state.error && <p className="muted">이 날짜에 선택할 일정이 없습니다.</p>}
         {!state.loading && state.occurrences.length > 0 && <fieldset className="calendar-meeting-options" disabled={state.creating}><legend className="sr-only">회의 일정</legend>{state.occurrences.map(event => <label className="calendar-meeting-option" key={event.key}>
           <input type="radio" name="calendar-meeting" checked={state.selectedKey === event.key} onChange={() => flow.select(event.key)} />
-          <span><strong>{event.title}</strong><span>{calendarOccurrenceTime(event, state.timeZone)}</span><span>{event.calendarName}</span></span>
+          <span><strong>{event.title}</strong><span>{calendarOccurrenceTime(event, state.timeZone)}</span><span>{event.calendarName}</span>{meetingCount(event.key) ? <span>{`회의 ${meetingCount(event.key)}개`}</span> : null}</span>
         </label>)}</fieldset>}
         {selected && <CalendarLinks reference={{ ...selected, occurrenceKey: selected.key }} onOpen={onOpenLink} />}
         {state.error && <p className="notice" role="alert">{state.error} <button type="button" className="small quiet" disabled={busy} onClick={() => { void flow.refresh(); }}>다시 시도</button></p>}
@@ -85,7 +85,7 @@ function CalendarMeetingPicker({ flow, container, finalFocus, onOpenLink }) {
   </Dialog>;
 }
 
-export function mountCalendarMeetingPicker({ container, bridge, onPrepared, onConfigure }) {
+export function mountCalendarMeetingPicker({ container, bridge, onPrepared, onConfigure, meetingCount = () => 0 }) {
   const document = container.ownerDocument;
   const mount = document.createElement('div');
   mount.dataset.neroUiOwned = '';
@@ -93,7 +93,7 @@ export function mountCalendarMeetingPicker({ container, bridge, onPrepared, onCo
   const root = createRoot(mount);
   const flow = createCalendarMeetingFlow({ bridge, onPrepared, onConfigure });
   let origin = null;
-  root.render(<CalendarMeetingPicker flow={flow} container={container} finalFocus={() => returnFocusTarget(origin, document.getElementById('navigation-toggle')) || false} onOpenLink={bridge.openCalendarJoinUrl} />);
+  root.render(<CalendarMeetingPicker flow={flow} container={container} finalFocus={() => returnFocusTarget(origin, document.getElementById('navigation-toggle')) || false} onOpenLink={bridge.openCalendarJoinUrl} meetingCount={meetingCount} />);
   return {
     open(trigger = document.activeElement, target = null) { origin = trigger; globalThis.NeroControls?.close?.(); flow.open(target); },
     close: () => flow.close(),
@@ -102,14 +102,17 @@ export function mountCalendarMeetingPicker({ container, bridge, onPrepared, onCo
   };
 }
 
-export function mountCalendarMeetingReference({ container, bridge }) {
+// `continuation.enabled` is false while recording cannot start; `meetings` is the library list.
+export function mountCalendarMeetingReference({ container, bridge, onContinue = () => {}, onOpenMeeting = () => {} }) {
   container.dataset.neroUiOwned = '';
   const root = createRoot(container);
   return {
-    render(meeting) {
+    render(meeting, { meetings = [], enabled = false } = {}) {
       const reference = meeting?.calendarReference;
       container.hidden = !reference;
-      root.render(reference ? <div className="calendar-meeting-reference" aria-label="연결된 일정"><span className="calendar-meeting-reference-label">일정</span><strong>{reference.title}</strong><span>{calendarOccurrenceTime(reference)}</span><span>{reference.calendarName}</span><CalendarLinks reference={reference} onOpen={bridge?.openCalendarJoinUrl} /></div> : null);
+      const siblings = calendarSiblings(meeting, meetings);
+      const continuable = Boolean(reference && calendarContinuable(meeting));
+      root.render(reference ? <div className="calendar-meeting-reference" aria-label="연결된 일정"><span className="calendar-meeting-reference-label">일정</span><strong>{reference.title}</strong><span>{calendarOccurrenceTime(reference)}</span><span>{reference.calendarName}</span>{continuable ? <button type="button" className="quiet small" disabled={!enabled} onClick={() => onContinue(meeting.id)}>이 일정으로 이어서 녹음</button> : null}<CalendarLinks reference={reference} onOpen={bridge?.openCalendarJoinUrl} />{siblings.length ? <nav className="calendar-meeting-siblings" aria-label="같은 일정의 회의"><span className="calendar-meeting-reference-label">같은 일정의 회의</span>{siblings.map(item => <button key={item.id} type="button" className="quiet small" onClick={() => onOpenMeeting(item.id)}>{item.title}</button>)}</nav> : null}</div> : null);
     },
     dispose() { root.unmount(); },
   };

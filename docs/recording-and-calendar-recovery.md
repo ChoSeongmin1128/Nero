@@ -85,9 +85,18 @@ calendar select one local civil date; the backend resolves both day boundaries i
 requested IANA time zone, including daylight-saving transitions. Queries are bounded and
 fully paged. They do not replace the separate reminder cache or change its horizon.
 Preparation refetches the selected occurrence and validates account/calendar generation
-before the core creates or reuses its meeting. Existing recordings and manual fields are
-not replaced, and trashed meetings are not silently restored. An untouched generated
-meeting title adopts the selected event title. Its start date in the picker's time zone
+before the core creates or reuses its meeting. One occurrence may have several meetings:
+a recording reuses an active meeting of the occurrence that can still take audio and
+otherwise creates a new meeting numbered `title (2)`, `title (3)` from the meetings already
+on it, trashed ones included. Existing recordings and manual fields are not replaced, and
+trashed meetings are neither restored nor reused. The picker always links the current
+empty meeting, even to an occurrence other meetings already use. A meeting with audio
+offers "이 일정으로 이어서 녹음", which records into a new meeting from that meeting's
+stored reference (no calendar fetch) in the same folder. Agent `meeting_from_calendar`
+without a meeting keeps returning the occurrence's existing meeting (active first, then
+the most recently changed) and creates one only when there is none. An untouched generated
+meeting title adopts the selected event title, numbered when the occurrence already has a
+meeting. Its start date in the picker's time zone
 fills an unset meeting date, including events that span midnight; reminder recording uses
 the system time zone. Creation/recording timestamps remain separate. Title origin is
 persisted on new drafts, cleared by title edits and not guessed for older drafts.

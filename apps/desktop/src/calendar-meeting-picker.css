@@ -19,3 +19,5 @@
 .calendar-meeting-reference strong { font-weight: var(--weight-medium); overflow-wrap: anywhere; }
 .calendar-meeting-reference-label { color: var(--text-secondary); }
 .calendar-meeting-reference .calendar-meeting-links { width: 100%; margin-top: 0; }
+.calendar-meeting-siblings { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 8px; width: 100%; min-width: 0; }
+.calendar-meeting-siblings button { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

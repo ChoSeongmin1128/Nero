@@ -209,19 +209,8 @@ impl Engine {
                 "이미 일정이 연결된 회의입니다.".into(),
             ));
         }
-        if self.meetings.values().any(|current| {
-            current
-                .meeting
-                .calendar_reference
-                .as_ref()
-                .is_some_and(|current| current.occurrence_key == reference.occurrence_key)
-        }) {
-            return Err(CoreError::InvalidState(
-                "이미 다른 회의에 연결된 일정입니다. 연결된 회의를 열어 주세요.".into(),
-            ));
-        }
         if stored.generated_title {
-            stored.meeting.title = reference.title.clone();
+            stored.meeting.title = self.calendar_part_title(&reference);
             stored.generated_title = false;
         }
         if stored.meeting.meeting_date.is_none() {
@@ -248,6 +237,62 @@ impl Engine {
         store::validate_text(&reference.title, "")
     }
 
+    fn calendar_meetings<'a>(&'a self, key: &'a str) -> impl Iterator<Item = &'a StoredMeeting> {
+        self.meetings.values().filter(move |stored| {
+            stored
+                .meeting
+                .calendar_reference
+                .as_ref()
+                .is_some_and(|current| current.occurrence_key == key)
+        })
+    }
+
+    // Active meetings first, then the most recently changed, then the id, so the
+    // same library always gives the same answer.
+    fn latest<'a>(meetings: impl Iterator<Item = &'a StoredMeeting>) -> Option<&'a StoredMeeting> {
+        meetings.min_by(|a, b| {
+            a.meeting
+                .deleted_at
+                .is_some()
+                .cmp(&b.meeting.deleted_at.is_some())
+                .then_with(|| b.meeting.updated_at.cmp(&a.meeting.updated_at))
+                .then_with(|| a.meeting.id.cmp(&b.meeting.id))
+        })
+    }
+
+    // The first meeting of an occurrence keeps the event title; later ones are
+    // numbered from the count of meetings already on it, trashed ones included.
+    fn calendar_part_title(&self, reference: &crate::CalendarReference) -> String {
+        let count = self.calendar_meetings(&reference.occurrence_key).count();
+        if count == 0 {
+            return reference.title.clone();
+        }
+        let titles: std::collections::BTreeSet<_> = self
+            .meetings
+            .values()
+            .map(|stored| stored.meeting.title.as_str())
+            .collect();
+        (count as u64 + 1..)
+            .map(|index| format!("{} ({index})", reference.title))
+            .find(|candidate| !titles.contains(candidate.as_str()))
+            .unwrap()
+    }
+
+    fn create_calendar_part(
+        &mut self,
+        reference: crate::CalendarReference,
+    ) -> Result<StoredMeeting> {
+        let title = self.calendar_part_title(&reference);
+        let stored = self
+            .store
+            .create_with_calendar(title, String::new(), Some(reference), false)?;
+        self.meetings
+            .insert(stored.meeting.id.clone(), stored.clone());
+        Ok(stored)
+    }
+
+    /// The meeting an occurrence already has, or a new one when it has none. Agent
+    /// tools use this to find an event's meeting without creating empty ones.
     pub fn create_meeting_from_calendar(
         &mut self,
         reference: crate::CalendarReference,
@@ -256,24 +301,58 @@ impl Engine {
             return Err(CoreError::Unavailable);
         }
         Self::validate_calendar_reference(&reference)?;
-        if let Some(stored) = self.meetings.values().find(|stored| {
-            stored
-                .meeting
-                .calendar_reference
-                .as_ref()
-                .is_some_and(|current| current.occurrence_key == reference.occurrence_key)
-        }) {
+        if let Some(stored) = Self::latest(self.calendar_meetings(&reference.occurrence_key)) {
             return Ok(stored.meeting.clone());
         }
-        let stored = self.store.create_with_calendar(
-            reference.title.clone(),
-            String::new(),
-            Some(reference),
-            false,
-        )?;
-        let meeting = stored.meeting.clone();
-        self.meetings.insert(meeting.id.clone(), stored);
-        Ok(meeting)
+        Ok(self.create_calendar_part(reference)?.meeting)
+    }
+
+    /// The meeting a recording for this occurrence goes into: an active meeting of
+    /// the occurrence that can still take audio, otherwise a new numbered meeting.
+    /// A meeting that already has audio or is in the trash is left as it is.
+    pub fn meeting_for_calendar_recording(
+        &mut self,
+        reference: crate::CalendarReference,
+    ) -> Result<Meeting> {
+        if self.quitting {
+            return Err(CoreError::Unavailable);
+        }
+        Self::validate_calendar_reference(&reference)?;
+        let reusable = Self::latest(
+            self.calendar_meetings(&reference.occurrence_key)
+                .filter(|stored| {
+                    stored.meeting.deleted_at.is_none() && self.accepts_new_audio(stored)
+                }),
+        );
+        if let Some(stored) = reusable {
+            return Ok(stored.meeting.clone());
+        }
+        Ok(self.create_calendar_part(reference)?.meeting)
+    }
+
+    /// A new meeting on the same occurrence as `source_id`, from the reference
+    /// stored with that meeting, placed in the same folder.
+    pub fn create_calendar_continuation(&mut self, source_id: &str) -> Result<Meeting> {
+        if self.quitting {
+            return Err(CoreError::Unavailable);
+        }
+        self.require_active_meeting(source_id)?;
+        let reference = self.meetings[source_id]
+            .meeting
+            .calendar_reference
+            .clone()
+            .ok_or_else(|| CoreError::InvalidState("일정이 연결된 회의가 아닙니다.".into()))?;
+        let folder = self.meetings[source_id].meeting.folder_id.clone();
+        let meeting = self.create_calendar_part(reference)?.meeting;
+        if folder.is_some() {
+            // The meeting exists either way; a failed placement leaves it unfiled.
+            let _ = self.move_meetings(std::slice::from_ref(&meeting.id), folder);
+        }
+        Ok(self
+            .meetings
+            .get(&meeting.id)
+            .map(|stored| stored.meeting.clone())
+            .unwrap_or(meeting))
     }
 
     pub(crate) fn agent_library_version(&self) -> Result<String> {
@@ -1278,7 +1357,7 @@ mod tests {
     }
 
     #[test]
-    fn calendar_attachment_rejects_stale_moved_deleted_and_duplicate_targets() {
+    fn calendar_attachment_rejects_stale_moved_and_deleted_targets_but_not_a_linked_occurrence() {
         let (_temporary, mut engine) = engine();
         let draft = engine
             .create_meeting("Draft".into(), String::new())
@@ -1301,21 +1380,121 @@ mod tests {
             Err(CoreError::EditConflict)
         ));
         let target = engine.draft_attachment_target(&draft.id).unwrap();
-        engine
+        let first = engine
             .create_meeting_from_calendar(calendar_reference("a"))
             .unwrap();
-        let before = engine.meetings[&draft.id].meeting.clone();
-        assert!(matches!(
-            engine.attach_calendar_to_draft(target.clone(), calendar_reference("a")),
-            Err(CoreError::InvalidState(_))
-        ));
-        assert_eq!(engine.meetings[&draft.id].meeting, before);
-        engine.trash_meetings(&[draft.id.clone()]).unwrap();
+        let attached = engine
+            .attach_calendar_to_draft(target, calendar_reference("a"))
+            .unwrap();
+        assert_ne!(attached.id, first.id);
+        assert_eq!(attached.title, "Edited");
+        assert_eq!(attached.calendar_reference, Some(calendar_reference("a")));
+        let generated = engine
+            .create_meeting("새 회의".into(), String::new())
+            .unwrap();
+        let target = engine.draft_attachment_target(&generated.id).unwrap();
+        assert_eq!(
+            engine
+                .attach_calendar_to_draft(target, calendar_reference("a"))
+                .unwrap()
+                .title,
+            "Synthetic schedule (3)"
+        );
+        let other = engine
+            .create_meeting("Other".into(), String::new())
+            .unwrap();
+        let target = engine.draft_attachment_target(&other.id).unwrap();
+        engine.trash_meetings(&[other.id.clone()]).unwrap();
         assert!(matches!(
             engine.attach_calendar_to_draft(target, calendar_reference("b")),
             Err(CoreError::MeetingNotFound)
         ));
-        assert_eq!(engine.meetings.len(), 2);
+        assert_eq!(engine.meetings.len(), 4);
+    }
+
+    #[test]
+    fn a_recorded_or_trashed_occurrence_gets_a_new_numbered_meeting_and_an_empty_one_is_reused() {
+        let (_temporary, mut engine) = engine();
+        let reference = calendar_reference("a");
+        let first = engine
+            .meeting_for_calendar_recording(reference.clone())
+            .unwrap();
+        assert_eq!(first.title, "Synthetic schedule");
+        assert_eq!(
+            engine
+                .meeting_for_calendar_recording(reference.clone())
+                .unwrap()
+                .id,
+            first.id
+        );
+        let (session, mut sink) = synthetic(&mut engine, &first.id);
+        sink.write(&[0.5_f32.to_le_bytes(); 2].concat());
+        engine.stop(&session).unwrap();
+        let second = engine
+            .meeting_for_calendar_recording(reference.clone())
+            .unwrap();
+        assert_ne!(second.id, first.id);
+        assert_eq!(second.title, "Synthetic schedule (2)");
+        assert_eq!(second.calendar_reference, Some(reference.clone()));
+        assert_eq!(second.meeting_date, reference.start_date);
+        assert_eq!(
+            engine
+                .meeting_for_calendar_recording(reference.clone())
+                .unwrap()
+                .id,
+            second.id
+        );
+        engine.trash_meetings(&[second.id.clone()]).unwrap();
+        let third = engine
+            .meeting_for_calendar_recording(reference.clone())
+            .unwrap();
+        assert_eq!(third.title, "Synthetic schedule (3)");
+        assert!(engine.meetings[&second.id].meeting.deleted_at.is_some());
+        let mut renamed = engine
+            .update_meeting(&third.id, "Synthetic schedule (4)".into(), String::new())
+            .unwrap();
+        assert_eq!(renamed.title, "Synthetic schedule (4)");
+        let (session, mut sink) = synthetic(&mut engine, &third.id);
+        sink.write(&[0.5_f32.to_le_bytes(); 2].concat());
+        engine.stop(&session).unwrap();
+        renamed = engine
+            .meeting_for_calendar_recording(reference)
+            .unwrap();
+        assert_eq!(renamed.title, "Synthetic schedule (5)");
+        assert_eq!(engine.meetings.len(), 4);
+    }
+
+    #[test]
+    fn a_continuation_follows_the_source_occurrence_and_folder_and_refuses_a_trashed_source() {
+        let (_temporary, mut engine) = engine();
+        let reference = calendar_reference("a");
+        let source = engine
+            .meeting_for_calendar_recording(reference.clone())
+            .unwrap();
+        let folder = engine.create_folder("Folder".into()).unwrap();
+        engine
+            .move_meetings(&[source.id.clone()], Some(folder.id.clone()))
+            .unwrap();
+        let next = engine.create_calendar_continuation(&source.id).unwrap();
+        assert_ne!(next.id, source.id);
+        assert_eq!(next.title, "Synthetic schedule (2)");
+        assert_eq!(next.calendar_reference, Some(reference));
+        assert_eq!(next.folder_id, Some(folder.id));
+        assert_eq!(next.notes, "");
+        assert_eq!(next.status, MeetingStatus::Draft);
+        let plain = engine
+            .create_meeting("Plain".into(), String::new())
+            .unwrap();
+        assert!(matches!(
+            engine.create_calendar_continuation(&plain.id),
+            Err(CoreError::InvalidState(_))
+        ));
+        engine.trash_meetings(&[source.id.clone()]).unwrap();
+        assert!(matches!(
+            engine.create_calendar_continuation(&source.id),
+            Err(CoreError::MeetingNotFound)
+        ));
+        assert_eq!(engine.meetings.len(), 3);
     }
 
     #[test]
@@ -1417,7 +1596,7 @@ mod tests {
     }
 
     #[test]
-    fn calendar_recording_reopens_completed_occurrence_without_touching_audio_or_starting_device() {
+    fn calendar_recording_after_a_completed_meeting_uses_a_new_meeting_and_keeps_the_audio() {
         let (_temporary, mut engine) = engine();
         let reference = calendar_reference("a");
         let meeting = engine
@@ -1432,15 +1611,23 @@ mod tests {
         let root = engine.store.root.clone();
         drop(engine);
         let core = CoreHandle::open(root).unwrap();
-        let (existing, snapshot) = core
-            .create_calendar_recording(reference, "unavailable synthetic device")
-            .unwrap();
-        assert_eq!(existing, completed);
-        assert_eq!(snapshot.meetings.len(), 1);
+        for _ in 0..2 {
+            assert!(core
+                .create_calendar_recording(reference.clone(), "unavailable synthetic device")
+                .is_err());
+        }
+        let meetings = core.list_meetings().unwrap();
+        assert_eq!(meetings.len(), 2);
+        let next = meetings.iter().find(|item| item.id != meeting.id).unwrap();
+        assert_eq!(next.title, "Synthetic schedule (2)");
+        assert_eq!(next.status, MeetingStatus::Draft);
+        assert!(meetings.contains(&completed));
         assert_eq!(fs::read(audio).unwrap(), before);
-        assert!(!snapshot
-            .session
-            .is_some_and(|session| session.state == SessionState::Recording));
+        assert!(core.snapshot().unwrap().active_session().is_none());
+        assert!(core
+            .record_calendar_continuation(&meeting.id, "unavailable synthetic device")
+            .is_err());
+        assert_eq!(core.list_meetings().unwrap().len(), 3);
     }
 
     fn synthetic(engine: &mut Engine, meeting_id: &str) -> (String, CallbackSink) {
