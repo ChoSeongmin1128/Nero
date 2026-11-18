@@ -1584,3 +1584,150 @@ fn a_transcription_stopped_after_its_transcript_saved_is_not_offered_a_retry() {
     stopped.phase = Some("postprocessing".into());
     assert!(retry_block_reason(&stopped).is_some());
 }
+
+fn engine_record(kind: &str, engine: SpeechEngine) -> JobRecord {
+    JobRecord {
+        speech_engine: engine,
+        apple_speech_variant: (engine == SpeechEngine::AppleSpeech)
+            .then_some(crate::speech_choice::AppleVariant::SpeechTranscriber),
+        ..record(kind)
+    }
+}
+
+fn waits_for_cancel(
+    started: Sender<()>,
+) -> impl FnOnce(Arc<Processing>, Arc<AtomicBool>, PathBuf) -> Result<Option<String>, String> {
+    move |_, cancel, _| {
+        started.send(()).map_err(message)?;
+        while !cancel.load(Ordering::Acquire) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        Err("취소됨".into())
+    }
+}
+
+#[test]
+fn only_mac_moss_qwen_recognition_and_speaker_analysis_run_while_recording() {
+    let supported = crate::job_control::SUPPORTED;
+    for (kind, engine, expected) in [
+        ("transcribe", SpeechEngine::Moss, supported),
+        ("transcribe", SpeechEngine::QwenKo, supported),
+        ("diarize", SpeechEngine::Nemotron, supported),
+        ("transcribe", SpeechEngine::AppleSpeech, false),
+        ("transcribe", SpeechEngine::Nemotron, false),
+        ("transcribe", SpeechEngine::WhisperTurbo, false),
+        ("summary", SpeechEngine::Moss, false),
+        ("import", SpeechEngine::Moss, false),
+        ("model", SpeechEngine::Moss, false),
+    ] {
+        assert_eq!(
+            runs_while_recording(&engine_record(kind, engine)),
+            expected,
+            "{kind} {engine:?}"
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_moss_job_keeps_running_through_a_recording_start_without_a_live_session() {
+    let (_temporary, process) = setup();
+    *process.speech_engine.lock().unwrap() = SpeechEngine::Moss;
+    let (started, started_rx) = mpsc::channel();
+    let id = launch(
+        &process,
+        pending(engine_record("transcribe", SpeechEngine::Moss), waits_for_cancel(started)),
+    );
+    started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    process.recording_start(|| Ok::<_, String>(())).unwrap();
+    assert_eq!(status(&process, &id), JobStatus::Running);
+    assert!(process.requeue.lock().unwrap().is_empty());
+    let snapshot = process.snapshot();
+    assert!(snapshot.pausable);
+    assert!(snapshot.jobs.iter().any(|job| job.id == id && job.runs_while_recording));
+    process.cancel(&id).unwrap();
+    finish(&process);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_recording_start_still_interrupts_work_that_competes_with_it() {
+    for (engine, job_engine, kind) in [
+        (SpeechEngine::Moss, SpeechEngine::AppleSpeech, "transcribe"),
+        (SpeechEngine::Moss, SpeechEngine::Nemotron, "transcribe"),
+        // A legacy live session streams to its own worker.
+        (SpeechEngine::Nemotron, SpeechEngine::Moss, "transcribe"),
+    ] {
+        let (_temporary, process) = setup();
+        *process.speech_engine.lock().unwrap() = engine;
+        let (started, started_rx) = mpsc::channel();
+        let id = launch(&process, pending(engine_record(kind, job_engine), waits_for_cancel(started)));
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        process.recording_start(|| Ok::<_, String>(())).unwrap();
+        assert_eq!(status(&process, &id), JobStatus::Interrupted, "{engine:?} {job_engine:?} {kind}");
+        assert_eq!(*process.requeue.lock().unwrap(), [id]);
+    }
+}
+
+#[test]
+fn while_recording_a_queued_moss_job_may_start_and_an_apple_speech_job_waits() {
+    let (_temporary, process) = setup();
+    process.recording.store(true, Ordering::Release);
+    let moss = engine_record("transcribe", SpeechEngine::Moss);
+    assert_eq!(process.may_start(&moss), crate::job_control::SUPPORTED);
+    assert!(process.may_start(&engine_record("diarize", SpeechEngine::Moss)) == crate::job_control::SUPPORTED);
+    assert!(!process.may_start(&engine_record("transcribe", SpeechEngine::AppleSpeech)));
+    assert!(!process.may_start(&engine_record("summary", SpeechEngine::Moss)));
+    assert!(process.may_start(&engine_record("model", SpeechEngine::Moss)));
+    process.recording.store(false, Ordering::Release);
+    assert!(process.may_start(&engine_record("transcribe", SpeechEngine::AppleSpeech)));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_person_pauses_and_resumes_only_a_running_pausable_job() {
+    let (_temporary, process) = setup();
+    let (started, started_rx) = mpsc::channel();
+    let id = launch(
+        &process,
+        pending(engine_record("transcribe", SpeechEngine::Moss), move |_, cancel, _| {
+            started.send(()).map_err(message)?;
+            while !cancel.load(Ordering::Acquire) {
+                crate::job_control::pause_point(&cancel);
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err("취소됨".into())
+        }),
+    );
+    started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert!(process.set_paused("other", true).is_err());
+    let paused = process.set_paused(&id, true).unwrap();
+    assert_eq!(paused.pause.as_ref().unwrap().by, crate::job_control::PauseBy::User);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while process.snapshot().pause.as_ref().unwrap().state != crate::job_control::PauseState::Paused {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(
+        process.quiesce_for_update().unwrap_err(),
+        "일시 정지한 작업을 다시 시작하거나 취소한 뒤 업데이트해 주세요."
+    );
+    assert!(process.set_paused(&id, false).unwrap().pause.is_none());
+    process.update(|p| p.committing = true);
+    assert!(process.set_paused(&id, true).is_err());
+    process.update(|p| p.committing = false);
+    process.set_paused(&id, true).unwrap();
+    // Cancelling a paused job wakes it.
+    process.cancel(&id).unwrap();
+    finish(&process);
+    assert_eq!(status(&process, &id), JobStatus::Cancelled);
+    assert!(process.control.lock().unwrap().is_none());
+
+    let (started, started_rx) = mpsc::channel();
+    let id = launch(&process, pending(engine_record("transcribe", SpeechEngine::AppleSpeech), waits_for_cancel(started)));
+    started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert!(!process.snapshot().pausable);
+    assert!(process.set_paused(&id, true).is_err());
+    process.cancel(&id).unwrap();
+    finish(&process);
+}

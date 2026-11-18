@@ -1030,7 +1030,7 @@ function renderProcessing() {
   rememberProcessingFocus();
   const notices = processingNotices(state.processing, !state.libraryOpen && !state.setupRequested ? currentMeeting()?.id : undefined);
   const progress = notices.primary ? { ...(state.processing.id === notices.primary.id ? state.processing : {}), ...notices.primary } : {};
-  const feedback = processingFeedback(progress, { cancelling: state.processingCancellingId === progress.id || processingActions.get(progress.id) === 'cancel', waitingForModel: queuedBehindModel(state.processing, progress) });
+  const feedback = processingFeedback(progress, { cancelling: state.processingCancellingId === progress.id || processingActions.get(progress.id) === 'cancel', waitingForModel: queuedBehindModel(state.processing, progress), recording: Boolean(activeSession()), pausing: ['pause', 'resume'].includes(processingActions.get(progress.id)) });
   byId('import-audio').disabled = !state.connected || state.busy || Boolean(pendingJob(state.processing, { kind: 'import' })) || Boolean(activeSession());
   byId('processing').hidden = !feedback.visible || progress.kind === 'setup';
   byId('processing').dataset.state = feedback.state;
@@ -1047,12 +1047,16 @@ function renderProcessing() {
   setHTML('processing-error-fields', feedback.diagnostics.map(([label, value]) => `<div>${escape(label)}: ${escape(value)}</div>`).join(''));
   setText('processing-warning', feedback.warning);
   byId('processing-warning').hidden = !feedback.warning;
-  byId('processing-spinner').hidden = !feedback.active;
-  byId('processing-result-icon').hidden = feedback.active;
+  byId('processing-spinner').hidden = !feedback.active || feedback.paused;
+  byId('processing-result-icon').hidden = feedback.active && !feedback.paused;
   setHTML('processing-result-icon', icon(feedback.icon));
   byId('cancel-processing').hidden = !feedback.cancelVisible;
   byId('cancel-processing').disabled = feedback.cancelDisabled;
   setText('cancel-processing', feedback.cancelLabel);
+  byId('pause-processing').hidden = !feedback.pauseVisible;
+  byId('pause-processing').disabled = feedback.pauseDisabled;
+  byId('pause-processing').dataset.jobAction = feedback.pauseAction;
+  setText('pause-processing', feedback.pauseLabel);
   byId('processing-progress').hidden = !feedback.progress;
   setText('processing-percent', feedback.progress ? `${feedback.progress.percent}%` : '');
   byId('processing-percent').hidden = !feedback.progress;
@@ -1066,6 +1070,7 @@ function renderProcessing() {
     byId(id).dataset.jobId = progress.id || '';
     byId(id).dataset.jobAction = action;
   }
+  byId('pause-processing').dataset.jobId = progress.id || '';
   restoreProcessingFocus();
 }
 
@@ -1085,7 +1090,7 @@ function restoreProcessingFocus() {
   if (active && active !== document.body && active !== saved.target && active.isConnected !== false) { processingFocus = null; return; }
   if (processingActions.has(saved.id)) return;
   const usable = node => node && !node.disabled && !node.hidden && node.isConnected !== false && !node.closest?.('[hidden], [inert]');
-  const banner = ['cancel-processing', 'retry-processing', 'open-processing-meeting', 'dismiss-processing'].map(byId).filter(node => !byId('processing').hidden && usable(node));
+  const banner = ['pause-processing', 'cancel-processing', 'retry-processing', 'open-processing-meeting', 'dismiss-processing'].map(byId).filter(node => !byId('processing').hidden && usable(node));
   const forJob = id => banner.filter(node => node.dataset.jobId === id);
   const same = forJob(saved.id);
   const nextIds = saved.ids.slice(saved.index + 1);
@@ -1100,13 +1105,14 @@ function restoreProcessingFocus() {
   target?.focus({ preventScroll: true });
 }
 
-const processingCommands = { cancel: 'cancelProcessing', retry: 'retryProcessing', ack: 'acknowledgeProcessing' };
+const processingCommands = { cancel: 'cancelProcessing', retry: 'retryProcessing', ack: 'acknowledgeProcessing', pause: 'pauseProcessing', resume: 'resumeProcessing' };
 // Failures throw to the caller, which shows them where the action was asked; the banner also keeps them per job.
 async function processingAction(action, jobId = state.processing.id) {
   const job = processingJobs(state.processing).find(item => item.id === jobId);
   const allowed = action === 'cancel' ? ['queued', 'running'].includes(job?.status) && state.processingCancellingId !== job.id
     : action === 'retry' ? canRetryProcessing(job) && (localSummaryEnabled() || !localSummaryJob(job))
-      : action === 'ack' && canDismissProcessing(job);
+      : action === 'ack' ? canDismissProcessing(job)
+        : ['pause', 'resume'].includes(action) && job?.status === 'running' && job.pausable === true;
   if (!allowed || processingActions.has(job.id)) return;
   if (action === 'cancel') state.processingCancellingId = job.id;
   rememberProcessingFocus();
@@ -1418,7 +1424,7 @@ byId('import-audio').addEventListener('click', () => run(() => finishEditing(asy
   const progress = await bridge.importAudio(target);
   if (progress) await acceptProcessing(progress);
 })));
-for (const id of ['cancel-processing', 'retry-processing', 'dismiss-processing']) byId(id).addEventListener('click', () => { processingAction(byId(id).dataset.jobAction, byId(id).dataset.jobId).catch(showError); });
+for (const id of ['pause-processing', 'cancel-processing', 'retry-processing', 'dismiss-processing']) byId(id).addEventListener('click', () => { processingAction(byId(id).dataset.jobAction, byId(id).dataset.jobId).catch(showError); });
 byId('open-processing-meeting').addEventListener('click', () => {
   const job = processingJobs(state.processing).find(item => item.id === byId('open-processing-meeting').dataset.jobId);
   if (job?.meetingId) void run(() => selectMeeting(job.meetingId));

@@ -26,7 +26,7 @@ pub mod templates;
 pub mod terminology;
 mod transcript;
 mod whisper;
-pub use capture::CaptureReader;
+pub use capture::{CaptureLoad, CaptureReader};
 pub use diarization::{SpeakerAnalysis, SpeakerAnalysisDraft, SpeakerPosterior};
 pub use library::{Folder, FolderDeleteRequest, FolderMeetingState};
 pub use presentation::{DocumentFormat, DocumentKind, ExportedDocument};
@@ -788,6 +788,11 @@ impl CoreHandle {
 
     pub fn snapshot(&self) -> Result<Snapshot> {
         self.call_unfenced(|engine| Ok(engine.snapshot()))
+    }
+
+    /// The load handle of the current recording, if one is in progress.
+    pub fn capture_load(&self) -> Result<Option<CaptureLoad>> {
+        self.call(move |engine| Ok(engine.capture.as_ref().map(|capture| capture.load())))
     }
 
     pub fn capture_reader(&self, session_id: &str) -> Result<CaptureReader> {

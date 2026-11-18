@@ -422,11 +422,14 @@ pub(super) fn recognize(
     let mut child = crate::process_tree::spawn(&mut command)?;
     let began = Instant::now();
     let limit = Duration::from_secs(600 + 3 * (frames / RATE) as u64);
+    let mut pauser = crate::job_control::Pauser::new(cancel);
     loop {
         if cancel.load(Ordering::Acquire) {
+            pauser.release(&child);
             return Err("Qwen 처리를 취소했습니다.".into());
         }
-        if began.elapsed() > limit {
+        if began.elapsed().saturating_sub(pauser.paused()) > limit {
+            pauser.release(&child);
             return Err("Qwen 처리 시간이 너무 오래 걸렸습니다. 원본은 보관했습니다.".into());
         }
         if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
@@ -435,8 +438,10 @@ pub(super) fn recognize(
             }
             break;
         }
+        pauser.sync(&child);
         std::thread::sleep(Duration::from_millis(100));
     }
+    drop(pauser);
     drop(child);
     let log = read(&log_path, 64 * 1024 * 1024)?;
     classify_metal(&String::from_utf8_lossy(&log), bounds.len())?;

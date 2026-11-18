@@ -23,6 +23,30 @@ impl DerefMut for TreeChild {
 }
 
 impl TreeChild {
+    /// Sends `signal` to the worker's own process group, or to the worker alone
+    /// when it shares the parent's group. Not supported on Windows.
+    pub(super) fn signal(&self, signal: i32) -> std::io::Result<()> {
+        #[cfg(unix)]
+        {
+            extern "C" {
+                fn kill(pid: i32, signal: i32) -> i32;
+            }
+            if signal == 0 {
+                return Err(std::io::ErrorKind::Unsupported.into());
+            }
+            let target = self.group.map_or(self.child.id() as i32, |group| -group);
+            if unsafe { kill(target, signal) } == 0 {
+                return Ok(());
+            }
+            Err(std::io::Error::last_os_error())
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = signal;
+            Err(std::io::ErrorKind::Unsupported.into())
+        }
+    }
+
     pub(super) fn kill(&mut self) -> std::io::Result<()> {
         #[cfg(windows)]
         if let Some(job) = &self.job {

@@ -193,6 +193,9 @@ pub struct Progress {
     pub speech_switch: Option<crate::speech_switch::SwitchView>,
     pub speech_offer: Option<crate::speech_switch::OfferView>,
     pub speech_cleanup: Option<model_retirement::View>,
+    /// Whether the running job can be paused, and its pause when one is wanted.
+    pub pausable: bool,
+    pub pause: Option<crate::job_control::PauseView>,
 }
 
 #[derive(Clone, Serialize, Default, PartialEq, Eq)]
@@ -212,6 +215,10 @@ pub struct JobView {
     pub created_at: u64,
     pub retry_successor_id: Option<String>,
     pub failure_kind: Option<crate::failure::FailureKind>,
+    /// Starts and keeps running while a recording is in progress.
+    pub runs_while_recording: bool,
+    pub pausable: bool,
+    pub pause: Option<crate::job_control::PauseView>,
 }
 
 type Action = Box<
@@ -254,6 +261,18 @@ fn rejection_phase(kind: crate::failure::FailureKind) -> Option<&'static str> {
 
 fn model_job(kind: &str) -> bool {
     matches!(kind, "setup" | "model" | "summary-model" | "speaker-model")
+}
+
+// On macOS, MOSS and Qwen recognition and speaker analysis keep running while a
+// recording is in progress; they can be paused and step back when it needs room.
+// macOS system transcription, the legacy engines, summaries and imports wait.
+fn runs_while_recording(record: &JobRecord) -> bool {
+    crate::job_control::SUPPORTED
+        && match record.kind.as_str() {
+            "transcribe" => matches!(record.speech_engine, SpeechEngine::Moss | SpeechEngine::QwenKo),
+            "diarize" => true,
+            _ => false,
+        }
 }
 
 // Why a job cannot be retried, if it cannot. The job list and retry use the same rule.
@@ -359,6 +378,10 @@ pub struct Processing {
     startup_issues: Mutex<Vec<Progress>>,
     startup_issues_requested: AtomicBool,
     running: Mutex<Option<Running>>,
+    // Pause control of the running job, kept outside `running` so pausing never
+    // waits for a recording start or stop that holds that lock.
+    control: Mutex<Option<(String, Arc<crate::job_control::JobControl>)>>,
+    auto_pause: Mutex<crate::job_control::AutoPause>,
     pending: Mutex<VecDeque<Pending>>,
     records: Mutex<Vec<JobRecord>>,
     journal: Journal,
@@ -614,6 +637,8 @@ impl Processing {
             startup_issues: Mutex::new(startup_issues),
             startup_issues_requested: AtomicBool::new(false),
             running: Mutex::new(None),
+            control: Mutex::new(None),
+            auto_pause: Mutex::new(crate::job_control::AutoPause::default()),
             pending: Mutex::new(VecDeque::new()),
             records: Mutex::new(records),
             journal,
@@ -1188,10 +1213,23 @@ impl Processing {
         Ok(())
     }
     pub fn snapshot(&self) -> Progress {
+        let control = self.control.lock().unwrap().clone();
         let mut progress = {
             let stored = self.progress.lock().unwrap();
             let records = self.records.lock().unwrap();
             let mut progress = stored.clone();
+            let pause_of = |id: &str| {
+                control
+                    .as_ref()
+                    .filter(|(job, _)| job == id)
+                    .map(|(_, control)| (control.pausable(), control.view()))
+                    .unwrap_or((false, None))
+            };
+            (progress.pausable, progress.pause) = progress
+                .id
+                .as_deref()
+                .filter(|_| progress.status == "running")
+                .map_or((false, None), pause_of);
             progress.jobs = records
                 .iter()
                 .map(|record| JobView {
@@ -1213,6 +1251,11 @@ impl Processing {
                     retry_successor_id: record.retry_successor_id.clone(),
                     failure_kind: record.failure_kind,
                     retryable: retry_block_reason(record).is_none(),
+                    runs_while_recording: runs_while_recording(record),
+                    pausable: record.status == JobStatus::Running && pause_of(&record.id).0,
+                    pause: (record.status == JobStatus::Running)
+                        .then(|| pause_of(&record.id).1)
+                        .flatten(),
                 })
                 .collect();
             if records
@@ -1447,6 +1490,85 @@ impl Processing {
         Ok(())
     }
 
+    // Whether a queued job may start now, given a recording and any live worker.
+    fn may_start(&self, record: &JobRecord) -> bool {
+        (!self.recording.load(Ordering::Acquire)
+            || model_job(&record.kind)
+            || runs_while_recording(record))
+            && self.live_allows(&record.kind, record.meeting_id.as_deref())
+    }
+
+    fn end_control(&self, id: &str) {
+        let mut control = self.control.lock().unwrap();
+        if control.as_ref().is_some_and(|(job, _)| job == id) {
+            *control = None;
+        }
+    }
+
+    // While recording, lower the running job's priority and pause it when the
+    // recording or the machine needs room. Never blocks on the job.
+    fn supervise_pause(&self, core: &CoreHandle) {
+        let control = self.control.lock().unwrap().clone();
+        let mut auto = self.auto_pause.lock().unwrap();
+        let Some((_, control)) = control else {
+            auto.reset();
+            return;
+        };
+        let recording = self.recording.load(Ordering::Acquire);
+        control.set_throttle(recording);
+        if !recording || !control.pausable() {
+            auto.reset();
+            control.set_auto(None);
+            return;
+        }
+        if auto.load.as_ref().is_none_or(|load| load.finished()) {
+            auto.load = core.capture_load().ok().flatten();
+            auto.last_overloads = None;
+        }
+        let (fill, overloads) = auto
+            .load
+            .as_ref()
+            .map_or((0.0, 0), |load| (load.take_peak_fill(), load.xrun_count()));
+        let new_overloads = overloads.saturating_sub(auto.last_overloads.unwrap_or(overloads));
+        auto.last_overloads = Some(overloads);
+        let reason = auto.observe(
+            std::time::Instant::now(),
+            crate::job_control::LoadSample {
+                fill,
+                new_overloads,
+                memory_critical: crate::memory::MemoryMonitor::new().sample()
+                    == crate::memory::MemoryState::Critical,
+                thermal_serious: crate::job_control::thermal_serious(),
+            },
+        );
+        control.set_auto(reason);
+    }
+
+    /// Pauses or resumes the running job at the person's request. A person's pause
+    /// stays until they resume; an automatic pause may still apply after resuming.
+    pub fn set_paused(&self, id: &str, paused: bool) -> Result<Progress, String> {
+        let control = self
+            .control
+            .lock()
+            .unwrap()
+            .as_ref()
+            .filter(|(job, _)| job == id)
+            .map(|(_, control)| control.clone())
+            .ok_or("진행 중인 작업이 아닙니다.")?;
+        if !control.pausable() {
+            return Err("이 작업은 일시 정지할 수 없습니다.".into());
+        }
+        if paused {
+            let progress = self.progress.lock().unwrap();
+            if progress.committing || progress.phase.as_deref() == Some("saving") {
+                return Err("음성 기록을 저장하고 있습니다. 저장이 끝난 뒤 다시 시도해 주세요.".into());
+            }
+        }
+        control.set_user(paused);
+        self.update(|_| ());
+        Ok(self.snapshot())
+    }
+
     pub fn drive(self: &Arc<Self>, core: &CoreHandle) -> Result<(), String> {
         // A job that finished anyway, or whose meeting changed, keeps its retry action.
         for id in std::mem::take(&mut *self.requeue.lock().unwrap()) {
@@ -1454,6 +1576,7 @@ impl Processing {
         }
         let mut running = self.running.lock().unwrap();
         self.synchronize_recording(core)?;
+        self.supervise_pause(core);
         if running.as_ref().is_some_and(|r| !r.handle.is_finished())
             || self.shutting_down.load(Ordering::Acquire)
         {
@@ -1468,10 +1591,7 @@ impl Processing {
         self.reconcile_speech_switch(&running);
         self.reconcile_model_retirement(&running);
         let mut queue = self.pending.lock().unwrap();
-        let index = queue.iter().position(|job| {
-            (!self.recording.load(Ordering::Acquire) || model_job(&job.record.kind))
-                && self.live_allows(&job.record.kind, job.record.meeting_id.as_deref())
-        });
+        let index = queue.iter().position(|job| self.may_start(&job.record));
         if let Some(index) = index {
             let job = queue.remove(index).unwrap();
             drop(queue);
@@ -2245,7 +2365,18 @@ impl Processing {
                 .as_ref()
                 .is_some_and(|job| job.running.load(Ordering::Acquire))
         {
-            return Err("녹음과 진행 중인 작업을 마친 뒤 업데이트해 주세요.".into());
+            return Err(if self
+                .control
+                .lock()
+                .unwrap()
+                .as_ref()
+                .is_some_and(|(_, control)| control.user_paused())
+            {
+                "일시 정지한 작업을 다시 시작하거나 취소한 뒤 업데이트해 주세요."
+            } else {
+                "녹음과 진행 중인 작업을 마친 뒤 업데이트해 주세요."
+            }
+            .into());
         }
         self.shutting_down.store(true, Ordering::Release);
         Ok(())
@@ -2426,8 +2557,7 @@ impl Processing {
         };
         if !queue.is_empty()
             || running.as_ref().is_some_and(|r| !r.handle.is_finished())
-            || (self.recording.load(Ordering::Acquire) && !model_job(kind))
-            || !self.live_allows(kind, job.record.meeting_id.as_deref())
+            || !self.may_start(&job.record)
         {
             queue.push_back(job);
             drop(queue);
@@ -2467,6 +2597,10 @@ impl Processing {
             }
         });
         let cancel = Arc::new(AtomicBool::new(false));
+        let control =
+            crate::job_control::JobControl::new(cancel.clone(), runs_while_recording(&job.record));
+        control.set_throttle(self.recording.load(Ordering::Acquire));
+        *self.control.lock().unwrap() = Some((id.clone(), control));
         let flag = cancel.clone();
         let this = self.clone();
         let job_id = id.clone();
@@ -2487,6 +2621,7 @@ impl Processing {
                     this.cleanup_failed();
                     Err("처리 작업이 예기치 않게 종료되었습니다. 기존 결과는 유지했습니다.".into())
                 });
+                this.end_control(&job_id);
                 let interrupted = this.interrupted_jobs.lock().unwrap().remove(&job_id);
                 let user_cancelled = this.records.lock().unwrap().iter().any(|r| {
                     r.id == job_id
@@ -2856,7 +2991,20 @@ impl Processing {
             }
         }
         let downloading = model_job(&self.progress.lock().unwrap().kind);
-        if !downloading {
+        // A session that streams to a live worker would compete with the running job.
+        let live_session = !matches!(
+            self.speech_engine(),
+            SpeechEngine::AppleSpeech | SpeechEngine::QwenKo | SpeechEngine::Moss
+        );
+        let concurrent = !live_session
+            && running.as_ref().is_some_and(|job| {
+                self.records
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|record| record.id == job.id && runs_while_recording(record))
+            });
+        if !downloading && !concurrent {
             if let Some(job) = running.take() {
                 let interrupted = self.mark_interrupted(&job);
                 job.cancel.store(true, Ordering::Release);
@@ -2872,6 +3020,9 @@ impl Processing {
         let result = action();
         if result.is_ok() {
             self.recording.store(true, Ordering::Release);
+            if let Some((_, control)) = self.control.lock().unwrap().as_ref() {
+                control.set_throttle(true);
+            }
         }
         result
     }
@@ -3317,9 +3468,17 @@ impl Processing {
                 // optional profile must never prevent preserving the recognized baseline.
                 let terminology = crate::terminology::load_snapshot(&this);
                 core.audio_path(&meeting_id).map_err(message)?;
-                if core.snapshot().map_err(message)?.active_session().is_some() {
+                let concurrent = crate::job_control::SUPPORTED
+                    && matches!(engine, SpeechEngine::Moss | SpeechEngine::QwenKo);
+                if core
+                    .snapshot()
+                    .map_err(message)?
+                    .active_session()
+                    .is_some_and(|session| !concurrent || session.meeting_id == meeting_id)
+                {
                     return Err("녹음을 마친 뒤 음성 인식을 시작해 주세요.".into());
                 }
+                crate::job_control::pause_point(&cancel);
                 this.update(|p| {
                     p.phase = Some("preparing".into());
                     p.message = "모델을 확인하고 있습니다.".into();
@@ -3357,6 +3516,7 @@ impl Processing {
                             && value["modelRevision"] == live_model.revision
                     })
                 });
+                crate::job_control::pause_point(&cancel);
                 let prepared = match &live {
                     Some(live) => {
                         crate::speech_audio::AnalysisAudio::from_live(&audio, &live.audio, &cancel)
@@ -3366,6 +3526,7 @@ impl Processing {
                     }
                 }
                 .map_err(|error| this.report(error))?;
+                crate::job_control::pause_point(&cancel);
                 this.update(|p| {
                     p.phase = Some("recognizing".into());
                     p.message = "텍스트로 변환 중".into();
@@ -3447,6 +3608,7 @@ impl Processing {
                         return Err("모델 경로가 처리 중 변경됐습니다.".into());
                     }
                 }
+                crate::job_control::pause_point(&cancel);
                 let source = this.checkpoint_transcript_following(
                     &cancel,
                     || match engine {
@@ -3500,6 +3662,7 @@ impl Processing {
                         this.update(|p| { p.phase = Some("mossTimingContext".into()); p.message = "전사를 저장했습니다. 일부 발언은 정확한 시각 대신 구간 범위로 표시합니다.".into(); });
                     }
                 };
+                crate::job_control::pause_point(&cancel);
                 crate::terminology::correct(
                     &this,
                     &core,
@@ -3510,6 +3673,7 @@ impl Processing {
                     &cancel,
                 )?;
                 cancelled(&cancel)?;
+                crate::job_control::pause_point(&cancel);
                 if !speaker_enabled {
                     finish_timing();
                     return Ok(Some(meeting_id));

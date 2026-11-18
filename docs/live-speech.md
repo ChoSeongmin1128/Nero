@@ -2,7 +2,7 @@
 
 This is a source contract, not a microphone, target-laptop or macOS acceptance receipt.
 
-Legacy Nemotron and Whisper jobs use the paths below and retain their original preview contracts. MOSS, Qwen and macOS system transcription run after recording ends without a live ASR preview. Speaker analysis is optional and frozen with the selected engine at recording start. Disabling it skips speaker preparation and analysis.
+Legacy Nemotron and Whisper jobs use the paths below and retain their original preview contracts. MOSS, Qwen and macOS system transcription recognize a recording after it ends, without a live ASR preview; on macOS, MOSS and Qwen work for earlier meetings continues during a new recording (see [task management](task-management.md)). Speaker analysis is optional and frozen with the selected engine at recording start. Disabling it skips speaker preparation and analysis.
 
 The recorder retains its device callback, bounded queue, capture PCM writer and
 separate playback WAV. A background reader consumes only complete frames already

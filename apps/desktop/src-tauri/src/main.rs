@@ -25,6 +25,7 @@ mod external_open;
 mod failure;
 mod glossary_context;
 mod identity_migration;
+mod job_control;
 mod job_journal;
 mod lifecycle;
 mod live_asr;
@@ -1749,6 +1750,24 @@ fn cancel_processing(
     state.processing.cancel(&job_id)
 }
 #[tauri::command]
+fn pause_processing(
+    window: WebviewWindow,
+    state: tauri::State<'_, DesktopState>,
+    job_id: String,
+) -> Result<Progress, String> {
+    require_main(&window)?;
+    state.processing.set_paused(&job_id, true)
+}
+#[tauri::command]
+fn resume_processing(
+    window: WebviewWindow,
+    state: tauri::State<'_, DesktopState>,
+    job_id: String,
+) -> Result<Progress, String> {
+    require_main(&window)?;
+    state.processing.set_paused(&job_id, false)
+}
+#[tauri::command]
 fn acknowledge_processing(
     window: WebviewWindow,
     state: tauri::State<'_, DesktopState>,
@@ -2159,6 +2178,8 @@ fn main() {
             drop_import_cancel,
             transcribe_audio,
             cancel_processing,
+            pause_processing,
+            resume_processing,
             retry_processing,
             acknowledge_processing,
             read_terminology_settings,

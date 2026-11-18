@@ -5,11 +5,33 @@ This is a source contract, not an installed-app or hardware acceptance receipt.
 ## Ownership
 
 Rust core owns capture, original audio, placement and versioned results. Processing owns
-one execution slot and a bounded request queue. A recording start keeps model downloads,
-but cancels and joins an active inference before capture starts. That inference is queued
-again as a retry of the same request, so it reruns from the start once recording ends unless
-its inputs changed. Requested inference waits until recording/current processing ends. Changing the selected meeting does not change
-job ownership. Folder movement changes placement, never original paths or job ownership.
+one execution slot and a bounded request queue. A recording start keeps model downloads.
+On macOS, MOSS and Qwen recognition and speaker analysis of other meetings also keep
+running and may start while recording, unless the new session runs a live worker (legacy
+Nemotron/Whisper). Every other inference (macOS system transcription, legacy engines,
+summaries) is cancelled and joined before capture starts and queued again as a retry of
+the same request, so it reruns once recording ends unless its inputs changed; requested
+inference of that kind waits until recording/current processing ends. Windows keeps that
+rule for every inference. Changing the selected meeting does not change job ownership.
+Folder movement changes placement, never original paths or job ownership.
+
+## Pause
+
+On macOS a running MOSS or Qwen recognition or speaker analysis can be paused and resumed
+by the person. The worker process group receives SIGSTOP/SIGCONT from the loop that waits
+for it, so the model stays loaded and its memory stays in use; Rust-side work pauses only
+at stage boundaries outside processing locks, and saving cannot be paused. Wall-clock
+limits leave paused time out. A paused job keeps the execution slot, cancel wakes it, and
+an app quit recovers it as interrupted. The view separates a requested pause from one the
+job has reached. A person's pause lasts until they resume it.
+
+While a recording runs, the same jobs run with background scheduling for the worker and
+throttled disk I/O for the job thread, and pause automatically when the recording needs
+room: the largest unsaved backlog since the last check reaches a quarter of the capture
+queue, the audio device reports three processor overloads within 30 seconds, memory
+pressure is critical, or thermal state is serious or worse. The pause ends after every
+signal stayed clear for 30 seconds or when recording ends. These thresholds are initial
+values without measurement; a full queue still ends the recording as before.
 
 New recording also owns one isolated live speech child. It reads already saved
 PCM, preserves ASR and independent speaker state across pause/resume, and publishes

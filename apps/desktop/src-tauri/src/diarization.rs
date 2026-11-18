@@ -349,8 +349,11 @@ fn check_source(
     {
         return Err(failure(FailureKind::SourceChanged));
     }
+    // On macOS speaker analysis of a finished meeting continues while another records.
     let snapshot = core.snapshot().map_err(source_failure)?;
-    if snapshot.active_session().is_some() {
+    if snapshot.active_session().is_some_and(|session| {
+        !crate::job_control::SUPPORTED || session.meeting_id == meeting_id
+    }) {
         return Err(failure(FailureKind::RecordingActive));
     }
     Ok(())

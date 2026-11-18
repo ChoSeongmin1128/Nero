@@ -1,7 +1,7 @@
 //! The pinned NeMo speech package shared by recognition, speaker analysis and audio
 //! preparation: its file locations, backend names and the bounded child runner.
 use crate::failure::FailureKind;
-use crate::processing::{cancelled, plain_file, Processing, Worker};
+use crate::processing::{cancelled, plain_file, Processing};
 use serde::{Deserialize, Serialize};
 use std::fs::OpenOptions;
 use std::io::Read;
@@ -211,20 +211,30 @@ pub(crate) fn run(
             command.env_remove(name);
         }
     }
-    let mut worker = Worker(
-        command
-            .spawn()
-            .map_err(|_| FailureKind::EngineUnavailable)?,
-    );
-    loop {
-        if cancelled(cancel).is_err() {
-            worker.stop().map_err(|_| {
+    // Its own process group, so pausing or stopping it never reaches the app.
+    let mut worker =
+        crate::process_tree::spawn(&mut command).map_err(|_| FailureKind::EngineUnavailable)?;
+    let mut pauser = crate::job_control::Pauser::new(cancel);
+    let stop = |worker: &mut crate::process_tree::TreeChild,
+                    pauser: &mut crate::job_control::Pauser| {
+        pauser.release(worker);
+        if worker.try_wait().ok().flatten().is_some() {
+            return Ok(());
+        }
+        worker
+            .kill()
+            .and_then(|()| worker.wait().map(|_| ()))
+            .map_err(|_| {
                 process.cleanup_failed();
                 FailureKind::Cleanup
-            })?;
+            })
+    };
+    loop {
+        if cancelled(cancel).is_err() {
+            stop(&mut worker, &mut pauser)?;
             return Err(FailureKind::Cancelled);
         }
-        match worker.0.try_wait() {
+        match worker.try_wait() {
             Ok(Some(status)) if status.success() => return Ok(()),
             Ok(Some(status)) => {
                 return Err(classify(
@@ -235,12 +245,12 @@ pub(crate) fn run(
                     operation,
                 ))
             }
-            Ok(None) => thread::sleep(Duration::from_millis(100)),
+            Ok(None) => {
+                pauser.sync(&worker);
+                thread::sleep(Duration::from_millis(100));
+            }
             Err(_) => {
-                worker.stop().map_err(|_| {
-                    process.cleanup_failed();
-                    FailureKind::Cleanup
-                })?;
+                stop(&mut worker, &mut pauser)?;
                 return Err(FailureKind::EngineUnavailable);
             }
         }
@@ -441,6 +451,35 @@ mod tests {
                 FailureKind::EngineUnavailable
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_worker_has_its_own_process_group_so_pausing_it_never_reaches_the_app() {
+        extern "C" {
+            fn getpgrp() -> i32;
+        }
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let process = Processing::new(root.clone(), root.clone());
+        let cancel = AtomicBool::new(false);
+        run(
+            &process,
+            Path::new("/bin/sh"),
+            &["-c".into(), "ps -o pgid= -p $$ > group.txt".into()],
+            &root.join("worker.log"),
+            &cancel,
+            false,
+            None,
+            "diarize",
+        )
+        .unwrap();
+        let group: i32 = std::fs::read_to_string(root.join("group.txt"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert_ne!(group, unsafe { getpgrp() });
     }
 
     #[cfg(unix)]

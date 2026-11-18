@@ -1552,7 +1552,12 @@ impl Engine {
             return Err(CoreError::Unavailable);
         }
         self.require_active_meeting(id)?;
-        if self.capture.is_some() {
+        // Speaker analysis of a finished meeting may save while another one records.
+        if self
+            .capture
+            .as_ref()
+            .is_some_and(|capture| capture.manifest.meeting_id == id)
+        {
             return Err(CoreError::RecordingBusy);
         }
         let current = self

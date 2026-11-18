@@ -7,7 +7,9 @@ qualification. The policy lives in `apps/desktop/src-tauri/src/memory.rs`,
 ## OS observations
 
 OS memory state is advisory. Warning, critical and unknown observations do not reject,
-cancel, pause or reconfigure a summary. No application-defined RAM percentage threshold
+cancel, pause or reconfigure a summary. The one exception is outside summaries: while a
+recording runs on macOS, critical pressure automatically pauses a running MOSS, Qwen or
+speaker-analysis job (see [task management](task-management.md)). No application-defined RAM percentage threshold
 is used. Observations remain available in job diagnostics; the normal processing
 view does not promote them to warnings or imply that they caused a failure.
 
@@ -64,8 +66,8 @@ normal quit remain blocked when direct-worker termination cannot be confirmed.
 
 ## Cancellation and results
 
-- Before retry, recheck cancellation. Recording start and normal quit cancel/join active
-  processing before continuing; they do not launch a recovery attempt after cancellation.
+- Before retry, recheck cancellation. Recording start (for summaries and every job not
+  allowed to run while recording) and normal quit cancel/join active processing before continuing; they do not launch a recovery attempt after cancellation.
 - Final commit and accepted user cancellation share a boundary. If cancellation wins,
   no new summary is committed. Once commit begins, cancellation is rejected and
   recording/quit waits for the job's completion.

@@ -162,6 +162,10 @@ pub(crate) struct Signals {
     failure_kinds: AtomicU8,
     saved_bytes: AtomicU64,
     queued_bytes: AtomicU64,
+    // Largest unsaved backlog since the last `CaptureLoad::take_peak_fill`, and the
+    // queue size it is measured against.
+    recent_pending_bytes: AtomicU64,
+    queue_bytes: AtomicU64,
     phase: AtomicU8,
     completion: AtomicU8,
     // The input stream stopped (device gone or stream invalidated) but the capture
@@ -189,6 +193,8 @@ impl Signals {
             failure_kinds: AtomicU8::new(0),
             saved_bytes: AtomicU64::new(0),
             queued_bytes: AtomicU64::new(0),
+            recent_pending_bytes: AtomicU64::new(0),
+            queue_bytes: AtomicU64::new(0),
             phase: AtomicU8::new(0),
             completion: AtomicU8::new(0),
             detached: AtomicBool::new(false),
@@ -424,10 +430,14 @@ impl CallbackSink {
                             .fetch_add(input.len() as u64, Ordering::Release);
                         let queued = self.signals.queued_bytes.load(Ordering::Acquire);
                         let saved = self.signals.saved_bytes.load(Ordering::Acquire);
+                        let pending = queued.saturating_sub(saved);
                         self.signals.timing.max_pending_frames.fetch_max(
-                            queued.saturating_sub(saved) / self.frame_bytes as u64,
+                            pending / self.frame_bytes as u64,
                             Ordering::Relaxed,
                         );
+                        self.signals
+                            .recent_pending_bytes
+                            .fetch_max(pending, Ordering::Relaxed);
                         chunk.commit_all();
                     }
                     Err(_) => self.signals.fail(FAULT_OVERFLOW),
@@ -448,6 +458,38 @@ enum WriterCommand {
 pub(crate) struct CaptureOutcome {
     pub manifest: Manifest,
     pub audio: Option<AudioArtifact>,
+}
+
+/// Recording load as seen from the device callback, for work that runs alongside a
+/// recording and should step back before the queue fills. Reading never waits for
+/// the callback or the writer.
+pub struct CaptureLoad {
+    signals: Arc<Signals>,
+    session_id: String,
+}
+
+impl CaptureLoad {
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+    pub fn finished(&self) -> bool {
+        self.signals.completion.load(Ordering::Acquire) != 0
+    }
+    /// The largest share of the queue that was waiting to be saved since the last
+    /// call, from 0 to 1.
+    pub fn take_peak_fill(&self) -> f64 {
+        let peak = self.signals.recent_pending_bytes.swap(0, Ordering::AcqRel);
+        let capacity = self.signals.queue_bytes.load(Ordering::Relaxed);
+        if capacity == 0 {
+            0.0
+        } else {
+            (peak as f64 / capacity as f64).min(1.0)
+        }
+    }
+    /// Processor overload notices from the audio device so far.
+    pub fn xrun_count(&self) -> u64 {
+        self.signals.event_totals[CaptureQualityEventKind::Xrun as usize].load(Ordering::Acquire)
+    }
 }
 
 /// A bounded reader of already written microphone PCM. It never calls the
@@ -510,6 +552,13 @@ pub(crate) struct Capture {
 }
 
 impl Capture {
+    pub(crate) fn load(&self) -> CaptureLoad {
+        CaptureLoad {
+            signals: self.signals.clone(),
+            session_id: self.manifest.session_id.clone(),
+        }
+    }
+
     pub(crate) fn reader(&self, root: &Path) -> Result<CaptureReader> {
         let path = store::checked_path(root, &self.manifest.relative_dir().join("audio.pcm"))?;
         Ok(CaptureReader {
@@ -537,6 +586,9 @@ impl Capture {
     ) -> Result<(Self, CallbackSink)> {
         let (producer, consumer) = queue(capacity)?;
         let signals = Arc::new(Signals::new(manifest.frame_bytes()));
+        signals
+            .queue_bytes
+            .store(capacity as u64, Ordering::Relaxed);
         let (control, commands) = mpsc::channel();
         let root = root.to_path_buf();
         let writer_manifest = manifest.clone();
@@ -1302,6 +1354,25 @@ mod tests {
         assert_eq!(reader.consumed_frames, 3);
         assert!(reader.read_mono(16).unwrap().is_empty());
         assert_eq!(fs::metadata(original).unwrap().len(), 12);
+    }
+
+    #[test]
+    fn capture_load_reports_the_peak_backlog_once_and_counts_overload_notices() {
+        let (_temp, _store, mut capture, mut sink) = setup(4096);
+        let load = capture.load();
+        assert_eq!(load.session_id(), capture.manifest.session_id);
+        assert_eq!(load.take_peak_fill(), 0.0);
+        capture.begin();
+        sink.write(&[0_u8; 1024]);
+        let fill = load.take_peak_fill();
+        assert!(fill > 0.0 && fill <= 1024.0 / 4096.0, "{fill}");
+        assert_eq!(load.take_peak_fill(), 0.0);
+        assert_eq!(load.xrun_count(), 0);
+        capture.signals.record_event(CaptureQualityEventKind::Xrun);
+        assert_eq!(load.xrun_count(), 1);
+        assert!(!load.finished());
+        capture.finish(CapturePhase::Completed, None).unwrap();
+        assert!(load.finished());
     }
 
     #[test]

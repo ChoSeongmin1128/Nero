@@ -65,7 +65,7 @@ function failureDiagnostics(job) {
   return rows;
 }
 
-export function processingFeedback(job = {}, { cancelling = false, waitingForModel = false } = {}) {
+export function processingFeedback(job = {}, { cancelling = false, waitingForModel = false, recording = false, pausing = false } = {}) {
   const active = Boolean(job.id) && ['running', 'cancelling'].includes(job.status);
   const queued = Boolean(job.id) && job.status === 'queued';
   const committing = active && (job.committing === true
@@ -86,11 +86,21 @@ export function processingFeedback(job = {}, { cancelling = false, waitingForMod
   let message = String(job.message || '').trim();
   if (job.status === 'cancelled' && ['취소했습니다.', '취소됨'].includes(message)) message = '';
   // Native reports every queued job as '대기 중', which only repeats the heading.
-  if (job.status === 'queued') message = waitingForModel ? '모델 다운로드가 끝나면 시작합니다.' : message && message !== '대기 중' ? message : '앞선 작업이나 녹음이 끝나면 실행합니다.';
+  if (job.status === 'queued') message = waitingForModel ? '모델 다운로드가 끝나면 시작합니다.' : message && message !== '대기 중' ? message : job.runsWhileRecording ? '앞선 작업이 끝나면 실행합니다.' : '앞선 작업이나 녹음이 끝나면 실행합니다.';
   if (job.status === 'interrupted') message = message || '기존 녹음과 결과는 유지됩니다.';
   if (job.status === 'needsReview' && !['mossPartial', 'mossTimingContext'].includes(job.phase)) message = '회의를 열어 저장된 결과를 확인해 주세요.';
   if (speakerPhase) message = '';
   if (active && job.kind === 'transcribe' && !cancelRequested) { heading = '음성 기록 처리 중'; message = ''; }
+  // A pause is shown only while the job runs; the worker or a stage boundary holds it.
+  const pause = active && !cancelRequested && !committing ? job.pause : null;
+  if (pause) {
+    heading = pause.state === 'paused' ? `${title} 일시 정지됨` : `${title} 멈추는 중`;
+    message = pause.by === 'user' ? '일시 정지했습니다. 다시 시작하면 이어서 처리합니다.' : '녹음을 보호하려고 잠시 멈췄습니다. 여유가 생기면 이어서 처리합니다.';
+  } else if (active && recording && job.runsWhileRecording && !cancelRequested && !committing) {
+    message = '녹음과 함께 처리하고 있습니다.';
+  }
+  const userPaused = pause?.by === 'user';
+  const pauseVisible = active && job.pausable === true && !cancelRequested && !committing;
   if (job.kind === 'diarize' && job.status === 'failed') {
     message = (Object.hasOwn(speakerFailures, job.failureKind) ? speakerFailures[job.failureKind] : '')
       || '화자를 구분하지 못했습니다. 원인을 확인하지 못했습니다. 기존 음성 기록은 유지됩니다.';
@@ -106,7 +116,8 @@ export function processingFeedback(job = {}, { cancelling = false, waitingForMod
     visible: Boolean(job.id) && job.acknowledged !== true && ['running', 'cancelling', 'failed', 'cancelled', 'queued', 'interrupted', 'needsReview'].includes(job.status),
     active,
     state: cancelRequested ? 'cancelling' : active ? 'running' : job.status || 'idle',
-    icon: job.status === 'queued' ? 'clock' : ['failed', 'needsReview'].includes(job.status) ? 'triangle-alert' : job.status === 'interrupted' ? 'pause' : 'circle-slash',
+    paused: pause?.state === 'paused',
+    icon: job.status === 'queued' ? 'clock' : ['failed', 'needsReview'].includes(job.status) ? 'triangle-alert' : job.status === 'interrupted' || pause?.state === 'paused' ? 'pause' : 'circle-slash',
     title: heading,
     detail: message && !cancelRequested && !repeated && !['준비 중', '완료', heading].includes(message) ? message : '',
     warning: '',
@@ -115,5 +126,9 @@ export function processingFeedback(job = {}, { cancelling = false, waitingForMod
     cancelVisible: (active || queued) && !committing,
     cancelDisabled: cancelRequested || committing || (queued && cancelling),
     cancelLabel: cancelRequested ? '취소 중' : '취소',
+    pauseVisible,
+    pauseDisabled: pausing,
+    pauseAction: userPaused ? 'resume' : 'pause',
+    pauseLabel: userPaused ? '다시 시작' : '일시 정지',
   };
 }

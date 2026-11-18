@@ -307,3 +307,39 @@ test('a queued job explains what it waits for instead of repeating its heading',
   assert.equal(processingFeedback(job).detail, '앞선 작업이나 녹음이 끝나면 실행합니다.');
   assert.equal(processingFeedback(job, { waitingForModel: true }).detail, '모델 다운로드가 끝나면 시작합니다.');
 });
+
+test('a job that runs while recording says so when queued and while it runs alongside a recording', () => {
+  const queued = { id: 'next', kind: 'transcribe', status: 'queued', message: '대기 중', runsWhileRecording: true };
+  assert.equal(processingFeedback(queued).detail, '앞선 작업이 끝나면 실행합니다.');
+  const running = { id: 'now', kind: 'transcribe', status: 'running', message: '텍스트로 변환 중', runsWhileRecording: true, pausable: true };
+  assert.equal(processingFeedback(running, { recording: true }).detail, '녹음과 함께 처리하고 있습니다.');
+  assert.equal(processingFeedback(running).detail, '');
+  assert.equal(processingFeedback({ ...running, runsWhileRecording: false }, { recording: true }).detail, '');
+});
+
+test('a pausable job offers pause and resume and shows who paused it', () => {
+  const running = { id: 'job', kind: 'transcribe', status: 'running', pausable: true, runsWhileRecording: true };
+  let feedback = processingFeedback(running);
+  assert.equal(feedback.pauseVisible, true);
+  assert.equal(feedback.pauseAction, 'pause');
+  assert.equal(feedback.pauseLabel, '일시 정지');
+  assert.equal(feedback.paused, false);
+  feedback = processingFeedback({ ...running, pause: { by: 'user', state: 'pausing' } });
+  assert.equal(feedback.title, '음성 기록 변환 멈추는 중');
+  assert.equal(feedback.pauseAction, 'resume');
+  assert.equal(feedback.pauseLabel, '다시 시작');
+  feedback = processingFeedback({ ...running, pause: { by: 'user', state: 'paused' } });
+  assert.equal(feedback.title, '음성 기록 변환 일시 정지됨');
+  assert.equal(feedback.detail, '일시 정지했습니다. 다시 시작하면 이어서 처리합니다.');
+  assert.equal(feedback.paused, true);
+  assert.equal(feedback.icon, 'pause');
+  assert.equal(feedback.cancelVisible, true);
+  feedback = processingFeedback({ ...running, pause: { by: 'auto', state: 'paused', reason: 'buffer' } });
+  assert.equal(feedback.detail, '녹음을 보호하려고 잠시 멈췄습니다. 여유가 생기면 이어서 처리합니다.');
+  assert.equal(feedback.pauseAction, 'pause');
+  assert.equal(processingFeedback({ ...running, pausable: false }).pauseVisible, false);
+  assert.equal(processingFeedback({ ...running, committing: true }).pauseVisible, false);
+  assert.equal(processingFeedback(running, { cancelling: true }).pauseVisible, false);
+  assert.equal(processingFeedback(running, { pausing: true }).pauseDisabled, true);
+  assert.equal(processingFeedback({ ...running, status: 'queued' }).pauseVisible, false);
+});
