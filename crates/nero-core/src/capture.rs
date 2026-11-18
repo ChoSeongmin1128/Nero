@@ -166,6 +166,8 @@ pub(crate) struct Signals {
     // queue size it is measured against.
     recent_pending_bytes: AtomicU64,
     queue_bytes: AtomicU64,
+    // Overload notices before the first audio was saved (the device starting input).
+    startup_xruns: AtomicU64,
     phase: AtomicU8,
     completion: AtomicU8,
     // The input stream stopped (device gone or stream invalidated) but the capture
@@ -195,6 +197,7 @@ impl Signals {
             queued_bytes: AtomicU64::new(0),
             recent_pending_bytes: AtomicU64::new(0),
             queue_bytes: AtomicU64::new(0),
+            startup_xruns: AtomicU64::new(0),
             phase: AtomicU8::new(0),
             completion: AtomicU8::new(0),
             detached: AtomicBool::new(false),
@@ -295,7 +298,12 @@ impl Signals {
     pub(crate) fn device_event(&self, error: cpal::Error) {
         self.callbacks.fetch_add(1, Ordering::SeqCst);
         match error.kind() {
-            cpal::ErrorKind::Xrun => self.record_event(CaptureQualityEventKind::Xrun),
+            cpal::ErrorKind::Xrun => {
+                if self.saved_bytes.load(Ordering::Acquire) == 0 {
+                    self.startup_xruns.fetch_add(1, Ordering::AcqRel);
+                }
+                self.record_event(CaptureQualityEventKind::Xrun)
+            }
             cpal::ErrorKind::RealtimeDenied => {
                 self.record_event(CaptureQualityEventKind::RealtimeDenied)
             }
@@ -486,9 +494,11 @@ impl CaptureLoad {
             (peak as f64 / capacity as f64).min(1.0)
         }
     }
-    /// Processor overload notices from the audio device so far.
+    /// Processor overload notices from the audio device since audio started to be saved.
     pub fn xrun_count(&self) -> u64 {
-        self.signals.event_totals[CaptureQualityEventKind::Xrun as usize].load(Ordering::Acquire)
+        self.signals.event_totals[CaptureQualityEventKind::Xrun as usize]
+            .load(Ordering::Acquire)
+            .saturating_sub(self.signals.startup_xruns.load(Ordering::Acquire))
     }
 }
 
@@ -1357,6 +1367,51 @@ mod tests {
     }
 
     #[test]
+    fn an_overload_notice_before_any_audio_is_saved_is_kept_but_not_a_warning() {
+        let event = |count, last_saved_frame| CaptureQualityEvent {
+            kind: CaptureQualityEventKind::Xrun,
+            count,
+            first_observed_at_ms: 1,
+            last_observed_at_ms: 1,
+            first_saved_frame: 0,
+            last_saved_frame,
+            first_queued_frame: 0,
+            last_queued_frame: 0,
+            coalesced: false,
+        };
+        let startup = CaptureQuality {
+            xrun_count: 1,
+            events: vec![event(1, 0)],
+            ..CaptureQuality::default()
+        };
+        assert_eq!(startup.startup_xruns(), 1);
+        assert_eq!(startup.warning(), None);
+        let later = CaptureQuality {
+            xrun_count: 2,
+            events: vec![event(1, 0), event(1, 48_000)],
+            ..CaptureQuality::default()
+        };
+        assert!(later.warning().unwrap().contains("입력 지연 신호"));
+        // A notice counted without its event (beyond the kept events) still warns.
+        let uncounted = CaptureQuality {
+            xrun_count: 2,
+            events: vec![event(1, 0)],
+            ..CaptureQuality::default()
+        };
+        assert!(uncounted.warning().is_some());
+
+        let signals = Signals::new(4);
+        signals.device_event(cpal::ErrorKind::Xrun.into());
+        signals.saved_bytes.store(4, Ordering::Release);
+        signals.device_event(cpal::ErrorKind::Xrun.into());
+        let load = CaptureLoad {
+            signals: Arc::new(signals),
+            session_id: "s".into(),
+        };
+        assert_eq!(load.xrun_count(), 1);
+    }
+
+    #[test]
     fn capture_load_reports_the_peak_backlog_once_and_counts_overload_notices() {
         let (_temp, _store, mut capture, mut sink) = setup(4096);
         let load = capture.load();
@@ -1603,6 +1658,13 @@ mod tests {
     fn nonterminal_device_events_keep_recording_and_persist_observations_at_checkpoints() {
         let (_temporary, store, mut capture, mut sink) = setup(4096);
         capture.begin();
+        sink.write(&[0.25_f32.to_le_bytes(); 10].concat());
+        // Observed after audio was saved, not as the device starts its input.
+        let began = Instant::now();
+        while capture.signals.saved_bytes.load(Ordering::Acquire) == 0 {
+            assert!(began.elapsed() < Duration::from_secs(5));
+            thread::sleep(Duration::from_millis(5));
+        }
         let diagnostic_lock = capture.signals.device_diagnostic.lock().unwrap();
         for kind in [
             cpal::ErrorKind::Xrun,
@@ -1613,7 +1675,6 @@ mod tests {
             capture.signals.device_event(kind.into());
         }
         assert!(capture.signals.error().is_none());
-        sink.write(&[0.25_f32.to_le_bytes(); 10].concat());
         drop(diagnostic_lock);
         capture.pause().unwrap();
         let path = store

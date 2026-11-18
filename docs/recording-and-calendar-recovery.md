@@ -6,6 +6,10 @@ recovery. The rendering layer does not infer missing audio from counters or obse
 
 - Driver xrun observations are informational. They do not establish missing audio or a gap length.
   The macOS CPAL backend forwards the device-global processor-overload notification as xrun.
+  macOS typically sends one as the device starts its input, before the first audio is saved
+  (observed once at saved frame 0 in half of the recordings on one Mac, never later). Such a
+  notice stays in the manifest but is not shown as a warning and does not count toward the
+  automatic pause of work running alongside a recording.
 - Route changes ask users to check their microphone. Queue, writer, device and format faults
   retain their specific recovery instructions and interrupted state.
 - A disconnected device or an invalidated stream does not end the capture. It records a

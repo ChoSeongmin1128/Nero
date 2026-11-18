@@ -9,10 +9,16 @@ const policies = {
 };
 const priority = { info: 0, warning: 1, error: 2 };
 
+// An overload notice before any audio was saved is the device starting its input
+// (macOS sends one); it stays in the record but is not shown.
+const startupXrun = event => event.kind === 'xrun' && event.lastSavedFrame === 0;
+
 export function recordingQuality(quality, sampleRate, frames) {
-  const events = (quality?.events || []).filter(event => Object.hasOwn(policies, event.kind));
+  const all = (quality?.events || []).filter(event => Object.hasOwn(policies, event.kind));
+  const startup = all.filter(startupXrun).reduce((sum, event) => sum + (Number.isSafeInteger(event.count) ? event.count : 0), 0);
+  const events = all.filter(event => !startupXrun(event));
   const observed = events.map(event => policies[event.kind]);
-  if (quality?.xrunCount > 0) observed.push(policies.xrun);
+  if (quality?.xrunCount > startup) observed.push(policies.xrun);
   if (quality?.routeChangedCount > 0) observed.push(policies.routeChanged);
   const policy = observed.reduce((current, next) => priority[next.severity] > priority[current.severity] ? next : current, observed[0] || policies.xrun);
   const { severity, title, message } = policy;

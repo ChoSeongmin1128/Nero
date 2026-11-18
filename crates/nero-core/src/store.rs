@@ -120,9 +120,22 @@ pub struct CaptureQuality {
 }
 
 impl CaptureQuality {
+    /// Overload notices from before the first audio was saved. macOS reports one as
+    /// the device starts its input; it says nothing about the recording's content.
+    pub fn startup_xruns(&self) -> u64 {
+        self.events
+            .iter()
+            .filter(|event| {
+                event.kind == CaptureQualityEventKind::Xrun && event.last_saved_frame == 0
+            })
+            .map(|event| event.count)
+            .sum::<u64>()
+            .min(self.xrun_count)
+    }
+
     pub fn warning(&self) -> Option<String> {
         let mut warnings: Vec<String> = Vec::new();
-        if self.xrun_count != 0 {
+        if self.xrun_count > self.startup_xruns() {
             warnings.push("오디오 입력 지연 신호가 기록되었습니다.".into());
         }
         if self.route_changed_count != 0 {

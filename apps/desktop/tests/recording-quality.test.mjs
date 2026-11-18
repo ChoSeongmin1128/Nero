@@ -41,3 +41,14 @@ test('observed positions never synthesize a gap or seek beyond saved audio', () 
   assert.equal('end' in result.locations[0],false);
   assert.equal(recordingQuality({events:[{kind:'deviceFailure',firstSavedFrame:50000}]},16000,48000).locations[0].seconds,null);
 });
+
+test('an input delay notice before any audio was saved is not shown, a later one is', () => {
+  const startup = { kind: 'xrun', count: 1, firstSavedFrame: 0, lastSavedFrame: 0 };
+  const hidden = recordingQuality({ xrunCount: 1, events: [startup] }, 48000, 96000);
+  assert.equal(hidden.visible, false);
+  assert.deepEqual(hidden.locations, []);
+  const later = recordingQuality({ xrunCount: 2, events: [startup, { kind: 'xrun', count: 1, firstSavedFrame: 48000, lastSavedFrame: 48000 }] }, 48000, 96000);
+  assert.equal(later.visible, true);
+  assert.deepEqual(later.locations.map(location => location.seconds), [1]);
+  assert.equal(recordingQuality({ xrunCount: 2, events: [startup] }, 48000, 96000).visible, true);
+});

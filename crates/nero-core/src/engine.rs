@@ -1691,12 +1691,21 @@ mod tests {
         let (_temporary, mut engine) = engine();
         let meeting = engine.create_meeting("회의".into(), "메모".into()).unwrap();
         let (session_id, mut sink) = synthetic(&mut engine, &meeting.id);
-        engine
+        sink.write(&[0.25_f32.to_le_bytes(); 10].concat());
+        let signals = engine.capture.as_ref().unwrap().signals.clone();
+        let reader = engine
             .capture
             .as_ref()
             .unwrap()
-            .signals
-            .device_event(cpal::ErrorKind::Xrun.into());
+            .reader(&engine.store.root)
+            .unwrap();
+        // A notice after audio was saved; one before it is the device starting input.
+        let began = std::time::Instant::now();
+        while reader.available_frames() == 0 {
+            assert!(began.elapsed() < std::time::Duration::from_secs(5));
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        signals.device_event(cpal::ErrorKind::Xrun.into());
         engine.poll_capture();
         assert!(engine.capture.is_some());
         let snapshot = engine.snapshot();
@@ -1707,7 +1716,6 @@ mod tests {
         assert_eq!(snapshot.session.unwrap().state, SessionState::Recording);
         assert_eq!(snapshot.meetings[0].warning, warning);
         assert_eq!(snapshot.meetings[0].capture_quality, quality);
-        sink.write(&[0.25_f32.to_le_bytes(); 10].concat());
         engine.pause(&session_id).unwrap();
         let saved: StoredMeeting = serde_json::from_slice(
             &fs::read(
