@@ -15,6 +15,23 @@ inference of that kind waits until recording/current processing ends. Windows ke
 rule for every inference. Changing the selected meeting does not change job ownership.
 Folder movement changes placement, never original paths or job ownership.
 
+## Recording-time MOSS chunks
+
+With Settings > 녹음 "녹음하면서 음성 기록 만들기" on (macOS, MOSS, off by default), a
+recording owns the live slot like a legacy preview session: other inference is interrupted
+at recording start and waits until recording ends. The processor reads saved capture PCM,
+normalizes it like the final WAV and writes each whole 60 s chunk as its own WAV (at most
+five waiting). One worker run per chunk loads the model, so model memory is released
+between chunks. It runs at background priority with throttled disk reads; when the
+automatic pause signals below apply it stops the running worker instead of pausing it and
+starts no new chunk until they clear. On stop it finishes only the chunk in flight. Each
+recognized chunk is kept as the worker's exact output plus a receipt. The transcription
+job waits for the processor, then uses a receipt only for a chunk that is not complete yet,
+of the same meeting and session, with matching model/runtime/worker digest and an input
+digest equal to the canonical header plus that range of the analysis WAV; anything else is
+recognized again. The processor folder is removed once the job saved its baseline; retries
+take the chunks from the job's checkpoint. The processor never commits a transcript.
+
 ## Pause
 
 On macOS a running MOSS or Qwen recognition or speaker analysis can be paused and resumed

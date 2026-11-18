@@ -193,6 +193,9 @@ pub struct Progress {
     pub speech_switch: Option<crate::speech_switch::SwitchView>,
     pub speech_offer: Option<crate::speech_switch::OfferView>,
     pub speech_cleanup: Option<model_retirement::View>,
+    /// Recognize MOSS chunks while recording, and whether this Mac can.
+    pub recording_transcription: bool,
+    pub recording_transcription_supported: bool,
     /// Whether the running job can be paused, and its pause when one is wanted.
     pub pausable: bool,
     pub pause: Option<crate::job_control::PauseView>,
@@ -391,6 +394,11 @@ pub struct Processing {
     unsaved: Mutex<HashMap<String, JobRecord>>,
     retry_gate: Mutex<()>,
     pub(super) recording: AtomicBool,
+    // Set by `recording_start` for the session it is starting: recognize MOSS chunks
+    // while recording. `start_live` takes it.
+    pub(super) live_moss_next: AtomicBool,
+    // Settings > 녹음: recognize MOSS chunks while recording, from the next recording.
+    transcribe_while_recording: AtomicBool,
     interrupted_jobs: Mutex<HashSet<String>>,
     // Work that a recording start interrupted; queued again as retries.
     requeue: Mutex<Vec<String>>,
@@ -557,6 +565,7 @@ impl Drop for Worker {
 
 impl Processing {
     pub fn new(root: PathBuf, resources: PathBuf) -> Arc<Self> {
+        let transcribe_while_recording = crate::live_moss::enabled(&root);
         let speech_file = root.join("preferences/speech.json");
         let preference_unset = !speech_file.exists() && !speech_file.is_symlink();
         let (speech_engine, speaker_enabled, apple_speech_variant, speech_preference_error) =
@@ -646,6 +655,8 @@ impl Processing {
             unsaved: Mutex::new(HashMap::new()),
             retry_gate: Mutex::new(()),
             recording: AtomicBool::new(false),
+            live_moss_next: AtomicBool::new(false),
+            transcribe_while_recording: AtomicBool::new(transcribe_while_recording),
             interrupted_jobs: Mutex::new(HashSet::new()),
             requeue: Mutex::new(Vec::new()),
             revision: AtomicU64::new(0),
@@ -1268,6 +1279,9 @@ impl Processing {
             progress
         };
         progress.supported = self.supported();
+        progress.recording_transcription = self.transcribe_while_recording.load(Ordering::Acquire);
+        progress.recording_transcription_supported =
+            crate::job_control::SUPPORTED && crate::moss_asr::supported(&self.resources);
         progress.speaker_enabled = self.speaker_enabled();
         progress.apple_speech = self.apple_speech.lock().unwrap().clone();
         progress.local_summary_enabled = crate::release_capabilities::LOCAL_SUMMARY_ENABLED;
@@ -1507,18 +1521,37 @@ impl Processing {
 
     // While recording, lower the running job's priority and pause it when the
     // recording or the machine needs room. Never blocks on the job.
+    // The recording-time MOSS processor is governed by the same reading: it stops its
+    // worker instead of pausing it.
     fn supervise_pause(&self, core: &CoreHandle) {
-        let control = self.control.lock().unwrap().clone();
-        let mut auto = self.auto_pause.lock().unwrap();
-        let Some((_, control)) = control else {
-            auto.reset();
-            return;
-        };
+        let job = self
+            .control
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|(_, control)| control.clone());
+        let live = self
+            .live
+            .lock()
+            .unwrap()
+            .as_ref()
+            .filter(|job| job.running.load(Ordering::Acquire))
+            .and_then(|job| job.control.clone());
         let recording = self.recording.load(Ordering::Acquire);
-        control.set_throttle(recording);
-        if !recording || !control.pausable() {
+        if let Some(control) = &job {
+            control.set_throttle(recording);
+        }
+        let governed: Vec<_> = job
+            .into_iter()
+            .filter(|control| control.pausable())
+            .chain(live)
+            .collect();
+        let mut auto = self.auto_pause.lock().unwrap();
+        if !recording || governed.is_empty() {
             auto.reset();
-            control.set_auto(None);
+            for control in &governed {
+                control.set_auto(None);
+            }
             return;
         }
         if auto.load.as_ref().is_none_or(|load| load.finished()) {
@@ -1541,7 +1574,17 @@ impl Processing {
                 thermal_serious: crate::job_control::thermal_serious(),
             },
         );
-        control.set_auto(reason);
+        for control in governed {
+            control.set_auto(reason);
+        }
+    }
+
+    /// Applies to recordings started after this; a recording in progress keeps its choice.
+    pub fn set_recording_transcription(&self, enabled: bool) -> Result<Progress, String> {
+        crate::live_moss::set_enabled(&self.root, enabled)?;
+        self.transcribe_while_recording.store(enabled, Ordering::Release);
+        self.update(|_| ());
+        Ok(self.snapshot())
     }
 
     /// Pauses or resumes the running job at the person's request. A person's pause
@@ -2991,11 +3034,17 @@ impl Processing {
             }
         }
         let downloading = model_job(&self.progress.lock().unwrap().kind);
+        // A MOSS recording that recognizes its own chunks puts the current meeting first.
+        let live_moss = crate::job_control::SUPPORTED
+            && self.speech_engine() == SpeechEngine::Moss
+            && crate::moss_asr::supported(&self.resources)
+            && self.transcribe_while_recording.load(Ordering::Acquire);
         // A session that streams to a live worker would compete with the running job.
-        let live_session = !matches!(
-            self.speech_engine(),
-            SpeechEngine::AppleSpeech | SpeechEngine::QwenKo | SpeechEngine::Moss
-        );
+        let live_session = live_moss
+            || !matches!(
+                self.speech_engine(),
+                SpeechEngine::AppleSpeech | SpeechEngine::QwenKo | SpeechEngine::Moss
+            );
         let concurrent = !live_session
             && running.as_ref().is_some_and(|job| {
                 self.records
@@ -3017,7 +3066,9 @@ impl Processing {
             }
         }
         self.worker_ready()?;
+        self.live_moss_next.store(live_moss, Ordering::Release);
         let result = action();
+        self.live_moss_next.store(false, Ordering::Release);
         if result.is_ok() {
             self.recording.store(true, Ordering::Release);
             if let Some((_, control)) = self.control.lock().unwrap().as_ref() {
@@ -3527,6 +3578,13 @@ impl Processing {
                 }
                 .map_err(|error| this.report(error))?;
                 crate::job_control::pause_point(&cancel);
+                // Chunks recognized while this recording was made; each is checked
+                // against the recording before it takes a chunk's place.
+                let (live_seeds, live_folders) = if engine == SpeechEngine::Moss {
+                    crate::live_moss::seeds(&this.root, &meeting_id, &session_id)
+                } else {
+                    Default::default()
+                };
                 this.update(|p| {
                     p.phase = Some("recognizing".into());
                     p.message = "텍스트로 변환 중".into();
@@ -3534,7 +3592,7 @@ impl Processing {
                 let raw = match &live {
                     Some(live) if engine == live_engine => Ok(live.raw.clone()),
                     _ => match engine {
-                        SpeechEngine::Moss => crate::moss_asr::recognize(&this.resources, &prepared, &path, &cancel, &directory, previous_moss.as_deref()),
+                        SpeechEngine::Moss => crate::moss_asr::recognize(&this.resources, &prepared, &path, &cancel, &directory, previous_moss.as_deref(), &live_seeds),
                         SpeechEngine::QwenKo => {
                             this.update(|p| {
                                 p.message =
@@ -3640,6 +3698,10 @@ impl Processing {
                         }
                     },
                 )?;
+                // This job's checkpoint now holds every recording-time chunk it used.
+                for folder in &live_folders {
+                    let _ = fs::remove_dir_all(folder);
+                }
                 // Once the baseline is saved, no retry reads the live analysis WAV again.
                 let _live_audio = live
                     .as_ref()

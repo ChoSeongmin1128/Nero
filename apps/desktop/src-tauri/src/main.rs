@@ -29,6 +29,7 @@ mod job_control;
 mod job_journal;
 mod lifecycle;
 mod live_asr;
+mod live_moss;
 mod live_speech;
 mod live_speech_worker;
 #[cfg(target_os = "macos")]
@@ -1750,6 +1751,15 @@ fn cancel_processing(
     state.processing.cancel(&job_id)
 }
 #[tauri::command]
+fn set_recording_transcription(
+    window: WebviewWindow,
+    state: tauri::State<'_, DesktopState>,
+    enabled: bool,
+) -> Result<Progress, String> {
+    require_main(&window)?;
+    state.processing.set_recording_transcription(enabled)
+}
+#[tauri::command]
 fn pause_processing(
     window: WebviewWindow,
     state: tauri::State<'_, DesktopState>,
@@ -2180,6 +2190,7 @@ fn main() {
             cancel_processing,
             pause_processing,
             resume_processing,
+            set_recording_transcription,
             retry_processing,
             acknowledge_processing,
             read_terminology_settings,

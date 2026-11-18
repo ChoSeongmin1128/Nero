@@ -36,8 +36,32 @@ pub(super) struct LiveJob {
     child: Arc<Mutex<Option<Child>>>,
     handle: Mutex<Option<JoinHandle<()>>>,
     pub running: Arc<AtomicBool>,
+    // The MOSS recording-time processor's load control; none for preview workers.
+    pub(super) control: Option<Arc<crate::job_control::JobControl>>,
 }
 impl LiveJob {
+    pub(super) fn new(
+        meeting_id: &str,
+        session_id: &str,
+        engine: SpeechEngine,
+        cancel: Arc<AtomicBool>,
+        running: Arc<AtomicBool>,
+        control: Option<Arc<crate::job_control::JobControl>>,
+    ) -> Self {
+        Self {
+            meeting_id: meeting_id.into(),
+            session_id: session_id.into(),
+            engine,
+            cancel,
+            child: Arc::new(Mutex::new(None)),
+            handle: Mutex::new(None),
+            running,
+            control,
+        }
+    }
+    pub(super) fn set_handle(&self, handle: JoinHandle<()>) {
+        *self.handle.lock().unwrap() = Some(handle);
+    }
     pub(super) fn stop(&self) -> Result<(), String> {
         self.cancel.store(true, Ordering::Release);
         if let Some(child) = self.child.lock().unwrap().as_mut() {
@@ -73,7 +97,12 @@ impl Drop for LiveJob {
         let _ = self.stop();
     }
 }
-struct RunningGuard(Arc<AtomicBool>);
+pub(super) struct RunningGuard(Arc<AtomicBool>);
+impl RunningGuard {
+    pub(super) fn new(running: Arc<AtomicBool>) -> Self {
+        Self(running)
+    }
+}
 impl Drop for RunningGuard {
     fn drop(&mut self) {
         self.0.store(false, Ordering::Release);
@@ -153,6 +182,13 @@ impl Processing {
             )?
         };
         self.cancel_live()?;
+        // Decided once by `recording_start`, which also chose whether other work waits.
+        if choice.engine == SpeechEngine::Moss
+            && self.live_moss_next.swap(false, Ordering::AcqRel)
+        {
+            self.update(|progress| progress.live_transcript = None);
+            return self.start_live_moss(core, &session.meeting_id, &session.id);
+        }
         if matches!(
             choice.engine,
             SpeechEngine::AppleSpeech | SpeechEngine::QwenKo | SpeechEngine::Moss
@@ -184,6 +220,7 @@ impl Processing {
             child: child.clone(),
             handle: Mutex::new(None),
             running: running.clone(),
+            control: None,
         });
         let process = self.clone();
         let core = core.clone();
@@ -759,6 +796,7 @@ pub(super) fn waiting_fixture(process: &Processing, meeting: &str, session: &str
         child: Arc::new(Mutex::new(None)),
         handle: Mutex::new(Some(handle)),
         running,
+        control: None,
     });
     *process.live.lock().unwrap() = Some(job.clone());
     job
@@ -793,6 +831,7 @@ mod lifecycle_tests {
             child: child.clone(),
             handle: Mutex::new(Some(handle)),
             running: active.clone(),
+            control: None,
         }));
         let cancel = Arc::new(AtomicBool::new(false));
         let flag = cancel.clone();

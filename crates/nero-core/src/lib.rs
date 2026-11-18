@@ -45,7 +45,7 @@ pub use transcript::{
     TranscriptHistory, TranscriptHistoryEntry, TranscriptSegment, TranscriptSource,
     TranscriptSpeaker, TranscriptUpgradeReport, TranscriptVersion,
 };
-pub use transcript::{MOSS_CHUNK_FRAMES, MOSS_CHUNK_POLICY};
+pub use transcript::{moss_chunk_wav_header, MOSS_CHUNK_FRAMES, MOSS_CHUNK_POLICY};
 
 /// Validates a checkpoint through the same projector used by immutable stored transcripts.
 pub fn inspect_moss_chunk_transcript(

@@ -68,6 +68,10 @@ fn collect(value: &mut Value, output: &Path) -> Result<(), Failure> {
         if file.exists() {
             chunk["rawBytes"] = json!(read(&file, 2 * 1024 * 1024)?);
             chunk["notProcessed"] = json!(false);
+            // A chunk recognized again reads the whole analysis file.
+            if let Some(chunk) = chunk.as_object_mut() {
+                chunk.remove("input");
+            }
         }
     }
     Ok(())
@@ -114,6 +118,227 @@ pub(super) fn save_baseline(
     save(&work.join("moss-baseline.json"), &json!(version)).map_err(|e| e.message)
 }
 
+/// What produced a chunk outside the final job: the pinned model and the worker bytes.
+pub(super) fn provenance(resources: &Path) -> Result<Value, Failure> {
+    let model: Value = serde_json::from_str(MANIFEST).expect("MOSS manifest");
+    let worker = Sha256::digest(read(&executable(resources), 256 * 1024 * 1024)?);
+    Ok(json!({"model":model["repository"],"modelRevision":model["revision"],"runtime":RUNTIME,
+        "workerSha256":format!("{worker:x}")}))
+}
+
+/// A whole chunk recognized from its own WAV while the meeting was recorded.
+pub(super) struct Seed {
+    pub index: u32,
+    pub raw: Vec<u8>,
+    /// `{sha256, frames, offsetFrames}` of the WAV the worker read.
+    pub input: Value,
+    pub provenance: Value,
+}
+
+// The PCM16 bytes of a 16 kHz mono WAV and its frame count.
+fn pcm_region(path: &Path) -> Result<(u64, u64), Failure> {
+    let unreadable = || failure("MOSS 입력 음성을 확인하지 못했습니다.");
+    let mut file = plain_file(path)?;
+    let mut header = [0_u8; 12];
+    file.read_exact(&mut header).map_err(|_| unreadable())?;
+    if &header[0..4] != b"RIFF" || &header[8..12] != b"WAVE" {
+        return Err(unreadable());
+    }
+    let mut at = 12_u64;
+    loop {
+        let mut chunk = [0_u8; 8];
+        file.read_exact(&mut chunk).map_err(|_| unreadable())?;
+        let size = u64::from(u32::from_le_bytes(chunk[4..8].try_into().unwrap()));
+        at += 8;
+        if &chunk[0..4] == b"data" {
+            return Ok((at, size / 2));
+        }
+        std::io::Seek::seek(&mut file, std::io::SeekFrom::Current((size + (size & 1)) as i64))
+            .map_err(|_| unreadable())?;
+        at += size + (size & 1);
+    }
+}
+
+// Whether `seed` was read from exactly this audio's samples at its place.
+fn seed_matches(audio: &Path, seed: &Seed) -> Result<bool, Failure> {
+    let (Some(frames), Some(offset), Some(expected)) = (
+        seed.input["frames"].as_u64(),
+        seed.input["offsetFrames"].as_u64(),
+        seed.input["sha256"].as_str(),
+    ) else {
+        return Ok(false);
+    };
+    let (data, total) = pcm_region(audio)?;
+    if offset.checked_add(frames).is_none_or(|end| end > total) {
+        return Ok(false);
+    }
+    let Ok(header) = nero_core::moss_chunk_wav_header(frames) else {
+        return Ok(false);
+    };
+    let mut file = plain_file(audio)?;
+    std::io::Seek::seek(&mut file, std::io::SeekFrom::Start(data + offset * 2))
+        .map_err(|e| e.to_string())?;
+    let mut digest = Sha256::new();
+    digest.update(header);
+    let mut remaining = frames * 2;
+    let mut buffer = vec![0_u8; 1 << 16];
+    while remaining > 0 {
+        let take = remaining.min(buffer.len() as u64) as usize;
+        file.read_exact(&mut buffer[..take])
+            .map_err(|_| failure("MOSS 입력 음성을 확인하지 못했습니다."))?;
+        digest.update(&buffer[..take]);
+        remaining -= take as u64;
+    }
+    Ok(format!("{:x}", digest.finalize()) == expected)
+}
+
+// Places each seed that verifies against `audio` into a chunk that is not complete
+// yet. A seed that does not verify, or would not decode as complete, is dropped.
+fn apply_seeds(
+    value: &mut Value,
+    seeds: &[Seed],
+    audio: &Path,
+    frames: u64,
+    current: &Value,
+) -> Result<(), Failure> {
+    for seed in seeds {
+        let report = nero_core::inspect_moss_chunk_transcript(
+            &serde_json::to_vec(&*value).map_err(|e| e.to_string())?,
+            frames,
+            16_000,
+        )
+        .map_err(|e| e.to_string())?;
+        let open = report
+            .chunks
+            .get(seed.index as usize)
+            .is_some_and(|chunk| chunk.state != RecognitionChunkState::Complete);
+        if !open || seed.provenance != *current || !seed_matches(audio, seed)? {
+            continue;
+        }
+        let mut trial = value.clone();
+        trial["schemaVersion"] = json!(2);
+        let chunk = &mut trial["chunks"][seed.index as usize];
+        chunk["rawBytes"] = json!(seed.raw);
+        chunk["notProcessed"] = json!(false);
+        chunk["input"] = seed.input.clone();
+        let complete = nero_core::inspect_moss_chunk_transcript(
+            &serde_json::to_vec(&trial).map_err(|e| e.to_string())?,
+            frames,
+            16_000,
+        )
+        .is_ok_and(|report| {
+            report.chunks[seed.index as usize].state == RecognitionChunkState::Complete
+        });
+        if complete {
+            *value = trial;
+        }
+    }
+    Ok(())
+}
+
+// Runs the worker on `request` in `work` until it exits, is cancelled, overruns or
+// `abort` asks it to stop.
+fn run_worker(
+    resources: &Path,
+    request: &Path,
+    work: &Path,
+    chunks: usize,
+    cancel: &AtomicBool,
+    abort: &dyn Fn() -> bool,
+) -> Result<(), Failure> {
+    let cli = executable(resources);
+    let mut command = Command::new(&cli);
+    let stdout = work.join("moss.stdout.log");
+    let stderr = work.join("moss.stderr.log");
+    command
+        .arg("--product-chunks")
+        .arg(request)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(
+            OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&stdout)
+                .map_err(|e| e.to_string())?,
+        ))
+        .stderr(Stdio::from(
+            OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&stderr)
+                .map_err(|e| e.to_string())?,
+        ));
+    let mut child = crate::process_tree::spawn(&mut command)?;
+    let began = Instant::now();
+    let limit = Duration::from_secs(600 + chunks as u64 * 180);
+    let mut pauser = crate::job_control::Pauser::new(cancel);
+    loop {
+        if cancel.load(Ordering::Acquire)
+            || abort()
+            || began.elapsed().saturating_sub(pauser.paused()) > limit
+            || [&stdout, &stderr]
+                .iter()
+                .any(|p| fs::metadata(p).is_ok_and(|m| m.len() > 64 * 1024 * 1024))
+        {
+            pauser.release(&child);
+            child.kill().map_err(|_| {
+                failure("MOSS 실행기를 종료하지 못했습니다. 앱을 다시 열어 주세요.")
+            })?;
+            child.wait().map_err(|e| e.to_string())?;
+            break;
+        }
+        if child.try_wait().map_err(|e| e.to_string())?.is_some() {
+            break;
+        }
+        pauser.sync(&child);
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Ok(())
+}
+
+/// Recognizes every whole chunk of a WAV written as `canonical_wav_header` + PCM16,
+/// returning each chunk's exact worker output by index. Used while recording.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn recognize_wav(
+    resources: &Path,
+    wav: &Path,
+    sha256: &str,
+    frames: u64,
+    work: &Path,
+    cancel: &AtomicBool,
+    model: &Path,
+    abort: &dyn Fn() -> bool,
+) -> Result<Vec<(u32, Vec<u8>)>, Failure> {
+    cancelled(cancel)?;
+    let chunks = frames / MOSS_CHUNK_FRAMES;
+    if chunks == 0 || frames % MOSS_CHUNK_FRAMES != 0 {
+        return Err(failure("MOSS 구간 길이가 올바르지 않습니다."));
+    }
+    let output = work.join("moss-chunks");
+    fs::create_dir(&output).map_err(|e| e.to_string())?;
+    let selected: Vec<u64> = (0..chunks).collect();
+    let request = json!({"schemaVersion":1,"processingPolicy":MOSS_CHUNK_POLICY,"inputPath":wav,"inputAudioSha256":sha256,
+        "inputAudioFrames":frames,"modelDirectory":model,"outputDirectory":output,"selectedChunks":selected});
+    save(&work.join("moss-request.json"), &request)?;
+    run_worker(
+        resources,
+        &work.join("moss-request.json"),
+        work,
+        chunks as usize,
+        cancel,
+        abort,
+    )?;
+    cancelled(cancel)?;
+    let mut results = Vec::new();
+    for index in 0..chunks as u32 {
+        let file = output.join(format!("chunk-{index}.json"));
+        if file.exists() {
+            results.push((index, read(&file, 2 * 1024 * 1024)?));
+        }
+    }
+    Ok(results)
+}
+
 pub(super) fn recognize(
     resources: &Path,
     audio: &AnalysisAudio,
@@ -121,6 +346,7 @@ pub(super) fn recognize(
     cancel: &AtomicBool,
     model: &Path,
     previous: Option<&Path>,
+    seeds: &[Seed],
 ) -> Result<Vec<u8>, Failure> {
     cancelled(cancel)?;
     let evidence = audio.evidence();
@@ -139,6 +365,9 @@ pub(super) fn recognize(
         Some(path) => resume(path, frames, hash)?,
         None => empty(frames, hash),
     };
+    if !seeds.is_empty() {
+        apply_seeds(&mut value, seeds, audio.path(), frames, &provenance(resources)?)?;
+    }
     let report = nero_core::inspect_moss_chunk_transcript(
         &serde_json::to_vec(&value).map_err(|e| e.to_string())?,
         frames,
@@ -160,64 +389,22 @@ pub(super) fn recognize(
     if !selected.is_empty() {
         let cli = executable(resources);
         let cli_hash = Sha256::digest(read(&cli, 256 * 1024 * 1024)?);
-        let mut command = Command::new(&cli);
-        let stdout = work.join("moss.stdout.log");
-        let stderr = work.join("moss.stderr.log");
-        command
-            .arg("--product-chunks")
-            .arg(work.join("moss-request.json"))
-            .stdin(Stdio::null())
-            .stdout(Stdio::from(
-                OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(&stdout)
-                    .map_err(|e| e.to_string())?,
-            ))
-            .stderr(Stdio::from(
-                OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(&stderr)
-                    .map_err(|e| e.to_string())?,
-            ));
-        let mut child = crate::process_tree::spawn(&mut command)?;
-        let began = Instant::now();
-        let limit = Duration::from_secs(600 + selected.len() as u64 * 180);
-        let mut stopped = false;
-        let mut pauser = crate::job_control::Pauser::new(cancel);
-        loop {
-            if cancel.load(Ordering::Acquire)
-                || began.elapsed().saturating_sub(pauser.paused()) > limit
-                || [&stdout, &stderr]
-                    .iter()
-                    .any(|p| fs::metadata(p).is_ok_and(|m| m.len() > 64 * 1024 * 1024))
-            {
-                pauser.release(&child);
-                child.kill().map_err(|_| {
-                    failure("MOSS 실행기를 종료하지 못했습니다. 앱을 다시 열어 주세요.")
-                })?;
-                child.wait().map_err(|e| e.to_string())?;
-                stopped = true;
-                break;
-            }
-            if child.try_wait().map_err(|e| e.to_string())?.is_some() {
-                break;
-            }
-            pauser.sync(&child);
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        drop(pauser);
-        drop(child);
+        // A stopped/crashed worker can leave independently completed chunks. Core
+        // validates them and exposes all missing ranges instead of claiming success.
+        run_worker(
+            resources,
+            &work.join("moss-request.json"),
+            work,
+            selected.len(),
+            cancel,
+            &|| false,
+        )?;
         collect(&mut value, &output)?;
         save(&work.join("moss-checkpoint.json"), &value)?;
         cancelled(cancel)?;
         if Sha256::digest(read(&cli, 256 * 1024 * 1024)?) != cli_hash {
             return Err(failure("MOSS 실행기가 처리 중 변경됐습니다."));
         }
-        // A stopped/crashed worker can leave independently completed chunks. Core
-        // validates them and exposes all missing ranges instead of claiming success.
-        let _ = stopped;
     }
     let raw = serde_json::to_vec(&value).map_err(|e| e.to_string())?;
     if raw.len() as u64 > MAX_RAW {
@@ -292,7 +479,7 @@ for index in request['selectedChunks']:
         let second = root.join("second");
         fs::create_dir(&first).unwrap();
         fs::create_dir(&second).unwrap();
-        let initial = recognize(&root, &audio, &first, &cancel, &model, None).unwrap();
+        let initial = recognize(&root, &audio, &first, &cancel, &model, None, &[]).unwrap();
         let initial_report =
             nero_core::inspect_moss_chunk_transcript(&initial, MOSS_CHUNK_FRAMES + 16000, 16000)
                 .unwrap();
@@ -302,7 +489,8 @@ for index in request['selectedChunks']:
             RecognitionChunkState::Complete
         );
         fs::remove_file(model.join("fail-second")).unwrap();
-        let retried = recognize(&root, &audio, &second, &cancel, &model, Some(&first)).unwrap();
+        let retried =
+            recognize(&root, &audio, &second, &cancel, &model, Some(&first), &[]).unwrap();
         assert!(nero_core::inspect_moss_chunk_transcript(
             &retried,
             MOSS_CHUNK_FRAMES + 16000,
@@ -321,5 +509,139 @@ for index in request['selectedChunks']:
             retried["chunks"][0]["rawBytes"]
         );
         assert!(!second.join("moss-chunks/chunk-0.json").exists());
+    }
+
+    #[cfg(unix)]
+    fn fake_worker(root: &Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let cli = root.join("native/moss/MossHarness");
+        fs::create_dir_all(cli.parent().unwrap()).unwrap();
+        fs::write(&cli,r#"#!/usr/bin/python3
+import json, sys
+from pathlib import Path
+request=json.loads(Path(sys.argv[2]).read_text())
+flags=Path(request['modelDirectory'])
+with open(flags/'executed.log','a') as log: log.write(json.dumps(request['selectedChunks'])+'\n')
+for index in request['selectedChunks']:
+ start=index*960000; end=min(start+960000,request['inputAudioFrames']); frames=end-start
+ lengths=[(min(480000,frames-i)+1279)//1280 for i in range(0,frames,480000)]
+ value={'index':index,'startFrame':start,'endFrame':end,'inputAudioSha256':request['inputAudioSha256'],
+  'rawText':'[0]합성 문장[0.5]','segments':[{'start':0,'end':0.5,'text':'합성 문장'}],'parsedCompletely':True,
+  'generationMetadata':[{'metadataSchemaVersion':2,'eosPolicy':'model-generation-config+tokenizer-v1','samplingPolicy':'greedy-argmax-v1',
+   'terminationReason':'eos','terminalTokenId':151645,'configuredEosTokenIds':[151645],'tokenizerEosTokenId':151645,
+   'inputAudioSamples':frames,'featureChunkCount':len(lengths),'featureTokenLengths':lengths,'audioTokenCount':sum(lengths),'audioEmbeddingCount':sum(lengths),
+   'promptTokens':1000,'contextSize':32768,'maxTokens':8192,'effectiveMaxTokens':8192,'generationTokens':12}]}
+ (Path(request['outputDirectory'])/('chunk-%d.json'%index)).write_text(json.dumps(value))
+"#).unwrap();
+        fs::set_permissions(&cli, fs::Permissions::from_mode(0o755)).unwrap();
+        let model = root.join("fixture-model");
+        fs::create_dir(&model).unwrap();
+        model
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn chunks_recognized_while_recording_fill_their_places_and_only_the_rest_runs_after() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let model = fake_worker(&root);
+        let frames = 2 * MOSS_CHUNK_FRAMES + 16000;
+        let samples: Vec<i16> = (0..frames).map(|i| ((i * 7) % 2001) as i16 - 1000).collect();
+        let input = root.join("audio.wav");
+        let mut wav = hound::WavWriter::create(
+            &input,
+            hound::WavSpec {
+                channels: 1,
+                sample_rate: 16000,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            },
+        )
+        .unwrap();
+        for sample in &samples {
+            wav.write_sample(*sample).unwrap();
+        }
+        wav.finalize().unwrap();
+        let cancel = AtomicBool::new(false);
+        let current = provenance(&root).unwrap();
+        // What the recording-time processor produces for chunk `index`.
+        let live = |index: u64, provenance: Value| {
+            let directory = tempfile::tempdir_in(&root).unwrap().keep();
+            let mut writer = crate::live_moss::ChunkWriter::new(directory.clone());
+            let start = (index * MOSS_CHUNK_FRAMES) as usize;
+            let mut files = Vec::new();
+            // The writer numbers its own chunks; feed it from the recording start.
+            for chunk in samples[..start + MOSS_CHUNK_FRAMES as usize].chunks(4096) {
+                files.extend(writer.push(chunk, || true).unwrap());
+            }
+            let file = files.pop().unwrap();
+            assert_eq!(file.index, index);
+            let work = directory.join("run");
+            fs::create_dir(&work).unwrap();
+            let outputs = recognize_wav(
+                &root, &file.path, &file.sha256, MOSS_CHUNK_FRAMES, &work, &cancel, &model, &|| false,
+            )
+            .unwrap();
+            Seed {
+                index: index as u32,
+                raw: outputs[0].1.clone(),
+                input: json!({"sha256":file.sha256,"frames":MOSS_CHUNK_FRAMES,"offsetFrames":index * MOSS_CHUNK_FRAMES}),
+                provenance,
+            }
+        };
+        let seeds = vec![live(0, current.clone()), live(1, current.clone())];
+        fs::remove_file(model.join("executed.log")).unwrap();
+        let audio = AnalysisAudio::from_live(&input, &input, &cancel).unwrap();
+        let work = root.join("final");
+        fs::create_dir(&work).unwrap();
+        let raw = recognize(&root, &audio, &work, &cancel, &model, None, &seeds).unwrap();
+        assert_eq!(fs::read_to_string(model.join("executed.log")).unwrap(), "[2]\n");
+        let report = nero_core::inspect_moss_chunk_transcript(&raw, frames, 16000).unwrap();
+        assert!(report.text_complete());
+        let value: Value = serde_json::from_slice(&raw).unwrap();
+        assert_eq!(value["schemaVersion"], 2);
+        assert_eq!(value["chunks"][1]["input"]["offsetFrames"], MOSS_CHUNK_FRAMES);
+        assert!(value["chunks"][2].get("input").is_none());
+        assert_eq!(value["chunks"][0]["rawBytes"], json!(seeds[0].raw));
+
+        // A retry from this checkpoint keeps the recording-time chunks as they are.
+        let retry = root.join("retry");
+        fs::create_dir(&retry).unwrap();
+        fs::remove_file(model.join("executed.log")).unwrap();
+        let again = recognize(&root, &audio, &retry, &cancel, &model, Some(&work), &[]).unwrap();
+        assert!(!model.join("executed.log").exists());
+        assert_eq!(serde_json::from_slice::<Value>(&again).unwrap()["chunks"], value["chunks"]);
+
+        // A chunk from another worker, or whose samples differ, is recognized again.
+        let mut other = current.clone();
+        other["workerSha256"] = json!("0".repeat(64));
+        let mut tampered = live(1, current.clone());
+        tampered.input["sha256"] = json!("1".repeat(64));
+        let rejected = vec![live(0, other), tampered];
+        fs::remove_file(model.join("executed.log")).unwrap();
+        let work = root.join("rejected");
+        fs::create_dir(&work).unwrap();
+        let raw = recognize(&root, &audio, &work, &cancel, &model, None, &rejected).unwrap();
+        assert_eq!(
+            fs::read_to_string(model.join("executed.log")).unwrap(),
+            "[0, 1, 2]\n"
+        );
+        let value: Value = serde_json::from_slice(&raw).unwrap();
+        assert!(value["chunks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|chunk| chunk.get("input").is_none()));
+    }
+
+    #[test]
+    fn a_chunk_recognized_again_no_longer_claims_its_separate_wav() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut value = empty(MOSS_CHUNK_FRAMES, &"a".repeat(64));
+        value["chunks"][0]["input"] = json!({"sha256":"b".repeat(64)});
+        fs::write(dir.path().join("chunk-0.json"), b"{}").unwrap();
+        collect(&mut value, dir.path()).unwrap();
+        assert!(value["chunks"][0].get("input").is_none());
+        assert_eq!(value["chunks"][0]["notProcessed"], false);
     }
 }

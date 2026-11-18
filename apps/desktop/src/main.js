@@ -663,6 +663,10 @@ function renderSettings() {
   else select.removeAttribute('aria-describedby');
   byId('auto-recorder').checked = state.autoRecorder;
   byId('auto-recorder').disabled = state.recorderSettingBusy;
+  // Only MOSS on a Mac that can run it recognizes chunks while recording.
+  byId('recording-transcription-row').hidden = !(state.processing.recordingTranscriptionSupported && state.processing.speechEngine === 'moss');
+  if (!state.recordingTranscriptionBusy) byId('recording-transcription').checked = state.processing.recordingTranscription === true;
+  byId('recording-transcription').disabled = Boolean(state.recordingTranscriptionBusy);
   const job = state.processing;
   const featureJob = pendingJob(job, { kind: 'summary-model' });
   const failedFeature = !featureJob && !job.summaryReady && processingJobs(job).filter(item => item.kind === 'summary-model' && item.status === 'failed' && !item.acknowledged).at(-1);
@@ -920,6 +924,16 @@ byId('auto-recorder').addEventListener('change', async () => {
     state.settingsError = '';
   } catch { state.autoRecorder = previous; state.settingsError = '녹음 제어창 설정을 저장하지 못했습니다.'; }
   finally { state.recorderSettingBusy = false; renderSettings(); }
+});
+byId('recording-transcription').addEventListener('change', async () => {
+  const next = byId('recording-transcription').checked;
+  state.recordingTranscriptionBusy = true;
+  renderSettings();
+  try {
+    await acceptProcessing(await bridge.setRecordingTranscription(next));
+    state.settingsError = '';
+  } catch { state.settingsError = '녹음 중 음성 기록 설정을 저장하지 못했습니다.'; }
+  finally { state.recordingTranscriptionBusy = false; renderSettings(); }
 });
 byId('create-calendar-meeting').addEventListener('click', event => { const trigger = event.currentTarget; void run(() => finishEditing(async () => { if (!modelsReady()) return openSetup(); const target = await bridge.draftAttachmentTarget(state.selectedId); calendarPicker.open(trigger, target); })); });
 byId('retry-audio').addEventListener('click', () => { const meeting = currentMeeting(); if (meeting) void prepareAudio(meeting, Boolean(activeSession()?.meetingId === meeting.id), true); });

@@ -177,6 +177,11 @@ impl JobControl {
     }
 }
 
+/// Throttles or restores this thread's disk reads.
+pub(crate) fn throttle_this_thread(throttle: bool) {
+    apply_thread_io(throttle);
+}
+
 /// Pause point for code that only has the job's cancel flag.
 pub(crate) fn pause_point(cancel: &AtomicBool) {
     if let Some(control) = JobControl::find(cancel) {

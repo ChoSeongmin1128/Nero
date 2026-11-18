@@ -1731,3 +1731,34 @@ fn a_person_pauses_and_resumes_only_a_running_pausable_job() {
     process.cancel(&id).unwrap();
     finish(&process);
 }
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn a_recording_that_transcribes_its_own_chunks_puts_the_current_meeting_first() {
+    let (temporary, process) = setup();
+    let worker = temporary
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("unused-resources/native/moss/MossHarness");
+    std::fs::create_dir_all(worker.parent().unwrap()).unwrap();
+    std::fs::write(&worker, b"fixture").unwrap();
+    *process.speech_engine.lock().unwrap() = SpeechEngine::Moss;
+    assert!(!process.snapshot().recording_transcription);
+    process.set_recording_transcription(true).unwrap();
+    assert!(process.snapshot().recording_transcription);
+    assert!(crate::live_moss::enabled(&process.root));
+    let (started, started_rx) = mpsc::channel();
+    let id = launch(
+        &process,
+        pending(engine_record("transcribe", SpeechEngine::Moss), waits_for_cancel(started)),
+    );
+    started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    let flagged = process
+        .recording_start(|| Ok::<_, String>(process.live_moss_next.load(Ordering::Acquire)))
+        .unwrap();
+    assert!(flagged);
+    assert!(!process.live_moss_next.load(Ordering::Acquire));
+    assert_eq!(status(&process, &id), JobStatus::Interrupted);
+    assert_eq!(*process.requeue.lock().unwrap(), [id]);
+}

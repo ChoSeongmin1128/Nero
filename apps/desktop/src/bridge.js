@@ -108,6 +108,7 @@ export const dropImportFinish = token => call('drop_import_finish', { token });
 export const dropImportCancel = token => call('drop_import_cancel', { token });
 export const transcribeAudio = (meetingId) => call('transcribe_audio', { meetingId });
 export const cancelProcessing = (jobId) => call('cancel_processing', { jobId });
+export const setRecordingTranscription = (enabled) => call('set_recording_transcription', { enabled });
 export const pauseProcessing = (jobId) => call('pause_processing', { jobId });
 export const resumeProcessing = (jobId) => call('resume_processing', { jobId });
 export const retryProcessing = (jobId) => call('retry_processing', { jobId });

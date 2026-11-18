@@ -76,6 +76,46 @@ struct ChunkRecord {
     raw_bytes: Vec<u8>,
     #[serde(default)]
     not_processed: bool,
+    // Schema 2: the worker read this chunk from a separate WAV recorded while the
+    // meeting was still being captured.
+    #[serde(default)]
+    input: Option<ChunkInput>,
+}
+
+/// Where a chunk recognized from its own WAV sits in the recording. `sha256` is the
+/// digest of `canonical_wav_header(frames)` followed by the recording's PCM16 from
+/// `offset_frames`, so it can be recomputed from the stored audio and the raw output.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ChunkInput {
+    sha256: String,
+    frames: u64,
+    offset_frames: u64,
+}
+
+/// The 44-byte header of a 16 kHz mono PCM16 WAV holding `frames` samples.
+pub fn canonical_wav_header(frames: u64) -> Result<[u8; 44]> {
+    let data = frames
+        .checked_mul(2)
+        .and_then(|bytes| u32::try_from(bytes).ok())
+        .filter(|data| *data <= u32::MAX - 36)
+        .ok_or_else(invalid)?;
+    let rate = SOURCE_TIMEBASE as u32;
+    let mut header = [0_u8; 44];
+    header[0..4].copy_from_slice(b"RIFF");
+    header[4..8].copy_from_slice(&(36 + data).to_le_bytes());
+    header[8..12].copy_from_slice(b"WAVE");
+    header[12..16].copy_from_slice(b"fmt ");
+    header[16..20].copy_from_slice(&16_u32.to_le_bytes());
+    header[20..22].copy_from_slice(&1_u16.to_le_bytes());
+    header[22..24].copy_from_slice(&1_u16.to_le_bytes());
+    header[24..28].copy_from_slice(&rate.to_le_bytes());
+    header[28..32].copy_from_slice(&(rate * 2).to_le_bytes());
+    header[32..34].copy_from_slice(&2_u16.to_le_bytes());
+    header[34..36].copy_from_slice(&16_u16.to_le_bytes());
+    header[36..40].copy_from_slice(b"data");
+    header[40..44].copy_from_slice(&data.to_le_bytes());
+    Ok(header)
 }
 
 #[derive(Deserialize)]
@@ -225,7 +265,7 @@ pub(super) fn decode_with_projector(
             .map_err(|_| invalid())?;
     let expected_frames =
         crate::audio_normalize::output_frames(source_frames, source_rate).map_err(|_| invalid())?;
-    if output.schema_version != 1
+    if !matches!(output.schema_version, 1 | 2)
         || output.model != manifest["repository"]
         || output.model_revision != manifest["revision"]
         || output.runtime != WHOLE_RECORDING_RUNTIME
@@ -256,6 +296,7 @@ pub(super) fn decode_with_projector(
             || record.end_frame != end
             || record.raw_bytes.len() > 2 * 1024 * 1024
             || (record.not_processed && !record.raw_bytes.is_empty())
+            || (record.input.is_some() && (output.schema_version != 2 || record.not_processed))
         {
             return Err(invalid());
         }
@@ -273,12 +314,30 @@ pub(super) fn decode_with_projector(
             continue;
         }
         let native = serde_json::from_slice::<NativeChunk>(&record.raw_bytes).ok();
+        if record.input.is_some() && native.is_none() {
+            return Err(invalid());
+        }
         if let Some(native) = native {
-            if native.index != record.index
-                || native.start_frame != start
-                || native.end_frame != end
-                || native.input_audio_sha256 != output.input_audio_sha256
-            {
+            let identified = match &record.input {
+                None => {
+                    native.index == record.index
+                        && native.start_frame == start
+                        && native.end_frame == end
+                        && native.input_audio_sha256 == output.input_audio_sha256
+                }
+                // A whole chunk read from its own WAV, at a chunk boundary of that file.
+                Some(input) => {
+                    digest(&input.sha256)
+                        && native.input_audio_sha256 == input.sha256
+                        && end - start == CHUNK_FRAMES
+                        && input.offset_frames % CHUNK_FRAMES == 0
+                        && u64::from(native.index) * CHUNK_FRAMES == native.start_frame
+                        && native.start_frame.checked_add(input.offset_frames) == Some(start)
+                        && native.end_frame.checked_add(input.offset_frames) == Some(end)
+                        && native.end_frame <= input.frames
+                }
+            };
+            if !identified {
                 return Err(invalid());
             }
             if native.parsed_completely
@@ -373,6 +432,10 @@ pub(super) fn decode_with_projector(
                     chunk.issue = None;
                 }
             }
+        }
+        // Only finished chunks are carried over from a separate WAV.
+        if record.input.is_some() && chunk.state != RecognitionChunkState::Complete {
+            return Err(invalid());
         }
         report.chunks.push(chunk);
     }
@@ -897,5 +960,102 @@ mod tests {
             .recognition_report
             .unwrap()
             .text_complete());
+    }
+
+    // Chunk `index` recognized from its own one-chunk WAV, mapped back into the recording.
+    fn separate(value: &mut Value, index: usize) {
+        let start = index as u64 * CHUNK_FRAMES;
+        let mut raw = native(0, 0, CHUNK_FRAMES);
+        raw["inputAudioSha256"] = json!("b".repeat(64));
+        value["schemaVersion"] = json!(2);
+        value["chunks"][index]["rawBytes"] = json!(serde_json::to_vec(&raw).unwrap());
+        value["chunks"][index]["input"] =
+            json!({"sha256":"b".repeat(64),"frames":CHUNK_FRAMES,"offsetFrames":start});
+    }
+
+    #[test]
+    fn a_chunk_from_its_own_wav_projects_like_the_same_chunk_of_the_whole_recording() {
+        let frames = 2 * CHUNK_FRAMES + 16000;
+        let whole = project(&output(frames)).unwrap();
+        let mut value = output(frames);
+        separate(&mut value, 1);
+        let mapped = project(&value).unwrap();
+        let shape = |document: &Transcript| {
+            document
+                .segments
+                .iter()
+                .map(|segment| (segment.start, segment.end, segment.text.clone(), segment.source_index))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(shape(&mapped), shape(&whole));
+        assert_eq!(mapped.segments[1].start, 60.0);
+        assert_eq!(
+            mapped.source.as_ref().unwrap().recognition_report,
+            whole.source.as_ref().unwrap().recognition_report
+        );
+        assert_eq!(
+            mapped.source.unwrap().chunking_policy.as_deref(),
+            Some(POLICY)
+        );
+    }
+
+    #[test]
+    fn a_mapped_chunk_must_match_its_own_wav_and_be_a_finished_whole_chunk() {
+        let frames = 2 * CHUNK_FRAMES + 16000;
+        let mut cases: Vec<Box<dyn Fn(&mut Value)>> = vec![
+            Box::new(|value| value["chunks"][1]["input"]["sha256"] = json!("c".repeat(64))),
+            Box::new(|value| value["chunks"][1]["input"]["offsetFrames"] = json!(CHUNK_FRAMES + 1)),
+            Box::new(|value| value["chunks"][1]["input"]["offsetFrames"] = json!(0)),
+            Box::new(|value| value["chunks"][1]["input"]["frames"] = json!(CHUNK_FRAMES - 1)),
+            Box::new(|value| change(value, 1, |native| native["index"] = json!(1))),
+            Box::new(|value| change(value, 1, |native| native["parsedCompletely"] = json!(false))),
+            Box::new(|value| value["schemaVersion"] = json!(1)),
+            Box::new(|value| {
+                value["chunks"][1]["notProcessed"] = json!(true);
+                value["chunks"][1]["rawBytes"] = json!([]);
+            }),
+            Box::new(|value| value["chunks"][1]["input"]["unknown"] = json!(1)),
+        ];
+        // The last, partial chunk is never taken from a separate WAV.
+        cases.push(Box::new(|value| {
+            value["chunks"][2]["input"] =
+                json!({"sha256":"a".repeat(64),"frames":16000,"offsetFrames":2 * CHUNK_FRAMES});
+        }));
+        for (case, mutate) in cases.into_iter().enumerate() {
+            let mut value = output(frames);
+            separate(&mut value, 1);
+            mutate(&mut value);
+            assert!(project(&value).is_err(), "case {case}");
+        }
+        let mut batch = output(frames);
+        separate(&mut batch, 1);
+        // Two chunks read from one WAV starting at chunk 0 of the recording.
+        let mut raw = native(1, CHUNK_FRAMES, 2 * CHUNK_FRAMES);
+        raw["inputAudioSha256"] = json!("b".repeat(64));
+        batch["chunks"][1]["rawBytes"] = json!(serde_json::to_vec(&raw).unwrap());
+        batch["chunks"][1]["input"] =
+            json!({"sha256":"b".repeat(64),"frames":2 * CHUNK_FRAMES,"offsetFrames":0});
+        assert!(project(&batch).is_ok());
+    }
+
+    #[test]
+    fn the_canonical_chunk_header_is_what_a_wav_writer_produces_for_16khz_mono_pcm16() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("chunk.wav");
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(&path, spec).unwrap();
+        for sample in 0..1000_i16 {
+            writer.write_sample(sample).unwrap();
+        }
+        writer.finalize().unwrap();
+        let bytes = std::fs::read(path).unwrap();
+        assert_eq!(bytes.len(), 44 + 2000);
+        assert_eq!(&bytes[..44], &canonical_wav_header(1000).unwrap());
+        assert!(canonical_wav_header(u64::MAX).is_err());
     }
 }
