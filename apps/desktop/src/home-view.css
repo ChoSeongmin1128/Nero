@@ -8,9 +8,9 @@
 .home-event > time { flex: none; width: 104px; color: var(--text-secondary); font-size: var(--text-label-size); font-variant-numeric: tabular-nums; }
 .home-event > strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: var(--weight-medium); }
 .home-event[data-over="true"] > :is(time, strong) { color: var(--text-secondary); }
-.home-event-state { flex: none; color: var(--text-secondary); font-size: var(--text-caption-size); }
-.home-event > button, .home-actions > button { display: inline-flex; flex: none; align-items: center; gap: 6px; }
-.home-event svg, .home-actions svg, .home-context svg { width: 15px; height: 15px; flex: none; }
+.home-event > .status-chip { flex: none; }
+.home-event > button, .home-actions > button { flex: none; }
+.home-context svg { width: 15px; height: 15px; flex: none; }
 .home-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 28px; }
 .home-schedule + .home-actions { margin-top: 24px; }
 .home-content > .home-date + .home-actions { margin-top: 0; }

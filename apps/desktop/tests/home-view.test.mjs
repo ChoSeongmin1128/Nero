@@ -50,11 +50,23 @@ test('without a calendar, starting a recording is the emphasis and connecting is
   assert.equal(app.container.querySelector('.home-schedule'), null);
 });
 
-test('a connection still being checked at launch is not shown as disconnected', async t => {
+test('a connection still being checked at launch shows loading with the shared spinner, not a connect hint', async t => {
   const app = harness({ connected: false, restoring: true });
   t.after(() => app.window.happyDOM.abort());
   await app.home.refresh();
   assert.equal(app.container.querySelector('[data-home-action="calendar"]'), null);
+  const status = app.container.querySelector('.home-schedule [role="status"]');
+  assert.ok(status.querySelector('.activity-spinner'));
+  assert.match(status.textContent, /일정을 불러오는 중/);
+});
+
+test('reloading a connected schedule shows the shared spinner and the running event uses the status chip', async t => {
+  const now = at.getTime();
+  const app = harness({ connected: true }, [{ key: 'now', title: '주간 회의', startAt: now - hour / 2, endAt: now + hour / 2 }]);
+  t.after(() => app.window.happyDOM.abort());
+  await app.home.refresh();
+  assert.equal(app.container.querySelector('.home-event .status-chip').textContent, '진행 중');
+  assert.ok([...app.container.querySelectorAll('.home-actions button, .home-event button')].every(button => button.classList.contains('with-icon')));
 });
 
 test('home picks the folder new meetings start in, unfiled by default', async t => {

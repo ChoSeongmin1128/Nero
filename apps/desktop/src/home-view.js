@@ -48,10 +48,11 @@ export function mountHome({ container, bridge, icon, escape, onRecord, onCreate,
     if (key === renderKey) return;
     renderKey = key;
     const format = clock(schedule.timeZone || timeZone());
-    const button = (attrs, iconName, label, primary = false) => `<button type="button" class="small${primary ? ' primary' : ''}" ${attrs}${off ? ' disabled' : ''}>${icon(iconName)}<span>${escape(label)}</span></button>`;
-    const rows = events.map(event => `<li class="home-event"${event.current ? ' data-current="true"' : ''}${event.over ? ' data-over="true"' : ''}><time>${escape(format.format(event.startAt))} - ${escape(format.format(event.endAt))}</time><strong title="${escape(event.title)}">${escape(event.title || '제목 없는 일정')}</strong>${event.current ? '<span class="home-event-state">진행 중</span>' : ''}${button(`data-home-event="${escape(event.key)}"`, 'mic', '녹음', event.current)}</li>`).join('');
-    const scheduleBlock = schedule.connected
-      ? `<section class="home-schedule" aria-labelledby="home-schedule-title"><h2 id="home-schedule-title">오늘 일정</h2>${rows ? `<ul>${rows}</ul>` : `<p class="home-note">${schedule.loading ? '일정을 불러오는 중입니다.' : '오늘 일정이 없습니다.'}</p>`}</section>`
+    const button = (attrs, iconName, label, primary = false) => `<button type="button" class="small with-icon${primary ? ' primary' : ''}" ${attrs}${off ? ' disabled' : ''}>${icon(iconName)}<span>${escape(label)}</span></button>`;
+    const rows = events.map(event => `<li class="home-event"${event.current ? ' data-current="true"' : ''}${event.over ? ' data-over="true"' : ''}><time>${escape(format.format(event.startAt))} - ${escape(format.format(event.endAt))}</time><strong title="${escape(event.title)}">${escape(event.title || '제목 없는 일정')}</strong>${event.current ? '<span class="status-chip">진행 중</span>' : ''}${button(`data-home-event="${escape(event.key)}"`, 'mic', '녹음', event.current)}</li>`).join('');
+    // A saved connection still being checked at launch reads as loading, not as disconnected.
+    const scheduleBlock = schedule.connected || schedule.restoring
+      ? `<section class="home-schedule" aria-labelledby="home-schedule-title"><h2 id="home-schedule-title">오늘 일정</h2>${rows ? `<ul>${rows}</ul>` : schedule.loading || schedule.restoring ? '<p class="home-note"><span class="processing-inline" role="status"><span class="activity-spinner" aria-hidden="true"></span>일정을 불러오는 중입니다.</span></p>' : '<p class="home-note">오늘 일정이 없습니다.</p>'}</section>`
       : schedule.error ? `<p class="home-note">${escape(schedule.error)}</p>` : '';
     const hint = !schedule.connected && !schedule.restoring && !schedule.loading && !schedule.error ? `<p class="home-note"><button type="button" class="quiet small" data-home-action="calendar">Google Calendar 연결</button><span>하면 오늘 일정에서 바로 녹음할 수 있습니다.</span></p>` : '';
     const options = `<option value="">미분류</option>${choices.map(item => `<option value="${escape(item.id)}"${item.id === chosen ? ' selected' : ''}>${escape(item.name)}</option>`).join('')}`;
