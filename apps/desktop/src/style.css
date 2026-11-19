@@ -109,7 +109,7 @@ html.recorder-document { background: transparent; }
 .recorder-page .recorder-drag { flex: 0 0 22px; justify-content: center; padding: 0; color: var(--overlay-muted); cursor: grab; }
 .recorder-page .recorder-drag:active { cursor: grabbing; }
 .recorder-page .recorder-drag svg { width: 12px; height: 20px; stroke-width: 2.5; pointer-events: none; }
-.recorder-page .recorder-open { flex: 1; min-width: 0; min-height: 28px; padding: 3px 4px; gap: 6px; border-radius: 7px; }
+.recorder-page .recorder-open { flex: 1; min-width: 0; min-height: 28px; padding: 3px 4px; gap: 6px; border-radius: var(--control-radius); }
 .recorder-page .desktop-overlay-state { flex: none; }
 .recorder-page .desktop-timer { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .recorder-page .desktop-overlay-controls #hide-recorder { width: 22px; height: 28px; min-height: 28px; padding: 4px; color: var(--overlay-muted); }
@@ -218,14 +218,9 @@ html.recorder-document { background: transparent; }
 .app-settings-tabs button { min-height: 34px; padding: 6px 10px; text-align: left; white-space: nowrap; font-size: var(--text-label-size); }
 .app-settings-content { min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 22px 20px; }
 .settings-panel-title { margin: 0 0 18px; font-size: var(--text-subtitle-size); font-weight: var(--weight-semibold); }
-.app-settings-content .appearance-options { margin: 0; }
-.app-settings-content .appearance-options + .appearance-options { margin-top: 22px; }
-.app-settings-content .appearance-options legend { padding-bottom: 10px; font-size: var(--text-label-size); font-weight: var(--weight-medium); }
 .app-settings-content .brightness-choice { display: grid; place-items: center; width: 36px; min-height: 32px; padding: 6px; }
 .app-settings-content .brightness-choice svg { width: 18px; height: 18px; }
-.appearance-options { display: flex; align-items: center; justify-content: space-between; }
-.appearance-options legend { float: left; padding: 0; }
-.appearance-options .brightness-options { margin: 0; }
+.settings-general .brightness-options { margin: 0; }
 .app-settings-content .theme-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
 .app-settings-content .theme-preview { height: 62px; }
 .app-settings-content .preview-sidebar { padding: 10px 5px; gap: 5px; }
@@ -234,7 +229,7 @@ html.recorder-document { background: transparent; }
 .app-settings-label { display: block; margin: 0 0 10px; font-size: var(--text-label-size); font-weight: var(--weight-medium); }
 .settings-microphone-label { min-width: 0; }
 .settings-microphone-label p { margin: 4px 0 0; }
-.settings-microphone-control { display: flex; flex: 0 1 260px; align-items: center; gap: 6px; min-width: 0; }
+.settings-microphone-control { display: flex; flex: 0 0 min(260px, 50%); align-items: center; gap: 6px; min-width: 0; }
 .settings-microphone-control > select, .settings-microphone-control > .nero-select { flex: 1; min-width: 0; width: 100%; }
 .settings-microphone-control .nero-select-trigger { width: 100%; min-width: 0; }
 .settings-microphone-control > button { flex: none; }
@@ -496,23 +491,23 @@ html.recorder-document { background: transparent; }
 /* Approved A library: one primary action, quiet search and readable rows. */
 #library-search-home { flex: none; margin: 6px 0 24px; max-width: 420px; }
 #library-search-home:empty { display: none; }
-#library-search-home > .search-field { display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text-secondary); }
+#library-search-home > .search-field { display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--control-radius); background: var(--surface); color: var(--text-secondary); }
 #library-search-home .search-field > [data-detail-icon] { display: flex; flex: none; }
 #library-search-home .search-field svg { width: 17px; height: 17px; }
 #library-search-home input { border: 0; background: transparent; padding: 0; outline: none; box-shadow: none; font-size: var(--text-body-size); }
-#library-search-home:focus-within { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 6px; }
+#library-search-home:focus-within { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: var(--control-radius); }
 .library-screen-header { margin-bottom: 18px; }
 #library-count:not(:has(.activity-spinner)) { display: none; }
 #library-record { width: 100%; justify-content: flex-start; }
 .navigation-shell.nav-pinned #library-create { display: none; }
 .app-body:has(#library-screen:not([hidden])) #sidebar-create-collapsed { display: none; }
-#library-create { gap: 8px; min-height: 36px; padding: 8px 16px; background: var(--accent-fill); color: var(--on-accent); border: 0; border-radius: 7px; }
+#library-create { gap: 8px; min-height: 36px; padding: 8px 16px; background: var(--accent-fill); color: var(--on-accent); border: 0; border-radius: var(--control-radius); }
 #library-create:hover:not(:disabled) { background: var(--accent-fill-hover); }
 .meeting-entry { border: 0; border-bottom: 1px solid var(--border); margin: 0; }
 .meeting-entry .meeting-item { min-height: 78px; gap: 16px; padding: 16px 8px; }
 .meeting-entry .meeting-item strong { font-size: var(--text-reading-size); font-weight: var(--weight-semibold); }
 .meeting-entry .meeting-item-meta { margin-top: 5px; font-size: var(--text-caption-size); }
-.meeting-entry .meeting-select-control { width: 40px; height: 40px; border-radius: 8px; background: var(--surface-secondary); }
+.meeting-entry .meeting-select-control { width: 40px; height: 40px; border-radius: var(--radius); background: var(--surface-secondary); }
 .library-screen .meeting-list { padding-inline: 0; }
 @container detail (max-width: 520px) { .meeting-entry .meeting-item strong { font-size: var(--text-body-size); } .meeting-entry .meeting-item { gap: 10px; } }
 
@@ -521,13 +516,16 @@ html.recorder-document { background: transparent; }
 .detail-library-actions > .toolbar-divider { height: 18px; width: 1px; background: var(--border); flex: none; }
 .summary-section > .detail-panel-toolbar:has(#prepare-summary[hidden]):has(#summarize[hidden]):has(#summary-template-choice[hidden]) { display: none; }
 .detail-context > button, #meeting-context-control > button { font-size: var(--text-caption-size); font-weight: var(--weight-regular); color: var(--text-secondary); min-height: 24px; padding-block: 2px; }
+/* Quiet buttons keep their hover area but line up with the plain date and length text beside them. */
+.detail-context > button, #meeting-context-control > button { margin-inline: -6px; padding-inline: 6px; }
+.meeting-timestamps:not(:has(> :not([hidden]))) { display: none; }
 .detail-context button svg { width: 15px; height: 15px; }
 @container detail (max-width: 420px) {
   .detail-primary { padding-inline: 24px; }
 }
 
 .library-more { position: relative; }
-.library-more > summary { display: grid; place-items: center; width: 28px; min-height: 28px; padding: 5px; border: 0; border-radius: 6px; list-style: none; color: var(--text-secondary); }
+.library-more > summary { display: grid; place-items: center; width: 28px; min-height: 28px; padding: 5px; border: 0; border-radius: var(--control-radius); list-style: none; color: var(--text-secondary); }
 .library-more > summary::-webkit-details-marker { display: none; }
 .library-more > summary:hover { background: var(--hover); }
 .library-more > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
@@ -570,4 +568,8 @@ html.recorder-document { background: transparent; }
 .summary-recovery { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
 .summary-recovery > p { margin: 0; }
 /* A wide window, such as one with the sidebar folded away, keeps the meeting in a readable column. */
-@container detail (min-width: 1180px) { .detail-primary > :not(.document-search) { box-sizing: border-box; width: 100%; max-width: 960px; margin-inline: auto; } }
+@container detail (min-width: 1180px) {
+  .detail-primary > :not(.document-search) { box-sizing: border-box; width: 100%; max-width: 960px; margin-inline: auto; }
+  /* The status band and player keep their full-width background but line up with the centered document. */
+  .detail-common > :is(.processing-notice, .audio-region) { padding-inline: max(24px, calc((100% - 960px) / 2)); }
+}

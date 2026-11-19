@@ -69,7 +69,7 @@
 .attendee-create { border-top: 1px solid var(--border); color: var(--text-secondary); }
 .attendee-chips { display: flex; flex-wrap: wrap; gap: 6px; max-height: min(160px, 25vh); overflow: auto; }
 .attendee-selected { gap: 10px; }
-.attendee-chip { display: inline-flex; align-items: center; gap: 2px; min-width: 0; max-width: 100%; padding: 4px 5px 4px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-secondary); }
+.attendee-chip { display: inline-flex; align-items: center; gap: 2px; min-width: 0; max-width: 100%; padding: 4px 5px 4px 8px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-secondary); }
 .attendee-chip-name { display: inline-flex; align-items: center; gap: 4px; min-height: 28px; min-width: 0; padding: 2px 4px; overflow-wrap: anywhere; }
 .attendee-chip-name > svg { flex: none; color: var(--text-secondary); }
 .attendee-chip > .icon { width: 28px; height: 28px; min-height: 28px; padding: 5px; color: var(--text-secondary); flex: none; }

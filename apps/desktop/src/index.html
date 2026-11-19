@@ -160,7 +160,7 @@
           <button id="settings-recording-tab" type="button" role="tab" data-settings-panel="recording" aria-selected="false" aria-controls="settings-recording-panel" tabindex="-1">녹음</button>
           <button id="settings-transcription-tab" type="button" role="tab" data-settings-panel="transcription" aria-selected="false" aria-controls="settings-transcription-panel" tabindex="-1">음성 인식</button>
           <button id="settings-agent-tab" type="button" role="tab" data-settings-panel="agent" aria-selected="false" aria-controls="settings-agent-panel" tabindex="-1">연동</button>
-          <button id="settings-people-tab" type="button" role="tab" data-settings-panel="people" aria-selected="false" aria-controls="settings-people-panel" tabindex="-1"> 참석자</button>
+          <button id="settings-people-tab" type="button" role="tab" data-settings-panel="people" aria-selected="false" aria-controls="settings-people-panel" tabindex="-1">참석자</button>
           <button id="settings-templates-tab" type="button" role="tab" data-settings-panel="templates" aria-selected="false" aria-controls="settings-templates-panel" tabindex="-1">요약 템플릿</button>
         </nav>
         <div class="app-settings-content">
@@ -197,19 +197,19 @@
           </section>
           <section id="settings-appearance-panel" role="tabpanel" aria-labelledby="settings-appearance-tab">
             <h3 class="settings-panel-title">일반</h3>
-            <fieldset class="appearance-options">
-              <legend>테마</legend>
-              <div class="brightness-options">
-                <label class="brightness-choice"><input type="radio" name="appearance-mode" value="light" aria-label="라이트 테마"><span data-detail-icon="sun" aria-hidden="true"></span><span class="sr-only">라이트</span></label>
-                <label class="brightness-choice"><input type="radio" name="appearance-mode" value="dark" aria-label="다크 테마"><span data-detail-icon="moon" aria-hidden="true"></span><span class="sr-only">다크</span></label>
+            <div class="settings-group settings-general">
+              <div class="settings-row" role="radiogroup" aria-labelledby="settings-theme-label">
+                <span id="settings-theme-label">테마</span>
+                <div class="brightness-options">
+                  <label class="brightness-choice"><input type="radio" name="appearance-mode" value="light" aria-label="라이트 테마"><span data-detail-icon="sun" aria-hidden="true"></span><span class="sr-only">라이트</span></label>
+                  <label class="brightness-choice"><input type="radio" name="appearance-mode" value="dark" aria-label="다크 테마"><span data-detail-icon="moon" aria-hidden="true"></span><span class="sr-only">다크</span></label>
+                </div>
               </div>
-            </fieldset>
-            <section id="app-update" class="settings-app-update" aria-labelledby="app-update-title">
-              <div class="settings-row"><div><h4 id="app-update-title" class="settings-subtitle">Nero 업데이트</h4><p id="app-update-version" class="muted type-caption"></p></div><button id="app-update-action" type="button" class="small">업데이트 확인</button></div>
-              <p id="app-update-message" class="muted type-caption" role="status" hidden></p>
-              <progress id="app-update-progress" aria-label="앱 업데이트 다운로드" hidden></progress>
-              <p id="app-update-recovery" class="notice type-caption" hidden></p>
-            </section>
+              <section id="app-update" class="settings-row settings-app-update" aria-labelledby="app-update-title">
+                <div><span id="app-update-title">Nero 업데이트</span><p id="app-update-version" class="muted type-caption"></p><p id="app-update-message" class="muted type-caption" role="status" hidden></p><progress id="app-update-progress" aria-label="앱 업데이트 다운로드" hidden></progress><p id="app-update-recovery" class="notice type-caption" hidden></p></div>
+                <button id="app-update-action" type="button" class="small">업데이트 확인</button>
+              </section>
+            </div>
             <section id="settings-local-summary" class="settings-feature-section" aria-labelledby="settings-features-title" hidden>
               <h4 id="settings-features-title" class="settings-subtitle">추가 기능</h4>
               <div class="settings-group"><div class="settings-row"><span>회의 요약</span><span id="settings-summary-control" class="settings-feature-control" tabindex="-1"><span id="settings-summary-state" class="muted type-caption"></span><button id="models" type="button" class="small">추가</button></span></div></div>

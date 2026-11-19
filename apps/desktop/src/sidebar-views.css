@@ -26,7 +26,7 @@
 .navigation-rail #notifications-open { position: relative; }
 .navigation-rail #notifications-open[aria-pressed="true"] { color: var(--text); background: var(--hover); }
 /* Only what needs the person: a failed job or a broken connection. */
-.navigation-rail .navigation-notification-count { position: absolute; top: -3px; right: -5px; min-width: 15px; height: 15px; padding: 0 4px; border-radius: 8px; background: var(--danger-text); color: var(--canvas); font-size: 10px; font-weight: var(--weight-semibold); line-height: 15px; text-align: center; pointer-events: none; }
+.navigation-rail .navigation-notification-count { position: absolute; top: -3px; right: -5px; min-width: 15px; height: 15px; padding: 0 4px; border-radius: var(--radius); background: var(--danger-text); color: var(--canvas); font-size: var(--text-micro-size); font-weight: var(--weight-semibold); line-height: 15px; text-align: center; pointer-events: none; }
 .navigation-rail .navigation-notification-count[hidden] { display: none; }
 
 .library-header .navigation-brand { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 8px; align-items: center; }
@@ -83,21 +83,30 @@
 .library[data-sidebar-view="navigation"] .sidebar-navigation-view > .search-field,
 .library[data-sidebar-view="navigation"] #library-system-views .library-folder-item:has([data-library-filter="unfiled"]),
 .library[data-sidebar-view="navigation"] .navigation-folder-section { display: none; }
-.library .library-folder-link { display: grid; grid-template-columns: 20px minmax(0, 1fr) 12px; gap: 10px; width: 100%; min-height: 40px; padding: 10px 12px; font-size: 14px; font-weight: 400; line-height: 20px; border-radius: 7px; }
-.library .library-folder-link[aria-current="page"] { font-weight: 600; }
+.library .library-folder-link { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; gap: 10px; width: 100%; min-height: 40px; padding: 10px 12px; font-size: var(--text-body-size); font-weight: var(--weight-regular); line-height: 20px; border-radius: var(--control-radius); }
+.library .library-folder-link[aria-current="page"] { font-weight: var(--weight-semibold); }
 .library .library-folder-link > svg { width: 19px; height: 19px; }
 .library .library-folder-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .library[data-sidebar-view="navigation"] .library-folder-count { display: none; }
+/* A folder's menu takes the count's place only while the row is pointed at or focused. */
+.library .library-folder-item > .library-folder-menu { inset-inline-end: 6px; }
+.library .library-folder-item > .library-folder-menu:not([open]) > summary { opacity: 0; }
+.library .library-folder-item:is(:hover, :focus-within) > .library-folder-menu > summary { opacity: 1; }
+.library .library-folder-item:has(> .library-folder-menu):is(:hover, :focus-within) .library-folder-count { visibility: hidden; }
+@media (hover: none) {
+  .library .library-folder-item > .library-folder-menu > summary { opacity: 1; }
+  .library .library-folder-item:has(> .library-folder-menu) .library-folder-count { visibility: hidden; }
+}
 .library-folder-chevron { display: flex; justify-content: center; }
 .library-folder-chevron svg { width: 14px; height: 14px; }
 .library .recent-section { margin: 24px 14px 0; padding-top: 14px; }
-.library .recent-section > summary { padding: 6px 12px 12px; min-height: 32px; font-size: 11px; font-weight: 400; }
+.library .recent-section > summary { padding: 6px 12px 12px; min-height: 32px; font-size: var(--text-aux-size); font-weight: var(--weight-regular); }
 .library[data-sidebar-view="navigation"] .recent-section > summary > span:first-child { display: none; }
 .library[data-sidebar-view="navigation"] .recent-meetings { gap: 0; scrollbar-gutter: auto; }
 .library[data-sidebar-view="navigation"] .navigation-recent-row > .recent-meeting { display: grid; grid-template-columns: 16px minmax(0, 1fr); align-items: center; column-gap: 12px; min-height: 39px; padding: 9px 12px; }
 .library[data-sidebar-view="navigation"] .recent-title-line { min-width: 0; }
-.library[data-sidebar-view="navigation"] .recent-title-line strong { font-size: 13px; font-weight: 400; line-height: 20px; }
-.library[data-sidebar-view="navigation"] .recent-meeting[aria-current="page"] strong { font-weight: 600; }
+.library[data-sidebar-view="navigation"] .recent-title-line strong { font-size: var(--text-label-size); font-weight: var(--weight-regular); line-height: 20px; }
+.library[data-sidebar-view="navigation"] .recent-meeting[aria-current="page"] strong { font-weight: var(--weight-semibold); }
 .library[data-sidebar-view="navigation"] :is(.recent-meeting-folder, .recent-meeting-meta) { display: none; }
 .recent-meeting-icon { display: flex; flex: none; align-items: center; justify-content: center; color: var(--text-secondary); }
 .recent-meeting-icon svg { width: 16px; height: 16px; }
@@ -105,17 +114,17 @@
 .library[data-preview="true"] .navigation-recent-row > .recent-meeting { grid-template-columns: 16px minmax(0, 1fr); column-gap: 10px; }
 .library[data-preview="true"] :is(.recent-title-line, .recent-meeting-meta) { grid-column: 2; }
 .library > .sidebar-footer { display: flex; flex-direction: column; gap: 8px; min-height: 70px; border-top: 0; padding: 19px 14px; }
-.library > .sidebar-footer button { flex: none; height: 32px; min-height: 32px; padding: 6px 12px; gap: 12px; font-size: 13px; font-weight: 400; }
+.library > .sidebar-footer button { flex: none; height: 32px; min-height: 32px; padding: 6px 12px; gap: 12px; font-size: var(--text-label-size); font-weight: var(--weight-regular); }
 
 #library-search-home { flex: none; max-width: 420px; margin: 20px 0 18px; }
 #library-search-home:empty { display: none; }
-#library-search-home > .search-field { padding: 8px 10px; border: 1px solid var(--border); background: var(--surface); border-radius: 6px; }
-#library-search-home > .search-field input { min-height: 20px; padding: 0; border: 0; border-radius: 0; background: transparent; font-size: 12px; box-shadow: none; }
+#library-search-home > .search-field { padding: 8px 10px; border: 1px solid var(--border); background: var(--surface); border-radius: var(--control-radius); }
+#library-search-home > .search-field input { min-height: 20px; padding: 0; border: 0; border-radius: 0; background: transparent; font-size: var(--text-caption-size); box-shadow: none; }
 #library-folder-actions { display: inline-flex; align-items: center; }
 #library-folder-actions[hidden] { display: none; }
-#library-folder-actions > #new-folder { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; min-width: 32px; min-height: 32px; padding: 7px; border-radius: 6px; }
-.library-folder-card-entry { display: flex; align-items: center; position: relative; min-width: 0; border-radius: 7px; background: var(--surface-secondary); }
-.library-folder-card-entry > .library-folder-card { flex: 1; width: 100%; background: transparent; padding-right: 34px; border-radius: 7px; }
+#library-folder-actions > #new-folder { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; min-width: 32px; min-height: 32px; padding: 7px; border-radius: var(--control-radius); }
+.library-folder-card-entry { display: flex; align-items: center; position: relative; min-width: 0; border-radius: var(--control-radius); background: var(--surface-secondary); }
+.library-folder-card-entry > .library-folder-card { flex: 1; width: 100%; background: transparent; padding-right: 34px; border-radius: var(--control-radius); }
 .library-folder-card-entry > .library-folder-menu { right: 4px; left: auto; }
 .library-folder-card-entry > .library-folder-menu > summary { opacity: 0; }
 .library-folder-card-entry:hover > .library-folder-menu > summary,
@@ -124,10 +133,10 @@
 @media (hover: none) { .library-folder-card-entry > .library-folder-menu > summary { opacity: 1; } }
 #sidebar-create-expanded:has(> #create-meeting[hidden]) { display: none; }
 
-.library[data-preview="true"] .sidebar-navigation-view > .search-field { display: flex; align-items: center; gap: 8px; min-width: 0; margin: 0 14px 10px; padding: 7px 9px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); }
+.library[data-preview="true"] .sidebar-navigation-view > .search-field { display: flex; align-items: center; gap: 8px; min-width: 0; margin: 0 14px 10px; padding: 7px 9px; border: 1px solid var(--border); border-radius: var(--control-radius); background: var(--surface); }
 .library[data-preview="true"] .sidebar-navigation-view > .search-field > :is(svg, span:has(> svg)) { display: flex; flex: none; width: 15px; height: 15px; }
 .library[data-preview="true"] .sidebar-navigation-view > .search-field svg { width: 15px; height: 15px; }
-.library[data-preview="true"] .sidebar-navigation-view > .search-field > input { flex: 1; min-width: 0; width: 100%; min-height: 20px; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; font-size: 12px; }
+.library[data-preview="true"] .sidebar-navigation-view > .search-field > input { flex: 1; min-width: 0; width: 100%; min-height: 20px; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; font-size: var(--text-caption-size); }
 
 /* Keep the relocated settings control centered 35px above the app bottom. */
 .library > .sidebar-footer > div, .navigation-rail-footer > div { display: flex; flex: none; align-items: center; }

@@ -125,6 +125,7 @@ button.quiet {
 }
 
 button.quiet:hover:not(:disabled) {
+  border-color: transparent;
   background: var(--hover);
 }
 
