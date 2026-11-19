@@ -327,7 +327,7 @@ idempotentHint=false이며 기존 내용을 바꾸거나 삭제하는 도구에�
 - `recording_continue`는 음성이 있는 일정 회의와 같은 일정에 번호를 붙인 새 회의를 같은 폴더에 만들고 녹음을 시작한다. 화면의 "이 일정으로 이어서 녹음"과 같으며 일정을 다시 조회하지 않는다.
 - `recording_discard`는 화면의 "녹음 버리기"와 같다. 녹음, 음성 기록, 요약이 있는 회의를 처리 작업을 취소하고 휴지통으로 옮긴 뒤, 제목, 메모, 참석자, 날짜, 일정, 폴더, Notion 자료를 그대로 둔 빈 회의를 새로 만든다. 휴지통에서 복원하면 녹음을 되찾는다. 녹음 중에는 거부한다.
 - `settings_set`의 `recordingTranscription`은 녹음하면서 음성 기록 만들기를 켜거나 끄며 이후 시작하는 녹음에 적용한다. `settings_get`의 `recordingTranscription.supported`가 거짓이면 켤 수 없다.
-- `settings_set`의 `newMeetingFolder`는 설정 > 녹음의 "새 회의 폴더"와 같다. 폴더 ID 또는 `unfiled`를 받으며(CLI `--new-meeting-folder`), 이후 새 회의, 녹음 시작, 파일 가져오기, 일정으로 처음 만드는 회의가 그 폴더에 들어간다. 일정에서 이어서 녹음한 회의는 원래 회의의 폴더를 따른다. 폴더가 삭제되면 미분류로 돌아가며 `settings_get`의 `newMeetingFolder.folderId`는 null이 된다.
+- `settings_set`의 `newMeetingFolder`는 홈의 "저장 위치", 설정 > 녹음의 "새 회의 폴더"와 같다. 폴더 ID 또는 `unfiled`를 받으며(CLI `--new-meeting-folder`), 이후 새 회의, 녹음 시작, 파일 가져오기, 일정으로 처음 만드는 회의가 그 폴더에 들어간다. 일정에서 이어서 녹음한 회의는 원래 회의의 폴더를 따른다. 폴더가 삭제되면 미분류로 돌아가며 `settings_get`의 `newMeetingFolder.folderId`는 null이 된다.
 - `storage_usage`는 설정의 저장 공간과 같은 값을, `recordings_compact`는 설정의 "이전 형식 녹음 줄이기"와 같은 동작을 수행한다. 원본 녹음 파일을 지우므로 되돌릴 수 없고 사용자의 명시적인 현재 요청에만 사용한다. 처리 중이거나 확인하지 않은 작업이 있는 녹음은 제외하고 실패한 녹음은 원래 파일을 유지한다.
 - `jobs_list`는 진행 중인 작업에 일시 정지 가능 여부(`pausable`)와 현재 일시 정지(`pause`: 사용자/자동, 상태, 사유)를 함께 준다. `job_pause`/`job_resume`은 처리 알림의 일시 정지/다시 시작 버튼과 같다. 사용자가 멈춘 작업은 `job_resume`까지 멈춰 있고, 녹음 때문에 자동으로 멈춘 작업은 녹음 상황에 따라 이어진다.
 - `transcript_save`는 `transcript_get`의 `version`을 받고 바꾼 구간만 ID로 보낸다. `speakers_save`는 바뀐 뒤의 전체 화자 목록과 화자가 바뀌는 구간만 보낸다. 이전 기록은 `transcript_history`에 남는다.

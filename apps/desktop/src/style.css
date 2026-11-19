@@ -569,3 +569,5 @@ html.recorder-document { background: transparent; }
 
 .summary-recovery { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
 .summary-recovery > p { margin: 0; }
+/* A wide window, such as one with the sidebar folded away, keeps the meeting in a readable column. */
+@container detail (min-width: 1180px) { .detail-primary > :not(.document-search) { box-sizing: border-box; width: 100%; max-width: 960px; margin-inline: auto; } }

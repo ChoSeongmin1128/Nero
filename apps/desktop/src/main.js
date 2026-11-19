@@ -728,6 +728,7 @@ async function openSettings(panel = 'appearance', returnId = 'settings') {
 async function reloadNewMeetingFolder() {
   try { state.newMeetingFolder = await bridge.readNewMeetingFolder() ?? null; } catch { return; }
   renderSettings();
+  home.render();
 }
 
 function changeMicrophone() {
@@ -1774,12 +1775,16 @@ const library = mountLibrary({ bridge, getState: () => state, byId, finishEditin
 const home = mountHome({ container: byId('home-screen'), bridge, icon, escape,
   disabled: () => !state.connected || state.busy || !modelsReady(),
   device: microphoneLabel,
+  folders: () => state.snapshot.folders || [],
+  folder: () => state.newMeetingFolder,
+  onFolder: folderId => run(async () => { state.newMeetingFolder = await bridge.setNewMeetingFolder(folderId) ?? null; home.render(); renderSettings(); }),
   onRecord: () => run(() => createMeeting({ record: true, fromHome: true })),
   onCreate: () => run(() => createMeeting({ fromHome: true })),
   onImport: () => run(importNewMeeting),
   onRecordEvent: (key, scope) => run(() => recordCalendarEvent(key, scope)),
   onConnectCalendar: () => openSettings('agent', 'home-screen'),
 });
+void reloadNewMeetingFolder();
 const notificationCenter = mountNotificationCenter({ container: byId('notification-center'), onOpenMeeting: id => selectMeeting(id), onProcessingAction: processingAction, showError, icon, onNoticeAction: service => service === 'app-update' ? appUpdateView.perform() : undefined, onOpenIntegration: async service => {
   await openSettings('agent', 'notifications-open');
   const target = service === 'google-calendar' ? byId('calendar-settings').querySelector('.calendar-settings-account button:not(:disabled)') : byId(`settings-${service}-connect`);

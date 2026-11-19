@@ -6,7 +6,7 @@ import { homeEvents, mountHome } from '../src/home-view.js';
 const hour = 3600000;
 const at = new Date(2026, 10, 19, 14, 30);
 
-function harness(calendar, occurrences = []) {
+function harness(calendar, occurrences = [], extra = {}) {
   const window = new Window();
   const container = window.document.createElement('section');
   window.document.body.append(container);
@@ -14,7 +14,7 @@ function harness(calendar, occurrences = []) {
   const home = mountHome({ container, icon: name => `<svg data-icon="${name}"></svg>`, escape: value => String(value ?? ''), now: () => at, timeZone: () => 'Asia/Seoul',
     device: () => '내장 마이크',
     bridge: { readCalendarMeetingOccurrences: async request => { calls.push(request); return { calendar, occurrences, scopeRevision: 4, ...request }; } },
-    onRecordEvent: (key, scope) => calls.push(['event', key, scope]), onRecord: () => calls.push(['record']) });
+    onRecordEvent: (key, scope) => calls.push(['event', key, scope]), onRecord: () => calls.push(['record']), ...extra });
   return { window, container, home, calls };
 }
 
@@ -56,3 +56,22 @@ test('a connection still being checked at launch is not shown as disconnected', 
   await app.home.refresh();
   assert.equal(app.container.querySelector('[data-home-action="calendar"]'), null);
 });
+
+test('home picks the folder new meetings start in, unfiled by default', async t => {
+  let chosen = 'f2';
+  const picked = [];
+  const app = harness({ connected: false }, [], { folders: () => [{ id: 'f1', name: '제품 회의' }, { id: 'f2', name: '채용' }], folder: () => chosen, onFolder: id => { picked.push(id); chosen = id; } });
+  t.after(() => app.window.happyDOM.abort());
+  await app.home.refresh();
+  const select = app.container.querySelector('[data-home-folder]');
+  assert.deepEqual([...select.options].map(option => option.textContent), ['미분류', '제품 회의', '채용']);
+  assert.equal(select.value, 'f2');
+  select.value = '';
+  select.dispatchEvent(new app.window.Event('change', { bubbles: true }));
+  assert.deepEqual(picked, [null]);
+  chosen = 'gone';
+  app.home.render();
+  assert.equal(app.container.querySelector('[data-home-folder]').value, '', 'a deleted folder shows unfiled');
+  assert.match(app.container.querySelector('.home-context').textContent, /내장 마이크/);
+});
+
