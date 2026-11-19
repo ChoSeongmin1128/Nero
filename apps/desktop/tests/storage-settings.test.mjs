@@ -69,3 +69,24 @@ test('a failed or partial compaction says the original files are kept', async ()
   assert.equal(unread.byId('storage-message').hidden, false);
   assert.equal(unread.byId('storage-compact-row').hidden, true);
 });
+
+test('a panel reopened during compaction shows the usage after it and enables the button again', async () => {
+  let finish, reads = 0;
+  const app = harness({
+    read: async () => (reads += 1) > 1 ? usage({ reducibleBytes: 0, reducibleMeetings: 0, meetingsBytes: 800_000_000 }) : usage(),
+    compact: () => new Promise(resolve => { finish = resolve; }),
+  });
+  await app.settings.setActive(true);
+  const running = app.settings.compact();
+  await new Promise(resolve => setImmediate(resolve));
+  await app.settings.setActive(false);
+  await app.settings.setActive(true);
+  assert.equal(app.byId('storage-compact').disabled, true);
+  finish({ freedBytes: 9_000_000_000, meetings: 9, failed: 0, usage: usage() });
+  await running;
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(app.calls.read, 3);
+  assert.equal(app.byId('storage-meetings').textContent, '800 MB');
+  assert.equal(app.byId('storage-compact').disabled, false);
+  assert.equal(app.byId('storage-compact-row').hidden, true);
+});

@@ -732,7 +732,9 @@ impl Store {
         if saved.meeting.audio.as_ref() != Some(artifact) || saved.capture_id != stored.capture_id {
             return Ok(0);
         }
-        self.audio_path(&stored.meeting)?;
+        if !verified_playback(&self.audio_path(&stored.meeting)?) {
+            return Ok(0);
+        }
         let manifest: Manifest = read_json(&checked_path(
             &self.root,
             &sessions_dir(&stored.meeting.id)
@@ -1109,19 +1111,30 @@ fn publish_playback(
         durable.sync_all()?;
         // The capture PCM is released once this file is the meeting's audio, so
         // what was saved is read back before it takes the playback name.
-        if let Some(written) = written {
-            let saved = stored_digest(BufReader::new(open_read(&temporary_path)?))?;
-            if saved != written {
-                return Err(CoreError::Storage(
-                    "저장한 재생 파일이 변환 결과와 다릅니다.".into(),
-                ));
+        let verified = match written {
+            Some(written) => {
+                let saved = stored_digest(BufReader::new(open_read(&temporary_path)?))?;
+                if saved != written {
+                    return Err(CoreError::Storage(
+                        "저장한 재생 파일이 변환 결과와 다릅니다.".into(),
+                    ));
+                }
+                true
             }
-        }
+            None => false,
+        };
         checked_path(root, &wav_relative)?;
         if wav_path.exists() && !(replace && fs::symlink_metadata(&wav_path)?.is_file()) {
             return Err(CoreError::Storage("재생 파일이 이미 존재합니다.".into()));
         }
         fs::rename(&temporary_path, &wav_path)?;
+        if let Ok(mut set) = VERIFIED_PLAYBACK.lock() {
+            if verified {
+                set.insert(wav_path.clone());
+            } else {
+                set.remove(&wav_path);
+            }
+        }
         Ok(())
     })();
     if let Err(error) = written {
@@ -1129,6 +1142,26 @@ fn publish_playback(
         return Err(error);
     }
     sync_parent(&wav_path)
+}
+
+// Playback files this process wrote and read back against their conversion. Only
+// those let `release_raw` delete the capture PCM; a file found on disk, whose samples
+// were never compared, keeps its PCM until a conversion writes it again.
+static VERIFIED_PLAYBACK: std::sync::Mutex<BTreeSet<PathBuf>> =
+    std::sync::Mutex::new(BTreeSet::new());
+
+fn verified_playback(path: &Path) -> bool {
+    VERIFIED_PLAYBACK
+        .lock()
+        .map(|verified| verified.contains(path))
+        .unwrap_or(false)
+}
+
+#[cfg(test)]
+pub(crate) fn forget_verified_playback(path: &Path) {
+    if let Ok(mut verified) = VERIFIED_PLAYBACK.lock() {
+        verified.remove(path);
+    }
 }
 
 // A playback WAV left half-written by an earlier crash or full disk is never

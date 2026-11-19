@@ -1776,3 +1776,39 @@ fn a_partial_moss_result_is_retryable_until_its_chunks_were_tried_in_pieces() {
         Some("인식하지 못한 구간은 다시 시도해도 같은 결과가 나옵니다.")
     );
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_job_the_person_paused_stays_paused_in_the_retry_after_a_recording_took_its_place() {
+    let (_temporary, process) = setup();
+    // A legacy live session streams to its own worker, so the MOSS job gives way.
+    *process.speech_engine.lock().unwrap() = SpeechEngine::Nemotron;
+    let (started, started_rx) = mpsc::channel();
+    let id = launch(
+        &process,
+        pending(engine_record("transcribe", SpeechEngine::Moss), waits_for_cancel(started)),
+    );
+    started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    process.set_paused(&id, true).unwrap();
+    process.recording_start(|| Ok::<_, String>(())).unwrap();
+    assert_eq!(*process.requeue.lock().unwrap(), [id.clone()]);
+    let mut successor = engine_record("transcribe", SpeechEngine::Moss);
+    successor.id = Uuid::new_v4().to_string();
+    for record in process.records.lock().unwrap().iter_mut() {
+        if record.id == id {
+            record.retry_successor_id = Some(successor.id.clone());
+        }
+    }
+    let (resumed, resumed_rx) = mpsc::channel();
+    let next = launch(&process, pending(successor, waits_for_cancel(resumed)));
+    resumed_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert!(process
+        .control
+        .lock()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|(job, control)| *job == next && control.user_paused()));
+    assert!(process.user_paused_jobs.lock().unwrap().is_empty());
+    process.cancel(&next).unwrap();
+    finish(&process);
+}

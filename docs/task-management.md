@@ -40,7 +40,8 @@ for it, so the model stays loaded and its memory stays in use; Rust-side work pa
 at stage boundaries outside processing locks, and saving cannot be paused. Wall-clock
 limits leave paused time out. A paused job keeps the execution slot, cancel wakes it, and
 an app quit recovers it as interrupted. The view separates a requested pause from one the
-job has reached. A person's pause lasts until they resume it.
+job has reached. A person's pause lasts until they resume it, including when a recording
+starts a live session and the job continues later as a retry.
 
 While a recording runs, the same jobs run with background scheduling for the worker and
 throttled disk I/O for the job thread, and pause automatically when the recording needs
@@ -63,8 +64,8 @@ Shutdown/removal terminates and joins the live child. See [live speech](live-spe
 New jobs append immutable generations at `processing/<job-id>/job-state/<generation>.json`.
 Existing owner metadata, worker evidence and meeting files are preserved. A job's converted
 analysis WAV is removed when the job ends; a retry converts the original audio again. One
-left by a job that did not end normally is removed at the next launch, before any job
-starts; a live recording's analysis WAV stays until that meeting's transcript is saved. An
+left by a job that did not end normally is removed at the next launch; that cleanup looks
+only at job folders present when it begins and skips any job still queued or running; a live recording's analysis WAV stays until that meeting's transcript is saved. An
 import's staged copy of the selected file is removed when the import ends, since Core keeps
 its own copy and imports are not retried. A request refused before its first record leaves
 no job folder. Writes use

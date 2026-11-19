@@ -120,6 +120,27 @@ fn a_pcm_is_kept_until_the_meeting_document_on_disk_names_the_wav() {
 }
 
 #[test]
+fn a_playback_file_found_on_disk_keeps_its_pcm_until_it_is_written_again() {
+    let (_temporary, store, mut stored, mut manifest, original) = fixture(48_000, 1);
+    let pcm = store.root.join(manifest.relative_dir()).join("audio.pcm");
+    stored.meeting.audio = finalize_audio(&store.root, &mut manifest).unwrap();
+    let wav = store.audio_path(&stored.meeting).unwrap();
+    // An earlier run wrote this file and stopped before saving the meeting; its
+    // samples changed while the header and length still match.
+    let mut damaged = fs::read(&wav).unwrap();
+    *damaged.last_mut().unwrap() ^= 0x40;
+    fs::write(&wav, &damaged).unwrap();
+    forget_verified_playback(&wav);
+    stored.meeting.audio = finalize_audio(&store.root, &mut manifest).unwrap();
+    store.save(&stored).unwrap();
+    assert_eq!(store.release_raw(&stored).unwrap(), 0);
+    assert_eq!(fs::read(&pcm).unwrap(), original);
+    store.convert_playback(&mut stored).unwrap();
+    assert_ne!(fs::read(&wav).unwrap(), damaged);
+    assert_eq!(store.release_raw(&stored).unwrap(), original.len() as u64);
+}
+
+#[test]
 fn a_speech_file_with_changed_samples_is_written_again_before_its_pcm_goes() {
     let (_temporary, store, mut stored, mut manifest, original) = fixture(48_000, 1);
     let pcm = store.root.join(manifest.relative_dir()).join("audio.pcm");

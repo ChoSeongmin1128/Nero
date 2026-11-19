@@ -421,6 +421,9 @@ pub struct Processing {
     interrupted_jobs: Mutex<HashSet<String>>,
     // Work that a recording start interrupted; queued again as retries.
     requeue: Mutex<Vec<String>>,
+    // Jobs the person had paused when a recording took their place; the retry that
+    // continues one starts paused too.
+    user_paused_jobs: Mutex<HashSet<String>>,
     revision: AtomicU64,
     recording_transcription: Mutex<RecordingTranscription>,
     shutting_down: AtomicBool,
@@ -678,6 +681,7 @@ impl Processing {
             transcribe_while_recording: AtomicBool::new(transcribe_while_recording),
             interrupted_jobs: Mutex::new(HashSet::new()),
             requeue: Mutex::new(Vec::new()),
+            user_paused_jobs: Mutex::new(HashSet::new()),
             revision: AtomicU64::new(0),
             recording_transcription: Mutex::new(RecordingTranscription::default()),
             shutting_down: AtomicBool::new(false),
@@ -2674,6 +2678,17 @@ impl Processing {
         let control =
             crate::job_control::JobControl::new(cancel.clone(), runs_while_recording(&job.record));
         control.set_throttle(self.recording.load(Ordering::Acquire));
+        let predecessor = self
+            .records
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|record| record.retry_successor_id.as_deref() == Some(id.as_str()))
+            .map(|record| record.id.clone());
+        if predecessor.is_some_and(|previous| self.user_paused_jobs.lock().unwrap().remove(&previous))
+        {
+            control.set_user(true);
+        }
         *self.control.lock().unwrap() = Some((id.clone(), control));
         let flag = cancel.clone();
         let this = self.clone();
@@ -3086,6 +3101,15 @@ impl Processing {
             });
         if !downloading && !concurrent {
             if let Some(job) = running.take() {
+                if self
+                    .control
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .is_some_and(|(id, control)| *id == job.id && control.user_paused())
+                {
+                    self.user_paused_jobs.lock().unwrap().insert(job.id.clone());
+                }
                 let interrupted = self.mark_interrupted(&job);
                 job.cancel.store(true, Ordering::Release);
                 job.handle
@@ -3969,17 +3993,32 @@ impl Processing {
         commit: impl FnOnce() -> nero_core::Result<Option<nero_core::Transcript>>,
     ) -> Result<Option<nero_core::Transcript>, String> {
         self.checkpoint_transcript_following(cancel, commit, |progress, result| {
-            if let Some(source) = result {
-                if self
-                    .records
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .find(|record| Some(&record.id) == progress.id.as_ref())
-                    .is_some_and(|record| record.speaker_enabled)
+            let Some(source) = result else { return Ok(()) };
+            let Some(record) = self
+                .records
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|record| Some(&record.id) == progress.id.as_ref())
+                .cloned()
+            else {
+                return Ok(());
+            };
+            // A MOSS transcription with chunks still to recognize stays a transcription,
+            // as at its own checkpoint. Its retry compares against the corrected text,
+            // which this job wrote, rather than refusing it as a later edit.
+            if retryable_missing(source) {
+                let work = self.root.join("processing").join(&record.id);
+                if record.kind == "transcribe"
+                    && record.speech_engine == SpeechEngine::Moss
+                    && work.join("moss-request.json").is_file()
                 {
-                    self.bind_speaker_continuation(progress, core, meeting_id, source)?;
+                    crate::moss_asr::save_baseline(&work, &Some(source.version.clone()))?;
                 }
+                return Ok(());
+            }
+            if record.speaker_enabled {
+                self.bind_speaker_continuation(progress, core, meeting_id, source)?;
             }
             Ok(())
         })

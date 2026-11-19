@@ -51,7 +51,9 @@ export function mountStorageSettings({ byId, bridge, confirm }) {
       if (current(value)) message = '녹음을 줄이지 못했습니다. 원래 파일은 그대로 있습니다.';
     } finally {
       working = false;
+      // A panel reopened while this ran asked for usage before it finished.
       if (current(value)) render();
+      else if (active) void reload();
     }
   }
 

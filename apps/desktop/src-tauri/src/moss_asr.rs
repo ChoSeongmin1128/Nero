@@ -403,38 +403,47 @@ fn split_failed(
         }
         cancelled(cancel)?;
         let half = length / 2;
-        let mut pieces = Vec::new();
-        let mut ran = true;
-        for (part, (offset, piece)) in [
-            (chunk.start_frame, half),
-            (chunk.start_frame + half, length - half),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let directory = work.join(format!("split-{index}-{part}"));
-            fs::create_dir(&directory).map_err(|e| e.to_string())?;
-            let wav = directory.join("piece.wav");
-            let sha256 = piece_wav(audio, offset, piece, &wav)?;
-            let outputs = recognize_wav(
-                resources, &wav, &sha256, piece, &directory, cancel, model, &|| false,
-            )?;
-            let _ = fs::remove_file(&wav);
-            // No output means the worker did not finish (time limit, crash), which says
-            // nothing about this input; the chunk stays open for a later retry.
-            let Some(raw) = outputs
-                .into_iter()
-                .find(|(index, _)| *index == 0)
-                .map(|(_, raw)| raw)
-            else {
-                ran = false;
-                break;
-            };
-            pieces.push(json!({"rawBytes":raw,"input":{"sha256":sha256,"frames":piece,"offsetFrames":offset}}));
-        }
-        if !ran {
-            continue;
-        }
+        let attempt = || -> Result<Option<Vec<Value>>, Failure> {
+            let mut pieces = Vec::new();
+            for (part, (offset, piece)) in [
+                (chunk.start_frame, half),
+                (chunk.start_frame + half, length - half),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let directory = work.join(format!("split-{index}-{part}"));
+                fs::create_dir(&directory).map_err(|e| e.to_string())?;
+                let wav = directory.join("piece.wav");
+                let sha256 = piece_wav(audio, offset, piece, &wav)?;
+                let outputs = recognize_wav(
+                    resources, &wav, &sha256, piece, &directory, cancel, model, &|| false,
+                );
+                let _ = fs::remove_file(&wav);
+                // No output means the worker did not finish (time limit, crash), which
+                // says nothing about this input; the chunk stays open for a later retry.
+                let Some(raw) = outputs?
+                    .into_iter()
+                    .find(|(index, _)| *index == 0)
+                    .map(|(_, raw)| raw)
+                else {
+                    return Ok(None);
+                };
+                pieces.push(json!({"rawBytes":raw,"input":{"sha256":sha256,"frames":piece,"offsetFrames":offset}}));
+            }
+            Ok(Some(pieces))
+        };
+        // A piece that could not be written or run leaves this chunk open for a later
+        // retry; the chunks already recognized are still saved. A stop ends the pass.
+        let pieces = match attempt() {
+            Ok(Some(pieces)) => pieces,
+            Ok(None) => continue,
+            Err(error) => {
+                cancelled(cancel)?;
+                eprintln!("Nero: MOSS 구간 {index}을 나눠 다시 인식하지 못했습니다: {}", error.message);
+                continue;
+            }
+        };
         value["schemaVersion"] = json!(3);
         value["chunks"][index]["pieces"] = json!(pieces);
         // Each chunk's pieces are kept as soon as both ran, so a stop later in this
@@ -793,6 +802,19 @@ for index in request['selectedChunks']:
         assert_eq!(value["schemaVersion"], 3);
         assert_eq!(value["chunks"][1]["pieces"][1]["input"]["offsetFrames"], MOSS_CHUNK_FRAMES + half);
         assert!(!value["chunks"][1]["rawBytes"].as_array().unwrap().is_empty());
+
+        // A piece that cannot be written leaves its chunk open for a retry, and the
+        // chunks recognized around it are still returned.
+        let blocked = root.join("blocked");
+        fs::create_dir(&blocked).unwrap();
+        fs::create_dir(blocked.join("split-1-0")).unwrap();
+        let raw = recognize(&root, &audio, &blocked, &cancel, &model, None, &[]).unwrap();
+        let report = nero_core::inspect_moss_chunk_transcript(&raw, frames, 16000).unwrap();
+        assert_eq!(report.chunks[0].state, RecognitionChunkState::Complete);
+        assert_eq!(report.chunks[1].state, RecognitionChunkState::Failed);
+        assert_eq!(report.chunks[2].state, RecognitionChunkState::Complete);
+        let value: Value = serde_json::from_slice(&raw).unwrap();
+        assert!(value["chunks"][1].get("pieces").is_none());
 
         fs::write(model.join("fail-pieces"), b"fixture").unwrap();
         let (failed, raw, _) = run("unrecognized", None);

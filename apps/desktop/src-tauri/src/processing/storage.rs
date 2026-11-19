@@ -125,10 +125,24 @@ impl Processing {
             .map(|meeting| meeting.id)
             .collect();
         let mut freed = 0;
-        for entry in entries.filter_map(Result::ok) {
-            if Uuid::parse_str(&entry.file_name().to_string_lossy()).is_err()
+        // This runs beside jobs a screen or agent may start meanwhile: only folders
+        // present when it began are looked at, and never one of a job still active.
+        let entries: Vec<_> = entries.filter_map(Result::ok).collect();
+        for entry in entries {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if Uuid::parse_str(&name).is_err()
                 || !entry.file_type().is_ok_and(|kind| kind.is_dir())
             {
+                continue;
+            }
+            let active = self.records.lock().unwrap().iter().any(|record| {
+                record.id == name
+                    && matches!(
+                        record.status,
+                        JobStatus::Queued | JobStatus::Running | JobStatus::Cancelling
+                    )
+            });
+            if active {
                 continue;
             }
             let job = entry.path();
@@ -180,6 +194,29 @@ mod tests {
         let unknown_live = job(&[("analysis.wav", b"1"), ("live-request.json", b"not json")]);
         fs::create_dir_all(processing.join("not-a-job")).unwrap();
         fs::write(processing.join("not-a-job").join("analysis.wav"), b"1").unwrap();
+        // A job a screen started while this ran keeps the audio it is reading.
+        let running = job(&[("analysis.wav", b"12")]);
+        process.records.lock().unwrap().push(super::super::JobRecord {
+            glossary_snapshot_required: false,
+            speech_engine: Default::default(),
+            speaker_enabled: true,
+            apple_speech_variant: None,
+            schema_version: 1,
+            id: running.file_name().unwrap().to_string_lossy().into_owned(),
+            kind: "transcribe".into(),
+            meeting_id: Some(waiting.id.clone()),
+            source_fingerprint: None,
+            include_summary: false,
+            summary_template_ref: None,
+            acknowledged: false,
+            retry_successor_id: None,
+            failure_kind: None,
+            status: JobStatus::Running,
+            phase: None,
+            message: "처리 중".into(),
+            created_at: 1,
+            updated_at: 1,
+        });
 
         assert_eq!(process.remove_leftover_analysis_audio(&core), 8);
         assert!(!finished.join("analysis.wav").exists());
@@ -189,6 +226,7 @@ mod tests {
         assert!(live.join("analysis.wav").exists());
         assert!(unknown_live.join("analysis.wav").exists());
         assert!(processing.join("not-a-job").join("analysis.wav").exists());
+        assert!(running.join("analysis.wav").exists());
         assert_eq!(process.remove_leftover_analysis_audio(&core), 0);
 
         let usage = process.storage_usage(&core).unwrap();

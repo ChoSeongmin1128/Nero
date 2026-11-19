@@ -6,7 +6,8 @@ use crate::{
 };
 use cpal::traits::DeviceTrait;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 pub(crate) struct Engine {
     pub(crate) store: Store,
@@ -591,22 +592,42 @@ impl Engine {
             source.meeting.calendar_reference.clone(),
             source.generated_title,
         )?;
+        let copy = stored.meeting.id.clone();
         stored.meeting.attendees = source.meeting.attendees.clone();
         stored.meeting.meeting_date = source.meeting.meeting_date.clone();
-        let meeting = self.commit_meeting(stored)?;
-        let mut library = self.library.clone();
-        library
-            .placements
-            .entry(meeting.id.clone())
-            .or_default()
-            .folder_id = source.meeting.folder_id.clone();
-        library
-            .placements
-            .entry(id.to_owned())
-            .or_default()
-            .deleted_at
-            .get_or_insert(store::now());
-        self.commit_library(library)?;
+        let committed = self.commit_meeting(stored).and_then(|meeting| {
+            let mut library = self.library.clone();
+            library
+                .placements
+                .entry(meeting.id.clone())
+                .or_default()
+                .folder_id = source.meeting.folder_id.clone();
+            library
+                .placements
+                .entry(id.to_owned())
+                .or_default()
+                .deleted_at
+                .get_or_insert(store::now());
+            self.commit_library(library).map(|()| meeting)
+        });
+        let meeting = match committed {
+            Ok(meeting) => meeting,
+            Err(error) => {
+                // The copy stands only beside a trashed original; otherwise a second
+                // attempt would leave another empty meeting.
+                let trashed = self
+                    .library
+                    .placements
+                    .get(id)
+                    .is_some_and(|placement| placement.deleted_at.is_some());
+                if !trashed {
+                    self.meetings.remove(&copy);
+                    let _ = store::checked_path(&self.store.root, &Path::new("meetings").join(&copy))
+                        .and_then(|path| Ok(fs::remove_dir_all(path)?));
+                }
+                return Err(error);
+            }
+        };
         Ok(self
             .meetings
             .get(&meeting.id)
@@ -1606,6 +1627,37 @@ mod tests {
         );
         engine.restore_meetings(&[source.id.clone()]).unwrap();
         assert!(engine.meetings[&source.id].meeting.audio.is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_discard_that_cannot_trash_the_recording_leaves_no_empty_copy() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_temporary, mut engine) = engine();
+        let source = engine.create_meeting("회의".into(), String::new()).unwrap();
+        let (session, mut sink) = synthetic(&mut engine, &source.id);
+        sink.write(&[0.5_f32.to_le_bytes(); 2].concat());
+        engine.stop(&session).unwrap();
+        let version =
+            crate::edit_version::meeting_edit_version(&engine.meetings[&source.id].meeting)
+                .unwrap();
+        let root = engine.store.root.clone();
+        let before: BTreeSet<_> = fs::read_dir(root.join("meetings"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        // library.json is replaced through a new file beside it.
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o555)).unwrap();
+        let result = engine.discard_recording(&source.id, &version);
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(result.is_err());
+        assert_eq!(engine.meetings.len(), 1);
+        assert!(engine.meetings[&source.id].meeting.deleted_at.is_none());
+        let after: BTreeSet<_> = fs::read_dir(root.join("meetings"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(after, before);
     }
 
     #[test]
