@@ -160,7 +160,8 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     ${uiSource.replace(/^export /gm, '')}
     return { ui, icon, escape, button, duration, recordingStatus, statusMarkup, sessionControls, applySystemAppearance() {} };
   })()`, context);
-  const executable = source.replace(/^import .*;\r?\n/gm, '');
+  // These cases start inside the first meeting rather than on the home screen.
+  const executable = source.replace(/^import .*;\r?\n/gm, '').replace('homeOpen: true,', 'homeOpen: false,');
   const app = await vm.runInContext(`(async () => {
     ${historySource.replace(/^export /gm, '')}
     const mountSidebarViews=()=>({updateCounts(){},close(){},isOpen:()=>false});
@@ -209,6 +210,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     const mountMeetingAttendees = () => ({open:async()=>{},beforeLeave:async()=>true,dispose(){}});
     const mountMeetingContext = () => ({setMeeting(){},close(){},dispose(){}});
     const mountNotificationCenter = testMountNotificationCenter;
+    const mountHome = () => ({ refresh: async () => {}, ensure() {}, render() {}, focus() {} });
     const mountCalendarSettings = () => ({ setActive() {} });
     const mountCalendarMeetingPicker = () => ({open(){}, close(){}, isOpen(){return false;}});
     const mountCalendarMeetingReference = () => ({render(){}});
@@ -897,7 +899,7 @@ test('optional summary download leaves new meetings enabled and reports transfer
   await page.app.acceptProcessing({ revision: 3, id: 'download', kind: 'summary-model', status: 'running', supported: true, modelReady: true, summarySupported: true, summaryReady: false, message: '요약 모델 다운로드 중', bytes: 25, totalBytes: 100 });
   assert.equal(page.element('create-meeting').disabled, false);
   assert.equal(page.element('setup-screen').hidden, true);
-  assert.match(page.element('notification-center').innerHTML, /요약 모델 준비 중 \(25%\)/);
+  assert.match(page.element('notification-center').innerHTML, /요약 모델 준비 중<\/strong><span class="notification-time">25%/);
   assert.equal(page.element('processing').hidden, true);
   let created = false;
   page.bridge.createMeeting = async () => { created = true; return { id: 'b' }; };

@@ -154,3 +154,4 @@
 .ai-account-recovery { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
 .ai-account-recovery > p { flex-basis: 100%; margin: 0; }
 .ai-response-info p { overflow-wrap: anywhere; }
+.ai-history-manage { width: 100%; justify-content: flex-start; margin-top: 4px; color: var(--text-secondary); }

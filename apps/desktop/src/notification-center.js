@@ -4,6 +4,23 @@ import { processingFeedback, canRetryProcessing, canDismissProcessing } from './
 const activeStatuses = new Set(['queued', 'running', 'cancelling']);
 const terminalStatuses = new Set(['completed', 'failed', 'cancelled', 'interrupted', 'needsReview']);
 const canAcknowledge = job => ['integration', 'notice'].includes(job.category) ? job.unread : canDismissProcessing(job) || (job.status === 'completed' && job.acknowledged !== true && !job.retrySuccessorId);
+const attentionStatuses = new Set(['failed', 'needsReview', 'interrupted']);
+// What needs the person comes first, then work in progress, then what is done.
+export function notificationGroup(item) {
+  if (['integration', 'notice'].includes(item.category)) return 'attention';
+  if (activeStatuses.has(item.status)) return 'active';
+  return attentionStatuses.has(item.status) ? 'attention' : 'done';
+}
+const groupTitles = { attention: '확인 필요', active: '진행 중', done: '완료' };
+export function relativeTime(value, now = Date.now()) {
+  if (!Number.isFinite(value) || value <= 0) return '';
+  const minutes = Math.floor((now - value) / 60000);
+  if (minutes < 1) return '방금';
+  if (minutes < 60) return `${minutes}분 전`;
+  if (minutes < 24 * 60) return `${Math.floor(minutes / 60)}시간 전`;
+  const date = new Date(value);
+  return `${date.getMonth() + 1}. ${date.getDate()}.`;
+}
 const escape = value => String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
 
 export function notificationProjection({ processing = {}, meetings = [], selectedMeetingId = null } = {}) {
@@ -33,7 +50,7 @@ export function notificationProjection({ processing = {}, meetings = [], selecte
     });
 }
 
-export function mountNotificationCenter({ container, onOpenMeeting, onProcessingAction, onOpenIntegration, onNoticeAction, onChanged = () => {}, showError = () => {}, icon = () => '' }) {
+export function mountNotificationCenter({ container, onOpenMeeting, onProcessingAction, onOpenIntegration, onNoticeAction, onChanged = () => {}, showError = () => {}, icon = () => '', now = () => Date.now() }) {
   const confirmedNotices = new Set();
   const pending = new Map();
   const errors = new Map();
@@ -82,19 +99,27 @@ export function mountNotificationCenter({ container, onOpenMeeting, onProcessing
     if (key === renderKey) return;
     renderKey = key;
     const active = jobs.filter(job => job.active).length;
-    const unread = jobs.filter(job => !job.active && job.unread).length;
+    const unread = jobs.filter(job => notificationGroup(job) === 'attention' && job.unread).length;
     const button = (job, action, label, quiet = true, disabled = false) => `<button type="button" class="${quiet ? 'quiet ' : ''}small" data-notification-job="${escape(job.id)}" data-notification-action="${action}"${disabled || !canAct(job) ? ' disabled' : ''}>${label}</button>`;
     const expandedDiagnostics = new Set([...container.querySelectorAll('details[data-notification-diagnostics]')].filter(node => node.open).map(node => node.dataset.notificationDiagnostics));
     const listScroll = container.querySelector('.notification-list')?.scrollTop || 0;
-    container.innerHTML = `<header class="notification-heading"><button type="button" class="quiet small icon" data-notification-action="back" aria-label="회의 탐색으로 돌아가기" title="회의 탐색으로 돌아가기">${icon('arrow-left')}</button><h2 class="notification-heading-title" tabindex="-1" data-notification-heading>알림</h2><button type="button" class="quiet small" data-notification-action="ack-all"${jobs.some(job => canAcknowledge(job) && canAct(job)) && !confirming ? '' : ' disabled'}>${confirming ? '확인 중' : '모두 확인'}</button><span class="sr-only" role="status">${active ? '작업 진행 중' : ''}${unread ? ' 읽지 않은 알림 있음' : ''}</span></header><div class="notification-list">${jobs.map(job => {
-      if (['integration', 'notice'].includes(job.category)) return `<article class="notification-item" data-notification-id="${escape(job.id)}" data-unread="${job.unread}" aria-busy="${actionPending(job.id)}"><div class="notification-copy"><strong class="notification-title">${escape(job.title)}</strong><p>${escape(job.message)}</p>${errors.has(job.id) ? `<p class="field-error" role="alert">${escape(errors.get(job.id))}</p>` : ''}</div><div class="notification-actions">${button(job, job.category === 'integration' ? 'settings' : 'notice', escape(job.category === 'integration' ? '설정' : job.actionLabel || '열기'), false, job.actionDisabled)}${job.unread ? button(job, 'ack', '확인') : ''}</div></article>`;
+    const glyph = (name, tone = '') => `<span class="notification-glyph"${tone ? ` data-tone="${tone}"` : ''} aria-hidden="true">${name === 'spinner' ? '<span class="activity-spinner"></span>' : icon(name)}</span>`;
+    const row = job => {
+      const time = job.active ? '' : relativeTime(job.updatedAt || job.createdAt, now());
+      const timeMark = time ? `<span class="notification-time">${escape(time)}</span>` : '';
+      if (['integration', 'notice'].includes(job.category)) return `<article class="notification-item" data-notification-id="${escape(job.id)}" aria-busy="${actionPending(job.id)}">${glyph(job.category === 'integration' ? 'link' : 'download')}<div class="notification-copy"><div class="notification-title-line"><strong class="notification-title">${escape(job.title)}</strong>${timeMark}</div><p>${escape(job.message)}</p>${errors.has(job.id) ? `<p class="field-error" role="alert">${escape(errors.get(job.id))}</p>` : ''}</div><div class="notification-actions">${button(job, job.category === 'integration' ? 'settings' : 'notice', escape(job.category === 'integration' ? '설정 열기' : job.actionLabel || '열기'), false, job.actionDisabled)}${job.unread ? button(job, 'ack', '닫기') : ''}</div></article>`;
       const cancelling = snapshot.actions?.get(job.id) === 'cancel';
       const feedback = processingFeedback(job, { cancelling, waitingForModel: job.waitingForModel, pausing: ['pause', 'resume'].includes(snapshot.actions?.get(job.id)) });
-      const status = feedback.title;
+      const group = notificationGroup(job);
+      const mark = job.active ? (job.status === 'queued' || feedback.paused ? glyph(feedback.paused ? 'pause' : 'clock') : glyph('spinner'))
+        : group === 'attention' ? glyph('triangle-alert', 'danger') : job.status === 'cancelled' ? glyph('circle-slash') : glyph('check');
       const title = job.hasMeeting ? `<button type="button" class="quiet notification-title" data-notification-job="${escape(job.id)}" data-notification-action="open"${snapshot.connected === false || actionPending(job.id) ? ' disabled' : ''}>${escape(job.title)}</button>` : `<strong class="notification-title">${escape(job.title)}</strong>`;
-      const controls = `${feedback.pauseVisible ? button(job, feedback.pauseAction, feedback.pauseLabel, true, feedback.pauseDisabled) : ''}${feedback.cancelVisible ? button(job, 'cancel', feedback.cancelLabel, true, feedback.cancelDisabled) : ''}${canRetryProcessing(job) ? button(job, 'retry', '다시 시도', false) : ''}${canAcknowledge(job) ? button(job, 'ack', '확인') : ''}`;
-      return `<article class="notification-item" data-notification-id="${escape(job.id)}" data-state="${escape(feedback.state)}" data-unread="${!job.active && job.unread}" aria-busy="${actionPending(job.id)}"${job.selected ? ' data-selected="true"' : ''}><div class="notification-copy">${title}<p class="notification-status">${job.active ? job.status === 'queued' || feedback.paused ? `<span class="notification-status-mark" aria-hidden="true">${icon(feedback.paused ? 'pause' : 'clock')}</span>` : '<span class="activity-spinner" aria-hidden="true"></span>' : ''}${escape(status)}${feedback.progress ? ` (${feedback.progress.percent}%)` : ''}</p>${feedback.detail ? `<p>${escape(feedback.detail)}</p>` : ''}${errors.has(job.id) ? `<p class="field-error" role="alert">${escape(errors.get(job.id))}</p>` : ''}${feedback.diagnostics.length ? `<details class="notification-diagnostics" data-notification-diagnostics="${escape(`${job.id}:${job.status}`)}"><summary>오류 정보</summary>${feedback.diagnostics.map(([label, value]) => `<p>${escape(label)}: ${escape(value)}</p>`).join('')}</details>` : ''}${feedback.progress ? `<progress max="${feedback.progress.max}" value="${feedback.progress.value}" aria-label="${escape(feedback.title)}"></progress>` : ''}</div><div class="notification-actions">${controls}</div></article>`;
-    }).join('') || '<p class="notification-empty">알림이 없습니다.</p>'}</div>`;
+      const progress = feedback.progress ? `<span class="notification-time">${feedback.progress.percent}%</span>` : timeMark;
+      const controls = `${canRetryProcessing(job) ? button(job, 'retry', '다시 시도', false) : ''}${feedback.pauseVisible ? button(job, feedback.pauseAction, feedback.pauseLabel, true, feedback.pauseDisabled) : ''}${feedback.cancelVisible ? button(job, 'cancel', feedback.cancelLabel, true, feedback.cancelDisabled) : ''}${canAcknowledge(job) ? button(job, 'ack', '닫기') : ''}`;
+      return `<article class="notification-item" data-notification-id="${escape(job.id)}" data-state="${escape(feedback.state)}" aria-busy="${actionPending(job.id)}"${job.selected ? ' data-selected="true"' : ''}>${mark}<div class="notification-copy"><div class="notification-title-line">${title}${progress}</div>${job.title === feedback.title ? '' : `<p class="notification-status">${escape(feedback.title)}</p>`}${feedback.detail ? `<p>${escape(feedback.detail)}</p>` : ''}${errors.has(job.id) ? `<p class="field-error" role="alert">${escape(errors.get(job.id))}</p>` : ''}${feedback.diagnostics.length ? `<details class="notification-diagnostics" data-notification-diagnostics="${escape(`${job.id}:${job.status}`)}"><summary>오류 정보</summary>${feedback.diagnostics.map(([label, value]) => `<p>${escape(label)}: ${escape(value)}</p>`).join('')}</details>` : ''}${feedback.progress ? `<progress max="${feedback.progress.max}" value="${feedback.progress.value}" aria-label="${escape(feedback.title)}"></progress>` : ''}</div>${controls ? `<div class="notification-actions">${controls}</div>` : ''}</article>`;
+    };
+    const groups = ['attention', 'active', 'done'].map(group => [group, jobs.filter(job => notificationGroup(job) === group)]).filter(([, items]) => items.length);
+    container.innerHTML = `<header class="notification-heading"><h2 class="notification-heading-title" tabindex="-1" data-notification-heading>알림</h2><button type="button" class="quiet small" data-notification-action="ack-all"${jobs.some(job => canAcknowledge(job) && canAct(job)) && !confirming ? '' : ' disabled'}>${confirming ? '확인 중' : '모두 확인'}</button><span class="sr-only" role="status">${active ? '작업 진행 중' : ''}${unread ? ' 확인할 알림 있음' : ''}</span></header><div class="notification-list">${groups.map(([group, items]) => `<section class="notification-group" data-group="${group}"><h3>${groupTitles[group]}</h3>${items.map(row).join('')}</section>`).join('') || '<p class="notification-empty">알림이 없습니다.</p>'}</div>`;
     container.querySelector('.notification-list').scrollTop = listScroll;
     for (const node of container.querySelectorAll('details[data-notification-diagnostics]')) if (expandedDiagnostics.has(node.dataset.notificationDiagnostics)) node.open = true;
     restoreFocus(saved);
@@ -179,6 +204,6 @@ export function mountNotificationCenter({ container, onOpenMeeting, onProcessing
     else void perform(target.dataset.notificationAction, target.dataset.notificationJob);
   };
   container.addEventListener('click', click);
-  return { update, render, counts: () => ({ active: rows().filter(job => job.active).length, unread: rows().filter(job => !job.active && job.unread).length, total: rows().length }),
+  return { update, render, counts: () => ({ active: rows().filter(job => job.active).length, unread: rows().filter(job => notificationGroup(job) === 'attention' && job.unread).length, total: rows().length }),
     destroy() { disposed = true; container.removeEventListener('click', click); } };
 }

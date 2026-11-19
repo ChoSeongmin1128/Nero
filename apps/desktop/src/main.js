@@ -15,6 +15,8 @@ import { mountPeopleSettings, mountMeetingAttendees } from './people-ui.jsx';
 import { bindDialogDismiss } from './dialog-dismiss.js';
 import { createIntegrationMonitor } from './integration-notifications.js';
 import { mountNotificationCenter } from './notification-center.js';
+import { mountHome } from './home-view.js';
+import './home-view.css';
 import './notification-center.css';
 import { returnFocusTarget } from './focus-return.js';
 import { mountCalendarMeetingPicker, mountCalendarMeetingReference } from './calendar-meeting-picker.jsx';
@@ -99,7 +101,7 @@ function readMicrophonePreference() {
 }
 const microphonePreference = readMicrophonePreference();
 let sidebarViews = null, viewHistory = null;
-const state = { snapshot: { meetings: [], folders: [], session: null }, libraryOpen: false, libraryFilter: 'all', librarySelection: new Set(), libraryBusy: false, librarySearchIds: null, librarySearchHits: [], pendingSearchIntent: null, setupReturnId: null, librarySearchPending: false, librarySearchUnavailable: 0, selectedId: null, devices: [], devicesLoaded: false, deviceId: microphonePreference.id, deviceName: microphonePreference.name, settingsPanel: 'appearance', summaryFeatureError: '', settingsKey: '', settingsError: '', settingsReturnId: 'settings', setupFromSettings: false, autoRecorder: readAutoRecorder(), recorderSettingBusy: false, snapshotSignatures: null, processingKey: '', processingCancellingId: null, transcriptEditing: null, audioRequest: 0, audioLoading: null, dateSaving: null, dateKey: '', dateError: null, lastError: null, errorIsSave: false, connected: false, busy: false, composing: false, transcriptComposing: false, editLocks: 0, draft: null, saveTimer: null, saveQueue: Promise.resolve(), controlsKey: '', audioKey: '', processing: { status: 'idle', supported: false, modelReady: false, localSummaryEnabled: false }, transcriptDraft: null, transcriptKey: '', transcriptLoadId: 0, transcriptSaveQueue: Promise.resolve(), summary: null, citationTimes: null, summaryKey: '', summaryLoadId: 0, summaryLoaded: false, transcriptLoaded: false, summaryLoadError: false, transcriptLoadError: false, setupRequested: false };
+const state = { snapshot: { meetings: [], folders: [], session: null }, homeOpen: true, libraryOpen: false, libraryFilter: 'all', librarySelection: new Set(), libraryBusy: false, librarySearchIds: null, librarySearchHits: [], pendingSearchIntent: null, setupReturnId: null, librarySearchPending: false, librarySearchUnavailable: 0, selectedId: null, devices: [], devicesLoaded: false, deviceId: microphonePreference.id, deviceName: microphonePreference.name, settingsPanel: 'appearance', summaryFeatureError: '', settingsKey: '', settingsError: '', settingsReturnId: 'settings', setupFromSettings: false, autoRecorder: readAutoRecorder(), recorderSettingBusy: false, snapshotSignatures: null, processingKey: '', processingCancellingId: null, transcriptEditing: null, audioRequest: 0, audioLoading: null, dateSaving: null, dateKey: '', dateError: null, lastError: null, errorIsSave: false, connected: false, busy: false, composing: false, transcriptComposing: false, editLocks: 0, draft: null, saveTimer: null, saveQueue: Promise.resolve(), controlsKey: '', audioKey: '', processing: { status: 'idle', supported: false, modelReady: false, localSummaryEnabled: false }, transcriptDraft: null, transcriptKey: '', transcriptLoadId: 0, transcriptSaveQueue: Promise.resolve(), summary: null, citationTimes: null, summaryKey: '', summaryLoadId: 0, summaryLoaded: false, transcriptLoaded: false, summaryLoadError: false, transcriptLoadError: false, setupRequested: false };
 // Low-memory model preparation needs an explicit acknowledgement; it is not persisted.
 const speechMemoryAcknowledged = new Set();
 function acknowledgeSpeechMemory(engine, checked) {
@@ -132,6 +134,7 @@ const modelDownloadStatus = mountModelDownloadStatus({ button: byId('sidebar-mod
 } });
 const appUpdateRecovery = mountAppUpdateRecovery({ document, quit: () => appUpdateView.quitForRecovery() });
 const appUpdateView = mountAppUpdateView({ container: byId('app-update'), bridge,
+  onOpen: async () => { await openSettings('appearance', 'sidebar-app-update'); byId('app-update').scrollIntoView?.({ block: 'nearest' }); byId('app-update-action').focus({ preventScroll: true }); },
   onRecovery: status => appUpdateRecovery.update(status),
   saveEdits: () => prepareAppLeave(() => true),
   onChange(notices) { appUpdateNotices = notices; render(); },
@@ -403,13 +406,15 @@ function render() {
   sidebarViews?.updateCounts(notificationCenter.counts());
   if (setupVisible && !state.setupWasVisible) sidebarViews?.close({ focus: false });
   state.setupWasVisible = setupVisible;
-  for (const button of document.querySelectorAll('[data-navigation-preview]')) { const category = ['trash', 'ai'].includes(state.libraryFilter) ? state.libraryFilter : !['all', 'unfiled'].includes(state.libraryFilter) ? 'folders' : 'all'; button.setAttribute('aria-current', state.libraryOpen && category === button.dataset.navigationPreview ? 'page' : 'false'); }
   library.render();
   speakers.render();
   renderSearchStatus();
   renderSettings();
   renderProcessing();
-  const meeting = currentMeeting();
+  const homeVisible = state.connected && !setupVisible && state.homeOpen && !state.libraryOpen;
+  const meeting = homeVisible ? null : currentMeeting();
+  byId('home-screen').hidden = !homeVisible;
+  if (homeVisible) { home.ensure(); home.render(); }
   calendarReference.render(meeting, { meetings: state.snapshot.meetings, enabled: state.connected && !state.busy && !activeSession() && modelsReady() });
   aiChat?.setMeeting(state.libraryOpen || setupVisible ? null : meeting);
   meetingContext?.setMeeting(state.libraryOpen || setupVisible ? null : meeting);
@@ -422,10 +427,10 @@ function render() {
   const aiLibraryOpen = state.libraryOpen && state.libraryFilter === 'ai' && state.connected && !setupVisible;
   byId('ai-library-screen').hidden = !aiLibraryOpen;
   if (aiLibraryOpen) aiLibrary?.mount();
-  byId('library-screen').hidden = aiLibraryOpen || setupVisible || !state.connected || (!state.libraryOpen && !modelsReady() && !state.snapshot.meetings.length) || (!state.libraryOpen && Boolean(meeting));
-  byId('welcome').hidden = aiLibraryOpen || !byId('library-screen').hidden || setupVisible || Boolean(meeting);
+  byId('library-screen').hidden = homeVisible || aiLibraryOpen || setupVisible || !state.connected || (!state.libraryOpen && !modelsReady() && !state.snapshot.meetings.length) || (!state.libraryOpen && Boolean(meeting));
+  byId('welcome').hidden = homeVisible || aiLibraryOpen || !byId('library-screen').hidden || setupVisible || Boolean(meeting);
   byId('meeting-detail').hidden = setupVisible || state.libraryOpen || !meeting;
-  if (state.connected && !setupVisible) viewHistory?.visit(state.libraryOpen || !meeting ? { kind: 'library', filter: state.libraryFilter, view: state.libraryView, query: byId('search').value } : { kind: 'meeting', id: meeting.id });
+  if (state.connected && !setupVisible) viewHistory?.visit(homeVisible ? { kind: 'home' } : state.libraryOpen || !meeting ? { kind: 'library', filter: state.libraryFilter, view: state.libraryView, query: byId('search').value } : { kind: 'meeting', id: meeting.id });
   if (!meeting) { detail.update({ id: null }); summaryEvidence?.reset(); return; }
   renderMeetingDates(meeting);
   if (!state.draft?.dirty && !state.draft?.saving && document.activeElement !== byId('meeting-title') && document.activeElement !== byId('meeting-notes')) {
@@ -527,7 +532,7 @@ function acceptSnapshot(snapshot) {
     }
   }
   const first = snapshot.meetings.find(meeting => meeting.deletedAt == null);
-  if (!state.selectedId && !state.libraryOpen && modelsReady() && first) { void selectMeeting(first.id); return; }
+  if (!state.selectedId && !state.libraryOpen && !state.homeOpen && modelsReady() && first) { void selectMeeting(first.id); return; }
   if (!changed) return;
   if (timerOnly) {
     const ownSession = activeSession()?.meetingId === state.selectedId ? activeSession() : null;
@@ -602,6 +607,7 @@ async function selectMeeting(id, searchIntent = null, isHistoryCurrent = null) {
       const changed = state.selectedId !== id;
       detail.rememberScroll();
       state.libraryOpen = false;
+      state.homeOpen = false;
       speakers.reset(); transcriptActions.reset(); documentSearch.reset();
       state.setupRequested = false; state.setupFromSettings = false;
       state.pendingSearchIntent = searchIntent ? { ...searchIntent, meetingId: id } : null;
@@ -754,7 +760,7 @@ async function runNow(action) {
   }
 }
 
-async function createMeeting({ record = false } = {}) {
+async function createMeeting({ record = false, fromHome = false } = {}) {
   if (record && activeSession()) return selectMeeting(activeSession().meetingId);
   if (!modelsReady()) return openSetup();
   await finishEditing(async () => {
@@ -766,7 +772,7 @@ async function createMeeting({ record = false } = {}) {
     state.setupRequested = false;
     const meeting = await bridge.createMeeting('새 회의', '');
     acceptSnapshot(await bridge.readSnapshot());
-    if (state.snapshot.folders?.some(folder => folder.id === state.libraryFilter)) {
+    if (!fromHome && state.snapshot.folders?.some(folder => folder.id === state.libraryFilter)) {
       try { acceptSnapshot(await bridge.moveMeetings([meeting.id], state.libraryFilter)); } catch (error) { showError(error); }
     }
     await selectMeeting(meeting.id);
@@ -780,6 +786,41 @@ async function createMeeting({ record = false } = {}) {
     }
   });
 }
+
+async function openHome() {
+  await finishEditing(async () => {
+    if (!await speakers.beforeLeave()) return;
+    state.homeOpen = true; state.libraryOpen = false; state.setupRequested = false;
+    render();
+    void home.refresh();
+    home.focus();
+  });
+}
+
+// Records the calendar event a person chose on home: its meeting, or a new numbered one
+// when that meeting already has audio.
+async function recordCalendarEvent(key, scope) {
+  if (activeSession()) return selectMeeting(activeSession().meetingId);
+  if (!modelsReady()) return openSetup();
+  await finishEditing(async () => {
+    const meeting = await bridge.createMeetingFromCalendar(key, scope);
+    acceptSnapshot(await bridge.readSnapshot());
+    if (meeting.deletedAt != null) throw Error('휴지통에 있는 회의입니다. 복원한 뒤 녹음해 주세요.');
+    if (meeting.audio) return continueCalendarRecording(meeting.id);
+    await selectMeeting(meeting.id);
+    await startSelectedRecording();
+  });
+}
+
+async function importNewMeeting() {
+  if (!modelsReady()) return openSetup();
+  await finishEditing(async () => {
+    const progress = await bridge.importAudio(null);
+    if (progress) await acceptProcessing(progress);
+  });
+}
+
+const microphoneLabel = () => (state.devices.find(device => device.id === state.deviceId) || state.devices.find(device => device.isDefault))?.name || state.deviceName || '';
 
 async function startSelectedRecording() {
   if (activeSession()) return selectMeeting(activeSession().meetingId);
@@ -1617,6 +1658,8 @@ aiChat = mountAiChat({
   getTemplate: async () => (await summaryTemplatePicker.selected()).id,
   getMeetings: () => state.snapshot.meetings.filter(meeting => !meeting.deletedAt),
   onOpenMeeting: meetingId => openAiMeeting(meetingId),
+  // Conversation management (selection, cleanup, trash) opens in the content area.
+  onManage: () => { void library.show('ai'); },
   onSettings: () => { void openSettings('agent', 'ai-chat-open').catch(showError); },
   onSaved: async (kind, meetingId) => { if (state.selectedId === meetingId) { if (kind === 'summary') await loadSummary(meetingId); render(); } },
   async onCitation(citation) {
@@ -1691,17 +1734,32 @@ const transcriptActions = mountTranscriptActions({ byId, bridge, finishEditing, 
 });
 const library = mountLibrary({ bridge, getState: () => state, byId, finishEditing, acceptSnapshot, selectMeeting, render, showError, escape, icon, recordingStatus, duration, beginNavigation, phaseOf: stateFor,
   isAudioReady: id => { const meeting = state.snapshot.meetings.find(item => item.id === id); return Boolean(meeting?.audio) && state.audioKey === audioKeyFor(meeting) && byId('audio-message').dataset.state === 'ready'; }, onViewChanged() { meetingSearch.update(byId('search').value, state.libraryFilter === 'trash'); if (state.libraryFilter === 'ai') { aiLibrary?.show(); aiChat?.open(null); } } });
+const home = mountHome({ container: byId('home-screen'), bridge, icon, escape,
+  disabled: () => !state.connected || state.busy || !modelsReady(),
+  device: microphoneLabel,
+  onRecord: () => run(() => createMeeting({ record: true, fromHome: true })),
+  onCreate: () => run(() => createMeeting({ fromHome: true })),
+  onImport: () => run(importNewMeeting),
+  onRecordEvent: (key, scope) => run(() => recordCalendarEvent(key, scope)),
+  onConnectCalendar: () => openSettings('agent', 'home-screen'),
+});
 const notificationCenter = mountNotificationCenter({ container: byId('notification-center'), onOpenMeeting: id => selectMeeting(id), onProcessingAction: processingAction, showError, icon, onNoticeAction: service => service === 'app-update' ? appUpdateView.perform() : undefined, onOpenIntegration: async service => {
   await openSettings('agent', 'notifications-open');
   const target = service === 'google-calendar' ? byId('calendar-settings').querySelector('.calendar-settings-account button:not(:disabled)') : byId(`settings-${service}-connect`);
   target?.scrollIntoView?.({ block: 'nearest' });
 }, onChanged: () => render() });
-sidebarViews = mountSidebarViews({ aside: byId('navigation-sidebar'), navigation: byId('sidebar-navigation-view'), notifications: byId('notification-center'), trigger: byId('notifications-open'), badge: byId('notification-count'), onPreview: view => library.preview(view) });
-byId('sidebar-preview-open').addEventListener('click', () => { const filter = byId('sidebar-preview-open').dataset.sidebarFilter; void library.show(['trash', 'ai'].includes(filter) ? filter : 'all'); });
+let sidebarStorage = null;
+try { sidebarStorage = window.localStorage; } catch {}
+sidebarViews = mountSidebarViews({ aside: byId('navigation-sidebar'), navigation: byId('sidebar-navigation-view'), notifications: byId('notification-center'), trigger: byId('notifications-open'), badge: byId('notification-count'), storage: sidebarStorage,
+  count: filter => filter === 'folders' ? (state.snapshot.folders || []).length : library.count(filter),
+  folderName: id => (state.snapshot.folders || []).find(folder => folder.id === id)?.name || '',
+  onPreview: (view, folder) => { library.preview(view, folder); if (view === 'home') void openHome(); } });
+byId('sidebar-preview-open').addEventListener('click', () => { const filter = byId('sidebar-preview-open').dataset.sidebarFilter; void library.show(filter === 'unfiled' || filter === 'trash' || state.snapshot.folders.some(folder => folder.id === filter) ? filter : 'all'); });
 viewHistory = createViewHistory({
-  canVisit: route => route.kind === 'meeting' ? state.snapshot.meetings.some(meeting => meeting.id === route.id && !meeting.deletedAt) : ['all', 'unfiled', 'trash'].includes(route.filter) || state.snapshot.folders.some(folder => folder.id === route.filter),
+  canVisit: route => route.kind === 'home' ? true : route.kind === 'meeting' ? state.snapshot.meetings.some(meeting => meeting.id === route.id && !meeting.deletedAt) : ['all', 'unfiled', 'trash'].includes(route.filter) || state.snapshot.folders.some(folder => folder.id === route.filter),
   async navigate(route, { isCurrent }) {
     sidebarViews.close({ focus: false });
+    if (route.kind === 'home') { await openHome(); return isCurrent() && state.homeOpen && !state.libraryOpen; }
     if (route.kind === 'meeting') { await selectMeeting(route.id, null, isCurrent); return isCurrent() && !state.libraryOpen && state.selectedId === route.id; }
     return await library.show(route.filter, { isCurrent, history: true, beforeCommit() { byId('search').value = route.query || ''; state.libraryView = route.view || 'folders'; } });
   },

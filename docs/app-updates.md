@@ -17,9 +17,9 @@ is independent of this signature and is not configured by this change.
   package is not replaced by a scheduled check.
   An available update downloads automatically. Installation requires the
   user's restart action, after the consuming screen has saved all open editors.
-  The sidebar footer offers the restart action when ready and shows an icon when
-  navigation is collapsed. Settings can also invoke a manual check; recovery
-  actions remain available through the sidebar or notifications when applicable.
+  Settings > 일반 carries the whole flow: check, download and the restart that
+  installs. While an update exists the navigation rail shows an update icon that
+  opens that settings row; recovery actions also appear in notifications.
 - Native commands are restricted to the main window. No frontend permission grants
   direct access to the updater plugin's download/install commands. The UI cannot
   supply a signing key, endpoint, destination or installer arguments.
@@ -140,22 +140,22 @@ and `setInstalling(boolean)`. Call `start()` once after the app is initialized a
 `dispose()` on teardown. Settings/theme markup belongs to the consuming screen
 and canonical shared design system, not this controller.
 
-`app-update-view.js` connects this controller to the desktop bridge, sidebar footer
-and General settings row. `main.js` starts it after initialization and supplies
+`app-update-view.js` connects this controller to the desktop bridge, the rail's
+update icon and the General settings row. `main.js` starts it after initialization and supplies
 `prepareAppLeave(() => true)` as the shared leave/save guard. The view owns the
 installation interaction lock; main owns its contribution to `state.editLocks`.
 Available updates download automatically after both scheduled and manual checks.
-Installation is only invoked by the explicit restart action in the sidebar or
+Installation is only invoked by the explicit restart action in settings or the
 notification center. Actionable update failures use the `app-update` service in
 the common notice collection, separately from integration notices. Ready updates
-remain available through the sidebar without creating a completion notification.
+remain available through settings without creating a completion notification.
 
-The shared settings row shows the installed version and manual-check action.
-The sidebar action appears for download, ready, waiting or recovery states.
-A user-started check keeps a disabled status visible through checking and
-download preparation. Background checks stay quiet until a download starts.
-The sidebar button only becomes actionable once a verified download is ready,
-and explicitly says to restart and update. Check/download failures offer retry
+The settings row shows the installed version and the next action: check, download,
+or restart to update once a verified download is ready. The rail icon appears for
+available, downloading, ready, waiting or recovery states, names the state and the
+version, and only opens the settings row. A user-started check keeps a disabled
+status visible through checking and download preparation. Background checks stay
+quiet until a download starts. Check/download failures offer retry
 through settings and notifications, not through the restart button. Download
 completion never installs automatically.
 Progress uses the action label and download bar; a blocked installation or error

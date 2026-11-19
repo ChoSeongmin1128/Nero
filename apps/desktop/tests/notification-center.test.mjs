@@ -181,9 +181,11 @@ test('old completed work is not injected at startup and newly observed completio
   assert.equal(app.controller.counts().total, 0);
   app.update([job('old', 'a', 'completed'), job('done', 'a', 'running', 30)], 2);
   app.update([job('old', 'a', 'completed'), job('done', 'a', 'completed', 30)], 3);
-  assert.equal(app.controller.counts().unread, 1);
+  assert.equal(app.controller.counts().total, 1);
+  assert.equal(app.controller.counts().unread, 0, 'a completion is listed but does not need attention');
+  assert.ok(app.container.querySelector('[data-group="done"] [data-notification-id="done"]'));
   assert.ok(app.button('done', 'open'));
-  assert.ok(app.button('done', 'ack'));
+  assert.equal(app.button('done', 'ack').textContent, '닫기');
   await app.click('done', 'ack');
   assert.deepEqual(calls, ['done']);
   assert.equal(app.controller.counts().total, 0);
@@ -280,8 +282,29 @@ test('compact notifications preserve their own scroll and show retry failures in
   assert.equal(app.container.querySelector('.notification-list').scrollTop, 120);
   assert.equal(app.container.querySelector('[role="alert"]').textContent, '예시 재시도 실패');
   assert.equal(app.button('notice', 'notice').disabled, false);
-  assert.ok(app.container.querySelector('[data-notification-action="back"]'));
+  assert.equal(app.container.querySelector('[data-notification-action="back"]'), null, 'the rail bell, not a back button, leaves notifications');
   assert.equal(app.container.querySelector('h1'), null);
+});
+
+test('rows group by what needs the person, then work in progress, then completed work', t => {
+  const minute = 60_000;
+  const app = harness(t, { now: () => 30 + 5 * minute });
+  const all = [...meetings, { id: 'c', title: '회의 C', deletedAt: null }];
+  app.update([job('fail', 'a', 'failed', 10), job('done', 'c', 'running', 20)], 1, { meetings: all });
+  app.update([job('fail', 'a', 'failed', 10), job('run', 'b', 'running', 25), job('done', 'c', 'completed', 30)], 2,
+    { meetings: all, integrations: [{ id: 'notion', service: 'notion', title: 'Notion 연결 끊김', message: '다시 연결해 주세요.', unread: true }] });
+  assert.deepEqual([...app.container.querySelectorAll('.notification-group h3')].map(node => node.textContent), ['확인 필요', '진행 중', '완료']);
+  assert.deepEqual([...app.container.querySelectorAll('[data-group="attention"] [data-notification-id]')].map(node => node.dataset.notificationId).sort(), ['fail', 'notion']);
+  assert.ok(app.container.querySelector('[data-group="active"] [data-notification-id="run"] .activity-spinner'));
+  assert.ok(app.container.querySelector('[data-notification-id="fail"] .notification-glyph[data-tone="danger"]'));
+  assert.equal(app.container.querySelector('[data-notification-id="done"] .notification-time').textContent, '5분 전');
+  const actions = [...app.container.querySelectorAll('[data-notification-id="fail"] .notification-actions button')].map(node => node.dataset.notificationAction);
+  assert.equal(actions[0], 'retry');
+  assert.equal(actions.at(-1), 'ack');
+  assert.equal(app.button('fail', 'ack').textContent, '닫기');
+  assert.equal(app.button('notion', 'settings').textContent, '설정 열기');
+  assert.equal(app.container.querySelector('[data-unread]'), null, 'the unread dot is gone');
+  assert.deepEqual(app.controller.counts(), { active: 1, unread: 2, total: 4 }, 'only attention items count toward the badge');
 });
 
 test('running jobs do not inflate the unread result count', t => {

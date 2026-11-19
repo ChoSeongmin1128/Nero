@@ -5,8 +5,9 @@ feature layout. Colors, typography, control appearance, icons and focus treatmen
 continue to come from the canonical `design-system/` sources. This change adds no
 Windows-specific theme, component copy or generated-source override.
 
-The library header exposes **새 회의 만들기** and **녹음 시작** even when the
-navigation sidebar is collapsed. View filters and selection tools occupy the next
+Home is the first screen: today's calendar events, each with a record action, and
+**녹음 시작**, **빈 회의** and **파일 가져오기** without an event. The central library
+header (목록 크게 보기) also exposes **새 회의 만들기** and **녹음 시작**. View filters and selection tools occupy the next
 row. Empty-library, folder, search and trash messages explain their own state.
 
 Create opens a draft and focuses its title. Quick recording checks model and

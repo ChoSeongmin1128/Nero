@@ -216,6 +216,8 @@ pub struct JobView {
     pub retryable: bool,
     pub acknowledged: bool,
     pub created_at: u64,
+    /// When the job last changed state, for the notification list's time.
+    pub updated_at: u64,
     pub retry_successor_id: Option<String>,
     pub failure_kind: Option<crate::failure::FailureKind>,
     /// Starts and keeps running while a recording is in progress.
@@ -1282,6 +1284,7 @@ impl Processing {
                     message: record.message.clone(),
                     acknowledged: record.acknowledged,
                     created_at: record.created_at,
+                    updated_at: record.updated_at,
                     retry_successor_id: record.retry_successor_id.clone(),
                     failure_kind: record.failure_kind,
                     retryable: retry_block_reason(record).is_none(),

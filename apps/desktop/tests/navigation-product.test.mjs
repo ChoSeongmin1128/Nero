@@ -42,7 +42,12 @@ test('product shares hover, pin and close navigation without hiding the meeting 
   const shell = document.querySelector('.workspace'), trigger = document.getElementById('navigation-toggle');
   document.querySelector('[data-navigation-preview="all"]').dispatchEvent(new window.PointerEvent('pointerenter', { pointerType: 'mouse' }));
   await new Promise(resolve => setTimeout(resolve, 160));
-  assert.equal(shell.classList.contains('nav-peek'), true);
+  assert.equal(shell.classList.contains('nav-peek'), false, 'hovering a rail button opens nothing');
+  document.querySelector('[data-navigation-preview="all"]').dispatchEvent(new window.PointerEvent('pointerleave', { pointerType: 'mouse' }));
+  trigger.dispatchEvent(new window.PointerEvent('pointerenter', { pointerType: 'mouse' }));
+  await new Promise(resolve => setTimeout(resolve, 160));
+  assert.equal(shell.classList.contains('nav-peek'), true, 'hovering the toolbar toggle reveals the sidebar');
+  assert.equal(document.querySelector('[data-navigation-compact]').hidden, false);
   assert.equal(trigger.parentElement.className, 'application-toolbar-actions');
   assert.equal(document.querySelector('main').inert, false);
   trigger.click();
@@ -223,8 +228,9 @@ test('new meeting has one persistent toolbar action and draft owns calendar and 
 
 test('closing a recent-action dialog returns to the compact toggle after temporary navigation closes', async t => {
   const { window, document } = await setup(t);
-  document.querySelector('[data-navigation-preview="recent"]').focus();
-  const row = document.querySelector('[data-recent-row="unfiled"]');
+  document.querySelector('[data-navigation-preview="recent"]').click();
+  assert.equal(document.getElementById('navigation-sidebar').inert, false);
+  const row = document.querySelector('#sidebar-meeting-list [data-recent-row="unfiled"]');
   row.dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2 }));
   row.querySelector('[data-library-action="rename"]').click();
   document.getElementById('library-meeting-name').dispatchEvent(new window.PointerEvent('pointerdown', { bubbles: true }));
@@ -285,8 +291,8 @@ for (const popup of [
 
 test('open shared menus retain shortcut priority and Escape closes only the menu', async t => {
   const { window, document } = await setup(t);
-  document.querySelector('[data-navigation-preview="recent"]').focus();
-  const row = document.querySelector('[data-recent-row="filed"]');
+  document.querySelector('[data-navigation-preview="recent"]').click();
+  const row = document.querySelector('#sidebar-meeting-list [data-recent-row="filed"]');
   row.dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2 }));
   const menu = row.querySelector('details'), button = menu.querySelector('button');
   button.dispatchEvent(new window.KeyboardEvent('keydown', { code: 'Backslash', ctrlKey: true, bubbles: true, cancelable: true }));
@@ -310,7 +316,7 @@ test('product sidebar has one resize separator only while pinned or peeking and 
   document.querySelector('[data-navigation-preview="all"]').click();
   assert.equal(handle.hidden, false);
   const pointer = (type, x, options = {}) => handle.dispatchEvent(new window.PointerEvent(type, { pointerId: 1, button: 0, isPrimary: true, clientX: x, bubbles: true, ...options }));
-  pointer('pointerdown', 224);
+  pointer('pointerdown', 272);
   pointer('pointermove', 300);
   pointer('pointermove', 320);
   await new Promise(resolve => window.requestAnimationFrame(resolve));
@@ -357,7 +363,7 @@ test('sidebar keyboard sizing and viewport bounds preserve the saved preference'
   key('End'); assert.equal(handle.getAttribute('aria-valuenow'), '400');
   key('ArrowLeft'); assert.equal(handle.getAttribute('aria-valuenow'), '392');
   handle.dispatchEvent(new window.MouseEvent('dblclick', { bubbles: true }));
-  assert.equal(handle.getAttribute('aria-valuenow'), '224');
+  assert.equal(handle.getAttribute('aria-valuenow'), '272');
   assert.equal(document.activeElement, handle);
 });
 
@@ -382,13 +388,17 @@ for (const cancellation of ['pointercancel', 'lostpointercapture', 'blur', 'hidd
 }
 
 
-test('compact navigation owns five categories while the toolbar and utility slots keep singleton controls', async t => {
+test('the rail owns the list choices and utilities in both modes while the toolbar keeps singleton controls', async t => {
   const { document } = await setup(t);
   const rail = document.querySelector('.navigation-rail'), aside = document.getElementById('navigation-sidebar');
+  const footer = rail.querySelector('.navigation-rail-footer');
   assert.equal(aside.inert, true);
-  assert.deepEqual([...rail.querySelectorAll('[data-navigation-preview]')].map(button => button.dataset.navigationPreview), ['all', 'folders', 'recent', 'ai', 'trash']);
-  assert.ok(rail.querySelector('.navigation-rail-footer').contains(rail.querySelector('[data-navigation-preview="trash"]')));
-  assert.ok(aside.querySelector('.sidebar-footer').contains(document.getElementById('library-trash-view')));
+  assert.equal(rail.hidden, false);
+  assert.deepEqual([...rail.querySelectorAll('[data-navigation-preview]')].map(button => button.dataset.navigationPreview), ['home', 'all', 'unfiled', 'folders', 'recent', 'trash']);
+  assert.equal(document.querySelector('[data-navigation-preview="ai"]'), null);
+  assert.equal(document.getElementById('navigation-home').dataset.navigationPreview, 'home');
+  assert.ok(footer.contains(rail.querySelector('[data-navigation-preview="trash"]')));
+  assert.equal(aside.querySelector('.sidebar-footer').hidden, true);
   assert.equal(document.getElementById('folder-list').contains(document.getElementById('library-trash-view')), false);
   const toolbar = document.querySelector('.application-toolbar');
   for (const id of ['navigation-back', 'navigation-forward', 'navigation-toggle', 'create-meeting']) {
@@ -397,20 +407,26 @@ test('compact navigation owns five categories while the toolbar and utility slot
     assert.equal(rail.contains(document.getElementById(id)), false);
     assert.equal(aside.contains(document.getElementById(id)), false);
   }
-  assert.ok(document.getElementById('navigation-header').contains(document.getElementById('notifications-open')));
-  const trigger = document.getElementById('navigation-toggle');
-  for (const [id, slot] of [['settings', 'sidebar-settings'], ['sidebar-app-update', 'sidebar-update']]) {
+  const utilities = ['sidebar-model-download', 'sidebar-app-update', 'notifications-open', 'settings'];
+  const placement = () => utilities.map(id => document.getElementById(id).parentElement);
+  for (const id of utilities) {
     assert.equal(document.querySelectorAll(`#${id}`).length, 1);
-    assert.equal(document.getElementById(id).parentElement.id, `${slot}-collapsed`);
+    assert.ok(footer.contains(document.getElementById(id)), id);
   }
+  assert.ok(footer.lastElementChild.contains(document.getElementById('settings')), 'settings is last');
+  assert.ok(document.getElementById('notifications-open').contains(document.getElementById('notification-count')));
+  const before = placement();
+  const trigger = document.getElementById('navigation-toggle');
   trigger.click();
-  assert.equal(rail.hidden, true);
-  assert.equal(rail.inert, true);
-  for (const [id, slot] of [['settings', 'sidebar-settings'], ['sidebar-app-update', 'sidebar-update']]) assert.equal(document.getElementById(id).parentElement.id, `${slot}-expanded`);
+  assert.equal(rail.hidden, false);
+  assert.equal(rail.inert, false);
+  assert.equal(aside.inert, false);
+  assert.deepEqual(placement(), before, 'pinning does not relocate utilities');
   assert.equal(trigger.parentElement.className, 'application-toolbar-actions');
   trigger.click();
   assert.equal(rail.hidden, false);
   assert.equal(rail.inert, false);
+  assert.deepEqual(placement(), before);
   assert.equal(document.querySelectorAll('#create-meeting').length, 1);
   assert.ok(toolbar.contains(document.getElementById('create-meeting')));
   assert.equal(rail.contains(document.getElementById('create-meeting')), false);
@@ -432,20 +448,36 @@ test('sidebar reveal and dismissal preserve the persistent toolbar toggle', asyn
   assert.equal(trigger.parentElement.className, 'application-toolbar-actions');
 });
 
-test('compact category previews preserve the active meeting, library scope, selection and navigation history', async t => {
+test('rail list choices preserve the active meeting, library scope, selection and navigation history', async t => {
   const { document, state, library, navigationCalls } = await setup(t);
   state.libraryFilter = 'project'; state.libraryOpen = false; state.selectedId = 'filed'; state.librarySelection.add('filed');
   library.render();
   const notes = document.getElementById('meeting-notes'), content = document.querySelector('main');
   notes.value = '저장 전 메모';
   const aside = document.getElementById('navigation-sidebar');
-  const sections = { all: 'library-system-views', trash: 'library-trash-view', ai: 'library-ai-view', recent: 'recent-section' };
-  for (const view of ['all', 'folders', 'trash', 'recent', 'ai']) {
-    document.querySelector(`[data-navigation-preview="${view}"]`).click();
-    assert.equal(aside.dataset.sidebarView, 'navigation');
-    assert.equal(aside.dataset.preview, 'false');
-    const marked = aside.querySelector('[data-preview-focus]');
-    assert.ok(view === 'folders' ? marked.matches('.navigation-folder-section') : marked.id === sections[view], view);
+  const rows = () => [...document.querySelectorAll('#sidebar-meeting-list [data-recent-meeting]')].map(node => node.dataset.recentMeeting);
+  const expected = { home: ['unfiled', 'filed'], all: ['unfiled', 'filed'], unfiled: ['unfiled'], recent: ['unfiled', 'filed'], trash: ['deleted'] };
+  const titles = { home: '최근 회의', all: '전체 회의', unfiled: '미분류', folders: '폴더', recent: '최근 회의', trash: '휴지통' };
+  for (const view of ['home', 'all', 'unfiled', 'folders', 'recent', 'trash']) {
+    const button = document.querySelector(`[data-navigation-preview="${view}"]`);
+    button.click();
+    assert.equal(aside.dataset.sidebarView, view);
+    assert.equal(aside.dataset.preview, 'true');
+    assert.equal(button.getAttribute('aria-current'), 'page');
+    assert.equal(document.querySelectorAll('[data-navigation-preview][aria-current]').length, 1);
+    assert.equal(document.getElementById('sidebar-preview-title').textContent, titles[view]);
+    assert.equal(document.getElementById('meeting-search-field').hidden, false);
+    if (view === 'folders') {
+      assert.equal(document.getElementById('sidebar-meeting-list').hidden, true);
+      assert.equal(document.getElementById('sidebar-library-navigation').hidden, false);
+      assert.ok(document.querySelector('#library-user-folders [data-library-filter="project"]'));
+    } else {
+      assert.equal(document.getElementById('sidebar-meeting-list').hidden, false);
+      assert.equal(document.getElementById('sidebar-library-navigation').hidden, true);
+      assert.deepEqual(rows(), expected[view], view);
+    }
+    assert.equal(document.getElementById('sidebar-empty-trash').hidden, view !== 'trash');
+    assert.equal(document.getElementById('sidebar-preview-open').hidden, !['all', 'unfiled', 'trash'].includes(view));
     assert.equal(aside.inert, false);
     assert.equal(state.libraryFilter, 'project');
     assert.equal(state.libraryOpen, false);
@@ -475,7 +507,8 @@ test('recent duration distinguishes recorded length from the calendar timestamp'
 test('all meetings use the same list icon in expanded and compact navigation, distinct from creation', async t => {
   const { document } = await setup(t);
   const expanded = document.querySelector('#library-system-views [data-library-filter="all"] svg').dataset.icon;
-  const compact = document.querySelector('#navigation-home [data-detail-icon]').dataset.detailIcon;
+  const compact = document.querySelector('[data-navigation-preview="all"] [data-detail-icon]').dataset.detailIcon;
+  assert.equal(document.querySelector('#navigation-home [data-detail-icon]').dataset.detailIcon, 'house');
   const create = document.querySelector('#create-meeting').dataset.uiIcon;
   assert.equal(expanded, 'list');
   assert.equal(compact, expanded);
@@ -547,19 +580,27 @@ test('A navigation destinations select all meetings or folder overview without c
   assert.deepEqual(state.snapshot, before);
 });
 
-test('the single search input and folder action follow the central list and temporary sidebar', async t => {
+test('the single search input stays in the sidebar and the folder action follows the folder list', async t => {
   const { document } = await setup(t);
   const search = document.getElementById('search'), createFolder = document.getElementById('new-folder');
+  const navigation = document.getElementById('sidebar-navigation-view'), folderHeading = document.querySelector('.navigation-folder-section > .library-heading');
   search.value = '회의';
-  assert.ok(document.getElementById('library-search-home').contains(search));
-  assert.ok(document.getElementById('library-folder-actions').contains(createFolder));
+  assert.ok(navigation.contains(search));
+  assert.equal(document.getElementById('library-search-home').contains(search), false);
+  assert.ok(folderHeading.contains(createFolder));
   document.querySelector('[data-navigation-preview="folders"]').click();
-  assert.ok(document.getElementById('library-search-home').contains(search));
-  assert.ok(document.getElementById('library-folder-actions').contains(createFolder));
+  assert.ok(navigation.contains(search));
+  assert.ok(document.getElementById('sidebar-folder-actions').contains(createFolder));
   assert.equal(search.value, '회의');
+  document.querySelector('[data-navigation-preview="all"]').click();
+  assert.ok(folderHeading.contains(createFolder));
   document.getElementById('navigation-toggle').click();
-  assert.ok(document.getElementById('library-search-home').contains(search));
-  assert.ok(document.getElementById('library-folder-actions').contains(createFolder));
+  assert.ok(navigation.contains(search));
+  document.getElementById('notifications-open').click();
+  assert.equal(document.getElementById('meeting-search-field').hidden, true);
+  document.getElementById('notifications-open').click();
+  assert.equal(document.getElementById('meeting-search-field').hidden, false);
+  assert.equal(search.value, '회의');
   assert.equal(document.querySelectorAll('#search').length, 1);
   assert.equal(document.querySelectorAll('#new-folder').length, 1);
 });

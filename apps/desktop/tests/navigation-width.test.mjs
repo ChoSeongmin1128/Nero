@@ -6,7 +6,7 @@ import { navigationWidthPreference, navigationWidthBounds, navigationRailWidth }
 import { mountAiChatLayout } from '../src/ai-chat-layout.js';
 
 test('width preferences reject non-numeric shapes and retain valid numeric strings', () => {
-  for (const value of [null, undefined, '', ' ', 'broken', '280px', -10, 0, Infinity, {}, [], true]) assert.equal(navigationWidthPreference(value), 224);
+  for (const value of [null, undefined, '', ' ', 'broken', '280px', -10, 0, Infinity, {}, [], true]) assert.equal(navigationWidthPreference(value), 272);
   assert.equal(navigationWidthPreference(' 280.4 '), 280);
   assert.equal(navigationWidthPreference('999999'), 400);
   assert.equal(navigationWidthPreference(12), 200);

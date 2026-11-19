@@ -63,7 +63,12 @@ test('one transcript panel stays in the body through processing and summary comp
     }
     assert.fail('Missing result state: ' + el('error-message').textContent + ' / ' + el('summary-message').textContent);
   };
+  await wait(() => !el('home-screen').hidden);
+  assert.equal(el('notes-section').hidden, true, 'startup shows home instead of selecting a meeting');
+  await wait(() => window.document.querySelector('#sidebar-meeting-list [data-recent-meeting="one"]'));
+  window.document.querySelector('#sidebar-meeting-list [data-recent-meeting="one"]').click();
   await wait(() => !el('notes-section').hidden);
+  assert.equal(el('home-screen').hidden, true);
   snapshot = { ...snapshot, revision: 2, session: { ...snapshot.session, state: 'finalizing' } };
   subscriptions.subscribeSnapshots(snapshot);
   await wait(() => el('summary-message').textContent.includes('처리하고 있습니다.'));
@@ -189,11 +194,22 @@ test('the real application HTML boots and opens all settings tabs without stale 
   assert.equal(typeof subscriptions.subscribeAppUpdate, 'function');
   subscriptions.subscribeAppUpdate({ phase: 'ready', currentVersion: '0.0.1', currentBuild: '40', availableBuild: '41', message: '업데이트 설치 준비 완료', downloadReady: true });
   await wait(() => !window.document.getElementById('sidebar-app-update').hidden);
-  assert.equal(window.document.getElementById('sidebar-app-update').querySelector('[data-app-update-label]').textContent, '다시 시작해 업데이트');
+  assert.equal(window.document.getElementById('sidebar-app-update').querySelector('[data-app-update-label]').textContent, '업데이트 설치 준비됨');
+  assert.equal(window.document.getElementById('app-update-action').textContent, '다시 시작해 업데이트');
   assert.doesNotMatch(window.document.getElementById('notification-center').textContent, /업데이트 설치 준비 완료/);
+  window.document.getElementById('sidebar-app-update').click();
+  await wait(() => window.document.getElementById('settings-dialog').open);
+  assert.equal(window.document.getElementById('settings-appearance-panel').hidden, false);
+  await wait(() => window.document.activeElement.id === 'app-update-action');
+  assert.equal(calls.includes('installAppUpdate'), false, 'the rail button only opens settings');
+  window.document.getElementById('settings-close').click();
+  await wait(() => !window.document.getElementById('settings-dialog').open);
   const recording = { revision: 2, folders: [], meetings: [{ id: 'one', title: '회의', createdAt: 1, notes: '', status: 'recording' }], session: { id: 'capture', meetingId: 'one', state: 'paused', elapsedMs: 1000 } };
   snapshot = recording;
   subscriptions.subscribeSnapshots(recording);
+  await wait(() => window.document.querySelector('#sidebar-meeting-list [data-recent-meeting="one"]'));
+  assert.equal(window.document.getElementById('home-screen').hidden, false, 'a new snapshot does not leave home by itself');
+  window.document.querySelector('#sidebar-meeting-list [data-recent-meeting="one"]').click();
   await wait(() => window.document.querySelector('[data-action="show-recorder"]'));
   const reopen = window.document.querySelector('[data-action="show-recorder"]');
   assert.equal(reopen.getAttribute('aria-label'), '녹음 제어창 표시');
@@ -251,8 +267,9 @@ test('startup integration alerts appear without visiting settings and route to t
   window.eval(bundled.outputFiles[0].text); await window.neroBoot;
   const el = id => window.document.getElementById(id);
   assert.equal(el('notifications-open').dataset.unread, 'true');
-  assert.equal(el('notification-count').textContent, '');
-  assert.match(el('notifications-open').getAttribute('aria-label'), /2개/);
+  assert.equal(el('notification-count').hidden, false);
+  assert.equal(el('notification-count').textContent, '2');
+  assert.match(el('notifications-open').getAttribute('aria-label'), /확인할 알림 2개/);
   el('notifications-open').click();
   await new Promise(resolve => setTimeout(resolve, 10));
   const notice = [...el('notification-center').querySelectorAll('article')].find(row => row.textContent.includes('Claude'));

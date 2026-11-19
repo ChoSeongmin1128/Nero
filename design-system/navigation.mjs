@@ -55,12 +55,12 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
       destination.append(node);
       if (preserveFocus) focused.focus({ preventScroll: true });
     }
+    // The rail stays in place whether the sidebar is pinned or opens on demand.
     if (compact) {
-      compact.hidden = pinned;
-      compact.inert = pinned || unavailable();
-      compact.setAttribute('aria-hidden', String(pinned || unavailable()));
+      compact.hidden = false;
+      compact.inert = unavailable();
+      compact.setAttribute('aria-hidden', String(unavailable()));
     }
-    for (const button of previews) button.setAttribute('aria-expanded', String(temporary && !pinned && button === previewAnchor));
     aside.inert = !open;
     for (const node of aside.querySelectorAll('.recent-section, .recent')) node.inert = !open;
     width.update(open);
@@ -75,12 +75,13 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
     aside.dispatchEvent(new document.defaultView.CustomEvent('nero:navigation-state', { detail: { expanded: open, pinned } }));
   }
   function reveal() { if (unavailable()) return; clearTimeout(hoverTimer); clearTimeout(timer); if (!pinned) temporary = true; render(); }
+  // A rail button chooses the sidebar's list; an unpinned sidebar opens to show it.
   function openPreview(button) {
-    if (pinned || unavailable()) return;
+    if (unavailable()) return;
     previewAnchor = button;
     previewView = button.dataset.navigationPreview;
     aside.dispatchEvent(new document.defaultView.CustomEvent('nero:sidebar-preview', { detail: { view: previewView } }));
-    reveal();
+    if (!pinned) reveal();
   }
   function openPopups() {
     return [...document.querySelectorAll('dialog[open],[role="dialog"],[role="alertdialog"],[role="menu"],[role="listbox"],[data-slot="menu-popup"],[data-slot="popover-content"],[data-slot="select-content"],details[open]:not(.recent-section):not(.recent)')].filter(node => {
@@ -144,7 +145,15 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
   }
   const enter = node => { hovered.add(node); clearTimeout(timer); };
   const leave = node => { hovered.delete(node); hide(); };
-  edge?.addEventListener('pointerenter', event => { if (!compact && event.pointerType === 'mouse') { enter(edge); reveal(); } });
+  edge?.addEventListener('pointerenter', event => { if (event.pointerType === 'mouse' && !pinned) { enter(edge); reveal(); } });
+  // Pointing at the sidebar toggle shows the sidebar; clicking it pins or unpins it.
+  trigger.addEventListener('pointerenter', event => {
+    if (event.pointerType !== 'mouse' || pinned || unavailable()) return;
+    enter(trigger);
+    clearTimeout(hoverTimer);
+    hoverTimer = setTimeout(reveal, 140);
+  });
+  trigger.addEventListener('pointerleave', () => { clearTimeout(hoverTimer); leave(trigger); });
   edge?.addEventListener('pointerleave', () => leave(edge));
   edge?.addEventListener('focusout', hide);
   aside.addEventListener('pointerenter', event => {
@@ -169,17 +178,9 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
   compact?.addEventListener('pointerleave', () => leave(compact));
   compact?.addEventListener('focusout', hide);
   for (const button of previews) {
-    button.addEventListener('pointerenter', event => {
-      if (event.pointerType !== 'mouse' || pinned || unavailable()) return;
-      enter(button);
-      clearTimeout(hoverTimer);
-      if (temporary) openPreview(button); else hoverTimer = setTimeout(() => openPreview(button), 140);
-    });
-    button.addEventListener('pointerleave', () => { clearTimeout(hoverTimer); leave(button); });
-    button.addEventListener('focusin', () => { if (!restoringFocus) openPreview(button); });
     button.addEventListener('click', () => openPreview(button));
     button.addEventListener('keydown', event => {
-      if (!['ArrowRight', 'Enter'].includes(event.key) || event.defaultPrevented || event.isComposing || event.keyCode === 229 || event.altKey || event.metaKey || event.ctrlKey || event.shiftKey || pinned || unavailable() || openPopups().length) return;
+      if (!['ArrowRight', 'Enter'].includes(event.key) || event.defaultPrevented || event.isComposing || event.keyCode === 229 || event.altKey || event.metaKey || event.ctrlKey || event.shiftKey || unavailable() || openPopups().length) return;
       event.preventDefault();
       openPreview(button);
       // An empty preview list still lets the keyboard reach the view's own actions.

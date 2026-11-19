@@ -43,7 +43,7 @@ export function AiAccounts({ flow }) {
   </div>;
 }
 
-export function mountAiChat({ node, settingsNode, trigger, layoutRoot, resizeHandle, bridge, onSettings, onCitation, onOpenMeeting = null, beforeWrite, onSaved, getTemplate, getMeetings = () => [], writeClipboard }) {
+export function mountAiChat({ node, settingsNode, trigger, layoutRoot, resizeHandle, bridge, onSettings, onCitation, onOpenMeeting = null, onManage = null, beforeWrite, onSaved, getTemplate, getMeetings = () => [], writeClipboard }) {
   const flow = createAiChatFlow({ bridge, beforeWrite, onSaved, getTemplate, getMeetings, writeClipboard });
   const root = createRoot(node), settingsRoot = createRoot(settingsNode);
   const layout = mountAiChatLayout({ root: layoutRoot, handle: resizeHandle, panel: node.parentElement, trigger });
@@ -62,7 +62,7 @@ export function mountAiChat({ node, settingsNode, trigger, layoutRoot, resizeHan
     event.preventDefault(); close();
   };
   node.addEventListener('keydown', escape);
-  root.render(<GlobalAiChat flow={flow} onSettings={onSettings} onCitation={onCitation} onClose={close} getMeetings={getMeetings} onOpenMeeting={onOpenMeeting} />);
+  root.render(<GlobalAiChat flow={flow} onSettings={onSettings} onCitation={onCitation} onClose={close} getMeetings={getMeetings} onOpenMeeting={onOpenMeeting} onManage={onManage} />);
   settingsRoot.render(<AiAccounts flow={flow} />);
   return { flow, open, close, prepareSummary: meeting => { layout.update(true); return flow.prepareSummary(meeting); }, setMeeting: meeting => flow.setMeeting(meeting), setSettingsActive: active => flow.setSettingsActive(active), dispose() { trigger?.removeEventListener('click', toggle); window.removeEventListener('focus', checkAccounts); document.removeEventListener('visibilitychange', checkAccounts); node.removeEventListener('keydown', escape); layout.destroy(); flow.dispose(); root.unmount(); settingsRoot.unmount(); } };
 }

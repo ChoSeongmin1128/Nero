@@ -13,10 +13,10 @@ function setup(t, preferences = {}) {
   const window = new Window({ url: 'http://nero.test' });
   t.after(() => window.happyDOM.abort());
   const document = window.document;
-  document.body.innerHTML = `<div class="navigation-shell">
-    <nav class="navigation-rail" data-navigation-compact>${['all', 'folders', 'trash', 'recent'].map(view => `<button data-navigation-preview="${view}">${view}</button>`).join('')}<footer id="navigation-toggle-collapsed"><button id="navigation-toggle">탐색</button></footer><div id="utilities-compact"><button id="settings">설정</button><button id="update">업데이트</button></div></nav>
+  document.body.innerHTML = `<header class="application-toolbar"><button id="navigation-toggle">탐색</button></header><div class="navigation-shell">
+    <nav class="navigation-rail" data-navigation-compact>${['home', 'all', 'unfiled', 'folders', 'recent'].map(view => `<button data-navigation-preview="${view}">${view}</button>`).join('')}<div class="navigation-rail-footer"><button id="update" hidden>업데이트</button><button id="notifications">알림</button><button data-navigation-preview="trash">trash</button><button id="settings">설정</button></div></nav>
     <div class="navigation-edge"></div>
-    <aside id="navigation-sidebar"><header id="navigation-header"><span id="navigation-toggle-expanded"></span></header><input id="search"><button id="meeting">회의</button><details class="recent-section" open><summary>최근 회의</summary></details><div id="utilities-expanded"></div></aside>
+    <aside id="navigation-sidebar"><header id="navigation-header"></header><input id="search"><button id="meeting">회의</button><details class="recent-section" open><summary>최근 회의</summary></details></aside>
     <main><textarea id="notes">작성 중</textarea></main>
   </div>`;
   for (const [key, value] of Object.entries(preferences)) window.localStorage.setItem(key, value);
@@ -26,30 +26,35 @@ function setup(t, preferences = {}) {
   const events = [], states = [];
   aside.addEventListener('nero:sidebar-preview', event => { events.push({ view: event.detail.view, expanded: !aside.inert }); aside.dataset.previewView = event.detail.view; });
   aside.addEventListener('nero:navigation-state', event => states.push(event.detail));
-  const navigation = mountNavigationSidebar({ shell, aside, content: document.querySelector('main'), trigger: el('navigation-toggle'), storage: window.localStorage,
-    relocate: ['settings', 'update'].map(id => ({ node: el(id), expanded: el('utilities-expanded'), compact: el('utilities-compact') })) });
+  const navigation = mountNavigationSidebar({ shell, aside, content: document.querySelector('main'), trigger: el('navigation-toggle'), storage: window.localStorage });
   const preview = view => compact.querySelector(`[data-navigation-preview="${view}"]`);
   const pointer = (node, type, pointerType = 'mouse') => node.dispatchEvent(new window.PointerEvent(type, { pointerType }));
   const escape = node => node.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
   return { window, document, el, shell, aside, compact, navigation, events, states, preview, pointer, escape, tick: milliseconds => t.mock.timers.tick(milliseconds) };
 }
 
-test('compact previews use hover intent and bridge pointer movement into the overlay', t => {
+test('hovering rail buttons opens nothing while the toolbar toggle and edge reveal the sidebar', t => {
   const app = setup(t);
   app.el('notes').focus();
-  app.pointer(app.document.querySelector('.navigation-edge'), 'pointerenter');
-  app.tick(140);
+  for (const view of ['home', 'all', 'folders', 'trash']) {
+    app.pointer(app.preview(view), 'pointerenter');
+    app.tick(500);
+    app.pointer(app.preview(view), 'pointerleave');
+  }
   assert.equal(app.aside.inert, true);
-  app.pointer(app.preview('all'), 'pointerenter', 'touch');
-  app.tick(140);
+  assert.deepEqual(app.events, []);
+  const toggle = app.el('navigation-toggle');
+  app.pointer(toggle, 'pointerenter', 'touch');
+  app.tick(500);
   assert.equal(app.aside.inert, true);
-  app.pointer(app.preview('all'), 'pointerenter');
+  app.pointer(toggle, 'pointerenter');
   app.tick(139);
   assert.equal(app.aside.inert, true);
   app.tick(1);
-  assert.deepEqual(app.events, [{ view: 'all', expanded: false }]);
+  assert.equal(app.aside.inert, false);
   assert.equal(app.shell.classList.contains('nav-peek'), true);
-  app.pointer(app.preview('all'), 'pointerleave');
+  assert.deepEqual(app.events, [], 'revealing does not choose a different list');
+  app.pointer(toggle, 'pointerleave');
   app.tick(100);
   app.pointer(app.aside, 'pointerenter');
   app.tick(180);
@@ -59,20 +64,32 @@ test('compact previews use hover intent and bridge pointer movement into the ove
   assert.equal(app.aside.inert, false);
   app.tick(1);
   assert.equal(app.aside.inert, true);
+  app.pointer(toggle, 'pointerenter');
+  app.tick(100);
+  app.pointer(toggle, 'pointerleave');
+  app.tick(500);
+  assert.equal(app.aside.inert, true, 'passing over the toggle does not open the sidebar');
+  const edge = app.document.querySelector('.navigation-edge');
+  app.pointer(edge, 'pointerenter');
+  assert.equal(app.aside.inert, false);
+  app.pointer(edge, 'pointerleave');
+  app.tick(180);
+  assert.equal(app.aside.inert, true);
   assert.equal(app.document.activeElement, app.el('notes'));
+  assert.equal(app.window.localStorage.getItem('nero.sidebar.pinned'), null);
 });
 
-test('hover switches all four previews while retaining content, browser history and preferences', t => {
+test('rail clicks switch every list while retaining content, browser history and preferences', t => {
   const app = setup(t), notes = app.el('notes'), main = app.document.querySelector('main');
   const historyLength = app.window.history.length;
   notes.value = '저장 전 메모';
-  for (const view of ['all', 'folders', 'trash', 'recent']) {
-    app.pointer(app.preview(view), 'pointerenter');
-    app.tick(140);
+  const views = ['home', 'all', 'unfiled', 'folders', 'recent', 'trash'];
+  for (const view of views) {
+    app.preview(view).click();
     assert.equal(app.aside.dataset.previewView, view);
-    app.pointer(app.preview(view), 'pointerleave');
+    assert.equal(app.aside.inert, false);
   }
-  assert.deepEqual(app.events.map(event => event.view), ['all', 'folders', 'trash', 'recent']);
+  assert.deepEqual(app.events.map(event => event.view), views);
   assert.equal(app.el('notes'), notes);
   assert.equal(notes.value, '저장 전 메모');
   assert.equal(main.hidden, false);
@@ -82,16 +99,17 @@ test('hover switches all four previews while retaining content, browser history 
   assert.equal(app.window.localStorage.getItem('nero.sidebar.pinned'), null);
 });
 
-test('focus and click reveal previews immediately and keyboard focus prevents automatic hiding', t => {
+test('focus alone opens nothing, a click reveals immediately and keyboard focus prevents automatic hiding', t => {
   const app = setup(t);
   app.preview('folders').focus();
-  assert.equal(app.aside.dataset.previewView, 'folders');
+  assert.equal(app.aside.inert, true);
+  assert.deepEqual(app.events, []);
+  app.preview('recent').click();
+  assert.equal(app.aside.dataset.previewView, 'recent');
   assert.equal(app.aside.inert, false);
   app.pointer(app.compact, 'pointerleave');
   app.tick(180);
   assert.equal(app.aside.inert, false);
-  app.preview('recent').click();
-  assert.equal(app.aside.dataset.previewView, 'recent');
   app.el('meeting').focus();
   app.pointer(app.aside, 'pointerleave');
   app.tick(180);
@@ -99,7 +117,7 @@ test('focus and click reveal previews immediately and keyboard focus prevents au
   app.escape(app.el('meeting'));
   assert.equal(app.aside.inert, true);
   assert.equal(app.document.activeElement, app.preview('recent'));
-  assert.equal(app.events.length, 2);
+  assert.equal(app.events.length, 1);
 });
 
 test('input and opened menus retain the overlay, and Escape gives the menu priority', t => {
@@ -147,28 +165,34 @@ test('closed popups and open content disclosures do not block dismissal', t => {
   assert.equal(app.aside.inert, true);
 });
 
-test('pinning relocates singleton controls and disables the compact navigation', t => {
-  const app = setup(t), trigger = app.el('navigation-toggle'), settings = app.el('settings'), update = app.el('update');
-  assert.equal(trigger.parentElement, app.el('navigation-toggle-collapsed'));
-  app.preview('all').click();
-  assert.equal(trigger.parentElement, app.el('navigation-toggle-expanded'));
+test('the rail stays usable while pinned and its clicks choose the list without collapsing', t => {
+  const app = setup(t), trigger = app.el('navigation-toggle'), toolbar = trigger.parentElement;
+  const footer = app.compact.querySelector('.navigation-rail-footer');
   trigger.click();
-  assert.equal(app.compact.hidden, true);
-  assert.equal(app.compact.inert, true);
-  assert.equal(app.compact.getAttribute('aria-hidden'), 'true');
-  assert.equal(settings.parentElement, app.el('utilities-expanded'));
-  assert.equal(update.parentElement, app.el('utilities-expanded'));
+  assert.equal(app.shell.classList.contains('nav-pinned'), true);
+  assert.equal(app.shell.classList.contains('nav-peek'), false);
+  assert.equal(app.compact.hidden, false);
+  assert.equal(app.compact.inert, false);
+  assert.equal(app.compact.getAttribute('aria-hidden'), 'false');
   assert.deepEqual(app.states.at(-1), { expanded: true, pinned: true });
   app.preview('folders').click();
-  assert.equal(app.events.length, 1);
+  assert.deepEqual(app.events, [{ view: 'folders', expanded: true }]);
+  assert.equal(app.aside.inert, false);
+  assert.equal(app.shell.classList.contains('nav-peek'), false);
+  assert.equal(app.window.localStorage.getItem('nero.sidebar.pinned'), 'true');
+  app.pointer(app.preview('all'), 'pointerenter');
+  app.tick(500);
+  assert.equal(app.events.length, 1, 'hover does not switch lists while pinned');
   trigger.click();
   assert.equal(app.compact.hidden, false);
   assert.equal(app.compact.inert, false);
   assert.equal(app.compact.getAttribute('aria-hidden'), 'false');
-  assert.equal(trigger.parentElement, app.el('navigation-toggle-collapsed'));
-  assert.equal(settings.parentElement, app.el('utilities-compact'));
-  assert.equal(update.parentElement, app.el('utilities-compact'));
-  for (const id of ['navigation-toggle', 'settings', 'update']) assert.equal(app.document.querySelectorAll(`#${id}`).length, 1);
+  assert.equal(app.aside.inert, true);
+  for (const [id, parent] of [['navigation-toggle', toolbar], ['settings', footer], ['update', footer], ['notifications', footer]]) {
+    assert.equal(app.document.querySelectorAll(`#${id}`).length, 1);
+    assert.equal(app.el(id).parentElement, parent, `${id} stays in place`);
+  }
+  assert.equal(footer.lastElementChild, app.el('settings'));
   assert.deepEqual(app.states.at(-1), { expanded: false, pinned: false });
   assert.equal(app.window.localStorage.getItem('nero.sidebar.pinned'), 'false');
 });
@@ -192,7 +216,7 @@ test('navigation actions close only the temporary overlay and onboarding keeps n
   app.navigation.navigate();
   assert.equal(app.aside.inert, true);
   app.el('navigation-toggle').click();
-  assert.equal(app.shell.style.getPropertyValue('--navigation-width'), '224px');
+  assert.equal(app.shell.style.getPropertyValue('--navigation-width'), '240px', 'the 272 default is clamped to the pinned bound');
   app.navigation.navigate();
   assert.equal(app.aside.inert, false);
   app.el('navigation-toggle').click();
@@ -230,7 +254,7 @@ test('navigation refresh keeps focused search and opened popups until an actual 
   assert.equal(app.aside.inert, true);
 });
 
-test('keyboard enters the sidebar section a rail button names and returns without changing the document', async t => {
+async function productSidebar(t) {
   const window = new Window({ url: 'http://nero.test', settings: { disableCSSFileLoading: true, disableJavaScriptFileLoading: true } });
   t.after(() => window.happyDOM.abort());
   const document = window.document;
@@ -243,27 +267,42 @@ test('keyboard enters the sidebar section a rail button names and returns withou
   const calls = [];
   const library = mountLibrary({ bridge: {}, getState: () => state, byId: el, finishEditing: async action => action(), acceptSnapshot() {}, selectMeeting: id => calls.push(['select', id]), render() {}, showError(error) { throw error; }, beginNavigation: history => { calls.push(['navigate', history]); return () => true; }, escape: value => String(value ?? ''), icon: name => `<svg data-icon="${name}"></svg>`, duration: String, recordingStatus: String });
   library.render();
-  const views = mountSidebarViews({ aside: el('navigation-sidebar'), navigation: el('sidebar-navigation-view'), notifications: el('notification-center'), trigger: el('notifications-open'), badge: el('notification-count'), onPreview: view => library.preview(view) });
+  const views = mountSidebarViews({ aside: el('navigation-sidebar'), navigation: el('sidebar-navigation-view'), notifications: el('notification-center'), trigger: el('notifications-open'), badge: el('notification-count'), storage: window.localStorage,
+    count: filter => filter === 'folders' ? state.snapshot.folders.length : library.count(filter),
+    folderName: id => state.snapshot.folders.find(folder => folder.id === id)?.name || '',
+    onPreview: (view, folder) => library.preview(view, folder) });
   t.after(() => views.destroy());
+  return { window, document, el, state, calls, library, views };
+}
+
+test('keyboard enters the list a rail button chooses and returns without changing the document', async t => {
+  const { window, document, el, state, calls, views } = await productSidebar(t);
   const notes = el('meeting-notes'); notes.value = '저장 전 메모';
   const key = (node, value, options = {}) => { const event = new window.KeyboardEvent('keydown', { key: value, bubbles: true, cancelable: true, ...options }); node.dispatchEvent(event); return event; };
-  const targets = { all: '#library-system-views [data-library-filter="all"]', folders: '.navigation-folder-section [data-library-filter="project"]', ai: '#library-ai-view [data-library-filter="ai"]', trash: '#library-trash-view [data-library-filter="trash"]', recent: '#recent-meetings [data-recent-meeting]' };
+  const targets = { home: '#sidebar-meeting-list [data-recent-meeting="unfiled"]', all: '#sidebar-meeting-list [data-recent-meeting="unfiled"]', unfiled: '#sidebar-meeting-list [data-recent-meeting="unfiled"]',
+    folders: '#library-user-folders [data-library-filter="project"]', recent: '#sidebar-meeting-list [data-recent-meeting="unfiled"]', trash: '#sidebar-meeting-list [data-recent-meeting="deleted"]' };
   const buttons = [...document.querySelectorAll('[data-navigation-preview]')];
+  assert.deepEqual(buttons.map(button => button.dataset.navigationPreview), ['home', 'all', 'unfiled', 'folders', 'recent', 'trash']);
+  assert.equal(views.activeView(), 'home');
   for (let index = 0; index < buttons.length; index++) {
     const button = buttons[index], view = button.dataset.navigationPreview;
     button.focus();
-    assert.equal(views.activeView(), 'navigation');
+    assert.equal(views.activeView(), index ? buttons[index - 1].dataset.navigationPreview : 'home', 'focus alone keeps the current list');
     assert.equal(key(button, 'ArrowRight').defaultPrevented, true);
+    assert.equal(views.activeView(), view);
+    assert.equal(button.getAttribute('aria-current'), 'page');
+    assert.equal(document.querySelectorAll('[data-navigation-preview][aria-current="page"]').length, 1);
     const target = document.querySelector(targets[view]);
     assert.ok(target, view);
     assert.equal(document.activeElement, target, view);
-    assert.equal(key(target, 'Tab', { shiftKey: true }).defaultPrevented, true);
+    const boundary = [...el('navigation-sidebar').querySelectorAll('[data-navigation-preview-action]')].find(node => !node.disabled && !node.closest('[hidden]')) || target;
+    boundary.focus();
+    assert.equal(key(boundary, 'Tab', { shiftKey: true }).defaultPrevented, true, view);
     assert.equal(document.activeElement, button);
     assert.equal(key(button, 'Enter').defaultPrevented, true);
     assert.equal(document.activeElement, target);
     assert.equal(key(target, 'ArrowLeft').defaultPrevented, true);
     assert.equal(document.activeElement, button);
-    assert.equal(views.activeView(), 'navigation');
     if (index < buttons.length - 1) assert.equal(key(button, 'Tab').defaultPrevented, false);
     assert.equal(state.libraryFilter, 'project');
     assert.equal(state.selectedId, 'filed');
@@ -271,8 +310,40 @@ test('keyboard enters the sidebar section a rail button names and returns withou
     assert.deepEqual([...state.librarySelection], ['filed']);
     assert.deepEqual(calls, []);
   }
+  assert.equal(window.localStorage.getItem('nero.sidebar.view'), 'trash');
   assert.equal(el('meeting-notes'), notes);
   assert.equal(notes.value, '저장 전 메모');
+});
+
+test('a folder row opens its meetings in the sidebar and the back button returns to the folder list', async t => {
+  const { document, el, state, calls, views } = await productSidebar(t);
+  views.choose('folders');
+  assert.equal(el('sidebar-library-navigation').hidden, false);
+  assert.equal(el('sidebar-meeting-list').hidden, true);
+  assert.equal(el('library-system-views').hidden, true);
+  assert.equal(el('library-ai-view').hidden, true);
+  assert.equal(el('sidebar-preview-title').textContent, '폴더');
+  assert.equal(el('sidebar-preview-count').textContent, '1');
+  assert.equal(el('sidebar-preview-back').hidden, true);
+  assert.equal(el('sidebar-preview-open').hidden, true);
+  el('library-user-folders').querySelector('[data-library-filter="project"]').click();
+  assert.equal(views.activeView(), 'folder');
+  assert.equal(views.folder(), 'project');
+  assert.equal(el('sidebar-preview-title').textContent, '프로젝트');
+  assert.equal(el('sidebar-preview-back').hidden, false);
+  assert.equal(el('sidebar-library-navigation').hidden, true);
+  assert.equal(el('sidebar-meeting-list').hidden, false);
+  assert.deepEqual([...el('sidebar-meeting-list').querySelectorAll('[data-recent-meeting]')].map(node => node.dataset.recentMeeting), ['filed']);
+  assert.equal(el('sidebar-preview-open').hidden, false);
+  assert.equal(el('sidebar-preview-open').dataset.sidebarFilter, 'project');
+  assert.equal(document.querySelector('[data-navigation-preview="folders"]').getAttribute('aria-current'), 'page');
+  assert.equal(state.libraryOpen, false, 'the central library stays closed');
+  assert.deepEqual(calls, []);
+  el('sidebar-preview-back').click();
+  assert.equal(views.activeView(), 'folders');
+  assert.equal(el('sidebar-library-navigation').hidden, false);
+  assert.equal(el('sidebar-preview-back').hidden, true);
+  assert.equal(document.defaultView.localStorage.getItem('nero.sidebar.view'), 'folders', 'a single folder is not remembered as the starting list');
 });
 
 test('preview keyboard return preserves text editing and open menu priority', t => {

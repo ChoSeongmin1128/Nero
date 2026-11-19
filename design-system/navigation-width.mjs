@@ -1,6 +1,6 @@
 import { mountResizablePane } from './resizable-pane.mjs';
 
-const DEFAULT_WIDTH = 224;
+const DEFAULT_WIDTH = 272;
 const MIN_WIDTH = 200;
 const MAX_WIDTH = 400;
 const CONTENT_MIN = 400;
@@ -18,8 +18,9 @@ export function navigationWidthPreference(value) {
 }
 
 export function navigationWidthBounds(viewport, { overlay: temporary = false, railWidth = 0 } = {}) {
-  const width = Math.max(0, viewport - (temporary ? railWidth : 0));
-  const overlay = temporary || viewport < MIN_WIDTH + CONTENT_MIN;
+  // The rail stays beside the sidebar whether it is pinned or temporary.
+  const width = Math.max(0, viewport - railWidth);
+  const overlay = temporary || width < MIN_WIDTH + CONTENT_MIN;
   const max = Math.max(0, Math.min(MAX_WIDTH, width - (overlay ? OVERLAY_GAP : CONTENT_MIN)));
   return { min: Math.min(MIN_WIDTH, max), max, overlay };
 }

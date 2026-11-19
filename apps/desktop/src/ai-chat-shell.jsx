@@ -84,7 +84,7 @@ function EffortPicker({ flow, state, busy }) {
     </PopoverContent>
   </Popover>;
 }
-function ConversationHistory({ flow, state }) {
+function ConversationHistory({ flow, state, onManage = null }) {
   const [open, setOpen] = React.useState(false), [deleting, setDeleting] = React.useState(null);
   const titleId = React.useId();
   const [scope, setScope] = React.useState({ meetingId: state.meeting?.id || null, filter: state.meeting ? 'meeting' : 'all' });
@@ -105,6 +105,7 @@ function ConversationHistory({ flow, state }) {
         <button type="button" className="quiet small icon" aria-label={`${item.title || '대화'} 휴지통으로 이동`} title="휴지통으로 이동" onClick={() => setDeleting(item)}><Trash2 size={15} aria-hidden="true" /></button>
       </div>)}</div>
       {!state.listBusy && !state.listError && !items.length && <p className="ai-chat-muted">{filter === 'meeting' ? '이 회의로 질문한 대화가 없습니다.' : '저장된 대화가 없습니다.'}</p>}
+      {onManage && <button type="button" className="quiet small ai-history-manage" onClick={() => { setOpen(false); onManage(); }}>대화 관리</button>}
     </PopoverContent>
   </Popover><Dialog open={Boolean(deleting) && state.active} onOpenChange={next => { if (!next) setDeleting(null); }}>
     <DialogContent className="ai-conversation-confirm" data-nero-ui-owned="" showCloseButton={false}><DialogTitle>대화를 휴지통으로 옮길까요?</DialogTitle><DialogDescription>대화 목록의 휴지통에서 복원할 수 있습니다.</DialogDescription><DialogFooter><DialogClose className="quiet small">취소</DialogClose><button type="button" className="small danger" onClick={async () => { if (await flow.removeConversation(deleting.id)) setDeleting(null); }}>휴지통으로 이동</button></DialogFooter></DialogContent>
@@ -186,7 +187,7 @@ function SaveAnswer({ flow, state, message, kind }) {
   if (targets.length === 1) return <button type="button" className="quiet small icon" disabled={disabled} aria-label={label} title={label} onClick={() => { void save(targets[0].meetingId); }}>{icon}</button>;
   return <Popover open={open && state.active} onOpenChange={setOpen}><PopoverTrigger type="button" className="quiet small icon" disabled={disabled} aria-label={label} title={label}>{icon}</PopoverTrigger><PopoverContent side="top" className="nero-action-popover" finalFocus={state.active ? undefined : false}><PopoverTitle className="ai-popover-title">저장할 회의</PopoverTitle>{targets.map(target => <button type="button" key={target.meetingId} className="quiet small" disabled={disabled} onClick={() => { void save(target.meetingId); }}>{target.title}</button>)}</PopoverContent></Popover>;
 }
-export function GlobalAiChat({ flow, onSettings = () => {}, onCitation = async () => {}, onClose = () => {}, getMeetings = () => [], onOpenMeeting = null }) {
+export function GlobalAiChat({ flow, onSettings = () => {}, onCitation = async () => {}, onClose = () => {}, getMeetings = () => [], onOpenMeeting = null, onManage = null }) {
   const state = React.useSyncExternalStore(flow.subscribe, flow.getSnapshot), conversation = state.conversation;
   const account = state.accounts.find(item => item.id === state.accountId && item.provider === state.provider);
   const busy = Boolean(conversation.activeRequestId || conversation.action);
@@ -246,7 +247,7 @@ export function GlobalAiChat({ flow, onSettings = () => {}, onCitation = async (
     return true;
   };
   return <div className="ai-chat" data-nero-ui-owned="">
-    <header className="ai-chat-header"><ConversationHistory flow={flow} state={state} /><button type="button" className="quiet small icon" aria-label="새 대화" title="새 대화" onClick={() => { void flow.newConversation({ attachCurrent: true }); }}><SquarePen size={17} aria-hidden="true" /></button><button type="button" className="quiet small icon" aria-label="네로 패널 닫기" title="네로 패널 닫기" onClick={onClose}><X size={18} aria-hidden="true" /></button></header>
+    <header className="ai-chat-header"><ConversationHistory flow={flow} state={state} onManage={onManage} /><button type="button" className="quiet small icon" aria-label="새 대화" title="새 대화" onClick={() => { void flow.newConversation({ attachCurrent: true }); }}><SquarePen size={17} aria-hidden="true" /></button><button type="button" className="quiet small icon" aria-label="네로 패널 닫기" title="네로 패널 닫기" onClick={onClose}><X size={18} aria-hidden="true" /></button></header>
     <div ref={transcript} className="ai-chat-messages" role="log" aria-label="AI 대화" aria-live="polite" aria-relevant="additions" onScroll={event => { const node = event.currentTarget; pinned.current = node.scrollHeight - node.scrollTop - node.clientHeight < 48; }}>
       {conversation.loading ? <p className="ai-chat-muted" role="status">대화를 불러오는 중</p> : !shown.length && <div className="ai-chat-empty"><h2>{conversation.meetings.length ? '회의에서 무엇을 찾을까요?' : '무엇을 도와드릴까요?'}</h2>{Boolean(conversation.meetings.length) && <button type="button" className="quiet small" onClick={() => { flow.summaryPrompt(); composer.current?.focus(); }}>결정 사항과 할 일 정리</button>}</div>}
       {shown.map(message => <article key={message.id} className={`ai-chat-message ai-chat-message--${message.role}`} aria-label={message.role === 'user' ? '내 질문' : 'AI 답변'}>

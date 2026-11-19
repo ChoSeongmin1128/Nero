@@ -59,7 +59,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
   const readPreference = key => { try { return storage?.getItem(key); } catch { return null; } };
   const savePreference = (key, value) => { try { storage?.setItem(key, value); } catch {} };
   const shell = owner.querySelector?.('.workspace');
-  const sidebar = shell ? mountNavigationSidebar({ shell, aside: byId('navigation-sidebar'), content: owner.querySelector('.main-content'), trigger: byId('navigation-toggle'), storage, icons: icon, relocate: [['create-meeting', 'sidebar-create-expanded', 'sidebar-create-collapsed'], ['settings', 'sidebar-settings-expanded', 'sidebar-settings-collapsed'], ['sidebar-app-update', 'sidebar-update-expanded', 'sidebar-update-collapsed'], ['sidebar-model-download', 'sidebar-model-expanded', 'sidebar-model-collapsed']].map(([node, expanded, compact]) => ({ node: byId(node), expanded: byId(expanded), compact: byId(compact) })).filter(item => item.node && item.expanded && item.compact) }) : null;
+  const sidebar = shell ? mountNavigationSidebar({ shell, aside: byId('navigation-sidebar'), content: owner.querySelector('.main-content'), trigger: byId('navigation-toggle'), storage, icons: icon, relocate: [].map(([node, expanded, compact]) => ({ node: byId(node), expanded: byId(expanded), compact: byId(compact) })).filter(item => item.node && item.expanded && item.compact) }) : null;
   const savedView = getState().libraryView || readPreference('nero.library.view');
   getState().libraryView = ['folders', 'all'].includes(savedView) ? savedView : 'folders';
   const recents = byId('recent-section');
@@ -119,6 +119,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
         const changed = state().libraryFilter !== filter;
         state().libraryFilter = filter;
         state().libraryOpen = true;
+        state().homeOpen = false;
         sidebar?.navigate();
         resetSelection();
         renderApp();
@@ -366,35 +367,40 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     state().libraryOpen = true;
     resetSelection();
   }
-  function navigationRows(meetings, disabled, activeId) {
+  function navigationRows(meetings, disabled, activeId, { folder = true } = {}) {
     const folders = state().snapshot.folders || [];
     return meetings.map(meeting => recentMeetingRow({
       id: meeting.id, title: meeting.title, active: activeId === meeting.id, disabled, escape,
       leadingIcon: icon('audio-lines'),
       durationLabel: meeting.audio?.sampleRate ? recentDurationLabel(meeting.audio.frames / meeting.audio.sampleRate * 1000) : '',
-      metadata: [folders.find(folder => folder.id === meeting.folderId)?.name || '', recentDate.format(meeting.recordedAt ?? meeting.createdAt ?? 0), meeting.audio?.sampleRate ? formatRecentDuration(meeting.audio.frames / meeting.audio.sampleRate * 1000) : ''],
+      metadata: [folder && folders.find(item => item.id === meeting.folderId)?.name || '', recentDate.format(meeting.recordedAt ?? meeting.createdAt ?? 0), meeting.audio?.sampleRate ? formatRecentDuration(meeting.audio.frames / meeting.audio.sampleRate * 1000) : ''],
       menu: renderMeetingMenu(meeting, { escape, icon, disabled }),
     })).join('');
   }
-  function preview(view = byId('navigation-sidebar')?.dataset.sidebarView) {
+  // The sidebar list for the rail's choice: all, unfiled, one folder, recent or trash.
+  function preview(view = byId('navigation-sidebar')?.dataset.sidebarView, folderId = byId('navigation-sidebar')?.dataset.sidebarFolder) {
     const container = byId('sidebar-meeting-list');
-    if (!container || !['all', 'trash'].includes(view)) return;
+    const scope = view === 'folder' ? folderId : view === 'home' ? 'recent' : view;
+    if (!container || !scope || ['folders', 'notifications', 'navigation'].includes(scope)) return;
     const snapshot = state().snapshot;
     const found = state().librarySearchIds;
     const ids = query() && found != null ? new Set(found) : null;
-    const meetings = filterLibraryMeetings(snapshot.meetings, view, ids ? '' : query())
+    let meetings = filterLibraryMeetings(snapshot.meetings, scope === 'recent' ? 'all' : scope, ids ? '' : query())
       .filter(meeting => !ids || ids.has(meeting.id))
       .sort((a, b) => (b.recordedAt ?? b.createdAt ?? 0) - (a.recordedAt ?? a.createdAt ?? 0) || a.id.localeCompare(b.id));
+    if (scope === 'recent') meetings = meetings.slice(0, 20);
     const disabled = Boolean(state().libraryBusy || !state().connected);
-    const activeId = state().libraryOpen ? null : state().selectedId;
+    const activeId = state().libraryOpen || state().homeOpen ? null : state().selectedId;
     // Only what the rows show: notes and attendees change on every autosave.
-    const key = JSON.stringify([view, query(), disabled, activeId, snapshot.folders, meetings.map(meeting => [meeting.id, meeting.title, meeting.folderId, meeting.recordedAt, meeting.createdAt, meeting.audio?.frames, meeting.audio?.sampleRate, meeting.deletedAt])]);
+    const key = JSON.stringify([scope, query(), disabled, activeId, snapshot.folders, meetings.map(meeting => [meeting.id, meeting.title, meeting.folderId, meeting.recordedAt, meeting.createdAt, meeting.audio?.frames, meeting.audio?.sampleRate, meeting.deletedAt])]);
     if (key === previewKey) return;
     previewKey = key;
     const focused = owner.activeElement?.closest?.('[data-recent-row]')?.dataset.recentRow;
     const focusMenu = owner.activeElement?.matches?.('summary');
-    container.setAttribute('aria-label', view === 'trash' ? '휴지통의 회의' : '전체 회의');
-    container.innerHTML = navigationRows(meetings, disabled, activeId) || `<p class="list-empty">${view === 'trash' ? '휴지통이 비어 있습니다.' : '회의가 없습니다.'}</p>`;
+    const folder = state().snapshot.folders?.find(item => item.id === scope);
+    container.setAttribute('aria-label', scope === 'trash' ? '휴지통의 회의' : scope === 'unfiled' ? '미분류 회의' : scope === 'recent' ? '최근 회의' : folder ? `${folder.name} 폴더의 회의` : '전체 회의');
+    const empty = query() ? '찾는 회의가 없습니다.' : scope === 'trash' ? '휴지통이 비어 있습니다.' : folder ? '이 폴더에 회의가 없습니다.' : scope === 'unfiled' ? '미분류 회의가 없습니다.' : '회의가 없습니다.';
+    container.innerHTML = navigationRows(meetings, disabled, activeId, { folder: !folder }) || `<p class="list-empty">${empty}</p>`;
     if (focused) [...container.querySelectorAll('[data-recent-row]')].find(row => row.dataset.recentRow === focused)?.querySelector(focusMenu ? 'summary' : '[data-recent-meeting]')?.focus({ preventScroll: true });
     if (menus.active?.isConnected === false) closeMenu();
   }
@@ -500,13 +506,14 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
       cardsKey = nextCardsKey;
       byId('library-folders').innerHTML = folders.map(folder => `<article class="library-folder-card-entry"><button type="button" class="library-folder-card" data-library-filter="${escape(folder.id)}"${disabled ? ' disabled' : ''}>${icon('folder')}<span><strong title="${escape(folder.name)}">${escape(folder.name)}</strong><small>${countInView(folder.id)}개 회의</small></span>${icon('chevron-right')}</button><details class="library-folder-menu"><summary aria-label="${escape(folder.name)} 폴더 메뉴">${icon('ellipsis')}</summary><div class="action-menu"><button type="button" data-folder-rename="${escape(folder.id)}"${disabled ? ' disabled' : ''}>이름 변경</button><button type="button" class="danger-text" data-folder-delete="${escape(folder.id)}"${disabled ? ' disabled' : ''}>폴더 삭제</button></div></details></article>`).join('');
     }
-    const selectedMeeting = state().libraryOpen || state().notificationsOpen ? null : current(state().selectedId);
+    const selectedMeeting = state().libraryOpen || state().notificationsOpen || state().homeOpen ? null : current(state().selectedId);
     const parent = selectedMeeting ? selectedMeeting.folderId || 'unfiled' : filter;
     const parentName = navigation.find(item => item.id === parent)?.name || '미분류';
-    const nextBreadcrumbKey = JSON.stringify([filter, state().libraryOpen, selectedMeeting?.id, selectedMeeting?.title, parent, parentName, disabled]);
+    const home = state().homeOpen && !state().libraryOpen;
+    const nextBreadcrumbKey = JSON.stringify([home, filter, state().libraryOpen, selectedMeeting?.id, selectedMeeting?.title, parent, parentName, disabled]);
     if (breadcrumbKey !== nextBreadcrumbKey) {
       breadcrumbKey = nextBreadcrumbKey;
-      byId('navigation-breadcrumbs').innerHTML = `<button type="button" class="quiet small" data-library-filter="all"${disabled ? ' disabled' : ''}${!selectedMeeting && filter === 'all' ? ' aria-current="page"' : ''}>회의 목록</button>${parent !== 'all' ? `<span class="breadcrumb-separator" aria-hidden="true">${icon('chevron-right')}</span><button type="button" class="quiet small" data-library-filter="${escape(parent)}"${disabled ? ' disabled' : ''}${!selectedMeeting ? ' aria-current="page"' : ''}>${escape(parentName)}</button>` : ''}${selectedMeeting ? `<span class="breadcrumb-separator" aria-hidden="true">${icon('chevron-right')}</span><span class="breadcrumb-current" aria-current="page" title="${escape(selectedMeeting.title)}">${escape(selectedMeeting.title)}</span>` : ''}`;
+      byId('navigation-breadcrumbs').innerHTML = home ? '<span class="breadcrumb-current" aria-current="page">홈</span>' : `<button type="button" class="quiet small" data-library-filter="all"${disabled ? ' disabled' : ''}${!selectedMeeting && filter === 'all' ? ' aria-current="page"' : ''}>회의 목록</button>${parent !== 'all' ? `<span class="breadcrumb-separator" aria-hidden="true">${icon('chevron-right')}</span><button type="button" class="quiet small" data-library-filter="${escape(parent)}"${disabled ? ' disabled' : ''}${!selectedMeeting ? ' aria-current="page"' : ''}>${escape(parentName)}</button>` : ''}${selectedMeeting ? `<span class="breadcrumb-separator" aria-hidden="true">${icon('chevron-right')}</span><span class="breadcrumb-current" aria-current="page" title="${escape(selectedMeeting.title)}">${escape(selectedMeeting.title)}</span>` : ''}`;
     }
     const nextNavigationKey = `${state().notificationsOpen}:${state().libraryOpen}:${state().selectedId}:${filter}`;
     if (navigationKey !== nextNavigationKey) { navigationKey = nextNavigationKey; sidebar?.navigate(); }
@@ -733,5 +740,6 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
       else void mutate(() => moveChecked(sources, destination.destination), resetSelection);
     });
   }
-  return { render, show, preview, resetSelection, toggleSelection, handleRowSelection, selectedIds, visibleMeetings };
+  const count = filter => countLibraryMeetings(state().snapshot.meetings).get(filter) || 0;
+  return { render, show, preview, count, resetSelection, toggleSelection, handleRowSelection, selectedIds, visibleMeetings };
 }
