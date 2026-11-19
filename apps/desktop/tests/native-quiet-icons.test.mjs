@@ -20,7 +20,9 @@ test('every selected SVG and brand source matches the registry packaged by both 
 
 // These are selected shapes, not a snapshot of every exploratory icon candidate.
 test('the shared renderer preserves the chosen core geometry and normalized outline weight',()=>{
-  assert.equal(icon.names.length,85);
+  assert.equal(icon.names.length,86);
+  assert.ok(icon.names.includes('house'));
+  assert.match(icon('house'),/M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8/);
   assert.match(icon('arrow-up'),/M12 18V6M7\.5 10\.5 12 6l4\.5 4\.5/);
   assert.match(icon('notebook-tabs'),/M8 9\.5v5M12 7v10M16 9\.5v5/);
   assert.match(icon('mic'),/M8\.4 7\.4/);

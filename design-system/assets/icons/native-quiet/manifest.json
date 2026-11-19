@@ -225,6 +225,12 @@
       "source": "Lucide, rounded outline adaptation"
     },
     {
+      "id": "house",
+      "asset": "house.svg",
+      "kind": "stroke",
+      "source": "Lucide, rounded outline adaptation"
+    },
+    {
       "id": "inbox",
       "asset": "inbox.svg",
       "kind": "stroke",
