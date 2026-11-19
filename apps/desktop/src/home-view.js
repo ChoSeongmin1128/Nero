@@ -13,7 +13,7 @@ export function homeEvents(occurrences = [], now = Date.now()) {
 // The screen a person opens Nero to: record the meeting happening now, or start one.
 export function mountHome({ container, bridge, icon, escape, onRecord, onCreate, onImport, onRecordEvent, onConnectCalendar, device = () => '', disabled = () => false, now = () => new Date(), timeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone }) {
   let schedule = { loading: false, connected: false, events: [], scopeRevision: null, day: '', timeZone: '', error: '' };
-  let request = 0, renderKey = '';
+  let request = 0, renderKey = '', retry = null, restoringTries = 0;
   const clock = zone => new Intl.DateTimeFormat('ko-KR', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZone: zone });
 
   async function refresh() {
@@ -24,7 +24,12 @@ export function mountHome({ container, bridge, icon, escape, onRecord, onCreate,
     try {
       const result = await bridge.readCalendarMeetingOccurrences({ day, timeZone: zone });
       if (current !== request) return;
-      schedule = { loading: false, connected: Boolean(result?.calendar?.connected), events: result?.occurrences || [], scopeRevision: result?.scopeRevision ?? null, day, timeZone: zone, error: '' };
+      const restoring = Boolean(result?.calendar?.restoring);
+      schedule = { loading: false, restoring, connected: Boolean(result?.calendar?.connected), events: result?.occurrences || [], scopeRevision: result?.scopeRevision ?? null, day, timeZone: zone, error: '' };
+      // Right after launch the saved Google connection is still being checked.
+      clearTimeout(retry);
+      if (restoring && restoringTries++ < 20) retry = setTimeout(() => { void refresh(); }, 1500);
+      else if (!restoring) restoringTries = 0;
     } catch (error) {
       if (current !== request) return;
       schedule = { ...schedule, loading: false, events: [], error: error?.message || '오늘 일정을 불러오지 못했습니다.' };
@@ -47,7 +52,7 @@ export function mountHome({ container, bridge, icon, escape, onRecord, onCreate,
     const scheduleBlock = schedule.connected
       ? `<section class="home-schedule" aria-labelledby="home-schedule-title"><h2 id="home-schedule-title">오늘 일정</h2>${rows ? `<ul>${rows}</ul>` : `<p class="home-note">${schedule.loading ? '일정을 불러오는 중입니다.' : '오늘 남은 일정이 없습니다.'}</p>`}</section>`
       : schedule.error ? `<p class="home-note">${escape(schedule.error)}</p>` : '';
-    const hint = !schedule.connected && !schedule.loading && !schedule.error ? `<p class="home-note"><button type="button" class="quiet small" data-home-action="calendar">Google Calendar 연결</button><span>하면 오늘 일정에서 바로 녹음할 수 있습니다.</span></p>` : '';
+    const hint = !schedule.connected && !schedule.restoring && !schedule.loading && !schedule.error ? `<p class="home-note"><button type="button" class="quiet small" data-home-action="calendar">Google Calendar 연결</button><span>하면 오늘 일정에서 바로 녹음할 수 있습니다.</span></p>` : '';
     container.innerHTML = `<div class="home-content"><h1 class="home-date" tabindex="-1">${escape(dayTitle.format(now()))}</h1>${scheduleBlock}<div class="home-actions">${rows ? '<span class="home-actions-label">일정 없이</span>' : ''}${button('data-home-action="record"', 'mic', '녹음 시작', !running)}${button('data-home-action="create"', 'square-pen', '빈 회의')}${button('data-home-action="import"', 'upload', '파일 가져오기')}${device() ? `<span class="home-device">${icon('mic')}<span>${escape(device())}</span></span>` : ''}</div>${hint}</div>`;
   }
 

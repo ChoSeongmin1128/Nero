@@ -76,7 +76,14 @@ const agentSettings = mountAgentSettings({ byId, bridge, dialog: agentConnection
 const terminologySettings = mountTerminologySettings({ byId, bridge, isProcessing: () => processingActive(), onChange: () => renderSettings() });
 const storageConfirmation = mountConfirmDialog({ container: byId('settings-dialog') });
 const storageSettings = mountStorageSettings({ byId, bridge, confirm: options => storageConfirmation.confirm(options) });
-const calendarSettings = mountCalendarSettings({ panel: byId('calendar-settings'), bridge, onSnapshot: value => integrationMonitor.acceptCalendar(value) });
+let calendarConnected = null;
+const calendarSettings = mountCalendarSettings({ panel: byId('calendar-settings'), bridge, onSnapshot: value => {
+  integrationMonitor.acceptCalendar(value);
+  // Home lists today's events, so a connection made or lost in settings reloads it.
+  const connected = Boolean(value?.connected);
+  if (calendarConnected !== null && connected !== calendarConnected) queueMicrotask(() => { void home.refresh(); });
+  calendarConnected = connected;
+} });
 const calendarReference = mountCalendarMeetingReference({ container: byId('calendar-meeting-reference'), bridge,
   onContinue: meetingId => run(() => continueCalendarRecording(meetingId)),
   onOpenMeeting: meetingId => selectMeeting(meetingId),
