@@ -25,6 +25,8 @@ export function mountSidebarViews({ aside, navigation, notifications, trigger, b
   const saved = read();
   let view = views[saved] && saved !== 'notifications' && saved !== 'folder' ? saved : 'home';
   let folderId = '', returnView = view, unread = 0, active = 0, disposed = false;
+  let bellHover, hoverOpened = false;
+  const pinned = () => aside.parentElement?.classList.contains('nav-pinned') === true;
   function paint() {
     if (view === 'folder' && !folderName(folderId)) { view = 'folders'; folderId = ''; }
     const opened = view === 'notifications', config = views[view] || {};
@@ -78,8 +80,9 @@ export function mountSidebarViews({ aside, navigation, notifications, trigger, b
       else button.removeAttribute('aria-current');
     }
   }
-  function choose(name, folder = '') {
+  function choose(name, folder = '', { hover = false } = {}) {
     if (disposed || !views[name]) return;
+    hoverOpened = false;
     if (notifications.contains(document.activeElement)) document.activeElement.blur();
     view = name;
     folderId = name === 'folder' ? folder : '';
@@ -87,11 +90,12 @@ export function mountSidebarViews({ aside, navigation, notifications, trigger, b
       returnView = name;
       try { if (name !== 'folder') storage?.setItem('nero.sidebar.view', name); } catch {}
     }
-    onPreview(name, folderId);
+    onPreview(name, folderId, { hover });
     paint();
   }
   function close({ focus = true } = {}) {
     if (disposed || view !== 'notifications') return;
+    hoverOpened = false;
     view = returnView;
     paint();
     onChange(false);
@@ -107,7 +111,7 @@ export function mountSidebarViews({ aside, navigation, notifications, trigger, b
     if (focus) notifications.querySelector('[data-notification-heading]')?.focus({ preventScroll: true });
   }
   // While the sidebar is hidden the bell shows the notifications it still holds.
-  const click = () => view === 'notifications' && !aside.inert ? close() : open();
+  const click = () => view === 'notifications' && !aside.inert && !hoverOpened ? close() : (hoverOpened = false, open());
   const backClick = () => choose('folders');
   const closeFromList = event => { if (event.target.closest?.('[data-notification-action="back"]')) close(); };
   // A folder in the folder list opens its meetings here instead of the central list.
@@ -123,8 +127,17 @@ export function mountSidebarViews({ aside, navigation, notifications, trigger, b
     event.preventDefault(); event.stopPropagation(); close();
   };
   const stateChanged = () => paint();
-  const previewChanged = event => choose(event.detail?.view);
+  const previewChanged = event => choose(event.detail?.view, '', { hover: event.detail?.hover === true });
+  // While the sidebar is not pinned, resting on the bell shows the notifications.
+  const bellEnter = event => {
+    clearTimeout(bellHover);
+    if (event.pointerType !== 'mouse' || pinned() || view === 'notifications') return;
+    bellHover = setTimeout(() => { if (!pinned() && view !== 'notifications') { open({ focus: false }); hoverOpened = true; } }, 140);
+  };
+  const bellLeave = () => clearTimeout(bellHover);
   trigger.addEventListener('click', click);
+  trigger.addEventListener('pointerenter', bellEnter);
+  trigger.addEventListener('pointerleave', bellLeave);
   back?.addEventListener('click', backClick);
   library?.addEventListener('click', folderClick, true);
   notifications.addEventListener('click', closeFromList);
@@ -138,6 +151,7 @@ export function mountSidebarViews({ aside, navigation, notifications, trigger, b
     updateCounts(counts = {}) { unread = Math.max(0, Number(counts.unread) || 0); active = Math.max(0, Number(counts.active) || 0); paint(); },
     destroy() {
       disposed = true;
+      clearTimeout(bellHover); trigger.removeEventListener('pointerenter', bellEnter); trigger.removeEventListener('pointerleave', bellLeave);
       trigger.removeEventListener('click', click); back?.removeEventListener('click', backClick); library?.removeEventListener('click', folderClick, true);
       notifications.removeEventListener('click', closeFromList); notifications.removeEventListener('keydown', keydown);
       aside.removeEventListener('nero:navigation-state', stateChanged); aside.removeEventListener('nero:sidebar-preview', previewChanged); aside.removeEventListener('nero:sidebar-content-updated', paint);

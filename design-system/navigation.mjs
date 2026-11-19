@@ -76,11 +76,11 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
   }
   function reveal() { if (unavailable()) return; clearTimeout(hoverTimer); clearTimeout(timer); if (!pinned) temporary = true; render(); }
   // A rail button chooses the sidebar's list; an unpinned sidebar opens to show it.
-  function openPreview(button) {
+  function openPreview(button, { hover = false } = {}) {
     if (unavailable()) return;
     previewAnchor = button;
     previewView = button.dataset.navigationPreview;
-    aside.dispatchEvent(new document.defaultView.CustomEvent('nero:sidebar-preview', { detail: { view: previewView } }));
+    aside.dispatchEvent(new document.defaultView.CustomEvent('nero:sidebar-preview', { detail: { view: previewView, hover } }));
     if (!pinned) reveal();
   }
   function openPopups() {
@@ -177,7 +177,16 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
   compact?.addEventListener('pointerenter', event => { if (event.pointerType === 'mouse') enter(compact); });
   compact?.addEventListener('pointerleave', () => leave(compact));
   compact?.addEventListener('focusout', hide);
+  // While the sidebar is not pinned, resting on a rail button shows its list; passing
+  // over one on the way elsewhere does not.
+  let previewHover;
   for (const button of previews) {
+    button.addEventListener('pointerenter', event => {
+      clearTimeout(previewHover);
+      if (event.pointerType !== 'mouse' || pinned || unavailable() || openPopups().length) return;
+      previewHover = setTimeout(() => { if (!pinned) openPreview(button, { hover: true }); }, 140);
+    });
+    button.addEventListener('pointerleave', () => clearTimeout(previewHover));
     button.addEventListener('click', () => openPreview(button));
     button.addEventListener('keydown', event => {
       if (!['ArrowRight', 'Enter'].includes(event.key) || event.defaultPrevented || event.isComposing || event.keyCode === 229 || event.altKey || event.metaKey || event.ctrlKey || event.shiftKey || unavailable() || openPopups().length) return;

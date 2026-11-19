@@ -51,3 +51,14 @@ test('focus refresh is bounded, hidden views skip polling and disposal removes l
   monitor.dispose(); assert.ok(cleared); assert.equal(events.size, 0); assert.equal(docEvents.size, 0);
   await monitor.refresh(); assert.equal(calls, 1);
 });
+
+test('an update the host cannot take from the app explains why instead of offering the update', () => {
+  const same = { available: true, clients: [{ id: 'claude', state: 'update_required', action: 'none', packageVersion: '44', detail: 'Claude에 설치된 Nero 연동과 번호가 같아 업데이트되지 않습니다.' }] };
+  const [notice] = integrationNotices({ agents: same });
+  assert.equal(notice.action, undefined);
+  assert.match(notice.message, /번호가 같아/);
+  const [offered] = integrationNotices({ agents: { available: true, clients: [{ id: 'claude', state: 'update_required', action: 'update', packageVersion: '45' }] } });
+  assert.equal(offered.action, 'update');
+  assert.equal(offered.message, '업데이트 필요');
+});
+

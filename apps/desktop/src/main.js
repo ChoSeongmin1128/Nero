@@ -1793,14 +1793,19 @@ const notificationCenter = mountNotificationCenter({ container: byId('notificati
   if (service === 'claude' && info?.claudeExtensionPath) {
     await openSettings('agent', 'notifications-open');
     agentConnectionDialog.openClaudeExtension(info.claudeExtensionPath, byId('settings-claude-connect'));
+    return '';
   }
+  // Claude Desktop shows its own install confirmation; until it is accepted the
+  // connection still needs the update.
+  if (client?.state === 'update_required') return service === 'claude' ? 'Claude Desktop에서 설치를 확인해 주세요.' : 'ChatGPT에서 설치를 확인해 주세요.';
+  return '';
 }, onChanged: () => render() });
 let sidebarStorage = null;
 try { sidebarStorage = window.localStorage; } catch {}
 sidebarViews = mountSidebarViews({ aside: byId('navigation-sidebar'), navigation: byId('sidebar-navigation-view'), notifications: byId('notification-center'), trigger: byId('notifications-open'), badge: byId('notification-count'), storage: sidebarStorage,
   count: filter => filter === 'folders' ? (state.snapshot.folders || []).length : library.count(filter),
   folderName: id => (state.snapshot.folders || []).find(folder => folder.id === id)?.name || '',
-  onPreview: (view, folder) => { library.preview(view, folder); if (view === 'home') void openHome(); } });
+  onPreview: (view, folder, { hover = false } = {}) => { library.preview(view, folder); if (view === 'home' && !hover) void openHome(); } });
 byId('sidebar-preview-open').addEventListener('click', () => { const filter = byId('sidebar-preview-open').dataset.sidebarFilter; void library.show(filter === 'unfiled' || filter === 'trash' || state.snapshot.folders.some(folder => folder.id === filter) ? filter : 'all'); });
 viewHistory = createViewHistory({
   canVisit: route => route.kind === 'home' ? true : route.kind === 'meeting' ? state.snapshot.meetings.some(meeting => meeting.id === route.id && !meeting.deletedAt) : ['all', 'unfiled', 'trash'].includes(route.filter) || state.snapshot.folders.some(folder => folder.id === route.filter),

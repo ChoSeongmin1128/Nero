@@ -33,16 +33,31 @@ function setup(t, preferences = {}) {
   return { window, document, el, shell, aside, compact, navigation, events, states, preview, pointer, escape, tick: milliseconds => t.mock.timers.tick(milliseconds) };
 }
 
-test('hovering rail buttons opens nothing while the toolbar toggle and edge reveal the sidebar', t => {
+test('resting on a rail button shows its list, passing over one does not, and the toggle and edge reveal the sidebar', t => {
   const app = setup(t);
   app.el('notes').focus();
   for (const view of ['home', 'all', 'folders', 'trash']) {
     app.pointer(app.preview(view), 'pointerenter');
-    app.tick(500);
+    app.tick(100);
     app.pointer(app.preview(view), 'pointerleave');
   }
+  app.pointer(app.preview('all'), 'pointerenter', 'touch');
+  app.tick(500);
   assert.equal(app.aside.inert, true);
   assert.deepEqual(app.events, []);
+  app.pointer(app.preview('all'), 'pointerenter');
+  app.tick(140);
+  assert.equal(app.aside.inert, false);
+  app.pointer(app.preview('all'), 'pointerleave');
+  app.pointer(app.preview('trash'), 'pointerenter');
+  app.tick(140);
+  assert.deepEqual(app.events, [{ view: 'all', expanded: false }, { view: 'trash', expanded: true }]);
+  assert.equal(app.document.activeElement, app.el('notes'), 'hovering keeps the writing focus');
+  app.pointer(app.preview('trash'), 'pointerleave');
+  app.pointer(app.compact, 'pointerleave');
+  app.tick(500);
+  assert.equal(app.aside.inert, true);
+  app.events.length = 0;
   const toggle = app.el('navigation-toggle');
   app.pointer(toggle, 'pointerenter', 'touch');
   app.tick(500);

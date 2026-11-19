@@ -255,7 +255,7 @@ test('startup integration alerts appear without visiting settings, update in pla
     readSnapshot: () => ({ revision: 1, meetings: [], folders: [], session: null }), listDevices: () => [], setAutoRecorder() {},
     processingStatus: () => ({ status: 'idle', supported: true, modelReady: true, summarySupported: true, summaryReady: true }),
     readTerminologySettings: () => ({ available: false }), listTemplates: () => [], readTemplateCatalog: () => ({revision:'catalog:1',templates:[]}),
-    agentConnectionInfo: () => ({ available: true, clients: [{ id: 'claude', name: 'Claude', state: 'update_required', packageVersion: '28' }, { id: 'codex', name: 'ChatGPT', state: 'connected' }] }),
+    agentConnectionInfo: () => ({ available: true, clients: [{ id: 'claude', name: 'Claude', state: 'update_required', action: 'update', packageVersion: '28' }, { id: 'codex', name: 'ChatGPT', state: 'connected' }] }),
     readCalendarSettings: () => ({ revision: 1, configured: true, connected: false, accountLabel: 'Test account', error: 'Reconnect', calendars: [], selectedCalendars: [] }),
     connectAgentClient: client => { connects += 1; return { available: true, clients: [{ id: client, name: 'Claude', state: 'connected' }, { id: 'codex', name: 'ChatGPT', state: 'connected' }] }; },
     readNewMeetingFolder: () => null,

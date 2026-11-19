@@ -69,6 +69,22 @@ test('collapsing the temporary panel keeps rail controls usable and the bell rev
   assert.equal(notes.value, '저장 전 메모');
 });
 
+test('resting on the bell while the sidebar is not pinned shows notifications, and a click keeps them open', t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const app = setup(t);
+  const pointer = (type, pointerType = 'mouse') => app.el('notifications').dispatchEvent(new app.window.PointerEvent(type, { pointerType }));
+  pointer('pointerenter'); t.mock.timers.tick(100); pointer('pointerleave'); t.mock.timers.tick(500);
+  assert.equal(app.views.isOpen(), false, 'passing over the bell does not open it');
+  pointer('pointerenter'); t.mock.timers.tick(140);
+  assert.equal(app.views.isOpen(), true);
+  assert.equal(app.shell.classList.contains('nav-peek'), true);
+  assert.equal(app.document.activeElement === app.el('notes') || !app.el('notifications-panel').contains(app.document.activeElement), true, 'hovering does not move focus into the list');
+  app.el('notifications').click();
+  assert.equal(app.views.isOpen(), true, 'a click after hovering keeps them open');
+  app.el('notifications').click();
+  assert.equal(app.views.isOpen(), false);
+});
+
 test('the badge shows the attention count with an accessible label while active work is separate', t => {
   const app = setup(t);
   app.views.updateCounts({ unread: 3, active: 1 });

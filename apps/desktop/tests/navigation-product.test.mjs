@@ -37,13 +37,18 @@ async function setup(t, preferences = {}) {
   return { window, document, state, library, navigationCalls, mutations, bridge };
 }
 
-test('product shares hover, pin and close navigation without hiding the meeting content', async t => {
+test('product shares hover, pin and close navigation without hiding the meeting content (rail hover shows a list)', async t => {
   const { window, document } = await setup(t);
   const shell = document.querySelector('.workspace'), trigger = document.getElementById('navigation-toggle');
   document.querySelector('[data-navigation-preview="all"]').dispatchEvent(new window.PointerEvent('pointerenter', { pointerType: 'mouse' }));
   await new Promise(resolve => setTimeout(resolve, 160));
-  assert.equal(shell.classList.contains('nav-peek'), false, 'hovering a rail button opens nothing');
+  assert.equal(shell.classList.contains('nav-peek'), true, 'resting on a rail button shows its list');
+  assert.equal(document.getElementById('navigation-sidebar').dataset.sidebarView, 'all');
   document.querySelector('[data-navigation-preview="all"]').dispatchEvent(new window.PointerEvent('pointerleave', { pointerType: 'mouse' }));
+  document.querySelector('[data-navigation-compact]').dispatchEvent(new window.PointerEvent('pointerleave', { pointerType: 'mouse' }));
+  document.getElementById('navigation-sidebar').dispatchEvent(new window.PointerEvent('pointerleave', { pointerType: 'mouse' }));
+  await new Promise(resolve => setTimeout(resolve, 400));
+  assert.equal(shell.classList.contains('nav-peek'), false, 'leaving the rail hides it again');
   trigger.dispatchEvent(new window.PointerEvent('pointerenter', { pointerType: 'mouse' }));
   await new Promise(resolve => setTimeout(resolve, 160));
   assert.equal(shell.classList.contains('nav-peek'), true, 'hovering the toolbar toggle reveals the sidebar');

@@ -282,6 +282,17 @@ test('an integration that needs an update is updated from its notification', asy
   assert.match(f.container.querySelector('.field-error').textContent, /업데이트하지 못했습니다/);
 });
 
+test('an update waiting for the host says what to do next on its notification', async t => {
+  const f = harness(t, { onUpdateIntegration: async () => 'Claude Desktop에서 설치를 확인해 주세요.' });
+  const notice = { id: 'integration:claude:update:45', service: 'claude', title: 'Claude 연동', message: '업데이트 필요', action: 'update' };
+  f.update([], 1, { integrations: [notice] });
+  await f.click(notice.id, 'update');
+  assert.match(f.container.querySelector('[role="status"].notification-status').textContent, /설치를 확인해/);
+  f.update([], 2, { integrations: [] });
+  f.update([], 3, { integrations: [notice] });
+  assert.equal(f.container.querySelector('.notification-status[role="status"]'), null);
+});
+
 test('confirming mixed job and integration notifications cannot cancel or acknowledge an unrelated job', async t => {
   const acknowledged = [];
   const f = harness(t, { onProcessingAction: async (action, id) => { acknowledged.push(id); f.update([job('failed', 'a', 'failed', 10, { acknowledged: true })], 2, { integrations: [notice] }); } });

@@ -7,7 +7,7 @@ export function integrationNotices({ agents, calendar } = {}) {
       const client = agents.clients?.find(value => value.id === id);
       if (client?.state !== 'update_required') continue;
       result.push({ id: `integration:${id}:update:${client.packageVersion || ''}`, service: id,
-        title: `${name} 연동`, message: '업데이트 필요', action: 'update' });
+        title: `${name} 연동`, ...(client.action === 'update' ? { message: '업데이트 필요', action: 'update' } : { message: client.detail || '업데이트 필요' }) });
     }
   }
   if (calendar?.configured && calendar.accountLabel && !calendar.connected && !calendar.connecting

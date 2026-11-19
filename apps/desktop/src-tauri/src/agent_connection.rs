@@ -500,11 +500,13 @@ fn payload_generation(
         _ => return Err("지원하지 않는 연결입니다.".into()),
     };
     let mut digest = Sha256::new();
-    digest.update(b"nero-ai-package-v3\0");
+    digest.update(b"nero-ai-package-v4\0");
     digest.update(client.as_bytes());
     digest.update([0]);
-    digest.update((binary.len() as u64).to_le_bytes());
-    digest.update(binary);
+    for part in signed_code(binary).unwrap_or_else(|| vec![binary]) {
+        digest.update((part.len() as u64).to_le_bytes());
+        digest.update(part);
+    }
     for name in names {
         let bytes = read(name)?;
         let bytes = if name.ends_with(".json") {
@@ -534,6 +536,49 @@ fn payload_generation(
         digest.update(bytes);
     }
     Ok(format!("{:x}", digest.finalize()))
+}
+
+// A signed Mach-O executable without its signature's CMS part: the bytes before
+// the signature and its code directories. Signing the same build again only
+// changes the signing time, which must not make the same package look new.
+fn signed_code(binary: &[u8]) -> Option<Vec<&[u8]>> {
+    let le =
+        |at: usize| Some(u32::from_le_bytes(binary.get(at..at + 4)?.try_into().ok()?) as usize);
+    if le(0)? != 0xfeed_facf {
+        return None;
+    }
+    let (count, mut at) = (le(16)?, 32);
+    let mut signature = None;
+    for _ in 0..count {
+        let (command, size) = (le(at)?, le(at + 4)?);
+        if size < 8 {
+            return None;
+        }
+        if command == 0x1d {
+            signature = Some((le(at + 8)?, le(at + 12)?));
+        }
+        at = at.checked_add(size)?;
+    }
+    let (offset, size) = signature?;
+    let blob = binary.get(offset..offset.checked_add(size)?)?;
+    if offset.checked_add(size)? != binary.len() {
+        return None;
+    }
+    let be = |at: usize| Some(u32::from_be_bytes(blob.get(at..at + 4)?.try_into().ok()?) as usize);
+    if be(0)? != 0xfade_0cc0 {
+        return None;
+    }
+    let mut parts = vec![binary.get(..offset)?];
+    for index in 0..be(8)? {
+        let (kind, start) = (be(12 + index * 8)?, be(16 + index * 8)?);
+        if kind == 0 || (0x1000..0x1005).contains(&kind) {
+            if be(start)? != 0xfade_0c02 {
+                return None;
+            }
+            parts.push(blob.get(start..start.checked_add(be(start + 4)?)?)?);
+        }
+    }
+    (parts.len() > 1).then_some(parts)
 }
 
 fn load_registration(directory: &Path, root: &Path, client: &str) -> Result<Value, String> {
@@ -932,6 +977,70 @@ pub fn resource_agent_path(resources: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    fn signed(code: u8, cms: &[u8]) -> Vec<u8> {
+        let directory = [
+            &0xfade_0c02_u32.to_be_bytes()[..],
+            &12_u32.to_be_bytes(),
+            &[7, 7, 7, 7],
+        ]
+        .concat();
+        let cms_blob = [
+            &0xfade_0b01_u32.to_be_bytes()[..],
+            &((8 + cms.len()) as u32).to_be_bytes(),
+            cms,
+        ]
+        .concat();
+        let header = 12 + 2 * 8;
+        let blob = [
+            &0xfade_0cc0_u32.to_be_bytes()[..],
+            &((header + directory.len() + cms_blob.len()) as u32).to_be_bytes(),
+            &2_u32.to_be_bytes(),
+            &0_u32.to_be_bytes(),
+            &(header as u32).to_be_bytes(),
+            &0x10000_u32.to_be_bytes(),
+            &((header + directory.len()) as u32).to_be_bytes(),
+            &directory,
+            &cms_blob,
+        ]
+        .concat();
+        let offset = 32 + 16 + 16;
+        [
+            &0xfeed_facf_u32.to_le_bytes()[..],
+            &[0; 12],
+            &1_u32.to_le_bytes(),
+            &16_u32.to_le_bytes(),
+            &[0; 8],
+            &0x1d_u32.to_le_bytes(),
+            &16_u32.to_le_bytes(),
+            &(offset as u32).to_le_bytes(),
+            &(blob.len() as u32).to_le_bytes(),
+            &[code; 16],
+            &blob,
+        ]
+        .concat()
+    }
+
+    #[test]
+    fn signing_the_same_build_again_keeps_its_package_generation() {
+        let generation = |binary: &[u8]| {
+            super::payload_generation("claude", binary, |_| Ok(b"{}".to_vec())).unwrap()
+        };
+        let first = signed(1, b"signed at eight");
+        assert_eq!(super::signed_code(&first).unwrap().len(), 2);
+        assert_eq!(
+            generation(&first),
+            generation(&signed(1, b"signed at nine!"))
+        );
+        assert_ne!(
+            generation(&first),
+            generation(&signed(2, b"signed at eight"))
+        );
+        assert_ne!(generation(b"unsigned"), generation(b"unsigned!"));
+        let mut trailing = first.clone();
+        trailing.push(0);
+        assert!(super::signed_code(&trailing).is_none());
+    }
+
     #[test]
     fn development_info_never_offers_an_external_package_or_command() {
         let info = super::development_info(std::path::Path::new("/synthetic-dev"));
