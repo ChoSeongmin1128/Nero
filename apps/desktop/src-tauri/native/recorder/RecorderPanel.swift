@@ -51,8 +51,9 @@ struct RecorderUpdate: Decodable {
         presenter?.moveDrag(to: point)
     }
     override func mouseUp(with event: NSEvent) {
+        // A pointer click never pins the detail row open: hover already shows it, and a
+        // pinned row stayed open after the pointer left.
         if dragged { presenter?.endDrag(at: window?.convertPoint(toScreen: event.locationInWindow) ?? NSEvent.mouseLocation) }
-        else if down != nil { presenter?.toggleControls() }
         down = nil
     }
     override func accessibilityPerformPress() -> Bool { presenter?.toggleControls(); return true }
@@ -119,6 +120,7 @@ struct RecorderUpdate: Decodable {
     var floatingSize: NSSize { NSSize(width: RecorderMetrics.floatingWidth(textWidth), height: RecorderMetrics.floatingHeight) }
     private(set) var pulse: CGFloat = 1
     private var pulseTimer: Timer?
+    private var pointerWatch: Timer?
 
     init(callback: @escaping RecorderCallback, defaults: UserDefaults? = .standard) {
         self.callback = callback; self.defaults = defaults
@@ -157,7 +159,7 @@ struct RecorderUpdate: Decodable {
         refreshEnvironment()
     }
 
-    func hide() { shown = false; collapse?.cancel(); expanded = false; explicitExpansion = false; updatePulse(); panel.orderOut(nil) }
+    func hide() { shown = false; collapse?.cancel(); stopPointerWatch(); expanded = false; explicitExpansion = false; updatePulse(); panel.orderOut(nil) }
 
     func hide(generation next: UInt64) {
         guard next >= generation else { return }
@@ -237,7 +239,7 @@ struct RecorderUpdate: Decodable {
     func hover(_ inside: Bool) {
         collapse?.cancel()
         guard !placement.floating, !dragging, !explicitExpansion else { return }
-        if inside { expanded = true; layout(animated: true) }
+        if inside { expanded = true; layout(animated: true); watchPointer() }
         else {
             let task = DispatchWorkItem { [weak self] in
                 guard let self, !self.panel.frame.contains(NSEvent.mouseLocation), !self.dragging else { return }
@@ -245,6 +247,23 @@ struct RecorderUpdate: Decodable {
             }
             collapse = task; DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: task)
         }
+    }
+
+    // An exit event can be lost while the panel resizes under the pointer, so while the
+    // row is open on hover the pointer position also decides when it closes.
+    private func watchPointer() {
+        guard pointerWatch == nil else { return }
+        pointerWatch = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.closeIfPointerLeft(NSEvent.mouseLocation) }
+        }
+    }
+
+    private func stopPointerWatch() { pointerWatch?.invalidate(); pointerWatch = nil }
+
+    func closeIfPointerLeft(_ pointer: NSPoint) {
+        guard expanded, !explicitExpansion, !placement.floating else { stopPointerWatch(); return }
+        guard !dragging, !panel.frame.insetBy(dx: -2, dy: -2).contains(pointer) else { return }
+        collapse?.cancel(); stopPointerWatch(); expanded = false; layout(animated: true)
     }
 
     func toggleControls() {

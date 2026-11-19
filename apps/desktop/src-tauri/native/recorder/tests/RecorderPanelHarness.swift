@@ -97,8 +97,18 @@ import AppKit
         assert(button("open") != nil && button("hide") != nil)
         presenter.toggleControls()
         assert(button("open") == nil && button("pause") != nil)
+        presenter.hover(true)
+        assert(presenter.expanded)
+        let inside = NSPoint(x: presenter.panel.frame.midX, y: presenter.panel.frame.midY)
+        for kind in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            presenter.panel.sendEvent(NSEvent.mouseEvent(with: kind, location: presenter.panel.convertPoint(fromScreen: inside), modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: presenter.panel.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!)
+        }
+        presenter.closeIfPointerLeft(inside)
+        assert(presenter.expanded)
+        presenter.closeIfPointerLeft(NSPoint(x: presenter.panel.frame.maxX + 40, y: presenter.panel.frame.minY - 40))
+        assert(!presenter.expanded && button("open") == nil)
         report(["event": "primary-control-tests", "passed": true,
-                "cases": ["collapsed controls", "pause", "resume", "finalizing disabled", "auxiliary expansion"]])
+                "cases": ["collapsed controls", "pause", "resume", "finalizing disabled", "auxiliary expansion", "click keeps hover row", "pointer outside closes row"]])
     }
 
     func exerciseDrag() {

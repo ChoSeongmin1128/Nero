@@ -20,8 +20,9 @@ The floating panel keeps pause and stop apart from open, dock and hide. Floating
 monitor disappears. Only the placement is saved in `nero.recorderPlacement.v1`.
 
 The mark breathes slowly while recording (still under Reduce Motion); a paused clock dims. Hover adds a detail row
-with the meeting title and the auxiliary actions (open meeting and hide), right-aligned under pause and stop; clicking
-the status also keeps that row available for accessibility. Dragging works from anywhere on the panel and detaches it, and dropping near the top
+with the meeting title and the auxiliary actions (open meeting and hide), right-aligned under pause and stop. It closes when the pointer leaves, checked
+again by pointer position in case an exit event is lost while the panel resizes; a pointer click does not pin it
+open. The accessibility press action keeps the row open until pressed again. Dragging works from anywhere on the panel and detaches it, and dropping near the top
 center or choosing "상단에 붙이기" docks it again. Hiding the panel does not stop
 recording; the existing main-window recording action can show it again.
 
