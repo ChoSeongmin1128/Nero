@@ -309,16 +309,21 @@ idempotentHint=false이며 기존 내용을 바꾸거나 삭제하는 도구에�
 | 캘린더 | `calendar_status`, `calendar_events`, `calendar_attendees` | `calendar status/events`, `calendar attendees ID` |
 | | `calendars_select`, `calendar_sync`, `meeting_from_calendar` | `calendar select/sync/create-meeting` |
 | 용어집과 설정 | `terminology_get`, `glossary_save`, `settings_get`, `settings_set` | `terminology get`, `glossary save ID`, `settings get/set` |
-| 녹음 | `recording_devices`, `recording_control` | `recording devices`, `recording start/pause/resume/stop` |
+| 녹음 | `recording_devices`, `recording_control`, `recording_continue` | `recording devices`, `recording start/pause/resume/stop`, `recording continue ID` |
+| 저장 공간 | `storage_usage`, `recordings_compact` | `storage usage`, `storage compact` |
 | 회의와 처리 | `meeting_create`, `meeting_notes_append`, `transcription_start`, `speakers_analyze`, `models_prepare` | `meetings new`, `meetings notes-append ID`, `transcript start ID`, `speakers analyze ID`, `models prepare` |
 | 음성 기록 | `transcript_history`, `transcript_save`, `transcript_restore`, `speakers_save` | `transcript history/save/restore ID`, `speakers save ID` |
-| 작업 | `job_retry`, `job_acknowledge` | `jobs retry/acknowledge ID` |
+| 작업 | `job_retry`, `job_acknowledge`, `job_pause`, `job_resume` | `jobs retry/acknowledge/pause/resume ID` |
 
 - CLI 옵션은 도구 입력 이름을 그대로 쓴다. 불리언은 `--이름`/`--no-이름`, 목록은 단수형 옵션을 반복하며(`--meeting-id`), `--file JSON_PATH`는 나머지 필드를 한 객체로 준다. 결과는 JSON이다.
 - `ai_chat_get`과 `ai_chat_version_select`는 답변마다 저장한 입력 자료(첨부한 회의/Notion 본문, 허용한 인용 목록, 템플릿 프롬프트)를 빼고 반환한다. 이 자료는 회의/자료 도구로 읽는다. 앱 연결의 응답이 전송 한도(1MiB)를 넘으면 연결을 끊지 않고 `response_too_large`로 알린다.
 - `ai_chat_send`는 사용자의 구독 계정으로 앱의 AI에 질문하고 바로 `conversationId`, `requestId`를 돌려준다. 답변은 `ai_chat_get`의 상태가 완료/실패/취소가 될 때까지 읽는다. `conversationId`가 없으면 새 대화를 만든다. 요약 스킬은 회의 하나와 템플릿이 필요하며 질문 없이 보낼 수 있다. 추론 수준을 생략하면 모델의 기본 수준을 쓴다.
 - `ai_chats_trash`는 고른 대화 또는 마지막 활동이 지정한 일수보다 오래된 대화를 휴지통으로 옮기며 답변 중인 대화는 건너뛴다. 대화 영구 삭제는 없다.
 - `recording_control`의 `start`는 빈 회의나 새 회의(`title`)에 지정한 입력 장치 또는 기본 장치로 녹음한다. 앱 화면처럼 진행 중인 처리 작업을 멈추고 시작하며, 필요하면 macOS가 마이크 권한을 묻는다. `stop`은 앱 화면과 같이 녹음 후 처리를 이어서 시작한다. `pause`/`resume`/`stop`에 `sessionId`를 주면 그 사이 다른 녹음이 시작된 경우 `edit_conflict`로 거부한다.
+- `recording_continue`는 음성이 있는 일정 회의와 같은 일정에 번호를 붙인 새 회의를 같은 폴더에 만들고 녹음을 시작한다. 화면의 "이 일정으로 이어서 녹음"과 같으며 일정을 다시 조회하지 않는다.
+- `settings_set`의 `recordingTranscription`은 녹음하면서 음성 기록 만들기를 켜거나 끄며 이후 시작하는 녹음에 적용한다. `settings_get`의 `recordingTranscription.supported`가 거짓이면 켤 수 없다.
+- `storage_usage`는 설정의 저장 공간과 같은 값을, `recordings_compact`는 설정의 "이전 형식 녹음 줄이기"와 같은 동작을 수행한다. 원본 녹음 파일을 지우므로 되돌릴 수 없고 사용자의 명시적인 현재 요청에만 사용한다. 처리 중이거나 확인하지 않은 작업이 있는 녹음은 제외하고 실패한 녹음은 원래 파일을 유지한다.
+- `jobs_list`는 진행 중인 작업에 일시 정지 가능 여부(`pausable`)와 현재 일시 정지(`pause`: 사용자/자동, 상태, 사유)를 함께 준다. `job_pause`/`job_resume`은 처리 알림의 일시 정지/다시 시작 버튼과 같다. 사용자가 멈춘 작업은 `job_resume`까지 멈춰 있고, 녹음 때문에 자동으로 멈춘 작업은 녹음 상황에 따라 이어진다.
 - `transcript_save`는 `transcript_get`의 `version`을 받고 바꾼 구간만 ID로 보낸다. `speakers_save`는 바뀐 뒤의 전체 화자 목록과 화자가 바뀌는 구간만 보낸다. 이전 기록은 `transcript_history`에 남는다.
 - 회의 자료 추가는 사용자가 준 Notion 페이지 링크만 Nero의 Notion 연결로 읽는다. 캘린더 일정은 하루와 명시한 시간대로 조회하며, 일정으로 회의를 만들 때는 그 조회의 `occurrenceKey`와 `scopeRevision`을 쓴다.
 - 회의를 읽거나 바꾸는 쓰기는 다른 회의 변경과 같이 열린 편집을 먼저 저장한다.

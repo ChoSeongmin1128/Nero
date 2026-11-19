@@ -330,7 +330,7 @@ fn require_local_window(window: &WebviewWindow) -> Result<(), String> {
     }
 }
 
-async fn on_core<T: Send + 'static>(
+pub(crate) async fn on_core<T: Send + 'static>(
     core: CoreHandle,
     action: impl FnOnce(CoreHandle) -> Result<T, nero_core::CoreError> + Send + 'static,
 ) -> Result<T, String> {

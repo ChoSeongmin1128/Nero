@@ -1,13 +1,13 @@
 // Requests an external agent sends to the running app's own services: AI chat, Notion
-// sources, calendar, terminology, recording, transcript edits and settings. Only the
-// shape is checked here, so a CLI can refuse a malformed request before sending it;
-// the app decides everything else.
+// sources, calendar, terminology, recording, storage, jobs, transcript edits and
+// settings. Only the shape is checked here, so a CLI can refuse a malformed request
+// before sending it; the app decides everything else.
 use crate::agent_control::ControlError;
 use crate::{store, TranscriptVersion};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-pub const METHODS: [&str; 37] = [
+pub const METHODS: [&str; 42] = [
     "ai_chats_list",
     "ai_chat_get",
     "ai_models_list",
@@ -34,6 +34,9 @@ pub const METHODS: [&str; 37] = [
     "settings_set",
     "recording_devices",
     "recording_control",
+    "recording_continue",
+    "storage_usage",
+    "recordings_compact",
     "meeting_create",
     "meeting_notes_append",
     "transcription_start",
@@ -45,6 +48,8 @@ pub const METHODS: [&str; 37] = [
     "speakers_save",
     "job_retry",
     "job_acknowledge",
+    "job_pause",
+    "job_resume",
 ];
 
 // Codes the app answers these requests with. Any other code reaches the agent as
@@ -216,6 +221,7 @@ pub enum AppRequest {
     SettingsSet {
         speaker_analysis: Option<bool>,
         terminology: Option<bool>,
+        recording_transcription: Option<bool>,
     },
     RecordingDevices {},
     RecordingControl {
@@ -227,6 +233,13 @@ pub enum AppRequest {
         #[serde(default)]
         session_id: Option<String>,
     },
+    // Records into a new meeting on the calendar event of a meeting that has audio.
+    RecordingContinue {
+        meeting_id: String,
+        device_id: Option<String>,
+    },
+    StorageUsage {},
+    RecordingsCompact {},
     MeetingCreate {
         #[serde(default)]
         title: String,
@@ -271,6 +284,14 @@ pub enum AppRequest {
         expected_version: String,
     },
     JobAcknowledge {
+        job_id: String,
+        expected_version: String,
+    },
+    JobPause {
+        job_id: String,
+        expected_version: String,
+    },
+    JobResume {
         job_id: String,
         expected_version: String,
     },
@@ -343,6 +364,8 @@ impl AppRequest {
             | Self::CalendarSync {}
             | Self::SettingsGet {}
             | Self::RecordingDevices {}
+            | Self::StorageUsage {}
+            | Self::RecordingsCompact {}
             | Self::ModelsPrepare {} => true,
             Self::AiChatSend {
                 conversation_id,
@@ -454,7 +477,21 @@ impl AppRequest {
             Self::SettingsSet {
                 speaker_analysis,
                 terminology,
-            } => speaker_analysis.is_some() || terminology.is_some(),
+                recording_transcription,
+            } => {
+                speaker_analysis.is_some()
+                    || terminology.is_some()
+                    || recording_transcription.is_some()
+            }
+            Self::RecordingContinue {
+                meeting_id,
+                device_id,
+            } => {
+                id(meeting_id)
+                    && device_id
+                        .as_deref()
+                        .is_none_or(|value| text(value, 1024) && !value.is_empty())
+            }
             Self::RecordingControl {
                 action,
                 meeting_id,
@@ -531,6 +568,14 @@ impl AppRequest {
             | Self::JobAcknowledge {
                 job_id,
                 expected_version,
+            }
+            | Self::JobPause {
+                job_id,
+                expected_version,
+            }
+            | Self::JobResume {
+                job_id,
+                expected_version,
             } => id(job_id) && version(expected_version),
         }
     }
@@ -605,6 +650,9 @@ mod tests {
                 "recording_control",
                 json!({"action":"start","title":"주간 회의"}),
             ),
+            ("recording_continue", json!({"meetingId":meeting})),
+            ("storage_usage", json!({})),
+            ("recordings_compact", json!({})),
             ("meeting_create", json!({"title":"빈 회의"})),
             (
                 "meeting_notes_append",
@@ -637,7 +685,16 @@ mod tests {
                 "job_acknowledge",
                 json!({"jobId":meeting,"expectedVersion":version}),
             ),
+            (
+                "job_pause",
+                json!({"jobId":meeting,"expectedVersion":version}),
+            ),
+            (
+                "job_resume",
+                json!({"jobId":meeting,"expectedVersion":version}),
+            ),
         ];
+        assert!(AppRequest::parse("settings_set", json!({"recordingTranscription":true})).is_ok());
         assert_eq!(samples.len(), METHODS.len());
         assert!(AppRequest::parse(
             "recording_control",
@@ -701,6 +758,12 @@ mod tests {
                 json!({"occurrenceKey":"k","day":"2026-11-05","timezone":"Asia/Seoul","scopeRevision":1,"meetingId":meeting}),
             ),
             ("settings_set", json!({"autoRecorder":true})),
+            ("recording_continue", json!({})),
+            (
+                "recording_continue",
+                json!({"meetingId":meeting,"deviceId":""}),
+            ),
+            ("job_pause", json!({"jobId":meeting})),
             (
                 "meeting_notes_append",
                 json!({"meetingId":meeting,"expectedVersion":"v","text":"x"}),

@@ -1670,6 +1670,8 @@ impl Processing {
         if limit == 0 || limit > 200 {
             return Err(nero_core::agent_control::ControlError::invalid());
         }
+        // The running job also reports whether it can pause and any pause in effect.
+        let control = self.control.lock().unwrap().clone();
         let records = self.records.lock().unwrap();
         let mut matching = records
             .iter()
@@ -1684,7 +1686,17 @@ impl Processing {
             .iter()
             .skip(offset)
             .take(limit)
-            .map(|record| agent_job_view(record))
+            .map(|record| {
+                let mut view = agent_job_view(record);
+                if let Some((_, control)) = control
+                    .as_ref()
+                    .filter(|(job, _)| record.status == JobStatus::Running && *job == record.id)
+                {
+                    view["pausable"] = serde_json::json!(control.pausable());
+                    view["pause"] = serde_json::json!(control.view());
+                }
+                view
+            })
             .collect::<Vec<_>>();
         let next = offset.saturating_add(jobs.len());
         Ok(

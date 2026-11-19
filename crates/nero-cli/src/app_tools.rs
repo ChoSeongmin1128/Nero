@@ -71,7 +71,7 @@ fn none() -> Vec<Field> {
     vec![]
 }
 
-pub(crate) const TOOLS: [AppTool; 37] = [
+pub(crate) const TOOLS: [AppTool; 42] = [
     AppTool { name: "ai_chats_list", words: &["ai", "chats"], positional: None, usage: "[--trashed] [--meeting-id ID]", read_only: true, destructive: false, open_world: false,
         description: "List Nero's in-app AI conversations, newest first, with their attached meeting IDs and whether an answer is streaming. trashed lists recoverable trash instead.",
         fields: || vec![field("trashed", boolean(), "List recoverable trash instead of active conversations."), field("meetingId", id_schema(), "Only conversations with a question that attached this meeting.")] },
@@ -139,17 +139,26 @@ pub(crate) const TOOLS: [AppTool; 37] = [
         description: "Replace the domain glossary with entries, using the terminology_get revision. Each entry's sourceId must be a candidate or reusable entry terminology_get returned for this meeting, or already in the glossary. Existing transcripts are unchanged.",
         fields: || vec![meeting(), required("expectedRevision", json!({"type":"integer","minimum":0}), "terminology_get glossary revision."), required("entries", json!({"type":"array","maxItems":200,"items":{"type":"object","properties":{"term":{"type":"string","minLength":1,"maxLength":100},"sourceId":token()},"required":["term","sourceId"],"additionalProperties":false}}), "Complete glossary after the change.")] },
     AppTool { name: "settings_get", words: &["settings", "get"], positional: None, usage: "", read_only: true, destructive: false, open_world: false,
-        description: "Read Nero settings an agent may change: speakerAnalysis and terminology (available, enabled).",
+        description: "Read Nero settings an agent may change: speakerAnalysis, terminology (available, enabled) and recordingTranscription (supported, enabled).",
         fields: none },
-    AppTool { name: "settings_set", words: &["settings", "set"], positional: None, usage: "[--speaker-analysis | --no-speaker-analysis] [--terminology | --no-terminology]", read_only: false, destructive: false, open_world: false,
-        description: "Change Nero settings only on explicit current user request. speakerAnalysis and terminology apply to future processing. speakerAnalysis changes only while nothing is recording or processing; terminology needs a saved glossary.",
-        fields: || vec![field("speakerAnalysis", boolean(), "Speaker analysis for future transcripts."), field("terminology", boolean(), "Terminology correction for future transcripts.")] },
+    AppTool { name: "settings_set", words: &["settings", "set"], positional: None, usage: "[--speaker-analysis | --no-speaker-analysis] [--terminology | --no-terminology] [--recording-transcription | --no-recording-transcription]", read_only: false, destructive: false, open_world: false,
+        description: "Change Nero settings only on explicit current user request. speakerAnalysis and terminology apply to future processing. speakerAnalysis changes only while nothing is recording or processing; terminology needs a saved glossary. recordingTranscription recognizes MOSS chunks while recording so the transcript is ready sooner after it ends; it uses CPU/GPU and memory during recording, applies to recordings started afterwards and needs settings_get recordingTranscription.supported.",
+        fields: || vec![field("speakerAnalysis", boolean(), "Speaker analysis for future transcripts."), field("terminology", boolean(), "Terminology correction for future transcripts."), field("recordingTranscription", boolean(), "Transcribe while recording, for recordings started afterwards.")] },
     AppTool { name: "recording_devices", words: &["recording", "devices"], positional: None, usage: "", read_only: true, destructive: false, open_world: false,
         description: "List audio input devices, the default device and the current recording session.",
         fields: none },
     AppTool { name: "recording_control", words: &["recording"], positional: Some("action"), usage: "start|pause|resume|stop [--meeting-id ID | --title TITLE] [--device-id ID] [--session-id ID]", read_only: false, destructive: true, open_world: false,
         description: "Start, pause, resume or stop the microphone recording, only on explicit current user request. start records into an empty meetingId, or a new meeting titled title, with deviceId or the default input. The app may ask macOS for microphone permission. Returns the recording session.",
         fields: || vec![required("action", json!({"type":"string","enum":["start","pause","resume","stop"]}), "start, pause, resume or stop."), field("meetingId", id_schema(), "start only: an empty meeting without audio."), field("title", json!({"type":"string","minLength":1,"maxLength":256}), "start only: title of a new meeting."), field("deviceId", json!({"type":"string","minLength":1,"maxLength":1024}), "start only: device id from recording_devices."), field("sessionId", id_schema(), "pause, resume or stop only: the session from recording_devices or a previous result; refused with edit_conflict when another recording is active.")] },
+    AppTool { name: "recording_continue", words: &["recording", "continue"], positional: Some("meetingId"), usage: "MEETING_ID [--device-id ID]", read_only: false, destructive: true, open_world: false,
+        description: "Start recording into a new meeting on the same calendar event as meetingId, a calendar meeting that already has audio, only on explicit current user request. The new meeting is numbered after the event's meetings and filed in the same folder; the calendar is not fetched again. Returns the new meeting, its editVersion and the recording session.",
+        fields: || vec![meeting(), field("deviceId", json!({"type":"string","minLength":1,"maxLength":1024}), "Device id from recording_devices. Omit for the default input.")] },
+    AppTool { name: "storage_usage", words: &["storage", "usage"], positional: None, usage: "", read_only: true, destructive: false, open_world: false,
+        description: "Read the bytes used by meeting recordings and documents, speech job records and models, and how many earlier-format recordings recordings_compact can reduce (reducibleMeetings, reducibleBytes). heldMeetings have a job that still reads their audio and are left as they are.",
+        fields: none },
+    AppTool { name: "recordings_compact", words: &["storage", "compact"], positional: None, usage: "", read_only: false, destructive: true, open_world: false,
+        description: "Reduce earlier-format recordings, only on explicit current user request: each becomes the 16 kHz mono WAV used for recognition and its original audio file is deleted. Transcripts are unchanged, but original audio quality cannot be restored. Not while recording. A recording that fails keeps its original files. Returns freedBytes, meetings, failed and the new usage.",
+        fields: none },
     AppTool { name: "meeting_create", words: &["meetings", "new"], positional: None, usage: "[--title TITLE] [--notes TEXT]", read_only: false, destructive: false, open_world: false,
         description: "Create an empty meeting without audio. Returns the meeting and its editVersion.",
         fields: || vec![field("title", json!({"type":"string","maxLength":256}), "Meeting title."), field("notes", string(256 * 1024), "Initial notes.")] },
@@ -183,6 +192,12 @@ pub(crate) const TOOLS: [AppTool; 37] = [
     AppTool { name: "job_acknowledge", words: &["jobs", "acknowledge"], positional: Some("jobId"), usage: "JOB_ID --expected-version HASH", read_only: false, destructive: false, open_world: false,
         description: "Dismiss a finished job's notice with its jobs_list editVersion. Results are unchanged.",
         fields: || vec![required("jobId", id_schema(), "Job id from jobs_list."), required("expectedVersion", edit_version(), "jobs_list editVersion.")] },
+    AppTool { name: "job_pause", words: &["jobs", "pause"], positional: Some("jobId"), usage: "JOB_ID --expected-version HASH", read_only: false, destructive: false, open_world: false,
+        description: "Pause the running job when jobs_list shows it pausable, with its jobs_list editVersion. It stays paused until job_resume; its saved progress is kept. Refused while the transcript is being saved.",
+        fields: || vec![required("jobId", id_schema(), "Running job id from jobs_list."), required("expectedVersion", edit_version(), "jobs_list editVersion.")] },
+    AppTool { name: "job_resume", words: &["jobs", "resume"], positional: Some("jobId"), usage: "JOB_ID --expected-version HASH", read_only: false, destructive: false, open_world: false,
+        description: "Resume a job paused with job_pause or the app's pause button. A job paused automatically for a recording continues when the recording allows.",
+        fields: || vec![required("jobId", id_schema(), "Running job id from jobs_list."), required("expectedVersion", edit_version(), "jobs_list editVersion.")] },
 ];
 
 pub(crate) fn find(name: &str) -> Option<&'static AppTool> {
@@ -453,6 +468,22 @@ mod tests {
                 vec!["transcript", "history", meeting],
                 "transcript_history",
                 json!({"meetingId":meeting}),
+            ),
+            (
+                vec!["settings", "set", "--recording-transcription"],
+                "settings_set",
+                json!({"recordingTranscription":true}),
+            ),
+            (
+                vec!["recording", "continue", meeting],
+                "recording_continue",
+                json!({"meetingId":meeting}),
+            ),
+            (vec!["storage", "compact"], "recordings_compact", json!({})),
+            (
+                vec!["jobs", "pause", meeting, "--expected-version", "v"],
+                "job_pause",
+                json!({"jobId":meeting,"expectedVersion":"v"}),
             ),
         ];
         for (arguments, method, params) in cases {

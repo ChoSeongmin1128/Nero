@@ -1203,6 +1203,7 @@ fn stdio_initialization_tools_errors_and_framing_use_the_sdk() {
         "terminology_get",
         "settings_get",
         "recording_devices",
+        "storage_usage",
         "transcript_history",
     ];
     for tool in tools {

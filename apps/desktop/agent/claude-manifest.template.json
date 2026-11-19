@@ -247,11 +247,11 @@
     },
     {
       "name": "settings_get",
-      "description": "화자 분석과 용어 교정 설정 조회"
+      "description": "화자 분석, 용어 교정, 녹음 중 음성 기록 설정 조회"
     },
     {
       "name": "settings_set",
-      "description": "사용자가 요청한 화자 분석, 용어 교정 설정 변경"
+      "description": "사용자가 요청한 화자 분석, 용어 교정, 녹음 중 음성 기록 설정 변경"
     },
     {
       "name": "recording_devices",
@@ -260,6 +260,18 @@
     {
       "name": "recording_control",
       "description": "사용자가 요청한 녹음 시작, 일시정지, 다시 시작, 종료"
+    },
+    {
+      "name": "recording_continue",
+      "description": "사용자가 요청한 같은 일정의 새 회의로 이어서 녹음"
+    },
+    {
+      "name": "storage_usage",
+      "description": "녹음, 기록, 모델의 저장 공간 조회"
+    },
+    {
+      "name": "recordings_compact",
+      "description": "사용자가 요청한 이전 형식 녹음 줄이기"
     },
     {
       "name": "meeting_create",
@@ -304,6 +316,14 @@
     {
       "name": "job_acknowledge",
       "description": "끝난 처리 작업 알림 확인"
+    },
+    {
+      "name": "job_pause",
+      "description": "진행 중인 처리 작업 일시 정지"
+    },
+    {
+      "name": "job_resume",
+      "description": "일시 정지한 처리 작업 다시 시작"
     }
   ]
 }

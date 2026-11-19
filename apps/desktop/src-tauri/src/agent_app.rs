@@ -309,7 +309,18 @@ impl<L> AgentApp<'_, L> {
             AppRequest::SettingsSet {
                 speaker_analysis,
                 terminology: enabled,
+                recording_transcription,
             } => {
+                if recording_transcription == Some(true)
+                    && !desktop
+                        .processing
+                        .snapshot()
+                        .recording_transcription_supported
+                {
+                    return Err(rejected(
+                        "이 Mac과 현재 음성 인식 엔진에서는 녹음하면서 음성 기록을 만들 수 없습니다.",
+                    ));
+                }
                 if let Some(enabled) = speaker_analysis {
                     desktop
                         .processing
@@ -318,6 +329,12 @@ impl<L> AgentApp<'_, L> {
                 }
                 if let Some(enabled) = enabled {
                     terminology::set_enabled(&desktop.processing, enabled).map_err(rejected)?;
+                }
+                if let Some(enabled) = recording_transcription {
+                    desktop
+                        .processing
+                        .set_recording_transcription(enabled)
+                        .map_err(rejected)?;
                 }
                 changed(app, json!({"area":"settings"}));
                 self.settings()
@@ -334,6 +351,42 @@ impl<L> AgentApp<'_, L> {
                 title,
                 session_id,
             } => self.recording(action, meeting_id, device_id, title, session_id),
+            AppRequest::RecordingContinue {
+                meeting_id,
+                device_id,
+            } => {
+                let snapshot = desktop.core.snapshot().map_err(core_error)?;
+                if crate::active_session(&snapshot).is_some() {
+                    return Err(ControlError::new("recording_active", "이미 녹음 중입니다."));
+                }
+                let (meeting, snapshot) =
+                    block_on(crate::start_capture(app, device_id, move |core, device| {
+                        core.record_calendar_continuation(&meeting_id, device)
+                            .map_err(|error| error.to_string())
+                    }))
+                    .map_err(rejected)?;
+                let mut view = meeting_view(&meeting)?;
+                view["session"] = value(snapshot.session)?;
+                Ok(view)
+            }
+            AppRequest::StorageUsage {} => {
+                let processing = desktop.processing.clone();
+                value(
+                    block_on(crate::on_core(desktop.core.clone(), move |core| {
+                        processing.storage_usage(&core)
+                    }))
+                    .map_err(rejected)?,
+                )
+            }
+            AppRequest::RecordingsCompact {} => {
+                let processing = desktop.processing.clone();
+                let result = block_on(crate::on_core(desktop.core.clone(), move |core| {
+                    processing.compact_recordings(&core)
+                }))
+                .map_err(rejected)?;
+                changed(app, json!({"area":"storage"}));
+                value(result)
+            }
             AppRequest::MeetingCreate { title, notes } => {
                 desktop
                     .processing
@@ -505,7 +558,33 @@ impl<L> AgentApp<'_, L> {
                 desktop.processing.acknowledge(&job_id).map_err(rejected)?;
                 Ok(json!({"applied":true}))
             }
+            AppRequest::JobPause {
+                job_id,
+                expected_version,
+            } => self.pause_job(&job_id, &expected_version, true),
+            AppRequest::JobResume {
+                job_id,
+                expected_version,
+            } => self.pause_job(&job_id, &expected_version, false),
         }
+    }
+
+    // The person's own pause, as the processing notice's pause and resume buttons set it.
+    fn pause_job(
+        &self,
+        job_id: &str,
+        expected_version: &str,
+        paused: bool,
+    ) -> Result<Value, ControlError> {
+        let desktop = self.app.state::<DesktopState>();
+        desktop
+            .processing
+            .agent_check_job(job_id, expected_version)?;
+        desktop
+            .processing
+            .set_paused(job_id, paused)
+            .map_err(rejected)?;
+        desktop.processing.agent_jobs(None, 0, 5)
     }
 
     fn chat(&self) -> Result<std::sync::Arc<crate::ai_chat::AiChat>, ControlError> {
@@ -657,7 +736,14 @@ impl<L> AgentApp<'_, L> {
         let desktop = self.app.state::<DesktopState>();
         let progress = desktop.processing.snapshot();
         let terminology = terminology::read_settings(&desktop.processing).map_err(rejected)?;
-        Ok(json!({"speakerAnalysis":progress.speaker_enabled,"terminology":terminology}))
+        Ok(json!({
+            "speakerAnalysis":progress.speaker_enabled,
+            "terminology":terminology,
+            "recordingTranscription":{
+                "supported":progress.recording_transcription_supported,
+                "enabled":progress.recording_transcription,
+            },
+        }))
     }
 
     fn transcript(&self, meeting_id: &str) -> Result<nero_core::Transcript, ControlError> {

@@ -234,6 +234,8 @@ mod tests {
             "ai_chat_cancel",
             "calendars_select",
             "recording_control",
+            "recording_continue",
+            "recordings_compact",
             "transcription_start",
         ] {
             let tool = tools.iter().find(|tool| tool.name == name).unwrap();
