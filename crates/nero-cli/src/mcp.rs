@@ -235,6 +235,7 @@ mod tests {
             "calendars_select",
             "recording_control",
             "recording_continue",
+            "recording_discard",
             "recordings_compact",
             "transcription_start",
         ] {

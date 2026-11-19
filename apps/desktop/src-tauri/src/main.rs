@@ -832,6 +832,72 @@ async fn move_meetings(
     finish_library_change(&app, state.core.clone(), result).await
 }
 
+/// The meeting screen's "녹음 버리기" and agent requests: the meeting goes to the trash
+/// with its recording, transcript and summary, through the same coordination as any
+/// trashing, and an empty copy takes its place with the same Notion sources. Blocks.
+pub(crate) fn discard_recording_shared(
+    app: &tauri::AppHandle,
+    meeting_id: &str,
+    expected_version: &str,
+) -> Result<nero_core::Meeting, String> {
+    let state = app.state::<DesktopState>();
+    let core = state.core.clone();
+    let sources = meeting_context_desktop::sources(app, meeting_id)
+        .map(|view| view.source_ids())
+        .unwrap_or_default();
+    let ids = [meeting_id.to_owned()];
+    let meeting = trash_coordinated(app, &state.processing, &core, &ids, || {
+        core.discard_recording(meeting_id, expected_version)
+    })
+    .map_err(|error| error.to_string())?;
+    let mut revision = meeting_context_desktop::sources(app, &meeting.id)
+        .map(|view| view.revision())
+        .unwrap_or(0);
+    for source_id in sources {
+        match meeting_context_desktop::change_sources(
+            app,
+            &meeting.id,
+            revision,
+            meeting_context_desktop::SourceChange::Add(source_id),
+        ) {
+            Ok(view) => revision = view.revision(),
+            Err(error) => eprintln!("Nero: 버린 녹음의 회의 자료를 옮기지 못했습니다: {error}"),
+        }
+    }
+    Ok(meeting)
+}
+
+#[tauri::command]
+async fn discard_recording(
+    window: WebviewWindow,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, DesktopState>,
+    meeting_id: String,
+) -> Result<serde_json::Value, String> {
+    require_main(&window)?;
+    let snapshot = on_core(state.core.clone(), |core| core.snapshot()).await?;
+    let meeting = snapshot
+        .meetings
+        .iter()
+        .find(|meeting| meeting.id == meeting_id)
+        .ok_or("회의를 찾을 수 없습니다.")?;
+    let expected = nero_core::agent_control::meeting_edit_version(meeting)
+        .map_err(|error| error.to_string())?;
+    let handle = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        discard_recording_shared(&handle, &meeting_id, &expected)
+    })
+    .await
+    .map_err(|_| "작업을 완료하지 못했습니다. 다시 시도해 주세요.".to_string())?;
+    let snapshot = finish_library_change(
+        &app,
+        state.core.clone(),
+        result.as_ref().map(|_| ()).map_err(Clone::clone),
+    )
+    .await?;
+    Ok(serde_json::json!({"meetingId":result?.id,"snapshot":snapshot}))
+}
+
 /// Every way of trashing meetings stops their AI chat and context work, then their
 /// processing, before the action runs.
 pub(crate) fn trash_coordinated<T>(
@@ -2150,6 +2216,7 @@ fn main() {
             delete_folder,
             move_meetings,
             trash_meetings,
+            discard_recording,
             restore_meetings,
             purge_meetings,
             list_devices,

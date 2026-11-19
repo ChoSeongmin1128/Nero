@@ -429,6 +429,10 @@ impl CoreHandle {
     pub fn trash_meetings(&self, ids: Vec<String>) -> Result<()> {
         self.call(move |engine| engine.trash_meetings(&ids))
     }
+    pub fn discard_recording(&self, id: &str, expected_version: &str) -> Result<Meeting> {
+        let (id, expected) = (id.to_owned(), expected_version.to_owned());
+        self.call(move |engine| engine.discard_recording(&id, &expected))
+    }
     pub fn restore_meetings(&self, ids: Vec<String>) -> Result<()> {
         self.call(move |engine| engine.restore_meetings(&ids))
     }

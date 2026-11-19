@@ -369,6 +369,17 @@ impl<L> AgentApp<'_, L> {
                 view["session"] = value(snapshot.session)?;
                 Ok(view)
             }
+            AppRequest::RecordingDiscard {
+                meeting_id,
+                expected_version,
+            } => {
+                let _lease = (self.save_edits)()?;
+                let meeting =
+                    crate::discard_recording_shared(app, &meeting_id, &expected_version)
+                        .map_err(rejected)?;
+                publish_snapshot(app);
+                meeting_view(&meeting)
+            }
             AppRequest::StorageUsage {} => {
                 let processing = desktop.processing.clone();
                 value(

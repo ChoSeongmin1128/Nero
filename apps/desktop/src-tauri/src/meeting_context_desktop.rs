@@ -218,6 +218,13 @@ impl SourcesView {
     pub(crate) fn revision(&self) -> u64 {
         self.revision
     }
+    pub(crate) fn source_ids(&self) -> Vec<String> {
+        self.sources
+            .iter()
+            .filter(|source| !source.unavailable)
+            .map(|source| source.source_id.clone())
+            .collect()
+    }
     pub(crate) fn url_of(&self, page_id: &str) -> Option<&str> {
         self.sources
             .iter()

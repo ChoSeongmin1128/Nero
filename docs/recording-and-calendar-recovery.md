@@ -53,6 +53,17 @@ presentation preference. A manual presentation ends with that session.
 A recording that stops by itself (device, write or storage fault) closes the panel with its
 session, so the main window comes forward and shows the reason.
 
+## Discarding a recording
+
+"녹음 버리기" in the meeting menu, and agent `recording_discard`, is for a recording that
+should not be kept, such as small talk before the meeting started. It is refused while that
+meeting is recording. The meeting moves to the recoverable trash with its recording,
+transcript and summary, through the same coordination as trashing (its processing is
+cancelled). An empty copy takes its place with the same title, notes, attendees, date,
+calendar event, folder and Notion sources, and opens so it can be recorded again; a calendar
+reminder for the event uses it. Restoring the trashed meeting brings the recording back.
+Nothing is deleted permanently.
+
 ## Quitting
 
 On macOS, Cmd+Q, Dock quit, logout, restart and shutdown ask the app delegate first.

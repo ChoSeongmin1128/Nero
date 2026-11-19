@@ -71,7 +71,7 @@ fn none() -> Vec<Field> {
     vec![]
 }
 
-pub(crate) const TOOLS: [AppTool; 42] = [
+pub(crate) const TOOLS: [AppTool; 43] = [
     AppTool { name: "ai_chats_list", words: &["ai", "chats"], positional: None, usage: "[--trashed] [--meeting-id ID]", read_only: true, destructive: false, open_world: false,
         description: "List Nero's in-app AI conversations, newest first, with their attached meeting IDs and whether an answer is streaming. trashed lists recoverable trash instead.",
         fields: || vec![field("trashed", boolean(), "List recoverable trash instead of active conversations."), field("meetingId", id_schema(), "Only conversations with a question that attached this meeting.")] },
@@ -159,6 +159,9 @@ pub(crate) const TOOLS: [AppTool; 42] = [
     AppTool { name: "recordings_compact", words: &["storage", "compact"], positional: None, usage: "", read_only: false, destructive: true, open_world: false,
         description: "Reduce earlier-format recordings, only on explicit current user request: each becomes the 16 kHz mono WAV used for recognition and its original audio file is deleted. Transcripts are unchanged, but original audio quality cannot be restored. Not while recording. A recording that fails keeps its original files. Returns freedBytes, meetings, failed and the new usage.",
         fields: none },
+    AppTool { name: "recording_discard", words: &["recording", "discard"], positional: Some("meetingId"), usage: "MEETING_ID --expected-version HASH", read_only: false, destructive: true, open_world: false,
+        description: "Discard a meeting's recording without keeping it, only on explicit current user request, for example a recording of small talk before the meeting started. Not while it is recording. The meeting moves to recoverable trash with its recording, transcript and summary, and its processing is cancelled; an empty copy with the same title, notes, attendees, date, calendar event, folder and Notion sources takes its place and can be recorded again. Restoring the trashed meeting brings the recording back. Returns the new meeting and its editVersion.",
+        fields: || vec![meeting(), required("expectedVersion", edit_version(), "meeting_get editVersion.")] },
     AppTool { name: "meeting_create", words: &["meetings", "new"], positional: None, usage: "[--title TITLE] [--notes TEXT]", read_only: false, destructive: false, open_world: false,
         description: "Create an empty meeting without audio. Returns the meeting and its editVersion.",
         fields: || vec![field("title", json!({"type":"string","maxLength":256}), "Meeting title."), field("notes", string(256 * 1024), "Initial notes.")] },

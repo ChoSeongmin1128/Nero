@@ -139,6 +139,7 @@ export const renameFolder = (id, name) => call('rename_folder', { id, name }).th
 export const deleteFolder = (id, request = null) => call('delete_folder', { id, request }).then(accept);
 export const moveMeetings = (ids, folderId = null) => call('move_meetings', { ids, folderId }).then(accept);
 export const trashMeetings = (ids) => call('trash_meetings', { ids }).then(accept);
+export const discardRecording = (meetingId) => call('discard_recording', { meetingId });
 export const restoreMeetings = (ids) => call('restore_meetings', { ids }).then(accept);
 export const purgeMeetings = (ids) => call('purge_meetings', { ids }).then(accept);
 export const searchMeetings = (query, includeDeleted = false) => call('search_meetings', { query, includeDeleted });

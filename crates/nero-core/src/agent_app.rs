@@ -7,7 +7,7 @@ use crate::{store, TranscriptVersion};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-pub const METHODS: [&str; 42] = [
+pub const METHODS: [&str; 43] = [
     "ai_chats_list",
     "ai_chat_get",
     "ai_models_list",
@@ -37,6 +37,7 @@ pub const METHODS: [&str; 42] = [
     "recording_continue",
     "storage_usage",
     "recordings_compact",
+    "recording_discard",
     "meeting_create",
     "meeting_notes_append",
     "transcription_start",
@@ -240,6 +241,10 @@ pub enum AppRequest {
     },
     StorageUsage {},
     RecordingsCompact {},
+    RecordingDiscard {
+        meeting_id: String,
+        expected_version: String,
+    },
     MeetingCreate {
         #[serde(default)]
         title: String,
@@ -483,6 +488,10 @@ impl AppRequest {
                     || terminology.is_some()
                     || recording_transcription.is_some()
             }
+            Self::RecordingDiscard {
+                meeting_id,
+                expected_version,
+            } => id(meeting_id) && version(expected_version),
             Self::RecordingContinue {
                 meeting_id,
                 device_id,
@@ -653,6 +662,10 @@ mod tests {
             ("recording_continue", json!({"meetingId":meeting})),
             ("storage_usage", json!({})),
             ("recordings_compact", json!({})),
+            (
+                "recording_discard",
+                json!({"meetingId":meeting,"expectedVersion":version}),
+            ),
             ("meeting_create", json!({"title":"빈 회의"})),
             (
                 "meeting_notes_append",

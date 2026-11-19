@@ -564,6 +564,56 @@ impl Engine {
         self.commit_library(library)
     }
 
+    /// Moves a meeting with its recording, transcript and summary to the trash and puts
+    /// an empty copy in its place: title, notes, attendees, date, calendar event and
+    /// folder, so the same meeting can be recorded again. Restoring the trashed meeting
+    /// brings the recording back.
+    pub fn discard_recording(&mut self, id: &str, expected: &str) -> Result<Meeting> {
+        if self.quitting {
+            return Err(CoreError::Unavailable);
+        }
+        let source = self.require_meeting_version(id, expected, true)?.clone();
+        if self
+            .capture
+            .as_ref()
+            .is_some_and(|capture| capture.manifest.meeting_id == id)
+        {
+            return Err(CoreError::InvalidState(
+                "녹음을 종료한 뒤 버려 주세요.".into(),
+            ));
+        }
+        if source.meeting.audio.is_none() && source.capture_id.is_none() {
+            return Err(CoreError::InvalidState("버릴 녹음이 없습니다.".into()));
+        }
+        let mut stored = self.store.create_with_calendar(
+            source.meeting.title.clone(),
+            source.meeting.notes.clone(),
+            source.meeting.calendar_reference.clone(),
+            source.generated_title,
+        )?;
+        stored.meeting.attendees = source.meeting.attendees.clone();
+        stored.meeting.meeting_date = source.meeting.meeting_date.clone();
+        let meeting = self.commit_meeting(stored)?;
+        let mut library = self.library.clone();
+        library
+            .placements
+            .entry(meeting.id.clone())
+            .or_default()
+            .folder_id = source.meeting.folder_id.clone();
+        library
+            .placements
+            .entry(id.to_owned())
+            .or_default()
+            .deleted_at
+            .get_or_insert(store::now());
+        self.commit_library(library)?;
+        Ok(self
+            .meetings
+            .get(&meeting.id)
+            .map(|stored| stored.meeting.clone())
+            .unwrap_or(meeting))
+    }
+
     pub fn restore_meetings(&mut self, ids: &[String]) -> Result<()> {
         let ids = self.library_ids(ids, false)?;
         let mut library = self.library.clone();
@@ -1503,6 +1553,59 @@ mod tests {
             Err(CoreError::MeetingNotFound)
         ));
         assert_eq!(engine.meetings.len(), 3);
+    }
+
+    #[test]
+    fn discarding_a_recording_trashes_it_and_leaves_an_empty_copy_to_record_again() {
+        let (_temporary, mut engine) = engine();
+        let reference = calendar_reference("a");
+        let source = engine
+            .meeting_for_calendar_recording(reference.clone())
+            .unwrap();
+        let folder = engine.create_folder("Folder".into()).unwrap();
+        engine
+            .move_meetings(&[source.id.clone()], Some(folder.id.clone()))
+            .unwrap();
+        let version = |engine: &Engine, id: &str| {
+            crate::edit_version::meeting_edit_version(&engine.meetings[id].meeting).unwrap()
+        };
+        let draft_version = version(&engine, &source.id);
+        assert!(matches!(
+            engine.discard_recording(&source.id, &draft_version),
+            Err(CoreError::InvalidState(_))
+        ));
+        let (session, mut sink) = synthetic(&mut engine, &source.id);
+        sink.write(&[0.5_f32.to_le_bytes(); 2].concat());
+        let recording = version(&engine, &source.id);
+        assert!(matches!(
+            engine.discard_recording(&source.id, &recording),
+            Err(CoreError::InvalidState(_))
+        ));
+        engine.stop(&session).unwrap();
+        engine
+            .update_meeting(&source.id, source.title.clone(), "메모".into())
+            .unwrap();
+        assert!(matches!(
+            engine.discard_recording(&source.id, &draft_version),
+            Err(CoreError::EditConflict)
+        ));
+        let current = version(&engine, &source.id);
+        let copy = engine.discard_recording(&source.id, &current).unwrap();
+        assert_ne!(copy.id, source.id);
+        assert_eq!(copy.title, source.title);
+        assert_eq!(copy.notes, "메모");
+        assert_eq!(copy.calendar_reference, Some(reference.clone()));
+        assert_eq!(copy.folder_id, Some(folder.id));
+        assert_eq!(copy.status, MeetingStatus::Draft);
+        assert!(copy.audio.is_none() && copy.deleted_at.is_none());
+        let trashed = &engine.meetings[&source.id].meeting;
+        assert!(trashed.deleted_at.is_some() && trashed.audio.is_some());
+        assert_eq!(
+            engine.meeting_for_calendar_recording(reference).unwrap().id,
+            copy.id
+        );
+        engine.restore_meetings(&[source.id.clone()]).unwrap();
+        assert!(engine.meetings[&source.id].meeting.audio.is_some());
     }
 
     #[test]

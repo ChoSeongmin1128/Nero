@@ -274,6 +274,10 @@
       "description": "사용자가 요청한 이전 형식 녹음 줄이기"
     },
     {
+      "name": "recording_discard",
+      "description": "사용자가 요청한 녹음 버리기(회의는 빈 상태로 남김)"
+    },
+    {
       "name": "meeting_create",
       "description": "음성 없는 빈 회의 만들기"
     },
