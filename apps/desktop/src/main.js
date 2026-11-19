@@ -108,7 +108,7 @@ function readMicrophonePreference() {
 }
 const microphonePreference = readMicrophonePreference();
 let sidebarViews = null, viewHistory = null;
-const state = { snapshot: { meetings: [], folders: [], session: null }, homeOpen: true, libraryOpen: false, libraryFilter: 'all', librarySelection: new Set(), libraryBusy: false, librarySearchIds: null, librarySearchHits: [], pendingSearchIntent: null, setupReturnId: null, librarySearchPending: false, librarySearchUnavailable: 0, selectedId: null, devices: [], devicesLoaded: false, deviceId: microphonePreference.id, deviceName: microphonePreference.name, settingsPanel: 'appearance', summaryFeatureError: '', settingsKey: '', settingsError: '', settingsReturnId: 'settings', setupFromSettings: false, autoRecorder: readAutoRecorder(), recorderSettingBusy: false, snapshotSignatures: null, processingKey: '', processingCancellingId: null, transcriptEditing: null, audioRequest: 0, audioLoading: null, dateSaving: null, dateKey: '', dateError: null, lastError: null, errorIsSave: false, connected: false, busy: false, composing: false, transcriptComposing: false, editLocks: 0, draft: null, saveTimer: null, saveQueue: Promise.resolve(), controlsKey: '', audioKey: '', processing: { status: 'idle', supported: false, modelReady: false, localSummaryEnabled: false }, transcriptDraft: null, transcriptKey: '', transcriptLoadId: 0, transcriptSaveQueue: Promise.resolve(), summary: null, citationTimes: null, summaryKey: '', summaryLoadId: 0, summaryLoaded: false, transcriptLoaded: false, summaryLoadError: false, transcriptLoadError: false, setupRequested: false };
+const state = { snapshot: { meetings: [], folders: [], session: null }, homeOpen: true, libraryOpen: false, libraryFilter: 'all', librarySelection: new Set(), libraryBusy: false, librarySearchIds: null, librarySearchHits: [], pendingSearchIntent: null, setupReturnId: null, librarySearchPending: false, librarySearchUnavailable: 0, selectedId: null, devices: [], devicesLoaded: false, deviceId: microphonePreference.id, deviceName: microphonePreference.name, settingsPanel: 'appearance', summaryFeatureError: '', settingsKey: '', settingsError: '', settingsReturnId: 'settings', setupFromSettings: false, autoRecorder: readAutoRecorder(), recorderSettingBusy: false, newMeetingFolder: null, newMeetingFolderBusy: false, snapshotSignatures: null, processingKey: '', processingCancellingId: null, transcriptEditing: null, audioRequest: 0, audioLoading: null, dateSaving: null, dateKey: '', dateError: null, lastError: null, errorIsSave: false, connected: false, busy: false, composing: false, transcriptComposing: false, editLocks: 0, draft: null, saveTimer: null, saveQueue: Promise.resolve(), controlsKey: '', audioKey: '', processing: { status: 'idle', supported: false, modelReady: false, localSummaryEnabled: false }, transcriptDraft: null, transcriptKey: '', transcriptLoadId: 0, transcriptSaveQueue: Promise.resolve(), summary: null, citationTimes: null, summaryKey: '', summaryLoadId: 0, summaryLoaded: false, transcriptLoaded: false, summaryLoadError: false, transcriptLoadError: false, setupRequested: false };
 // Low-memory model preparation needs an explicit acknowledgement; it is not persisted.
 const speechMemoryAcknowledged = new Set();
 function acknowledgeSpeechMemory(engine, checked) {
@@ -674,6 +674,15 @@ function renderSettings() {
   byId('settings-microphone-hint').hidden = !activeSession();
   if (activeSession()) select.setAttribute('aria-describedby', 'settings-microphone-hint');
   else select.removeAttribute('aria-describedby');
+  const folderSelect = byId('settings-new-meeting-folder');
+  const folders = state.snapshot.folders || [];
+  const folderKey = JSON.stringify([folders.map(folder => [folder.id, folder.name]), state.newMeetingFolder]);
+  if (folderSelect.dataset.key !== folderKey) {
+    folderSelect.dataset.key = folderKey;
+    folderSelect.innerHTML = `<option value="">미분류</option>${folders.map(folder => `<option value="${escape(folder.id)}">${escape(folder.name)}</option>`).join('')}`;
+    folderSelect.value = folders.some(folder => folder.id === state.newMeetingFolder) ? state.newMeetingFolder : '';
+  }
+  folderSelect.disabled = !state.connected || state.newMeetingFolderBusy;
   byId('auto-recorder').checked = state.autoRecorder;
   byId('auto-recorder').disabled = state.recorderSettingBusy;
   // Only MOSS on a Mac that can run it recognizes chunks while recording.
@@ -712,7 +721,13 @@ async function openSettings(panel = 'appearance', returnId = 'settings') {
     globalThis.NeroControls.refresh?.();
     byId(`settings-${panel}-tab`).focus({ preventScroll: true });
   });
+  void reloadNewMeetingFolder();
   try { await refreshDevices(); } catch { state.settingsError = '마이크 목록을 불러오지 못했습니다. 다시 시도해 주세요.'; renderSettings(); }
+}
+
+async function reloadNewMeetingFolder() {
+  try { state.newMeetingFolder = await bridge.readNewMeetingFolder() ?? null; } catch { return; }
+  renderSettings();
 }
 
 function changeMicrophone() {
@@ -779,8 +794,12 @@ async function createMeeting({ record = false, fromHome = false } = {}) {
     state.setupRequested = false;
     const meeting = await bridge.createMeeting('새 회의', '');
     acceptSnapshot(await bridge.readSnapshot());
-    if (!fromHome && state.snapshot.folders?.some(folder => folder.id === state.libraryFilter)) {
-      try { acceptSnapshot(await bridge.moveMeetings([meeting.id], state.libraryFilter)); } catch (error) { showError(error); }
+    // A meeting made from a folder's or the unfiled list stays in that list; otherwise
+    // it starts in the folder chosen in settings.
+    const context = fromHome ? undefined : state.libraryFilter === 'unfiled' ? null : state.snapshot.folders?.some(folder => folder.id === state.libraryFilter) ? state.libraryFilter : undefined;
+    const placed = state.snapshot.meetings.find(item => item.id === meeting.id)?.folderId ?? null;
+    if (context !== undefined && context !== placed) {
+      try { acceptSnapshot(await bridge.moveMeetings([meeting.id], context)); } catch (error) { showError(error); }
     }
     await selectMeeting(meeting.id);
     if (record) {
@@ -973,6 +992,17 @@ byId('auto-recorder').addEventListener('change', async () => {
   } catch { state.autoRecorder = previous; state.settingsError = '녹음 제어창 설정을 저장하지 못했습니다.'; }
   finally { state.recorderSettingBusy = false; renderSettings(); }
 });
+byId('settings-new-meeting-folder').addEventListener('change', async () => {
+  const select = byId('settings-new-meeting-folder');
+  const previous = state.newMeetingFolder;
+  state.newMeetingFolderBusy = true;
+  renderSettings();
+  try {
+    state.newMeetingFolder = await bridge.setNewMeetingFolder(select.value || null) ?? null;
+    state.settingsError = '';
+  } catch { state.newMeetingFolder = previous; state.settingsError = '새 회의 폴더를 저장하지 못했습니다.'; }
+  finally { select.dataset.key = ''; state.newMeetingFolderBusy = false; renderSettings(); }
+});
 byId('recording-transcription').addEventListener('change', async () => {
   const next = byId('recording-transcription').checked;
   state.recordingTranscriptionBusy = true;
@@ -1058,7 +1088,7 @@ async function prepareAppLeave(action) {
 function onAgentChanged(change) {
   if (change.area === 'aiChat') aiChat?.flow.externalChange(change.conversationIds || []);
   else if (change.area === 'meetingSources' || change.area === 'terminology') void meetingContext?.reload();
-  else if (change.area === 'settings') void terminologySettings.reload();
+  else if (change.area === 'settings') { void terminologySettings.reload(); void reloadNewMeetingFolder(); }
 }
 
 async function onAgentWriteRequest({ requestId, kind } = {}) {

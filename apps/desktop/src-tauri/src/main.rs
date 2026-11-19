@@ -1817,6 +1817,27 @@ fn cancel_processing(
     state.processing.cancel(&job_id)
 }
 #[tauri::command]
+async fn read_new_meeting_folder(
+    window: WebviewWindow,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<Option<String>, String> {
+    require_main(&window)?;
+    on_core(state.core.clone(), |core| core.new_meeting_folder()).await
+}
+#[tauri::command]
+async fn set_new_meeting_folder(
+    window: WebviewWindow,
+    state: tauri::State<'_, DesktopState>,
+    folder_id: Option<String>,
+) -> Result<Option<String>, String> {
+    require_main(&window)?;
+    on_core(state.core.clone(), move |core| {
+        core.set_new_meeting_folder(folder_id)?;
+        core.new_meeting_folder()
+    })
+    .await
+}
+#[tauri::command]
 fn set_recording_transcription(
     window: WebviewWindow,
     state: tauri::State<'_, DesktopState>,
@@ -2258,6 +2279,8 @@ fn main() {
             pause_processing,
             resume_processing,
             set_recording_transcription,
+            read_new_meeting_folder,
+            set_new_meeting_folder,
             retry_processing,
             acknowledge_processing,
             read_terminology_settings,

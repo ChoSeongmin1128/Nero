@@ -171,6 +171,10 @@
                 <div class="settings-microphone-label"><label for="settings-microphone">마이크</label><p id="settings-microphone-hint" class="muted type-caption" hidden>녹음 중에는 변경할 수 없습니다.</p></div>
                 <div class="settings-microphone-control"><select id="settings-microphone" data-field="settings-microphone" aria-label="녹음 마이크"><option value="">시스템 기본 마이크</option></select></div>
               </div>
+              <div class="settings-row settings-recording-device">
+                <div class="settings-microphone-label"><label for="settings-new-meeting-folder">새 회의 폴더</label><p class="muted type-caption">새 회의, 녹음, 파일 가져오기로 만든 회의가 들어갈 폴더입니다.</p></div>
+                <div class="settings-microphone-control"><select id="settings-new-meeting-folder" data-field="settings-new-meeting-folder" aria-label="새 회의 폴더"><option value="">미분류</option></select></div>
+              </div>
               <label class="settings-row"><span>녹음 제어창 자동 표시</span><input id="auto-recorder" type="checkbox" role="switch" checked></label>
               <label id="recording-transcription-row" class="settings-row" hidden><div><span>녹음하면서 음성 기록 만들기</span><p id="recording-transcription-hint" class="muted type-caption">녹음이 끝난 뒤 기다리는 시간이 줄어듭니다. 녹음 중에 CPU/GPU와 메모리를 사용하고, 그동안 다른 회의의 처리는 기다립니다.</p></div><input id="recording-transcription" type="checkbox" role="switch"></label>
             </div>

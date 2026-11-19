@@ -851,6 +851,7 @@ impl Engine {
         }
         let meeting = stored.meeting.clone();
         self.meetings.insert(meeting.id.clone(), stored);
+        let meeting = self.file_new_meeting(meeting);
         result?;
         Ok(meeting)
     }

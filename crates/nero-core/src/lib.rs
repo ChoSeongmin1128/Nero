@@ -384,6 +384,15 @@ impl CoreHandle {
         self.call(move |engine| engine.create_meeting(title, notes))
     }
 
+    /// The folder new meetings start in, or None for unfiled.
+    pub fn new_meeting_folder(&self) -> Result<Option<String>> {
+        self.call(|engine| Ok(engine.new_meeting_folder()))
+    }
+
+    pub fn set_new_meeting_folder(&self, folder_id: Option<String>) -> Result<()> {
+        self.call(move |engine| engine.set_new_meeting_folder(folder_id))
+    }
+
     pub fn draft_attachment_target(&self, id: &str) -> Result<DraftAttachmentTarget> {
         let id = id.to_owned();
         self.call(move |engine| engine.draft_attachment_target(&id))

@@ -310,6 +310,7 @@ impl<L> AgentApp<'_, L> {
                 speaker_analysis,
                 terminology: enabled,
                 recording_transcription,
+                new_meeting_folder,
             } => {
                 if recording_transcription == Some(true)
                     && !desktop
@@ -320,6 +321,13 @@ impl<L> AgentApp<'_, L> {
                     return Err(rejected(
                         "이 Mac과 현재 음성 인식 엔진에서는 녹음하면서 음성 기록을 만들 수 없습니다.",
                     ));
+                }
+                if let Some(folder) = new_meeting_folder {
+                    let folder = (folder != "unfiled").then_some(folder);
+                    desktop
+                        .core
+                        .set_new_meeting_folder(folder)
+                        .map_err(|error| rejected(error.to_string()))?;
                 }
                 if let Some(enabled) = speaker_analysis {
                     desktop
@@ -753,6 +761,9 @@ impl<L> AgentApp<'_, L> {
             "recordingTranscription":{
                 "supported":progress.recording_transcription_supported,
                 "enabled":progress.recording_transcription,
+            },
+            "newMeetingFolder":{
+                "folderId":desktop.core.new_meeting_folder().map_err(core_error)?,
             },
         }))
     }

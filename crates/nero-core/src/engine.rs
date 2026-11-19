@@ -21,6 +21,16 @@ pub(crate) struct Engine {
     pub(crate) quitting: bool,
     // Interrupted recordings whose playback file is still to be written.
     pending_playback: Vec<String>,
+    new_meeting_folder: Option<String>,
+}
+
+const NEW_MEETING_FOLDER: &str = "preferences/new-meeting-folder.json";
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NewMeetingFolder {
+    schema_version: u32,
+    folder_id: Option<String>,
 }
 
 impl Engine {
@@ -41,6 +51,10 @@ impl Engine {
             unreadable,
         } = store.load_meetings(&library)?;
         let pending_playback = store.recover(&mut meetings)?;
+        let new_meeting_folder =
+            store::read_json::<NewMeetingFolder>(&store.root.join(NEW_MEETING_FOLDER))
+                .ok()
+                .and_then(|saved| saved.folder_id);
         Ok(Self {
             store,
             meetings,
@@ -52,6 +66,7 @@ impl Engine {
             revision: 0,
             quitting: false,
             pending_playback,
+            new_meeting_folder,
         })
     }
 
@@ -135,7 +150,44 @@ impl Engine {
             .create_with_calendar(title, notes, None, generated_title)?;
         let meeting = stored.meeting.clone();
         self.meetings.insert(meeting.id.clone(), stored);
-        Ok(meeting)
+        Ok(self.file_new_meeting(meeting))
+    }
+
+    /// The folder new meetings go into, while it still exists; otherwise unfiled.
+    pub fn new_meeting_folder(&self) -> Option<String> {
+        self.new_meeting_folder
+            .clone()
+            .filter(|id| self.library.folders.contains_key(id))
+    }
+
+    pub fn set_new_meeting_folder(&mut self, folder_id: Option<String>) -> Result<()> {
+        if let Some(id) = &folder_id {
+            store::validate_id(id)?;
+            if !self.library.folders.contains_key(id) {
+                return Err(CoreError::InvalidInput("폴더를 찾을 수 없습니다.".into()));
+            }
+        }
+        let saved = NewMeetingFolder {
+            schema_version: 1,
+            folder_id: folder_id.clone(),
+        };
+        store::ensure_directory(&self.store.root.join("preferences"))?;
+        store::write_json(&self.store.root, Path::new(NEW_MEETING_FOLDER), &saved)?;
+        self.new_meeting_folder = folder_id;
+        Ok(())
+    }
+
+    // A new meeting starts in the chosen folder. The meeting exists either way; a
+    // failed placement leaves it unfiled.
+    pub(crate) fn file_new_meeting(&mut self, meeting: Meeting) -> Meeting {
+        let Some(folder) = self.new_meeting_folder() else {
+            return meeting;
+        };
+        let _ = self.move_meetings(std::slice::from_ref(&meeting.id), Some(folder));
+        self.meetings
+            .get(&meeting.id)
+            .map(|stored| stored.meeting.clone())
+            .unwrap_or(meeting)
     }
 
     // The meeting as stored, when its edit version is still `expected`. `active`
@@ -305,7 +357,8 @@ impl Engine {
         if let Some(stored) = Self::latest(self.calendar_meetings(&reference.occurrence_key)) {
             return Ok(stored.meeting.clone());
         }
-        Ok(self.create_calendar_part(reference)?.meeting)
+        let meeting = self.create_calendar_part(reference)?.meeting;
+        Ok(self.file_new_meeting(meeting))
     }
 
     /// The meeting a recording for this occurrence goes into: an active meeting of
@@ -328,7 +381,8 @@ impl Engine {
         if let Some(stored) = reusable {
             return Ok(stored.meeting.clone());
         }
-        Ok(self.create_calendar_part(reference)?.meeting)
+        let meeting = self.create_calendar_part(reference)?.meeting;
+        Ok(self.file_new_meeting(meeting))
     }
 
     /// A new meeting on the same occurrence as `source_id`, from the reference
@@ -1574,6 +1628,50 @@ mod tests {
             Err(CoreError::MeetingNotFound)
         ));
         assert_eq!(engine.meetings.len(), 3);
+    }
+
+    #[test]
+    fn new_meetings_start_in_the_chosen_folder_and_existing_ones_stay_put() {
+        let (_temporary, mut engine) = engine();
+        let root = engine.store.root.clone();
+        let unfiled = engine
+            .meeting_for_calendar_recording(calendar_reference("a"))
+            .unwrap();
+        let folder = engine.create_folder("Folder".into()).unwrap();
+        assert!(matches!(
+            engine.set_new_meeting_folder(Some(Uuid::new_v4().to_string())),
+            Err(CoreError::InvalidInput(_))
+        ));
+        engine
+            .set_new_meeting_folder(Some(folder.id.clone()))
+            .unwrap();
+        let created = engine
+            .create_meeting("새 회의".into(), String::new())
+            .unwrap();
+        assert_eq!(created.folder_id, Some(folder.id.clone()));
+        let scheduled = engine
+            .meeting_for_calendar_recording(calendar_reference("b"))
+            .unwrap();
+        assert_eq!(scheduled.folder_id, Some(folder.id.clone()));
+        let existing = engine
+            .create_meeting_from_calendar(calendar_reference("a"))
+            .unwrap();
+        assert_eq!(existing.id, unfiled.id);
+        assert_eq!(existing.folder_id, None);
+        let continued = engine.create_calendar_continuation(&unfiled.id).unwrap();
+        assert_eq!(continued.folder_id, None);
+
+        drop(engine);
+        let mut engine = Engine::open(root).unwrap();
+        assert_eq!(engine.new_meeting_folder(), Some(folder.id.clone()));
+        engine.delete_folder(&folder.id).unwrap();
+        assert_eq!(engine.new_meeting_folder(), None);
+        let after = engine
+            .create_meeting("새 회의".into(), String::new())
+            .unwrap();
+        assert_eq!(after.folder_id, None);
+        engine.set_new_meeting_folder(None).unwrap();
+        assert_eq!(engine.new_meeting_folder(), None);
     }
 
     #[test]

@@ -223,6 +223,9 @@ pub enum AppRequest {
         speaker_analysis: Option<bool>,
         terminology: Option<bool>,
         recording_transcription: Option<bool>,
+        // A folder ID, or "unfiled".
+        #[serde(default)]
+        new_meeting_folder: Option<String>,
     },
     RecordingDevices {},
     RecordingControl {
@@ -483,10 +486,15 @@ impl AppRequest {
                 speaker_analysis,
                 terminology,
                 recording_transcription,
+                new_meeting_folder,
             } => {
-                speaker_analysis.is_some()
-                    || terminology.is_some()
-                    || recording_transcription.is_some()
+                new_meeting_folder
+                    .as_deref()
+                    .is_none_or(|folder| folder == "unfiled" || id(folder))
+                    && (speaker_analysis.is_some()
+                        || terminology.is_some()
+                        || recording_transcription.is_some()
+                        || new_meeting_folder.is_some())
             }
             Self::RecordingDiscard {
                 meeting_id,
@@ -708,6 +716,9 @@ mod tests {
             ),
         ];
         assert!(AppRequest::parse("settings_set", json!({"recordingTranscription":true})).is_ok());
+        assert!(AppRequest::parse("settings_set", json!({"newMeetingFolder":"unfiled"})).is_ok());
+        assert!(AppRequest::parse("settings_set", json!({"newMeetingFolder":meeting})).is_ok());
+        assert!(AppRequest::parse("settings_set", json!({"newMeetingFolder":"../x"})).is_err());
         assert_eq!(samples.len(), METHODS.len());
         assert!(AppRequest::parse(
             "recording_control",
