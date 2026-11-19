@@ -230,7 +230,7 @@ test('navigation refresh keeps focused search and opened popups until an actual 
   assert.equal(app.aside.inert, true);
 });
 
-test('keyboard enters and returns from each product preview without advancing the category or document', async t => {
+test('keyboard enters the sidebar section a rail button names and returns without changing the document', async t => {
   const window = new Window({ url: 'http://nero.test', settings: { disableCSSFileLoading: true, disableJavaScriptFileLoading: true } });
   t.after(() => window.happyDOM.abort());
   const document = window.document;
@@ -247,30 +247,23 @@ test('keyboard enters and returns from each product preview without advancing th
   t.after(() => views.destroy());
   const notes = el('meeting-notes'); notes.value = '저장 전 메모';
   const key = (node, value, options = {}) => { const event = new window.KeyboardEvent('keydown', { key: value, bubbles: true, cancelable: true, ...options }); node.dispatchEvent(event); return event; };
-  el('sidebar-ai-preview').innerHTML = '<nav><article><button type="button" data-navigation-item="">주간 회의 정리</button></article></nav>';
-  const targets = { all: '#sidebar-meeting-list [data-recent-meeting="unfiled"]', folders: '#library-system-views [data-library-filter="unfiled"]', ai: '#sidebar-ai-preview [data-navigation-item]', trash: '#sidebar-meeting-list [data-recent-meeting="deleted"]', recent: '#recent-meetings [data-recent-meeting="unfiled"]' };
+  const targets = { all: '#library-system-views [data-library-filter="all"]', folders: '.navigation-folder-section [data-library-filter="project"]', ai: '#library-ai-view [data-library-filter="ai"]', trash: '#library-trash-view [data-library-filter="trash"]', recent: '#recent-meetings [data-recent-meeting]' };
   const buttons = [...document.querySelectorAll('[data-navigation-preview]')];
   for (let index = 0; index < buttons.length; index++) {
     const button = buttons[index], view = button.dataset.navigationPreview;
     button.focus();
-    assert.equal(views.activeView(), view);
+    assert.equal(views.activeView(), 'navigation');
     assert.equal(key(button, 'ArrowRight').defaultPrevented, true);
     const target = document.querySelector(targets[view]);
-    assert.equal(document.activeElement, target);
-    assert.equal(views.activeView(), view);
-    const hasHeaderActions = ['all', 'ai', 'trash'].includes(view);
-    assert.equal(key(target, 'Tab', { shiftKey: true }).defaultPrevented, !hasHeaderActions);
-    if (hasHeaderActions) {
-      const action = el({ trash: 'sidebar-empty-trash', ai: 'sidebar-ai-new' }[view] || 'sidebar-preview-open');
-      action.focus();
-      assert.equal(key(action, 'Tab', { shiftKey: true }).defaultPrevented, true);
-    }
+    assert.ok(target, view);
+    assert.equal(document.activeElement, target, view);
+    assert.equal(key(target, 'Tab', { shiftKey: true }).defaultPrevented, true);
     assert.equal(document.activeElement, button);
     assert.equal(key(button, 'Enter').defaultPrevented, true);
     assert.equal(document.activeElement, target);
     assert.equal(key(target, 'ArrowLeft').defaultPrevented, true);
     assert.equal(document.activeElement, button);
-    assert.equal(views.activeView(), view);
+    assert.equal(views.activeView(), 'navigation');
     if (index < buttons.length - 1) assert.equal(key(button, 'Tab').defaultPrevented, false);
     assert.equal(state.libraryFilter, 'project');
     assert.equal(state.selectedId, 'filed');

@@ -35,7 +35,7 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
   handle.setAttribute('aria-orientation', 'vertical');
   if (aside.id) handle.setAttribute('aria-controls', aside.id);
   shell.append(handle);
-  const width = mountNavigationWidth({ shell, handle, storage: preferenceStorage, storageKey: `${storageKey}.width`, getMode: () => pinned ? 'pinned' : previewView === 'ai' ? 'ai-temporary' : 'temporary', onDragging: active => { if (active) clearTimeout(timer); else hide(); } });
+  const width = mountNavigationWidth({ shell, handle, storage: preferenceStorage, storageKey: `${storageKey}.width`, getMode: () => pinned ? 'pinned' : 'temporary', onDragging: active => { if (active) clearTimeout(timer); else hide(); } });
   const unavailable = () => shell.dataset.onboarding === 'true';
   function render() {
     if (unavailable()) temporary = false;
@@ -102,8 +102,12 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
     }
     return true;
   }
+  // The section a rail button named comes first; sidebar-views marks it.
   function firstPreviewTarget() {
-    return [...aside.querySelectorAll('[data-recent-meeting],[data-library-filter],[data-navigation-item]')].find(availablePreviewTarget)
+    const targets = '[data-recent-meeting],[data-library-filter],[data-navigation-item]';
+    const section = aside.querySelector('[data-preview-focus]');
+    return [...section?.querySelectorAll(targets) || []].find(availablePreviewTarget)
+      || [...aside.querySelectorAll(targets)].find(availablePreviewTarget)
       || [...aside.querySelectorAll('input[type="search"],#search')].find(availablePreviewTarget);
   }
   function firstPreviewBoundary() {

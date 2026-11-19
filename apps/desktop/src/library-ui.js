@@ -185,11 +185,11 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     if (target?.closest?.('.navigation-sidebar')?.inert || target?.closest?.('.recent-section')?.inert || target?.closest?.('#sidebar-library-navigation[hidden],#sidebar-meeting-list[hidden],#sidebar-recent-preview[hidden]')) target = byId('navigation-toggle');
     target?.focus({ preventScroll: true });
   }
-  function openDialog({ title, content, confirm = '저장', destructive = false, action, detach = false, canConfirm = null }) {
+  function openDialog({ title, content, confirm = '저장', destructive = false, action, detach = false, canConfirm = null, after = null }) {
     if (state().libraryBusy) return;
     returnFocus = dialog.ownerDocument?.activeElement;
     returnRecentId = returnFocus?.closest?.('[data-recent-row]')?.dataset.recentRow || null;
-    pending = { confirm, action, detach, canConfirm };
+    pending = { confirm, action, detach, canConfirm, after };
     dialogBody.innerHTML = `<form class="library-form"><header class="dialog-header"><h2 id="library-dialog-title">${escape(title)}</h2><button type="button" class="quiet icon-button" data-library-close aria-label="닫기">${icon('x')}</button></header><div class="library-dialog-content">${content}<p id="library-dialog-error" class="field-error" role="alert" hidden></p></div><footer class="dialog-actions"><button type="button" data-library-close>취소</button><button type="submit" class="${destructive ? 'danger' : 'primary'}" data-library-confirm>${escape(confirm)}</button></footer></form>`;
     dialog.dataset.size = destructive ? 'compact' : '';
     dialog.setAttribute('aria-labelledby', 'library-dialog-title');
@@ -327,6 +327,17 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     const cancels = ids.some(meetingId => pendingJob(state().processing, { meetingId }));
     openDialog({ title: '휴지통으로 이동', content: `<p>${escape(description(ids))}</p>`, confirm: cancels ? '처리 취소 후 휴지통' : '휴지통으로 이동', destructive: true, detach: true, action: () => bridge.trashMeetings(ids) });
   }
+  // The meeting stays as an empty copy to record again; the recording goes to the trash.
+  function discardDialog(id) {
+    if (!current(id)) return;
+    if (runningRecording([id])) { showError('녹음을 종료한 뒤 버려 주세요.'); return; }
+    const cancels = pendingJob(state().processing, { meetingId: id });
+    let created = null;
+    openDialog({ title: '녹음을 버릴까요?', content: `<p>${escape(description([id]))}의 녹음과 음성 기록, 요약을 휴지통으로 옮깁니다. 제목, 메모, 참석자, 일정, 폴더는 그대로 둔 빈 회의가 남아 다시 녹음할 수 있습니다. 휴지통에서 복원하면 녹음을 되찾을 수 있습니다.</p>`,
+      confirm: cancels ? '처리 취소 후 버리기' : '녹음 버리기', destructive: true, detach: true,
+      action: async () => { const result = await bridge.discardRecording(id); created = result?.meetingId || null; return result?.snapshot; },
+      after: () => { if (created) void selectMeeting(created); } });
+  }
   function purgeDialog(ids) {
     if (!ids.length) return;
     openDialog({ title: '영구 삭제', content: `<p>${escape(description(ids))}</p>`, confirm: '영구 삭제', destructive: true, detach: true, action: () => bridge.purgeMeetings(ids) });
@@ -458,7 +469,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
       byId('library-user-folders').innerHTML = renderNavigation(navigation.filter(item => folders.some(folder => folder.id === item.id)));
       byId('library-ai-view').innerHTML = renderNavigation(navigation.filter(item => item.id === 'ai'));
       byId('library-trash-view').innerHTML = renderNavigation(navigation.filter(item => item.id === 'trash'));
-      if (focused) [...byId('folder-list').querySelectorAll('[data-library-filter]')].find(node => node.dataset.libraryFilter === focused)?.focus({ preventScroll: true });
+      if (focused) [...byId('folder-list').querySelectorAll('[data-library-filter]'), ...byId('library-trash-view').querySelectorAll('[data-library-filter]')].find(node => node.dataset.libraryFilter === focused)?.focus({ preventScroll: true });
     }
     const recent = recentLibraryMeetings(snapshot.meetings);
     const activeId = state().libraryOpen || state().notificationsOpen ? null : state().selectedId;
@@ -519,16 +530,24 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     byId('new-folder').disabled = disabled;
     const meeting = current(state().selectedId);
     const location = byId('meeting-folder-context');
+    const folderName = folders.find(folder => folder.id === meeting?.folderId)?.name || '미분류';
     if (location) {
-      const name = folders.find(folder => folder.id === meeting?.folderId)?.name || '미분류';
-      location.textContent = name;
-      location.title = name;
+      location.textContent = folderName;
+      location.title = folderName;
       location.hidden = !meeting;
+    }
+    const path = byId('meeting-path');
+    if (path) {
+      const target = meeting?.deletedAt != null ? 'trash' : meeting?.folderId || 'unfiled';
+      const name = target === 'trash' ? '휴지통' : folderName;
+      path.hidden = !meeting;
+      path.innerHTML = meeting ? `<button type="button" class="quiet small with-icon" data-library-filter="${escape(target)}" title="${escape(name)} 목록으로"${disabled ? ' disabled' : ''}>${icon(target === 'trash' ? 'trash-2' : 'folder')}<span>${escape(name)}</span></button><span class="breadcrumb-separator" aria-hidden="true">${icon('chevron-right')}</span>` : '';
     }
     updateReveal();
     renderList(visible);
     byId('meeting-move').disabled = disabled || !meeting || meeting.deletedAt != null;
     byId('meeting-trash').disabled = disabled || !meeting || meeting.deletedAt != null || Boolean(meeting && runningRecording([meeting.id]));
+    byId('meeting-discard-recording').disabled = byId('meeting-trash').disabled || !(meeting.audio || meeting.status !== 'draft');
     preview();
     if (sidebar) byId('navigation-sidebar').dispatchEvent(new owner.defaultView.CustomEvent('nero:sidebar-content-updated'));
   }
@@ -562,7 +581,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     event.preventDefault();
     if (!pending || state().libraryBusy || pending.canConfirm && !pending.canConfirm()) return;
     const intent = pending;
-    void mutate(intent.action, () => { resetSelection(); if (state().snapshot.meetings.every(meeting => meeting.id !== state().selectedId || meeting.deletedAt != null)) state().libraryOpen = true; }, { detach: intent.detach });
+    void mutate(intent.action, () => { resetSelection(); if (intent.after) { intent.after(); return; } if (state().snapshot.meetings.every(meeting => meeting.id !== state().selectedId || meeting.deletedAt != null)) state().libraryOpen = true; }, { detach: intent.detach });
   });
   dialog.addEventListener('click', event => { if (event.target.closest('[data-library-close]')) closeDialog(); });
   bindDialogDismiss(dialog, { dismiss: closeDialog, blocked: () => state().libraryBusy });
@@ -579,7 +598,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     if (remove) deleteFolder(remove.dataset.folderDelete);
     if (rename || remove) event.target.closest('details')?.removeAttribute('open');
   });
-  for (const id of ['library-folders', 'navigation-breadcrumbs']) byId(id).addEventListener('click', event => {
+  for (const id of ['library-folders', 'navigation-breadcrumbs', 'meeting-path', 'library-trash-view']) byId(id)?.addEventListener('click', event => {
     const button = event.target.closest('[data-library-filter]');
     if (button && !button.disabled) void show(button.dataset.libraryFilter);
     const rename = event.target.closest('[data-folder-rename]');
@@ -628,6 +647,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
   });
   byId('meeting-reveal').closest?.('details')?.addEventListener('toggle', updateReveal);
   for (const action of ['move', 'trash']) byId(`meeting-${action}`).addEventListener('click', () => { closeMenu(menus.active, true); actionFor(action, [state().selectedId].filter(Boolean)); });
+  byId('meeting-discard-recording').addEventListener('click', () => { closeMenu(menus.active, true); if (state().selectedId && !state().libraryBusy) discardDialog(state().selectedId); });
   byId('meeting-list').addEventListener('click', event => {
     const toggle = event.target.closest('[data-library-toggle]');
     const action = event.target.closest('[data-library-action]');
@@ -692,7 +712,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     const destination = moveDestination(filter);
     return destination && dragSources.some(source => source.folderId !== destination.folderId) ? { target, filter, destination } : null;
   }
-  for (const id of ['folder-list', 'library-folders']) {
+  for (const id of ['folder-list', 'library-folders', 'library-trash-view']) {
     byId(id).addEventListener('dragover', event => {
       const destination = dropDestination(event);
       if (!destination) { clearDropTarget(); if (event.dataTransfer) event.dataTransfer.dropEffect = 'none'; return; }

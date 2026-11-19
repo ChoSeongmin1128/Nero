@@ -10,14 +10,8 @@ export function mountSidebarViews({ aside, navigation, notifications, trigger, b
   const folderActions = document.getElementById('library-folder-actions');
   const newFolder = document.getElementById('new-folder');
   const folderActionHome = newFolder?.parentElement;
-  // Each sidebar view names what it shows; previews are the views with a label.
   const views = {
     navigation: { library: true, search: true },
-    folders: { label: '폴더', library: true, search: true, foldersOnly: true },
-    all: { label: '전체 회의', heading: true, search: true, meetings: true, open: 'all' },
-    ai: { label: '대화 기록', heading: true, ai: true, open: 'ai', newChat: true },
-    trash: { label: '휴지통', heading: true, search: true, meetings: true, open: 'trash', emptyTrash: true, noCreate: true },
-    recent: { label: '최근 회의', heading: true, search: true, recent: true },
     notifications: {},
   };
   let view = 'navigation', returnView = 'navigation', unread = 0, active = 0, disposed = false;
@@ -75,7 +69,7 @@ export function mountSidebarViews({ aside, navigation, notifications, trigger, b
     if (badge) { badge.hidden = !unread; badge.textContent = ''; badge.setAttribute('aria-hidden', 'true'); }
     for (const button of compact?.querySelectorAll('[data-navigation-preview]') || []) {
       button.setAttribute('aria-controls', aside.id);
-      button.setAttribute('aria-expanded', String(aside.inert === false && view === button.dataset.navigationPreview));
+      button.setAttribute('aria-expanded', String(aside.inert === false && button.getAttribute('aria-expanded') === 'true'));
     }
   }
   function close({ focus = true } = {}) {
@@ -94,12 +88,18 @@ export function mountSidebarViews({ aside, navigation, notifications, trigger, b
     onChange(true);
     if (focus) notifications.querySelector('[data-notification-heading]')?.focus({ preventScroll: true });
   }
+  // A rail button opens the whole sidebar over the content, at the section it names.
+  const sections = { all: '#library-system-views', folders: '.navigation-folder-section', trash: '#library-trash-view', recent: '#recent-section', ai: '#library-ai-view' };
   function preview(name) {
-    if (!views[name]?.label || disposed) return;
+    if (!sections[name] || disposed) return;
     if (notifications.contains(document.activeElement)) document.activeElement.blur();
-    view = returnView = name;
+    view = returnView = 'navigation';
     onPreview(name);
     paint();
+    for (const node of aside.querySelectorAll('[data-preview-focus]')) node.removeAttribute('data-preview-focus');
+    const section = aside.querySelector(sections[name]);
+    section?.setAttribute('data-preview-focus', '');
+    section?.scrollIntoView?.({ block: 'nearest' });
   }
   const click = () => view === 'notifications' ? close() : open();
   const back = event => { if (event.target.closest?.('[data-notification-action="back"]')) close(); };

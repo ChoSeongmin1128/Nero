@@ -132,3 +132,8 @@
 /* Keep the relocated settings control centered 35px above the app bottom. */
 .library > .sidebar-footer > div, .navigation-rail-footer > div { display: flex; flex: none; align-items: center; }
 .library > .sidebar-footer > div:has(> button[hidden]), .navigation-rail-footer > div:has(> button[hidden]) { display: none; }
+
+/* The trash sits at the foot of the sidebar with settings, and of the rail. */
+.library > .sidebar-footer > .navigation-trash-section { margin: 0; padding: 0; border: 0; }
+.library > .sidebar-footer > .navigation-trash-section .library-folder-item { margin: 0; }
+.library > .sidebar-footer > .navigation-trash-section:empty { display: none; }
