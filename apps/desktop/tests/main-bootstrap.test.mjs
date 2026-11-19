@@ -245,7 +245,7 @@ test('the real application HTML boots and opens all settings tabs without stale 
   assert.deepEqual(errors, []);
 });
 
-test('startup integration alerts appear without visiting settings and route to the matching connection', async t => {
+test('startup integration alerts appear without visiting settings, update in place and route to the matching connection', async t => {
   const window = new Window({ url: 'http://nero.test', settings: { enableJavaScriptEvaluation: true, suppressInsecureJavaScriptEnvironmentWarning: true, disableCSSFileLoading: true, disableJavaScriptFileLoading: true } });
   t.after(() => window.happyDOM.abort()); window.document.write(html);
   window.eval(markdownBundle);
@@ -257,7 +257,8 @@ test('startup integration alerts appear without visiting settings and route to t
     readTerminologySettings: () => ({ available: false }), listTemplates: () => [], readTemplateCatalog: () => ({revision:'catalog:1',templates:[]}),
     agentConnectionInfo: () => ({ available: true, clients: [{ id: 'claude', name: 'Claude', state: 'update_required', packageVersion: '28' }, { id: 'codex', name: 'ChatGPT', state: 'connected' }] }),
     readCalendarSettings: () => ({ revision: 1, configured: true, connected: false, accountLabel: 'Test account', error: 'Reconnect', calendars: [], selectedCalendars: [] }),
-    connectAgentClient: () => { connects += 1; },
+    connectAgentClient: client => { connects += 1; return { available: true, clients: [{ id: client, name: 'Claude', state: 'connected' }, { id: 'codex', name: 'ChatGPT', state: 'connected' }] }; },
+    readNewMeetingFolder: () => null,
   };
   window.testBridge = Object.fromEntries(bridgeNames.map(name => [name, async (...args) => {
     if (name === 'appUpdateStatus') return { phase: 'idle', currentVersion: '0.0.1', currentBuild: '40' };
@@ -273,12 +274,18 @@ test('startup integration alerts appear without visiting settings and route to t
   el('notifications-open').click();
   await new Promise(resolve => setTimeout(resolve, 10));
   const notice = [...el('notification-center').querySelectorAll('article')].find(row => row.textContent.includes('Claude'));
-  assert.ok(notice); notice.querySelector('[data-notification-action="settings"]').click();
+  assert.ok(notice); assert.equal(notice.querySelector('[data-notification-action="settings"]'), null);
+  notice.querySelector('[data-notification-action="update"]').click();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(connects, 1);
+  assert.equal(el('settings-dialog').open, false);
+  assert.equal([...el('notification-center').querySelectorAll('article')].some(row => row.textContent.includes('Claude')), false);
+  const calendar = [...el('notification-center').querySelectorAll('article')].find(row => row.textContent.includes('Google Calendar'));
+  calendar.querySelector('[data-notification-action="settings"]').click();
   await new Promise(resolve => setTimeout(resolve, 20));
   assert.equal(el('settings-dialog').open, true);
   assert.equal(el('settings-agent-tab').getAttribute('aria-selected'), 'true');
-  assert.equal(el('settings-claude-connect').hidden, false);
-  assert.equal(connects, 0);
+  assert.equal(connects, 1);
 });
 
 test('settings dismiss gestures preserve edits, nested controls, composition and return focus', async t => {

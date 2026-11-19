@@ -265,6 +265,23 @@ test('integration notices share the bell count, open their settings and acknowle
   assert.ok(changed.length); assert.deepEqual(f.errors, []);
 });
 
+test('an integration that needs an update is updated from its notification', async t => {
+  const updated = [];
+  let finish, fail = false;
+  const f = harness(t, { onUpdateIntegration: service => new Promise((resolve, reject) => { updated.push(service); finish = () => fail ? reject(new Error('업데이트하지 못했습니다.')) : resolve(); }) });
+  const notice = { id: 'integration:claude:update:44', service: 'claude', title: 'Claude 연동', message: '업데이트 필요', action: 'update' };
+  f.update([], 1, { integrations: [notice] });
+  assert.equal(f.button(notice.id, 'settings'), undefined);
+  assert.equal(f.button(notice.id, 'update').textContent, '업데이트');
+  f.button(notice.id, 'update').click();
+  assert.deepEqual(updated, ['claude']);
+  assert.equal(f.button(notice.id, 'update').textContent, '업데이트 중');
+  assert.equal(f.button(notice.id, 'update').disabled, true);
+  fail = true; finish(); await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(f.button(notice.id, 'update').textContent, '업데이트');
+  assert.match(f.container.querySelector('.field-error').textContent, /업데이트하지 못했습니다/);
+});
+
 test('confirming mixed job and integration notifications cannot cancel or acknowledge an unrelated job', async t => {
   const acknowledged = [];
   const f = harness(t, { onProcessingAction: async (action, id) => { acknowledged.push(id); f.update([job('failed', 'a', 'failed', 10, { acknowledged: true })], 2, { integrations: [notice] }); } });

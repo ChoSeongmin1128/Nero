@@ -1784,6 +1784,16 @@ const notificationCenter = mountNotificationCenter({ container: byId('notificati
   await openSettings('agent', 'notifications-open');
   const target = service === 'google-calendar' ? byId('calendar-settings').querySelector('.calendar-settings-account button:not(:disabled)') : byId(`settings-${service}-connect`);
   target?.scrollIntoView?.({ block: 'nearest' });
+}, onUpdateIntegration: async service => {
+  // The same update as the button in settings; Claude Desktop opens the extension itself.
+  const info = await bridge.connectAgentClient(service);
+  const client = info?.clients?.find(item => item.id === service);
+  if (client?.state === 'error') throw new Error(client.detail || '업데이트하지 못했습니다. 설정 > 연동에서 다시 시도해 주세요.');
+  integrationMonitor.acceptAgents(info);
+  if (service === 'claude' && info?.claudeExtensionPath) {
+    await openSettings('agent', 'notifications-open');
+    agentConnectionDialog.openClaudeExtension(info.claudeExtensionPath, byId('settings-claude-connect'));
+  }
 }, onChanged: () => render() });
 let sidebarStorage = null;
 try { sidebarStorage = window.localStorage; } catch {}

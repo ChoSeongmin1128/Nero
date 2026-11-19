@@ -50,7 +50,7 @@ export function notificationProjection({ processing = {}, meetings = [], selecte
     });
 }
 
-export function mountNotificationCenter({ container, onOpenMeeting, onProcessingAction, onOpenIntegration, onNoticeAction, onChanged = () => {}, showError = () => {}, icon = () => '', now = () => Date.now() }) {
+export function mountNotificationCenter({ container, onOpenMeeting, onProcessingAction, onOpenIntegration, onUpdateIntegration, onNoticeAction, onChanged = () => {}, showError = () => {}, icon = () => '', now = () => Date.now() }) {
   const confirmedNotices = new Set();
   const pending = new Map();
   const errors = new Map();
@@ -107,7 +107,7 @@ export function mountNotificationCenter({ container, onOpenMeeting, onProcessing
     const row = job => {
       const time = job.active ? '' : relativeTime(job.updatedAt || job.createdAt, now());
       const timeMark = time ? `<span class="notification-time">${escape(time)}</span>` : '';
-      if (['integration', 'notice'].includes(job.category)) return `<article class="notification-item" data-notification-id="${escape(job.id)}" aria-busy="${actionPending(job.id)}">${glyph(job.category === 'integration' ? 'link' : 'download')}<div class="notification-copy"><div class="notification-title-line"><strong class="notification-title">${escape(job.title)}</strong>${timeMark}</div><p>${escape(job.message)}</p>${errors.has(job.id) ? `<p class="field-error" role="alert">${escape(errors.get(job.id))}</p>` : ''}</div><div class="notification-actions">${button(job, job.category === 'integration' ? 'settings' : 'notice', escape(job.category === 'integration' ? '설정 열기' : job.actionLabel || '열기'), false, job.actionDisabled)}${job.unread ? button(job, 'ack', '닫기') : ''}</div></article>`;
+      if (['integration', 'notice'].includes(job.category)) return `<article class="notification-item" data-notification-id="${escape(job.id)}" aria-busy="${actionPending(job.id)}">${glyph(job.category === 'integration' ? 'link' : 'download')}<div class="notification-copy"><div class="notification-title-line"><strong class="notification-title">${escape(job.title)}</strong>${timeMark}</div><p>${escape(job.message)}</p>${errors.has(job.id) ? `<p class="field-error" role="alert">${escape(errors.get(job.id))}</p>` : ''}</div><div class="notification-actions">${job.category === 'integration' && job.action === 'update' ? button(job, 'update', pending.get(job.id) === 'update' ? '업데이트 중' : '업데이트', false) : button(job, job.category === 'integration' ? 'settings' : 'notice', escape(job.category === 'integration' ? '설정 열기' : job.actionLabel || '열기'), false, job.actionDisabled)}${job.unread ? button(job, 'ack', '닫기') : ''}</div></article>`;
       const cancelling = snapshot.actions?.get(job.id) === 'cancel';
       const feedback = processingFeedback(job, { cancelling, waitingForModel: job.waitingForModel, pausing: ['pause', 'resume'].includes(snapshot.actions?.get(job.id)) });
       const group = notificationGroup(job);
@@ -146,6 +146,7 @@ export function mountNotificationCenter({ container, onOpenMeeting, onProcessing
       pending.set(job.id, action); errors.delete(job.id); render();
       try {
         if (action === 'settings') await onOpenIntegration?.(job.service);
+        else if (action === 'update' && job.action === 'update') await onUpdateIntegration?.(job.service);
         else if (action === 'notice') await onNoticeAction?.(job.service);
         else if (action === 'ack') confirmedNotices.add(job.id);
         else return;
