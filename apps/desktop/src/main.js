@@ -4,7 +4,7 @@ import { mountNavigationShell } from './navigation-shell.js';
 import { createSettingsPanels } from './settings-panels.js';
 import { microphoneIssue as findMicrophoneIssue, mountRecordingSettings, readMicrophonePreference } from './recording-settings.js';
 import { createNewMeetingFolder } from './new-meeting-folder.js';
-import { openedMeetingId, routeKey, screenOf } from './screen-state.js';
+import { openedMeetingId, routeKey, screenOf, showHome, showList, showMeeting } from './screen-state.js';
 import { snapshotSignatures, compareSnapshotSignatures } from './snapshot-update.js';
 import { createViewHistory } from './view-history.js';
 import { mountWindowChrome } from './window-chrome.js';
@@ -524,7 +524,7 @@ function acceptSnapshot(snapshot) {
   if (quitQuestion && recordingSessionId() !== previousRecording) quitQuestion.sessionId = recordingSessionId();
   state.snapshotSignatures = signatures;
   state.connected = true;
-  if (state.selectedId && !snapshot.meetings.some(meeting => meeting.id === state.selectedId && meeting.deletedAt == null)) { state.selectedId = null; state.draft = null; state.transcriptDraft = null; state.summary = null; state.libraryOpen = true; speakers.reset(); clearAudio(); }
+  if (state.selectedId && !snapshot.meetings.some(meeting => meeting.id === state.selectedId && meeting.deletedAt == null)) { state.selectedId = null; state.draft = null; state.transcriptDraft = null; state.summary = null; showList(state); speakers.reset(); clearAudio(); }
   const saved = currentMeeting();
   const draft = state.draft;
   // Compare with what this draft last saved: a save stores the title trimmed, which is
@@ -620,12 +620,10 @@ async function selectMeeting(id, searchIntent = null, isHistoryCurrent = null) {
       if (!meeting || meeting.deletedAt) return;
       const changed = state.selectedId !== id;
       detail.rememberScroll();
-      state.libraryOpen = false;
-      state.homeOpen = false;
       speakers.reset(); transcriptActions.reset(); documentSearch.reset();
-      state.setupRequested = false; state.setupFromSettings = false;
+      state.setupFromSettings = false;
       state.pendingSearchIntent = searchIntent ? { ...searchIntent, meetingId: id } : null;
-      state.selectedId = id;
+      showMeeting(state, id);
       if (changed) {
         state.transcriptDraft = null; state.transcriptKey = ''; state.transcriptEditing = null;
         state.summary = null; state.summaryKey = '';
@@ -755,7 +753,7 @@ async function createMeeting({ record = false, fromHome = false } = {}) {
 async function openHome() {
   await finishEditing(async () => {
     if (!await speakers.beforeLeave()) return;
-    state.homeOpen = true; state.libraryOpen = false; state.setupRequested = false;
+    showHome(state);
     render();
     void home.refresh();
     home.focus();
@@ -838,7 +836,7 @@ byId('search').addEventListener('input', () => {
   // Results are meetings: the AI view cannot list them, and a trash view left for a
   // meeting is no longer what is being searched.
   if (state.libraryFilter === 'ai' || (!state.libraryOpen && state.libraryFilter === 'trash')) state.libraryFilter = 'all';
-  state.libraryOpen = true; library.resetSelection(); render();
+  showList(state); library.resetSelection(); render();
   meetingSearch.update(byId('search').value, state.libraryFilter === 'trash');
 });
 byId('library-create').addEventListener('click', () => run(createMeeting));

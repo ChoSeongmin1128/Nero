@@ -1,7 +1,7 @@
 import { bindDialogDismiss } from './dialog-dismiss.js';
 import { mountActionMenus } from '../../../design-system/action-menu.mjs';
 import { recentMeetingRow, renderMeetingMenu } from '../../../design-system/navigation.mjs';
-import { openedMeetingId } from './screen-state.js';
+import { openedMeetingId, showList } from './screen-state.js';
 import { pendingJob } from './processing-state.js';
 import { createDragPreview } from './drag-preview.js';
 export function filterLibraryMeetings(meetings, filter = 'all', query = '') {
@@ -108,9 +108,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
         if (!latest() || !isCurrent()) return null;
         beforeCommit();
         const changed = state().libraryFilter !== filter;
-        state().libraryFilter = filter;
-        state().libraryOpen = true;
-        state().homeOpen = false;
+        showList(state(), filter);
         onNavigated();
         resetSelection();
         renderApp();
@@ -360,7 +358,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     } });
   }
   function afterRemoval() {
-    state().libraryOpen = true;
+    showList(state());
     resetSelection();
   }
   function navigationRows(meetings, disabled, activeId, { folder = true } = {}) {
@@ -564,7 +562,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     event.preventDefault();
     if (!pending || state().libraryBusy || pending.canConfirm && !pending.canConfirm()) return;
     const intent = pending;
-    void mutate(intent.action, () => { resetSelection(); if (intent.after) { intent.after(); return; } if (state().snapshot.meetings.every(meeting => meeting.id !== state().selectedId || meeting.deletedAt != null)) state().libraryOpen = true; }, { detach: intent.detach });
+    void mutate(intent.action, () => { resetSelection(); if (intent.after) { intent.after(); return; } if (state().snapshot.meetings.every(meeting => meeting.id !== state().selectedId || meeting.deletedAt != null)) showList(state()); }, { detach: intent.detach });
   });
   dialog.addEventListener('click', event => { if (event.target.closest('[data-library-close]')) closeDialog(); });
   bindDialogDismiss(dialog, { dismiss: closeDialog, blocked: () => state().libraryBusy });

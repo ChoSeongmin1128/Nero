@@ -8,7 +8,7 @@ import { createNoticeActions } from '../src/notice-actions.js';
 import { createSettingsPanels } from '../src/settings-panels.js';
 import { microphoneIssue as findMicrophoneIssue, mountRecordingSettings, readMicrophonePreference } from '../src/recording-settings.js';
 import { createNewMeetingFolder } from '../src/new-meeting-folder.js';
-import { openedMeetingId, routeKey, screenOf } from '../src/screen-state.js';
+import { openedMeetingId, routeKey, screenOf, showHome, showList, showMeeting } from '../src/screen-state.js';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
@@ -154,7 +154,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
   bridge.writeClipboardText = async text => { copied.push(text); };
   const aiBridge = { appendNote: async () => {}, saveSummary: async () => {}, openSource: async () => {} };
   const templateSettings = { setActive() {}, beforeLeave: async () => true, isConfirming: () => false, hide() {} };
-  const context = vm.createContext({ recognitionCoverage, mountBrandIcons, snapshotSignatures, compareSnapshotSignatures, requestAudioPlayback, createIntegrationMonitor, attentionNotices, createNoticeActions, createSettingsPanels, findMicrophoneIssue, mountRecordingSettings, readMicrophonePreference, createNewMeetingFolder, openedMeetingId, routeKey, screenOf, liveTranscriptRows, meetingResultPreview, renderMeetingMenu, testMountNotificationCenter: mountNotificationCenter,
+  const context = vm.createContext({ recognitionCoverage, mountBrandIcons, snapshotSignatures, compareSnapshotSignatures, requestAudioPlayback, createIntegrationMonitor, attentionNotices, createNoticeActions, createSettingsPanels, findMicrophoneIssue, mountRecordingSettings, readMicrophonePreference, createNewMeetingFolder, openedMeetingId, routeKey, screenOf, showHome, showList, showMeeting, liveTranscriptRows, meetingResultPreview, renderMeetingMenu, testMountNotificationCenter: mountNotificationCenter,
     navigator: { clipboard: { writeText: async text => { copied.push(text); } } },
     document, testBridge: bridge, testAiBridge: aiBridge, testAiLifecycle: aiLifecycle, testAgentDialogCalls: agentDialogCalls, testTemplateSettings: templateSettings, localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
     NeroControls: { enhanceAll() {} },

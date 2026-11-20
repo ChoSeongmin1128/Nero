@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { openedMeetingId, routeKey, screenOf } from '../src/screen-state.js';
+import { openedMeetingId, routeKey, screenOf, showHome, showList, showMeeting } from '../src/screen-state.js';
 
 const base = { connected: true, setup: false, homeOpen: false, libraryOpen: false, libraryFilter: 'all', meetingSelected: false, modelsReady: true, hasMeetings: true };
 
@@ -25,4 +25,16 @@ test('the opened meeting is the selection only while a meeting is in front', () 
   assert.equal(openedMeetingId({}), null);
   assert.notEqual(routeKey({ selectedId: 'a' }), routeKey({ selectedId: 'b' }));
   assert.notEqual(routeKey({ libraryOpen: true, libraryFilter: 'all' }), routeKey({ libraryOpen: true, libraryFilter: 'trash' }));
+});
+
+test('moving the content sets the screen flags together', () => {
+  const state = { homeOpen: true, libraryOpen: false, setupRequested: true, libraryFilter: 'all', selectedId: null };
+  showList(state, 'trash');
+  assert.deepEqual([state.homeOpen, state.libraryOpen, state.libraryFilter], [false, true, 'trash']);
+  showMeeting(state, 'a');
+  assert.deepEqual([state.homeOpen, state.libraryOpen, state.setupRequested, state.selectedId], [false, false, false, 'a']);
+  assert.equal(openedMeetingId(state), 'a');
+  showHome(state);
+  assert.deepEqual([state.homeOpen, state.libraryOpen, state.selectedId], [true, false, 'a'], 'home keeps the last meeting to return to');
+  assert.equal(openedMeetingId(state), null);
 });
