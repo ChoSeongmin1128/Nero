@@ -2351,3 +2351,13 @@ test('the banner offers no button to open the meeting already open, and no cance
   await request;
   assert.equal(page.element('cancel-processing').disabled, false);
 });
+
+test('a meeting removed elsewhere while home is shown leaves home in front', async () => {
+  const page = await openApp();
+  page.app.state.homeOpen = true;
+  const meetings = page.app.state.snapshot.meetings.map(meeting => meeting.id === page.app.state.selectedId ? { ...meeting, deletedAt: 9 } : meeting);
+  page.app.acceptSnapshot({ ...page.app.state.snapshot, revision: page.app.state.snapshot.revision + 1, meetings });
+  assert.equal(page.app.state.homeOpen, true);
+  assert.equal(page.app.state.libraryOpen, false);
+  assert.equal(page.app.state.selectedId, null);
+});

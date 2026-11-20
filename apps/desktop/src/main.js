@@ -528,7 +528,13 @@ function acceptSnapshot(snapshot) {
   if (quitQuestion && recordingSessionId() !== previousRecording) quitQuestion.sessionId = recordingSessionId();
   state.snapshotSignatures = signatures;
   state.connected = true;
-  if (state.selectedId && !snapshot.meetings.some(meeting => meeting.id === state.selectedId && meeting.deletedAt == null)) { state.selectedId = null; state.draft = null; state.transcriptDraft = null; state.summary = null; fallBackToList(state); speakers.reset(); clearAudio(); }
+  if (state.selectedId && !snapshot.meetings.some(meeting => meeting.id === state.selectedId && meeting.deletedAt == null)) {
+    // Only a meeting on screen hands its place to the list; home or setup stays in front.
+    const wasOpen = openedMeetingId(state) === state.selectedId;
+    state.selectedId = null; state.draft = null; state.transcriptDraft = null; state.summary = null;
+    if (wasOpen) fallBackToList(state);
+    speakers.reset(); clearAudio();
+  }
   const saved = currentMeeting();
   const draft = state.draft;
   // Compare with what this draft last saved: a save stores the title trimmed, which is
