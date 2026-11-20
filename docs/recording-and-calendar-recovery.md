@@ -105,8 +105,10 @@ otherwise creates a new meeting numbered `title (2)`, `title (3)` from the meeti
 on it, trashed ones included. Existing recordings and manual fields are not replaced, and
 trashed meetings are neither restored nor reused. The picker always links the current
 empty meeting, even to an occurrence other meetings already use. A meeting with audio
-offers "이 일정으로 이어서 녹음", which records into a new meeting from that meeting's
-stored reference (no calendar fetch) in the same folder. Agent `meeting_from_calendar`
+offers "이 일정으로 이어서 녹음", which records into the occurrence's empty meeting that can
+still take audio, or else a new meeting from that meeting's stored reference (no calendar
+fetch) in the same folder, so a start that fails does not leave numbered meetings behind.
+Recording an event from home takes the same choice as a reminder. Agent `meeting_from_calendar`
 without a meeting keeps returning the occurrence's existing meeting (active first, then
 the most recently changed) and creates one only when there is none. An untouched generated
 meeting title adopts the selected event title, numbered when the occurrence already has a

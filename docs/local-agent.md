@@ -326,7 +326,7 @@ idempotentHint=false이며 기존 내용을 바꾸거나 삭제하는 도구에�
 - `ai_chat_send`는 사용자의 구독 계정으로 앱의 AI에 질문하고 바로 `conversationId`, `requestId`를 돌려준다. 답변은 `ai_chat_get`의 상태가 완료/실패/취소가 될 때까지 읽는다. `conversationId`가 없으면 새 대화를 만든다. 요약 스킬은 회의 하나와 템플릿이 필요하며 질문 없이 보낼 수 있다. 추론 수준을 생략하면 모델의 기본 수준을 쓴다.
 - `ai_chats_trash`는 고른 대화 또는 마지막 활동이 지정한 일수보다 오래된 대화를 휴지통으로 옮기며 답변 중인 대화는 건너뛴다. 대화 영구 삭제는 없다.
 - `recording_control`의 `start`는 빈 회의나 새 회의(`title`)에 지정한 입력 장치 또는 기본 장치로 녹음한다. 앱 화면처럼 진행 중인 처리 작업을 멈추고 시작하며, 필요하면 macOS가 마이크 권한을 묻는다. `stop`은 앱 화면과 같이 녹음 후 처리를 이어서 시작한다. `pause`/`resume`/`stop`에 `sessionId`를 주면 그 사이 다른 녹음이 시작된 경우 `edit_conflict`로 거부한다.
-- `recording_continue`는 음성이 있는 일정 회의와 같은 일정에 번호를 붙인 새 회의를 같은 폴더에 만들고 녹음을 시작한다. 화면의 "이 일정으로 이어서 녹음"과 같으며 일정을 다시 조회하지 않는다.
+- `recording_continue`는 음성이 있는 일정 회의와 같은 일정에 번호를 붙인 새 회의를 같은 폴더에 만들고 녹음을 시작한다. 같은 일정에 녹음을 받을 수 있는 빈 회의가 있으면 그 회의에 녹음하며, 반환하는 `editVersion`은 녹음을 시작한 뒤의 회의 기준이다. 화면의 "이 일정으로 이어서 녹음"과 같으며 일정을 다시 조회하지 않는다.
 - `recording_discard`는 화면의 "녹음 버리기"와 같다. 녹음, 음성 기록, 요약이 있는 회의를 처리 작업을 취소하고 휴지통으로 옮긴 뒤, 제목, 메모, 참석자, 날짜, 일정, 폴더, Notion 자료를 그대로 둔 빈 회의를 새로 만든다. 휴지통에서 복원하면 녹음을 되찾는다. 녹음 중에는 거부한다.
 - `settings_set`의 `recordingTranscription`은 녹음하면서 음성 기록 만들기를 켜거나 끄며 이후 시작하는 녹음에 적용한다. `settings_get`의 `recordingTranscription.supported`가 거짓이면 켤 수 없다.
 - `settings_set`의 `newMeetingFolder`는 홈의 "저장 위치", 설정 > 녹음의 "새 회의 폴더"와 같다. 폴더 ID 또는 `unfiled`를 받으며(CLI `--new-meeting-folder`), 이후 새 회의, 녹음 시작, 파일 가져오기, 일정으로 처음 만드는 회의가 그 폴더에 들어간다. 일정에서 이어서 녹음한 회의는 원래 회의의 폴더를 따른다. 폴더가 삭제되면 미분류로 돌아가며 `settings_get`의 `newMeetingFolder.folderId`는 null이 된다.
