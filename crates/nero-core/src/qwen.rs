@@ -261,13 +261,19 @@ pub(crate) mod tests {
     fn stored_qwen_word_speakers_keep_zero_length_words_unknown_and_history_readable() {
         let (_temp, mut engine, id, _audio) = crate::transcript::tests::setup();
         let nemo = engine
-            .commit_nemotron_transcript(&id, None, crate::nemotron::tests::raw())
+            .commit_transcript(
+                &id,
+                None,
+                crate::nemotron::tests::raw(),
+                crate::AsrProvider::Nemotron,
+            )
             .unwrap();
         let baseline = engine
-            .commit_qwen_transcript(
+            .commit_transcript(
                 &id,
                 Some(nemo.version.clone()),
                 serde_json::to_vec(&one_second_value()).unwrap(),
+                crate::AsrProvider::Qwen,
             )
             .unwrap();
         assert_eq!(engine.transcript(&id).unwrap().unwrap().model, MODEL);
@@ -276,7 +282,7 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(
             after.source.as_ref().unwrap().projector_version,
-            crate::nemotron::QWEN_WORD_PROJECTOR_VERSION
+            crate::word_speakers::QWEN_WORD_PROJECTOR_VERSION
         );
         let last = after.segments.last().unwrap();
         assert_eq!(last.text, "네.");

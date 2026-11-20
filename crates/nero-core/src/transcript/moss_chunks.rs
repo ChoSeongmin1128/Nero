@@ -1083,7 +1083,12 @@ mod tests {
         set_time(&mut value, 0, 1.5, 2.02);
         let raw = serde_json::to_vec(&value).unwrap();
         let current = engine
-            .commit_moss_chunk_transcript(&meeting.id, None, raw.clone())
+            .commit_transcript(
+                &meeting.id,
+                None,
+                raw.clone(),
+                crate::AsrProvider::MossChunks,
+            )
             .unwrap();
         drop(engine);
         let engine = Engine::open(root.clone()).unwrap();
@@ -1291,7 +1296,12 @@ mod tests {
             native["parsedCompletely"] = json!(false)
         });
         let initial = engine
-            .commit_moss_chunk_transcript(&meeting.id, None, serde_json::to_vec(&partial).unwrap())
+            .commit_transcript(
+                &meeting.id,
+                None,
+                serde_json::to_vec(&partial).unwrap(),
+                crate::AsrProvider::MossChunks,
+            )
             .unwrap();
         assert_eq!(initial.segments.len(), 1);
         assert!(!initial
@@ -1315,7 +1325,12 @@ mod tests {
             .unwrap();
         let complete = serde_json::to_vec(&output(64 * 16000)).unwrap();
         assert!(engine
-            .commit_moss_chunk_transcript(&meeting.id, Some(initial.version), complete)
+            .commit_transcript(
+                &meeting.id,
+                Some(initial.version),
+                complete,
+                crate::AsrProvider::MossChunks
+            )
             .is_err());
         assert_eq!(
             engine.transcript(&meeting.id).unwrap().unwrap().segments[0].text,

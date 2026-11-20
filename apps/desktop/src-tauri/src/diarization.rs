@@ -510,7 +510,9 @@ mod tests {
             "processedAudioFrames":16000,"inputAudioFrames":16000,"audioDurationSeconds":1.0
         }))
         .unwrap();
-        let document = core.commit_transcript(&meeting.id, None, raw).unwrap();
+        let document = core
+            .commit_legacy_moss_transcript(&meeting.id, None, raw)
+            .unwrap();
         let audio = core.audio_path(&meeting.id).unwrap();
         (core, meeting.id, document, audio)
     }
@@ -531,7 +533,7 @@ mod tests {
             .unwrap();
         let raw = fs::read(artifacts.join("recognition.json")).unwrap();
         let source = core
-            .commit_nemotron_transcript(&meeting.id, None, raw)
+            .commit_transcript(&meeting.id, None, raw, nero_core::AsrProvider::Nemotron)
             .unwrap();
         let initial = source.version.clone();
         let spec = model();
@@ -599,7 +601,12 @@ mod tests {
                 .import_audio("Recorded acceptance", &audio, &audio)
                 .unwrap();
             source = core
-                .commit_nemotron_transcript(&meeting.id, None, fs::read(raw).unwrap())
+                .commit_transcript(
+                    &meeting.id,
+                    None,
+                    fs::read(raw).unwrap(),
+                    nero_core::AsrProvider::Nemotron,
+                )
                 .unwrap();
             (core, meeting.id)
         });

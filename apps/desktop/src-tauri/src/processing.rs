@@ -3765,22 +3765,10 @@ impl Processing {
                     });
                 let source = this.checkpoint_transcript_following(
                     &cancel,
-                    || match engine {
-                        SpeechEngine::Moss => match unchanged {
-                            Some(current) => Ok(current),
-                            None => core.commit_moss_chunk_transcript(&meeting_id, expected, raw),
-                        },
-                        SpeechEngine::AppleSpeech => {
-                            core.commit_apple_transcript(&meeting_id, expected, raw)
-                        }
-                        SpeechEngine::Nemotron => {
-                            core.commit_nemotron_transcript(&meeting_id, expected, raw)
-                        }
-                        SpeechEngine::WhisperTurbo | SpeechEngine::WhisperLargeV3 => {
-                            core.commit_whisper_transcript(&meeting_id, expected, raw)
-                        }
-                        SpeechEngine::QwenKo => {
-                            core.commit_qwen_transcript(&meeting_id, expected, raw)
+                    || match unchanged {
+                        Some(current) => Ok(current),
+                        None => {
+                            core.commit_transcript(&meeting_id, expected, raw, engine.asr_provider())
                         }
                     },
                     |progress, source: &nero_core::Transcript| {
@@ -5143,7 +5131,7 @@ mod tests {
             .import_audio("Synthetic meeting", &input, &input)
             .unwrap();
         let source = core
-            .commit_transcript(&meeting.id, None, raw_transcript("원문"))
+            .commit_legacy_moss_transcript(&meeting.id, None, raw_transcript("원문"))
             .unwrap();
         let edited = core
             .edit_transcript(&meeting.id, source.version, vec!["사용자 수정".into()])
@@ -5211,7 +5199,11 @@ mod tests {
         process.cancel("recognition").unwrap();
         assert!(process
             .checkpoint_transcript(&cancel, || {
-                core.commit_transcript(&id, Some(source.version.clone()), raw_transcript("새 결과"))
+                core.commit_legacy_moss_transcript(
+                    &id,
+                    Some(source.version.clone()),
+                    raw_transcript("새 결과"),
+                )
             })
             .is_err());
         assert_eq!(fs::read(current).unwrap(), before);
@@ -5242,7 +5234,11 @@ mod tests {
         let cancel = AtomicBool::new(false);
         assert!(process
             .checkpoint_transcript(&cancel, || {
-                core.commit_transcript(&id, Some(source.version), raw_transcript("새 모델 결과"))
+                core.commit_legacy_moss_transcript(
+                    &id,
+                    Some(source.version),
+                    raw_transcript("새 모델 결과"),
+                )
             })
             .is_err());
         assert_eq!(fs::read(current).unwrap(), before);
@@ -5274,7 +5270,11 @@ mod tests {
         let cancel = AtomicBool::new(false);
         let baseline = process
             .checkpoint_transcript(&cancel, || {
-                core.commit_transcript(&id, Some(source.version), raw_transcript("새 음성 기록"))
+                core.commit_legacy_moss_transcript(
+                    &id,
+                    Some(source.version),
+                    raw_transcript("새 음성 기록"),
+                )
             })
             .unwrap();
         cancel.store(true, Ordering::Release);
@@ -5631,11 +5631,21 @@ mod tests {
                 .deleted_at
                 .is_some());
             assert!(matches!(
-                worker_core.commit_nemotron_transcript(&worker_id, None, b"synthetic".to_vec()),
+                worker_core.commit_transcript(
+                    &worker_id,
+                    None,
+                    b"synthetic".to_vec(),
+                    nero_core::AsrProvider::Nemotron
+                ),
                 Err(nero_core::CoreError::MeetingNotFound)
             ));
             assert!(matches!(
-                worker_core.commit_whisper_transcript(&worker_id, None, b"synthetic".to_vec()),
+                worker_core.commit_transcript(
+                    &worker_id,
+                    None,
+                    b"synthetic".to_vec(),
+                    nero_core::AsrProvider::Whisper
+                ),
                 Err(nero_core::CoreError::MeetingNotFound)
             ));
             // Joining must not retain the Core actor or a global library write lock.

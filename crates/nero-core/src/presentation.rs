@@ -611,7 +611,9 @@ mod tests {
     #[test]
     fn export_uses_saved_corrections_and_preserves_summary_archives_and_citations() {
         let (_temporary, mut engine, id, _) = setup();
-        let source = engine.commit_transcript(&id, None, output()).unwrap();
+        let source = engine
+            .commit_legacy_moss_transcript(&id, None, output())
+            .unwrap();
         let source = engine
             .edit_transcript(
                 &id,

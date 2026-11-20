@@ -46,9 +46,7 @@ A UI host should call them off its event/render thread.
 | `audio_path(meeting_id)` | Validated `PathBuf` for finalized playback |
 | `import_audio(title, original, prepared_wav)` | `Meeting`; original plus mono 16 kHz PCM16 playback |
 | `transcript(meeting_id)` | `Option<Transcript>` |
-| `commit_transcript(meeting_id, expected_version, raw)` | `Transcript`; retained MOSS output contract |
-| `commit_whole_transcript(meeting_id, expected_version, raw)` | `Transcript`; MOSS whole-input EOS/budget/completeness contract |
-| `commit_nemotron_transcript(meeting_id, expected_version, raw)` | `Transcript`; pinned Nemotron 3.5 ASR input/completion/word validation |
+| `commit_transcript(meeting_id, expected_version, raw, provider)` | `Transcript`; the `AsrProvider` (MOSS chunks, Nemotron, Whisper, Qwen, macOS speech) decides the validation and projection |
 | `edit_transcript(meeting_id, expected_version, texts)` | `Transcript`; separate correction revision |
 | `prepare_shutdown(expected_session_id)` | `Snapshot` |
 
@@ -65,7 +63,7 @@ The main window and floating controls should hide independently of this method.
 
 Transcripts bind to the finalized audio session. The default native host uses pinned
 Nemotron 3.5 Q8 ASR through one complete-input stateful stream, then commits its result
-with `commit_nemotron_transcript`. The core checks model/runtime identity, full input
+with `commit_transcript` and `AsrProvider::Nemotron`. The core checks model/runtime identity, full input
 frame/duration identity, native completion evidence and valid word timestamps, and
 projects sentence rows without inventing speaker labels. A completed native stream
 does not establish complete recognition of every spoken word.

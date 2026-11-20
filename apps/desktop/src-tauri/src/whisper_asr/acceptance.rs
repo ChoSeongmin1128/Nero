@@ -74,7 +74,7 @@ fn native_audio_import_whisper_execution_and_persisted_reader() {
         }
     }
     let transcript = core
-        .commit_whisper_transcript(&meeting.id, None, raw)
+        .commit_transcript(&meeting.id, None, raw, nero_core::AsrProvider::Whisper)
         .unwrap();
     assert!(!transcript.segments.is_empty());
     assert_eq!(

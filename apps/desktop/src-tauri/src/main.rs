@@ -69,6 +69,8 @@ mod template_settings;
 mod terminology;
 mod whisper_asr;
 mod window_position;
+use nero_core::projection::{ScreenSession, ScreenTranscript};
+use nero_core::search::{MeetingSearch, SearchField, SearchMatch, SearchOptions};
 use nero_core::{
     CoreHandle, Device, DocumentFormat, DocumentKind, ExportedDocument, Meeting, Snapshot,
     SummaryCitationTimes, SummaryCitations, SummaryView, Transcript, TranscriptHistory,
@@ -358,7 +360,7 @@ fn publish(app: &tauri::AppHandle, snapshot: &Snapshot) {
 #[serde(rename_all = "camelCase")]
 struct SessionUpdate<'a> {
     revision: u64,
-    session: &'a Option<nero_core::SessionSnapshot>,
+    session: Option<ScreenSession<'a>>,
 }
 
 fn session_only(previous: Option<&Snapshot>, snapshot: &Snapshot) -> bool {
@@ -542,39 +544,20 @@ struct SearchHit {
     transcript_version: Option<TranscriptVersion>,
 }
 
-fn search_excerpt(text: &str, query: &str) -> String {
-    // Map the folded byte offset back to the original character without storing
-    // an index for every byte of a long transcript or splitting Korean text.
-    let offset = text.to_lowercase().find(query).unwrap_or(0);
-    let mut folded_bytes = 0;
-    let mut match_index = 0;
-    for (index, character) in text.chars().enumerate() {
-        match_index = index;
-        let next = folded_bytes + character.to_lowercase().map(char::len_utf8).sum::<usize>();
-        if offset < next {
-            break;
-        }
-        folded_bytes = next;
-    }
-    let start = match_index.saturating_sub(32);
-    let mut excerpt: String = text.chars().skip(start).take(100).collect();
-    if start > 0 {
-        excerpt.insert_str(0, "...");
-    }
-    if text.chars().skip(start + 100).next().is_some() {
-        excerpt.push_str("...");
-    }
-    excerpt
-}
-
-fn search_hit(meeting_id: &str, kind: &'static str, text: &str, query: &str) -> SearchHit {
+fn search_hit(meeting_id: &str, found: SearchMatch, transcript: Option<&Transcript>) -> SearchHit {
+    let in_transcript = matches!(found.field, SearchField::Transcript | SearchField::Speaker);
     SearchHit {
         meeting_id: meeting_id.into(),
-        kind,
-        text: search_excerpt(text, query),
-        index: None,
-        segment_id: None,
-        transcript_version: None,
+        kind: found.field.name(),
+        text: found.excerpt,
+        index: found.segment,
+        segment_id: found
+            .segment
+            .and_then(|index| transcript?.segments.get(index))
+            .map(|segment| segment.id.clone()),
+        transcript_version: transcript
+            .filter(|_| in_transcript)
+            .map(|transcript| transcript.version.clone()),
     }
 }
 
@@ -591,7 +574,7 @@ async fn search_meetings(
     let search = LATEST.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1;
     let superseded = || LATEST.load(std::sync::atomic::Ordering::Acquire) != search;
     require_main(&window)?;
-    let query = query.trim().to_lowercase();
+    let query = nero_core::search::fold_query(&query);
     if query.len() > 4096 || query.contains('\0') {
         return Err("검색어가 너무 길거나 올바르지 않습니다.".into());
     }
@@ -609,78 +592,36 @@ async fn search_meetings(
             result.ids.push(meeting.id);
             continue;
         }
-        if let Some((kind, text)) = [
-            ("title", meeting.title.as_str()),
-            ("notes", meeting.notes.as_str()),
-        ]
-        .into_iter()
-        .find(|(_, text)| text.to_lowercase().contains(&query))
-        {
+        let mut search = MeetingSearch::new(&query, SearchOptions::SCREEN);
+        search.meeting(&meeting);
+        let mut transcript = None;
+        if !search.full() {
+            if superseded() {
+                return Ok(result);
+            }
+            let id = meeting.id.clone();
+            let read = on_core(state.core.clone(), move |core| core.transcript(&id)).await;
+            let mut unavailable = read.is_err();
+            transcript = read.ok().flatten();
+            if let Some(transcript) = &transcript {
+                search.transcript(transcript);
+            }
+            if !search.full() {
+                let id = meeting.id.clone();
+                let summary = on_core(state.core.clone(), move |core| core.summary(&id)).await;
+                unavailable |= summary.is_err();
+                if let Some(summary) = summary.ok().flatten() {
+                    search.summary(&summary.document.text);
+                }
+            }
+            result.unavailable += usize::from(unavailable);
+        }
+        if let Some(found) = search.matches.into_iter().next() {
             result
                 .hits
-                .push(search_hit(&meeting.id, kind, text, &query));
+                .push(search_hit(&meeting.id, found, transcript.as_ref()));
             result.ids.push(meeting.id);
-            continue;
         }
-        if superseded() {
-            return Ok(result);
-        }
-        let id = meeting.id.clone();
-        let transcript = on_core(state.core.clone(), move |core| core.transcript(&id)).await;
-        let mut unavailable = transcript.is_err();
-        let matched = transcript.ok().flatten().and_then(|transcript| {
-            if let Some((index, segment)) = transcript
-                .segments
-                .iter()
-                .enumerate()
-                .find(|(_, segment)| segment.text.to_lowercase().contains(&query))
-            {
-                let mut hit = search_hit(&meeting.id, "transcript", &segment.text, &query);
-                hit.index = Some(index);
-                hit.segment_id = Some(segment.id.clone());
-                hit.transcript_version = Some(transcript.version.clone());
-                return Some(hit);
-            }
-            transcript
-                .speakers
-                .iter()
-                .find(|speaker| speaker.name.to_lowercase().contains(&query))
-                .map(|speaker| {
-                    let mut hit = search_hit(&meeting.id, "speaker", &speaker.name, &query);
-                    if let Some((index, segment)) =
-                        transcript.segments.iter().enumerate().find(|(_, segment)| {
-                            segment.speaker_id.as_deref() == Some(speaker.id.as_str())
-                        })
-                    {
-                        hit.index = Some(index);
-                        hit.segment_id = Some(segment.id.clone());
-                    }
-                    hit.transcript_version = Some(transcript.version.clone());
-                    hit
-                })
-        });
-        if let Some(hit) = matched {
-            result.ids.push(meeting.id);
-            result.hits.push(hit);
-        } else {
-            let id = meeting.id.clone();
-            let summary = on_core(state.core.clone(), move |core| core.summary(&id)).await;
-            unavailable |= summary.is_err();
-            if let Some(summary) = summary
-                .ok()
-                .flatten()
-                .filter(|summary| summary.document.text.to_lowercase().contains(&query))
-            {
-                result.hits.push(search_hit(
-                    &meeting.id,
-                    "summary",
-                    &summary.document.text,
-                    &query,
-                ));
-                result.ids.push(meeting.id);
-            }
-        }
-        result.unavailable += usize::from(unavailable);
     }
     Ok(result)
 }
@@ -1418,7 +1359,7 @@ fn poll(
                 if session_only(previous.as_ref(), &snapshot) {
                     let update = SessionUpdate {
                         revision: snapshot.revision,
-                        session: &snapshot.session,
+                        session: snapshot.session.as_ref().map(ScreenSession),
                     };
                     let _ = app.emit("nero://snapshot-session", update);
                     recorder_window::sync(&app, &snapshot);
@@ -2001,9 +1942,11 @@ async fn read_transcript(
     window: WebviewWindow,
     state: tauri::State<'_, DesktopState>,
     meeting_id: String,
-) -> Result<Option<Transcript>, String> {
+) -> Result<Option<ScreenTranscript>, String> {
     require_main(&window)?;
-    on_core(state.core.clone(), move |core| core.transcript(&meeting_id)).await
+    on_core(state.core.clone(), move |core| core.transcript(&meeting_id))
+        .await
+        .map(|transcript| transcript.map(ScreenTranscript))
 }
 #[tauri::command]
 async fn read_transcript_history(
@@ -2026,7 +1969,7 @@ async fn restore_transcript(
     meeting_id: String,
     expected: TranscriptVersion,
     target: TranscriptVersion,
-) -> Result<Transcript, String> {
+) -> Result<ScreenTranscript, String> {
     require_main(&window)?;
     let processing = state.processing.clone();
     let core = state.core.clone();
@@ -2040,7 +1983,7 @@ async fn restore_transcript(
     .map_err(|error| error.to_string())?;
     let snapshot = on_core(state.core.clone(), |core| core.snapshot()).await?;
     publish(&app, &snapshot);
-    Ok(document)
+    Ok(ScreenTranscript(document))
 }
 
 #[tauri::command]
@@ -2050,12 +1993,13 @@ async fn save_transcript(
     meeting_id: String,
     expected: TranscriptVersion,
     texts: Vec<String>,
-) -> Result<Transcript, String> {
+) -> Result<ScreenTranscript, String> {
     require_main(&window)?;
     on_core(state.core.clone(), move |core| {
         core.edit_transcript(&meeting_id, expected, texts)
     })
     .await
+    .map(ScreenTranscript)
 }
 
 #[tauri::command]
@@ -2066,12 +2010,13 @@ async fn save_speakers(
     expected: TranscriptVersion,
     speakers: Vec<TranscriptSpeaker>,
     assignments: Vec<Option<String>>,
-) -> Result<Transcript, String> {
+) -> Result<ScreenTranscript, String> {
     require_main(&window)?;
     on_core(state.core.clone(), move |core| {
         core.edit_speakers(&meeting_id, expected, speakers, assignments)
     })
     .await
+    .map(ScreenTranscript)
 }
 
 fn main() {
@@ -2377,10 +2322,13 @@ fn main() {
 #[cfg(test)]
 mod search_tests {
     use super::*;
+    use nero_core::search::excerpt;
 
     #[test]
     fn search_excerpt_bounds_unicode_context_without_byte_slicing() {
         let text = format!("{}한국어 검색{}", "앞".repeat(150), "뒤".repeat(150));
+        let search_excerpt =
+            |text: &str, query: &str| excerpt(text, query, SearchOptions::SCREEN).unwrap();
         let excerpt = search_excerpt(&text, "한국어");
         assert!(excerpt.contains("한국어 검색"));
         assert!(excerpt.starts_with("...") && excerpt.ends_with("..."));
@@ -2391,7 +2339,12 @@ mod search_tests {
 
     #[test]
     fn search_hit_exposes_bounded_context_and_optional_anchor_only() {
-        let hit = search_hit("meeting", "notes", "회의 안건", "안건");
+        let found = SearchMatch {
+            field: SearchField::Notes,
+            excerpt: excerpt("회의 안건", "안건", SearchOptions::SCREEN).unwrap(),
+            segment: None,
+        };
+        let hit = search_hit("meeting", found, None);
         let value = serde_json::to_value(hit).unwrap();
         assert_eq!(value["meetingId"], "meeting");
         assert_eq!(value["kind"], "notes");

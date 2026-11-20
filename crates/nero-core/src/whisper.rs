@@ -344,11 +344,16 @@ pub(crate) mod tests {
         let (_temp, mut engine, id, _audio) = crate::transcript::tests::setup();
         let nemo_raw = crate::nemotron::tests::raw();
         let nemo = engine
-            .commit_nemotron_transcript(&id, None, nemo_raw)
+            .commit_transcript(&id, None, nemo_raw, crate::AsrProvider::Nemotron)
             .unwrap();
         let raw = serde_json::to_vec(&one_second_value()).unwrap();
         let baseline = engine
-            .commit_whisper_transcript(&id, Some(nemo.version.clone()), raw.clone())
+            .commit_transcript(
+                &id,
+                Some(nemo.version.clone()),
+                raw.clone(),
+                crate::AsrProvider::Whisper,
+            )
             .unwrap();
         let reread = engine.transcript(&id).unwrap().unwrap();
         assert_eq!(reread.model, MODEL);
@@ -361,7 +366,7 @@ pub(crate) mod tests {
         assert_eq!(after.model, MODEL);
         assert_eq!(
             after.source.as_ref().unwrap().projector_version,
-            crate::nemotron::WHISPER_WORD_PROJECTOR_VERSION
+            crate::word_speakers::WHISPER_WORD_PROJECTOR_VERSION
         );
         assert!(after.segments.iter().all(|s| s.speaker_id.is_some()));
         let reader = crate::reader::LibraryReader::open(&engine.store.root).unwrap();
@@ -382,7 +387,12 @@ pub(crate) mod tests {
         let mut v = one_second_value();
         v["words"][0]["end"] = v["words"][0]["start"].clone();
         let baseline = engine
-            .commit_whisper_transcript(&id, None, serde_json::to_vec(&v).unwrap())
+            .commit_transcript(
+                &id,
+                None,
+                serde_json::to_vec(&v).unwrap(),
+                crate::AsrProvider::Whisper,
+            )
             .unwrap();
         let after = engine
             .apply_diarization(&id, crate::nemotron::tests::posterior_draft(baseline))
@@ -417,7 +427,12 @@ pub(crate) mod tests {
         let mut v = one_second_value();
         v["words"][0]["timingScope"] = "nativeSegmentContext".into();
         let baseline = engine
-            .commit_whisper_transcript(&id, None, serde_json::to_vec(&v).unwrap())
+            .commit_transcript(
+                &id,
+                None,
+                serde_json::to_vec(&v).unwrap(),
+                crate::AsrProvider::Whisper,
+            )
             .unwrap();
         let after = engine
             .apply_diarization(&id, crate::nemotron::tests::posterior_draft(baseline))
@@ -463,7 +478,7 @@ pub(crate) mod tests {
         let (_temp, mut engine, id, _audio) = crate::transcript::tests::setup();
         let raw = serde_json::to_vec(&terminal_value()).unwrap();
         let baseline = engine
-            .commit_whisper_transcript(&id, None, raw.clone())
+            .commit_transcript(&id, None, raw.clone(), crate::AsrProvider::Whisper)
             .unwrap();
         let after = engine
             .apply_diarization(&id, crate::nemotron::tests::posterior_draft(baseline))

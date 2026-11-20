@@ -1,4 +1,6 @@
+use crate::asr_provider::{AsrProvider, Projection};
 use crate::engine::Engine;
+use crate::recording_guard::Operation;
 use crate::store::{self, CapturePhase, Encoding, Manifest};
 use crate::{CoreError, Meeting, MeetingStatus, Result};
 use serde::{Deserialize, Serialize};
@@ -92,6 +94,23 @@ pub struct TranscriptUpgradeReport {
     pub upgraded: u64,
     pub unchanged: u64,
     pub unavailable: u64,
+}
+
+impl Transcript {
+    pub(crate) fn validate_current_of(&self, meeting: &Meeting) -> Result<()> {
+        if meeting.transcript_id.as_deref() != Some(self.version.id.as_str())
+            || meeting
+                .audio
+                .as_ref()
+                .map(|audio| audio.session_id.as_str())
+                != Some(self.source_session_id.as_str())
+        {
+            return Err(CoreError::Storage(
+                "전사와 원음의 연결이 올바르지 않습니다.".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl TranscriptUpgradeReport {
@@ -251,20 +270,55 @@ struct MossSegment {
     asr_chunk: Option<serde_json::Value>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StoredProjector {
+    LegacyMoss,
+    MossChunks,
+    Asr(Projection),
+}
+
+impl StoredProjector {
+    fn of(version: &str) -> Option<Self> {
+        if matches!(version, PROJECTOR_VERSION | RECORDING_PROJECTOR_VERSION) {
+            Some(Self::LegacyMoss)
+        } else if moss_chunks::is_projector(version) {
+            Some(Self::MossChunks)
+        } else {
+            AsrProvider::of_projector(version).map(|(_, projection)| Self::Asr(projection))
+        }
+    }
+}
+
 #[derive(PartialEq, Eq)]
 enum MossValidationPolicy {
     NewRecognition,
     StoredArtifact,
 }
 
-enum TranscriptCommitPolicy {
-    Moss,
-    WholeMoss,
-    MossChunks,
-    Nemotron,
-    Whisper,
-    Qwen,
-    AppleSpeech,
+#[derive(Clone, Copy)]
+enum CommitFormat {
+    Provider(AsrProvider),
+    #[cfg(any(test, feature = "test-support"))]
+    LegacyMoss,
+    #[cfg(any(test, feature = "test-support"))]
+    LegacyWholeMoss,
+}
+
+// Where a new generation's current.json is written relative to the check that the
+// meeting's transcript is still the one the generation was made from.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CurrentWrite {
+    // A recognition result refused by the check stays a complete generation that the
+    // history can restore.
+    BeforeCheck,
+    AfterCheck,
+}
+
+enum RevisionEvidence {
+    None,
+    Upgrade(TranscriptUpgradeEvidence),
+    Terminology(serde_json::Value),
+    SpeakerAnalysis(crate::diarization::SpeakerAnalysisEvidence),
 }
 
 fn present_chunk<'de, D>(
@@ -722,9 +776,7 @@ impl Engine {
         if self.quitting {
             return Err(CoreError::Unavailable);
         }
-        if self.capture.is_some() {
-            return Err(CoreError::RecordingBusy);
-        }
+        self.refuse_while_recording(Operation::ImportAudio, [])?;
         if !source.is_absolute() || !prepared.is_absolute() {
             return Err(CoreError::InvalidInput(
                 "음성 파일의 절대 경로가 필요합니다.".into(),
@@ -876,14 +928,7 @@ impl Engine {
         let bytes = read_bytes(&self.store.root, &directory.join("current.json"))?;
         let doc: Transcript = serde_json::from_slice(&bytes)
             .map_err(|_| CoreError::Storage("저장 정보의 형식이 올바르지 않습니다.".into()))?;
-        if doc.version.id != *transcript_id
-            || meeting.audio.as_ref().map(|a| a.session_id.as_str())
-                != Some(doc.source_session_id.as_str())
-        {
-            return Err(CoreError::Storage(
-                "전사와 원음의 연결이 올바르지 않습니다.".into(),
-            ));
-        }
+        doc.validate_current_of(meeting)?;
         Ok(Some((doc, bytes)))
     }
 
@@ -968,11 +1013,8 @@ impl Engine {
         let source = document.source.as_ref().ok_or_else(|| {
             CoreError::Storage("음성 기록의 원본 연결을 확인할 수 없습니다.".into())
         })?;
-        let valid_source = (matches!(
-            source.projector_version.as_str(),
-            PROJECTOR_VERSION | RECORDING_PROJECTOR_VERSION
-        ) || moss_chunks::is_projector(&source.projector_version)
-            || crate::nemotron::is_projector(&source.projector_version))
+        let projector = StoredProjector::of(&source.projector_version);
+        let valid_source = projector.is_some()
             && source.raw_sha256 == sha256(&raw)
             && match source.association.as_str() {
                 "direct" => initial.source.as_ref() == Some(source),
@@ -988,7 +1030,7 @@ impl Engine {
             || initial.model != document.model
             || initial.model_revision != document.model_revision
             || (document.segments.is_empty()
-                && !(moss_chunks::is_projector(&source.projector_version)
+                && !(projector == Some(StoredProjector::MossChunks)
                     && moss_chunks::can_publish(&document)))
             || initial.segments.len() != document.segments.len()
         {
@@ -996,30 +1038,34 @@ impl Engine {
                 "음성 기록의 원본 연결을 확인할 수 없습니다.".into(),
             ));
         }
-        let projection = if moss_chunks::is_projector(&source.projector_version) {
-            moss_chunks::decode_with_projector(
+        let projection = match projector {
+            Some(StoredProjector::MossChunks) => moss_chunks::decode_with_projector(
                 &raw,
                 audio.frames,
                 audio.sample_rate,
                 &audio.session_id,
                 transcript_id,
                 &source.projector_version,
-            )?
-        } else if crate::nemotron::is_projector(&source.projector_version) {
-            crate::nemotron::decode(&raw, duration, &audio.session_id, transcript_id)?
-        } else {
-            MossOutput::decode_with_policy(
+            )?,
+            Some(StoredProjector::Asr(_)) => crate::asr_provider::decode_stored(
+                &raw,
+                duration,
+                &audio.session_id,
+                transcript_id,
+            )?,
+            Some(StoredProjector::LegacyMoss) | None => MossOutput::decode_with_policy(
                 &raw,
                 duration,
                 &audio.session_id,
                 transcript_id,
                 MossValidationPolicy::StoredArtifact,
-            )?
+            )?,
         };
         if projection.model != initial.model
-            || ((crate::nemotron::is_projector(&source.projector_version)
-                || moss_chunks::is_projector(&source.projector_version))
-                && projection.model_revision != initial.model_revision)
+            || (matches!(
+                projector,
+                Some(StoredProjector::Asr(_) | StoredProjector::MossChunks)
+            ) && projection.model_revision != initial.model_revision)
             || projection.segments.len() != initial.segments.len()
             || (source.association == "direct" && projection.source.as_ref() != Some(source))
             || (source.association == LEGACY_ASSOCIATION
@@ -1032,7 +1078,7 @@ impl Engine {
                 "모델 원본과 발언의 연결을 확인할 수 없습니다.".into(),
             ));
         }
-        if crate::nemotron::is_word_projector(&source.projector_version) {
+        if projector == Some(StoredProjector::Asr(Projection::WordSpeakers)) {
             if initial.speaker_analysis != projection.speaker_analysis
                 || initial.speakers != projection.speakers
                 || initial
@@ -1045,7 +1091,7 @@ impl Engine {
                     "화자 분석의 원본 연결을 확인할 수 없습니다.".into(),
                 ));
             }
-            let (run, bytes, expected_hash) = crate::nemotron::posterior_source(&raw)?;
+            let (run, bytes, expected_hash) = crate::word_speakers::posterior_source(&raw)?;
             store::validate_id(&run)?;
             let path = store::checked_path(
                 &self.store.root,
@@ -1144,9 +1190,7 @@ impl Engine {
             return Err(CoreError::Unavailable);
         }
         self.require_active_meeting(id)?;
-        if self.capture.is_some() {
-            return Err(CoreError::RecordingBusy);
-        }
+        self.refuse_while_recording(Operation::RestoreTranscript, [id])?;
         store::validate_id(&expected.id)?;
         store::validate_id(&target.id)?;
         let current_id = self.meetings[id]
@@ -1201,9 +1245,7 @@ impl Engine {
         if self.quitting {
             return Err(CoreError::Unavailable);
         }
-        if self.capture.is_some() {
-            return Err(CoreError::RecordingBusy);
-        }
+        self.refuse_while_recording(Operation::UpgradeTranscriptSource, [id])?;
         if self
             .meetings
             .get(id)
@@ -1319,7 +1361,7 @@ impl Engine {
         self.save_transcript_revision(
             id,
             doc,
-            Some(TranscriptUpgradeEvidence {
+            RevisionEvidence::Upgrade(TranscriptUpgradeEvidence {
                 before,
                 raw_sha256,
                 initial_sha256: sha256(&initial_bytes),
@@ -1333,126 +1375,84 @@ impl Engine {
         id: &str,
         expected: Option<TranscriptVersion>,
         raw: Vec<u8>,
+        provider: AsrProvider,
     ) -> Result<Transcript> {
-        self.commit_transcript_with_policy(id, expected, raw, TranscriptCommitPolicy::Moss)
+        self.commit_generation(id, expected, raw, CommitFormat::Provider(provider))
     }
 
-    pub fn commit_whole_transcript(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn commit_legacy_moss_transcript(
         &mut self,
         id: &str,
         expected: Option<TranscriptVersion>,
         raw: Vec<u8>,
     ) -> Result<Transcript> {
-        self.commit_transcript_with_policy(id, expected, raw, TranscriptCommitPolicy::WholeMoss)
+        self.commit_generation(id, expected, raw, CommitFormat::LegacyMoss)
     }
 
-    pub fn commit_moss_chunk_transcript(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn commit_legacy_whole_moss_transcript(
         &mut self,
         id: &str,
         expected: Option<TranscriptVersion>,
         raw: Vec<u8>,
     ) -> Result<Transcript> {
-        self.commit_transcript_with_policy(id, expected, raw, TranscriptCommitPolicy::MossChunks)
+        self.commit_generation(id, expected, raw, CommitFormat::LegacyWholeMoss)
     }
 
-    pub fn commit_nemotron_transcript(
+    fn commit_generation(
         &mut self,
         id: &str,
         expected: Option<TranscriptVersion>,
         raw: Vec<u8>,
-    ) -> Result<Transcript> {
-        self.commit_transcript_with_policy(id, expected, raw, TranscriptCommitPolicy::Nemotron)
-    }
-
-    pub fn commit_whisper_transcript(
-        &mut self,
-        id: &str,
-        expected: Option<TranscriptVersion>,
-        raw: Vec<u8>,
-    ) -> Result<Transcript> {
-        self.commit_transcript_with_policy(id, expected, raw, TranscriptCommitPolicy::Whisper)
-    }
-
-    pub fn commit_qwen_transcript(
-        &mut self,
-        id: &str,
-        expected: Option<TranscriptVersion>,
-        raw: Vec<u8>,
-    ) -> Result<Transcript> {
-        self.commit_transcript_with_policy(id, expected, raw, TranscriptCommitPolicy::Qwen)
-    }
-
-    pub fn commit_apple_transcript(
-        &mut self,
-        id: &str,
-        expected: Option<TranscriptVersion>,
-        raw: Vec<u8>,
-    ) -> Result<Transcript> {
-        self.commit_transcript_with_policy(id, expected, raw, TranscriptCommitPolicy::AppleSpeech)
-    }
-
-    fn commit_transcript_with_policy(
-        &mut self,
-        id: &str,
-        expected: Option<TranscriptVersion>,
-        raw: Vec<u8>,
-        policy: TranscriptCommitPolicy,
+        format: CommitFormat,
     ) -> Result<Transcript> {
         if self.quitting {
             return Err(CoreError::Unavailable);
         }
         store::validate_id(id)?;
         self.require_active_meeting(id)?;
-        let mut stored = self
+        self.refuse_while_recording(Operation::CommitTranscript, [id])?;
+        let audio = self
             .meetings
             .get(id)
             .ok_or(CoreError::MeetingNotFound)?
-            .clone();
-        let audio = stored.meeting.audio.as_ref().ok_or_else(|| {
-            CoreError::InvalidState("먼저 녹음을 종료하거나 음성을 가져와 주세요.".into())
-        })?;
+            .meeting
+            .audio
+            .clone()
+            .ok_or_else(|| {
+                CoreError::InvalidState("먼저 녹음을 종료하거나 음성을 가져와 주세요.".into())
+            })?;
         let transcript_id = Uuid::new_v4().to_string();
-        let directory = transcript_dir(id, &transcript_id)?;
-        store::ensure_directory(&store::checked_path(&self.store.root, &directory)?)?;
-        let mut file = store::create_new(&store::checked_path(
-            &self.store.root,
-            &directory.join("raw.json"),
-        )?)?;
-        file.write_all(&raw)?;
-        file.sync_all()?;
+        let directory = self.create_generation(id, &transcript_id, &raw)?;
         let duration = audio.frames as f64 / audio.sample_rate as f64;
-        let document = match policy {
-            TranscriptCommitPolicy::MossChunks => {
-                let document = moss_chunks::decode(
-                    &raw,
-                    audio.frames,
-                    audio.sample_rate,
-                    &audio.session_id,
-                    &transcript_id,
-                )?;
-                if !moss_chunks::can_publish(&document) {
-                    return Err(CoreError::InvalidInput(
-                        "인식된 본문이 없습니다. 실패 범위와 원본 결과는 보관했습니다.".into(),
-                    ));
+        let document = match format {
+            CommitFormat::Provider(provider) => match provider.decoder() {
+                Some(decode) => decode(&raw, duration, &audio.session_id, &transcript_id)?,
+                None => {
+                    let document = moss_chunks::decode(
+                        &raw,
+                        audio.frames,
+                        audio.sample_rate,
+                        &audio.session_id,
+                        &transcript_id,
+                    )?;
+                    if !moss_chunks::can_publish(&document) {
+                        return Err(CoreError::InvalidInput(
+                            "인식된 본문이 없습니다. 실패 범위와 원본 결과는 보관했습니다.".into(),
+                        ));
+                    }
+                    document
                 }
-                document
+            },
+            #[cfg(any(test, feature = "test-support"))]
+            CommitFormat::LegacyMoss | CommitFormat::LegacyWholeMoss => {
+                MossOutput::decode(&raw, duration, &audio.session_id, &transcript_id)?
             }
-            TranscriptCommitPolicy::Nemotron => {
-                crate::nemotron::decode_asr(&raw, duration, &audio.session_id, &transcript_id)?
-            }
-            TranscriptCommitPolicy::AppleSpeech => {
-                crate::apple_speech::decode(&raw, duration, &audio.session_id, &transcript_id)?
-            }
-            TranscriptCommitPolicy::Whisper => {
-                crate::whisper::decode_asr(&raw, duration, &audio.session_id, &transcript_id)?
-            }
-            TranscriptCommitPolicy::Qwen => {
-                crate::qwen::decode_asr(&raw, duration, &audio.session_id, &transcript_id)?
-            }
-            _ => MossOutput::decode(&raw, duration, &audio.session_id, &transcript_id)?,
         };
         immutable_json(&self.store.root, &directory.join("initial.json"), &document)?;
-        if matches!(policy, TranscriptCommitPolicy::WholeMoss)
+        #[cfg(any(test, feature = "test-support"))]
+        if matches!(format, CommitFormat::LegacyWholeMoss)
             && !document.source.as_ref().is_some_and(|source| {
                 source.projector_version == RECORDING_PROJECTOR_VERSION
                     && source.speaker_scope.as_deref() == Some("recording")
@@ -1463,16 +1463,50 @@ impl Engine {
                 "녹음 전체를 한 번에 처리하는 실행기가 필요합니다. 새 원문 결과는 보관했으며 현재 음성 기록은 변경하지 않았습니다.".into(),
             ));
         }
-        // Written before the check, so a result refused because the transcript changed
-        // meanwhile is a complete generation in the history and can be restored there.
-        store::write_json(&self.store.root, &directory.join("current.json"), &document)?;
-        if self.transcript(id)?.map(|d| d.version) != expected {
-            return Err(CoreError::InvalidState("전사가 변경되어 새 결과를 적용하지 않았습니다. 기존 수정은 그대로 두었고, 새 결과는 이전 기록에서 복원할 수 있습니다.".into()));
+        self.publish_generation(
+            id,
+            &transcript_id,
+            &document,
+            CurrentWrite::BeforeCheck,
+            |engine| {
+                if engine.transcript(id)?.map(|d| d.version) != expected {
+                    return Err(CoreError::InvalidState("전사가 변경되어 새 결과를 적용하지 않았습니다. 기존 수정은 그대로 두었고, 새 결과는 이전 기록에서 복원할 수 있습니다.".into()));
+                }
+                Ok(())
+            },
+        )?;
+        Ok(document)
+    }
+
+    // The native output stays even when it is then refused.
+    fn create_generation(&self, id: &str, transcript_id: &str, raw: &[u8]) -> Result<PathBuf> {
+        let directory = transcript_dir(id, transcript_id)?;
+        store::ensure_directory(&store::checked_path(&self.store.root, &directory)?)?;
+        immutable_bytes(&self.store.root, &directory.join("raw.json"), raw)?;
+        Ok(directory)
+    }
+
+    fn publish_generation(
+        &mut self,
+        id: &str,
+        transcript_id: &str,
+        current: &Transcript,
+        write: CurrentWrite,
+        still_current: impl FnOnce(&Self) -> Result<()>,
+    ) -> Result<()> {
+        let path = transcript_dir(id, transcript_id)?.join("current.json");
+        if write == CurrentWrite::BeforeCheck {
+            store::write_json(&self.store.root, &path, current)?;
         }
-        stored.meeting.transcript_id = Some(transcript_id);
+        still_current(self)?;
+        if write == CurrentWrite::AfterCheck {
+            store::write_json(&self.store.root, &path, current)?;
+        }
+        let mut stored = self.meetings[id].clone();
+        stored.meeting.transcript_id = Some(transcript_id.to_owned());
         stored.meeting.updated_at = store::now();
         self.commit_meeting(stored)?;
-        Ok(document)
+        Ok(())
     }
 
     pub fn edit_transcript(
@@ -1485,6 +1519,7 @@ impl Engine {
             return Err(CoreError::Unavailable);
         }
         self.require_active_meeting(id)?;
+        self.refuse_while_recording(Operation::EditTranscript, [id])?;
         let mut doc = self
             .transcript(id)?
             .ok_or_else(|| CoreError::InvalidState("저장할 전사가 없습니다.".into()))?;
@@ -1516,6 +1551,7 @@ impl Engine {
             return Err(CoreError::Unavailable);
         }
         self.require_active_meeting(id)?;
+        self.refuse_while_recording(Operation::CommitTerminology, [id])?;
         let current = self
             .transcript(id)?
             .ok_or_else(|| CoreError::InvalidState("보정할 음성 기록이 없습니다.".into()))?;
@@ -1544,7 +1580,7 @@ impl Engine {
                 "음성 기록이 변경되었습니다.".into(),
             ));
         }
-        self.save_transcript_revision_with_evidence(id, after, None, Some(evidence), None)
+        self.save_transcript_revision(id, after, RevisionEvidence::Terminology(evidence))
     }
 
     pub fn apply_diarization(
@@ -1557,13 +1593,7 @@ impl Engine {
         }
         self.require_active_meeting(id)?;
         // Speaker analysis of a finished meeting may save while another one records.
-        if self
-            .capture
-            .as_ref()
-            .is_some_and(|capture| capture.manifest.meeting_id == id)
-        {
-            return Err(CoreError::RecordingBusy);
-        }
+        self.refuse_while_recording(Operation::ApplySpeakerAnalysis, [id])?;
         let current = self
             .transcript(id)?
             .ok_or_else(|| CoreError::InvalidState("분석할 음성 기록이 없습니다.".into()))?;
@@ -1588,7 +1618,8 @@ impl Engine {
             .audio
             .as_ref()
             .ok_or_else(|| CoreError::InvalidState("원음 정보가 없습니다.".into()))?;
-        if draft.posterior.is_some() && crate::nemotron::supports_word_speakers(&draft.source.model)
+        if draft.posterior.is_some()
+            && AsrProvider::of_model(&draft.source.model).is_some_and(AsrProvider::word_speakers)
         {
             let before = draft.source.version.clone();
             let before_digest = crate::summary::transcript_digest(&draft.source)?;
@@ -1597,20 +1628,14 @@ impl Engine {
                 &transcript_dir(id, &before.id)?.join("raw.json"),
             )?;
             let next_id = Uuid::new_v4().to_string();
-            let generation = crate::nemotron::create_speaker_generation(
+            let generation = crate::word_speakers::create_speaker_generation(
                 draft,
                 &raw,
                 audio.frames,
                 audio.sample_rate,
                 &next_id,
             )?;
-            let directory = transcript_dir(id, &next_id)?;
-            store::ensure_directory(&store::checked_path(&self.store.root, &directory)?)?;
-            immutable_bytes(
-                &self.store.root,
-                &directory.join("raw.json"),
-                &generation.raw,
-            )?;
+            let directory = self.create_generation(id, &next_id, &generation.raw)?;
             immutable_json(
                 &self.store.root,
                 &directory.join("initial.json"),
@@ -1651,25 +1676,25 @@ impl Engine {
             )?;
             // All immutable artifacts are complete before replacing the meeting pointer.
             // A concurrent edit keeps its active generation and leaves this candidate archived.
-            let latest = self
-                .transcript(id)?
-                .ok_or_else(|| CoreError::InvalidState("음성 기록이 변경되었습니다.".into()))?;
-            if latest.version != before
-                || crate::summary::transcript_digest(&latest)? != before_digest
-            {
-                return Err(CoreError::InvalidState(
-                    "음성 기록이 변경되어 새 화자 분석을 적용하지 않았습니다.".into(),
-                ));
-            }
-            store::write_json(
-                &self.store.root,
-                &directory.join("current.json"),
+            self.publish_generation(
+                id,
+                &next_id,
                 &generation.current,
+                CurrentWrite::AfterCheck,
+                |engine| {
+                    let latest = engine.transcript(id)?.ok_or_else(|| {
+                        CoreError::InvalidState("음성 기록이 변경되었습니다.".into())
+                    })?;
+                    if latest.version != before
+                        || crate::summary::transcript_digest(&latest)? != before_digest
+                    {
+                        return Err(CoreError::InvalidState(
+                            "음성 기록이 변경되어 새 화자 분석을 적용하지 않았습니다.".into(),
+                        ));
+                    }
+                    Ok(())
+                },
             )?;
-            let mut stored = self.meetings[id].clone();
-            stored.meeting.transcript_id = Some(next_id);
-            stored.meeting.updated_at = store::now();
-            self.commit_meeting(stored)?;
             return Ok(generation.current);
         }
         let preserve_source_assignments =
@@ -1699,7 +1724,7 @@ impl Engine {
         } else {
             crate::diarization::project(draft, audio.frames, audio.sample_rate)?
         };
-        self.save_transcript_revision_with_evidence(id, after, None, None, Some(evidence))
+        self.save_transcript_revision(id, after, RevisionEvidence::SpeakerAnalysis(evidence))
     }
 
     pub fn edit_speakers(
@@ -1713,6 +1738,7 @@ impl Engine {
             return Err(CoreError::Unavailable);
         }
         self.require_active_meeting(id)?;
+        self.refuse_while_recording(Operation::EditSpeakers, [id])?;
         let mut doc = self
             .transcript(id)?
             .ok_or_else(|| CoreError::InvalidState("수정할 음성 기록이 없습니다.".into()))?;
@@ -1756,25 +1782,14 @@ impl Engine {
     }
 
     fn save_transcript_edit(&self, id: &str, doc: Transcript) -> Result<Transcript> {
-        self.save_transcript_revision(id, doc, None)
+        self.save_transcript_revision(id, doc, RevisionEvidence::None)
     }
 
     fn save_transcript_revision(
         &self,
         id: &str,
-        doc: Transcript,
-        upgrade: Option<TranscriptUpgradeEvidence>,
-    ) -> Result<Transcript> {
-        self.save_transcript_revision_with_evidence(id, doc, upgrade, None, None)
-    }
-
-    fn save_transcript_revision_with_evidence(
-        &self,
-        id: &str,
         mut doc: Transcript,
-        upgrade: Option<TranscriptUpgradeEvidence>,
-        terminology: Option<serde_json::Value>,
-        speaker_analysis: Option<crate::diarization::SpeakerAnalysisEvidence>,
+        evidence: RevisionEvidence,
     ) -> Result<Transcript> {
         let before_version = doc.version.clone();
         doc.version.revision = doc
@@ -1788,7 +1803,7 @@ impl Engine {
         let mut after =
             serde_json::to_vec(&doc).map_err(|error| CoreError::Storage(error.to_string()))?;
         after.push(b'\n');
-        if let Some(evidence) = &upgrade {
+        if let RevisionEvidence::Upgrade(evidence) = &evidence {
             let current = read_bytes(&self.store.root, &directory.join("current.json"))?;
             if current != evidence.before {
                 return Err(CoreError::InvalidState(
@@ -1803,54 +1818,57 @@ impl Engine {
         }
         // Receipts point at this copy as their evidence. A plain edit has no receipt,
         // and current.json already holds the document, so nothing would read it.
-        if upgrade.is_some() || terminology.is_some() || speaker_analysis.is_some() {
+        if !matches!(evidence, RevisionEvidence::None) {
             immutable_bytes(&self.store.root, &directory.join(&edit_name), &after)?;
         }
-        if let Some(evidence) = upgrade {
-            // 적용 뒤 영수증 쓰기 실패가 성공한 교체를 숨기지 않도록 증거를 먼저 보존한다.
-            immutable_json(
-                &self.store.root,
-                &directory.join(format!("upgrade-receipt-{transaction}.json")),
-                &serde_json::json!({
-                    "status":"prepared",
-                    "ruleVersion":LEGACY_ASSOCIATION,
-                    "timebase":SOURCE_TIMEBASE,
-                    "rawSha256":evidence.raw_sha256,
-                    "initialSha256":evidence.initial_sha256,
-                    "beforeCurrentSha256":sha256(&evidence.before),
-                    "afterCurrentSha256":sha256(&after),
-                    "beforePath":format!("upgrade-before-{transaction}.json"),
-                    "afterPath":edit_name,
-                    "beforeVersion":before_version,
-                    "afterVersion":doc.version,
-                }),
-            )?;
-        }
-        if let Some(evidence) = terminology {
-            let receipts = directory.join("terminology");
-            store::ensure_directory(&store::checked_path(&self.store.root, &receipts)?)?;
-            immutable_json(
-                &self.store.root,
-                &receipts.join(format!("receipt-{transaction}.json")),
-                &serde_json::json!({
-                    "status":"prepared",
-                    "beforeVersion":before_version,
-                    "afterVersion":doc.version,
-                    "afterCurrentSha256":sha256(&after),
-                    "afterPath":edit_name,
-                    "provenance":evidence,
-                }),
-            )?;
-        }
-        if let Some(evidence) = speaker_analysis {
-            self.write_speaker_receipts(
-                &directory,
-                &evidence,
-                serde_json::json!({
-                    "status":"prepared","beforeVersion":before_version,"afterVersion":doc.version,
-                    "afterCurrentSha256":sha256(&after),"afterPath":edit_name,"provenance":evidence.document
-                }),
-            )?;
+        match evidence {
+            RevisionEvidence::None => {}
+            RevisionEvidence::Upgrade(evidence) => {
+                // 적용 뒤 영수증 쓰기 실패가 성공한 교체를 숨기지 않도록 증거를 먼저 보존한다.
+                immutable_json(
+                    &self.store.root,
+                    &directory.join(format!("upgrade-receipt-{transaction}.json")),
+                    &serde_json::json!({
+                        "status":"prepared",
+                        "ruleVersion":LEGACY_ASSOCIATION,
+                        "timebase":SOURCE_TIMEBASE,
+                        "rawSha256":evidence.raw_sha256,
+                        "initialSha256":evidence.initial_sha256,
+                        "beforeCurrentSha256":sha256(&evidence.before),
+                        "afterCurrentSha256":sha256(&after),
+                        "beforePath":format!("upgrade-before-{transaction}.json"),
+                        "afterPath":edit_name,
+                        "beforeVersion":before_version,
+                        "afterVersion":doc.version,
+                    }),
+                )?;
+            }
+            RevisionEvidence::Terminology(evidence) => {
+                let receipts = directory.join("terminology");
+                store::ensure_directory(&store::checked_path(&self.store.root, &receipts)?)?;
+                immutable_json(
+                    &self.store.root,
+                    &receipts.join(format!("receipt-{transaction}.json")),
+                    &serde_json::json!({
+                        "status":"prepared",
+                        "beforeVersion":before_version,
+                        "afterVersion":doc.version,
+                        "afterCurrentSha256":sha256(&after),
+                        "afterPath":edit_name,
+                        "provenance":evidence,
+                    }),
+                )?;
+            }
+            RevisionEvidence::SpeakerAnalysis(evidence) => {
+                self.write_speaker_receipts(
+                    &directory,
+                    &evidence,
+                    serde_json::json!({
+                        "status":"prepared","beforeVersion":before_version,"afterVersion":doc.version,
+                        "afterCurrentSha256":sha256(&after),"afterPath":edit_name,"provenance":evidence.document
+                    }),
+                )?;
+            }
         }
         store::write_json(&self.store.root, &directory.join("current.json"), &doc)?;
         Ok(doc)
@@ -1915,18 +1933,49 @@ pub(crate) mod tests {
             .join("meeting.json");
         store::fail_next_json_sync(path);
         assert!(matches!(
-            engine.commit_transcript(&id, None, output()),
+            engine.commit_legacy_moss_transcript(&id, None, output()),
             Err(CoreError::Storage(_))
         ));
         assert_published_transcript_pointer(&engine, &id);
     }
 
     #[test]
+    fn a_refused_generation_keeps_its_current_document_only_when_written_before_the_check() {
+        let (_temporary, mut engine, id, _) = setup();
+        let published = engine
+            .commit_legacy_moss_transcript(&id, None, output())
+            .unwrap();
+        for (write, kept) in [
+            (CurrentWrite::BeforeCheck, true),
+            (CurrentWrite::AfterCheck, false),
+        ] {
+            let transcript_id = Uuid::new_v4().to_string();
+            let directory = engine
+                .create_generation(&id, &transcript_id, &output())
+                .unwrap();
+            let mut document = published.clone();
+            document.version.id = transcript_id.clone();
+            let refused = engine.publish_generation(&id, &transcript_id, &document, write, |_| {
+                Err(CoreError::InvalidState("refused".into()))
+            });
+            assert!(matches!(refused, Err(CoreError::InvalidState(_))));
+            let current = engine.store.root.join(&directory).join("current.json");
+            assert_eq!(current.exists(), kept);
+            assert_eq!(
+                engine.transcript(&id).unwrap().unwrap().version,
+                published.version
+            );
+        }
+    }
+
+    #[test]
     fn publication_of_restored_transcript_pointer_survives_metadata_sync_failure() {
         let (_temporary, mut engine, id, _) = setup();
-        let first = engine.commit_transcript(&id, None, output()).unwrap();
+        let first = engine
+            .commit_legacy_moss_transcript(&id, None, output())
+            .unwrap();
         let second = engine
-            .commit_transcript(&id, Some(first.version.clone()), output())
+            .commit_legacy_moss_transcript(&id, Some(first.version.clone()), output())
             .unwrap();
         let path = engine
             .store
@@ -2336,7 +2385,9 @@ pub(crate) mod tests {
     fn transcript_edits_are_versioned_and_raw_is_immutable_across_reopen() {
         let (temp, mut engine, id, _) = setup();
         let raw = output();
-        let doc = engine.commit_transcript(&id, None, raw.clone()).unwrap();
+        let doc = engine
+            .commit_legacy_moss_transcript(&id, None, raw.clone())
+            .unwrap();
         let edited = engine
             .edit_transcript(&id, doc.version.clone(), vec!["수정한 문장".into()])
             .unwrap();
@@ -2360,12 +2411,14 @@ pub(crate) mod tests {
     #[test]
     fn late_retranscription_preserves_edits_and_candidate_raw() {
         let (_temp, mut engine, id, _) = setup();
-        let first = engine.commit_transcript(&id, None, output()).unwrap();
+        let first = engine
+            .commit_legacy_moss_transcript(&id, None, output())
+            .unwrap();
         let edited = engine
             .edit_transcript(&id, first.version.clone(), vec!["수정".into()])
             .unwrap();
         assert!(engine
-            .commit_transcript(&id, Some(first.version), output())
+            .commit_legacy_moss_transcript(&id, Some(first.version), output())
             .is_err());
         assert_eq!(
             engine.transcript(&id).unwrap().unwrap().version,
@@ -2384,7 +2437,7 @@ pub(crate) mod tests {
     fn whole_commit_rejects_stale_and_diagnostic_workers_without_replacing_user_edits() {
         let (_temp, mut engine, id, _) = setup();
         let first = engine
-            .commit_whole_transcript(&id, None, whole_output())
+            .commit_legacy_whole_moss_transcript(&id, None, whole_output())
             .unwrap();
         let edited = engine
             .edit_transcript(&id, first.version, vec!["사용자 수정".into()])
@@ -2398,7 +2451,7 @@ pub(crate) mod tests {
         let rejected = [output(), chunk_output()];
         for raw in &rejected {
             assert!(engine
-                .commit_whole_transcript(&id, Some(edited.version.clone()), raw.clone())
+                .commit_legacy_whole_moss_transcript(&id, Some(edited.version.clone()), raw.clone())
                 .is_err());
             assert_eq!(
                 std::fs::read(directory.join("current.json")).unwrap(),
@@ -2438,9 +2491,13 @@ pub(crate) mod tests {
     #[test]
     fn whole_commit_keeps_source_cas_and_legacy_commit_reading_available() {
         let (_temp, mut engine, id, _) = setup();
-        assert!(engine.commit_whole_transcript(&id, None, output()).is_err());
+        assert!(engine
+            .commit_legacy_whole_moss_transcript(&id, None, output())
+            .is_err());
         assert!(engine.transcript(&id).unwrap().is_none());
-        let legacy = engine.commit_transcript(&id, None, chunk_output()).unwrap();
+        let legacy = engine
+            .commit_legacy_moss_transcript(&id, None, chunk_output())
+            .unwrap();
         assert_eq!(
             legacy.segments[0].speaker_id.as_deref(),
             Some("moss:chunk:0:S1")
@@ -2459,14 +2516,14 @@ pub(crate) mod tests {
             .unwrap();
         assert!(engine.history_document(&id, &legacy.version.id).is_ok());
         let whole = engine
-            .commit_whole_transcript(&id, Some(legacy.version), whole_output())
+            .commit_legacy_whole_moss_transcript(&id, Some(legacy.version), whole_output())
             .unwrap();
         let edited = engine
             .edit_transcript(&id, whole.version.clone(), vec!["최신 수정".into()])
             .unwrap();
         let candidate_raw = whole_output();
         assert!(engine
-            .commit_whole_transcript(&id, Some(whole.version), candidate_raw.clone())
+            .commit_legacy_whole_moss_transcript(&id, Some(whole.version), candidate_raw.clone())
             .is_err());
         let current = engine.transcript(&id).unwrap().unwrap();
         assert_eq!(current.version, edited.version);
@@ -2498,7 +2555,9 @@ pub(crate) mod tests {
     #[test]
     fn incomplete_malformed_and_wrong_audio_outputs_do_not_replace_transcript() {
         let (_temp, mut engine, id, _) = setup();
-        let first = engine.commit_transcript(&id, None, output()).unwrap();
+        let first = engine
+            .commit_legacy_moss_transcript(&id, None, output())
+            .unwrap();
         for field in [
             "hitTokenLimit",
             "hasUnparsedText",
@@ -2512,7 +2571,7 @@ pub(crate) mod tests {
                 _ => true.into(),
             };
             assert!(engine
-                .commit_transcript(
+                .commit_legacy_moss_transcript(
                     &id,
                     Some(first.version.clone()),
                     serde_json::to_vec(&bad).unwrap()
@@ -2524,7 +2583,7 @@ pub(crate) mod tests {
             );
         }
         assert!(engine
-            .commit_transcript(&id, Some(first.version.clone()), b"invalid".to_vec())
+            .commit_legacy_moss_transcript(&id, Some(first.version.clone()), b"invalid".to_vec())
             .is_err());
         assert_eq!(
             engine.transcript(&id).unwrap().unwrap().version,
@@ -2875,7 +2934,7 @@ pub(crate) mod tests {
     ) {
         let (_temp, mut engine, id, _) = setup();
         let initial = engine
-            .commit_whole_transcript(&id, None, whole_output())
+            .commit_legacy_whole_moss_transcript(&id, None, whole_output())
             .unwrap();
         let directory = engine
             .store
@@ -2931,7 +2990,7 @@ pub(crate) mod tests {
             .edit_transcript(&id, stored.version, vec!["수정한 이전 기록".into()])
             .unwrap();
         let next = engine
-            .commit_whole_transcript(&id, Some(edited.version.clone()), whole_output())
+            .commit_legacy_whole_moss_transcript(&id, Some(edited.version.clone()), whole_output())
             .unwrap();
         let restored = engine
             .restore_transcript(&id, next.version, edited.version)
@@ -2948,10 +3007,10 @@ pub(crate) mod tests {
         );
         assert_eq!(std::fs::read(directory.join("raw.json")).unwrap(), v1);
         assert!(engine
-            .commit_whole_transcript(&id, Some(restored.version.clone()), v1.clone())
+            .commit_legacy_whole_moss_transcript(&id, Some(restored.version.clone()), v1.clone())
             .is_err());
         assert!(engine
-            .commit_transcript(&id, Some(restored.version.clone()), v1.clone())
+            .commit_legacy_moss_transcript(&id, Some(restored.version.clone()), v1.clone())
             .is_err());
         assert_eq!(
             engine.transcript(&id).unwrap().unwrap().version,
@@ -3124,7 +3183,9 @@ pub(crate) mod tests {
     fn whole_recording_scope_preserves_current_history_and_never_upgrades_missing_source() {
         let (_temp, mut engine, id, _) = setup();
         let raw = whole_output();
-        let source = engine.commit_transcript(&id, None, raw.clone()).unwrap();
+        let source = engine
+            .commit_legacy_moss_transcript(&id, None, raw.clone())
+            .unwrap();
         let edited = engine
             .edit_transcript(&id, source.version, vec!["사용자 수정".into()])
             .unwrap();
@@ -3162,7 +3223,9 @@ pub(crate) mod tests {
     #[test]
     fn recording_scope_cannot_be_added_to_stored_chunk_raw_by_source_metadata_alone() {
         let (_temp, mut engine, id, _) = setup();
-        let doc = engine.commit_transcript(&id, None, chunk_output()).unwrap();
+        let doc = engine
+            .commit_legacy_moss_transcript(&id, None, chunk_output())
+            .unwrap();
         let directory = engine
             .store
             .root
@@ -3214,7 +3277,9 @@ pub(crate) mod tests {
     fn legacy_chunk_labels_are_recovered_locally_and_manual_merge_is_explicit() {
         let (_temp, mut engine, id, _) = setup();
         let raw = chunk_output();
-        let first = engine.commit_transcript(&id, None, raw.clone()).unwrap();
+        let first = engine
+            .commit_legacy_moss_transcript(&id, None, raw.clone())
+            .unwrap();
         let mut texts: Vec<_> = first
             .segments
             .iter()
@@ -3254,7 +3319,9 @@ pub(crate) mod tests {
     #[test]
     fn speaker_only_changes_stale_the_summary_and_reject_late_results_without_losing_minutes() {
         let (_temp, mut engine, id, _) = setup();
-        let source = engine.commit_transcript(&id, None, chunk_output()).unwrap();
+        let source = engine
+            .commit_legacy_moss_transcript(&id, None, chunk_output())
+            .unwrap();
         let draft = |source: Transcript, expected_id: Option<String>| crate::SummaryDraft {
             source,
             notes: None,
@@ -3367,7 +3434,9 @@ pub(crate) mod tests {
     #[test]
     fn speaker_edits_preserve_existing_origin_and_derive_new_origin_from_name_changes() {
         let (_temp, mut engine, id, _) = setup();
-        let original = engine.commit_transcript(&id, None, output()).unwrap();
+        let original = engine
+            .commit_legacy_moss_transcript(&id, None, output())
+            .unwrap();
         assert_eq!(
             original.speakers[0].name_origin,
             Some(SpeakerNameOrigin::Automatic)
@@ -3443,7 +3512,9 @@ pub(crate) mod tests {
     fn speaker_rename_merge_split_and_restore_are_versioned_without_changing_content() {
         let (_temp, mut engine, id, _) = setup();
         let raw = speaker_output(&[serde_json::json!("S1"), serde_json::json!("S2")]);
-        let original = engine.commit_transcript(&id, None, raw.clone()).unwrap();
+        let original = engine
+            .commit_legacy_moss_transcript(&id, None, raw.clone())
+            .unwrap();
         let edited = engine
             .edit_transcript(
                 &id,
@@ -3546,7 +3617,9 @@ pub(crate) mod tests {
     #[test]
     fn invalid_or_stale_speaker_edits_do_not_replace_current_document() {
         let (_temp, mut engine, id, _) = setup();
-        let doc = engine.commit_transcript(&id, None, output()).unwrap();
+        let doc = engine
+            .commit_legacy_moss_transcript(&id, None, output())
+            .unwrap();
         let before = serde_json::to_vec(&doc).unwrap();
         for (speakers, assignments) in [
             (doc.speakers.clone(), vec![]),
@@ -3607,7 +3680,9 @@ pub(crate) mod tests {
     fn old_document_is_only_upgraded_explicitly_and_preserves_user_edits() {
         let (_temp, mut engine, id, _) = setup();
         let raw = output();
-        let first = engine.commit_transcript(&id, None, raw.clone()).unwrap();
+        let first = engine
+            .commit_legacy_moss_transcript(&id, None, raw.clone())
+            .unwrap();
         let edited = engine
             .edit_transcript(&id, first.version, vec!["사용자 수정".into()])
             .unwrap();
@@ -3678,7 +3753,9 @@ pub(crate) mod tests {
     #[test]
     fn old_document_without_usable_raw_remains_readable_without_invented_speakers() {
         let (_temp, mut engine, id, _) = setup();
-        engine.commit_transcript(&id, None, output()).unwrap();
+        engine
+            .commit_legacy_moss_transcript(&id, None, output())
+            .unwrap();
         let (directory, before) = make_legacy(&engine, &id, false);
         std::fs::write(directory.join("raw.json"), b"unreadable").unwrap();
         assert_eq!(engine.upgrade_transcript_sources().unwrap().unavailable, 1);
@@ -3707,7 +3784,7 @@ pub(crate) mod tests {
         raw["segments"][0]["start"] = serde_json::json!(0.5799999999999998);
         raw["segments"][0]["end"] = serde_json::json!(0.8);
         engine
-            .commit_transcript(&id, None, serde_json::to_vec(&raw).unwrap())
+            .commit_legacy_moss_transcript(&id, None, serde_json::to_vec(&raw).unwrap())
             .unwrap();
         let (directory, _) = make_legacy(&engine, &id, false);
         let mut initial: serde_json::Value =
@@ -3755,7 +3832,7 @@ pub(crate) mod tests {
         assert_eq!(history.unavailable, 0);
         assert_eq!(history.entries.len(), 1);
         let next = engine
-            .commit_transcript(&id, Some(after.version.clone()), output())
+            .commit_legacy_moss_transcript(&id, Some(after.version.clone()), output())
             .unwrap();
         let restored = engine
             .restore_transcript(&id, next.version, after.version)
@@ -3789,7 +3866,9 @@ pub(crate) mod tests {
             "current-outside",
         ] {
             let (_temp, mut engine, id, _) = setup();
-            engine.commit_transcript(&id, None, chunk_output()).unwrap();
+            engine
+                .commit_legacy_moss_transcript(&id, None, chunk_output())
+                .unwrap();
             let (directory, _) = make_legacy(&engine, &id, false);
             let mut current: serde_json::Value =
                 store::read_json(&directory.join("current.json")).unwrap();
@@ -3858,7 +3937,9 @@ pub(crate) mod tests {
     #[test]
     fn explicit_unknown_speakers_survive_upgrade_and_the_prior_summary_is_retained_as_stale() {
         let (_temp, mut engine, id, _) = setup();
-        let first = engine.commit_transcript(&id, None, output()).unwrap();
+        let first = engine
+            .commit_legacy_moss_transcript(&id, None, output())
+            .unwrap();
         engine
             .edit_speakers(&id, first.version, vec![], vec![None])
             .unwrap();
@@ -3907,13 +3988,15 @@ pub(crate) mod tests {
     #[test]
     fn one_unavailable_legacy_document_does_not_block_other_documents_or_direct_results() {
         let (_temp, mut engine, id, wav) = setup();
-        engine.commit_transcript(&id, None, output()).unwrap();
+        engine
+            .commit_legacy_moss_transcript(&id, None, output())
+            .unwrap();
         make_legacy(&engine, &id, false);
         let missing = engine
             .import_audio("다른 회의".into(), wav.clone(), wav.clone())
             .unwrap();
         engine
-            .commit_transcript(&missing.id, None, output())
+            .commit_legacy_moss_transcript(&missing.id, None, output())
             .unwrap();
         let (missing_directory, before) = make_legacy(&engine, &missing.id, false);
         std::fs::rename(
@@ -3925,7 +4008,7 @@ pub(crate) mod tests {
             .import_audio("새 회의".into(), wav.clone(), wav)
             .unwrap();
         engine
-            .commit_transcript(&direct.id, None, output())
+            .commit_legacy_moss_transcript(&direct.id, None, output())
             .unwrap();
         let report = engine.upgrade_transcript_sources().unwrap();
         assert_eq!(
@@ -3961,7 +4044,9 @@ pub(crate) mod tests {
     #[test]
     fn retranscription_history_restores_edits_and_speakers_as_a_new_revision() {
         let (_temp, mut engine, id, _) = setup();
-        let first = engine.commit_transcript(&id, None, output()).unwrap();
+        let first = engine
+            .commit_legacy_moss_transcript(&id, None, output())
+            .unwrap();
         let edited = engine
             .edit_transcript(&id, first.version.clone(), vec!["수정한 문장".into()])
             .unwrap();
@@ -3980,7 +4065,7 @@ pub(crate) mod tests {
             )
             .unwrap();
         let second = engine
-            .commit_transcript(&id, Some(edited.version.clone()), output())
+            .commit_legacy_moss_transcript(&id, Some(edited.version.clone()), output())
             .unwrap();
         let root = engine.store.root.clone();
         let old_directory = root.join(transcript_dir(&id, &edited.version.id).unwrap());
@@ -4035,9 +4120,11 @@ pub(crate) mod tests {
     #[test]
     fn history_restore_requires_both_current_and_target_versions() {
         let (_temp, mut engine, id, _) = setup();
-        let first = engine.commit_transcript(&id, None, output()).unwrap();
+        let first = engine
+            .commit_legacy_moss_transcript(&id, None, output())
+            .unwrap();
         let second = engine
-            .commit_transcript(&id, Some(first.version.clone()), output())
+            .commit_legacy_moss_transcript(&id, Some(first.version.clone()), output())
             .unwrap();
         let changed = engine
             .edit_transcript(&id, second.version.clone(), vec!["새 수정".into()])
@@ -4080,9 +4167,11 @@ pub(crate) mod tests {
     fn history_rejects_damaged_source_identity_without_repair_or_partial_activation() {
         for corruption in ["raw", "id", "session", "sourceIndex", "original", "time"] {
             let (_temp, mut engine, id, _) = setup();
-            let first = engine.commit_transcript(&id, None, output()).unwrap();
+            let first = engine
+                .commit_legacy_moss_transcript(&id, None, output())
+                .unwrap();
             let second = engine
-                .commit_transcript(&id, Some(first.version.clone()), output())
+                .commit_legacy_moss_transcript(&id, Some(first.version.clone()), output())
                 .unwrap();
             let directory = engine
                 .store
@@ -4125,7 +4214,9 @@ pub(crate) mod tests {
     #[test]
     fn history_is_read_only_and_does_not_guess_legacy_or_incomplete_documents() {
         let (_temp, mut engine, id, _) = setup();
-        let first = engine.commit_transcript(&id, None, output()).unwrap();
+        let first = engine
+            .commit_legacy_moss_transcript(&id, None, output())
+            .unwrap();
         let (directory, legacy) = make_legacy(&engine, &id, true);
         assert_eq!(engine.transcript_history(&id).unwrap().unavailable, 1);
         assert_eq!(
@@ -4136,7 +4227,7 @@ pub(crate) mod tests {
         assert_eq!(engine.transcript_history(&id).unwrap().entries.len(), 1);
         let current = engine.transcript(&id).unwrap().unwrap();
         assert!(engine
-            .commit_transcript(&id, Some(current.version), b"invalid".to_vec())
+            .commit_legacy_moss_transcript(&id, Some(current.version), b"invalid".to_vec())
             .is_err());
         let history = engine.transcript_history(&id).unwrap();
         assert_eq!(history.entries.len(), 1);
@@ -4151,9 +4242,11 @@ pub(crate) mod tests {
     fn history_never_follows_transcript_directory_or_document_links() {
         use std::os::unix::fs::symlink;
         let (temp, mut engine, id, _) = setup();
-        let first = engine.commit_transcript(&id, None, output()).unwrap();
+        let first = engine
+            .commit_legacy_moss_transcript(&id, None, output())
+            .unwrap();
         let second = engine
-            .commit_transcript(&id, Some(first.version.clone()), output())
+            .commit_legacy_moss_transcript(&id, Some(first.version.clone()), output())
             .unwrap();
         let directory = engine
             .store
@@ -4190,9 +4283,11 @@ pub(crate) mod tests {
     #[test]
     fn restore_rejects_recording_shutdown_and_deleted_meetings_before_writing() {
         let (_temp, mut engine, id, _) = setup();
-        let first = engine.commit_transcript(&id, None, output()).unwrap();
+        let first = engine
+            .commit_legacy_moss_transcript(&id, None, output())
+            .unwrap();
         let second = engine
-            .commit_transcript(&id, Some(first.version.clone()), output())
+            .commit_legacy_moss_transcript(&id, Some(first.version.clone()), output())
             .unwrap();
         let recording = engine.create_meeting("녹음 중".into(), "".into()).unwrap();
         let manifest = Manifest::new(
@@ -4271,7 +4366,9 @@ pub(crate) mod tests {
     fn terminology_persists_profile_decisions_and_source_before_current_switch() {
         let (temp, mut engine, id, _) = setup();
         let raw = terminology_raw();
-        let source = engine.commit_transcript(&id, None, raw.clone()).unwrap();
+        let source = engine
+            .commit_legacy_moss_transcript(&id, None, raw.clone())
+            .unwrap();
         let directory = engine
             .store
             .root
@@ -4336,7 +4433,7 @@ pub(crate) mod tests {
     fn terminology_rejects_stale_version_and_same_version_changed_digest() {
         let (_temp, mut engine, id, _) = setup();
         let source = engine
-            .commit_transcript(&id, None, terminology_raw())
+            .commit_legacy_moss_transcript(&id, None, terminology_raw())
             .unwrap();
         let mut altered = source.clone();
         altered.segments[0].original_text.push('!');
@@ -4358,7 +4455,7 @@ pub(crate) mod tests {
     fn terminology_missing_acceptance_is_a_noop_without_revision_or_receipt() {
         let (_temp, mut engine, id, _) = setup();
         let source = engine
-            .commit_transcript(&id, None, terminology_raw())
+            .commit_legacy_moss_transcript(&id, None, terminology_raw())
             .unwrap();
         let mut draft = terminology_draft(source.clone());
         draft.decisions.clear();
@@ -4381,7 +4478,9 @@ pub(crate) mod tests {
     fn terminology_receipt_storage_failure_keeps_current_and_raw() {
         let (_temp, mut engine, id, _) = setup();
         let raw = terminology_raw();
-        let source = engine.commit_transcript(&id, None, raw.clone()).unwrap();
+        let source = engine
+            .commit_legacy_moss_transcript(&id, None, raw.clone())
+            .unwrap();
         let directory = engine
             .store
             .root
@@ -4421,7 +4520,9 @@ pub(crate) mod tests {
         let (temp, mut engine, id, source_audio) = setup();
         let audio_bytes = std::fs::read(&source_audio).unwrap();
         let raw = output();
-        let initial = engine.commit_transcript(&id, None, raw.clone()).unwrap();
+        let initial = engine
+            .commit_legacy_moss_transcript(&id, None, raw.clone())
+            .unwrap();
         let directory = engine
             .store
             .root
@@ -4510,7 +4611,9 @@ pub(crate) mod tests {
     #[test]
     fn a_plain_edit_does_not_leave_a_copy_nothing_reads() {
         let (_temp, mut engine, id, _) = setup();
-        let source = engine.commit_transcript(&id, None, output()).unwrap();
+        let source = engine
+            .commit_legacy_moss_transcript(&id, None, output())
+            .unwrap();
         let directory = engine
             .store
             .root
@@ -4536,7 +4639,9 @@ pub(crate) mod tests {
     #[test]
     fn diarization_source_digest_and_version_reject_concurrent_or_forged_source() {
         let (_temp, mut engine, id, _) = setup();
-        let source = engine.commit_transcript(&id, None, output()).unwrap();
+        let source = engine
+            .commit_legacy_moss_transcript(&id, None, output())
+            .unwrap();
         let mut forged = diarization_draft(source.clone());
         forged.source.segments[0].text = "수정 위조".into();
         assert!(engine.apply_diarization(&id, forged).is_err());
@@ -4555,7 +4660,9 @@ pub(crate) mod tests {
     fn diarization_evidence_storage_failure_never_switches_current() {
         let (_temp, mut engine, id, _) = setup();
         let raw = output();
-        let source = engine.commit_transcript(&id, None, raw.clone()).unwrap();
+        let source = engine
+            .commit_legacy_moss_transcript(&id, None, raw.clone())
+            .unwrap();
         let directory = engine
             .store
             .root
@@ -4584,7 +4691,7 @@ pub(crate) mod tests {
         let (_temp, mut engine, id, _audio) = setup();
         let raw = crate::nemotron::tests::raw();
         let baseline = engine
-            .commit_nemotron_transcript(&id, None, raw.clone())
+            .commit_transcript(&id, None, raw.clone(), crate::AsrProvider::Nemotron)
             .unwrap();
         let old_dir = transcript_dir(&id, &baseline.version.id).unwrap();
         let original_initial =
@@ -4641,7 +4748,7 @@ pub(crate) mod tests {
         let (_temp, mut engine, id, _audio) = setup();
         let raw = crate::nemotron::tests::raw();
         let baseline = engine
-            .commit_nemotron_transcript(&id, None, raw.clone())
+            .commit_transcript(&id, None, raw.clone(), crate::AsrProvider::Nemotron)
             .unwrap();
         let first = engine
             .apply_diarization(&id, crate::nemotron::tests::posterior_draft(baseline))
@@ -4681,7 +4788,7 @@ pub(crate) mod tests {
                 .join("raw.json"),
         )
         .unwrap();
-        assert_eq!(crate::nemotron::canonical_asr(&raw2).unwrap(), raw);
+        assert_eq!(crate::word_speakers::canonical_asr(&raw2).unwrap(), raw);
         assert_eq!(engine.transcript_history(&id).unwrap().entries.len(), 3);
     }
 
@@ -4689,7 +4796,9 @@ pub(crate) mod tests {
     fn invalid_posterior_or_missing_evidence_never_replaces_the_active_generation() {
         let (_temp, mut engine, id, _audio) = setup();
         let raw = crate::nemotron::tests::raw();
-        let baseline = engine.commit_nemotron_transcript(&id, None, raw).unwrap();
+        let baseline = engine
+            .commit_transcript(&id, None, raw, crate::AsrProvider::Nemotron)
+            .unwrap();
         let mut bad = crate::nemotron::tests::posterior_draft(baseline.clone());
         bad.posterior.as_mut().unwrap().frames = 100;
         assert!(engine.apply_diarization(&id, bad).is_err());
@@ -4728,7 +4837,9 @@ pub(crate) mod tests {
     fn legacy_moss_reanalysis_validates_new_posterior_but_keeps_the_legacy_generation() {
         let (_temp, mut engine, id, _audio) = setup();
         let raw = output();
-        let baseline = engine.commit_transcript(&id, None, raw.clone()).unwrap();
+        let baseline = engine
+            .commit_legacy_moss_transcript(&id, None, raw.clone())
+            .unwrap();
         let after = engine
             .apply_diarization(
                 &id,
@@ -4777,7 +4888,9 @@ pub(crate) mod tests {
         let (_temp, mut engine, id, _audio) = setup();
         let root = engine.store.root.clone();
         let raw = output();
-        let baseline = engine.commit_transcript(&id, None, raw.clone()).unwrap();
+        let baseline = engine
+            .commit_legacy_moss_transcript(&id, None, raw.clone())
+            .unwrap();
         let directory = transcript_dir(&id, &baseline.version.id).unwrap();
         let original_initial = read_bytes(&root, &directory.join("initial.json")).unwrap();
         let mut names = baseline.speakers.clone();
@@ -4821,7 +4934,7 @@ pub(crate) mod tests {
         assert_eq!(reopened.speakers, after.speakers);
         assert_eq!(reopened.segments[0].speaker_id, None);
         let other = engine
-            .commit_transcript(&id, Some(after.version.clone()), output())
+            .commit_legacy_moss_transcript(&id, Some(after.version.clone()), output())
             .unwrap();
         let restored = engine
             .restore_transcript(&id, other.version, after.version)
@@ -4843,7 +4956,12 @@ pub(crate) mod tests {
     fn asr_commit_rejects_a_derived_envelope_without_publishing_incomplete_posterior_history() {
         let (_temp, mut engine, id, _audio) = setup();
         let baseline = engine
-            .commit_nemotron_transcript(&id, None, crate::nemotron::tests::raw())
+            .commit_transcript(
+                &id,
+                None,
+                crate::nemotron::tests::raw(),
+                crate::AsrProvider::Nemotron,
+            )
             .unwrap();
         let derived = engine
             .apply_diarization(&id, crate::nemotron::tests::posterior_draft(baseline))
@@ -4852,7 +4970,12 @@ pub(crate) mod tests {
         let raw = read_bytes(&engine.store.root, &directory.join("raw.json")).unwrap();
         let before = read_bytes(&engine.store.root, &directory.join("current.json")).unwrap();
         assert!(engine
-            .commit_nemotron_transcript(&id, Some(derived.version.clone()), raw.clone())
+            .commit_transcript(
+                &id,
+                Some(derived.version.clone()),
+                raw.clone(),
+                crate::AsrProvider::Nemotron
+            )
             .is_err());
         assert_eq!(
             engine.transcript(&id).unwrap().unwrap().version,
@@ -4872,7 +4995,9 @@ pub(crate) mod tests {
     fn first_moss_posterior_preserves_manual_unassignment_without_a_name_edit() {
         let (_temp, mut engine, id, _audio) = setup();
         let raw = output();
-        let initial = engine.commit_transcript(&id, None, raw.clone()).unwrap();
+        let initial = engine
+            .commit_legacy_moss_transcript(&id, None, raw.clone())
+            .unwrap();
         let manual = engine
             .edit_speakers(&id, initial.version, initial.speakers.clone(), vec![None])
             .unwrap();
@@ -4932,7 +5057,7 @@ pub(crate) mod tests {
             {"start":0.5,"end":1.0,"text":"[S2] 둘째 발언","speaker_id":"S2"}
         ]);
         let initial = engine
-            .commit_transcript(&id, None, serde_json::to_vec(&value).unwrap())
+            .commit_legacy_moss_transcript(&id, None, serde_json::to_vec(&value).unwrap())
             .unwrap();
         let target = initial.segments[1].speaker_id.clone();
         let manual = engine
@@ -4959,7 +5084,9 @@ pub(crate) mod tests {
     #[test]
     fn previous_automatic_moss_analysis_is_not_mistaken_for_a_manual_initial_difference() {
         let (_temp, mut engine, id, _audio) = setup();
-        let initial = engine.commit_transcript(&id, None, output()).unwrap();
+        let initial = engine
+            .commit_legacy_moss_transcript(&id, None, output())
+            .unwrap();
         let first = engine
             .apply_diarization(&id, crate::nemotron::tests::posterior_draft(initial))
             .unwrap();

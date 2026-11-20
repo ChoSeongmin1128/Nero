@@ -6,6 +6,8 @@ publish = false
 
 [features]
 development = []
+# Commits transcripts in the retired MOSS formats; only tests that build those fixtures use it.
+test-support = []
 
 [dependencies]
 cpal = "=0.18.2"

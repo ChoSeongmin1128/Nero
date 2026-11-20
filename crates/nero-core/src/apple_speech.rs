@@ -207,7 +207,12 @@ mod tests {
             serde_json::json!(format!("{:x}", Sha256::digest(native.as_bytes())));
         value["nativeResultJson"] = serde_json::json!(native);
         let first = engine
-            .commit_apple_transcript(&id, None, serde_json::to_vec(&value).unwrap())
+            .commit_transcript(
+                &id,
+                None,
+                serde_json::to_vec(&value).unwrap(),
+                crate::AsrProvider::AppleSpeech,
+            )
             .unwrap();
         assert!(engine.transcript_history(&id).is_ok());
         assert!(first.speakers.is_empty());

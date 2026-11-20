@@ -1,5 +1,6 @@
 use crate::library::Library;
 use crate::presentation::{format_summary, DocumentFormat};
+use crate::search::{self, MeetingSearch, SearchField, SearchOptions};
 use crate::store::{self, StoredMeeting};
 use crate::{CoreError, Meeting, Result, Summary, SummaryContext, Transcript};
 use serde::de::DeserializeOwned;
@@ -398,7 +399,7 @@ impl<'a> Transaction<'a> {
             serde_json::from_slice(&content).map_err(|_| ReadError::InvalidDocument)?;
         if schema {
             match value.get("schemaVersion").and_then(Value::as_u64) {
-                Some(1) => (),
+                Some(version) if version == u64::from(store::SCHEMA_VERSION) => (),
                 Some(_) => return Err(ReadError::UnsupportedFormat.into()),
                 None => return Err(ReadError::InvalidDocument.into()),
             }
@@ -533,16 +534,11 @@ impl<'a> Transaction<'a> {
             }
             return Ok(None);
         };
-        if stored.meeting.id != id {
-            return Err(ReadError::InvalidDocument.into());
-        }
-        store::validate_text(&stored.meeting.title, &stored.meeting.notes)
+        stored
+            .validate_document(id)
             .map_err(|_| ReadError::InvalidDocument)?;
         if let Some(id) = &stored.meeting.transcript_id {
             store::validate_id(id).map_err(|_| ReadError::InvalidDocument)?;
-        }
-        if let Some(audio) = &stored.meeting.audio {
-            store::validate_artifact(id, audio).map_err(|_| ReadError::InvalidDocument)?;
         }
         if capture_details {
             if let Some(capture_id) = &stored.capture_id {
@@ -554,11 +550,8 @@ impl<'a> Transaction<'a> {
                     .document(&relative, true)?
                     .ok_or(ReadError::InvalidDocument)?;
                 manifest
-                    .validate()
+                    .validate_for(id, capture_id)
                     .map_err(|_| ReadError::InvalidDocument)?;
-                if manifest.meeting_id != id || &manifest.session_id != capture_id {
-                    return Err(ReadError::InvalidDocument.into());
-                }
                 store::hydrate_capture_metadata(&mut stored.meeting, &manifest);
             }
             if let Some(quality) = &stored.meeting.capture_quality {
@@ -572,12 +565,8 @@ impl<'a> Transaction<'a> {
                 .join(capture_id)
                 .join("manifest.json");
             if let Ok(Some(manifest)) = self.document::<store::Manifest>(&relative, true) {
-                if manifest.validate().is_ok()
-                    && manifest.meeting_id == id
-                    && &manifest.session_id == capture_id
-                    && manifest.device_id != "import"
-                {
-                    stored.meeting.recorded_at = Some(manifest.started_at);
+                if manifest.validate_for(id, capture_id).is_ok() {
+                    stored.meeting.recorded_at = manifest.recorded_at();
                 }
             }
         }
@@ -595,15 +584,9 @@ impl<'a> Transaction<'a> {
         let document: Transcript = self
             .document(&relative, false)?
             .ok_or(ReadError::InvalidDocument)?;
-        if &document.version.id != id
-            || meeting
-                .audio
-                .as_ref()
-                .map(|audio| audio.session_id.as_str())
-                != Some(document.source_session_id.as_str())
-        {
-            return Err(ReadError::InvalidDocument.into());
-        }
+        document
+            .validate_current_of(meeting)
+            .map_err(|_| ReadError::InvalidDocument)?;
         let mut ids = BTreeSet::new();
         let mut speakers = BTreeSet::new();
         for speaker in &document.speakers {
@@ -640,19 +623,9 @@ impl<'a> Transaction<'a> {
         let Some(summary): Option<Summary> = self.document(&relative, false)? else {
             return Ok(None);
         };
-        store::validate_id(&summary.id).map_err(|_| ReadError::InvalidDocument)?;
-        store::validate_id(&summary.source_version.id).map_err(|_| ReadError::InvalidDocument)?;
-        if summary.source_sha256.len() != 64
-            || !summary.source_sha256.bytes().all(|b| b.is_ascii_hexdigit())
-            || summary.attendees_sha256.as_ref().is_some_and(|digest| {
-                digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit())
-            })
-            || summary.notes_sha256.as_ref().is_some_and(|digest| {
-                digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit())
-            })
-        {
-            return Err(ReadError::InvalidDocument.into());
-        }
+        summary
+            .validate_references()
+            .map_err(|_| ReadError::InvalidDocument)?;
         let stale =
             crate::summary::is_stale(&summary, transcript, &meeting.notes, &meeting.attendees)?;
         let reference_count =
@@ -707,10 +680,8 @@ impl<'a> Transaction<'a> {
                     value["captureQuality"] = json!(quality);
                     // Notices queued within this bound were the device starting its input
                     // on macOS, not a recording problem; the record itself stays as saved.
-                    let startup_bound = meeting
-                        .audio
-                        .as_ref()
-                        .map(|audio| crate::startup_notice_frames(audio.sample_rate));
+                    let sample_rate = meeting.audio.as_ref().map(|audio| audio.sample_rate);
+                    let startup_bound = sample_rate.map(crate::startup_notice_frames);
                     value["captureQualityMeaning"] = json!({
                         "framePosition":"writerProgressAtObservation",
                         "audioSampleRate":meeting.audio.as_ref().map(|audio| audio.sample_rate),
@@ -720,9 +691,9 @@ impl<'a> Transaction<'a> {
                         "gapRecoveryVerified":false,
                         "coalescedRangeIsContinuous":false,
                         "startupXrunQueuedFrameBound":startup_bound.filter(|_| cfg!(target_os = "macos")),
-                        "startupXrunCount":startup_bound
+                        "startupXrunCount":sample_rate
                             .filter(|_| cfg!(target_os = "macos"))
-                            .map(|bound| quality.startup_xruns(bound))
+                            .map(|rate| quality.startup_xrun_count(rate))
                     });
                 }
                 if let Some(error) = &meeting.error {
@@ -807,12 +778,7 @@ impl<'a> Transaction<'a> {
             return Err(CoreError::InvalidInput("지정한 폴더가 없습니다.".into()));
         }
         let names = self.directory(Path::new("meetings"))?;
-        let query = params
-            .query
-            .as_deref()
-            .unwrap_or_default()
-            .trim()
-            .to_lowercase();
+        let query = search::fold_query(params.query.as_deref().unwrap_or_default());
         let mut meetings = Vec::new();
         let mut unreadable = 0_usize;
         for id in names {
@@ -866,48 +832,46 @@ impl<'a> Transaction<'a> {
                     }
                     Err(error) => return Err(error),
                 };
-                let mut matches = Vec::new();
-                let mut matches_truncated = false;
-                for (field, text) in [
-                    ("title", meeting.title.as_str()),
-                    ("notes", meeting.notes.as_str()),
-                ] {
-                    if let Some(text) = excerpt(text, &query) {
-                        matches.push(json!({"field":field,"text":text}));
-                    }
-                }
+                let mut found = MeetingSearch::new(&query, SearchOptions::AGENT);
+                found.meeting(&meeting);
                 if let Some(doc) = &transcript {
-                    for segment in &doc.segments {
-                        if let Some(text) = excerpt(&segment.text, &query) {
-                            if matches.len() == 20 {
-                                matches_truncated = true;
-                                break;
-                            }
-                            matches.push(json!({"field":"transcript","text":text,"segmentId":segment.id,"start":segment.start,"end":segment.end}));
-                        }
-                    }
+                    found.transcript(doc);
                 }
-                if let Some((summary, reference_count)) = summary {
-                    let external_text = format_summary(
+                if let Some((summary, reference_count)) = &summary {
+                    found.summary(&format_summary(
                         summary["text"].as_str().unwrap_or_default(),
                         DocumentFormat::Md,
                         false,
                         false,
-                        reference_count,
-                    );
-                    if let Some(text) = excerpt(&external_text, &query) {
-                        if matches.len() == 20 {
-                            matches_truncated = true;
-                        } else {
-                            matches.push(json!({"field":"summary","text":text,"stale":summary["stale"],"sourceVersion":summary["sourceVersion"]}));
-                        }
-                    }
+                        *reference_count,
+                    ));
                 }
-                if matches.is_empty() {
+                if found.matches.is_empty() {
                     continue;
                 }
+                let matches: Vec<_> = found
+                    .matches
+                    .iter()
+                    .map(|found| {
+                        let mut value = json!({"field":found.field.name(),"text":found.excerpt});
+                        let segment = found
+                            .segment
+                            .and_then(|index| transcript.as_ref()?.segments.get(index));
+                        if let (SearchField::Transcript, Some(segment)) = (found.field, segment) {
+                            value["segmentId"] = json!(segment.id);
+                            value["start"] = json!(segment.start);
+                            value["end"] = json!(segment.end);
+                        }
+                        if let (SearchField::Summary, Some((summary, _))) = (found.field, &summary)
+                        {
+                            value["stale"] = summary["stale"].clone();
+                            value["sourceVersion"] = summary["sourceVersion"].clone();
+                        }
+                        value
+                    })
+                    .collect();
                 value["matches"] = json!(matches);
-                value["matchesTruncated"] = json!(matches_truncated);
+                value["matchesTruncated"] = json!(found.truncated);
             }
             meetings.push(value);
         }
@@ -955,28 +919,6 @@ fn page_text_chunks(text: &str, params: &Params) -> (String, Value) {
     let chunks = text_chunks(text);
     let page = params.page(chunks.len(), "textChunks");
     (params.select(chunks).concat(), page)
-}
-
-fn excerpt(text: &str, query: &str) -> Option<String> {
-    text.to_lowercase().find(query)?;
-    let chars: Vec<_> = text.chars().collect();
-    let mut folded_bytes = 0;
-    let offset = text.to_lowercase().find(query)?;
-    let start = chars
-        .iter()
-        .position(|c| {
-            folded_bytes += c.to_lowercase().collect::<String>().len();
-            folded_bytes > offset
-        })
-        .unwrap_or(0)
-        .saturating_sub(40);
-    let end = start.saturating_add(160).min(chars.len());
-    Some(format!(
-        "{}{}{}",
-        if start > 0 { "..." } else { "" },
-        chars[start..end].iter().collect::<String>(),
-        if end < chars.len() { "..." } else { "" }
-    ))
 }
 
 fn validate_root(root: &Path) -> Result<()> {
@@ -1794,6 +1736,49 @@ mod tests {
             .any(|folder| folder["id"] == added_id && folder["name"] == "Added folder"));
         assert_ne!(folders["sourceVersion"], renamed["sourceVersion"]);
         assert_eq!(tree_hash(&fixture.root), after_add);
+    }
+
+    #[test]
+    fn the_reader_and_the_app_keep_their_own_document_checks() {
+        let fixture = Fixture::new();
+        let reader = fixture.reader();
+        let meeting = fixture.root.join("meetings").join(&fixture.id);
+        let original: Value =
+            serde_json::from_slice(&fs::read(meeting.join("meeting.json")).unwrap()).unwrap();
+        let app_reads = |value: &Value| {
+            fs::write(
+                meeting.join("meeting.json"),
+                serde_json::to_vec(value).unwrap(),
+            )
+            .unwrap();
+            let store = store::Store::open(fixture.root.clone()).unwrap();
+            let loaded = store.load_meetings(&store.load_library().unwrap()).unwrap();
+            loaded.meetings.contains_key(&fixture.id)
+        };
+        let reader_reads = || match reader.query("meeting_get", json!({"meetingId":fixture.id})) {
+            Ok(_) => true,
+            Err(CoreError::Reader(ReadError::InvalidDocument)) => false,
+            Err(error) => panic!("{error}"),
+        };
+        let mut dated = original.clone();
+        dated["meeting"]["meetingDate"] = json!("not-a-date");
+        assert!(!app_reads(&dated));
+        assert!(reader_reads());
+        let mut linked = original.clone();
+        linked["meeting"]["transcriptId"] = json!("not/an/id");
+        assert!(app_reads(&linked));
+        assert!(!reader_reads());
+        assert!(app_reads(&original));
+        let summary = meeting.join("summaries").join("current.json");
+        let mut value: Value = serde_json::from_slice(&fs::read(&summary).unwrap()).unwrap();
+        value["sourceSha256"] = json!("short");
+        fs::write(&summary, serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(matches!(
+            reader.query("summary_get", json!({"meetingId":fixture.id})),
+            Err(CoreError::Reader(ReadError::InvalidDocument))
+        ));
+        let engine = crate::engine::Engine::open(fixture.root.clone()).unwrap();
+        assert!(engine.summary(&fixture.id).unwrap().unwrap().stale);
     }
 
     #[test]

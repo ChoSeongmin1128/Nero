@@ -131,6 +131,31 @@ pub struct Summary {
     pub attendees_sha256: Option<String>,
     pub provenance: SummaryProvenance,
 }
+impl Summary {
+    // The read-only reader refuses a summary whose identifiers or digests are malformed;
+    // the app reads it as saved.
+    pub(crate) fn validate_references(&self) -> Result<()> {
+        let digest =
+            |value: &str| value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit());
+        store::validate_id(&self.id)?;
+        store::validate_id(&self.source_version.id)?;
+        if !digest(&self.source_sha256)
+            || self
+                .attendees_sha256
+                .as_deref()
+                .is_some_and(|value| !digest(value))
+            || self
+                .notes_sha256
+                .as_deref()
+                .is_some_and(|value| !digest(value))
+        {
+            return Err(CoreError::Storage(
+                "요약 정보의 형식이 올바르지 않습니다.".into(),
+            ));
+        }
+        Ok(())
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SummaryView {
@@ -405,9 +430,7 @@ impl Engine {
         if self.quitting {
             return Err(CoreError::Unavailable);
         }
-        if self.capture.is_some() {
-            return Err(CoreError::RecordingBusy);
-        }
+        self.refuse_while_recording(crate::recording_guard::Operation::SummaryContext, [id])?;
         context.validate()?;
         let input = self.summary_input(id)?;
         if SummaryContext::new(
@@ -553,15 +576,13 @@ impl Engine {
                     .iter()
                     .map(|segment| (segment.id.clone(), vec![segment.id.clone()]))
                     .collect();
-            } else if current
-                .source
-                .as_ref()
-                .is_some_and(|source| crate::nemotron::is_word_projector(&source.projector_version))
-            {
+            } else if current.source.as_ref().is_some_and(|source| {
+                crate::asr_provider::word_speaker_projector(&source.projector_version)
+            }) {
                 let raw_path = store::transcripts_dir(id)
                     .join(&current.version.id)
                     .join("raw.json");
-                targets = crate::nemotron::direct_parent_citation_targets(
+                targets = crate::word_speakers::direct_parent_citation_targets(
                     &citation_bytes(&self.store.root, &raw_path)?,
                     current,
                     &archive.source,
@@ -632,6 +653,7 @@ impl Engine {
         if self.quitting {
             return Err(CoreError::Unavailable);
         }
+        self.refuse_while_recording(crate::recording_guard::Operation::CommitSummary, [id])?;
         let directory = location(id)?;
         if !self.meetings.contains_key(id) {
             return Err(CoreError::MeetingNotFound);
@@ -719,7 +741,9 @@ mod tests {
     #[test]
     fn publication_size_rejects_combined_archive_before_replacing_existing_summary() {
         let (_temporary, mut engine, id, _) = setup();
-        let source = engine.commit_transcript(&id, None, output()).unwrap();
+        let source = engine
+            .commit_legacy_moss_transcript(&id, None, output())
+            .unwrap();
         let previous = engine
             .commit_summary(&id, draft(source.clone(), None, "Original summary [1]"))
             .unwrap();
@@ -762,7 +786,9 @@ mod tests {
     #[test]
     fn attendee_snapshot_changes_mark_summary_stale_and_reject_late_imports() {
         let (_temporary, mut engine, id, _) = setup();
-        engine.commit_transcript(&id, None, output()).unwrap();
+        engine
+            .commit_legacy_moss_transcript(&id, None, output())
+            .unwrap();
         let person = crate::Person {
             id: Uuid::new_v4().to_string(),
             name: "Reference name".into(),
@@ -835,7 +861,9 @@ mod tests {
     #[test]
     fn local_summary_draft_cannot_omit_a_nonempty_attendance_snapshot() {
         let (_temporary, mut engine, id, _) = setup();
-        let source = engine.commit_transcript(&id, None, output()).unwrap();
+        let source = engine
+            .commit_legacy_moss_transcript(&id, None, output())
+            .unwrap();
         let version =
             crate::agent_control::meeting_edit_version(&engine.meetings[&id].meeting).unwrap();
         engine
@@ -879,7 +907,9 @@ mod tests {
     #[test]
     fn presentation_reference_count_uses_only_the_validated_frozen_source() {
         let (_temp, mut engine, id, _) = setup();
-        let source = engine.commit_transcript(&id, None, output()).unwrap();
+        let source = engine
+            .commit_legacy_moss_transcript(&id, None, output())
+            .unwrap();
         let summary = engine
             .commit_summary(&id, draft(source.clone(), None, "결정 [1]"))
             .unwrap();
@@ -958,7 +988,9 @@ mod tests {
     #[test]
     fn external_import_uses_the_writer_and_preserves_sources_history_and_citations() {
         let (_temp, mut engine, id, _) = setup();
-        let source = engine.commit_transcript(&id, None, output()).unwrap();
+        let source = engine
+            .commit_legacy_moss_transcript(&id, None, output())
+            .unwrap();
         engine
             .update_meeting(&id, "회의".into(), "보존할 메모".into())
             .unwrap();
@@ -1029,7 +1061,9 @@ mod tests {
     fn external_import_rejects_changed_notes_transcript_and_summary_before_archiving() {
         for change in ["notes", "transcript", "summary"] {
             let (_temp, mut engine, id, _) = setup();
-            let source = engine.commit_transcript(&id, None, output()).unwrap();
+            let source = engine
+                .commit_legacy_moss_transcript(&id, None, output())
+                .unwrap();
             let expected = context(&engine, &id);
             match change {
                 "notes" => {
@@ -1069,7 +1103,9 @@ mod tests {
     #[test]
     fn external_import_rejects_invalid_citations_and_trashed_meetings_without_writes() {
         let (_temp, mut engine, id, _) = setup();
-        engine.commit_transcript(&id, None, output()).unwrap();
+        engine
+            .commit_legacy_moss_transcript(&id, None, output())
+            .unwrap();
         let expected = context(&engine, &id);
         let before = stored_files(&engine.store.root);
         for text in [
@@ -1129,7 +1165,9 @@ mod tests {
     #[test]
     fn summaries_reopen_without_changing_audio_notes_or_transcript() {
         let (_temp, mut engine, id, _) = setup();
-        let source = engine.commit_transcript(&id, None, output()).unwrap();
+        let source = engine
+            .commit_legacy_moss_transcript(&id, None, output())
+            .unwrap();
         let root = engine.store.root.clone();
         let audio = std::fs::read(engine.audio_path(&id).unwrap()).unwrap();
         let before = transcript_digest(&source).unwrap();
@@ -1161,7 +1199,9 @@ mod tests {
     #[test]
     fn changed_source_or_competing_summary_keeps_prior_result() {
         let (_temp, mut engine, id, _) = setup();
-        let source = engine.commit_transcript(&id, None, output()).unwrap();
+        let source = engine
+            .commit_legacy_moss_transcript(&id, None, output())
+            .unwrap();
         let one = engine
             .commit_summary(&id, draft(source.clone(), None, "첫 요약"))
             .unwrap();
@@ -1191,9 +1231,11 @@ mod tests {
     #[test]
     fn restored_transcript_keeps_summary_and_rejects_in_flight_old_source() {
         let (_temp, mut engine, id, _) = setup();
-        let first = engine.commit_transcript(&id, None, output()).unwrap();
+        let first = engine
+            .commit_legacy_moss_transcript(&id, None, output())
+            .unwrap();
         let second = engine
-            .commit_transcript(&id, Some(first.version.clone()), output())
+            .commit_legacy_moss_transcript(&id, Some(first.version.clone()), output())
             .unwrap();
         let summary = engine
             .commit_summary(&id, draft(second.clone(), None, "기존 요약"))
@@ -1219,7 +1261,9 @@ mod tests {
         engine
             .update_meeting(&id, "회의".into(), "처음 작성한 안건".into())
             .unwrap();
-        let transcript = engine.commit_transcript(&id, None, output()).unwrap();
+        let transcript = engine
+            .commit_legacy_moss_transcript(&id, None, output())
+            .unwrap();
         let input = engine.summary_input(&id).unwrap();
         assert_eq!(input.notes, "처음 작성한 안건");
         assert_eq!(input.source.version, transcript.version);
@@ -1261,7 +1305,9 @@ mod tests {
     #[test]
     fn changed_notes_reject_late_summary_without_replacing_the_previous_result() {
         let (_temp, mut engine, id, _) = setup();
-        engine.commit_transcript(&id, None, output()).unwrap();
+        engine
+            .commit_legacy_moss_transcript(&id, None, output())
+            .unwrap();
         let input = engine.summary_input(&id).unwrap();
         let mut first = draft(input.source, input.expected_id, "기존 회의록 [1]");
         first.notes = Some(input.notes);
@@ -1298,7 +1344,9 @@ mod tests {
     #[test]
     fn empty_notes_are_bound_but_legacy_transcript_only_summaries_remain_readable() {
         let (_temp, mut engine, id, _) = setup();
-        let source = engine.commit_transcript(&id, None, output()).unwrap();
+        let source = engine
+            .commit_legacy_moss_transcript(&id, None, output())
+            .unwrap();
         let mut candidate = draft(source.clone(), None, "빈 메모의 회의록");
         candidate.notes = Some(String::new());
         let current = engine.commit_summary(&id, candidate).unwrap();
@@ -1341,7 +1389,9 @@ mod tests {
     #[test]
     fn citations_read_the_frozen_source_and_current_target_without_writes() {
         let (_temp, mut engine, id, _) = setup();
-        let source = engine.commit_transcript(&id, None, output()).unwrap();
+        let source = engine
+            .commit_legacy_moss_transcript(&id, None, output())
+            .unwrap();
         let summary = engine
             .commit_summary(&id, draft(source.clone(), None, "요약 [1]"))
             .unwrap();
@@ -1371,7 +1421,9 @@ mod tests {
     #[test]
     fn citation_times_follow_the_frozen_source_without_writes() {
         let (_temp, mut engine, id, _) = setup();
-        let source = engine.commit_transcript(&id, None, output()).unwrap();
+        let source = engine
+            .commit_legacy_moss_transcript(&id, None, output())
+            .unwrap();
         let summary = engine
             .commit_summary(&id, draft(source.clone(), None, "요약 [1]"))
             .unwrap();
@@ -1402,7 +1454,9 @@ mod tests {
             source_index: Some(index),
         };
         let (_temp, mut engine, id, _) = setup();
-        let mut source = engine.commit_transcript(&id, None, output()).unwrap();
+        let mut source = engine
+            .commit_legacy_moss_transcript(&id, None, output())
+            .unwrap();
         source.segments = vec![
             segment(754.2, 756.0, 0),
             segment(800.0, 800.0, 1),
@@ -1436,7 +1490,12 @@ mod tests {
     fn stale_citations_map_only_a_verified_direct_parent_generation() {
         let (_temp, mut engine, id, _) = setup();
         let source = engine
-            .commit_nemotron_transcript(&id, None, crate::nemotron::tests::raw())
+            .commit_transcript(
+                &id,
+                None,
+                crate::nemotron::tests::raw(),
+                crate::AsrProvider::Nemotron,
+            )
             .unwrap();
         let summary = engine
             .commit_summary(&id, draft(source.clone(), None, "요약 [1]"))
@@ -1469,7 +1528,9 @@ mod tests {
     #[test]
     fn changed_revision_or_unrelated_generation_never_reuses_reference_ordinals() {
         let (_temp, mut engine, id, _) = setup();
-        let source = engine.commit_transcript(&id, None, output()).unwrap();
+        let source = engine
+            .commit_legacy_moss_transcript(&id, None, output())
+            .unwrap();
         let summary = engine
             .commit_summary(&id, draft(source.clone(), None, "요약 [1]"))
             .unwrap();
@@ -1480,7 +1541,7 @@ mod tests {
         assert_eq!(result.entries[0].segment.text, "원문");
         assert!(result.entries[0].current_segment_ids.is_empty());
         engine
-            .commit_transcript(&id, Some(edited.version), output())
+            .commit_legacy_moss_transcript(&id, Some(edited.version), output())
             .unwrap();
         assert!(engine
             .summary_citations(&id, &summary.id, &[1])
@@ -1493,7 +1554,9 @@ mod tests {
     #[test]
     fn citation_requests_reject_invalid_ranges_and_a_late_summary_id() {
         let (_temp, mut engine, id, _) = setup();
-        let source = engine.commit_transcript(&id, None, output()).unwrap();
+        let source = engine
+            .commit_legacy_moss_transcript(&id, None, output())
+            .unwrap();
         let first = engine
             .commit_summary(&id, draft(source.clone(), None, "요약 [1]"))
             .unwrap();
@@ -1516,7 +1579,9 @@ mod tests {
     #[test]
     fn missing_audio_or_replaced_session_keeps_excerpts_without_playing_another_recording() {
         let (_temp, mut engine, id, _) = setup();
-        let source = engine.commit_transcript(&id, None, output()).unwrap();
+        let source = engine
+            .commit_legacy_moss_transcript(&id, None, output())
+            .unwrap();
         let summary = engine
             .commit_summary(&id, draft(source.clone(), None, "요약 [1]"))
             .unwrap();
@@ -1544,7 +1609,9 @@ mod tests {
     #[test]
     fn citations_reject_changed_archive_identity_and_source_digest() {
         let (_temp, mut engine, id, _) = setup();
-        let source = engine.commit_transcript(&id, None, output()).unwrap();
+        let source = engine
+            .commit_legacy_moss_transcript(&id, None, output())
+            .unwrap();
         let summary = engine
             .commit_summary(&id, draft(source, None, "요약 [1]"))
             .unwrap();
@@ -1566,7 +1633,12 @@ mod tests {
     fn direct_parent_targets_reject_changed_raw_or_current_atom_ids() {
         let (_temp, mut engine, id, _) = setup();
         let source = engine
-            .commit_nemotron_transcript(&id, None, crate::nemotron::tests::raw())
+            .commit_transcript(
+                &id,
+                None,
+                crate::nemotron::tests::raw(),
+                crate::AsrProvider::Nemotron,
+            )
             .unwrap();
         let summary = engine
             .commit_summary(&id, draft(source.clone(), None, "요약 [1]"))
@@ -1599,7 +1671,9 @@ mod tests {
     #[test]
     fn citation_archive_paths_never_follow_links() {
         let (_temp, mut engine, id, _) = setup();
-        let source = engine.commit_transcript(&id, None, output()).unwrap();
+        let source = engine
+            .commit_legacy_moss_transcript(&id, None, output())
+            .unwrap();
         let summary = engine
             .commit_summary(&id, draft(source, None, "요약 [1]"))
             .unwrap();

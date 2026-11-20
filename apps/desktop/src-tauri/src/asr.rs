@@ -264,7 +264,7 @@ mod tests {
         let recognition_seconds = started.elapsed().as_secs_f64();
         std::fs::write(job.join("recognition.json"), &raw).unwrap();
         let source = core
-            .commit_nemotron_transcript(&meeting.id, None, raw)
+            .commit_transcript(&meeting.id, None, raw, nero_core::AsrProvider::Nemotron)
             .unwrap();
         let speaker_started = std::time::Instant::now();
         let draft = crate::diarization::analyze_with_model(

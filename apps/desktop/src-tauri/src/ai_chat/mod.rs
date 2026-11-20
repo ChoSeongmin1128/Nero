@@ -1525,7 +1525,9 @@ mod tests {
             "processedAudioFrames":16000,"inputAudioFrames":16000,"audioDurationSeconds":1.0
         }))
         .unwrap();
-        chat.core.commit_transcript(&meeting.id, None, raw).unwrap();
+        chat.core
+            .commit_legacy_moss_transcript(&meeting.id, None, raw)
+            .unwrap();
         meeting.id
     }
     fn answered(chat: &AiChat, meeting: &str, text: &str) -> (String, String) {

@@ -411,7 +411,7 @@ fn synthetic_playback_asr_speaker_generation_and_reader_preserve_coordinates_and
     drop(store);
     let mut engine = Engine::open(root.clone()).unwrap();
     let baseline = engine
-        .commit_nemotron_transcript(&id, None, raw.clone())
+        .commit_transcript(&id, None, raw.clone(), crate::AsrProvider::Nemotron)
         .unwrap();
     assert_eq!(baseline.segments.len(), 2);
     assert_eq!(baseline.source_session_id, manifest.session_id);

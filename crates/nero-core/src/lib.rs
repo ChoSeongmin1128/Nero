@@ -1,6 +1,7 @@
 pub mod agent_app;
 pub mod agent_control;
 mod apple_speech;
+mod asr_provider;
 pub mod audio_normalize;
 mod audio_playback;
 mod capture;
@@ -16,9 +17,12 @@ mod library;
 mod nemotron;
 pub mod people;
 pub mod presentation;
+pub mod projection;
 mod qwen;
+mod recording_guard;
 pub use people::{MeetingAttendee, PeopleCatalog, Person, PersonGroup, PromotedAttendee};
 pub mod reader;
+pub mod search;
 pub mod speech_runtime;
 mod store;
 mod summary;
@@ -26,6 +30,8 @@ pub mod templates;
 pub mod terminology;
 mod transcript;
 mod whisper;
+mod word_speakers;
+pub use asr_provider::AsrProvider;
 pub use capture::{CaptureLoad, CaptureReader};
 pub use diarization::{SpeakerAnalysis, SpeakerAnalysisDraft, SpeakerPosterior};
 pub use library::{Folder, FolderDeleteRequest, FolderMeetingState};
@@ -233,7 +239,7 @@ pub struct SessionSnapshot {
     pub capture_quality: Option<CaptureQuality>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
     pub revision: u64,
@@ -500,69 +506,32 @@ impl CoreHandle {
         id: &str,
         expected: Option<TranscriptVersion>,
         raw: Vec<u8>,
+        provider: AsrProvider,
     ) -> Result<Transcript> {
         let id = id.to_owned();
-        self.call(move |engine| engine.commit_transcript(&id, expected, raw))
+        self.call(move |engine| engine.commit_transcript(&id, expected, raw, provider))
     }
 
-    pub fn commit_whole_transcript(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn commit_legacy_moss_transcript(
         &self,
         id: &str,
         expected: Option<TranscriptVersion>,
         raw: Vec<u8>,
     ) -> Result<Transcript> {
         let id = id.to_owned();
-        self.call(move |engine| engine.commit_whole_transcript(&id, expected, raw))
+        self.call(move |engine| engine.commit_legacy_moss_transcript(&id, expected, raw))
     }
 
-    pub fn commit_moss_chunk_transcript(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn commit_legacy_whole_moss_transcript(
         &self,
         id: &str,
         expected: Option<TranscriptVersion>,
         raw: Vec<u8>,
     ) -> Result<Transcript> {
         let id = id.to_owned();
-        self.call(move |engine| engine.commit_moss_chunk_transcript(&id, expected, raw))
-    }
-
-    pub fn commit_nemotron_transcript(
-        &self,
-        id: &str,
-        expected: Option<TranscriptVersion>,
-        raw: Vec<u8>,
-    ) -> Result<Transcript> {
-        let id = id.to_owned();
-        self.call(move |engine| engine.commit_nemotron_transcript(&id, expected, raw))
-    }
-
-    pub fn commit_whisper_transcript(
-        &self,
-        id: &str,
-        expected: Option<TranscriptVersion>,
-        raw: Vec<u8>,
-    ) -> Result<Transcript> {
-        let id = id.to_string();
-        self.call(move |engine| engine.commit_whisper_transcript(&id, expected, raw))
-    }
-
-    pub fn commit_qwen_transcript(
-        &self,
-        id: &str,
-        expected: Option<TranscriptVersion>,
-        raw: Vec<u8>,
-    ) -> Result<Transcript> {
-        let id = id.to_owned();
-        self.call(move |engine| engine.commit_qwen_transcript(&id, expected, raw))
-    }
-
-    pub fn commit_apple_transcript(
-        &self,
-        id: &str,
-        expected: Option<TranscriptVersion>,
-        raw: Vec<u8>,
-    ) -> Result<Transcript> {
-        let id = id.to_owned();
-        self.call(move |engine| engine.commit_apple_transcript(&id, expected, raw))
+        self.call(move |engine| engine.commit_legacy_whole_moss_transcript(&id, expected, raw))
     }
 
     pub fn edit_transcript(
@@ -750,9 +719,7 @@ impl CoreHandle {
     pub fn create_recording(&self, title: &str, notes: &str, device_id: &str) -> Result<Snapshot> {
         let (title, notes, device_id) = (title.to_owned(), notes.to_owned(), device_id.to_owned());
         self.call(move |engine| {
-            if engine.capture.is_some() {
-                return Err(CoreError::RecordingBusy);
-            }
+            engine.refuse_while_recording(recording_guard::Operation::StartRecording, [])?;
             let meeting = engine.create_meeting(title, notes)?;
             engine.start(&meeting.id, &device_id)
         })
@@ -765,9 +732,7 @@ impl CoreHandle {
     ) -> Result<(Meeting, Snapshot)> {
         let device_id = device_id.to_owned();
         self.call(move |engine| {
-            if engine.capture.is_some() {
-                return Err(CoreError::RecordingBusy);
-            }
+            engine.refuse_while_recording(recording_guard::Operation::StartRecording, [])?;
             let meeting = engine.meeting_for_calendar_recording(reference)?;
             let snapshot = engine.start(&meeting.id, &device_id)?;
             Ok((meeting, snapshot))
@@ -783,9 +748,7 @@ impl CoreHandle {
     ) -> Result<(Meeting, Snapshot)> {
         let (meeting_id, device_id) = (meeting_id.to_owned(), device_id.to_owned());
         self.call(move |engine| {
-            if engine.capture.is_some() {
-                return Err(CoreError::RecordingBusy);
-            }
+            engine.refuse_while_recording(recording_guard::Operation::StartRecording, [])?;
             let meeting = engine.create_calendar_continuation(&meeting_id)?;
             let snapshot = engine.start(&meeting.id, &device_id)?;
             Ok((meeting, snapshot))

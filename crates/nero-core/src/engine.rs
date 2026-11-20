@@ -1,5 +1,6 @@
 use crate::capture::{self, Capture};
 use crate::library::{Folder, Library};
+use crate::recording_guard::{Operation, NEW_DRAFT_ONLY};
 use crate::store::{self, CapturePhase, Manifest, Store, StoredMeeting};
 use crate::{
     CoreError, Device, Meeting, MeetingStatus, Result, SessionSnapshot, SessionState, Snapshot,
@@ -240,16 +241,10 @@ impl Engine {
         }
         let stored =
             self.require_meeting_version(&target.meeting_id, &target.expected_version, true)?;
-        if !self.accepts_new_audio(stored)
-            || self
-                .capture
-                .as_ref()
-                .is_some_and(|capture| capture.manifest.meeting_id == target.meeting_id)
-        {
-            return Err(CoreError::InvalidState(
-                "음성이 없는 새 회의에서 다시 시도해 주세요.".into(),
-            ));
+        if !self.accepts_new_audio(stored) {
+            return Err(CoreError::InvalidState(NEW_DRAFT_ONLY.into()));
         }
+        self.refuse_while_recording(Operation::AttachToDraft, [target.meeting_id.as_str()])?;
         Ok(stored)
     }
 
@@ -547,15 +542,11 @@ impl Engine {
         if expected.len() != request.meetings.len() || expected != actual {
             return Err(conflict());
         }
-        if request.trash_meetings
-            && self
-                .capture
-                .as_ref()
-                .is_some_and(|capture| actual.contains_key(&capture.manifest.meeting_id))
-        {
-            return Err(CoreError::InvalidState(
-                "녹음을 종료한 뒤 삭제해 주세요.".into(),
-            ));
+        if request.trash_meetings {
+            self.refuse_while_recording(
+                Operation::TrashMeetings,
+                actual.keys().map(String::as_str),
+            )?;
         }
         Ok(())
     }
@@ -615,15 +606,7 @@ impl Engine {
 
     pub fn trash_meetings(&mut self, ids: &[String]) -> Result<()> {
         let ids = self.library_ids(ids, false)?;
-        if self
-            .capture
-            .as_ref()
-            .is_some_and(|capture| ids.contains(&capture.manifest.meeting_id))
-        {
-            return Err(CoreError::InvalidState(
-                "녹음을 종료한 뒤 삭제해 주세요.".into(),
-            ));
-        }
+        self.refuse_while_recording(Operation::TrashMeetings, ids.iter().map(String::as_str))?;
         let mut library = self.library.clone();
         let now = store::now();
         for id in ids {
@@ -646,15 +629,7 @@ impl Engine {
             return Err(CoreError::Unavailable);
         }
         let source = self.require_meeting_version(id, expected, true)?.clone();
-        if self
-            .capture
-            .as_ref()
-            .is_some_and(|capture| capture.manifest.meeting_id == id)
-        {
-            return Err(CoreError::InvalidState(
-                "녹음을 종료한 뒤 버려 주세요.".into(),
-            ));
-        }
+        self.refuse_while_recording(Operation::DiscardRecording, [id])?;
         if source.meeting.audio.is_none() && source.capture_id.is_none() {
             return Err(CoreError::InvalidState("버릴 녹음이 없습니다.".into()));
         }
@@ -817,9 +792,7 @@ impl Engine {
             return Err(CoreError::Unavailable);
         }
         self.require_active_meeting(id)?;
-        if self.capture.is_some() {
-            return Err(CoreError::RecordingBusy);
-        }
+        self.refuse_while_recording(Operation::StartRecording, [id])?;
         let stored = self.meetings.get(id).ok_or(CoreError::MeetingNotFound)?;
         if !self.accepts_new_audio(stored) {
             return Err(CoreError::InvalidState(
@@ -1128,11 +1101,7 @@ impl Engine {
         if self.quitting {
             return Err(CoreError::Unavailable);
         }
-        if self.capture.is_some() {
-            return Err(CoreError::InvalidState(
-                "녹음을 마친 뒤 녹음 파일을 줄여 주세요.".into(),
-            ));
-        }
+        self.refuse_while_recording(Operation::CompactRecording, [meeting_id])?;
         let stored = self
             .meetings
             .get(meeting_id)
@@ -1230,11 +1199,7 @@ impl Engine {
     pub fn resume_after_failed_shutdown(&mut self) -> Result<()> {
         // Update preparation never finalizes an active capture. Refuse to reopen
         // the gate if a caller tries to use this during capture.
-        if self.capture.is_some() {
-            return Err(CoreError::InvalidState(
-                "녹음 중에는 종료 준비를 취소할 수 없습니다.".into(),
-            ));
-        }
+        self.refuse_while_recording(Operation::ReopenAfterFailedShutdown, [])?;
         self.quitting = false;
         Ok(())
     }
@@ -2852,7 +2817,7 @@ mod tests {
                 .update_meeting(&id, "원래 제목".into(), "사용자가 작성한 메모".into())
                 .unwrap();
             let initial = engine
-                .commit_transcript(&id, None, crate::transcript::tests::output())
+                .commit_legacy_moss_transcript(&id, None, crate::transcript::tests::output())
                 .unwrap();
             let corrected = engine
                 .edit_transcript(&id, initial.version, vec!["사용자가 수정한 문장".into()])
@@ -3654,6 +3619,102 @@ mod tests {
         reopened.restore_meetings(&[meeting.id.clone()]).unwrap();
         assert!(reopened.require_active_meeting(&meeting.id).is_ok());
         assert_eq!(reopened.meetings()[0].notes, "기존 메모");
+    }
+
+    #[test]
+    fn operations_keep_their_recording_guards_and_refusals() {
+        let (_temporary, mut engine, finished, wav) = crate::transcript::tests::setup();
+        let source = engine
+            .commit_legacy_moss_transcript(&finished, None, crate::transcript::tests::output())
+            .unwrap();
+        let other = engine
+            .create_meeting("다른 회의".into(), "".into())
+            .unwrap();
+        let recording = engine.create_meeting("녹음 중".into(), "".into()).unwrap();
+        let (session, _sink) = synthetic(&mut engine, &recording.id);
+        let version =
+            crate::edit_version::meeting_edit_version(&engine.meetings[&recording.id].meeting)
+                .unwrap();
+        let refused = |result: Result<()>, message: &str| matches!(result, Err(CoreError::InvalidState(text)) if text == message);
+        let busy = |result: Result<()>| matches!(result, Err(CoreError::RecordingBusy));
+
+        assert!(busy(engine.draft(&other.id)));
+        assert!(busy(
+            engine
+                .import_audio("가져오기".into(), wav.clone(), wav.clone())
+                .map(|_| ())
+        ));
+        assert!(busy(
+            engine
+                .restore_transcript(&finished, source.version.clone(), source.version.clone())
+                .map(|_| ())
+        ));
+        assert!(busy(
+            engine.upgrade_transcript_source_of(&finished).map(|_| ())
+        ));
+        let context = crate::SummaryContext::new(&source, "", &[], None).unwrap();
+        assert!(busy(
+            engine
+                .validate_summary_context(&finished, &context)
+                .map(|_| ())
+        ));
+        assert!(refused(
+            engine.compaction_plan(&finished).map(|_| ()),
+            "녹음을 마친 뒤 녹음 파일을 줄여 주세요."
+        ));
+        assert!(refused(
+            engine.resume_after_failed_shutdown(),
+            "녹음 중에는 종료 준비를 취소할 수 없습니다."
+        ));
+
+        assert!(refused(
+            engine
+                .discard_recording(&recording.id, &version)
+                .map(|_| ()),
+            "녹음을 종료한 뒤 버려 주세요."
+        ));
+        assert!(refused(
+            engine.trash_meetings(&[recording.id.clone()]),
+            "녹음을 종료한 뒤 삭제해 주세요."
+        ));
+        let target = crate::DraftAttachmentTarget {
+            meeting_id: recording.id.clone(),
+            expected_version: version,
+        };
+        assert!(refused(
+            engine.require_draft_attachment(&target).map(|_| ()),
+            "음성이 없는 새 회의에서 다시 시도해 주세요."
+        ));
+        let draft = crate::SpeakerAnalysisDraft {
+            source: source.clone(),
+            model: "example/diarizer".into(),
+            model_revision: "revision-1".into(),
+            model_sha256: "a".repeat(64),
+            runtime: "example-runtime".into(),
+            configuration: serde_json::json!({"scope":"recording"}),
+            raw: Vec::new(),
+            posterior: None,
+        };
+        assert!(busy(
+            engine.apply_diarization(&recording.id, draft).map(|_| ())
+        ));
+
+        let edited = engine
+            .edit_transcript(
+                &finished,
+                source.version.clone(),
+                vec!["녹음 중 수정".into()],
+            )
+            .unwrap();
+        engine
+            .commit_legacy_moss_transcript(
+                &finished,
+                Some(edited.version),
+                crate::transcript::tests::output(),
+            )
+            .unwrap();
+        engine.trash_meetings(&[other.id.clone()]).unwrap();
+        engine.stop(&session).unwrap();
     }
 
     #[test]

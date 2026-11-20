@@ -12,7 +12,7 @@ use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
-const SCHEMA_VERSION: u32 = 1;
+pub(crate) const SCHEMA_VERSION: u32 = 1;
 pub(crate) const MAX_JSON_BYTES: u64 = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -125,23 +125,29 @@ pub fn startup_notice_frames(sample_rate: u32) -> u64 {
     u64::from(sample_rate) / 10
 }
 
+impl CaptureQualityEvent {
+    /// An overload notice while the device was starting its input (`startup_frames` from
+    /// `startup_notice_frames`). It says nothing about the recording's content. Other
+    /// platforms treat every notice as a recording's.
+    pub fn startup_xrun(&self, startup_frames: u64) -> bool {
+        cfg!(target_os = "macos")
+            && self.kind == CaptureQualityEventKind::Xrun
+            && (self.last_saved_frame == 0 || self.last_queued_frame <= startup_frames)
+    }
+}
+
 impl CaptureQuality {
-    /// Overload notices while the device was starting its input (`startup_frames` from
-    /// `startup_notice_frames`). They say nothing about the recording's content. Other
-    /// platforms count every notice.
     pub fn startup_xruns(&self, startup_frames: u64) -> u64 {
-        if !cfg!(target_os = "macos") {
-            return 0;
-        }
         self.events
             .iter()
-            .filter(|event| {
-                event.kind == CaptureQualityEventKind::Xrun
-                    && (event.last_saved_frame == 0 || event.last_queued_frame <= startup_frames)
-            })
+            .filter(|event| event.startup_xrun(startup_frames))
             .map(|event| event.count)
             .sum::<u64>()
             .min(self.xrun_count)
+    }
+
+    pub fn startup_xrun_count(&self, sample_rate: u32) -> u64 {
+        self.startup_xruns(startup_notice_frames(sample_rate))
     }
 
     pub fn warning(&self, sample_rate: u32) -> Option<String> {
@@ -274,6 +280,21 @@ impl Manifest {
         }
         Ok(())
     }
+
+    pub(crate) fn validate_for(&self, meeting_id: &str, session_id: &str) -> Result<()> {
+        self.validate()?;
+        if self.meeting_id != meeting_id || self.session_id != session_id {
+            return Err(CoreError::Storage(
+                "회의와 녹음 정보가 일치하지 않습니다.".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    // An imported file has no recording time.
+    pub(crate) fn recorded_at(&self) -> Option<u64> {
+        (self.device_id != "import").then_some(self.started_at)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -284,6 +305,22 @@ pub(crate) struct StoredMeeting {
     pub capture_id: Option<String>,
     #[serde(default)]
     pub generated_title: bool,
+}
+
+impl StoredMeeting {
+    // Checks both the app and the read-only reader make of a meeting document saved as `id`.
+    pub(crate) fn validate_document(&self, id: &str) -> Result<()> {
+        if self.schema_version != SCHEMA_VERSION || self.meeting.id != id {
+            return Err(CoreError::Storage(
+                "올바르지 않은 회의 정보가 있습니다.".into(),
+            ));
+        }
+        validate_text(&self.meeting.title, &self.meeting.notes)?;
+        if let Some(audio) = &self.meeting.audio {
+            validate_artifact(id, audio)?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Default)]
@@ -309,8 +346,8 @@ pub(crate) fn summaries_dir(id: &str) -> PathBuf {
 }
 
 pub(crate) fn hydrate_capture_metadata(meeting: &mut Meeting, manifest: &Manifest) {
-    if meeting.recorded_at.is_none() && manifest.device_id != "import" {
-        meeting.recorded_at = Some(manifest.started_at);
+    if meeting.recorded_at.is_none() {
+        meeting.recorded_at = manifest.recorded_at();
     }
     meeting.warning = match &manifest.quality {
         Some(quality) => quality.warning(manifest.sample_rate),
@@ -459,12 +496,7 @@ impl Store {
             return Ok(None);
         }
         let stored: StoredMeeting = read_json(&path)?;
-        if stored.schema_version != SCHEMA_VERSION || stored.meeting.id != id {
-            return Err(CoreError::Storage(
-                "올바르지 않은 회의 정보가 있습니다.".into(),
-            ));
-        }
-        validate_text(&stored.meeting.title, &stored.meeting.notes)?;
+        stored.validate_document(id)?;
         if let Some(date) = &stored.meeting.meeting_date {
             validate_meeting_date(date)?;
         }
@@ -472,7 +504,6 @@ impl Store {
             validate_id(capture_id)?;
         }
         if let Some(audio) = &stored.meeting.audio {
-            validate_artifact(id, audio)?;
             checked_path(&self.root, Path::new(&audio.relative_path))?;
         }
         Ok(Some(stored))
@@ -693,12 +724,7 @@ impl Store {
             .join("manifest.json");
         let path = checked_path(&self.root, &relative)?;
         let manifest: Manifest = read_json(&path)?;
-        manifest.validate()?;
-        if manifest.meeting_id != stored.meeting.id || manifest.session_id != session_id {
-            return Err(CoreError::Storage(
-                "회의와 녹음 정보가 일치하지 않습니다.".into(),
-            ));
-        }
+        manifest.validate_for(&stored.meeting.id, &session_id)?;
         // The person stopped a complete capture, but the playback file or the meeting
         // save was cut off: it is a completed recording, not an interrupted one.
         if manifest.phase == CapturePhase::Completed

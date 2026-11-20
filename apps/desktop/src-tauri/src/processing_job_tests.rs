@@ -488,7 +488,9 @@ fn edited_source(process: &Processing) -> (CoreHandle, String, nero_core::Transc
         "processedAudioFrames":16000,"inputAudioFrames":16000,"audioDurationSeconds":1.0
     }))
     .unwrap();
-    let source = core.commit_transcript(&meeting.id, None, raw).unwrap();
+    let source = core
+        .commit_legacy_moss_transcript(&meeting.id, None, raw)
+        .unwrap();
     (core, meeting.id, source)
 }
 
@@ -543,7 +545,7 @@ fn rejected_transcript_output_preserves_its_cause_and_remains_retryable() {
         &process,
         pending(record, move |this, cancel, _| {
             this.checkpoint_transcript(&cancel, || {
-                owned_core.commit_whole_transcript(&owned_id, Some(expected), output)
+                owned_core.commit_legacy_whole_moss_transcript(&owned_id, Some(expected), output)
             })?;
             panic!("rejected output must not reach postprocessing")
         }),
@@ -633,7 +635,7 @@ fn transcript_cas_rejection_reports_source_change_without_replacing_the_current_
         &process,
         pending(record, move |this, cancel, _| {
             this.checkpoint_transcript(&cancel, || {
-                owned_core.commit_transcript(&owned_id, Some(source.version), raw)
+                owned_core.commit_legacy_moss_transcript(&owned_id, Some(source.version), raw)
             })?;
             Ok(None)
         }),
@@ -686,7 +688,7 @@ fn missing_transcript_meeting_is_a_definite_unavailable_failure() {
         &process,
         pending(record, move |this, cancel, _| {
             this.checkpoint_transcript(&cancel, || {
-                core.commit_whole_transcript(&meeting_id, None, Vec::new())
+                core.commit_legacy_whole_moss_transcript(&meeting_id, None, Vec::new())
             })?;
             Ok(None)
         }),

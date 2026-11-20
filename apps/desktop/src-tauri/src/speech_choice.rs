@@ -43,6 +43,15 @@ impl SpeechEngine {
     pub(super) fn live_asr(self) -> Self {
         self
     }
+    pub(super) fn asr_provider(self) -> nero_core::AsrProvider {
+        match self {
+            Self::Moss => nero_core::AsrProvider::MossChunks,
+            Self::Nemotron => nero_core::AsrProvider::Nemotron,
+            Self::WhisperTurbo | Self::WhisperLargeV3 => nero_core::AsrProvider::Whisper,
+            Self::QwenKo => nero_core::AsrProvider::Qwen,
+            Self::AppleSpeech => nero_core::AsrProvider::AppleSpeech,
+        }
+    }
     pub(super) fn manifest(self) -> &'static str {
         match self {
             Self::Nemotron => crate::asr::MANIFEST,
