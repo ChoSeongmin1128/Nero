@@ -7,7 +7,6 @@ import { meetingLabels, olderThan } from '../src/ai-chat-library-state.js';
 
 const app = fileURLToPath(new URL('../', import.meta.url));
 const bundle = await build({ entryPoints: [app + 'src/ai-chat-library.jsx'], nodePaths: [app + 'node_modules'], bundle: true, write: false, format: 'iife', globalName: 'AiLibrary', jsx: 'automatic', loader: { '.css': 'empty' }, define: { 'process.env.NODE_ENV': '"production"' } });
-const sidebarBundle = await build({ entryPoints: [app + 'src/ai-chat-sidebar.jsx'], nodePaths: [app + 'node_modules'], bundle: true, write: false, format: 'iife', globalName: 'AiSidebar', jsx: 'automatic', loader: { '.css': 'empty' }, define: { 'process.env.NODE_ENV': '"production"' } });
 const DAY = 24 * 60 * 60 * 1000, now = Date.now();
 const meetings = [{ id: 'm1', title: '주간 회의' }, { id: 'm2', title: '지난 회의', deletedAt: 1 }];
 
@@ -97,37 +96,6 @@ test('the AI list opens a chat, trashes selections, old and all chats, and manag
   await confirm('휴지통 비우기');
   await wait(() => flow.calls.some(call => call[0] === 'purge'));
   assert.deepEqual(flow.calls.find(call => call[0] === 'purge'), ['purge', ['trashed']]);
-});
-
-test('the sidebar lists chats, opens one in the AI panel and links to its meeting', async t => {
-  const window = new Window({ url: 'http://nero.test', settings: { enableJavaScriptEvaluation: true, suppressInsecureJavaScriptEnvironmentWarning: true } });
-  t.after(() => window.happyDOM.abort());
-  window.document.body.innerHTML = '<div id="host"></div>';
-  window.eval(sidebarBundle.outputFiles[0].text);
-  const flow = fakeFlow(), opened = [];
-  flow.publish({ active: true, listLoaded: true });
-  const view = window.AiSidebar.mountAiChatSidebar({ node: window.document.getElementById('host'), flow, getMeetings: () => meetings, onOpenConversation: async id => opened.push(['chat', id]), onOpenMeeting: async (meetingId, id) => opened.push(['meeting', meetingId, id]) });
-  t.after(() => view.dispose());
-  view.show();
-  const wait = async predicate => { for (let i = 0; i < 100; i++) { if (predicate()) return; await new Promise(resolve => setTimeout(resolve, 5)); } assert.fail(window.document.body.textContent); };
-  await wait(() => window.document.querySelectorAll('.sidebar-ai-row').length === 3);
-  assert.ok(flow.calls.some(call => call[0] === 'loadList'));
-  const rows = [...window.document.querySelectorAll('.sidebar-ai-row')];
-  assert.equal(rows[0].querySelector('[data-navigation-item]').getAttribute('aria-current'), 'page');
-  assert.match(rows[0].textContent, /이번 주 정리/); assert.match(rows[0].textContent, /주간 회의/);
-  const timestamp = rows[0].querySelector('time');
-  assert.ok(timestamp.textContent.length <= 9);
-  assert.doesNotMatch(timestamp.textContent, /:/);
-  assert.equal(timestamp.getAttribute('datetime'), new Date(now - DAY).toISOString());
-  assert.ok(timestamp.title.length > timestamp.textContent.length);
-  assert.equal(rows[1].querySelector('.sidebar-ai-note'),null);
-  assert.equal(rows[1].querySelector('.sidebar-ai-meeting'),null);
-  assert.match(rows[2].textContent, /답변 중/); assert.match(rows[2].textContent, /삭제된 회의/);
-  assert.equal(rows[2].querySelector('.sidebar-ai-meeting'), null);
-  rows[1].querySelector('[data-navigation-item]').click();
-  rows[0].querySelector('.sidebar-ai-meeting').click();
-  await wait(() => opened.length === 2);
-  assert.deepEqual(opened, [['chat', 'old'], ['meeting', 'm1', 'recent']]);
 });
 
 for (const scenario of [

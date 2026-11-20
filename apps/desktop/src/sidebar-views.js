@@ -5,12 +5,9 @@ export function mountSidebarViews({ aside, navigation, notifications, trigger, b
   const heading = find('sidebar-preview-heading'), title = find('sidebar-preview-title'), openView = find('sidebar-preview-open');
   const back = find('sidebar-preview-back'), countLabel = find('sidebar-preview-count');
   const library = find('sidebar-library-navigation'), meetings = find('sidebar-meeting-list');
-  const emptyTrash = find('sidebar-empty-trash'), newChat = find('sidebar-ai-new'), aiPreview = find('sidebar-ai-preview'), search = aside.querySelector('.search-field');
-  const recentPreview = find('sidebar-recent-preview'), recentSection = find('recent-section');
+  const emptyTrash = find('sidebar-empty-trash');
   const compact = aside.parentElement.querySelector('[data-navigation-compact]');
-  const newFolder = document.getElementById('new-folder');
-  const folderActionHome = newFolder?.parentElement;
-  const folderActions = find('sidebar-folder-actions');
+  const newFolder = find('new-folder');
   const views = {
     home: { label: '최근 회의', rail: 'home', meetings: true },
     all: { label: '전체 회의', rail: 'all', meetings: true, open: 'all', count: 'all' },
@@ -35,17 +32,7 @@ export function mountSidebarViews({ aside, navigation, notifications, trigger, b
     navigation.hidden = opened;
     notifications.hidden = !opened;
     if (library) library.hidden = !config.folders;
-    if (aiPreview) aiPreview.hidden = true;
-    if (recentPreview) recentPreview.hidden = true;
-    if (recentSection) recentSection.hidden = true;
-    if (search) {
-      if (search.parentElement !== navigation) navigation.insertBefore(search, heading);
-      search.hidden = opened;
-    }
-    if (newFolder && folderActions && folderActionHome) {
-      const destination = config.folders ? folderActions : folderActionHome;
-      if (newFolder.parentElement !== destination) destination.append(newFolder);
-    }
+    if (newFolder) newFolder.hidden = !config.folders;
     if (meetings) meetings.hidden = !config.meetings;
     if (heading) heading.hidden = opened;
     const scope = view === 'folder' ? folderId : config.count;
@@ -56,15 +43,11 @@ export function mountSidebarViews({ aside, navigation, notifications, trigger, b
     }
     if (back) back.hidden = !config.back;
     if (emptyTrash) emptyTrash.hidden = !config.emptyTrash;
-    if (newChat) newChat.hidden = true;
     if (openView) {
       const filter = view === 'folder' ? folderId : config.open;
       openView.hidden = !filter;
       openView.dataset.sidebarFilter = filter || 'all';
     }
-    for (const id of ['library-system-views', 'library-ai-view']) { const section = find(id); if (section) section.hidden = true; }
-    const folderHeading = aside.querySelector('.navigation-folder-section > .library-heading');
-    if (folderHeading) folderHeading.hidden = true;
     trigger.setAttribute('aria-controls', notifications.id);
     trigger.setAttribute('aria-expanded', String(opened && !aside.inert));
     trigger.setAttribute('aria-pressed', String(opened));

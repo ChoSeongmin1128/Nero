@@ -7,8 +7,7 @@ body { overflow: hidden; }
 .brand { display: inline-flex; align-items: center; gap: 9px; font-size: var(--text-heading-size); font-weight: var(--weight-heading); letter-spacing: var(--tracking-heading); }
 .brand img { display: block; flex: none; }
 .library-heading { display: flex; align-items: center; justify-content: space-between; min-height: 32px; padding: 0 8px; }
-.library-heading h2, .recent-section h2 { color: var(--text-secondary); font-size: var(--text-caption-size); font-weight: var(--weight-medium); }
-.recent-section h2 { margin: 0 6px 8px; }
+.library-heading h2 { color: var(--text-secondary); font-size: var(--text-caption-size); font-weight: var(--weight-medium); }
 .section-heading h2, .recording-heading h2 { font-size: var(--text-subtitle-size); font-weight: var(--weight-semibold); letter-spacing: var(--tracking-ui); }
 .meeting-list { flex: 1; overflow: auto; padding: 0 6px 10px; }
 .meeting-item { display: flex; align-items: flex-start; gap: 8px; width: 100%; min-height: 36px; margin-bottom: 2px; border-color: transparent; background: transparent; padding: 5px 8px; text-align: left; }
@@ -416,12 +415,6 @@ html.recorder-document { background: transparent; }
 .navigation-breadcrumbs button { flex: none; min-height: 28px; padding: 4px 6px; color: var(--text-secondary); }
 .navigation-breadcrumbs [aria-current="page"] { color: var(--text); }
 .breadcrumb-current { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.recent-section > summary { display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 6px 8px; list-style: none; cursor: pointer; border-radius: var(--control-radius); color: var(--text-secondary); font-size: var(--text-caption-size); }
-.recent-section > summary::-webkit-details-marker { display: none; }
-.recent-section > summary:hover { background: var(--hover); color: var(--text); }
-.recent-section > summary > span:first-child { display: flex; }
-.recent-section > summary svg { width: 14px; height: 14px; transform: rotate(-90deg); }
-.recent-section[open] > summary svg { transform: none; }
 .library-view { display: flex; gap: 2px; padding: 3px; background: var(--surface-secondary); border: 1px solid var(--border); border-radius: var(--control-radius); }
 .library-view button { min-height: 28px; }
 .library-view button[aria-pressed="true"] { background: var(--surface-tint-strong); color: var(--text); }

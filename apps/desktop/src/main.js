@@ -41,7 +41,6 @@ import { meetingResultPreview } from './meeting-result-preview.js';
 import { mountMeetingDetail } from './meeting-detail-ui.js';
 import { mountAiChat } from './ai-chat-ui.jsx';
 import { mountAiChatLibrary } from './ai-chat-library.jsx';
-import { mountAiChatSidebar } from './ai-chat-sidebar.jsx';
 import { mountMeetingContext } from './meeting-context-ui.jsx';
 import * as aiChatBridge from './ai-chat-bridge.js';
 import { mountSummaryEvidence } from './summary-evidence.js';
@@ -159,7 +158,7 @@ function beginNavigation(history = false) { if (!history) viewHistory?.cancel();
 let speakerReplay = null;
 let summaryEvidence = null;
 let transcriptLoading = null, citationRequest = 0;
-let aiChat = null, aiLibrary = null, aiSidebar = null, meetingContext = null;
+let aiChat = null, aiLibrary = null, meetingContext = null;
 let lastLiveTranscript = null;
 const processingActions = new Map();
 const processingErrors = new Map();
@@ -1721,8 +1720,6 @@ aiChat = mountAiChat({
     });
   },
 });
-aiSidebar = mountAiChatSidebar({ node: byId('sidebar-ai-preview'), flow: aiChat.flow, getMeetings: () => state.snapshot.meetings, onOpenConversation: openAiConversation, async onOpenMeeting(meetingId, conversationId) { await openAiConversation(conversationId); await openAiMeeting(meetingId); } });
-byId('sidebar-ai-new').addEventListener('click', async () => { await aiChat.flow.newConversation({ attachCurrent: true }); aiChat.open(); });
 aiLibrary = mountAiChatLibrary({ node: byId('ai-library-screen'), flow: aiChat.flow, getMeetings: () => state.snapshot.meetings, onOpen: () => aiChat.open(null), container: document.body });
 summaryEvidence = mountSummaryEvidence({
   container: byId('summary-content'), panel: byId('summary-evidence'),

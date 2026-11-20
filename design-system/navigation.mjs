@@ -62,7 +62,6 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
       compact.setAttribute('aria-hidden', String(unavailable()));
     }
     aside.inert = !open;
-    for (const node of aside.querySelectorAll('.recent-section, .recent')) node.inert = !open;
     width.update(open);
     width.refresh();
     aside.setAttribute('aria-label', '회의 탐색');
@@ -84,7 +83,7 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
     if (!pinned) reveal();
   }
   function openPopups() {
-    return [...document.querySelectorAll('dialog[open],[role="dialog"],[role="alertdialog"],[role="menu"],[role="listbox"],[data-slot="menu-popup"],[data-slot="popover-content"],[data-slot="select-content"],details[open]:not(.recent-section):not(.recent)')].filter(node => {
+    return [...document.querySelectorAll('dialog[open],[role="dialog"],[role="alertdialog"],[role="menu"],[role="listbox"],[data-slot="menu-popup"],[data-slot="popover-content"],[data-slot="select-content"],details[open]:not(.recent)')].filter(node => {
       if (node.closest('[hidden],[inert],[aria-hidden="true"],[data-state="closed"],[data-closed],[data-open="false"],details:not([open])')) return false;
       if (node.matches('details') && !node.matches('.meeting-menu,.library-folder-menu,.document-export,.speed') && !node.querySelector(':scope > .action-menu,:scope > .speed-menu,:scope > [role="menu"],:scope > [data-slot="menu-popup"]')) return false;
       const style = document.defaultView.getComputedStyle(node);
@@ -103,12 +102,9 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
     }
     return true;
   }
-  // The section a rail button named comes first; sidebar-views marks it.
   function firstPreviewTarget() {
     const targets = '[data-recent-meeting],[data-library-filter],[data-navigation-item]';
-    const section = aside.querySelector('[data-preview-focus]');
-    return [...section?.querySelectorAll(targets) || []].find(availablePreviewTarget)
-      || [...aside.querySelectorAll(targets)].find(availablePreviewTarget)
+    return [...aside.querySelectorAll(targets)].find(availablePreviewTarget)
       || [...aside.querySelectorAll('input[type="search"],#search')].find(availablePreviewTarget);
   }
   function firstPreviewBoundary() {
@@ -220,11 +216,17 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
     attention(view, on) {
       const button = previews.find(item => item.dataset.navigationPreview === view);
       if (!button) return;
-      button.dataset.navigationLabel ||= button.getAttribute('aria-label') || '';
-      const label = button.dataset.navigationLabel;
-      if (on) button.dataset.attention = 'true';
-      else delete button.dataset.attention;
-      button.setAttribute('aria-label', on ? `${label}, 확인할 항목 있음` : label);
+      // The button's own label is kept once, before the phrase is ever added to it.
+      if (!('navigationLabel' in button.dataset)) button.dataset.navigationLabel = button.getAttribute('aria-label') || '';
+      const own = button.dataset.navigationLabel;
+      if (on) {
+        button.dataset.attention = 'true';
+        button.setAttribute('aria-label', `${own || button.textContent.trim()}, 확인할 항목 있음`);
+      } else {
+        delete button.dataset.attention;
+        if (own) button.setAttribute('aria-label', own);
+        else button.removeAttribute('aria-label');
+      }
     },
   };
 }

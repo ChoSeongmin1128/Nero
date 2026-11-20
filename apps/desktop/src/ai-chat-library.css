@@ -30,23 +30,4 @@
 .ai-library-title, .ai-library-copy > .type-caption { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ai-library-meta { display: inline-flex; align-items: center; gap: 6px; align-self: start; white-space: nowrap; font-size: var(--text-micro-size); line-height: 21px; }
 @media (max-width: 520px) { .ai-library-open { column-gap: 8px; } .ai-library-meta { font-size: var(--text-caption-size); } }
-.sidebar-ai-list { display: flex; flex-direction: column; gap: 1px; }
-.sidebar-ai-row { flex-direction: column; align-items: stretch; }
-.sidebar-ai-row > .recent-meeting { min-height: 0; padding-bottom: 2px; }
-.sidebar-ai-row .recent-meeting-timestamp { flex: none; color: var(--text-secondary); font-size: var(--text-micro-size); font-weight: var(--weight-regular); font-variant-numeric: tabular-nums; }
-.sidebar-ai-meeting, .sidebar-ai-note { display: inline-flex; align-self: flex-start; align-items: center; gap: 4px; max-width: calc(100% - 12px); min-height: 0; margin: 0 8px 8px 8px; padding: 1px 2px; border-radius: 4px; color: var(--text-secondary); font-size: var(--text-micro-size); font-weight: var(--weight-regular); }
-.sidebar-ai-meeting > svg { flex: none; }
-.sidebar-ai-meeting > span:first-of-type { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sidebar-ai-meeting:hover { color: var(--text); background: var(--surface); }
-.sidebar-ai-more { flex: none; }
-.sidebar-ai-note { padding-inline: 4px; }
 
-/* A history preview has no leading icon column or reserved menu gutter. */
-.library[data-sidebar-view="ai"] #sidebar-ai-preview { min-width: 0; min-height: 0; overflow-y: auto; padding: 0 8px 10px; }
-.library[data-sidebar-view="ai"] .sidebar-ai-list { min-width: 0; gap: 3px; }
-.library[data-sidebar-view="ai"] .sidebar-ai-row { min-width: 0; padding: 2px 0 3px; }
-.library[data-sidebar-view="ai"] .sidebar-ai-row > .recent-meeting { display: block; width: 100%; min-width: 0; min-height: 0; padding: 9px 8px 4px; border-radius: var(--control-radius); }
-.library[data-sidebar-view="ai"] .sidebar-ai-row .recent-title-line { display: flex; grid-column: auto; align-items: baseline; gap: 10px; width: 100%; min-width: 0; }
-.library[data-sidebar-view="ai"] .sidebar-ai-row .recent-title-line > strong { flex: 1; min-width: 0; font-size: var(--text-label-size); font-weight: var(--weight-semibold); line-height: 20px; }
-.library[data-sidebar-view="ai"] .sidebar-ai-row .recent-meeting-timestamp { flex: none; font-size: var(--text-micro-size); line-height: 20px; }
-.library[data-sidebar-view="ai"] :is(.sidebar-ai-meeting, .sidebar-ai-note) { max-width: calc(100% - 16px); margin: 0 8px 5px; padding: 1px 0; min-height: 18px; gap: 5px; font-size: var(--text-aux-size); line-height: 18px; }

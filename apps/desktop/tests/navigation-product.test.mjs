@@ -86,12 +86,8 @@ test('folder overview, all view and actual-parent breadcrumbs retain real librar
   assert.equal(state.libraryView, 'folders');
 });
 
-test('content searches span filed meetings and remembered recent disclosure remains independent', async t => {
-  const { document, library, window } = await setup(t, { 'nero.library.recents': 'false' });
-  const recent = document.getElementById('recent-section');
-  assert.equal(recent.open, false);
-  recent.open = true; recent.dispatchEvent(new window.Event('toggle'));
-  assert.equal(window.localStorage.getItem('nero.library.recents'), 'true');
+test('content searches span filed meetings', async t => {
+  const { document, library } = await setup(t);
   document.getElementById('search').value = '폴더 회의'; library.render();
   assert.deepEqual(library.visibleMeetings().map(meeting => meeting.id), ['filed']);
   assert.equal(document.getElementById('library-folders').hidden, true);
@@ -403,8 +399,7 @@ test('the rail owns the list choices and utilities in both modes while the toolb
   assert.equal(document.querySelector('[data-navigation-preview="ai"]'), null);
   assert.equal(document.getElementById('navigation-home').dataset.navigationPreview, 'home');
   assert.ok(footer.contains(rail.querySelector('[data-navigation-preview="trash"]')));
-  assert.equal(aside.querySelector('.sidebar-footer').hidden, true);
-  assert.equal(document.getElementById('folder-list').contains(document.getElementById('library-trash-view')), false);
+  assert.equal(aside.querySelector('[data-library-filter="trash"]'), null);
   const toolbar = document.querySelector('.application-toolbar');
   for (const id of ['navigation-back', 'navigation-forward', 'navigation-toggle', 'create-meeting']) {
     assert.equal(document.querySelectorAll(`#${id}`).length, 1);
@@ -516,15 +511,12 @@ test('recent duration distinguishes recorded length from the calendar timestamp'
 
 
 
-test('all meetings use the same list icon in expanded and compact navigation, distinct from creation', async t => {
+test('all meetings use the list icon in the rail, distinct from creation', async t => {
   const { document } = await setup(t);
-  const expanded = document.querySelector('#library-system-views [data-library-filter="all"] svg').dataset.icon;
   const compact = document.querySelector('[data-navigation-preview="all"] [data-detail-icon]').dataset.detailIcon;
   assert.equal(document.querySelector('#navigation-home [data-detail-icon]').dataset.detailIcon, 'house');
-  const create = document.querySelector('#create-meeting').dataset.uiIcon;
-  assert.equal(expanded, 'list');
-  assert.equal(compact, expanded);
-  assert.notEqual(create, expanded);
+  assert.equal(compact, 'list');
+  assert.notEqual(document.querySelector('#create-meeting').dataset.uiIcon, compact);
 });
 
 test('recording export and location actions require validated playback and send only the meeting id', async t => {
@@ -579,39 +571,25 @@ test('global AI controls and central playback keep their application hierarchy',
 
 
 
-test('A navigation destinations select all meetings or folder overview without changing meeting data', async t => {
-  const { document, state, library } = await setup(t, { 'nero.sidebar.pinned': 'true' });
-  const before = structuredClone(state.snapshot);
-  document.querySelector('#library-system-views [data-library-filter="all"]').click(); await settle();
-  assert.equal(state.libraryView, 'all');
-  assert.equal(document.getElementById('library-title').textContent, '전체 회의');
-  assert.deepEqual(library.visibleMeetings().map(meeting => meeting.id), ['unfiled', 'filed']);
-  document.querySelector('[data-library-overview]').click(); await settle();
-  assert.equal(state.libraryView, 'folders');
-  assert.equal(document.getElementById('library-title').textContent, '폴더');
-  assert.deepEqual(state.snapshot, before);
-});
-
 test('the single search input stays in the sidebar and the folder action follows the folder list', async t => {
   const { document } = await setup(t);
   const search = document.getElementById('search'), createFolder = document.getElementById('new-folder');
-  const navigation = document.getElementById('sidebar-navigation-view'), folderHeading = document.querySelector('.navigation-folder-section > .library-heading');
+  const navigation = document.getElementById('sidebar-navigation-view');
   search.value = '회의';
   assert.ok(navigation.contains(search));
-  assert.equal(document.getElementById('library-search-home').contains(search), false);
-  assert.ok(folderHeading.contains(createFolder));
-  document.querySelector('[data-navigation-preview="folders"]').click();
-  assert.ok(navigation.contains(search));
   assert.ok(document.getElementById('sidebar-folder-actions').contains(createFolder));
+  assert.equal(createFolder.hidden, true);
+  document.querySelector('[data-navigation-preview="folders"]').click();
+  assert.equal(createFolder.hidden, false);
   assert.equal(search.value, '회의');
   document.querySelector('[data-navigation-preview="all"]').click();
-  assert.ok(folderHeading.contains(createFolder));
+  assert.equal(createFolder.hidden, true);
   document.getElementById('navigation-toggle').click();
   assert.ok(navigation.contains(search));
   document.getElementById('notifications-open').click();
-  assert.equal(document.getElementById('meeting-search-field').hidden, true);
+  assert.equal(navigation.hidden, true);
   document.getElementById('notifications-open').click();
-  assert.equal(document.getElementById('meeting-search-field').hidden, false);
+  assert.equal(navigation.hidden, false);
   assert.equal(search.value, '회의');
   assert.equal(document.querySelectorAll('#search').length, 1);
   assert.equal(document.querySelectorAll('#new-folder').length, 1);

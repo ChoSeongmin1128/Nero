@@ -73,7 +73,8 @@ test('quick record creates once, starts through native boundary, and focuses rec
 
 for (const phase of ['recording', 'paused', 'finalizing']) test(`quick record returns to an existing ${phase} session without creating a meeting`, async t => {
   const f = await fixture(t, { session: { id: 'capture', meetingId: 'active', state: phase, elapsedMs: 1000 } });
-  f.window.document.querySelector('[data-library-filter="all"]').click();
+  f.window.document.querySelector('[data-navigation-preview="all"]').click();
+  f.get('sidebar-preview-open').click();
   await f.wait(() => !f.get('library-screen').hidden);
   f.get('library-record').click();
   await f.wait(() => f.get('library-screen').hidden && !f.get('library-record').disabled);

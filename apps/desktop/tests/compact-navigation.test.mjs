@@ -16,7 +16,7 @@ function setup(t, preferences = {}) {
   document.body.innerHTML = `<header class="application-toolbar"><button id="navigation-toggle">탐색</button></header><div class="navigation-shell">
     <nav class="navigation-rail" data-navigation-compact>${['home', 'all', 'unfiled', 'folders', 'recent'].map(view => `<button data-navigation-preview="${view}">${view}</button>`).join('')}<div class="navigation-rail-footer"><button id="update" hidden>업데이트</button><button id="notifications">알림</button><button data-navigation-preview="trash">trash</button><button id="settings">설정</button></div></nav>
     <div class="navigation-edge"></div>
-    <aside id="navigation-sidebar"><header id="navigation-header"></header><input id="search"><button id="meeting">회의</button><details class="recent-section" open><summary>최근 회의</summary></details></aside>
+    <aside id="navigation-sidebar"><header id="navigation-header"></header><input id="search"><button id="meeting">회의</button></aside>
     <main><textarea id="notes">작성 중</textarea></main>
   </div>`;
   for (const [key, value] of Object.entries(preferences)) window.localStorage.setItem(key, value);
@@ -247,7 +247,6 @@ test('navigation actions close only the temporary overlay and onboarding keeps n
   assert.equal(app.events.length, 1);
   assert.equal(app.compact.inert, true);
   assert.equal(app.aside.inert, true);
-  assert.equal(app.document.querySelector('.recent-section').inert, true);
   assert.equal(app.document.querySelector('main').inert, false);
 });
 
@@ -340,8 +339,6 @@ test('a folder row opens its meetings in the sidebar and the back button returns
   views.choose('folders');
   assert.equal(el('sidebar-library-navigation').hidden, false);
   assert.equal(el('sidebar-meeting-list').hidden, true);
-  assert.equal(el('library-system-views').hidden, true);
-  assert.equal(el('library-ai-view').hidden, true);
   assert.equal(el('sidebar-preview-title').textContent, '폴더');
   assert.equal(el('sidebar-preview-count').textContent, '1');
   assert.equal(el('sidebar-preview-back').hidden, true);

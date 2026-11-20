@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createRequire } from 'node:module';
-import { countLibraryMeetings, filterLibraryMeetings, recentLibraryMeetings, mountLibrary } from '../src/library-ui.js';
+import { countLibraryMeetings, filterLibraryMeetings, mountLibrary } from '../src/library-ui.js';
 
 const meetings = () => [
   { id: 'one', title: '주간 회의', notes: '', folderId: 'project', deletedAt: null },
@@ -51,7 +51,7 @@ function harness(overrides = {}, options = {}) {
         this.checkedRadio = /<input[^>]*name="library-destination"[^>]*value="([^"]*)"[^>]* checked/.exec(value)?.[1];
       }
     }
-    get innerHTML() { return this.id === 'folder-list' ? ['library-system-views', 'library-user-folders', 'library-ai-view', 'library-trash-view'].map(id => byId(id).innerHTML).join('') : this.html || ''; }
+    get innerHTML() { return this.id === 'folder-list' ? byId('library-user-folders').innerHTML : this.html || ''; }
     querySelector(selector) {
       if (selector === '[autofocus]') return this.autofocus || null;
       if (selector === '[data-new-destination]') return byId('library-new-destination');
@@ -325,33 +325,31 @@ test('folder navigation flushes edits and clears the previous selection', async 
   assert.equal(app.byId('library-title').textContent, '미분류');
 });
 
-test('detail selection moves from the preserved navigation scope to the open recent meeting', () => {
+test('detail selection moves from the preserved navigation scope to the open meeting in the sidebar list', () => {
   const app = harness();
+  app.byId('navigation-sidebar').dataset.sidebarView = 'home';
+  const list = () => app.byId('sidebar-meeting-list').innerHTML;
   app.state.snapshot.meetings[0].createdAt = new Date(2026, 0, 1, 9, 0).getTime();
-  app.state.libraryFilter = 'all';
+  app.state.libraryFilter = 'project';
   app.controller.render();
   const navigation = app.byId('folder-list').innerHTML;
   app.state.libraryOpen = false;
   app.controller.render();
-  assert.match(navigation, /data-library-filter="all"[^>]*aria-current="page"/);
+  assert.match(navigation, /data-library-filter="project"[^>]*aria-current="page"/);
   assert.doesNotMatch(app.byId('folder-list').innerHTML, /aria-current/);
-  assert.match(app.byId('recent-meetings').innerHTML, /data-recent-meeting="one"[^>]*aria-current="page"/);
-  assert.match(app.byId('recent-meetings').innerHTML, /aria-label="주간 회의, 프로젝트, 1\. 1\. 09:00"/);
-  assert.equal(app.state.libraryFilter, 'all');
+  assert.match(list(), /data-recent-meeting="one"[^>]*aria-current="page"/);
+  assert.match(list(), /aria-label="주간 회의, 프로젝트, 1\. 1\. 09:00"/);
+  assert.equal(app.state.libraryFilter, 'project');
   assert.equal(app.byId('meeting-folder-context').textContent, '프로젝트');
   assert.equal(app.byId('meeting-folder-context').title, '프로젝트');
   app.state.snapshot.meetings[0].folderId = null;
   app.controller.render();
   assert.equal(app.byId('meeting-folder-context').textContent, '미분류');
-  assert.equal(app.state.libraryFilter, 'all');
-  app.state.libraryFilter = 'project';
-  app.controller.render();
-  assert.doesNotMatch(app.byId('folder-list').innerHTML, /aria-current/);
-  assert.equal(app.byId('meeting-folder-context').textContent, '미분류');
+  assert.equal(app.state.libraryFilter, 'project');
   app.state.libraryOpen = true;
   app.controller.render();
   assert.match(app.byId('folder-list').innerHTML, /data-library-filter="project"[^>]*aria-current="page"/);
-  assert.doesNotMatch(app.byId('recent-meetings').innerHTML, /aria-current/);
+  assert.doesNotMatch(list(), /aria-current/);
 });
 
 test('renamed folders update detail context and long names keep an escaped full title', () => {
@@ -756,11 +754,14 @@ test('empty trash respects recording protection before opening and at confirmati
 });
 
 
-test('recent meetings exclude trash, use recording chronology and do not reorder the source', () => {
-  const source = Array.from({length: 8}, (_, index) => ({id: String(index), title: '회의', createdAt: index * 10, updatedAt: 999 - index, deletedAt: index === 7 ? 1 : null}));
+test('the recent sidebar list excludes trash, uses recording chronology and keeps the source order', () => {
+  const app = harness();
+  const source = Array.from({length: 8}, (_, index) => ({id: String(index), title: '회의', folderId: null, createdAt: index * 10, updatedAt: 999 - index, deletedAt: index === 7 ? 1 : null}));
   source[0].recordedAt = 65;
+  app.state.snapshot.meetings = source;
   const before = JSON.stringify(source);
-  assert.deepEqual(recentLibraryMeetings(source).map(item => item.id), ['0', '6', '5', '4', '3']);
+  app.controller.preview('recent');
+  assert.deepEqual([...app.byId('sidebar-meeting-list').innerHTML.matchAll(/data-recent-meeting="([^"]+)"/g)].map(match => match[1]), ['0', '6', '5', '4', '3', '2', '1']);
   assert.equal(JSON.stringify(source), before);
 });
 
@@ -768,15 +769,15 @@ test('recent navigation opens current meetings and ignores a deleted target with
   const opened = [];
   const app = harness({}, {selectMeeting(id) { opened.push(id); }});
   const target = {dataset: {recentMeeting: 'two'}};
-  app.byId('recent-meetings').listeners.click({target: {closest: selector => selector === '[data-recent-meeting]' ? target : null}});
+  app.byId('sidebar-meeting-list').listeners.click({target: {closest: selector => selector === '[data-recent-meeting]' ? target : null}});
   await settle();
   assert.deepEqual(opened, ['two']);
   assert.equal(app.state.libraryFilter, 'all');
   target.dataset.recentMeeting = 'three';
-  app.byId('recent-meetings').listeners.click({target: {closest: selector => selector === '[data-recent-meeting]' ? target : null}});
+  app.byId('sidebar-meeting-list').listeners.click({target: {closest: selector => selector === '[data-recent-meeting]' ? target : null}});
   app.state.connected = false;
   target.dataset.recentMeeting = 'one';
-  app.byId('recent-meetings').listeners.click({target: {closest: selector => selector === '[data-recent-meeting]' ? target : null}});
+  app.byId('sidebar-meeting-list').listeners.click({target: {closest: selector => selector === '[data-recent-meeting]' ? target : null}});
   await settle();
   assert.deepEqual(opened, ['two']);
 });
@@ -915,41 +916,35 @@ test('bulk toolbar focus retains list-wide select-all and Escape behavior', () =
 
 test('recent duration updates after finalization without navigation or title changes', () => {
   const h = harness({}, { duration: value => `${value}ms` });
-  const before = h.byId('recent-meetings').innerHTML;
+  h.byId('navigation-sidebar').dataset.sidebarView = 'home';
+  h.controller.render();
+  const list = () => h.byId('sidebar-meeting-list').innerHTML;
+  const before = list();
   h.state.snapshot.meetings[0].audio = { sampleRate: 16000, frames: 32000 };
   h.controller.render();
-  assert.notEqual(h.byId('recent-meetings').innerHTML, before);
-  assert.match(h.byId('recent-meetings').innerHTML, /녹음 길이 2초/);
+  assert.notEqual(list(), before);
+  assert.match(list(), /녹음 길이 2초/);
   h.state.snapshot.meetings[0].audio.frames = 48000;
   h.controller.render();
-  assert.match(h.byId('recent-meetings').innerHTML, /녹음 길이 3초/);
-  assert.doesNotMatch(h.byId('recent-meetings').innerHTML, /녹음 길이 2초/);
+  assert.match(list(), /녹음 길이 3초/);
+  assert.doesNotMatch(list(), /녹음 길이 2초/);
 });
 
- test('built-in views, user folders and trash occupy separate navigation groups', () => {
+test('the sidebar folder list holds only user folders', () => {
   const app = harness();
-  const views = app.byId('library-system-views').innerHTML;
   const folders = app.byId('library-user-folders').innerHTML;
-  const trash = app.byId('library-trash-view').innerHTML;
-  assert.match(views, /data-library-filter="all"/);
-  assert.match(views, /data-library-filter="unfiled"/);
-  assert.doesNotMatch(views, /data-library-filter="project"|data-library-filter="trash"/);
   assert.match(folders, /data-library-filter="project"/);
-  assert.doesNotMatch(folders, /data-library-filter="all"|data-library-filter="trash"/);
-  assert.match(trash, /data-library-filter="trash"/);
-  assert.doesNotMatch(views, /data-library-filter="ai"/);
-  assert.match(app.byId('library-ai-view').innerHTML, /data-library-filter="ai"/);
+  assert.doesNotMatch(folders, /data-library-filter="(all|unfiled|trash|ai)"/);
   app.state.snapshot.folders = [];
   app.controller.render();
   assert.equal(app.byId('library-user-folders').innerHTML, '');
-  assert.match(app.byId('library-system-views').innerHTML, /data-library-filter="all"/);
 });
 
 test('navigation and folder card counts refresh after moving, trashing and restoring meetings', () => {
   const app = harness();
-  const counts = () => Object.fromEntries([...app.byId('folder-list').innerHTML.matchAll(/data-library-filter="([^"]+)"[^>]*>(?:(?!<\/button>)[\s\S])*?class="library-folder-count">(\d+)</g)].map(match => [match[1], Number(match[2])]));
+  const folders = () => [...app.byId('folder-list').innerHTML.matchAll(/data-library-filter="([^"]+)"[^>]*>(?:(?!<\/button>)[\s\S])*?class="library-folder-count">(\d+)</g)].map(match => [match[1], Number(match[2])]);
+  const counts = () => Object.fromEntries([...['all', 'unfiled', 'trash'].map(filter => [filter, app.controller.count(filter)]), ...folders()]);
   assert.deepEqual(counts(), { all: 2, unfiled: 1, project: 1, trash: 1 });
-  assert.match(app.byId('folder-list').innerHTML, /data-library-filter="ai"[^>]*>(?:(?!<\/button>)[\s\S])*?class="library-folder-count"><\/span>/);
   app.state.snapshot.meetings[1].folderId = 'project';
   app.byId('search').value = 'no match';
   app.controller.render();
