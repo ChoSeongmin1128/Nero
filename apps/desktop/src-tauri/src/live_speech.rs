@@ -183,16 +183,13 @@ impl Processing {
         };
         self.cancel_live()?;
         // Decided once by `recording_start`, which also chose whether other work waits.
-        if choice.engine == SpeechEngine::Moss
+        if choice.engine.transcribes_while_recording()
             && self.live_moss_next.swap(false, Ordering::AcqRel)
         {
             self.update(|progress| progress.live_transcript = None);
             return self.start_live_moss(core, &session.meeting_id, &session.id);
         }
-        if matches!(
-            choice.engine,
-            SpeechEngine::AppleSpeech | SpeechEngine::QwenKo | SpeechEngine::Moss
-        ) {
+        if choice.engine.recognizes_after_recording() {
             self.update(|progress| progress.live_transcript = None);
             return Ok(());
         }
@@ -240,7 +237,7 @@ impl Processing {
                         &session_id,
                         cancel,
                         child,
-                        engine.live_asr(),
+                        engine,
                         speaker_enabled,
                         glossary,
                     );
@@ -274,13 +271,14 @@ impl Processing {
         }
         Ok(())
     }
-    pub(super) fn live_allows(&self, kind: &str, meeting_id: Option<&str>) -> bool {
-        self.live.lock().unwrap().as_ref().is_none_or(|job| {
-            !job.running.load(Ordering::Acquire)
-                || (!self.recording.load(Ordering::Acquire)
-                    && kind == "transcribe"
-                    && meeting_id == Some(job.meeting_id.as_str()))
-        })
+    // The meeting of a live worker that is still running, which keeps the inference slot.
+    pub(super) fn live_meeting(&self) -> Option<String> {
+        self.live
+            .lock()
+            .unwrap()
+            .as_ref()
+            .filter(|job| job.running.load(Ordering::Acquire))
+            .map(|job| job.meeting_id.clone())
     }
     pub(super) fn cancel_live_meeting(&self, meeting_id: Option<&str>) -> Result<(), String> {
         let mut slot = self.live.lock().unwrap();
@@ -588,6 +586,9 @@ fn publish_asr(
 ) -> Result<(), String> {
     let raw = read_limited(&path.join("recognition.json"), 16 * 1024 * 1024)?;
     let result: Value = serde_json::from_slice(&raw).map_err(|e| e.to_string())?;
+    if engine.recognizes_after_recording() {
+        return Err("이 전사 방식은 녹음 종료 후 처리합니다.".into());
+    }
     let model: Value = serde_json::from_str(engine.manifest()).map_err(|e| e.to_string())?;
     if result["inputAudioFrames"] != frames
         || result["inputPcmSha256"] != pcm_sha
@@ -597,9 +598,7 @@ fn publish_asr(
             SpeechEngine::Nemotron => {
                 result["streamFramesFed"] != frames || result["nativeStreamFinished"] != true
             }
-            SpeechEngine::AppleSpeech | SpeechEngine::QwenKo | SpeechEngine::Moss => {
-                return Err("이 전사 방식은 녹음 종료 후 처리합니다.".into())
-            }
+            SpeechEngine::AppleSpeech | SpeechEngine::QwenKo | SpeechEngine::Moss => true,
             SpeechEngine::WhisperTurbo | SpeechEngine::WhisperLargeV3 => {
                 result["modelSha256"] != model["files"][0]["sha256"]
                     || result["completed"] != true

@@ -37,11 +37,18 @@ impl SpeechEngine {
             matches!(self, Self::Nemotron | Self::WhisperTurbo)
         }
     }
-    pub(super) fn requirements(self) -> Vec<Self> {
-        vec![self]
+    /// Recognizes a recording only after it ends; a session with it has no live worker.
+    pub(super) fn recognizes_after_recording(self) -> bool {
+        matches!(self, Self::AppleSpeech | Self::QwenKo | Self::Moss)
     }
-    pub(super) fn live_asr(self) -> Self {
-        self
+    /// Its recognition of a finished meeting may run beside a recording of another one
+    /// where jobs can be paused (`job_control::SUPPORTED`).
+    pub(super) fn runs_beside_recording(self) -> bool {
+        matches!(self, Self::Moss | Self::QwenKo)
+    }
+    /// Can recognize a recording's chunks while it is made (Settings > 녹음).
+    pub(super) fn transcribes_while_recording(self) -> bool {
+        self == Self::Moss
     }
     pub(super) fn asr_provider(self) -> nero_core::AsrProvider {
         match self {

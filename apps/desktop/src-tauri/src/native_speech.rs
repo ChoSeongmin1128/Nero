@@ -1,6 +1,7 @@
 //! The pinned NeMo speech package shared by recognition, speaker analysis and audio
 //! preparation: its file locations, backend names and the bounded child runner.
 use crate::failure::FailureKind;
+use crate::process_tree::{supervise, Ended, Unconfirmed, Watch};
 use crate::processing::{cancelled, plain_file, Processing};
 use serde::{Deserialize, Serialize};
 use std::fs::OpenOptions;
@@ -8,8 +9,6 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::AtomicBool;
-use std::thread;
-use std::time::Duration;
 
 const LOG_LIMIT: u64 = 16 * 1024 * 1024;
 
@@ -177,7 +176,6 @@ fn bounded_log(path: &Path) -> String {
 
 // Runs one packaged child to completion. Each caller words the failure for its own stage.
 pub(crate) fn run(
-    process: &Processing,
     executable: &Path,
     arguments: &[std::ffi::OsString],
     log: &Path,
@@ -214,46 +212,18 @@ pub(crate) fn run(
     // Its own process group, so pausing or stopping it never reaches the app.
     let mut worker =
         crate::process_tree::spawn(&mut command).map_err(|_| FailureKind::EngineUnavailable)?;
-    let mut pauser = crate::job_control::Pauser::new(cancel);
-    let stop = |worker: &mut crate::process_tree::TreeChild,
-                    pauser: &mut crate::job_control::Pauser| {
-        pauser.release(worker);
-        if worker.try_wait().ok().flatten().is_some() {
-            return Ok(());
-        }
-        worker
-            .kill()
-            .and_then(|()| worker.wait().map(|_| ()))
-            .map_err(|_| {
-                process.cleanup_failed();
-                FailureKind::Cleanup
-            })
-    };
-    loop {
-        if cancelled(cancel).is_err() {
-            stop(&mut worker, &mut pauser)?;
-            return Err(FailureKind::Cancelled);
-        }
-        match worker.try_wait() {
-            Ok(Some(status)) if status.success() => return Ok(()),
-            Ok(Some(status)) => {
-                return Err(classify(
-                    &bounded_log(log),
-                    gpu,
-                    status.code(),
-                    input,
-                    operation,
-                ))
-            }
-            Ok(None) => {
-                pauser.sync(&worker);
-                thread::sleep(Duration::from_millis(100));
-            }
-            Err(_) => {
-                stop(&mut worker, &mut pauser)?;
-                return Err(FailureKind::EngineUnavailable);
-            }
-        }
+    match supervise(&mut worker, cancel, Watch::default()) {
+        Ok(Ended::Exited(status)) if status.success() => Ok(()),
+        Ok(Ended::Exited(status)) => Err(classify(
+            &bounded_log(log),
+            gpu,
+            status.code(),
+            input,
+            operation,
+        )),
+        Ok(Ended::Unreadable(_)) => Err(FailureKind::EngineUnavailable),
+        Ok(Ended::Cancelled | Ended::Stopped | Ended::OverBudget) => Err(FailureKind::Cancelled),
+        Err(Unconfirmed) => Err(FailureKind::Cleanup),
     }
 }
 
@@ -262,6 +232,8 @@ mod tests {
     use super::*;
     use serde_json::{json, Value};
     use std::sync::Arc;
+    use std::thread;
+    use std::time::Duration;
 
     fn classify_diarize(
         log: &str,
@@ -461,10 +433,8 @@ mod tests {
         }
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path().canonicalize().unwrap();
-        let process = Processing::new(root.clone(), root.clone());
         let cancel = AtomicBool::new(false);
         run(
-            &process,
             Path::new("/bin/sh"),
             &["-c".into(), "ps -o pgid= -p $$ > group.txt".into()],
             &root.join("worker.log"),
@@ -486,15 +456,12 @@ mod tests {
     #[test]
     fn cancellation_reaps_the_single_worker_without_starting_a_cpu_retry() {
         let temporary = tempfile::tempdir().unwrap();
-        let root = temporary.path().canonicalize().unwrap();
-        let process = Processing::new(root.clone(), root);
         let cancel = Arc::new(AtomicBool::new(false));
         let worker_cancel = cancel.clone();
         let log = temporary.path().join("worker.log");
         let started = std::time::Instant::now();
         let worker = thread::spawn(move || {
             run(
-                &process,
                 Path::new("/bin/sleep"),
                 &["30".into()],
                 &log,

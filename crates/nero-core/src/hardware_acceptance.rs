@@ -14,7 +14,12 @@ fn microphone_pause_resume_and_restart_preserve_recorded_audio() {
         .find(|d| d.is_default)
         .expect("default microphone");
     let started = core
-        .create_recording("Microphone acceptance", "", &device.id)
+        .create_recording(
+            "Microphone acceptance",
+            "",
+            NewMeetingPlace::Default,
+            &device.id,
+        )
         .unwrap();
     let session = started.session.unwrap();
     std::thread::sleep(Duration::from_secs(2));

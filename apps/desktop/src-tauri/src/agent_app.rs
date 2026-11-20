@@ -274,7 +274,6 @@ impl<L> AgentApp<'_, L> {
                     timezone,
                     scope_revision,
                     target,
-                    false,
                 ))
                 .map_err(rejected)?;
                 publish_snapshot(app);
@@ -313,14 +312,12 @@ impl<L> AgentApp<'_, L> {
                 recording_transcription,
                 new_meeting_folder,
             } => {
+                // Refused before any setting changes, by the rule the setting itself applies.
                 if recording_transcription == Some(true)
-                    && !desktop
-                        .processing
-                        .snapshot()
-                        .recording_transcription_supported
+                    && !desktop.processing.recording_transcription_available()
                 {
                     return Err(rejected(
-                        "이 Mac과 현재 음성 인식 엔진에서는 녹음하면서 음성 기록을 만들 수 없습니다.",
+                        crate::processing::RECORDING_TRANSCRIPTION_UNAVAILABLE,
                     ));
                 }
                 if let Some(folder) = new_meeting_folder {
@@ -461,17 +458,15 @@ impl<L> AgentApp<'_, L> {
                 desktop.processing.agent_jobs(Some(&meeting_id), 0, 5)
             }
             AppRequest::ModelsPrepare {} => {
-                let snapshot = desktop.core.snapshot().map_err(core_error)?;
-                if crate::active_session(&snapshot).is_some() {
-                    return Err(ControlError::new(
-                        "recording_active",
-                        "녹음을 마친 뒤 준비해 주세요.",
-                    ));
-                }
                 desktop
                     .processing
-                    .prepare_meeting_models(false)
-                    .map_err(rejected)?;
+                    .prepare_meeting_models(&desktop.core, false)
+                    .map_err(|refusal| match refusal {
+                        crate::processing::Refusal::Recording(message) => {
+                            ControlError::new("recording_active", message)
+                        }
+                        refusal => rejected(refusal.to_string()),
+                    })?;
                 desktop.processing.agent_jobs(None, 0, 10)
             }
             AppRequest::TranscriptHistory { meeting_id } => value(
@@ -766,7 +761,7 @@ impl<L> AgentApp<'_, L> {
             "speakerAnalysis":progress.speaker_enabled,
             "terminology":terminology,
             "recordingTranscription":{
-                "supported":progress.recording_transcription_supported,
+                "supported":progress.recording_transcription_available,
                 "enabled":progress.recording_transcription,
             },
             "newMeetingFolder":{
@@ -816,16 +811,12 @@ impl<L> AgentApp<'_, L> {
                             .processing
                             .require_meeting_models()
                             .map_err(not_ready)?;
-                        // The meeting is made only after readiness and microphone
-                        // permission pass, so a refused start leaves no empty meeting.
-                        let title = title.unwrap_or_else(|| "새 회의".into());
-                        block_on(crate::start_capture(app, device_id, move |core, device| {
-                            let snapshot = core
-                                .create_recording(&title, "", device)
-                                .map_err(|error| error.to_string())?;
-                            Ok(((), snapshot))
-                        }))
-                        .map(|(_, snapshot)| snapshot)
+                        block_on(crate::record_new_meeting(
+                            app,
+                            title.unwrap_or_else(|| "새 회의".into()),
+                            nero_core::NewMeetingPlace::Default,
+                            device_id,
+                        ))
                         .map_err(rejected)?
                     }
                 }

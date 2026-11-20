@@ -48,6 +48,17 @@ pub(super) fn apply(choices: &mut [SpeechChoice]) {
     );
 }
 
+/// The warning shown before preparing `engine` on this machine, if it has one.
+pub(super) fn memory_warning(engine: SpeechEngine) -> Option<String> {
+    warning_for(engine, physical_memory())
+}
+
+fn warning_for(engine: SpeechEngine, memory: Option<u64>) -> Option<String> {
+    (engine == SpeechEngine::QwenKo)
+        .then(|| qwen_memory_warning(memory))
+        .flatten()
+}
+
 fn recommend(choices: &mut [SpeechChoice], apple_silicon: bool, memory: Option<u64>) {
     let supported = |engine| {
         choices
@@ -72,9 +83,7 @@ fn recommend(choices: &mut [SpeechChoice], apple_silicon: bool, memory: Option<u
         choice.recommendation_reason = preferred
             .filter(|(engine, _)| *engine == choice.id)
             .map(|(_, reason)| reason);
-        choice.memory_warning = (choice.id == SpeechEngine::QwenKo)
-            .then(|| qwen_memory_warning(memory))
-            .flatten();
+        choice.memory_warning = warning_for(choice.id, memory);
     }
 }
 

@@ -269,7 +269,6 @@ pub(super) fn analyze_with_model(
             progress.message = "화자 구분 중".into();
         });
         let result = native_speech::run(
-            process,
             &worker_executable()?,
             &[
                 std::ffi::OsString::from("--nero-speaker-worker"),
@@ -349,11 +348,16 @@ fn check_source(
     {
         return Err(failure(FailureKind::SourceChanged));
     }
-    // On macOS speaker analysis of a finished meeting continues while another records.
     let snapshot = core.snapshot().map_err(source_failure)?;
-    if snapshot.active_session().is_some_and(|session| {
-        !crate::job_control::SUPPORTED || session.meeting_id == meeting_id
-    }) {
+    let recording = snapshot
+        .active_session()
+        .map(|session| session.meeting_id.as_str());
+    if !crate::processing::admission::admits(
+        crate::job_journal::JobKind::Diarize,
+        None,
+        Some(meeting_id),
+        crate::processing::admission::Session::recording(recording),
+    ) {
         return Err(failure(FailureKind::RecordingActive));
     }
     Ok(())
@@ -416,7 +420,7 @@ pub(super) fn analyze_recording(
 
 impl Processing {
     pub fn prepare_diarization(self: &Arc<Self>) -> Result<Progress, String> {
-        self.prepare_named_model(SPEAKER_MODEL, "speaker-model")
+        self.prepare_named_model(SPEAKER_MODEL, crate::job_journal::JobKind::SpeakerModel)
     }
 
     pub fn diarize(
@@ -452,12 +456,11 @@ impl Processing {
         }
         self.start_job(
             JobSpec {
-                kind: "diarize",
                 meeting_id: Some(meeting_id.clone()),
                 source: Some(core.clone()),
                 required_fingerprint,
                 requested_id,
-                ..JobSpec::default()
+                ..JobSpec::new(crate::job_journal::JobKind::Diarize)
             },
             move |this, cancel, path| {
                 let result = analyze_recording(

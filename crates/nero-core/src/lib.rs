@@ -153,6 +153,15 @@ pub struct AudioPlayback {
     pub channels: u16,
 }
 
+/// Where a meeting made for a new recording goes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NewMeetingPlace {
+    /// The folder chosen for new meetings.
+    Default,
+    /// This folder, or unfiled for `None`. A folder deleted meanwhile counts as `Default`.
+    Folder(Option<String>),
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CalendarReference {
@@ -422,10 +431,6 @@ impl CoreHandle {
 
     pub fn create_meeting_from_calendar(&self, reference: CalendarReference) -> Result<Meeting> {
         self.call(move |engine| engine.create_meeting_from_calendar(reference))
-    }
-
-    pub fn meeting_for_calendar_recording(&self, reference: CalendarReference) -> Result<Meeting> {
-        self.call(move |engine| engine.meeting_for_calendar_recording(reference))
     }
 
     pub fn create_folder(&self, name: &str) -> Result<Folder> {
@@ -714,13 +719,19 @@ impl CoreHandle {
         self.call(move |engine| engine.start(&meeting_id, &device_id))
     }
 
-    /// Creates an explicitly requested recording without a gap between the busy
-    /// check and creation. A failed capture preserves the requested draft.
-    pub fn create_recording(&self, title: &str, notes: &str, device_id: &str) -> Result<Snapshot> {
+    /// Creates an explicitly requested recording in `place` without a gap between the
+    /// busy check and creation. A failed capture preserves the requested draft.
+    pub fn create_recording(
+        &self,
+        title: &str,
+        notes: &str,
+        place: NewMeetingPlace,
+        device_id: &str,
+    ) -> Result<Snapshot> {
         let (title, notes, device_id) = (title.to_owned(), notes.to_owned(), device_id.to_owned());
         self.call(move |engine| {
             engine.refuse_while_recording(recording_guard::Operation::StartRecording, [])?;
-            let meeting = engine.create_meeting(title, notes)?;
+            let meeting = engine.create_meeting_in(title, notes, place)?;
             engine.start(&meeting.id, &device_id)
         })
     }

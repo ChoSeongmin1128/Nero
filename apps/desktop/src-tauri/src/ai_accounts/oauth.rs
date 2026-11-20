@@ -1,16 +1,13 @@
 use super::oidc;
 use crate::oauth_callback::CallbackPage;
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use ring::rand::{SecureRandom, SystemRandom};
-use sha2::{Digest, Sha256};
 use std::net::TcpListener;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
 };
-use std::time::{Duration, Instant};
+use std::time::Instant;
 #[cfg(test)]
-use std::{collections::BTreeMap, io::Read, net::TcpStream};
+use std::{collections::BTreeMap, io::Read, net::TcpStream, time::Duration};
 
 pub(super) struct Pending {
     pub id: String,
@@ -41,11 +38,8 @@ pub(super) struct Authorization {
 }
 
 pub(super) fn random_value() -> Result<String, String> {
-    let mut bytes = [0u8; 32];
-    SystemRandom::new()
-        .fill(&mut bytes)
-        .map_err(|_| "안전한 연결을 준비하지 못했습니다.".to_string())?;
-    Ok(URL_SAFE_NO_PAD.encode(bytes))
+    crate::oauth_callback::random_token()
+        .ok_or_else(|| "안전한 연결을 준비하지 못했습니다.".to_string())
 }
 impl Pending {
     pub fn begin(
@@ -68,7 +62,11 @@ impl Pending {
         let id = uuid::Uuid::new_v4().to_string();
         let state = random_value()?;
         let nonce = random_value()?;
-        let verifier = random_value()?;
+        let crate::oauth_callback::Pkce {
+            verifier,
+            challenge,
+        } = crate::oauth_callback::Pkce::new()
+            .ok_or_else(|| "안전한 연결을 준비하지 못했습니다.".to_string())?;
         let redirect_uri = format!("http://127.0.0.1:{port}/auth/callback");
         let mut url =
             reqwest::Url::parse("https://auth.openai.com/api/accounts/authorize").unwrap();
@@ -85,12 +83,7 @@ impl Pending {
             ("state", state.as_str()),
             ("nonce", nonce.as_str()),
             ("code_challenge_method", "S256"),
-            (
-                "code_challenge",
-                URL_SAFE_NO_PAD
-                    .encode(Sha256::digest(verifier.as_bytes()))
-                    .as_str(),
-            ),
+            ("code_challenge", challenge.as_str()),
         ]);
         if client_id.is_none() {
             url.query_pairs_mut().append_pair("agent_name_hint", "Nero");
@@ -204,67 +197,54 @@ fn receive(
     deadline: Instant,
     page: Arc<Mutex<Option<CallbackPage>>>,
 ) -> Result<Authorization, String> {
-    while Instant::now() < deadline {
-        if cancelled(own, external) {
-            return Err("AI 로그인을 취소했습니다.".into());
-        }
-        match listener.accept() {
-            Ok((mut stream, peer)) => {
-                if !peer.ip().is_loopback() {
-                    continue;
-                }
-                let _ = stream.set_write_timeout(Some(Duration::from_millis(100)));
-                let local_deadline = deadline.min(Instant::now() + Duration::from_secs(5));
-                let Some(request) =
-                    crate::oauth_callback::read_request(&mut stream, local_deadline, || {
-                        cancelled(own, external)
-                    })
-                else {
+    use crate::oauth_callback::Stopped;
+    let received = crate::oauth_callback::receive(
+        &listener,
+        deadline,
+        || cancelled(own, external),
+        |stream, request| {
+            let result = callback_for_path(&request, host, path, state, client);
+            if cancelled(own, external) {
+                CallbackPage::reject(stream, "AI 로그인을 취소했습니다.");
+                return Some(Err("AI 로그인을 취소했습니다.".into()));
+            }
+            match result {
+                None => {
                     CallbackPage::reject(
                         stream,
                         "연결 요청을 확인하지 못했습니다. Nero에서 다시 연결해 주세요.",
                     );
-                    continue;
-                };
-                let result = callback_for_path(&request, host, path, state, client);
-                if cancelled(own, external) {
-                    CallbackPage::reject(stream, "AI 로그인을 취소했습니다.");
-                    return Err("AI 로그인을 취소했습니다.".into());
+                    None
                 }
-                match result {
-                    None => CallbackPage::reject(
-                        stream,
-                        "연결 요청을 확인하지 못했습니다. Nero에서 다시 연결해 주세요.",
-                    ),
-                    Some(Err(message)) => {
-                        CallbackPage::reject(stream, &message);
-                        return Err(message);
+                Some(Err(message)) => {
+                    CallbackPage::reject(stream, &message);
+                    Some(Err(message))
+                }
+                Some(Ok(authorization)) => {
+                    let mut callback =
+                        CallbackPage::begin_for(stream, "ChatGPT", "Nero로 돌아가 주세요.");
+                    let Ok(mut target) = page.lock() else {
+                        return Some(Err("브라우저 연결 상태를 확인하지 못했습니다.".into()));
+                    };
+                    if cancelled(own, external) {
+                        callback.finish(Err("AI 로그인을 취소했습니다."));
+                        return Some(Err("AI 로그인을 취소했습니다.".into()));
                     }
-                    Some(Ok(authorization)) => {
-                        let mut callback =
-                            CallbackPage::begin_for(stream, "ChatGPT", "Nero로 돌아가 주세요.");
-                        let mut target = page
-                            .lock()
-                            .map_err(|_| "브라우저 연결 상태를 확인하지 못했습니다.")?;
-                        if cancelled(own, external) {
-                            callback.finish(Err("AI 로그인을 취소했습니다."));
-                            return Err("AI 로그인을 취소했습니다.".into());
-                        }
-                        if target.is_some() {
-                            return Err("AI 로그인을 확인 중입니다.".into());
-                        }
-                        *target = Some(callback);
-                        return Ok(authorization);
+                    if target.is_some() {
+                        return Some(Err("AI 로그인을 확인 중입니다.".into()));
                     }
+                    *target = Some(callback);
+                    Some(Ok(authorization))
                 }
             }
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                std::thread::sleep(Duration::from_millis(25))
-            }
-            Err(_) => return Err("브라우저 연결을 받지 못했습니다.".into()),
-        }
+        },
+    );
+    match received {
+        Ok(result) => result,
+        Err(Stopped::Cancelled) => Err("AI 로그인을 취소했습니다.".into()),
+        Err(Stopped::Expired) => Err("AI 로그인 시간이 지났습니다. 다시 시도해 주세요.".into()),
+        Err(Stopped::Failed) => Err("브라우저 연결을 받지 못했습니다.".into()),
     }
-    Err("AI 로그인 시간이 지났습니다. 다시 시도해 주세요.".into())
 }
 fn callback_for_path(
     request: &str,
@@ -427,7 +407,7 @@ mod tests {
         assert_eq!(query["code_challenge_method"], "S256");
         assert_eq!(
             query["code_challenge"],
-            URL_SAFE_NO_PAD.encode(Sha256::digest(first.verifier.as_bytes()))
+            crate::oauth_callback::pkce_challenge(&first.verifier)
         );
         assert_ne!(first.state, second.state);
         assert_ne!(request.authorization_url, second_request.authorization_url);

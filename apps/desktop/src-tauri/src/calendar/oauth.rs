@@ -1,7 +1,5 @@
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use reqwest::Url;
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 #[cfg(test)]
 use std::io::Write;
 use std::net::TcpListener;
@@ -11,7 +9,9 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
-use std::time::{Duration, Instant};
+#[cfg(test)]
+use std::time::Duration;
+use std::time::Instant;
 use uuid::Uuid;
 
 pub const SCOPES: &str = "https://www.googleapis.com/auth/calendar.calendarlist.readonly https://www.googleapis.com/auth/calendar.events.readonly";
@@ -89,11 +89,10 @@ impl Pending {
             .port();
         let id = Uuid::new_v4().to_string();
         let state = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
-        let entropy = (0..4)
-            .map(|_| Uuid::new_v4().simple().to_string())
-            .collect::<String>();
-        let verifier = URL_SAFE_NO_PAD.encode(Sha256::digest(entropy.as_bytes()));
-        let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+        let crate::oauth_callback::Pkce {
+            verifier,
+            challenge,
+        } = crate::oauth_callback::Pkce::new().ok_or("브라우저 연결을 준비하지 못했습니다.")?;
         let path = format!("/oauth2/callback/{id}");
         let redirect_uri = format!("http://127.0.0.1:{port}{path}");
         let mut url = Url::parse("https://accounts.google.com/o/oauth2/v2/auth").unwrap();
@@ -161,60 +160,49 @@ fn receive_blocking(
     cancelled: &AtomicBool,
     deadline: Instant,
 ) -> Result<Authorization, String> {
-    while Instant::now() < deadline {
-        if cancelled.load(Ordering::Acquire) {
-            return Err("Google 연결을 취소했습니다.".into());
-        }
-        match listener.accept() {
-            Ok((mut stream, peer)) => {
-                if !peer.ip().is_loopback() {
-                    continue;
-                }
-                let _ = stream.set_nonblocking(false);
-                let _ = stream.set_write_timeout(Some(Duration::from_millis(100)));
-                let connection_deadline = deadline.min(Instant::now() + Duration::from_secs(5));
-                let Some(request) =
-                    crate::oauth_callback::read_request(&mut stream, connection_deadline, || {
-                        cancelled.load(Ordering::Acquire)
-                    })
-                else {
-                    continue;
-                };
-                if cancelled.load(Ordering::Acquire) {
-                    return Err("Google 연결을 취소했습니다.".into());
-                }
-                if Instant::now() >= deadline {
-                    break;
-                }
-                match callback(&request, host, path, state) {
-                    Callback::Ignore => super::callback_page::CallbackPage::reject(
+    use crate::oauth_callback::Stopped;
+    let expired = || "Google 연결 시간이 지났습니다. 다시 연결해 주세요.".to_string();
+    let received = crate::oauth_callback::receive(
+        &listener,
+        deadline,
+        || cancelled.load(Ordering::Acquire),
+        |stream, request| {
+            if cancelled.load(Ordering::Acquire) {
+                return Some(Err("Google 연결을 취소했습니다.".into()));
+            }
+            if Instant::now() >= deadline {
+                return Some(Err(expired()));
+            }
+            match callback(&request, host, path, state) {
+                Callback::Ignore => {
+                    super::callback_page::CallbackPage::reject(
                         stream,
                         "연결 요청을 확인하지 못했습니다. Nero에서 다시 연결해 주세요.",
-                    ),
-                    Callback::Code(code) => {
-                        return Ok(Authorization {
-                            code,
-                            page: super::callback_page::CallbackPage::begin(stream),
-                        });
-                    }
-                    Callback::Denied => {
-                        super::callback_page::CallbackPage::reject(
-                            stream,
-                            "Google 연결을 취소했습니다. Nero에서 다시 연결할 수 있습니다.",
-                        );
-                        return Err(
-                            "Google 연결이 허용되지 않았습니다. 다시 연결할 수 있습니다.".into(),
-                        );
-                    }
+                    );
+                    None
+                }
+                Callback::Code(code) => Some(Ok(Authorization {
+                    code,
+                    page: super::callback_page::CallbackPage::begin(stream),
+                })),
+                Callback::Denied => {
+                    super::callback_page::CallbackPage::reject(
+                        stream,
+                        "Google 연결을 취소했습니다. Nero에서 다시 연결할 수 있습니다.",
+                    );
+                    Some(Err(
+                        "Google 연결이 허용되지 않았습니다. 다시 연결할 수 있습니다.".into(),
+                    ))
                 }
             }
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                std::thread::sleep(Duration::from_millis(25));
-            }
-            Err(_) => return Err("브라우저 연결을 받지 못했습니다. 다시 연결해 주세요.".into()),
-        }
+        },
+    );
+    match received {
+        Ok(result) => result,
+        Err(Stopped::Cancelled) => Err("Google 연결을 취소했습니다.".into()),
+        Err(Stopped::Expired) => Err(expired()),
+        Err(Stopped::Failed) => Err("브라우저 연결을 받지 못했습니다. 다시 연결해 주세요.".into()),
     }
-    Err("Google 연결 시간이 지났습니다. 다시 연결해 주세요.".into())
 }
 
 pub struct Authorization {
@@ -313,11 +301,22 @@ mod tests {
         ));
     }
     #[test]
-    fn pkce_matches_the_rfc7636_known_vector() {
-        let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+    fn the_authorization_request_carries_the_verifiers_challenge() {
+        let config = Config {
+            client_id: "synthetic.apps.googleusercontent.com".into(),
+            client_secret: Some("synthetic".into()),
+        };
+        let (pending, request) = Pending::begin(&config).unwrap();
+        let challenge = Url::parse(&request.authorization_url)
+            .unwrap()
+            .query_pairs()
+            .find(|(key, _)| key == "code_challenge")
+            .unwrap()
+            .1
+            .into_owned();
         assert_eq!(
-            URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes())),
-            "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+            challenge,
+            crate::oauth_callback::pkce_challenge(&pending.verifier)
         );
     }
     fn sockets() -> (TcpStream, TcpStream) {

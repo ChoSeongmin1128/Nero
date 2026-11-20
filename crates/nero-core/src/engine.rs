@@ -132,6 +132,15 @@ impl Engine {
     }
 
     pub fn create_meeting(&mut self, title: String, notes: String) -> Result<Meeting> {
+        self.create_meeting_in(title, notes, crate::NewMeetingPlace::Default)
+    }
+
+    pub(crate) fn create_meeting_in(
+        &mut self,
+        title: String,
+        notes: String,
+        place: crate::NewMeetingPlace,
+    ) -> Result<Meeting> {
         if self.quitting {
             return Err(CoreError::Unavailable);
         }
@@ -154,7 +163,7 @@ impl Engine {
             .create_with_calendar(title, notes, None, generated_title)?;
         let meeting = stored.meeting.clone();
         self.meetings.insert(meeting.id.clone(), stored);
-        Ok(self.file_new_meeting(meeting))
+        Ok(self.place_new_meeting(meeting, place))
     }
 
     /// The folder new meetings go into, while it still exists; otherwise unfiled.
@@ -181,10 +190,21 @@ impl Engine {
         Ok(())
     }
 
-    // A new meeting starts in the chosen folder. The meeting exists either way; a
-    // failed placement leaves it unfiled.
     pub(crate) fn file_new_meeting(&mut self, meeting: Meeting) -> Meeting {
-        let Some(folder) = self.new_meeting_folder() else {
+        self.place_new_meeting(meeting, crate::NewMeetingPlace::Default)
+    }
+
+    // A new meeting starts in its place. The meeting exists either way; a failed
+    // placement leaves it unfiled.
+    fn place_new_meeting(&mut self, meeting: Meeting, place: crate::NewMeetingPlace) -> Meeting {
+        let folder = match place {
+            crate::NewMeetingPlace::Folder(Some(id)) if self.library.folders.contains_key(&id) => {
+                Some(id)
+            }
+            crate::NewMeetingPlace::Folder(None) => None,
+            _ => self.new_meeting_folder(),
+        };
+        let Some(folder) = folder else {
             return meeting;
         };
         let _ = self.move_meetings(std::slice::from_ref(&meeting.id), Some(folder));
@@ -1700,6 +1720,60 @@ mod tests {
         assert_eq!(after.folder_id, None);
         engine.set_new_meeting_folder(None).unwrap();
         assert_eq!(engine.new_meeting_folder(), None);
+    }
+
+    #[test]
+    fn a_new_recordings_meeting_goes_to_the_folder_it_was_started_from() {
+        let (_temporary, mut engine) = engine();
+        let chosen = engine.create_folder("Chosen".into()).unwrap();
+        let listed = engine.create_folder("Listed".into()).unwrap();
+        engine
+            .set_new_meeting_folder(Some(chosen.id.clone()))
+            .unwrap();
+        let place = |folder: Option<&str>| crate::NewMeetingPlace::Folder(folder.map(Into::into));
+        for (place, expected) in [
+            (crate::NewMeetingPlace::Default, Some(chosen.id.clone())),
+            (place(Some(&listed.id)), Some(listed.id.clone())),
+            (place(None), None),
+            // A folder deleted meanwhile leaves the meeting where new meetings go.
+            (
+                place(Some(&Uuid::new_v4().to_string())),
+                Some(chosen.id.clone()),
+            ),
+        ] {
+            let meeting = engine
+                .create_meeting_in("새 회의".into(), String::new(), place)
+                .unwrap();
+            assert_eq!(meeting.folder_id, expected);
+            assert_eq!(engine.meetings[&meeting.id].meeting.folder_id, expected);
+        }
+        // A capture that fails after the meeting was made keeps that draft where it was
+        // asked for, without a recording.
+        let root = engine.store.root.clone();
+        drop(engine);
+        let core = CoreHandle::open(root).unwrap();
+        let in_listed = |core: &CoreHandle| {
+            core.list_meetings()
+                .unwrap()
+                .into_iter()
+                .filter(|meeting| meeting.folder_id.as_ref() == Some(&listed.id))
+                .collect::<Vec<_>>()
+        };
+        let before = in_listed(&core);
+        assert!(core
+            .create_recording(
+                "새 회의",
+                "",
+                crate::NewMeetingPlace::Folder(Some(listed.id.clone())),
+                "unavailable synthetic device"
+            )
+            .is_err());
+        let after = in_listed(&core);
+        assert_eq!(after.len(), before.len() + 1);
+        assert!(after
+            .iter()
+            .all(|meeting| meeting.status == MeetingStatus::Draft && meeting.audio.is_none()));
+        assert!(core.snapshot().unwrap().active_session().is_none());
     }
 
     #[test]

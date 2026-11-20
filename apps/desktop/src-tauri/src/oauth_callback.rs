@@ -1,10 +1,96 @@
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use ring::rand::{SecureRandom, SystemRandom};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{TcpListener, TcpStream};
 use std::time::{Duration, Instant};
 
 // How long a loopback listener waits for the browser once sign-in opens.
 pub const CALLBACK_WINDOW: Duration = Duration::from_secs(180);
+
+// How long one connection may take to send its request head.
+const REQUEST_WINDOW: Duration = Duration::from_secs(5);
+
+// Every answer to the browser, the page with its inline styles (about 46 KB) included,
+// is written in blocking mode within this. A busy browser still gets the whole page; a
+// local client that stops reading holds the one-at-a-time accept loop only this long.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(1);
+
+const ACCEPT_POLL: Duration = Duration::from_millis(25);
+
+/// Why a loopback receive ended without a decided sign-in.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Stopped {
+    Cancelled,
+    Expired,
+    Failed,
+}
+
+/// Accepts loopback connections on the nonblocking `listener` until `answer` decides the
+/// sign-in, `deadline` passes or `cancelled()`. Each connection is put in blocking mode
+/// with `WRITE_TIMEOUT`, since an accepted socket can keep the listener's nonblocking
+/// mode, and must send its request head within `REQUEST_WINDOW`; one that does not is
+/// dropped. `answer` answers the browser and returns `Some` once the sign-in is decided.
+pub fn receive<T>(
+    listener: &TcpListener,
+    deadline: Instant,
+    cancelled: impl Fn() -> bool,
+    mut answer: impl FnMut(TcpStream, String) -> Option<T>,
+) -> Result<T, Stopped> {
+    while Instant::now() < deadline {
+        if cancelled() {
+            return Err(Stopped::Cancelled);
+        }
+        match listener.accept() {
+            Ok((mut stream, peer)) if peer.ip().is_loopback() => {
+                let _ = stream.set_nonblocking(false);
+                let _ = stream.set_write_timeout(Some(WRITE_TIMEOUT));
+                let connection = deadline.min(Instant::now() + REQUEST_WINDOW);
+                let Some(request) = read_request(&mut stream, connection, &cancelled) else {
+                    continue;
+                };
+                if let Some(decided) = answer(stream, request) {
+                    return Ok(decided);
+                }
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(ACCEPT_POLL)
+            }
+            Err(_) => return Err(Stopped::Failed),
+        }
+    }
+    Err(Stopped::Expired)
+}
+
+/// A PKCE verifier (RFC 7636) and its S256 challenge.
+pub struct Pkce {
+    pub verifier: String,
+    pub challenge: String,
+}
+
+impl Pkce {
+    pub fn new() -> Option<Self> {
+        let verifier = random_token()?;
+        Some(Self {
+            challenge: pkce_challenge(&verifier),
+            verifier,
+        })
+    }
+}
+
+/// The S256 challenge of a PKCE `verifier`.
+pub fn pkce_challenge(verifier: &str) -> String {
+    URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
+}
+
+/// 32 random bytes in base64url without padding, for a verifier, state or nonce.
+pub fn random_token() -> Option<String> {
+    let mut bytes = [0u8; 32];
+    SystemRandom::new().fill(&mut bytes).ok()?;
+    Some(URL_SAFE_NO_PAD.encode(bytes))
+}
 
 // Browsers send every cookie set for the loopback host, so the head can be large.
 const MAX_REQUEST_HEAD: usize = 32 * 1024;
@@ -129,7 +215,7 @@ impl CallbackPage {
 
     fn start(mut stream: TcpStream, status: &str, provider: &str, success_message: &str) -> Self {
         let nonce = uuid::Uuid::new_v4().simple().to_string();
-        let _ = stream.set_write_timeout(Some(Duration::from_millis(100)));
+        let _ = stream.set_write_timeout(Some(WRITE_TIMEOUT));
         let _ = write!(stream, "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nTransfer-Encoding: chunked\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'none'; style-src 'nonce-{nonce}'; script-src 'nonce-{nonce}'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'\r\nConnection: close\r\n\r\n");
         let provider: String = provider
             .chars()
@@ -232,6 +318,88 @@ mod tests {
         let mut bytes = String::new();
         browser.read_to_string(&mut bytes).unwrap();
         bytes
+    }
+
+    #[test]
+    fn pkce_matches_the_rfc7636_known_vector_and_verifiers_differ() {
+        assert_eq!(
+            pkce_challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
+            "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        );
+        let first = Pkce::new().unwrap();
+        let second = Pkce::new().unwrap();
+        assert_eq!(first.verifier.len(), 43);
+        assert!(first
+            .verifier
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')));
+        assert_eq!(first.challenge, pkce_challenge(&first.verifier));
+        assert_ne!(first.verifier, second.verifier);
+    }
+
+    fn listener() -> TcpListener {
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        listener
+    }
+
+    #[test]
+    fn requests_are_answered_until_one_decides_and_silent_connections_are_dropped() {
+        let listener = listener();
+        let address = listener.local_addr().unwrap();
+        let browser = std::thread::spawn(move || {
+            drop(TcpStream::connect(address).unwrap());
+            let mut first = TcpStream::connect(address).unwrap();
+            first.write_all(b"GET /other HTTP/1.1\r\n\r\n").unwrap();
+            let mut answer = String::new();
+            first.read_to_string(&mut answer).unwrap();
+            let mut second = TcpStream::connect(address).unwrap();
+            second.write_all(b"GET /callback HTTP/1.1\r\n\r\n").unwrap();
+            answer
+        });
+        let mut seen = Vec::new();
+        let decided = receive(
+            &listener,
+            Instant::now() + Duration::from_secs(20),
+            || false,
+            |mut stream, request| {
+                seen.push(request.lines().next().unwrap_or_default().to_owned());
+                if request.starts_with("GET /callback ") {
+                    return Some("decided");
+                }
+                let _ = stream.write_all(b"HTTP/1.1 400 Bad Request\r\n\r\n");
+                None
+            },
+        );
+        assert_eq!(decided, Ok("decided"));
+        assert!(browser.join().unwrap().starts_with("HTTP/1.1 400"));
+        assert_eq!(seen, ["GET /other HTTP/1.1", "GET /callback HTTP/1.1"]);
+    }
+
+    #[test]
+    fn a_receive_stops_on_cancellation_and_at_its_deadline() {
+        let listener = listener();
+        let never = |_: TcpStream, _: String| None::<()>;
+        assert_eq!(
+            receive(
+                &listener,
+                Instant::now() + Duration::from_secs(5),
+                || true,
+                never
+            ),
+            Err(Stopped::Cancelled)
+        );
+        let started = Instant::now();
+        assert_eq!(
+            receive(
+                &listener,
+                started + Duration::from_millis(100),
+                || false,
+                never
+            ),
+            Err(Stopped::Expired)
+        );
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     #[test]

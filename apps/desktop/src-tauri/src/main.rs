@@ -959,6 +959,42 @@ async fn continue_calendar_recording(
     Ok(snapshot)
 }
 
+// Records into a new meeting made in the same Core call that starts capture, after
+// readiness and microphone permission pass, so a refused start leaves no empty meeting.
+// `folder_id`: absent for the folder chosen for new meetings, "unfiled", or a folder id.
+#[tauri::command]
+async fn create_recording(
+    app: tauri::AppHandle,
+    window: WebviewWindow,
+    folder_id: Option<String>,
+    device_id: Option<String>,
+) -> Result<Snapshot, String> {
+    require_main(&window)?;
+    let place = match folder_id {
+        None => nero_core::NewMeetingPlace::Default,
+        Some(id) if id == "unfiled" => nero_core::NewMeetingPlace::Folder(None),
+        Some(id) => nero_core::NewMeetingPlace::Folder(Some(id)),
+    };
+    record_new_meeting(&app, "새 회의".into(), place, device_id).await
+}
+
+// The screen's new recording and an agent's start without a meeting.
+pub(crate) async fn record_new_meeting(
+    app: &tauri::AppHandle,
+    title: String,
+    place: nero_core::NewMeetingPlace,
+    device_id: Option<String>,
+) -> Result<Snapshot, String> {
+    start_capture(app, device_id, move |core, device| {
+        let snapshot = core
+            .create_recording(&title, "", place, device)
+            .map_err(|error| error.to_string())?;
+        Ok(((), snapshot))
+    })
+    .await
+    .map(|(_, snapshot)| snapshot)
+}
+
 // The recording screen and agent requests start capture through the same checks.
 pub(crate) async fn begin_recording(
     app: tauri::AppHandle,
@@ -1536,26 +1572,20 @@ fn prepare_model(
     require_main(&window)?;
     state.processing.prepare_model()
 }
-// Both import entry points (file picker and drop) check the same conditions first.
+// Both import entry points (file picker and drop) refuse before a file is chosen or sent.
 async fn import_preflight(
     state: &DesktopState,
     target: Option<nero_core::DraftAttachmentTarget>,
 ) -> Result<(), String> {
-    state.processing.require_meeting_models()?;
-    if !state.processing.snapshot().supported {
-        return Err("이 기기의 음성 가져오기가 아직 준비되지 않았습니다.".into());
-    }
-    let snapshot = on_core(state.core.clone(), |core| core.snapshot()).await?;
-    if active_session(&snapshot).is_some() {
-        return Err("녹음을 마친 뒤 음성을 가져와 주세요.".into());
-    }
-    if let Some(target) = target {
-        on_core(state.core.clone(), move |core| {
-            core.validate_draft_attachment(target)
-        })
-        .await?;
-    }
-    Ok(())
+    let processing = state.processing.clone();
+    let core = state.core.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        processing
+            .import_preflight(&core, target.as_ref())
+            .map_err(String::from)
+    })
+    .await
+    .map_err(|_| "음성 가져오기를 확인하지 못했습니다.".to_string())?
 }
 
 #[tauri::command]
@@ -1565,26 +1595,36 @@ async fn prepare_meeting_models(
     include_summary: Option<bool>,
 ) -> Result<Progress, String> {
     require_main(&window)?;
-    let snapshot = on_core(state.core.clone(), |core| core.snapshot()).await?;
-    if active_session(&snapshot).is_some() {
-        return Err("녹음을 마친 뒤 준비해 주세요.".into());
-    }
-    state
-        .processing
-        .prepare_meeting_models(include_summary.unwrap_or(false))
+    let processing = state.processing.clone();
+    let core = state.core.clone();
+    on_processing(move || {
+        processing.prepare_meeting_models(&core, include_summary.unwrap_or(false))
+    })
+    .await
 }
+// `acknowledge_memory_warning`: the person confirmed the choice's memory warning.
 #[tauri::command]
 async fn request_speech_engine(
     window: WebviewWindow,
     state: tauri::State<'_, DesktopState>,
     engine: speech_choice::SpeechEngine,
+    acknowledge_memory_warning: Option<bool>,
 ) -> Result<Progress, String> {
     require_main(&window)?;
-    let snapshot = on_core(state.core.clone(), |core| core.snapshot()).await?;
-    if active_session(&snapshot).is_some() {
-        return Err("녹음을 마친 뒤 음성 인식 모델을 변경해 주세요.".into());
-    }
-    state.processing.request_speech_engine(engine)
+    let processing = state.processing.clone();
+    let core = state.core.clone();
+    on_processing(move || {
+        processing.request_speech_engine(&core, engine, acknowledge_memory_warning.unwrap_or(false))
+    })
+    .await
+}
+// Runs a Processing request that reads Core off the async runtime.
+async fn on_processing<T: Send + 'static>(
+    request: impl FnOnce() -> Result<T, processing::Refusal> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(move || request().map_err(String::from))
+        .await
+        .map_err(|_| "요청을 처리하지 못했습니다. 다시 시도해 주세요.".to_string())?
 }
 #[tauri::command]
 fn cancel_speech_switch(
@@ -1632,13 +1672,15 @@ async fn respond_speech_offer(
     window: WebviewWindow,
     state: tauri::State<'_, DesktopState>,
     accept: bool,
+    acknowledge_memory_warning: Option<bool>,
 ) -> Result<Progress, String> {
     require_main(&window)?;
-    let snapshot = on_core(state.core.clone(), |core| core.snapshot()).await?;
-    if accept && active_session(&snapshot).is_some() {
-        return Err("녹음을 마친 뒤 음성 인식 모델을 변경해 주세요.".into());
-    }
-    state.processing.respond_speech_offer(accept)
+    let processing = state.processing.clone();
+    let core = state.core.clone();
+    on_processing(move || {
+        processing.respond_speech_offer(&core, accept, acknowledge_memory_warning.unwrap_or(false))
+    })
+    .await
 }
 #[tauri::command]
 async fn draft_attachment_target(
@@ -1675,13 +1717,11 @@ async fn import_audio(
     let source = source
         .into_path()
         .map_err(|_| "로컬 음성 파일을 선택해 주세요.")?;
-    match target {
-        Some(target) => state
-            .processing
-            .import_into_draft(state.core.clone(), source, target),
-        None => state.processing.import(state.core.clone(), source),
-    }
-    .map(Some)
+    state
+        .processing
+        .import(state.core.clone(), source, target)
+        .map_err(String::from)?;
+    Ok(Some(state.processing.snapshot()))
 }
 // Starts receiving a file dropped on the window; the same checks as `import_audio`.
 #[tauri::command]
@@ -1733,7 +1773,11 @@ async fn drop_import_finish(
     let upload = tauri::async_runtime::spawn_blocking(move || drops.finish(&token))
         .await
         .map_err(|_| "끌어 놓은 음성 파일을 받지 못했습니다.".to_string())??;
-    state.processing.import_dropped(state.core.clone(), upload)
+    state
+        .processing
+        .import_dropped(state.core.clone(), upload)
+        .map_err(String::from)?;
+    Ok(state.processing.snapshot())
 }
 #[tauri::command]
 fn drop_import_cancel(window: WebviewWindow, state: tauri::State<'_, DesktopState>, token: String) {
@@ -2168,6 +2212,7 @@ fn main() {
             calendar_desktop::calendar_reminder_ready,
             calendar_desktop::dismiss_calendar_reminder,
             calendar_desktop::start_calendar_recording,
+            calendar_desktop::record_calendar_occurrence,
             template_settings::list_templates,
             template_settings::read_template_catalog,
             template_settings::reset_template_catalog,
@@ -2192,6 +2237,7 @@ fn main() {
             restore_meetings,
             purge_meetings,
             list_devices,
+            create_recording,
             start_recording,
             continue_calendar_recording,
             pause_recording,

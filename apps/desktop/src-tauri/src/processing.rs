@@ -1,4 +1,4 @@
-use crate::job_journal::{JobRecord, JobStatus, Journal};
+use crate::job_journal::{JobKind, JobRecord, JobStatus, Journal};
 use crate::speech_choice::{AppleVariant, SpeechChoice, SpeechEngine};
 use nero_core::{CoreHandle, SessionState, Snapshot};
 use serde::{Deserialize, Serialize};
@@ -15,6 +15,7 @@ use std::sync::{
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use uuid::Uuid;
+pub(crate) mod admission;
 mod model_retirement;
 pub mod storage;
 #[cfg(test)]
@@ -193,12 +194,43 @@ pub struct Progress {
     pub speech_switch: Option<crate::speech_switch::SwitchView>,
     pub speech_offer: Option<crate::speech_switch::OfferView>,
     pub speech_cleanup: Option<model_retirement::View>,
-    /// Recognize MOSS chunks while recording, and whether this Mac can.
+    /// Recognize MOSS chunks while recording, and whether that can apply now: this Mac
+    /// and the selected engine, as `Processing::recording_transcription_available`.
     pub recording_transcription: bool,
-    pub recording_transcription_supported: bool,
+    pub recording_transcription_available: bool,
     /// Whether the running job can be paused, and its pause when one is wanted.
     pub pausable: bool,
     pub pause: Option<crate::job_control::PauseView>,
+    pub review: Option<Review>,
+}
+
+/// What a job that ended as `needsReview` asks the person to look at.
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum Review {
+    /// The transcript was saved with missing chunks or range-only times; the job's own
+    /// message says which.
+    Recognition,
+    /// Whether the result was saved is not known: the meeting shows what was kept.
+    SavedResult,
+}
+
+// Recognition outcomes saved with gaps or range-only times; such a job ends as needsReview.
+fn recognition_review(phase: Option<&str>) -> bool {
+    matches!(
+        phase,
+        Some("mossPartial" | "mossUnrecognized" | "mossTimingContext")
+    )
+}
+
+fn review(needs_review: bool, phase: Option<&str>) -> Option<Review> {
+    needs_review.then(|| {
+        if recognition_review(phase) {
+            Review::Recognition
+        } else {
+            Review::SavedResult
+        }
+    })
 }
 
 #[derive(Clone, Serialize, Default, PartialEq, Eq)]
@@ -224,6 +256,7 @@ pub struct JobView {
     pub runs_while_recording: bool,
     pub pausable: bool,
     pub pause: Option<crate::job_control::PauseView>,
+    pub review: Option<Review>,
 }
 
 type Action = Box<
@@ -238,9 +271,8 @@ struct Pending {
 
 // A new job. Only `kind` is required. `source` binds a meeting job to the meeting's
 // current content; a retry also names the fingerprint its predecessor captured.
-#[derive(Default)]
 pub(super) struct JobSpec {
-    pub(super) kind: &'static str,
+    pub(super) kind: JobKind,
     pub(super) meeting_id: Option<String>,
     pub(super) source: Option<CoreHandle>,
     pub(super) required_fingerprint: Option<String>,
@@ -252,6 +284,60 @@ pub(super) struct JobSpec {
     pub(super) engine: Option<SpeechEngine>,
     pub(super) speaker_enabled: Option<bool>,
     pub(super) apple_variant: Option<AppleVariant>,
+}
+impl JobSpec {
+    pub(super) fn new(kind: JobKind) -> Self {
+        Self {
+            kind,
+            meeting_id: None,
+            source: None,
+            required_fingerprint: None,
+            importing: None,
+            include_summary: false,
+            template: None,
+            requested_id: None,
+            engine: None,
+            speaker_enabled: None,
+            apple_variant: None,
+        }
+    }
+}
+
+/// Why Processing refused a request before starting anything. The screens show its
+/// message; agent requests answer their own code for each kind.
+#[derive(Debug)]
+pub enum Refusal {
+    /// A recording is in progress.
+    Recording(String),
+    /// Speech recognition is not supported here or not prepared.
+    NotReady(String),
+    /// The chosen engine warns about memory and the person has not acknowledged it.
+    MemoryWarning,
+    /// The draft meeting an import names cannot take it.
+    Meeting(nero_core::CoreError),
+    /// Any other reason, such as the queue's own.
+    Other(String),
+}
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Recording(message) | Self::NotReady(message) | Self::Other(message) => {
+                f.write_str(message)
+            }
+            Self::MemoryWarning => f.write_str("메모리 경고에 대한 사용자 확인이 필요합니다."),
+            Self::Meeting(error) => write!(f, "{error}"),
+        }
+    }
+}
+impl From<String> for Refusal {
+    fn from(message: String) -> Self {
+        Self::Other(message)
+    }
+}
+impl From<Refusal> for String {
+    fn from(refusal: Refusal) -> Self {
+        refusal.to_string()
+    }
 }
 
 // The job phase recorded when Core refused a result before publishing anything.
@@ -276,27 +362,16 @@ fn retryable_missing(transcript: &nero_core::Transcript) -> bool {
         })
 }
 
-fn model_job(kind: &str) -> bool {
-    matches!(kind, "setup" | "model" | "summary-model" | "speaker-model")
-}
-
-// On macOS, MOSS and Qwen recognition and speaker analysis keep running while a
-// recording is in progress; they can be paused and step back when it needs room.
-// macOS system transcription, the legacy engines, summaries and imports wait.
+// Work that keeps running beside a recording, and so can be paused and step back when
+// the recording needs room; see `admission`.
 fn runs_while_recording(record: &JobRecord) -> bool {
-    crate::job_control::SUPPORTED
-        && match record.kind.as_str() {
-            "transcribe" => matches!(record.speech_engine, SpeechEngine::Moss | SpeechEngine::QwenKo),
-            "diarize" => true,
-            _ => false,
-        }
+    admission::runs_beside_recording(record.kind, Some(record.speech_engine))
 }
 
 // Why a job cannot be retried, if it cannot. The job list and retry use the same rule.
 fn retry_block_reason(record: &JobRecord) -> Option<&'static str> {
     if !crate::release_capabilities::LOCAL_SUMMARY_ENABLED
-        && (matches!(record.kind.as_str(), "summary" | "summary-model")
-            || (record.kind == "setup" && record.include_summary))
+        && (record.kind.summarizes() || (record.kind == JobKind::Setup && record.include_summary))
     {
         return Some(crate::release_capabilities::LOCAL_SUMMARY_MESSAGE);
     }
@@ -310,19 +385,22 @@ fn retry_block_reason(record: &JobRecord) -> Option<&'static str> {
     ) && !(record.status == JobStatus::NeedsReview
         && record.phase.as_deref() == Some("mossPartial"))
         || record.acknowledged
-        || record.kind == "import"
+        || record.kind == JobKind::Import
     {
         return Some("현재 작업은 다시 실행할 수 없습니다. 회의의 저장 결과를 먼저 확인해 주세요.");
     }
     // Stopped after its transcript was saved (during terminology correction with speaker
     // analysis off): the meeting has changed since, so a retry would only be refused.
-    if record.kind == "transcribe" && record.phase.as_deref() == Some("postprocessing") {
+    if record.kind == JobKind::Transcribe && record.phase.as_deref() == Some("postprocessing") {
         return Some(
             "음성 기록은 이미 저장되었습니다. 다시 변환하려면 회의에서 변환을 새로 시작해 주세요.",
         );
     }
     None
 }
+
+pub(super) const RECORDING_TRANSCRIPTION_UNAVAILABLE: &str =
+    "이 Mac과 현재 음성 인식 엔진에서는 녹음하면서 음성 기록을 만들 수 없습니다.";
 
 fn now() -> u64 {
     std::time::SystemTime::now()
@@ -462,6 +540,9 @@ fn check_agent_job_version(
 
 pub(super) fn message(error: impl std::fmt::Display) -> String {
     error.to_string()
+}
+fn message_of(error: impl std::fmt::Display) -> Refusal {
+    Refusal::Other(error.to_string())
 }
 pub(super) fn cancelled(cancel: &AtomicBool) -> Result<(), String> {
     if cancel.load(Ordering::Acquire) {
@@ -843,7 +924,6 @@ impl Processing {
                         && crate::whisper_asr::supported(&self.resources)
                 }
                 SpeechEngine::AppleSpeech => apple_supported,
-                // Qwen needs the Nemotron stream for its recording preview.
                 SpeechEngine::QwenKo => crate::qwen_asr::supported(&self.resources),
             }
     }
@@ -856,25 +936,15 @@ impl Processing {
         let status = crate::apple_speech::probe(&self.resources, variant);
         (self.supported_with(engine, status.supported), status.ready)
     }
-    // Every speech model a selection prepares, including Qwen's Nemotron preview model.
     fn speech_bytes(engine: SpeechEngine) -> u64 {
-        engine
-            .requirements()
-            .into_iter()
-            .map(|engine| Self::model_for(engine).bytes())
-            .sum()
+        Self::model_for(engine).bytes()
     }
-    // Bytes still missing for every model `engine` needs; `.part` files count as received.
+    // Bytes still missing for `engine`'s model; `.part` files count as received.
     fn remaining_speech_bytes(&self, engine: SpeechEngine) -> Result<u64, String> {
         if engine == SpeechEngine::AppleSpeech {
             return Ok(0);
         }
-        engine
-            .requirements()
-            .into_iter()
-            .try_fold(0, |sum, engine| {
-                Ok(sum + self.remaining_model_bytes(ModelSpec::speech(engine))?)
-            })
+        self.remaining_model_bytes(ModelSpec::speech(engine))
     }
     fn speakers_ready(&self, enabled: bool) -> bool {
         let (supported, ready, _) = crate::diarization::availability(self);
@@ -884,10 +954,7 @@ impl Processing {
         if engine == SpeechEngine::AppleSpeech {
             return self.apple_speech.lock().unwrap().ready;
         }
-        engine
-            .requirements()
-            .into_iter()
-            .all(|engine| self.model_ready(ModelSpec::speech(engine)))
+        self.model_ready(ModelSpec::speech(engine))
     }
     // Selects an engine. A ready engine becomes active now. Without a working engine
     // (first setup) the selection is only recorded; setup downloads it explicitly.
@@ -895,8 +962,42 @@ impl Processing {
     // `drive` switches once it is ready.
     pub fn request_speech_engine(
         self: &Arc<Self>,
+        core: &CoreHandle,
         engine: SpeechEngine,
-    ) -> Result<Progress, String> {
+        acknowledge_memory_warning: bool,
+    ) -> Result<Progress, Refusal> {
+        self.speech_engine_preflight(core, engine, acknowledge_memory_warning)?;
+        Ok(self.switch_speech_engine(engine)?)
+    }
+    /// Refuses a change of engine while recording, and one whose memory warning the
+    /// person has not acknowledged, as the settings screen asks before preparing.
+    pub fn speech_engine_preflight(
+        &self,
+        core: &CoreHandle,
+        engine: SpeechEngine,
+        acknowledged: bool,
+    ) -> Result<(), Refusal> {
+        self.refuse_while_recording(core, "녹음을 마친 뒤 음성 인식 모델을 변경해 주세요.")?;
+        if !acknowledged
+            && !self.model_ready_for(engine)
+            && crate::speech_recommendation::memory_warning(engine).is_some()
+        {
+            return Err(Refusal::MemoryWarning);
+        }
+        Ok(())
+    }
+    fn refuse_while_recording(&self, core: &CoreHandle, message: &str) -> Result<(), Refusal> {
+        if core
+            .snapshot()
+            .map_err(message_of)?
+            .active_session()
+            .is_some()
+        {
+            return Err(Refusal::Recording(message.into()));
+        }
+        Ok(())
+    }
+    fn switch_speech_engine(self: &Arc<Self>, engine: SpeechEngine) -> Result<Progress, String> {
         self.request_speech_engine_from(engine, false)
     }
     fn request_speech_engine_from(
@@ -928,7 +1029,7 @@ impl Processing {
             .unwrap()
             .iter()
             .find(|record| {
-                record.kind == "setup"
+                record.kind == JobKind::Setup
                     && matches!(
                         record.status,
                         JobStatus::Queued | JobStatus::Running | JobStatus::Cancelling
@@ -1007,7 +1108,7 @@ impl Processing {
                 .unwrap()
                 .iter()
                 .filter(|record| {
-                    record.kind == "setup"
+                    record.kind == JobKind::Setup
                         && record.speech_engine == target
                         && matches!(record.status, JobStatus::Queued | JobStatus::Running)
                 })
@@ -1021,7 +1122,18 @@ impl Processing {
         Ok(self.snapshot())
     }
     // Accepting uses the same switch flow; a refused start leaves the offer available.
-    pub fn respond_speech_offer(self: &Arc<Self>, accept: bool) -> Result<Progress, String> {
+    pub fn respond_speech_offer(
+        self: &Arc<Self>,
+        core: &CoreHandle,
+        accept: bool,
+        acknowledge_memory_warning: bool,
+    ) -> Result<Progress, Refusal> {
+        if accept {
+            self.speech_engine_preflight(core, SpeechEngine::Moss, acknowledge_memory_warning)?;
+        }
+        Ok(self.answer_speech_offer(accept)?)
+    }
+    fn answer_speech_offer(self: &Arc<Self>, accept: bool) -> Result<Progress, String> {
         if accept {
             // The offer is used up only once the switch has started; a refused switch
             // (no space, the same work already queued) leaves it to accept again.
@@ -1080,7 +1192,7 @@ impl Processing {
             .unwrap()
             .iter()
             .rev()
-            .find(|record| record.kind == "setup" && record.speech_engine == pending.target)
+            .find(|record| record.kind == JobKind::Setup && record.speech_engine == pending.target)
             .filter(|record| matches!(record.status, JobStatus::Failed | JobStatus::Cancelled))
             .cloned();
         if let Some(failed) = failed {
@@ -1123,7 +1235,7 @@ impl Processing {
     fn switch_view(&self) -> Option<crate::speech_switch::SwitchView> {
         let pending = (*self.speech_switch.lock().unwrap())?;
         let preparing = self.records.lock().unwrap().iter().any(|record| {
-            record.kind == "setup"
+            record.kind == JobKind::Setup
                 && record.speech_engine == pending.target
                 && matches!(
                     record.status,
@@ -1276,7 +1388,7 @@ impl Processing {
                     speaker_enabled: record.speaker_enabled,
                     apple_speech_variant: record.apple_speech_variant,
                     id: record.id.clone(),
-                    kind: record.kind.clone(),
+                    kind: record.kind.as_str().into(),
                     meeting_id: record.meeting_id.clone(),
                     status: serde_json::to_value(record.status)
                         .unwrap()
@@ -1296,6 +1408,10 @@ impl Processing {
                     pause: (record.status == JobStatus::Running)
                         .then(|| pause_of(&record.id).1)
                         .flatten(),
+                    review: review(
+                        record.status == JobStatus::NeedsReview,
+                        record.phase.as_deref(),
+                    ),
                 })
                 .collect();
             if records
@@ -1304,13 +1420,13 @@ impl Processing {
             {
                 progress.status = "acknowledged".into();
             }
+            progress.review = review(progress.status == "needsReview", progress.phase.as_deref());
             progress.revision = self.revision.load(Ordering::Acquire);
             progress
         };
         progress.supported = self.supported();
         progress.recording_transcription = self.transcribe_while_recording.load(Ordering::Acquire);
-        progress.recording_transcription_supported =
-            crate::job_control::SUPPORTED && crate::moss_asr::supported(&self.resources);
+        progress.recording_transcription_available = self.recording_transcription_available();
         progress.speaker_enabled = self.speaker_enabled();
         progress.apple_speech = self.apple_speech.lock().unwrap().clone();
         progress.local_summary_enabled = crate::release_capabilities::LOCAL_SUMMARY_ENABLED;
@@ -1499,23 +1615,42 @@ impl Processing {
     pub(super) fn source_fingerprint(
         core: &CoreHandle,
         id: &str,
-        kind: &str,
+        kind: JobKind,
     ) -> Result<String, String> {
         let snapshot = core.snapshot().map_err(message)?;
-        let meeting = snapshot
-            .meetings
-            .iter()
-            .find(|m| m.id == id && m.deleted_at.is_none())
-            .ok_or("회의를 찾을 수 없습니다.")?;
+        let meeting = Self::active_meeting(&snapshot, id)?;
         let transcript = core.transcript(id).map_err(message)?;
-        let summary = if kind == "summary" {
+        let summary = if kind == JobKind::Summary {
             core.summary(id).map_err(message)?.map(|s| s.document.id)
         } else {
             None
         };
+        Self::fingerprint_of(kind, meeting, transcript.as_ref(), summary)
+    }
+
+    fn active_meeting<'a>(
+        snapshot: &'a Snapshot,
+        id: &str,
+    ) -> Result<&'a nero_core::Meeting, String> {
+        Ok(snapshot
+            .meetings
+            .iter()
+            .find(|m| m.id == id && m.deleted_at.is_none())
+            .ok_or("회의를 찾을 수 없습니다.")?)
+    }
+
+    // The inputs a job of `kind` reads from `meeting`. A retry and a speaker continuation
+    // compare against this exact value.
+    fn fingerprint_of(
+        kind: JobKind,
+        meeting: &nero_core::Meeting,
+        transcript: Option<&nero_core::Transcript>,
+        summary: Option<String>,
+    ) -> Result<String, String> {
+        let summarizing = kind == JobKind::Summary;
         let mut input = serde_json::json!({"audio":meeting.audio,"transcript":transcript,"summary":summary,
-            "notes": if kind == "summary" { Some(&meeting.notes) } else { None }});
-        if kind == "summary" {
+            "notes": if summarizing { Some(&meeting.notes) } else { None }});
+        if summarizing {
             input["attendees"] = serde_json::json!(meeting.attendees);
         }
         Ok(format!(
@@ -1535,14 +1670,24 @@ impl Processing {
 
     // Whether a queued job may start now, given a recording and any live worker.
     fn may_start(&self, record: &JobRecord) -> bool {
-        (!self.recording.load(Ordering::Acquire)
-            || model_job(&record.kind)
-            || runs_while_recording(record))
-            && self.live_allows(&record.kind, record.meeting_id.as_deref())
-            && !record
-                .meeting_id
-                .as_ref()
-                .is_some_and(|id| self.compacting.lock().unwrap().contains(id))
+        let live = self.live_meeting();
+        let session = match (self.recording.load(Ordering::Acquire), live.as_deref()) {
+            (true, live) => admission::Session::Recording {
+                meeting: None,
+                live: live.is_some(),
+            },
+            (false, Some(meeting)) => admission::Session::Finishing(meeting),
+            (false, None) => admission::Session::Idle,
+        };
+        admission::admits(
+            record.kind,
+            Some(record.speech_engine),
+            record.meeting_id.as_deref(),
+            session,
+        ) && !record
+            .meeting_id
+            .as_ref()
+            .is_some_and(|id| self.compacting.lock().unwrap().contains(id))
     }
 
     fn end_control(&self, id: &str) {
@@ -1616,8 +1761,19 @@ impl Processing {
         }
     }
 
+    /// Settings > 녹음 "녹음하면서 음성 기록 만들기" can apply: this Mac can pause
+    /// jobs, the MOSS worker is present and MOSS is the selected engine.
+    pub fn recording_transcription_available(&self) -> bool {
+        crate::job_control::SUPPORTED
+            && self.speech_engine().transcribes_while_recording()
+            && crate::moss_asr::supported(&self.resources)
+    }
+
     /// Applies to recordings started after this; a recording in progress keeps its choice.
     pub fn set_recording_transcription(&self, enabled: bool) -> Result<Progress, String> {
+        if enabled && !self.recording_transcription_available() {
+            return Err(RECORDING_TRANSCRIPTION_UNAVAILABLE.into());
+        }
         crate::live_moss::set_enabled(&self.root, enabled)?;
         self.transcribe_while_recording.store(enabled, Ordering::Release);
         self.update(|_| ());
@@ -1722,6 +1878,16 @@ impl Processing {
         )
     }
 
+    /// One job as `agent_jobs` lists it.
+    pub fn agent_job(&self, id: &str) -> Option<serde_json::Value> {
+        self.records
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|record| record.id == id)
+            .map(agent_job_view)
+    }
+
     pub fn agent_cancel(
         &self,
         id: &str,
@@ -1786,7 +1952,7 @@ impl Processing {
             self.save_job(record.clone()).map_err(storage_error)?;
             pending.remove(index);
             drop(pending);
-            if record.kind == "transcribe" && !self.recording.load(Ordering::Acquire) {
+            if record.kind == JobKind::Transcribe && !self.recording.load(Ordering::Acquire) {
                 self.cancel_live_meeting(record.meeting_id.as_deref())
                     .map_err(storage_error)?;
             }
@@ -1803,11 +1969,13 @@ impl Processing {
             return Err(invalid_state("이미 종료된 작업입니다."));
         }
         if progress.committing || progress.summary_committing {
-            return Err(invalid_state(if progress.kind == "summary" {
-                "회의록을 저장하고 있습니다."
-            } else {
-                "음성 기록을 저장하고 있습니다."
-            }));
+            return Err(invalid_state(
+                if progress.kind == JobKind::Summary.as_str() {
+                    "회의록을 저장하고 있습니다."
+                } else {
+                    "음성 기록을 저장하고 있습니다."
+                },
+            ));
         }
         let record = self
             .records
@@ -1840,7 +2008,7 @@ impl Processing {
     }
 
     fn cancel_switch_for_setup(&self, record: &JobRecord) -> Result<(), String> {
-        let matching = record.kind == "setup"
+        let matching = record.kind == JobKind::Setup
             && self
                 .speech_switch
                 .lock()
@@ -1953,7 +2121,7 @@ impl Processing {
             progress.committing = true;
             progress.summary_committing = summary;
             progress.phase = Some("saving".into());
-            progress.message = if progress.kind == "import" {
+            progress.message = if progress.kind == JobKind::Import.as_str() {
                 "음성 저장 중"
             } else if summary {
                 "회의록 저장 중"
@@ -2504,6 +2672,18 @@ impl Processing {
             + Send
             + 'static,
     ) -> Result<Progress, String> {
+        self.enqueue(spec, action)?;
+        Ok(self.snapshot())
+    }
+
+    // Records a new job and queues or launches it; returns its id.
+    fn enqueue(
+        self: &Arc<Self>,
+        spec: JobSpec,
+        action: impl FnOnce(Arc<Self>, Arc<AtomicBool>, PathBuf) -> Result<Option<String>, String>
+            + Send
+            + 'static,
+    ) -> Result<String, String> {
         let JobSpec {
             kind,
             meeting_id,
@@ -2544,9 +2724,9 @@ impl Processing {
         if self.shutting_down.load(Ordering::Acquire) {
             return Err("앱을 종료하고 있습니다.".into());
         }
-        let supported = if kind.starts_with("summary") {
+        let supported = if kind.summarizes() {
             crate::summary::availability(self).0
-        } else if matches!(kind, "diarize" | "speaker-model") {
+        } else if matches!(kind, JobKind::Diarize | JobKind::SpeakerModel) {
             crate::diarization::availability(self).0
         } else if let Some(engine) = engine {
             self.engine_status(
@@ -2572,7 +2752,7 @@ impl Processing {
                 .is_some_and(|job| !job.handle.is_finished())
                 && {
                     let p = self.progress.lock().unwrap();
-                    p.kind == kind && p.meeting_id == meeting_id
+                    p.kind == kind.as_str() && p.meeting_id == meeting_id
                 })
         {
             return Err("이미 같은 작업이 진행 중이거나 대기 중입니다.".into());
@@ -2613,7 +2793,7 @@ impl Processing {
         let apple_variant = apple_variant.or_else(|| inherited.and_then(|choice| choice.2));
         let created_at = now();
         let record = JobRecord {
-            glossary_snapshot_required: kind == "transcribe",
+            glossary_snapshot_required: kind == JobKind::Transcribe,
             speech_engine: engine.unwrap_or_else(|| self.speech_engine()),
             speaker_enabled: speaker_enabled.unwrap_or_else(|| self.speaker_enabled()),
             apple_speech_variant: if engine.unwrap_or_else(|| self.speech_engine())
@@ -2625,7 +2805,7 @@ impl Processing {
             },
             schema_version: 1,
             id: id.clone(),
-            kind: kind.into(),
+            kind,
             meeting_id: meeting_id.clone(),
             source_fingerprint: source.as_ref().map(|(_, fingerprint)| fingerprint.clone()),
             include_summary,
@@ -2644,9 +2824,9 @@ impl Processing {
             Self::bind_job(&path, meeting_id)?;
         }
         let validate = source.map(|(core, fingerprint)| {
-            let id = meeting_id.unwrap(); let kind = kind.to_string();
+            let id = meeting_id.unwrap();
             Box::new(move || {
-                if Self::source_fingerprint(&core, &id, &kind)? != fingerprint {
+                if Self::source_fingerprint(&core, &id, kind)? != fingerprint {
                     return Err("회의 내용이 변경되어 대기하던 작업을 실행하지 않았습니다. 현재 내용을 확인해 주세요.".into());
                 }
                 Ok(())
@@ -2675,7 +2855,7 @@ impl Processing {
             drop(queue);
             *running = Some(self.launch_checked(job)?);
         }
-        Ok(self.snapshot())
+        Ok(id)
     }
 
     fn launch(self: &Arc<Self>, mut job: Pending) -> Result<Running, String> {
@@ -2693,7 +2873,7 @@ impl Processing {
             *p = Progress {
                 revision: p.revision,
                 id: Some(id.clone()),
-                kind: job.record.kind.clone(),
+                kind: job.record.kind.as_str().into(),
                 meeting_id: job.record.meeting_id.clone(),
                 status: "running".into(),
                 message: "준비 중".into(),
@@ -2715,11 +2895,11 @@ impl Processing {
         {
             control.set_user(true);
         }
-        *self.control.lock().unwrap() = Some((id.clone(), control));
+        *self.control.lock().unwrap() = Some((id.clone(), control.clone()));
         let flag = cancel.clone();
         let this = self.clone();
         let job_id = id.clone();
-        let preparation = model_job(&job.record.kind);
+        let preparation = job.record.kind.prepares_model();
         // Jobs run whole download and recognition futures on this thread; the default
         // 2 MiB left no margin, and an overflow aborts the app instead of failing the job.
         let handle = thread::Builder::new()
@@ -2736,6 +2916,9 @@ impl Processing {
                     this.cleanup_failed();
                     Err("처리 작업이 예기치 않게 종료되었습니다. 기존 결과는 유지했습니다.".into())
                 });
+                if control.termination_unconfirmed() {
+                    this.cleanup_failed();
+                }
                 this.end_control(&job_id);
                 let interrupted = this.interrupted_jobs.lock().unwrap().remove(&job_id);
                 let user_cancelled = this.records.lock().unwrap().iter().any(|r| {
@@ -2754,10 +2937,7 @@ impl Processing {
                         if meeting.is_some() {
                             p.meeting_id = meeting;
                         }
-                        if matches!(
-                            p.phase.as_deref(),
-                            Some("mossPartial" | "mossUnrecognized" | "mossTimingContext")
-                        ) {
+                        if recognition_review(p.phase.as_deref()) {
                             p.status = "needsReview".into();
                         } else {
                             p.status = "completed".into();
@@ -2843,16 +3023,19 @@ impl Processing {
         })
     }
     pub fn prepare_model(self: &Arc<Self>) -> Result<Progress, String> {
-        self.prepare_meeting_models(false)
+        self.prepare_meeting_models_with_id(false, None, None, None, None)
     }
     pub fn require_meeting_models(&self) -> Result<(), String> {
         meeting_models_ready(&self.snapshot())
     }
+    /// Setup the person asks for; refused while recording.
     pub fn prepare_meeting_models(
         self: &Arc<Self>,
+        core: &CoreHandle,
         include_summary: bool,
-    ) -> Result<Progress, String> {
-        self.prepare_meeting_models_with_id(include_summary, None, None, None, None)
+    ) -> Result<Progress, Refusal> {
+        self.refuse_while_recording(core, "녹음을 마친 뒤 준비해 주세요.")?;
+        Ok(self.prepare_meeting_models_with_id(include_summary, None, None, None, None)?)
     }
 
     fn prepare_meeting_models_with_id(
@@ -2884,13 +3067,12 @@ impl Processing {
         )?;
         self.start_job(
             JobSpec {
-                kind: "setup",
                 include_summary,
                 requested_id,
                 engine: Some(engine),
                 speaker_enabled: Some(speaker_enabled),
                 apple_variant,
-                ..JobSpec::default()
+                ..JobSpec::new(JobKind::Setup)
             },
             move |this, cancel, path| {
                 let mut total =
@@ -2912,16 +3094,7 @@ impl Processing {
                     *this.apple_speech.lock().unwrap() = status;
                     0
                 } else {
-                    let mut done = 0;
-                    for engine in engine.requirements() {
-                        done += this.prepare_files(
-                            ModelSpec::speech(engine),
-                            &cancel,
-                            done,
-                            &mut total,
-                        )?;
-                    }
-                    done
+                    this.prepare_files(ModelSpec::speech(engine), &cancel, 0, &mut total)?
                 };
                 if speaker_enabled && crate::diarization::availability(&this).0 {
                     first += this.prepare_files(
@@ -2941,7 +3114,7 @@ impl Processing {
     pub(super) fn prepare_named_model(
         self: &Arc<Self>,
         spec: ModelSpec,
-        kind: &'static str,
+        kind: JobKind,
     ) -> Result<Progress, String> {
         self.prepare_named_model_with_id(spec, kind, None)
     }
@@ -2949,18 +3122,17 @@ impl Processing {
     fn prepare_named_model_with_id(
         self: &Arc<Self>,
         spec: ModelSpec,
-        kind: &'static str,
+        kind: JobKind,
         requested_id: Option<String>,
     ) -> Result<Progress, String> {
-        if kind == "summary-model" {
+        if kind == JobKind::SummaryModel {
             crate::release_capabilities::require_local_summary()?;
         }
         crate::storage_space::check(&self.root, self.remaining_model_bytes(spec)?)?;
         self.start_job(
             JobSpec {
-                kind,
                 requested_id,
-                ..JobSpec::default()
+                ..JobSpec::new(kind)
             },
             move |this, cancel, _path| {
                 let mut total = this.remaining_model_bytes(spec)?;
@@ -3105,31 +3277,37 @@ impl Processing {
             self.compaction_cancel.store(true, Ordering::Release);
         }
         if let Some(job) = running.as_ref() {
-            if !job.handle.is_finished() && self.progress.lock().unwrap().kind == "import" {
+            if !job.handle.is_finished()
+                && self.progress.lock().unwrap().kind == JobKind::Import.as_str()
+            {
                 return Err("음성 가져오기가 끝난 뒤 녹음을 시작해 주세요.".into());
             }
         }
-        let downloading = model_job(&self.progress.lock().unwrap().kind);
         // A MOSS recording that recognizes its own chunks puts the current meeting first.
-        let live_moss = crate::job_control::SUPPORTED
-            && self.speech_engine() == SpeechEngine::Moss
-            && crate::moss_asr::supported(&self.resources)
+        let live_moss = self.recording_transcription_available()
             && self.transcribe_while_recording.load(Ordering::Acquire);
-        // A session that streams to a live worker would compete with the running job.
-        let live_session = live_moss
-            || !matches!(
-                self.speech_engine(),
-                SpeechEngine::AppleSpeech | SpeechEngine::QwenKo | SpeechEngine::Moss
-            );
-        let concurrent = !live_session
-            && running.as_ref().is_some_and(|job| {
-                self.records
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .any(|record| record.id == job.id && runs_while_recording(record))
-            });
-        if !downloading && !concurrent {
+        let session = admission::Session::Recording {
+            meeting: None,
+            live: live_moss || !self.speech_engine().recognizes_after_recording(),
+        };
+        // A download keeps going; other work stays only where the recording admits it.
+        let stays = running.as_ref().is_some_and(|job| {
+            self.records
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|record| record.id == job.id)
+                .is_some_and(|record| {
+                    record.kind.prepares_model()
+                        || admission::admits(
+                            record.kind,
+                            Some(record.speech_engine),
+                            record.meeting_id.as_deref(),
+                            session,
+                        )
+                })
+        });
+        if !stays {
             if let Some(job) = running.take() {
                 if self
                     .control
@@ -3233,7 +3411,7 @@ impl Processing {
             return Err(reason.into());
         }
         if let Some(meeting_id) = &record.meeting_id {
-            if !(record.kind == "transcribe"
+            if !(record.kind == JobKind::Transcribe
                 && record.speech_engine == SpeechEngine::Moss
                 && self
                     .root
@@ -3242,7 +3420,7 @@ impl Processing {
                     .join("moss-request.json")
                     .is_file())
                 && record.source_fingerprint.as_ref()
-                    != Some(&Self::source_fingerprint(&core, meeting_id, &record.kind)?)
+                    != Some(&Self::source_fingerprint(core, meeting_id, record.kind)?)
             {
                 return Err("회의 내용이 변경되어 이전 작업을 다시 실행하지 않았습니다. 현재 회의에서 작업을 시작해 주세요.".into());
             }
@@ -3291,39 +3469,39 @@ impl Processing {
         record: &JobRecord,
         successor_id: &str,
     ) -> Result<(), String> {
-        match record.kind.as_str() {
-            "setup" => self.prepare_meeting_models_with_id(
+        match record.kind {
+            JobKind::Setup => self.prepare_meeting_models_with_id(
                 record.include_summary,
                 Some(successor_id.into()),
                 Some(record.speech_engine),
                 Some(record.speaker_enabled),
                 record.apple_speech_variant,
             )?,
-            "model" => self.prepare_meeting_models_with_id(
+            JobKind::Model => self.prepare_meeting_models_with_id(
                 false,
                 Some(successor_id.into()),
                 Some(record.speech_engine),
                 Some(record.speaker_enabled),
                 record.apple_speech_variant,
             )?,
-            "summary-model" => self.prepare_named_model_with_id(
+            JobKind::SummaryModel => self.prepare_named_model_with_id(
                 crate::summary::SUMMARY_MODEL,
-                "summary-model",
+                JobKind::SummaryModel,
                 Some(successor_id.into()),
             )?,
-            "speaker-model" => self.prepare_named_model_with_id(
+            JobKind::SpeakerModel => self.prepare_named_model_with_id(
                 crate::diarization::SPEAKER_MODEL,
-                "speaker-model",
+                JobKind::SpeakerModel,
                 Some(successor_id.into()),
             )?,
-            "transcribe" => self.transcribe_bound(
+            JobKind::Transcribe => self.transcribe_bound(
                 core.clone(),
                 record.meeting_id.clone().ok_or("회의가 없습니다.")?,
                 if record.speech_engine == SpeechEngine::Moss {
                     Some(Self::source_fingerprint(
                         &core,
                         record.meeting_id.as_deref().ok_or("회의가 없습니다.")?,
-                        "transcribe",
+                        JobKind::Transcribe,
                     )?)
                 } else {
                     record.source_fingerprint.clone()
@@ -3334,14 +3512,14 @@ impl Processing {
                 Some(record.speaker_enabled),
                 record.apple_speech_variant,
             )?,
-            "summary" => self.summarize_bound_with_template(
+            JobKind::Summary => self.summarize_bound_with_template(
                 core,
                 record.meeting_id.clone().ok_or("회의가 없습니다.")?,
                 record.source_fingerprint.clone(),
                 record.summary_template_ref.clone(),
                 Some(successor_id.into()),
             )?,
-            "diarize" => {
+            JobKind::Diarize => {
                 let meeting_id = record.meeting_id.clone().ok_or("회의가 없습니다.")?;
                 let expected = core
                     .transcript(&meeting_id)
@@ -3356,12 +3534,35 @@ impl Processing {
                     Some(successor_id.into()),
                 )?
             }
-            _ => return Err("지원하지 않는 작업입니다.".into()),
+            JobKind::Import => return Err("지원하지 않는 작업입니다.".into()),
         };
         Ok(())
     }
-    pub fn import(self: &Arc<Self>, core: CoreHandle, source: PathBuf) -> Result<Progress, String> {
-        self.import_target(core, source, None, None)
+    /// Refuses an import before a file is chosen or received: nothing may be recording,
+    /// speech recognition must be ready, and a draft `target` must still take audio.
+    pub fn import_preflight(
+        &self,
+        core: &CoreHandle,
+        target: Option<&nero_core::DraftAttachmentTarget>,
+    ) -> Result<(), Refusal> {
+        self.refuse_while_recording(core, "녹음을 마친 뒤 음성을 가져와 주세요.")?;
+        self.require_meeting_models().map_err(Refusal::NotReady)?;
+        if let Some(target) = target {
+            core.validate_draft_attachment(target.clone())
+                .map_err(Refusal::Meeting)?;
+        }
+        Ok(())
+    }
+
+    /// Imports `source` as a new meeting, or into the draft `target`; returns the job's id.
+    pub fn import(
+        self: &Arc<Self>,
+        core: CoreHandle,
+        source: PathBuf,
+        target: Option<nero_core::DraftAttachmentTarget>,
+    ) -> Result<String, Refusal> {
+        self.import_preflight(&core, target.as_ref())?;
+        Ok(self.queue_import(core, source, target, None)?)
     }
 
     // A file dropped on the window: its cache copy is removed when the job is dropped.
@@ -3369,39 +3570,24 @@ impl Processing {
         self: &Arc<Self>,
         core: CoreHandle,
         upload: crate::drop_import::Finished,
-    ) -> Result<Progress, String> {
+    ) -> Result<String, Refusal> {
         let cleanup = crate::drop_import::RemoveOnDrop(upload.directory);
-        if let Some(target) = &upload.target {
-            core.validate_draft_attachment(target.clone())
-                .map_err(message)?;
-        }
-        self.import_target(core, upload.path, upload.target, Some(cleanup))
+        self.import_preflight(&core, upload.target.as_ref())?;
+        Ok(self.queue_import(core, upload.path, upload.target, Some(cleanup))?)
     }
 
-    pub fn import_into_draft(
-        self: &Arc<Self>,
-        core: CoreHandle,
-        source: PathBuf,
-        target: nero_core::DraftAttachmentTarget,
-    ) -> Result<Progress, String> {
-        core.validate_draft_attachment(target.clone())
-            .map_err(message)?;
-        self.import_target(core, source, Some(target), None)
-    }
-
-    fn import_target(
+    fn queue_import(
         self: &Arc<Self>,
         core: CoreHandle,
         source: PathBuf,
         target: Option<nero_core::DraftAttachmentTarget>,
         cleanup: Option<crate::drop_import::RemoveOnDrop>,
-    ) -> Result<Progress, String> {
-        self.start_job(
+    ) -> Result<String, String> {
+        self.enqueue(
             JobSpec {
-                kind: "import",
                 meeting_id: target.as_ref().map(|target| target.meeting_id.clone()),
                 importing: target.is_none().then(|| core.clone()),
-                ..JobSpec::default()
+                ..JobSpec::new(JobKind::Import)
             },
             move |this, cancel, path| {
                 let _cleanup = cleanup;
@@ -3580,7 +3766,6 @@ impl Processing {
         .inspect_err(|_| discard_unrecorded(&job_path))?;
         self.start_job(
             JobSpec {
-                kind: "transcribe",
                 meeting_id: Some(meeting_id.clone()),
                 source: Some(core.clone()),
                 required_fingerprint,
@@ -3588,7 +3773,7 @@ impl Processing {
                 engine: Some(engine),
                 speaker_enabled: Some(speaker_enabled),
                 apple_variant,
-                ..JobSpec::default()
+                ..JobSpec::new(JobKind::Transcribe)
             },
             move |this, cancel, path| {
                 if core.audio_path(&meeting_id).map_err(message)? != audio
@@ -3604,14 +3789,16 @@ impl Processing {
                 // optional profile must never prevent preserving the recognized baseline.
                 let terminology = crate::terminology::load_snapshot(&this);
                 core.audio_path(&meeting_id).map_err(message)?;
-                let concurrent = crate::job_control::SUPPORTED
-                    && matches!(engine, SpeechEngine::Moss | SpeechEngine::QwenKo);
-                if core
-                    .snapshot()
-                    .map_err(message)?
+                let snapshot = core.snapshot().map_err(message)?;
+                let recording = snapshot
                     .active_session()
-                    .is_some_and(|session| !concurrent || session.meeting_id == meeting_id)
-                {
+                    .map(|session| session.meeting_id.as_str());
+                if !admission::admits(
+                    JobKind::Transcribe,
+                    Some(engine),
+                    Some(&meeting_id),
+                    admission::Session::recording(recording),
+                ) {
                     return Err("녹음을 마친 뒤 음성 인식을 시작해 주세요.".into());
                 }
                 crate::job_control::pause_point(&cancel);
@@ -3636,10 +3823,7 @@ impl Processing {
                     .into();
                 });
                 let _finalization = this.wait_live_asr(&meeting_id, &session_id, &cancel)?;
-                // Qwen keeps the live audio and speaker stream but never commits the
-                // Nemotron preview text; its final transcript is recognized below.
-                let live_engine = engine.live_asr();
-                let live_model = Self::model_for(live_engine);
+                let live_model = Self::model_for(engine);
                 let live = match this.take_live(&meeting_id, &session_id) {
                     Some(live) => Some(live),
                     None => this.recover_live(&meeting_id, &session_id, &audio, &cancel)?,
@@ -3647,7 +3831,7 @@ impl Processing {
                 .filter(|live| {
                     serde_json::from_slice::<serde_json::Value>(&live.raw).is_ok_and(|value| {
                         engine != SpeechEngine::AppleSpeech
-                            && value["glossaryContext"] == glossary.evidence(live_engine)
+                            && value["glossaryContext"] == glossary.evidence(engine)
                             && value["model"] == live_model.repository
                             && value["modelRevision"] == live_model.revision
                     })
@@ -3675,8 +3859,8 @@ impl Processing {
                     p.message = "텍스트로 변환 중".into();
                 });
                 let raw = match &live {
-                    Some(live) if engine == live_engine => Ok(live.raw.clone()),
-                    _ => match engine {
+                    Some(live) => Ok(live.raw.clone()),
+                    None => match engine {
                         SpeechEngine::Moss => crate::moss_asr::recognize(&this.resources, &prepared, &path, &cancel, &directory, previous_moss.as_deref(), &live_seeds),
                         SpeechEngine::QwenKo => {
                             this.update(|p| {
@@ -3775,7 +3959,7 @@ impl Processing {
                         if engine == SpeechEngine::Moss {
                             crate::moss_asr::save_baseline(&path, &Some(source.version.clone()))?;
                             let mut record = this.records.lock().unwrap().iter().find(|r| Some(&r.id) == progress.id.as_ref()).cloned().ok_or("MOSS 작업을 찾을 수 없습니다.")?;
-                            record.source_fingerprint = Some(Self::source_fingerprint(&core, &meeting_id, "transcribe")?);
+                            record.source_fingerprint = Some(Self::source_fingerprint(&core, &meeting_id, JobKind::Transcribe)?);
                             this.save_job_or_keep(record)?;
                         }
                         // Speaker analysis reads the whole recording, so missing chunks
@@ -3934,16 +4118,10 @@ impl Processing {
         source: &nero_core::Transcript,
     ) -> Result<(), String> {
         let snapshot = core.snapshot().map_err(message)?;
-        let meeting = snapshot
-            .meetings
-            .iter()
-            .find(|meeting| meeting.id == meeting_id && meeting.deleted_at.is_none())
-            .ok_or("회의를 찾을 수 없습니다.")?;
-        let input = serde_json::json!({"audio":meeting.audio,"transcript":source,"summary":null,"notes":null});
-        let fingerprint = format!(
-            "{:x}",
-            Sha256::digest(serde_json::to_vec(&input).map_err(message)?)
-        );
+        let meeting = Self::active_meeting(&snapshot, meeting_id)?;
+        // The transcript this job just saved, not one read back: a later edit must make
+        // the speaker stage refuse to start.
+        let fingerprint = Self::fingerprint_of(JobKind::Diarize, meeting, Some(source), None)?;
         let mut record = self
             .records
             .lock()
@@ -3952,18 +4130,20 @@ impl Processing {
             .find(|record| Some(&record.id) == progress.id.as_ref())
             .cloned()
             .ok_or("음성 처리 작업을 찾을 수 없습니다.")?;
-        if !matches!(record.kind.as_str(), "transcribe" | "diarize")
+        if !matches!(record.kind, JobKind::Transcribe | JobKind::Diarize)
             || record.status != JobStatus::Running
             || record.meeting_id.as_deref() != Some(meeting_id)
         {
             return Err("음성 처리 작업이 변경되었습니다.".into());
         }
-        record.kind = "diarize".into();
+        // From here the running transcription is a speaker analysis of the saved
+        // transcript: its retry analyzes speakers again instead of recognizing.
+        record.kind = JobKind::Diarize;
         record.source_fingerprint = Some(fingerprint);
         record.phase = Some("postprocessing".into());
         record.updated_at = now().max(record.updated_at);
         self.save_job_or_keep(record)?;
-        progress.kind = "diarize".into();
+        progress.kind = JobKind::Diarize.as_str().into();
         progress.committing = false;
         progress.summary_committing = false;
         Ok(())
@@ -3975,14 +4155,14 @@ impl Processing {
         meeting_id: &str,
         source: &nero_core::Transcript,
     ) -> Result<(), String> {
-        let fingerprint = Self::source_fingerprint(core, meeting_id, "diarize")?;
+        let fingerprint = Self::source_fingerprint(core, meeting_id, JobKind::Diarize)?;
         let progress = self.progress.lock().unwrap();
         let records = self.records.lock().unwrap();
         let record = records
             .iter()
             .find(|record| Some(&record.id) == progress.id.as_ref())
             .ok_or("음성 처리 작업을 찾을 수 없습니다.")?;
-        if record.kind != "diarize"
+        if record.kind != JobKind::Diarize
             || record.meeting_id.as_deref() != Some(meeting_id)
             || record.source_fingerprint.as_deref() != Some(&fingerprint)
             || core
@@ -4024,7 +4204,7 @@ impl Processing {
             // which this job wrote, rather than refusing it as a later edit.
             if retryable_missing(source) {
                 let work = self.root.join("processing").join(&record.id);
-                if record.kind == "transcribe"
+                if record.kind == JobKind::Transcribe
                     && record.speech_engine == SpeechEngine::Moss
                     && work.join("moss-request.json").is_file()
                 {
@@ -4151,9 +4331,8 @@ mod speech_choice_tests {
         let job = process
             .start_job(
                 JobSpec {
-                    kind: "transcribe",
                     engine: Some(SpeechEngine::WhisperTurbo),
-                    ..JobSpec::default()
+                    ..JobSpec::new(JobKind::Transcribe)
                 },
                 move |_, _, _| {
                     started.send(()).unwrap();
@@ -4530,7 +4709,7 @@ mod tests {
                 apple_speech_variant: None,
                 schema_version: 1,
                 id: Uuid::new_v4().to_string(),
-                kind: "setup".into(),
+                kind: JobKind::Setup,
                 meeting_id: None,
                 source_fingerprint: None,
                 include_summary: false,
@@ -4572,7 +4751,7 @@ mod tests {
                 .unwrap();
             let pending = waiting(&process);
             let id = queued_setup(&process);
-            let progress = process.request_speech_engine(SpeechEngine::QwenKo).unwrap();
+            let progress = process.switch_speech_engine(SpeechEngine::QwenKo).unwrap();
             assert_eq!(progress.speech_engine, Some(SpeechEngine::Nemotron));
             assert_eq!(progress.speech_switch.unwrap().target, SpeechEngine::QwenKo);
             let queue = process.pending.lock().unwrap();
@@ -4584,7 +4763,7 @@ mod tests {
                 Some(pending)
             );
             assert!(process
-                .request_speech_engine(SpeechEngine::WhisperTurbo)
+                .switch_speech_engine(SpeechEngine::WhisperTurbo)
                 .is_err());
             assert_eq!(
                 crate::speech_switch::load_pending(&process.root).unwrap(),
@@ -4725,7 +4904,7 @@ mod tests {
             process.reconcile_speech_switch(&None);
             assert_eq!(process.speech_engine(), SpeechEngine::Nemotron);
             assert!(process.snapshot().speech_switch.unwrap().error.is_some());
-            let retried = process.request_speech_engine(SpeechEngine::QwenKo).unwrap();
+            let retried = process.switch_speech_engine(SpeechEngine::QwenKo).unwrap();
             assert_eq!(retried.speech_engine, Some(SpeechEngine::QwenKo));
             assert_eq!(retried.speech_switch, None);
         }
@@ -4790,7 +4969,7 @@ mod tests {
                 crate::speech_switch::load_pending(&process.root).unwrap(),
                 None
             );
-            let switched = process.request_speech_engine(SpeechEngine::QwenKo).unwrap();
+            let switched = process.switch_speech_engine(SpeechEngine::QwenKo).unwrap();
             assert_eq!(switched.speech_engine, Some(SpeechEngine::QwenKo));
             assert_eq!(switched.speech_switch, None);
         }
@@ -4802,7 +4981,7 @@ mod tests {
                 return;
             }
             // Nothing works yet: the choice is recorded and setup downloads it explicitly.
-            let chosen = process.request_speech_engine(SpeechEngine::QwenKo).unwrap();
+            let chosen = process.switch_speech_engine(SpeechEngine::QwenKo).unwrap();
             assert_eq!(chosen.speech_engine, Some(SpeechEngine::QwenKo));
             assert_eq!(chosen.speech_switch, None);
             assert!(process.pending.lock().unwrap().is_empty());
@@ -4825,7 +5004,7 @@ mod tests {
             assert!(progress.model_ready);
             assert_eq!(progress.speech_offer, None);
             assert_eq!(progress.speech_switch, None);
-            reopened.respond_speech_offer(false).unwrap();
+            reopened.answer_speech_offer(false).unwrap();
             assert_eq!(fs::read(&offers).unwrap(), b"not json");
         }
 
@@ -4844,7 +5023,7 @@ mod tests {
             *process.platform_supported_override.lock().unwrap() = Some(true);
             process.recording.store(true, Ordering::Release);
             assert!(process
-                .request_speech_engine(SpeechEngine::WhisperTurbo)
+                .switch_speech_engine(SpeechEngine::WhisperTurbo)
                 .is_err());
             process.recording.store(false, Ordering::Release);
             assert!(process.snapshot().speech_offer.is_some());
@@ -4926,7 +5105,7 @@ mod tests {
             let process = Processing::new(process.root.clone(), process.resources.clone());
             *process.platform_supported_override.lock().unwrap() = Some(true);
             assert!(process.snapshot().speech_offer.is_some());
-            process.respond_speech_offer(true).unwrap();
+            process.answer_speech_offer(true).unwrap();
             let offers: serde_json::Value = serde_json::from_slice(
                 &fs::read(process.root.join("preferences/speech-offers.json")).unwrap(),
             )
@@ -4966,7 +5145,7 @@ mod tests {
                 .set_speech_selection(SpeechEngine::Nemotron, false, None)
                 .unwrap();
             process
-                .request_speech_engine(SpeechEngine::AppleSpeech)
+                .switch_speech_engine(SpeechEngine::AppleSpeech)
                 .unwrap();
             let pending = process.speech_switch.lock().unwrap().unwrap();
             assert_eq!(pending.target, SpeechEngine::AppleSpeech);
@@ -4979,7 +5158,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .iter()
-                .find(|record| record.kind == "setup")
+                .find(|record| record.kind == JobKind::Setup)
                 .cloned()
                 .unwrap();
             assert_eq!(
@@ -5014,10 +5193,10 @@ mod tests {
             );
             // A switch that cannot start keeps the offer to accept again.
             *process.platform_supported_override.lock().unwrap() = Some(false);
-            assert!(process.respond_speech_offer(true).is_err());
+            assert!(process.answer_speech_offer(true).is_err());
             *process.platform_supported_override.lock().unwrap() = Some(true);
             assert!(process.snapshot().speech_offer.is_some());
-            process.respond_speech_offer(false).unwrap();
+            process.answer_speech_offer(false).unwrap();
             assert_eq!(process.snapshot().speech_offer, None);
             assert_eq!(process.speech_engine(), SpeechEngine::Nemotron);
             let reopened = Processing::new(process.root.clone(), process.resources.clone());
@@ -5065,7 +5244,7 @@ mod tests {
         let meeting = core
             .create_meeting("Synthetic meeting", "Original notes")
             .unwrap();
-        let kinds = ["summary", "transcribe", "diarize"];
+        let kinds = [JobKind::Summary, JobKind::Transcribe, JobKind::Diarize];
         let before =
             kinds.map(|kind| Processing::source_fingerprint(&core, &meeting.id, kind).unwrap());
         let attendee = nero_core::MeetingAttendee {
@@ -5095,7 +5274,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             after[0],
-            Processing::source_fingerprint(&core, &meeting.id, "summary").unwrap()
+            Processing::source_fingerprint(&core, &meeting.id, JobKind::Summary).unwrap()
         );
     }
 
@@ -5862,7 +6041,7 @@ mod tests {
             apple_speech_variant: None,
             schema_version: 1,
             id: Uuid::new_v4().to_string(),
-            kind: "summary".into(),
+            kind: JobKind::Summary,
             meeting_id: Some(meeting.id.clone()),
             source_fingerprint: None,
             include_summary: false,

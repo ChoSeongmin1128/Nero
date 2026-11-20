@@ -3,16 +3,14 @@ use super::{
     now_ms, Error, Result, MCP_ENDPOINT,
 };
 use crate::oauth_callback::CallbackPage;
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     net::TcpListener,
     sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -185,7 +183,7 @@ pub(super) fn authorization_url(
     verifier: &str,
     state: &str,
 ) -> Result<String> {
-    let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+    let challenge = crate::oauth_callback::pkce_challenge(verifier);
     let mut url = notion_endpoint(&discovery.metadata.authorization_endpoint)?;
     url.query_pairs_mut().extend_pairs([
         ("response_type", "code"),
@@ -224,15 +222,9 @@ impl Pending {
         {
             return Err(Error::Protocol);
         }
-        let verifier = URL_SAFE_NO_PAD.encode(Sha256::digest(
-            format!(
-                "{}{}{}",
-                uuid::Uuid::new_v4(),
-                uuid::Uuid::new_v4(),
-                uuid::Uuid::new_v4()
-            )
-            .as_bytes(),
-        ));
+        let verifier = crate::oauth_callback::Pkce::new()
+            .ok_or(Error::Callback)?
+            .verifier;
         let state = format!(
             "{}{}",
             uuid::Uuid::new_v4().simple(),
@@ -305,51 +297,38 @@ fn receive_callback(
     page: &Arc<Mutex<Option<CallbackPage>>>,
 ) -> Result<String> {
     // The same window the other sign-ins give the browser; before, it waited forever.
+    use crate::oauth_callback::Stopped;
     let deadline = Instant::now() + crate::oauth_callback::CALLBACK_WINDOW;
-    while Instant::now() < deadline {
-        cancellation.check()?;
-        match listener.accept() {
-            Ok((mut stream, peer)) if peer.ip().is_loopback() => {
-                let _ = stream.set_nonblocking(false);
-                let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
-                let connection_deadline = deadline.min(Instant::now() + Duration::from_secs(5));
-                let Some(request) =
-                    crate::oauth_callback::read_request(&mut stream, connection_deadline, || {
-                        cancellation.check().is_err()
-                    })
-                else {
-                    continue;
-                };
-                match parse_callback(&request, host, path, state, metadata) {
-                    Ok(code) => {
-                        let mut page = page.lock().unwrap();
-                        if let Err(error) = cancellation.check() {
-                            CallbackPage::reject(stream, &error.to_string());
-                            return Err(error);
-                        }
-                        *page = Some(CallbackPage::begin_for(
-                            stream,
-                            "Notion",
-                            "Notion 연결을 완료했습니다. Nero로 돌아가 주세요.",
-                        ));
-                        return Ok(code);
-                    }
-                    Err(error) => {
-                        CallbackPage::reject(stream, &error.to_string());
-                        if error == Error::Cancelled {
-                            return Err(error);
-                        }
-                    }
+    let received = crate::oauth_callback::receive(
+        &listener,
+        deadline,
+        || cancellation.check().is_err(),
+        |stream, request| match parse_callback(&request, host, path, state, metadata) {
+            Ok(code) => {
+                let mut page = page.lock().unwrap();
+                if let Err(error) = cancellation.check() {
+                    CallbackPage::reject(stream, &error.to_string());
+                    return Some(Err(error));
                 }
+                *page = Some(CallbackPage::begin_for(
+                    stream,
+                    "Notion",
+                    "Notion 연결을 완료했습니다. Nero로 돌아가 주세요.",
+                ));
+                Some(Ok(code))
             }
-            Ok(_) => (),
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                std::thread::sleep(Duration::from_millis(25))
+            Err(error) => {
+                CallbackPage::reject(stream, &error.to_string());
+                (error == Error::Cancelled).then_some(Err(error))
             }
-            Err(_) => return Err(Error::Callback),
-        }
+        },
+    );
+    match received {
+        Ok(result) => result,
+        Err(Stopped::Cancelled) => Err(cancellation.check().err().unwrap_or(Error::Cancelled)),
+        Err(Stopped::Expired) => Err(Error::Timeout),
+        Err(Stopped::Failed) => Err(Error::Callback),
     }
-    Err(Error::Timeout)
 }
 
 pub(super) fn parse_callback(

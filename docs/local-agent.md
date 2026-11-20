@@ -332,7 +332,7 @@ idempotentHint=false이며 기존 내용을 바꾸거나 삭제하는 도구에�
 - `recording_control`의 `start`는 빈 회의나 새 회의(`title`)에 지정한 입력 장치 또는 기본 장치로 녹음한다. 앱 화면처럼 진행 중인 처리 작업을 멈추고 시작하며, 필요하면 macOS가 마이크 권한을 묻는다. `stop`은 앱 화면과 같이 녹음 후 처리를 이어서 시작한다. `pause`/`resume`/`stop`에 `sessionId`를 주면 그 사이 다른 녹음이 시작된 경우 `edit_conflict`로 거부한다.
 - `recording_continue`는 음성이 있는 일정 회의와 같은 일정에 번호를 붙인 새 회의를 같은 폴더에 만들고 녹음을 시작한다. 같은 일정에 녹음을 받을 수 있는 빈 회의가 있으면 그 회의를 원래 회의의 폴더로 옮겨 녹음하며, 반환하는 `editVersion`은 녹음을 시작한 뒤의 회의 기준이다. 화면의 "이 일정으로 이어서 녹음"과 같으며 일정을 다시 조회하지 않는다.
 - `recording_discard`는 화면의 "녹음 버리기"와 같다. 녹음, 음성 기록, 요약이 있는 회의를 처리 작업을 취소하고 휴지통으로 옮긴 뒤, 제목, 메모, 참석자, 날짜, 일정, 폴더, Notion 자료를 그대로 둔 빈 회의를 새로 만든다. 휴지통에서 복원하면 녹음을 되찾는다. 녹음 중에는 거부한다.
-- `settings_set`의 `recordingTranscription`은 녹음하면서 음성 기록 만들기를 켜거나 끄며 이후 시작하는 녹음에 적용한다. `settings_get`의 `recordingTranscription.supported`가 거짓이면 켤 수 없다.
+- `settings_set`의 `recordingTranscription`은 녹음하면서 음성 기록 만들기를 켜거나 끄며 이후 시작하는 녹음에 적용한다. `settings_get`의 `recordingTranscription.supported`는 이 Mac에서 MOSS를 쓰고 있을 때만 참이며, 거짓이면 켤 수 없다(앱 화면의 설정과 같은 판정).
 - `settings_set`의 `newMeetingFolder`는 홈의 "저장 위치", 설정 > 녹음의 "새 회의 폴더"와 같다. 폴더 ID 또는 `unfiled`를 받으며(CLI `--new-meeting-folder`), 이후 새 회의, 녹음 시작, 파일 가져오기, 일정으로 처음 만드는 회의가 그 폴더에 들어간다. 일정에서 이어서 녹음한 회의는 원래 회의의 폴더를 따른다. 폴더가 삭제되면 미분류로 돌아가며 `settings_get`의 `newMeetingFolder.folderId`는 null이 된다.
 - `storage_usage`는 설정의 저장 공간과 같은 값을, `recordings_compact`는 설정의 "이전 형식 녹음 줄이기"와 같은 동작을 수행한다. 원본 녹음 파일을 지우므로 되돌릴 수 없고 사용자의 명시적인 현재 요청에만 사용한다. 처리 중이거나 확인하지 않은 작업이 있는 녹음은 제외하고 실패한 녹음은 원래 파일을 유지한다.
 - `jobs_list`는 진행 중인 작업에 일시 정지 가능 여부(`pausable`)와 현재 일시 정지(`pause`: 사용자/자동, 상태, 사유)를 함께 준다. `job_pause`/`job_resume`은 처리 알림의 일시 정지/다시 시작 버튼과 같다. 사용자가 멈춘 작업은 `job_resume`까지 멈춰 있고, 녹음 때문에 자동으로 멈춘 작업은 녹음 상황에 따라 이어진다.
@@ -375,8 +375,7 @@ OGG다. 대상은 존재하는 일반 파일이어야 하며 심볼릭 링크와
 | `choices[]` | `id`, `title`, `supported`, `ready`, `recommended`, `memoryWarning`, `modelBytes` |
 | `switch` | 대기 중인 전환의 `target`, 다운로드 진행 여부 `preparing`, 다운로드 작업 `jobId`. 없으면 `null` |
 
-`modelBytes`는 선택한 엔진에 필요한 음성 모델 전체 크기다(Qwen은 녹음 중 미리 보기용 Nemotron
-포함). 이미 받은 부분을 빼지 않으며 화자 분석 모델은 포함하지 않는다. `recommended`는 기기 사양에 따른 제안이며 엔진 변경이나 다운로드 권한이 아니다.
+`modelBytes`는 선택한 엔진의 음성 모델 전체 크기다. 이미 받은 부분을 빼지 않으며 화자 분석 모델은 포함하지 않는다. `recommended`는 기기 사양에 따른 제안이며 엔진 변경이나 다운로드 권한이 아니다.
 
 `speech_engine_set`(CLI `speech set ENGINE`)은 `Processing::request_speech_engine`과 같은
 동작이다. 결과의 `outcome`은 다음 중 하나이며 `speech`에 변경 후 상태를 함께 반환한다.

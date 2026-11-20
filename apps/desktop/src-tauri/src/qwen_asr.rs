@@ -1,5 +1,6 @@
 // Qwen3-ASR-ko through the pinned CrispASR CLI: pause chunks, gain, aligner words.
 use crate::failure::Failure;
+use crate::process_tree::{supervise, Ended, Unconfirmed, Watch};
 use crate::processing::{cancelled, plain_file};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -8,8 +9,8 @@ use std::fs::OpenOptions;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::sync::atomic::AtomicBool;
+use std::time::Duration;
 
 pub(super) const MANIFEST: &str = include_str!("../../../../config/models/qwen3-asr-ko.json");
 const RUNTIME: &str = include_str!("../../../../scripts/native-crispasr/runtime.json");
@@ -420,28 +421,19 @@ pub(super) fn recognize(
                 .map_err(|e| e.to_string())?,
         ));
     let mut child = crate::process_tree::spawn(&mut command)?;
-    let began = Instant::now();
     let limit = Duration::from_secs(600 + 3 * (frames / RATE) as u64);
-    let mut pauser = crate::job_control::Pauser::new(cancel);
-    loop {
-        if cancel.load(Ordering::Acquire) {
-            pauser.release(&child);
-            return Err("Qwen 처리를 취소했습니다.".into());
+    match supervise(&mut child, cancel, Watch::budget(limit)) {
+        Ok(Ended::Exited(status)) if status.success() => {}
+        Ok(Ended::Exited(_)) => {
+            return Err("Qwen 구간 처리를 완료하지 못했습니다. 원본은 보관했습니다.".into())
         }
-        if began.elapsed().saturating_sub(pauser.paused()) > limit {
-            pauser.release(&child);
-            return Err("Qwen 처리 시간이 너무 오래 걸렸습니다. 원본은 보관했습니다.".into());
+        Ok(Ended::Cancelled | Ended::Stopped) => return Err("Qwen 처리를 취소했습니다.".into()),
+        Ok(Ended::OverBudget) => {
+            return Err("Qwen 처리 시간이 너무 오래 걸렸습니다. 원본은 보관했습니다.".into())
         }
-        if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
-            if !status.success() {
-                return Err("Qwen 구간 처리를 완료하지 못했습니다. 원본은 보관했습니다.".into());
-            }
-            break;
-        }
-        pauser.sync(&child);
-        std::thread::sleep(Duration::from_millis(100));
+        Ok(Ended::Unreadable(error)) => return Err(error.to_string().into()),
+        Err(Unconfirmed) => return Err(crate::process_tree::UNCONFIRMED.into()),
     }
-    drop(pauser);
     drop(child);
     let log = read(&log_path, 64 * 1024 * 1024)?;
     classify_metal(&String::from_utf8_lossy(&log), bounds.len())?;

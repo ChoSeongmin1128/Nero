@@ -1,13 +1,14 @@
 use crate::failure::{Failure, FailureKind};
+use crate::process_tree::{supervise, Ended, Unconfirmed, Watch};
 use crate::processing::{cancelled, plain_file, Processing};
 use crate::speech_choice::AppleVariant;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::AtomicBool;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 pub(super) const MANIFEST: &str =
     r#"{"repository":"apple/SpeechTranscriber","revision":"system-managed-ko-KR","files":[]}"#;
@@ -86,25 +87,22 @@ pub(super) fn probe(resources: &Path, variant: Option<AppleVariant>) -> Availabi
     let Ok(mut child) = crate::process_tree::spawn(&mut command) else {
         return unavailable();
     };
-    let started = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) if status.success() => {
-                let mut raw = Vec::new();
-                if child
-                    .stdout
-                    .take()
-                    .is_some_and(|stdout| stdout.take(8193).read_to_end(&mut raw).is_ok())
-                    && raw.len() <= 8192
-                {
-                    return availability(&raw).unwrap_or_else(|_| unavailable());
-                }
-                return unavailable();
+    // No job owns a status check, so only its budget stops it.
+    let never = AtomicBool::new(false);
+    match supervise(&mut child, &never, Watch::budget(Duration::from_secs(15))) {
+        Ok(Ended::Exited(status)) if status.success() => {
+            let mut raw = Vec::new();
+            if child
+                .stdout
+                .take()
+                .is_some_and(|stdout| stdout.take(8193).read_to_end(&mut raw).is_ok())
+                && raw.len() <= 8192
+            {
+                return availability(&raw).unwrap_or_else(|_| unavailable());
             }
-            Ok(Some(_)) | Err(_) => return unavailable(),
-            Ok(None) if started.elapsed() >= Duration::from_secs(15) => return unavailable(),
-            Ok(None) => std::thread::sleep(Duration::from_millis(25)),
+            unavailable()
         }
+        _ => unavailable(),
     }
 }
 fn unavailable() -> Availability {
@@ -158,38 +156,23 @@ fn execute(
             "macOS 기본 전사를 시작하지 못했습니다.",
         )
     })?;
-    loop {
-        if cancelled(cancel).is_err() {
-            if let Some(mut input) = child.stdin.take() {
-                let _ = input.write_all(b"c");
-            }
-            for _ in 0..50 {
-                if child.try_wait().ok().flatten().is_some() {
-                    return Err(Failure::new(
-                        FailureKind::Cancelled,
-                        "음성 처리를 취소했습니다.",
-                    ));
-                }
-                std::thread::sleep(Duration::from_millis(100));
-            }
-            if child.kill().is_err() || child.wait().is_err() {
-                process.cleanup_failed();
-                return Err(Failure::new(
-                    FailureKind::Cleanup,
-                    "음성 처리 종료를 확인하지 못했습니다. 앱을 다시 열어 주세요.",
-                ));
-            }
-            return Err(Failure::new(
-                FailureKind::Cancelled,
-                "음성 처리를 취소했습니다.",
-            ));
-        }
-        match child.try_wait() {
-            Ok(Some(status)) if status.success() => return Ok(()),
-            Ok(Some(_)) => return Err(Failure::new(FailureKind::EngineUnavailable, "macOS 기본 전사를 완료하지 못했습니다. 언어 자산을 다시 준비해 주세요. 원음과 기존 기록은 유지됩니다.")),
-            Err(_) => return Err(Failure::new(FailureKind::EngineUnavailable, "macOS 기본 전사 상태를 확인하지 못했습니다.")),
-            Ok(None) => std::thread::sleep(Duration::from_millis(100)),
-        }
+    // A cancelled helper is asked to stop first so it can end its system session.
+    match supervise(
+        &mut child,
+        cancel,
+        Watch::default().ask_first(b"c", Duration::from_secs(5)),
+    ) {
+        Ok(Ended::Exited(status)) if status.success() => Ok(()),
+        Ok(Ended::Exited(_)) => Err(Failure::new(FailureKind::EngineUnavailable, "macOS 기본 전사를 완료하지 못했습니다. 언어 자산을 다시 준비해 주세요. 원음과 기존 기록은 유지됩니다.")),
+        Ok(Ended::Unreadable(_)) => Err(Failure::new(FailureKind::EngineUnavailable, "macOS 기본 전사 상태를 확인하지 못했습니다.")),
+        Ok(Ended::Cancelled | Ended::Stopped | Ended::OverBudget) => Err(Failure::new(
+            FailureKind::Cancelled,
+            "음성 처리를 취소했습니다.",
+        )),
+        Err(Unconfirmed) => Err(Failure::new(
+            FailureKind::Cleanup,
+            crate::process_tree::UNCONFIRMED,
+        )),
     }
 }
 pub(super) fn prepare(

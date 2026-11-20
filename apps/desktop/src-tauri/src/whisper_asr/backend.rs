@@ -1,9 +1,9 @@
 //! Backend selection and native process lifecycle; stdout never establishes acceleration.
 use super::runtime::Runtime;
 use super::*;
+use crate::process_tree::{supervise, Ended, Unconfirmed, Watch};
 use std::process::{Command, Stdio};
-use std::sync::atomic::Ordering;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Backend {
@@ -231,23 +231,19 @@ fn run_attempt(
     } else {
         crate::process_tree::spawn(&mut command)
     }?;
-    let began = Instant::now();
-    loop {
-        if cancel.load(Ordering::Acquire) {
-            return Err("Whisper 처리를 취소했습니다.".into());
+    match supervise(&mut child, cancel, Watch::budget(Duration::from_secs(1800))) {
+        Ok(Ended::Exited(status)) if status.success() => {}
+        Ok(Ended::Exited(_)) => {
+            return Err("Whisper 구간 처리를 완료하지 못했습니다. 원본은 보관했습니다.".into())
         }
-        if began.elapsed() > Duration::from_secs(1800) {
+        Ok(Ended::Cancelled | Ended::Stopped) => return Err("Whisper 처리를 취소했습니다.".into()),
+        Ok(Ended::OverBudget) => {
             return Err(
                 "Whisper 구간 처리 시간이 너무 오래 걸렸습니다. 원본은 보관했습니다.".into(),
-            );
+            )
         }
-        if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
-            if !status.success() {
-                return Err("Whisper 구간 처리를 완료하지 못했습니다. 원본은 보관했습니다.".into());
-            }
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(50));
+        Ok(Ended::Unreadable(error)) => return Err(error.to_string()),
+        Err(Unconfirmed) => return Err(crate::process_tree::UNCONFIRMED.into()),
     }
     let log = read(&log_path, 4 * 1024 * 1024)?;
     let log = String::from_utf8_lossy(&log);

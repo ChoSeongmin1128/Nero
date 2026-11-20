@@ -17,7 +17,7 @@ fn record(kind: &str) -> JobRecord {
         apple_speech_variant: None,
         schema_version: 1,
         id: Uuid::new_v4().to_string(),
-        kind: kind.into(),
+        kind: serde_json::from_value(serde_json::json!(kind)).unwrap(),
         meeting_id: None,
         source_fingerprint: None,
         include_summary: false,
@@ -168,7 +168,9 @@ fn a_failed_import_removes_its_staged_copy_and_keeps_the_original() {
     let core = CoreHandle::open(&process.root).unwrap();
     let source = process.root.join("broken.wav");
     fs::write(&source, b"not audio").unwrap();
-    let id = process.import(core, source.clone()).unwrap().id.unwrap();
+    let id = process
+        .queue_import(core, source.clone(), None, None)
+        .unwrap();
     finish(&process);
     assert_eq!(status(&process, &id), JobStatus::Failed);
     let staged = process.root.join("processing").join(&id).join("source");
@@ -526,7 +528,8 @@ fn rejected_transcript_output_preserves_its_cause_and_remains_retryable() {
         .iter()
         .map(|path| fs::read(path).unwrap())
         .collect();
-    let fingerprint = Processing::source_fingerprint(&core, &meeting_id, "transcribe").unwrap();
+    let fingerprint =
+        Processing::source_fingerprint(&core, &meeting_id, JobKind::Transcribe).unwrap();
     let rejected = serde_json::to_vec(&serde_json::json!({
         "model":"OpenMOSS-Team/MOSS-Transcribe-Diarize",
         "segments":[{"start":0.0,"end":1.0,"text":"미완성 출력","speaker_id":"S1"}],
@@ -574,7 +577,7 @@ fn rejected_transcript_output_preserves_its_cause_and_remains_retryable() {
         edited.version
     );
     assert_eq!(
-        Processing::source_fingerprint(&core, &meeting_id, "transcribe").unwrap(),
+        Processing::source_fingerprint(&core, &meeting_id, JobKind::Transcribe).unwrap(),
         fingerprint
     );
     for (path, bytes) in preserved.iter().zip(before) {
@@ -606,7 +609,8 @@ fn rejected_transcript_output_preserves_its_cause_and_remains_retryable() {
 fn transcript_cas_rejection_reports_source_change_without_replacing_the_current_edit() {
     let (_temporary, process) = setup();
     let (core, meeting_id, source) = edited_source(&process);
-    let fingerprint = Processing::source_fingerprint(&core, &meeting_id, "transcribe").unwrap();
+    let fingerprint =
+        Processing::source_fingerprint(&core, &meeting_id, JobKind::Transcribe).unwrap();
     let edited = core
         .edit_transcript(
             &meeting_id,
@@ -747,7 +751,7 @@ fn retry_rejects_a_changed_source_and_preserves_audio_and_current_edits() {
     let mut record = record("transcribe");
     record.meeting_id = Some(meeting_id.clone());
     record.source_fingerprint =
-        Some(Processing::source_fingerprint(&core, &meeting_id, "transcribe").unwrap());
+        Some(Processing::source_fingerprint(&core, &meeting_id, JobKind::Transcribe).unwrap());
     record.status = JobStatus::Interrupted;
     let id = record.id.clone();
     process.save_job(record).unwrap();
@@ -777,9 +781,9 @@ fn retry_rejects_a_changed_source_and_preserves_audio_and_current_edits() {
 fn retry_binding_rejects_changes_between_initial_check_and_new_input_capture() {
     let (_temporary, process) = setup();
     let (core, id, source) = edited_source(&process);
-    let original = Processing::source_fingerprint(&core, &id, "transcribe").unwrap();
+    let original = Processing::source_fingerprint(&core, &id, JobKind::Transcribe).unwrap();
     assert_eq!(
-        Processing::source_fingerprint(&core, &id, "transcribe").unwrap(),
+        Processing::source_fingerprint(&core, &id, JobKind::Transcribe).unwrap(),
         original
     );
     let edited = core
@@ -791,11 +795,10 @@ fn retry_binding_rejects_changes_between_initial_check_and_new_input_capture() {
         .unwrap();
     let result = process.start_job(
         JobSpec {
-            kind: "transcribe",
             meeting_id: Some(id.clone()),
             source: Some(core.clone()),
             required_fingerprint: Some(original),
-            ..JobSpec::default()
+            ..JobSpec::new(JobKind::Transcribe)
         },
         |_, _, _| panic!("stale retry must not launch"),
     );
@@ -953,10 +956,10 @@ fn speaker_continuation_is_durable_retryable_and_releases_only_the_finished_save
         .into_iter()
         .find(|r| r.id == id)
         .unwrap();
-    assert_eq!(stored.kind, "diarize");
+    assert_eq!(stored.kind, JobKind::Diarize);
     assert_eq!(
         stored.source_fingerprint,
-        Some(Processing::source_fingerprint(&core, &meeting_id, "diarize").unwrap())
+        Some(Processing::source_fingerprint(&core, &meeting_id, JobKind::Diarize).unwrap())
     );
     assert_eq!(
         core.transcript(&meeting_id).unwrap().unwrap().version,
@@ -1001,7 +1004,7 @@ fn cancelled_recognition_cannot_publish_a_speaker_continuation() {
             .find(|r| r.id == id)
             .unwrap()
             .kind,
-        "transcribe"
+        JobKind::Transcribe
     );
 }
 
@@ -1069,7 +1072,7 @@ fn baseline_checkpoint_publishes_bound_continuation_before_cancellation() {
     let mut job = record("transcribe");
     job.meeting_id = Some(meeting_id.clone());
     job.source_fingerprint =
-        Some(Processing::source_fingerprint(&core, &meeting_id, "transcribe").unwrap());
+        Some(Processing::source_fingerprint(&core, &meeting_id, JobKind::Transcribe).unwrap());
     let worker_core = core.clone();
     let worker_meeting = meeting_id.clone();
     let (saved_tx, saved_rx) = mpsc::channel();
@@ -1107,15 +1110,15 @@ fn baseline_checkpoint_publishes_bound_continuation_before_cancellation() {
         .into_iter()
         .find(|record| record.id == id)
         .unwrap();
-    assert_eq!(saved.kind, "diarize");
+    assert_eq!(saved.kind, JobKind::Diarize);
     assert_eq!(saved.status, JobStatus::Cancelled);
     assert_eq!(
         saved.source_fingerprint,
-        Some(Processing::source_fingerprint(&core, &meeting_id, "diarize").unwrap())
+        Some(Processing::source_fingerprint(&core, &meeting_id, JobKind::Diarize).unwrap())
     );
     process
         .retry_with(&core, &id, |record, successor_id| {
-            assert_eq!(record.kind, "diarize");
+            assert_eq!(record.kind, JobKind::Diarize);
             let mut successor = record.clone();
             successor.id = successor_id.into();
             successor.status = JobStatus::Queued;
@@ -1147,7 +1150,7 @@ fn terminology_checkpoint_rebinds_only_the_committed_revision() {
     job.meeting_id = Some(meeting_id.clone());
     job.status = JobStatus::Running;
     job.source_fingerprint =
-        Some(Processing::source_fingerprint(&core, &meeting_id, "diarize").unwrap());
+        Some(Processing::source_fingerprint(&core, &meeting_id, JobKind::Diarize).unwrap());
     let id = job.id.clone();
     process.save_job(job).unwrap();
     process.update(|p| {
@@ -1175,7 +1178,7 @@ fn terminology_checkpoint_rebinds_only_the_committed_revision() {
         .unwrap();
     assert_eq!(
         bound.source_fingerprint,
-        Some(Processing::source_fingerprint(&core, &meeting_id, "diarize").unwrap())
+        Some(Processing::source_fingerprint(&core, &meeting_id, JobKind::Diarize).unwrap())
     );
     let edited = core
         .edit_transcript(
@@ -1205,7 +1208,7 @@ fn continuation_journal_failure_preserves_committed_text_and_blocks_reexecution(
     job.meeting_id = Some(meeting_id.clone());
     job.status = JobStatus::Running;
     job.source_fingerprint =
-        Some(Processing::source_fingerprint(&core, &meeting_id, "transcribe").unwrap());
+        Some(Processing::source_fingerprint(&core, &meeting_id, JobKind::Transcribe).unwrap());
     let id = job.id.clone();
     process.save_job(job).unwrap();
     process.update(|p| {
@@ -1341,7 +1344,7 @@ fn legacy_postprocessing_without_bound_continuation_never_repeats_recognition() 
     job.status = JobStatus::Cancelled;
     job.phase = Some("postprocessing".into());
     job.source_fingerprint =
-        Some(Processing::source_fingerprint(&core, &meeting_id, "transcribe").unwrap());
+        Some(Processing::source_fingerprint(&core, &meeting_id, JobKind::Transcribe).unwrap());
     let id = job.id.clone();
     process.save_job(job).unwrap();
     let preserved = core
@@ -1368,7 +1371,7 @@ fn legacy_postprocessing_without_bound_continuation_never_repeats_recognition() 
         .find(|record| record.id == id)
         .unwrap();
     assert!(!record.acknowledged);
-    assert_eq!(record.kind, "transcribe");
+    assert_eq!(record.kind, JobKind::Transcribe);
 }
 
 #[test]
@@ -1558,12 +1561,18 @@ fn live_scheduler_allows_its_completion_but_not_competing_inference() {
         "f85ab0da-8d37-4bc4-b3d3-789a39d20190",
         "session",
     );
+    let job = |kind: &str, meeting: &str| JobRecord {
+        meeting_id: Some(meeting.into()),
+        ..engine_record(kind, SpeechEngine::Nemotron)
+    };
+    let own = job("transcribe", "f85ab0da-8d37-4bc4-b3d3-789a39d20190");
     process.recording.store(true, Ordering::Release);
-    assert!(!process.live_allows("transcribe", Some("f85ab0da-8d37-4bc4-b3d3-789a39d20190")));
+    assert!(!process.may_start(&own));
+    assert!(!process.may_start(&record("setup")));
     process.recording.store(false, Ordering::Release);
-    assert!(process.live_allows("transcribe", Some("f85ab0da-8d37-4bc4-b3d3-789a39d20190")));
-    assert!(!process.live_allows("transcribe", Some("different")));
-    assert!(!process.live_allows("summary", Some("f85ab0da-8d37-4bc4-b3d3-789a39d20190")));
+    assert!(process.may_start(&own));
+    assert!(!process.may_start(&job("transcribe", "different")));
+    assert!(!process.may_start(&job("summary", "f85ab0da-8d37-4bc4-b3d3-789a39d20190")));
     let cancel = AtomicBool::new(false);
     process
         .wait_live(
@@ -1813,4 +1822,123 @@ fn a_job_the_person_paused_stays_paused_in_the_retry_after_a_recording_took_its_
     assert!(process.user_paused_jobs.lock().unwrap().is_empty());
     process.cancel(&next).unwrap();
     finish(&process);
+}
+
+#[test]
+fn a_job_needing_review_says_whether_its_recognition_or_its_saved_result_is_in_question() {
+    let (_temporary, process) = setup();
+    let mut partial = engine_record("transcribe", SpeechEngine::Moss);
+    partial.status = JobStatus::NeedsReview;
+    partial.phase = Some("mossTimingContext".into());
+    let mut saving = record("summary");
+    saving.status = JobStatus::NeedsReview;
+    saving.phase = Some("saving".into());
+    let mut completed = engine_record("transcribe", SpeechEngine::Moss);
+    completed.status = JobStatus::Completed;
+    completed.phase = Some("mossTimingContext".into());
+    for record in [&partial, &saving, &completed] {
+        process.save_job(record.clone()).unwrap();
+    }
+    let jobs = process.snapshot().jobs;
+    let review = |id: &str| jobs.iter().find(|job| job.id == id).unwrap().review;
+    assert_eq!(review(&partial.id), Some(Review::Recognition));
+    assert_eq!(review(&saving.id), Some(Review::SavedResult));
+    assert_eq!(review(&completed.id), None);
+    assert_eq!(
+        serde_json::to_value(Review::Recognition).unwrap(),
+        "recognition"
+    );
+    assert_eq!(
+        serde_json::to_value(Review::SavedResult).unwrap(),
+        "savedResult"
+    );
+    for phase in ["mossPartial", "mossUnrecognized", "mossTimingContext"] {
+        assert!(recognition_review(Some(phase)));
+    }
+    assert!(!recognition_review(Some("saving")));
+    assert!(!recognition_review(None));
+}
+
+#[test]
+fn recording_transcription_turns_on_only_where_it_applies_and_always_turns_off() {
+    let (temporary, process) = setup();
+    *process.speech_engine.lock().unwrap() = SpeechEngine::QwenKo;
+    assert!(!process.recording_transcription_available());
+    assert_eq!(
+        process.set_recording_transcription(true).err().as_deref(),
+        Some(RECORDING_TRANSCRIPTION_UNAVAILABLE)
+    );
+    assert!(!crate::live_moss::enabled(&process.root));
+    assert!(
+        !process
+            .set_recording_transcription(false)
+            .unwrap()
+            .recording_transcription
+    );
+    let worker = temporary
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("unused-resources/native/moss/MossHarness");
+    std::fs::create_dir_all(worker.parent().unwrap()).unwrap();
+    std::fs::write(&worker, b"fixture").unwrap();
+    // The worker alone is not enough: MOSS must be the selected engine.
+    assert!(!process.recording_transcription_available());
+    *process.speech_engine.lock().unwrap() = SpeechEngine::Moss;
+    let available = crate::job_control::SUPPORTED && cfg!(target_arch = "aarch64");
+    assert_eq!(process.recording_transcription_available(), available);
+    assert_eq!(
+        process.snapshot().recording_transcription_available,
+        available
+    );
+    assert_eq!(process.set_recording_transcription(true).is_ok(), available);
+}
+
+#[test]
+fn a_worker_whose_end_was_not_confirmed_blocks_new_work_after_its_job() {
+    let (_temporary, process) = setup();
+    let id = launch(
+        &process,
+        pending(record("transcribe"), |_, cancel, _| {
+            crate::job_control::report_unconfirmed_termination(&cancel);
+            Err(crate::process_tree::UNCONFIRMED.into())
+        }),
+    );
+    finish(&process);
+    assert_eq!(status(&process, &id), JobStatus::Failed);
+    assert!(process.worker_ready().is_err());
+}
+
+#[test]
+fn imports_and_engine_changes_are_refused_by_processing_before_any_job() {
+    let (_temporary, process) = setup();
+    let core = CoreHandle::open(&process.root).unwrap();
+    let source = process.root.join("meeting.wav");
+    std::fs::write(&source, b"synthetic").unwrap();
+    assert!(matches!(
+        process.import_preflight(&core, None),
+        Err(Refusal::NotReady(_))
+    ));
+    assert!(matches!(
+        process.import(core.clone(), source.clone(), None),
+        Err(Refusal::NotReady(_))
+    ));
+    assert!(process.snapshot().jobs.is_empty());
+    assert!(!process.root.join("processing").exists());
+    assert_eq!(std::fs::read(&source).unwrap(), b"synthetic");
+    // The settings screen shows the same warning before it lets a person prepare Qwen.
+    let warned = crate::speech_recommendation::memory_warning(SpeechEngine::QwenKo).is_some();
+    assert_eq!(
+        matches!(
+            process.speech_engine_preflight(&core, SpeechEngine::QwenKo, false),
+            Err(Refusal::MemoryWarning)
+        ),
+        warned
+    );
+    assert!(process
+        .speech_engine_preflight(&core, SpeechEngine::QwenKo, true)
+        .is_ok());
+    assert!(process
+        .speech_engine_preflight(&core, SpeechEngine::Moss, false)
+        .is_ok());
 }

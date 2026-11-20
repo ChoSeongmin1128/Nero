@@ -137,7 +137,7 @@ status and backend evidence. macOS requires positive Metal initialization, one m
 load and one processed input per chunk. The child receives no inherited `GGML_*` or
 `CRISPASR_*` overrides and its Metal pipeline cache is disabled, so it writes no
 cache outside the job folder. Model and runtime hashes are checked before and after
-the run. A failure never switches to the Nemotron preview silently.
+the run. A failure never switches to another engine silently.
 
 This reduces remaining work after a meeting when the device can keep up. It does
 not establish real-time speed on an 8 GB office laptop, accuracy, eight-person

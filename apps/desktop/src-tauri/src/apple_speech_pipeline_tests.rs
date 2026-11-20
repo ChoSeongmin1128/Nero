@@ -78,10 +78,10 @@ fn apple_file_processing_preserves_text_and_skips_all_speaker_work_when_disabled
             Some(AppleVariant::SpeechTranscriber)
         );
         if speakers {
-            assert_eq!(saved.kind, "diarize");
+            assert_eq!(saved.kind, crate::job_journal::JobKind::Diarize);
             assert_eq!(saved.status, JobStatus::Failed);
         } else {
-            assert_eq!(saved.kind, "transcribe");
+            assert_eq!(saved.kind, crate::job_journal::JobKind::Transcribe);
             assert_eq!(saved.status, JobStatus::Completed);
             assert!(
                 !root.join("models").exists() || !fs::read_dir(root.join("models")).unwrap().any(|entry| entry
@@ -203,7 +203,7 @@ fn a_failed_status_check_neither_delays_startup_nor_hides_the_choice() {
     )
     .unwrap();
     process
-        .request_speech_engine(SpeechEngine::AppleSpeech)
+        .switch_speech_engine(SpeechEngine::AppleSpeech)
         .unwrap();
     assert_eq!(
         process.snapshot().speech_engine,

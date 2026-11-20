@@ -170,6 +170,9 @@ impl Processing {
                 if let Err(error) = run(&process, reader, &path, &cancel, &control) {
                     let _ = write_json(&path.join("live-failure.json"), &json!({"error":error}));
                 }
+                if control.termination_unconfirmed() {
+                    process.cleanup_failed();
+                }
             })
             .map_err(|e| e.to_string())?;
         job.set_handle(handle);

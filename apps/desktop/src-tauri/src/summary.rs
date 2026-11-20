@@ -1133,7 +1133,7 @@ where
         let folder = directory(path, &format!("attempt-{number}")).map_err(storage)?;
         process.update(|p| {
             p.retry_count = number;
-            if p.kind == "summary" {
+            if p.kind == crate::job_journal::JobKind::Summary.as_str() {
                 p.phase = Some("preparing".into());
             }
             p.message = loading_messages[usize::from(number)].into();
@@ -1370,7 +1370,7 @@ fn commit_summary_failure(error: nero_core::CoreError) -> Failure {
 impl Processing {
     pub fn prepare_summary(self: &Arc<Self>) -> Result<Progress, String> {
         crate::release_capabilities::require_local_summary()?;
-        self.prepare_named_model(SUMMARY_MODEL, "summary-model")
+        self.prepare_named_model(SUMMARY_MODEL, crate::job_journal::JobKind::SummaryModel)
     }
     pub fn summarize_selected(
         self: &Arc<Self>,
@@ -1412,13 +1412,12 @@ impl Processing {
 
         self.start_job(
             crate::processing::JobSpec {
-                kind: "summary",
                 meeting_id: Some(meeting_id.clone()),
                 source: Some(core.clone()),
                 required_fingerprint,
                 template: selection.clone(),
                 requested_id,
-                ..Default::default()
+                ..crate::processing::JobSpec::new(crate::job_journal::JobKind::Summary)
             },
             move |process, cancel, path| {
                 let result = (|| -> SummaryResult<Option<String>> {

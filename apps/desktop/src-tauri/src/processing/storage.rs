@@ -238,7 +238,7 @@ mod tests {
             apple_speech_variant: None,
             schema_version: 1,
             id: running.file_name().unwrap().to_string_lossy().into_owned(),
-            kind: "transcribe".into(),
+            kind: crate::job_journal::JobKind::Transcribe,
             meeting_id: Some(waiting.id.clone()),
             source_fingerprint: None,
             include_summary: false,

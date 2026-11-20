@@ -102,7 +102,10 @@ file of that model is verified.
   persistence succeeds. User cancellation is not promoted to a recording interruption.
 - Baseline recognition, final publication and imported-audio publication save their phase
   before applying effects. Cancellation is rejected during final publication.
-- Unconfirmed worker termination blocks new capture/inference. Typed failure feedback is
+- Every external worker (MOSS, Qwen, Whisper, macOS system transcription, native speech and
+  audio conversion) is waited for and stopped by one supervision loop. A stop whose end it
+  cannot confirm marks the worker's job, and the job's end blocks new capture/inference,
+  as any unconfirmed worker termination does. Typed failure feedback is
   preserved; acknowledging an alert neither erases the outcome nor retries its operation.
   A completed model preparation acknowledges earlier failed, cancelled or interrupted
   preparations of the same kind, so their alerts no longer show; their outcomes remain.
@@ -153,7 +156,8 @@ term definitions and are not automatically injected as such.
 ## Presentation and platforms
 
 Waiting, interruption, failure and uncertain saving have distinct feedback and ID-based
-actions. Unrelated downloads do not block existing meetings. List updates preserve edits,
+actions. A job that ends as needsReview names what to review: a recognition saved with
+missing chunks or range-only times, or a result whose saving is uncertain. Unrelated downloads do not block existing meetings. List updates preserve edits,
 playback and selected tabs. Read-only CLI/MCP never initialize this job writer/recovery.
 
 The recorder remains non-focused and always-on-top. Physical work-area checks recover

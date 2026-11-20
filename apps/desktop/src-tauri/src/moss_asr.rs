@@ -1,4 +1,5 @@
 use crate::failure::{Failure, FailureKind};
+use crate::process_tree::{supervise, Ended, Unconfirmed, Watch};
 use crate::processing::{cancelled, plain_file};
 use crate::speech_audio::AnalysisAudio;
 use nero_core::{RecognitionChunkState, MOSS_CHUNK_FRAMES, MOSS_CHUNK_POLICY};
@@ -8,8 +9,8 @@ use std::fs::{self, OpenOptions};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::sync::atomic::AtomicBool;
+use std::time::Duration;
 
 pub(super) const MANIFEST: &str =
     include_str!("../../../../crates/nero-core/resources/models/moss.json");
@@ -275,31 +276,21 @@ fn run_worker(
                 .map_err(|e| e.to_string())?,
         ));
     let mut child = crate::process_tree::spawn(&mut command)?;
-    let began = Instant::now();
     let limit = Duration::from_secs(600 + chunks as u64 * 180);
-    let mut pauser = crate::job_control::Pauser::new(cancel);
-    loop {
-        if cancel.load(Ordering::Acquire)
-            || abort()
-            || began.elapsed().saturating_sub(pauser.paused()) > limit
+    let stop = || {
+        abort()
             || [&stdout, &stderr]
                 .iter()
                 .any(|p| fs::metadata(p).is_ok_and(|m| m.len() > 64 * 1024 * 1024))
-        {
-            pauser.release(&child);
-            child.kill().map_err(|_| {
-                failure("MOSS 실행기를 종료하지 못했습니다. 앱을 다시 열어 주세요.")
-            })?;
-            child.wait().map_err(|e| e.to_string())?;
-            break;
-        }
-        if child.try_wait().map_err(|e| e.to_string())?.is_some() {
-            break;
-        }
-        pauser.sync(&child);
-        std::thread::sleep(Duration::from_millis(100));
+    };
+    // The chunks it wrote before it ended are read either way.
+    match supervise(&mut child, cancel, Watch::budget(limit).stop_when(&stop)) {
+        Ok(Ended::Unreadable(error)) => Err(error.to_string().into()),
+        Ok(_) => Ok(()),
+        Err(Unconfirmed) => Err(failure(
+            "MOSS 실행기를 종료하지 못했습니다. 앱을 다시 열어 주세요.",
+        )),
     }
-    Ok(())
 }
 
 /// Recognizes every whole chunk of a WAV written as `canonical_wav_header` + PCM16,

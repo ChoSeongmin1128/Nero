@@ -229,12 +229,11 @@ impl Processing {
                 candidates: Vec::new(),
             });
         receipt.candidates.retain(|engine| retired(*engine));
-        let required = target.requirements();
         for engine in SpeechEngine::ALL
             .into_iter()
             .filter(|engine| retired(*engine))
         {
-            if !required.contains(&engine) && !receipt.candidates.contains(&engine) {
+            if engine != target && !receipt.candidates.contains(&engine) {
                 receipt.candidates.push(engine);
             }
         }
@@ -273,24 +272,27 @@ impl Processing {
                 return Ok(true);
             }
             self.worker_ready()?;
-            let current_requirements = current.requirements();
-            let mut required = current_requirements.clone();
+            let mut required = vec![current];
             if let Some(pending) = *self.speech_switch.lock().unwrap() {
-                required.extend(pending.target.requirements());
+                required.push(pending.target);
             }
             for record in self.records.lock().unwrap().iter() {
-                if matches!(record.kind.as_str(), "setup" | "model" | "transcribe")
-                    && (matches!(
-                        record.status,
-                        JobStatus::Queued | JobStatus::Running | JobStatus::Cancelling
-                    ) || retry_block_reason(record).is_none())
+                if matches!(
+                    record.kind,
+                    crate::job_journal::JobKind::Setup
+                        | crate::job_journal::JobKind::Model
+                        | crate::job_journal::JobKind::Transcribe
+                ) && (matches!(
+                    record.status,
+                    JobStatus::Queued | JobStatus::Running | JobStatus::Cancelling
+                ) || retry_block_reason(record).is_none())
                 {
-                    required.extend(record.speech_engine.requirements());
+                    required.push(record.speech_engine);
                 }
             }
             let candidates = receipt.candidates.clone();
             for engine in candidates {
-                if current_requirements.contains(&engine) {
+                if engine == current {
                     receipt.candidates.retain(|candidate| *candidate != engine);
                     save(&self.root, &receipt)?;
                     continue;
@@ -424,7 +426,7 @@ mod tests {
             apple_speech_variant: None,
             schema_version: 1,
             id: uuid::Uuid::new_v4().to_string(),
-            kind: "transcribe".into(),
+            kind: crate::job_journal::JobKind::Transcribe,
             meeting_id: None,
             source_fingerprint: None,
             include_summary: false,
@@ -473,7 +475,7 @@ mod tests {
         let old_revision = process.root.join("models/Nemotron35-ASR-other-revision");
         fs::create_dir(&old_revision).unwrap();
         fs::write(old_revision.join(&name), b"keep").unwrap();
-        let after = process.request_speech_engine(SpeechEngine::Moss).unwrap();
+        let after = process.switch_speech_engine(SpeechEngine::Moss).unwrap();
         assert_eq!(after.speech_engine, Some(SpeechEngine::Moss));
         assert!(after.model_ready);
         assert!(after.speech_cleanup.is_none());
@@ -499,7 +501,7 @@ mod tests {
         ready(&process, SpeechEngine::Nemotron);
         ready(&process, SpeechEngine::Moss);
         process.cleanup_failed();
-        let after = process.request_speech_engine(SpeechEngine::Moss).unwrap();
+        let after = process.switch_speech_engine(SpeechEngine::Moss).unwrap();
         assert_eq!(after.speech_engine, Some(SpeechEngine::Moss));
         assert!(after.model_ready);
         assert!(after
@@ -523,7 +525,7 @@ mod tests {
         }
         ready(&process, SpeechEngine::Nemotron);
         ready(&process, SpeechEngine::QwenKo);
-        let after = process.request_speech_engine(SpeechEngine::QwenKo).unwrap();
+        let after = process.switch_speech_engine(SpeechEngine::QwenKo).unwrap();
         assert_eq!(after.speech_engine, Some(SpeechEngine::QwenKo));
         assert!(!model_file(&process, SpeechEngine::Nemotron).exists());
         assert!(after.speech_cleanup.is_none());
@@ -555,7 +557,7 @@ mod tests {
         ready(&process, SpeechEngine::Nemotron);
         ready(&process, SpeechEngine::Moss);
         process.records.lock().unwrap().push(transcribe_record());
-        let after = process.request_speech_engine(SpeechEngine::Moss).unwrap();
+        let after = process.switch_speech_engine(SpeechEngine::Moss).unwrap();
         assert!(after.speech_cleanup.is_some());
         assert!(model_file(&process, SpeechEngine::Nemotron).exists());
         let revision = process.revision.load(Ordering::Acquire);
@@ -577,7 +579,7 @@ mod tests {
         let mut record = transcribe_record();
         record.phase = Some("postprocessing".into());
         process.records.lock().unwrap().push(record);
-        process.request_speech_engine(SpeechEngine::Moss).unwrap();
+        process.switch_speech_engine(SpeechEngine::Moss).unwrap();
         assert!(!model_file(&process, SpeechEngine::Nemotron).exists());
     }
 
@@ -590,7 +592,7 @@ mod tests {
         ready(&process, SpeechEngine::Nemotron);
         ready(&process, SpeechEngine::Moss);
         process.model_cleanup_ready.store(false, Ordering::Release);
-        process.request_speech_engine(SpeechEngine::Moss).unwrap();
+        process.switch_speech_engine(SpeechEngine::Moss).unwrap();
         assert!(model_file(&process, SpeechEngine::Nemotron).exists());
         process.model_cleanup_ready.store(true, Ordering::Release);
         process.recording.store(true, Ordering::Release);
@@ -622,7 +624,7 @@ mod tests {
             .error
             .is_some());
         assert!(load(&process.root).unwrap().is_some());
-        process.request_speech_engine(SpeechEngine::Moss).unwrap();
+        process.switch_speech_engine(SpeechEngine::Moss).unwrap();
         assert!(!model_file(&process, SpeechEngine::Nemotron).exists());
         assert!(load(&process.root).unwrap().is_none());
     }
@@ -636,9 +638,9 @@ mod tests {
         ready(&process, SpeechEngine::Nemotron);
         ready(&process, SpeechEngine::Moss);
         process.records.lock().unwrap().push(transcribe_record());
-        process.request_speech_engine(SpeechEngine::Moss).unwrap();
+        process.switch_speech_engine(SpeechEngine::Moss).unwrap();
         assert!(process
-            .request_speech_engine(SpeechEngine::Nemotron)
+            .switch_speech_engine(SpeechEngine::Nemotron)
             .is_err());
         assert_eq!(process.speech_engine(), SpeechEngine::Moss);
         assert!(model_file(&process, SpeechEngine::Nemotron).exists());
@@ -687,7 +689,7 @@ mod tests {
         ] {
             ready(&process, engine);
         }
-        process.request_speech_engine(SpeechEngine::Moss).unwrap();
+        process.switch_speech_engine(SpeechEngine::Moss).unwrap();
         for engine in [
             SpeechEngine::Nemotron,
             SpeechEngine::WhisperTurbo,
@@ -709,7 +711,7 @@ mod tests {
         ready(&process, SpeechEngine::Moss);
         ready(&process, SpeechEngine::QwenKo);
         ready(&process, SpeechEngine::Nemotron);
-        process.request_speech_engine(SpeechEngine::Moss).unwrap();
+        process.switch_speech_engine(SpeechEngine::Moss).unwrap();
         save(
             &process.root,
             &Receipt {
@@ -744,7 +746,7 @@ mod tests {
         let outside = process.root.join("outside-model");
         fs::write(&outside, b"outside").unwrap();
         std::os::unix::fs::symlink(&outside, &old).unwrap();
-        let after = process.request_speech_engine(SpeechEngine::Moss).unwrap();
+        let after = process.switch_speech_engine(SpeechEngine::Moss).unwrap();
         assert_eq!(after.speech_engine, Some(SpeechEngine::Moss));
         assert!(after.speech_cleanup.unwrap().error.is_some());
         assert_eq!(fs::read(&outside).unwrap(), b"outside");

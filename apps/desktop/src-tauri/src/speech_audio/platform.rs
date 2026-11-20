@@ -29,7 +29,6 @@ pub(super) fn prepare(
                 destination.as_os_str().to_os_string(),
             ];
             return crate::native_speech::run(
-                process,
                 &process.worker("AudioPrepare"),
                 &arguments,
                 &work.join("prepare.log"),

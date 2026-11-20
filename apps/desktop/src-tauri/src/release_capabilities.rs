@@ -58,7 +58,9 @@ mod tests {
         let before = inventory(&root);
         for result in [
             process.prepare_summary(),
-            process.prepare_meeting_models(true),
+            process
+                .prepare_meeting_models(&core, true)
+                .map_err(String::from),
             process.summarize_selected(core.clone(), "missing-meeting".into(), None),
         ] {
             assert_eq!(result.err().unwrap(), LOCAL_SUMMARY_MESSAGE);

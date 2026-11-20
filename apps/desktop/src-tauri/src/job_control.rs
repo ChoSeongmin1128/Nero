@@ -73,6 +73,8 @@ pub(crate) struct JobControl {
     auto: AtomicU8,
     throttle: AtomicBool,
     held: AtomicU32,
+    // A worker of this job was told to stop and its end could not be confirmed.
+    unconfirmed: AtomicBool,
 }
 
 static REGISTRY: Mutex<Vec<Weak<JobControl>>> = Mutex::new(Vec::new());
@@ -87,6 +89,7 @@ impl JobControl {
             auto: AtomicU8::new(0),
             throttle: AtomicBool::new(false),
             held: AtomicU32::new(0),
+            unconfirmed: AtomicBool::new(false),
         });
         let mut registry = REGISTRY.lock().unwrap();
         registry.retain(|entry| entry.strong_count() > 0);
@@ -107,6 +110,12 @@ impl JobControl {
 
     pub(crate) fn pausable(&self) -> bool {
         self.pausable
+    }
+
+    /// Whether a worker of this job may still be running after it was told to stop.
+    /// The job's owner then refuses new work, as for any unconfirmed worker end.
+    pub(crate) fn termination_unconfirmed(&self) -> bool {
+        self.unconfirmed.load(Ordering::Acquire)
     }
 
     pub(crate) fn set_user(&self, paused: bool) {
@@ -186,6 +195,13 @@ pub(crate) fn throttle_this_thread(throttle: bool) {
 pub(crate) fn pause_point(cancel: &AtomicBool) {
     if let Some(control) = JobControl::find(cancel) {
         control.wait_while_paused();
+    }
+}
+
+/// Records on the job that owns `cancel` that one of its workers may still be running.
+pub(crate) fn report_unconfirmed_termination(cancel: &AtomicBool) {
+    if let Some(control) = JobControl::find(cancel) {
+        control.unconfirmed.store(true, Ordering::Release);
     }
 }
 

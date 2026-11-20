@@ -1,4 +1,4 @@
-use crate::processing::{Processing, Progress};
+use crate::processing::{Processing, Progress, Refusal};
 use crate::publish;
 use crate::speech_choice::SpeechEngine;
 use nero_core::agent_control::{
@@ -7,7 +7,7 @@ use nero_core::agent_control::{
 };
 use nero_core::{CoreError, CoreHandle, DraftAttachmentTarget};
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -350,19 +350,26 @@ impl Drop for AgentMutations {
 }
 
 // What agent processing requests need from the running app. Requests use the same
-// `Processing` entry points as the app's own screens.
+// `Processing` entry points as the app's own screens, which also check their conditions.
 trait ProcessingPort {
     fn progress(&self) -> Progress;
-    fn recording(&self) -> Result<bool, ControlError>;
-    fn require_meeting_models(&self) -> Result<(), String>;
-    fn validate_draft(&self, target: &DraftAttachmentTarget) -> nero_core::Result<()>;
+    fn import_preflight(&self) -> Result<(), Refusal>;
     fn import(
         &self,
         source: PathBuf,
         target: Option<DraftAttachmentTarget>,
-    ) -> Result<Progress, String>;
-    fn jobs(&self) -> Result<Value, ControlError>;
-    fn request_speech_engine(&self, engine: SpeechEngine) -> Result<Progress, String>;
+    ) -> Result<String, Refusal>;
+    fn job(&self, id: &str) -> Value;
+    fn speech_engine_preflight(
+        &self,
+        engine: SpeechEngine,
+        acknowledged: bool,
+    ) -> Result<(), Refusal>;
+    fn request_speech_engine(
+        &self,
+        engine: SpeechEngine,
+        acknowledged: bool,
+    ) -> Result<Progress, Refusal>;
     fn cancel_speech_switch(&self) -> Result<Progress, String>;
 }
 
@@ -375,33 +382,34 @@ impl ProcessingPort for AppProcessing<'_> {
     fn progress(&self) -> Progress {
         self.processing.snapshot()
     }
-    fn recording(&self) -> Result<bool, ControlError> {
-        let snapshot = self.core.snapshot().map_err(ControlError::core)?;
-        Ok(snapshot.active_session().is_some())
-    }
-    fn require_meeting_models(&self) -> Result<(), String> {
-        self.processing.require_meeting_models()
-    }
-    fn validate_draft(&self, target: &DraftAttachmentTarget) -> nero_core::Result<()> {
-        self.core.validate_draft_attachment(target.clone())
+    fn import_preflight(&self) -> Result<(), Refusal> {
+        self.processing.import_preflight(self.core, None)
     }
     fn import(
         &self,
         source: PathBuf,
         target: Option<DraftAttachmentTarget>,
-    ) -> Result<Progress, String> {
-        match target {
-            Some(target) => self
-                .processing
-                .import_into_draft(self.core.clone(), source, target),
-            None => self.processing.import(self.core.clone(), source),
-        }
+    ) -> Result<String, Refusal> {
+        self.processing.import(self.core.clone(), source, target)
     }
-    fn jobs(&self) -> Result<Value, ControlError> {
-        self.processing.agent_jobs(None, 0, 200)
+    fn job(&self, id: &str) -> Value {
+        self.processing.agent_job(id).unwrap_or(Value::Null)
     }
-    fn request_speech_engine(&self, engine: SpeechEngine) -> Result<Progress, String> {
-        self.processing.request_speech_engine(engine)
+    fn speech_engine_preflight(
+        &self,
+        engine: SpeechEngine,
+        acknowledged: bool,
+    ) -> Result<(), Refusal> {
+        self.processing
+            .speech_engine_preflight(self.core, engine, acknowledged)
+    }
+    fn request_speech_engine(
+        &self,
+        engine: SpeechEngine,
+        acknowledged: bool,
+    ) -> Result<Progress, Refusal> {
+        self.processing
+            .request_speech_engine(self.core, engine, acknowledged)
     }
     fn cancel_speech_switch(&self) -> Result<Progress, String> {
         self.processing.cancel_speech_switch()
@@ -418,6 +426,24 @@ fn rejected() -> ControlError {
 }
 fn active_job(status: &str) -> bool {
     matches!(status, "queued" | "running" | "cancelling")
+}
+// The codes agents read for each reason Processing refuses; `other` answers the rest.
+fn refused(refusal: Refusal, other: impl FnOnce(String) -> ControlError) -> ControlError {
+    match refusal {
+        Refusal::Recording(_) => recording_active(),
+        Refusal::NotReady(_) => {
+            ControlError::new("speech_not_ready", "음성 인식을 먼저 준비해 주세요.")
+        }
+        Refusal::MemoryWarning => ControlError::new(
+            "memory_warning_unacknowledged",
+            "메모리 경고에 대한 사용자 확인이 필요합니다.",
+        ),
+        Refusal::Meeting(CoreError::InvalidInput(_)) => {
+            ControlError::core(CoreError::MeetingNotFound)
+        }
+        Refusal::Meeting(error) => ControlError::core(error),
+        Refusal::Other(message) => other(message),
+    }
 }
 
 fn handle_processing<G>(
@@ -484,47 +510,18 @@ fn meeting_import<G>(
     save_edits: impl FnOnce() -> Result<G, ControlError>,
 ) -> Result<Value, ControlError> {
     let source = import_source(path)?;
-    if port.recording()? {
-        return Err(recording_active());
-    }
-    port.require_meeting_models()
-        .map_err(|_| ControlError::new("speech_not_ready", "음성 인식을 먼저 준비해 주세요."))?;
-    let _edits = target.as_ref().map(|_| save_edits()).transpose()?;
-    if let Some(target) = &target {
-        port.validate_draft(target).map_err(|error| match error {
-            CoreError::InvalidInput(_) => ControlError::core(CoreError::MeetingNotFound),
-            error => ControlError::core(error),
-        })?;
-    }
-    let before = port
-        .progress()
-        .jobs
-        .into_iter()
-        .map(|job| job.id)
-        .collect::<HashSet<_>>();
-    let meeting_id = target.as_ref().map(|target| target.meeting_id.clone());
     // The queue's own reason (the same import already queued, no space) is kept.
-    port.import(source, target)
-        .map_err(|message| ControlError::new("processing_rejected", message))?;
-    // The queue admits one import per target, so the new import record is this request's.
-    let job = port
-        .jobs()
-        .ok()
-        .and_then(|page| {
-            page["jobs"]
-                .as_array()?
-                .iter()
-                .find(|job| {
-                    job["kind"] == "import"
-                        && job["id"].as_str().is_some_and(|id| !before.contains(id))
-                        && meeting_id
-                            .as_deref()
-                            .is_none_or(|id| job["meetingId"].as_str() == Some(id))
-                })
-                .cloned()
+    let refused = |refusal| {
+        refused(refusal, |message| {
+            ControlError::new("processing_rejected", message)
         })
-        .unwrap_or(Value::Null);
-    Ok(json!({"applied":true,"meetingId":meeting_id,"job":job}))
+    };
+    port.import_preflight().map_err(refused)?;
+    // Open editors are saved before the import checks the draft's version.
+    let _edits = target.as_ref().map(|_| save_edits()).transpose()?;
+    let meeting_id = target.as_ref().map(|target| target.meeting_id.clone());
+    let id = port.import(source, target).map_err(refused)?;
+    Ok(json!({"applied":true,"meetingId":meeting_id,"job":port.job(&id)}))
 }
 
 fn unknown_engine() -> ControlError {
@@ -582,9 +579,6 @@ fn speech_engine_set(
     acknowledged: bool,
 ) -> Result<Value, ControlError> {
     let engine = speech_engine(id)?;
-    if port.recording()? {
-        return Err(recording_active());
-    }
     let progress = port.progress();
     let choice = progress
         .speech_choices
@@ -597,13 +591,8 @@ fn speech_engine_set(
             "이 기기에서 사용할 수 없는 음성 인식 엔진입니다.",
         ));
     }
-    // The settings screen asks for the same acknowledgement before preparing.
-    if choice.memory_warning.is_some() && !choice.ready && !acknowledged {
-        return Err(ControlError::new(
-            "memory_warning_unacknowledged",
-            "메모리 경고에 대한 사용자 확인이 필요합니다.",
-        ));
-    }
+    port.speech_engine_preflight(engine, acknowledged)
+        .map_err(|refusal| refused(refusal, |_| rejected()))?;
     let unchanged = progress.speech_switch.as_ref().map_or(
         progress.speech_engine == Some(engine) && progress.model_ready,
         |switch| switch.target == engine && switch.preparing,
@@ -617,7 +606,9 @@ fn speech_engine_set(
             "처리 작업이 끝난 뒤 다시 시도해 주세요.",
         ));
     }
-    let progress = port.request_speech_engine(engine).map_err(|_| rejected())?;
+    let progress = port
+        .request_speech_engine(engine, acknowledged)
+        .map_err(|refusal| refused(refusal, |_| rejected()))?;
     Ok(engine_outcome(&progress, engine))
 }
 
@@ -691,48 +682,78 @@ mod tests {
         }
     }
 
+    impl Fake {
+        // The conditions `Processing` checks, in its order.
+        fn preflight(&self) -> Result<(), Refusal> {
+            if self.recording {
+                return Err(Refusal::Recording("synthetic".into()));
+            }
+            if self.models_missing {
+                return Err(Refusal::NotReady("synthetic".into()));
+            }
+            Ok(())
+        }
+    }
+
     impl ProcessingPort for Fake {
         fn progress(&self) -> Progress {
             self.progress.lock().unwrap().clone()
         }
-        fn recording(&self) -> Result<bool, ControlError> {
-            Ok(self.recording)
-        }
-        fn require_meeting_models(&self) -> Result<(), String> {
-            if self.models_missing {
-                Err("synthetic".into())
-            } else {
-                Ok(())
-            }
-        }
-        fn validate_draft(&self, _: &DraftAttachmentTarget) -> nero_core::Result<()> {
-            self.call("validate");
-            self.draft_error.lock().unwrap().take().map_or(Ok(()), Err)
+        fn import_preflight(&self) -> Result<(), Refusal> {
+            self.preflight()
         }
         fn import(
             &self,
             source: PathBuf,
             target: Option<DraftAttachmentTarget>,
-        ) -> Result<Progress, String> {
+        ) -> Result<String, Refusal> {
+            self.preflight()?;
+            if target.is_some() {
+                self.call("validate");
+                if let Some(error) = self.draft_error.lock().unwrap().take() {
+                    return Err(Refusal::Meeting(error));
+                }
+            }
             self.call("import");
-            let mut progress = self.progress.lock().unwrap();
-            progress.jobs.push(JobView {
-                id: uuid::Uuid::new_v4().to_string(),
+            let id = uuid::Uuid::new_v4().to_string();
+            self.progress.lock().unwrap().jobs.push(JobView {
+                id: id.clone(),
                 kind: "import".into(),
                 meeting_id: target.as_ref().map(|target| target.meeting_id.clone()),
                 status: "queued".into(),
                 ..Default::default()
             });
             self.imports.lock().unwrap().push((source, target));
-            Ok(progress.clone())
+            Ok(id)
         }
-        fn jobs(&self) -> Result<Value, ControlError> {
-            let jobs = self.progress.lock().unwrap().jobs.iter().rev().map(|job| {
+        fn job(&self, id: &str) -> Value {
+            self.progress.lock().unwrap().jobs.iter().find(|job| job.id == id).map_or(Value::Null, |job| {
                 json!({"id":job.id,"kind":job.kind,"meetingId":job.meeting_id,"status":job.status,"editVersion":"sha256:synthetic"})
-            }).collect::<Vec<_>>();
-            Ok(json!({"jobs":jobs}))
+            })
         }
-        fn request_speech_engine(&self, engine: SpeechEngine) -> Result<Progress, String> {
+        fn speech_engine_preflight(
+            &self,
+            engine: SpeechEngine,
+            acknowledged: bool,
+        ) -> Result<(), Refusal> {
+            if self.recording {
+                return Err(Refusal::Recording("synthetic".into()));
+            }
+            let progress = self.progress.lock().unwrap();
+            let warned = progress.speech_choices.iter().any(|choice| {
+                choice.id == engine && choice.memory_warning.is_some() && !choice.ready
+            });
+            if warned && !acknowledged {
+                return Err(Refusal::MemoryWarning);
+            }
+            Ok(())
+        }
+        fn request_speech_engine(
+            &self,
+            engine: SpeechEngine,
+            acknowledged: bool,
+        ) -> Result<Progress, Refusal> {
+            self.speech_engine_preflight(engine, acknowledged)?;
             self.engines.lock().unwrap().push(engine);
             let mut progress = self.progress.lock().unwrap();
             let ready = progress

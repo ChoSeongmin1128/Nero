@@ -254,7 +254,6 @@ pub(crate) async fn create_meeting(
     time_zone: String,
     scope_revision: u64,
     target: Option<nero_core::DraftAttachmentTarget>,
-    for_recording: bool,
 ) -> Result<Meeting, String> {
     let state = app.state::<DesktopState>();
     state.processing.require_meeting_models()?;
@@ -278,8 +277,6 @@ pub(crate) async fn create_meeting(
             let reference = calendar_reference(event, zone.clone())?;
             match target {
                 Some(target) => core.attach_calendar_to_draft(target, reference),
-                // A recording goes into a meeting that can still take audio.
-                None if for_recording => core.meeting_for_calendar_recording(reference),
                 None => core.create_meeting_from_calendar(reference),
             }
             .map_err(|error| error.to_string())
@@ -503,19 +500,52 @@ pub async fn create_meeting_from_calendar(
     time_zone: String,
     scope_revision: u64,
     target: Option<nero_core::DraftAttachmentTarget>,
-    for_recording: Option<bool>,
 ) -> Result<Meeting, String> {
     crate::require_main(&window)?;
-    create_meeting(
-        &app,
-        occurrence_key,
-        day,
-        time_zone,
-        scope_revision,
-        target,
-        for_recording.unwrap_or(false),
-    )
-    .await
+    create_meeting(&app, occurrence_key, day, time_zone, scope_revision, target).await
+}
+
+/// The day view an occurrence was chosen from, as `read_calendar_meeting_occurrences`
+/// answered it.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OccurrenceScope {
+    day: String,
+    time_zone: String,
+    scope_revision: u64,
+}
+
+// Records the occurrence a person chose on home into its meeting that can still take
+// audio, or a new numbered one; Core decides which and starts capture in the same call,
+// as for a reminder, so a refused start leaves no empty meeting.
+#[tauri::command]
+pub async fn record_calendar_occurrence(
+    app: tauri::AppHandle,
+    window: WebviewWindow,
+    occurrence_key: String,
+    scope: OccurrenceScope,
+    device_id: Option<String>,
+) -> Result<Snapshot, String> {
+    crate::require_main(&window)?;
+    app.state::<DesktopState>()
+        .processing
+        .require_meeting_models()?;
+    let service = app.state::<CalendarDesktop>().service()?;
+    let result = service
+        .browse_day(scope.day, scope.time_zone, Some(scope.scope_revision))
+        .await;
+    publish(&app);
+    let browse = result?;
+    let zone = jiff::tz::TimeZone::get(&browse.time_zone)
+        .map_err(|_| "일정 시간대를 확인하지 못했습니다.".to_string())?;
+    let (_, snapshot) = crate::start_capture(&app, device_id, move |core, device| {
+        service.with_browsed_occurrence(&browse, &occurrence_key, |event| {
+            core.create_calendar_recording(calendar_reference(event, zone)?, device)
+                .map_err(|error| error.to_string())
+        })
+    })
+    .await?;
+    Ok(snapshot)
 }
 #[tauri::command]
 pub fn calendar_reminder_ready(

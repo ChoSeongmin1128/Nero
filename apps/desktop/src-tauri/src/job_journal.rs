@@ -8,16 +8,53 @@ use uuid::Uuid;
 
 const SCHEMA_VERSION: u32 = 1;
 const MAX_RECORD_BYTES: u64 = 16 * 1024;
-const KINDS: &[&str] = &[
-    "setup",
-    "model",
-    "summary-model",
-    "speaker-model",
-    "transcribe",
-    "summary",
-    "diarize",
-    "import",
-];
+
+// What a job does, stored as the same strings as before the enum. A record with a kind
+// this version does not know fails to read, and recovery sets that one job aside.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub(super) enum JobKind {
+    #[serde(rename = "setup")]
+    Setup,
+    #[serde(rename = "model")]
+    Model,
+    #[serde(rename = "summary-model")]
+    SummaryModel,
+    #[serde(rename = "speaker-model")]
+    SpeakerModel,
+    #[serde(rename = "transcribe")]
+    Transcribe,
+    #[serde(rename = "summary")]
+    Summary,
+    #[serde(rename = "diarize")]
+    Diarize,
+    #[serde(rename = "import")]
+    Import,
+}
+
+impl JobKind {
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            Self::Setup => "setup",
+            Self::Model => "model",
+            Self::SummaryModel => "summary-model",
+            Self::SpeakerModel => "speaker-model",
+            Self::Transcribe => "transcribe",
+            Self::Summary => "summary",
+            Self::Diarize => "diarize",
+            Self::Import => "import",
+        }
+    }
+    // Downloads a model rather than reading a meeting.
+    pub(super) fn prepares_model(self) -> bool {
+        matches!(
+            self,
+            Self::Setup | Self::Model | Self::SummaryModel | Self::SpeakerModel
+        )
+    }
+    pub(super) fn summarizes(self) -> bool {
+        matches!(self, Self::Summary | Self::SummaryModel)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -45,7 +82,7 @@ pub(super) struct JobRecord {
     pub apple_speech_variant: Option<crate::speech_choice::AppleVariant>,
     pub schema_version: u32,
     pub id: String,
-    pub kind: String,
+    pub kind: JobKind,
     pub meeting_id: Option<String>,
     pub source_fingerprint: Option<String>,
     pub include_summary: bool,
@@ -77,7 +114,6 @@ impl JobRecord {
                 .as_ref()
                 .is_some_and(|id| !valid_id(id) || id == &self.id)
             || (self.phase.as_deref() == Some("retryPending") && self.retry_successor_id.is_none())
-            || !KINDS.contains(&self.kind.as_str())
             || self.source_fingerprint.as_ref().is_some_and(|value| {
                 value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit())
             })
@@ -558,7 +594,7 @@ mod tests {
             apple_speech_variant: None,
             schema_version: 1,
             id: Uuid::new_v4().to_string(),
-            kind: "transcribe".into(),
+            kind: JobKind::Transcribe,
             meeting_id: Some(Uuid::new_v4().to_string()),
             source_fingerprint: Some("a".repeat(64)),
             include_summary: false,
@@ -782,10 +818,6 @@ mod tests {
                 ..original.clone()
             },
             JobRecord {
-                kind: "shell".into(),
-                ..original.clone()
-            },
-            JobRecord {
                 source_fingerprint: Some("bad".into()),
                 ..original.clone()
             },
@@ -867,6 +899,54 @@ mod tests {
         assert!(journal.records().is_err());
         assert!(journal.recover().is_err());
         assert_eq!(journal.recover_available().unwrap().records, report.records);
+    }
+
+    #[test]
+    fn job_kinds_keep_their_stored_names() {
+        for (kind, name) in [
+            (JobKind::Setup, "setup"),
+            (JobKind::Model, "model"),
+            (JobKind::SummaryModel, "summary-model"),
+            (JobKind::SpeakerModel, "speaker-model"),
+            (JobKind::Transcribe, "transcribe"),
+            (JobKind::Summary, "summary"),
+            (JobKind::Diarize, "diarize"),
+            (JobKind::Import, "import"),
+        ] {
+            assert_eq!(kind.as_str(), name);
+            assert_eq!(serde_json::to_value(kind).unwrap(), name);
+            assert_eq!(
+                serde_json::from_value::<JobKind>(serde_json::json!(name)).unwrap(),
+                kind
+            );
+        }
+    }
+
+    // A newer version may store a kind this one does not know. That job fails to read
+    // like a damaged one: recovery sets it aside with its bytes and keeps the others.
+    #[test]
+    fn a_job_of_an_unknown_kind_is_set_aside_and_the_others_recover() {
+        let temp = tempfile::tempdir().unwrap();
+        let journal = Journal::new(temp.path().into());
+        let known = record(JobStatus::Queued);
+        let unknown = record(JobStatus::Completed);
+        journal.write(&known).unwrap();
+        journal.write(&unknown).unwrap();
+        let stored = states(temp.path(), &unknown).join("00000000000000000001.json");
+        let mut raw = serde_json::to_value(&unknown).unwrap();
+        raw["kind"] = serde_json::json!("future-kind");
+        fs::write(&stored, format!("{raw}\n")).unwrap();
+        let before = fs::read(&stored).unwrap();
+
+        let report = journal.recover_available().unwrap();
+        assert_eq!(report.records.len(), 1);
+        assert_eq!(report.records[0].id, known.id);
+        assert_eq!(report.records[0].status, JobStatus::Interrupted);
+        assert_eq!(report.issues.len(), 1);
+        assert!(report.issues[0].contains(unknown.id.as_str()));
+        assert_eq!(fs::read(&stored).unwrap(), before);
+        assert!(journal.write(&unknown).is_err());
+        assert_eq!(fs::read(&stored).unwrap(), before);
     }
 
     #[test]

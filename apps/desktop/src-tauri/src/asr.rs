@@ -196,7 +196,6 @@ pub fn recognize(
     });
     let run = |gpu: bool, output: &Path| {
         native_speech::run(
-            process,
             &executable(process, gpu),
             &arguments(audio, &model, output, gpu),
             &path.join(if gpu { "asr-gpu.log" } else { "asr-cpu.log" }),
