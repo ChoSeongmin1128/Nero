@@ -15,7 +15,23 @@ export function homeEvents(occurrences = [], now = Date.now()) {
 // `noticeState` how far their action got; `onNotice` runs it through the shared notice actions.
 export function mountHome({ container, bridge, icon, escape, onRecord, onCreate, onImport, onRecordEvent, onConnectCalendar, onFolder, onNotice, attention = () => [], noticeState = () => ({}), ui = globalThis.NeroUI, device = () => '', folders = () => [], folder = () => null, disabled = () => false, now = () => new Date(), timeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone }) {
   let schedule = { loading: false, connected: false, events: [], scopeRevision: null, day: '', timeZone: '', error: '' };
-  let request = 0, renderKey = '', retry = null, restoringTries = 0;
+  let request = 0, renderKey = '', retry = null, restoringTries = 0, focusTarget = null;
+  // Redrawing replaces every control, so the focused one is found again by what it does.
+  // A button disabled while its action runs takes focus back once it is enabled again.
+  const focusAttributes = ['data-home-notice', 'data-home-action', 'data-home-event', 'data-home-folder'];
+  function remember() {
+    const active = container.ownerDocument?.activeElement;
+    if (!active || active === container.ownerDocument.body) return;
+    const control = container.contains(active) ? active.closest?.(focusAttributes.map(name => `[${name}]`).join(',')) : null;
+    const name = control && focusAttributes.find(item => control.hasAttribute(item));
+    focusTarget = name ? `[${name}="${(control.getAttribute(name) || '').replace(/["\\]/g, '\\$&')}"]` : null;
+  }
+  function restore() {
+    const control = focusTarget && container.querySelector(focusTarget);
+    if (!control || control.disabled) return;
+    focusTarget = null;
+    control.focus({ preventScroll: true });
+  }
   const clock = zone => new Intl.DateTimeFormat('ko-KR', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZone: zone });
 
   async function refresh() {
@@ -67,13 +83,15 @@ export function mountHome({ container, bridge, icon, escape, onRecord, onCreate,
       const busy = Boolean(run.pending);
       const label = update ? (busy ? '업데이트 중' : '업데이트') : '설정 열기';
       const html = `${busy ? '<span class="activity-spinner" aria-hidden="true"></span>' : ''}<span>${escape(label)}</span>`;
-      const action = ui.button({ html, withIcon: busy, className: `small${update ? ' primary' : ''}`, disabled: busy, attrs: { 'data-home-notice': notice.id, 'data-home-notice-action': update ? 'update' : 'settings' } });
+      const action = ui.button({ html, withIcon: busy, className: 'small', disabled: busy, attrs: { 'data-home-notice': notice.id, 'data-home-notice-action': update ? 'update' : 'settings' } });
       return ui.attentionNotice({ title: notice.title, message: notice.detail || notice.message, status: run.note, error: run.error, actionsHTML: action, attrs: { 'data-notice-id': notice.id } });
     }).join('')}</div>` : '';
+    remember();
     container.innerHTML = `<div class="home-content"><h1 class="home-date" tabindex="-1">${escape(dayTitle.format(now()))}</h1>${attentionBlock}${scheduleBlock}<div class="home-actions">${rows ? '<span class="home-actions-label">일정 없이</span>' : ''}${button('data-home-action="record"', 'mic', '녹음 시작', !running)}${button('data-home-action="create"', 'square-pen', '빈 회의')}${button('data-home-action="import"', 'upload', '파일 가져오기')}</div>${where}${hint}</div>`;
     const select = container.querySelector('[data-home-folder]');
     if (select) select.value = chosen;
     globalThis.NeroControls?.enhanceAll?.(container);
+    restore();
   }
 
   container.addEventListener('change', event => {

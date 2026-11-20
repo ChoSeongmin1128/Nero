@@ -22,7 +22,7 @@ export function integrationNotices({ agents, calendar } = {}) {
 
 // Notices for something that stops a feature until the person acts. They are marked where
 // they are made, so home, the rail and the notification list agree on which they are.
-export const attentionNotices = notices => (notices || []).filter(notice => notice.attention === true);
+export const attentionNotices = notices => (notices || []).filter(notice => notice?.attention === true);
 
 export function createIntegrationMonitor({ bridge, onChange = () => {} }) {
   let agents = null, calendar = null, disposed = false, generation = 0, pending = null, key = '[]', stop = () => {};

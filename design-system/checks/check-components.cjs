@@ -311,3 +311,22 @@ test('citations next to links stay citations, numeric definitions stay links and
   const forged = UI.summaryDocument('근거 [1] 위조 &#xE000;00&#xE001; &#xE000;abcdefgh0&#xE001;');
   assert.equal((forged.match(/<button/g) || []).length, 1);
 });
+
+test('attention notices render their text inertly and show only the parts they were given', () => {
+  const value = '"><img src=x onerror=alert(1)>';
+  const action = UI.button({ text: '업데이트', className: 'small primary', attrs: { 'data-home-notice': value } });
+  const html = UI.attentionNotice({ title: value, message: value, status: value, error: value, actionsHTML: action, attrs: { 'data-notice-id': value } });
+  assert.ok(!html.includes('<img'));
+  assert.match(html, /^<section class="attention-notice" data-notice-id="&quot;&gt;&lt;img/);
+  assert.match(html, /<strong>&quot;&gt;&lt;img[^<]*<\/strong><span>&quot;&gt;&lt;img/);
+  assert.match(html, /<span class="attention-notice-status" role="status">&quot;&gt;&lt;img/);
+  assert.match(html, /<span class="field-error" role="alert">&quot;&gt;&lt;img/);
+  assert.ok(html.includes(`<div class="attention-notice-actions">${action}</div>`), 'the consumer action is placed as given');
+  assert.equal((html.match(/<button/g) || []).length, 1, 'no close button of its own');
+  const plain = UI.attentionNotice({ title: 'Google Calendar', message: '연결 확인 필요' });
+  assert.match(plain, /<strong>Google Calendar<\/strong><span>연결 확인 필요<\/span><\/div><\/section>$/);
+  assert.doesNotMatch(plain, /role="status"|role="alert"|attention-notice-actions|<button/);
+  const empty = UI.attentionNotice({ title: null, message: undefined, status: undefined, error: null });
+  assert.doesNotMatch(empty, /null|undefined|role=/);
+  assert.throws(() => UI.attentionNotice({ title: 'x', message: 'y', attrs: { onclick: 'bad()' } }), /Unsupported/);
+});

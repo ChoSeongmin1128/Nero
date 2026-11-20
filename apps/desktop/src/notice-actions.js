@@ -4,14 +4,15 @@
 export function createNoticeActions({ handlers }) {
   const pending = new Map(), errors = new Map(), notes = new Map();
   const listeners = new Set();
-  const changed = () => { for (const listener of listeners) listener(); };
-  const message = error => error instanceof Error ? error.message : String(error);
+  // A screen that fails to redraw must not leave the action marked as running.
+  const changed = () => { for (const listener of listeners) try { listener(); } catch (error) { queueMicrotask(() => { throw error; }); } };
+  const message = error => (error instanceof Error ? error.message : String(error ?? '')) || '작업을 끝내지 못했습니다.';
   return {
     state: id => ({ pending: pending.get(id) || null, error: errors.get(id) || '', note: notes.get(id) || '' }),
     busy: id => pending.has(id),
     async run(notice, action) {
-      const handler = handlers[action];
-      if (!notice || !handler || pending.has(notice.id)) return;
+      const handler = Object.hasOwn(handlers, action) ? handlers[action] : null;
+      if (!notice || typeof handler !== 'function' || pending.has(notice.id)) return;
       pending.set(notice.id, action); errors.delete(notice.id); notes.delete(notice.id); changed();
       try {
         const note = await handler(notice);
