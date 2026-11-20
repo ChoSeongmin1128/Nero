@@ -8,11 +8,11 @@ use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 mod moss_chunks;
-pub use moss_chunks::{RecognitionChunk, RecognitionChunkState, RecognitionReport};
 pub use moss_chunks::{
     canonical_wav_header as moss_chunk_wav_header, CHUNK_FRAMES as MOSS_CHUNK_FRAMES,
-    POLICY as MOSS_CHUNK_POLICY,
+    POLICY as MOSS_CHUNK_POLICY, SPLIT_MINIMUM_FRAMES as MOSS_SPLIT_MINIMUM_FRAMES,
 };
+pub use moss_chunks::{RecognitionChunk, RecognitionChunkState, RecognitionReport};
 
 pub(crate) fn inspect_moss_chunks(
     raw: &[u8],

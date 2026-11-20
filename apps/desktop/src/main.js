@@ -76,13 +76,13 @@ const agentSettings = mountAgentSettings({ byId, bridge, dialog: agentConnection
 const terminologySettings = mountTerminologySettings({ byId, bridge, isProcessing: () => processingActive(), onChange: () => renderSettings() });
 const storageConfirmation = mountConfirmDialog({ container: byId('settings-dialog') });
 const storageSettings = mountStorageSettings({ byId, bridge, confirm: options => storageConfirmation.confirm(options) });
-let calendarConnected = null;
+let calendarState = null;
 const calendarSettings = mountCalendarSettings({ panel: byId('calendar-settings'), bridge, onSnapshot: value => {
   integrationMonitor.acceptCalendar(value);
-  // Home lists today's events, so a connection made or lost in settings reloads it.
-  const connected = Boolean(value?.connected);
-  if (calendarConnected !== null && connected !== calendarConnected) queueMicrotask(() => { void home.refresh(); });
-  calendarConnected = connected;
+  // Home lists today's events, so a connection made, lost or finished checking reloads it.
+  const next = `${Boolean(value?.connected)}:${Boolean(value?.restoring)}`;
+  if (calendarState !== null && next !== calendarState) queueMicrotask(() => { void home.refresh(); });
+  calendarState = next;
 } });
 const calendarReference = mountCalendarMeetingReference({ container: byId('calendar-meeting-reference'), bridge,
   onContinue: meetingId => run(() => continueCalendarRecording(meetingId)),
@@ -824,16 +824,14 @@ async function openHome() {
   });
 }
 
-// Records the calendar event a person chose on home: its meeting, or a new numbered one
-// when that meeting already has audio.
+// Records the calendar event a person chose on home into the event's meeting that can
+// still take audio, or a new numbered one; Core decides which, as for a reminder.
 async function recordCalendarEvent(key, scope) {
   if (activeSession()) return selectMeeting(activeSession().meetingId);
   if (!modelsReady()) return openSetup();
   await finishEditing(async () => {
-    const meeting = await bridge.createMeetingFromCalendar(key, scope);
+    const meeting = await bridge.createMeetingFromCalendar(key, { ...scope, forRecording: true });
     acceptSnapshot(await bridge.readSnapshot());
-    if (meeting.deletedAt != null) throw Error('휴지통에 있는 회의입니다. 복원한 뒤 녹음해 주세요.');
-    if (meeting.audio) return continueCalendarRecording(meeting.id);
     await selectMeeting(meeting.id);
     await startSelectedRecording();
   });

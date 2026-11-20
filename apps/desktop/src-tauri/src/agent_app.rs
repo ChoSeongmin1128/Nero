@@ -274,6 +274,7 @@ impl<L> AgentApp<'_, L> {
                     timezone,
                     scope_revision,
                     target,
+                    false,
                 ))
                 .map_err(rejected)?;
                 publish_snapshot(app);
@@ -373,7 +374,13 @@ impl<L> AgentApp<'_, L> {
                             .map_err(|error| error.to_string())
                     }))
                     .map_err(rejected)?;
-                let mut view = meeting_view(&meeting)?;
+                // Starting changes the meeting, so its version comes from the snapshot after the start.
+                let started = snapshot
+                    .meetings
+                    .iter()
+                    .find(|item| item.id == meeting.id)
+                    .unwrap_or(&meeting);
+                let mut view = meeting_view(started)?;
                 view["session"] = value(snapshot.session)?;
                 Ok(view)
             }

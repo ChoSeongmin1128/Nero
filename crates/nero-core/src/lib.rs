@@ -41,11 +41,13 @@ pub use terminology::{
     TerminologyKind, TerminologyOutcome, TerminologyProfile, TerminologyRule,
 };
 pub use transcript::{
+    moss_chunk_wav_header, MOSS_CHUNK_FRAMES, MOSS_CHUNK_POLICY, MOSS_SPLIT_MINIMUM_FRAMES,
+};
+pub use transcript::{
     RecognitionChunk, RecognitionChunkState, RecognitionReport, SpeakerNameOrigin, Transcript,
     TranscriptHistory, TranscriptHistoryEntry, TranscriptSegment, TranscriptSource,
     TranscriptSpeaker, TranscriptUpgradeReport, TranscriptVersion,
 };
-pub use transcript::{moss_chunk_wav_header, MOSS_CHUNK_FRAMES, MOSS_CHUNK_POLICY};
 
 /// Validates a checkpoint through the same projector used by immutable stored transcripts.
 pub fn inspect_moss_chunk_transcript(
@@ -412,6 +414,11 @@ impl CoreHandle {
 
     pub fn create_meeting_from_calendar(&self, reference: CalendarReference) -> Result<Meeting> {
         self.call(move |engine| engine.create_meeting_from_calendar(reference))
+    }
+
+    /// The occurrence's meeting that can still take a recording, or a new numbered one.
+    pub fn meeting_for_calendar_recording(&self, reference: CalendarReference) -> Result<Meeting> {
+        self.call(move |engine| engine.meeting_for_calendar_recording(reference))
     }
 
     pub fn create_folder(&self, name: &str) -> Result<Folder> {
@@ -838,9 +845,17 @@ impl CoreHandle {
         self.call(|engine| Ok(engine.reducible_recordings()))
     }
 
+    // Reading and rewriting a long recording takes a while, so only the check before
+    // and the swap after run on the actor; other requests are served meanwhile.
     pub fn compact_recording(&self, meeting_id: &str) -> Result<u64> {
-        let meeting_id = meeting_id.to_owned();
-        self.call(move |engine| engine.compact_recording(&meeting_id))
+        let id = meeting_id.to_owned();
+        let Some((planned, source, root)) = self.call(move |engine| engine.compaction_plan(&id))?
+        else {
+            return Ok(0);
+        };
+        let prepared = source.write(&root)?;
+        let id = meeting_id.to_owned();
+        self.call(move |engine| engine.finish_compaction(&id, &planned, prepared))
     }
 }
 

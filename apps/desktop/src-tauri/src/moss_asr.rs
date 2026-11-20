@@ -347,7 +347,8 @@ pub(super) fn recognize_wav(
 }
 
 // Shortest chunk worth splitting: each piece keeps at least a second of audio.
-const SPLIT_MINIMUM: u64 = 2 * 16_000;
+// Core treats a failed chunk shorter than this as final, so the two agree.
+const SPLIT_MINIMUM: u64 = nero_core::MOSS_SPLIT_MINIMUM_FRAMES;
 
 // The canonical WAV of `frames` samples of `audio` from `offset`, and its digest.
 fn piece_wav(audio: &Path, offset: u64, frames: u64, path: &Path) -> Result<String, Failure> {

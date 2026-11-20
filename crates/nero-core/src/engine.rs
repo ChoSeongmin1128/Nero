@@ -397,6 +397,18 @@ impl Engine {
             .calendar_reference
             .clone()
             .ok_or_else(|| CoreError::InvalidState("일정이 연결된 회의가 아닙니다.".into()))?;
+        // An empty meeting already on the occurrence (a continuation whose recording
+        // never started, say) takes the recording instead of another numbered one.
+        let reusable = Self::latest(self.calendar_meetings(&reference.occurrence_key).filter(
+            |stored| {
+                stored.meeting.id != source_id
+                    && stored.meeting.deleted_at.is_none()
+                    && self.accepts_new_audio(stored)
+            },
+        ));
+        if let Some(stored) = reusable {
+            return Ok(stored.meeting.clone());
+        }
         let folder = self.meetings[source_id].meeting.folder_id.clone();
         let meeting = self.create_calendar_part(reference)?.meeting;
         if folder.is_some() {
@@ -1103,33 +1115,65 @@ impl Engine {
 
     /// Keeps only the speech playback file of a finished recording and returns the
     /// bytes freed. The capture PCM cannot be brought back afterwards.
-    pub fn compact_recording(&mut self, meeting_id: &str) -> Result<u64> {
+    /// What converting `meeting_id` needs, checked on the actor. `None` when nothing
+    /// is left to reduce. The conversion itself runs off the actor.
+    pub(crate) fn compaction_plan(
+        &self,
+        meeting_id: &str,
+    ) -> Result<Option<(StoredMeeting, crate::store::ConversionSource, PathBuf)>> {
         if self.quitting {
             return Err(CoreError::Unavailable);
         }
-        // Converting runs on this actor; while any recording runs it would hold up its
-        // pause and stop.
         if self.capture.is_some() {
             return Err(CoreError::InvalidState(
                 "녹음을 마친 뒤 녹음 파일을 줄여 주세요.".into(),
             ));
+        }
+        let stored = self
+            .meetings
+            .get(meeting_id)
+            .ok_or(CoreError::MeetingNotFound)?
+            .clone();
+        if self.store.reducible_bytes(&stored) == 0 {
+            return Ok(None);
+        }
+        let source = self.store.prepare_conversion(&stored)?;
+        Ok(Some((stored, source, self.store.root.clone())))
+    }
+
+    /// Puts a conversion written off the actor in place, if the meeting still has the
+    /// audio it was written from, and saves the meeting.
+    pub(crate) fn finish_compaction(
+        &mut self,
+        meeting_id: &str,
+        planned: &StoredMeeting,
+        prepared: crate::store::PreparedPlayback,
+    ) -> Result<u64> {
+        if self.quitting {
+            return Err(CoreError::Unavailable);
         }
         let mut stored = self
             .meetings
             .get(meeting_id)
             .ok_or(CoreError::MeetingNotFound)?
             .clone();
-        let before = self.store.reducible_bytes(&stored);
-        if before == 0 {
-            return Ok(0);
+        if stored.meeting.audio != planned.meeting.audio || stored.capture_id != planned.capture_id
+        {
+            return Err(CoreError::InvalidState(
+                "녹음이 바뀌어 줄이지 않았습니다. 다시 시도해 주세요.".into(),
+            ));
         }
+        let before = self.store.reducible_bytes(&stored);
         let original = stored.clone();
-        self.store.convert_playback(&mut stored)?;
+        self.store.install_conversion(prepared, &mut stored)?;
         if stored.meeting.audio != original.meeting.audio {
             if let Err(error) = self.commit_meeting(stored.clone()) {
                 // The saved document still names the old file: put it back so the
                 // meeting plays now, not only after the next launch repairs it.
-                if self.meetings.get(meeting_id).map(|kept| &kept.meeting.audio)
+                if self
+                    .meetings
+                    .get(meeting_id)
+                    .map(|kept| &kept.meeting.audio)
                     == Some(&original.meeting.audio)
                 {
                     let _ = self.store.restore_playback(&original);
@@ -1139,6 +1183,15 @@ impl Engine {
         }
         self.store.release_raw(&stored)?;
         Ok(before.saturating_sub(self.store.reducible_bytes(&stored)))
+    }
+
+    #[cfg(test)]
+    pub fn compact_recording(&mut self, meeting_id: &str) -> Result<u64> {
+        let Some((planned, source, root)) = self.compaction_plan(meeting_id)? else {
+            return Ok(0);
+        };
+        let prepared = source.write(&root)?;
+        self.finish_compaction(meeting_id, &planned, prepared)
     }
 
     pub fn audio_path(&self, meeting_id: &str) -> Result<PathBuf> {
@@ -1885,10 +1938,14 @@ mod tests {
         assert!(meetings.contains(&completed));
         assert_eq!(fs::read(audio).unwrap(), before);
         assert!(core.snapshot().unwrap().active_session().is_none());
-        assert!(core
-            .record_calendar_continuation(&meeting.id, "unavailable synthetic device")
-            .is_err());
-        assert_eq!(core.list_meetings().unwrap().len(), 3);
+        // A continuation whose start fails reuses the empty numbered meeting, so
+        // repeated attempts do not pile up meetings.
+        for _ in 0..2 {
+            assert!(core
+                .record_calendar_continuation(&meeting.id, "unavailable synthetic device")
+                .is_err());
+        }
+        assert_eq!(core.list_meetings().unwrap().len(), 2);
     }
 
     fn synthetic(engine: &mut Engine, meeting_id: &str) -> (String, CallbackSink) {

@@ -26,10 +26,12 @@ export function mountHome({ container, bridge, icon, escape, onRecord, onCreate,
       if (current !== request) return;
       const restoring = Boolean(result?.calendar?.restoring);
       schedule = { loading: false, restoring, connected: Boolean(result?.calendar?.connected), events: result?.occurrences || [], scopeRevision: result?.scopeRevision ?? null, day, timeZone: zone, error: '' };
-      // Right after launch the saved Google connection is still being checked.
+      // Right after launch the saved Google connection is still being checked. When that
+      // outlasts the retries the note says so instead of spinning; a later calendar change reloads.
       clearTimeout(retry);
-      if (restoring && restoringTries++ < 20) retry = setTimeout(() => { void refresh(); }, 1500);
-      else if (!restoring) restoringTries = 0;
+      if (restoring && restoringTries < 20) { restoringTries += 1; retry = setTimeout(() => { void refresh(); }, 1500); }
+      else if (restoring) schedule = { ...schedule, restoring: false, error: 'Google Calendar 연결을 아직 확인하지 못했습니다. 연결되면 오늘 일정이 표시됩니다.' };
+      else restoringTries = 0;
     } catch (error) {
       if (current !== request) return;
       schedule = { ...schedule, loading: false, events: [], error: error?.message || '오늘 일정을 불러오지 못했습니다.' };

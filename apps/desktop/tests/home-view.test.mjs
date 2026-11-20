@@ -60,6 +60,20 @@ test('a connection still being checked at launch shows loading with the shared s
   assert.match(status.textContent, /일정을 불러오는 중/);
 });
 
+test('a connection check that outlasts its retries stops spinning and says so', async t => {
+  const timers = [];
+  const app = harness({ connected: false, restoring: true });
+  t.after(() => app.window.happyDOM.abort());
+  const original = globalThis.setTimeout;
+  globalThis.setTimeout = (callback) => { timers.push(callback); return timers.length; };
+  t.after(() => { globalThis.setTimeout = original; });
+  await app.home.refresh();
+  for (let index = 0; index < 20; index += 1) await timers.shift()();
+  assert.equal(timers.length, 0);
+  assert.equal(app.container.querySelector('.activity-spinner'), null);
+  assert.match(app.container.textContent, /연결을 아직 확인하지 못했습니다/);
+});
+
 test('reloading a connected schedule shows the shared spinner and the running event uses the status chip', async t => {
   const now = at.getTime();
   const app = harness({ connected: true }, [{ key: 'now', title: '주간 회의', startAt: now - hour / 2, endAt: now + hour / 2 }]);

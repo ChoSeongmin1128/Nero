@@ -88,14 +88,22 @@ impl Processing {
         }
         let mut result = Compacted::default();
         for (id, _) in core.reducible_recordings()? {
-            // The same gate new jobs take, so none starts reading the file while it
-            // is being replaced.
-            let compacted = self.meeting_idle(&id, || {
-                if self.holds_recording(&id) {
-                    return Ok(None);
+            // Claimed under the gate new jobs take, so none starts reading the file while
+            // it is replaced; the conversion itself runs after the gate is released.
+            let claimed =
+                self.meeting_idle(&id, || {
+                    Ok(!self.holds_recording(&id)
+                        && self.compacting.lock().unwrap().insert(id.clone()))
+                });
+            let compacted = match claimed {
+                Ok(true) => {
+                    let outcome = core.compact_recording(&id).map(Some);
+                    self.compacting.lock().unwrap().remove(&id);
+                    outcome
                 }
-                core.compact_recording(&id).map(Some)
-            });
+                Ok(false) => Ok(None),
+                Err(error) => Err(error),
+            };
             match compacted {
                 Ok(None) => {}
                 Ok(Some(freed)) => {

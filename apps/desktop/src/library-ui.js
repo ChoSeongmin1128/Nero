@@ -333,10 +333,12 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     if (!current(id)) return;
     if (runningRecording([id])) { showError('녹음을 종료한 뒤 버려 주세요.'); return; }
     const cancels = pendingJob(state().processing, { meetingId: id });
+    // The meeting as shown here; a change made elsewhere while the dialog is open is refused.
+    const seen = current(id).updatedAt;
     let created = null;
     openDialog({ title: '녹음을 버릴까요?', content: `<p>${escape(description([id]))}의 녹음과 음성 기록, 요약을 휴지통으로 옮깁니다. 제목, 메모, 참석자, 일정, 폴더는 그대로 둔 빈 회의가 남아 다시 녹음할 수 있습니다. 휴지통에서 복원하면 녹음을 되찾을 수 있습니다.</p>`,
       confirm: cancels ? '처리 취소 후 버리기' : '녹음 버리기', destructive: true, detach: true,
-      action: async () => { const result = await bridge.discardRecording(id); created = result?.meetingId || null; return result?.snapshot; },
+      action: async () => { const result = await bridge.discardRecording(id, seen); created = result?.meetingId || null; return result?.snapshot; },
       after: () => { if (created) void selectMeeting(created); } });
   }
   function purgeDialog(ids) {

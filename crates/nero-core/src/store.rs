@@ -317,6 +317,26 @@ enum Recovered {
     NeedsPlayback,
 }
 
+pub(crate) struct ConversionSource {
+    manifest: Manifest,
+    playback: Playback,
+    raw_path: PathBuf,
+    frames: u64,
+}
+
+impl ConversionSource {
+    // Reads the whole capture PCM and writes the converted file; needs only the root.
+    pub(crate) fn write(&self, root: &Path) -> Result<PreparedPlayback> {
+        let raw = open_read(&self.raw_path)?;
+        if raw.metadata()?.len() / self.manifest.frame_bytes() as u64 != self.frames {
+            return Err(CoreError::InvalidState(
+                "줄일 수 있는 녹음이 아닙니다.".into(),
+            ));
+        }
+        write_playback(root, &self.manifest, &self.playback, raw)
+    }
+}
+
 pub(crate) struct Store {
     pub root: PathBuf,
     _lock: File,
@@ -764,7 +784,15 @@ impl Store {
     /// A meeting that already has the speech form gets the same file written again: a
     /// file saved before playback was read back may differ from its PCM in samples
     /// alone, and the PCM must not go before the file is known to be right.
+    #[cfg(test)]
     pub(crate) fn convert_playback(&self, stored: &mut StoredMeeting) -> Result<()> {
+        let prepared = self.prepare_conversion(stored)?.write(&self.root)?;
+        self.install_conversion(prepared, stored)
+    }
+
+    /// Checks that `stored` can be converted and what the result will be, without
+    /// reading the audio. `ConversionSource::write` does the long part.
+    pub(crate) fn prepare_conversion(&self, stored: &StoredMeeting) -> Result<ConversionSource> {
         let unavailable = || CoreError::InvalidState("줄일 수 있는 녹음이 아닙니다.".into());
         let artifact = stored.meeting.audio.as_ref().ok_or_else(unavailable)?;
         if stored.capture_id.as_ref() != Some(&artifact.session_id) {
@@ -778,8 +806,8 @@ impl Store {
                 .join("manifest.json"),
         )?)?;
         manifest.validate()?;
-        let raw = open_read(&self.raw_path(&manifest)?)?;
-        let frames = raw.metadata()?.len() / manifest.frame_bytes() as u64;
+        let raw_path = self.raw_path(&manifest)?;
+        let frames = fs::symlink_metadata(&raw_path)?.len() / manifest.frame_bytes() as u64;
         if frames != artifact.frames
             || manifest.sample_rate != artifact.sample_rate
             || manifest.channels != artifact.channels
@@ -791,9 +819,24 @@ impl Store {
         if artifact.playback.is_some() && artifact.playback != playback.metadata() {
             return Err(unavailable());
         }
-        publish_playback(&self.root, &manifest, &playback, raw, true)?;
+        Ok(ConversionSource {
+            manifest,
+            playback,
+            raw_path,
+            frames,
+        })
+    }
+
+    /// Puts a written conversion in place of the playback file and records its form.
+    pub(crate) fn install_conversion(
+        &self,
+        prepared: PreparedPlayback,
+        stored: &mut StoredMeeting,
+    ) -> Result<()> {
+        let metadata = prepared.metadata.clone();
+        install_playback(&self.root, prepared, true)?;
         if let Some(artifact) = stored.meeting.audio.as_mut() {
-            artifact.playback = playback.metadata();
+            artifact.playback = metadata;
         }
         Ok(())
     }
@@ -1089,8 +1132,35 @@ fn publish_playback(
     raw: File,
     replace: bool,
 ) -> Result<()> {
+    let prepared = write_playback(root, manifest, playback, raw)?;
+    install_playback(root, prepared, replace)
+}
+
+/// A converted playback file written and read back beside its final name, not yet in place.
+/// Dropping it removes the file.
+pub(crate) struct PreparedPlayback {
+    temporary: PathBuf,
+    wav_relative: PathBuf,
+    verified: bool,
+    metadata: Option<crate::AudioPlayback>,
+}
+
+impl Drop for PreparedPlayback {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.temporary);
+    }
+}
+
+// The long part of a conversion: it needs only the library root, so it can run while
+// the library serves other requests.
+fn write_playback(
+    root: &Path,
+    manifest: &Manifest,
+    playback: &Playback,
+    raw: File,
+) -> Result<PreparedPlayback> {
     let wav_relative = manifest.relative_dir().join("audio.wav");
-    let wav_path = checked_path(root, &wav_relative)?;
+    checked_path(root, &wav_relative)?;
     remove_playback_temporaries(root, manifest)?;
     disk_space::ensure(
         &checked_path(root, &manifest.relative_dir())?,
@@ -1101,45 +1171,45 @@ fn publish_playback(
         .join(format!("audio.{}.wav.tmp", Uuid::new_v4()));
     let temporary_path = checked_path(root, &temporary)?;
     let output = create_new(&temporary_path)?;
-    let written = (|| -> Result<()> {
-        let durable = output.try_clone()?;
-        let mut writer =
-            hound::WavWriter::new(BufWriter::new(output), playback.spec).map_err(wav_error)?;
-        let mut input = BufReader::new(raw);
-        let written = playback.write(&mut input, &mut writer, manifest)?;
-        writer.finalize().map_err(wav_error)?;
-        durable.sync_all()?;
-        // The capture PCM is released once this file is the meeting's audio, so
-        // what was saved is read back before it takes the playback name.
-        let verified = match written {
-            Some(written) => {
-                let saved = stored_digest(BufReader::new(open_read(&temporary_path)?))?;
-                if saved != written {
-                    return Err(CoreError::Storage(
-                        "저장한 재생 파일이 변환 결과와 다릅니다.".into(),
-                    ));
-                }
-                true
-            }
-            None => false,
-        };
-        checked_path(root, &wav_relative)?;
-        if wav_path.exists() && !(replace && fs::symlink_metadata(&wav_path)?.is_file()) {
-            return Err(CoreError::Storage("재생 파일이 이미 존재합니다.".into()));
+    let mut prepared = PreparedPlayback {
+        temporary: temporary_path,
+        wav_relative,
+        verified: false,
+        metadata: playback.metadata(),
+    };
+    let durable = output.try_clone()?;
+    let mut writer =
+        hound::WavWriter::new(BufWriter::new(output), playback.spec).map_err(wav_error)?;
+    let mut input = BufReader::new(raw);
+    let written = playback.write(&mut input, &mut writer, manifest)?;
+    writer.finalize().map_err(wav_error)?;
+    durable.sync_all()?;
+    // The capture PCM is released once this file is the meeting's audio, so
+    // what was saved is read back before it takes the playback name.
+    if let Some(written) = written {
+        let saved = stored_digest(BufReader::new(open_read(&prepared.temporary)?))?;
+        if saved != written {
+            return Err(CoreError::Storage(
+                "저장한 재생 파일이 변환 결과와 다릅니다.".into(),
+            ));
         }
-        fs::rename(&temporary_path, &wav_path)?;
-        if let Ok(mut set) = VERIFIED_PLAYBACK.lock() {
-            if verified {
-                set.insert(wav_path.clone());
-            } else {
-                set.remove(&wav_path);
-            }
+        prepared.verified = true;
+    }
+    Ok(prepared)
+}
+
+fn install_playback(root: &Path, prepared: PreparedPlayback, replace: bool) -> Result<()> {
+    let wav_path = checked_path(root, &prepared.wav_relative)?;
+    if wav_path.exists() && !(replace && fs::symlink_metadata(&wav_path)?.is_file()) {
+        return Err(CoreError::Storage("재생 파일이 이미 존재합니다.".into()));
+    }
+    fs::rename(&prepared.temporary, &wav_path)?;
+    if let Ok(mut set) = VERIFIED_PLAYBACK.lock() {
+        if prepared.verified {
+            set.insert(wav_path.clone());
+        } else {
+            set.remove(&wav_path);
         }
-        Ok(())
-    })();
-    if let Err(error) = written {
-        let _ = fs::remove_file(&temporary_path);
-        return Err(error);
     }
     sync_parent(&wav_path)
 }

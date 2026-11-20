@@ -423,6 +423,8 @@ pub struct Processing {
     interrupted_jobs: Mutex<HashSet<String>>,
     // Work that a recording start interrupted; queued again as retries.
     requeue: Mutex<Vec<String>>,
+    // Meetings whose playback file is being rewritten; their jobs wait until it is done.
+    compacting: Mutex<HashSet<String>>,
     // Jobs the person had paused when a recording took their place; the retry that
     // continues one starts paused too.
     user_paused_jobs: Mutex<HashSet<String>>,
@@ -683,6 +685,7 @@ impl Processing {
             transcribe_while_recording: AtomicBool::new(transcribe_while_recording),
             interrupted_jobs: Mutex::new(HashSet::new()),
             requeue: Mutex::new(Vec::new()),
+            compacting: Mutex::new(HashSet::new()),
             user_paused_jobs: Mutex::new(HashSet::new()),
             revision: AtomicU64::new(0),
             recording_transcription: Mutex::new(RecordingTranscription::default()),
@@ -1536,6 +1539,10 @@ impl Processing {
             || model_job(&record.kind)
             || runs_while_recording(record))
             && self.live_allows(&record.kind, record.meeting_id.as_deref())
+            && !record
+                .meeting_id
+                .as_ref()
+                .is_some_and(|id| self.compacting.lock().unwrap().contains(id))
     }
 
     fn end_control(&self, id: &str) {
@@ -1583,6 +1590,10 @@ impl Processing {
         if auto.load.as_ref().is_none_or(|load| load.finished()) {
             auto.load = core.capture_load().ok().flatten();
             auto.last_overloads = None;
+            // The peak kept since the recording began predates this work; judge only what follows.
+            if let Some(load) = &auto.load {
+                load.take_peak_fill();
+            }
         }
         let (fill, overloads) = auto
             .load

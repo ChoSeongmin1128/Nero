@@ -873,6 +873,7 @@ async fn discard_recording(
     app: tauri::AppHandle,
     state: tauri::State<'_, DesktopState>,
     meeting_id: String,
+    expected_updated_at: u64,
 ) -> Result<serde_json::Value, String> {
     require_main(&window)?;
     let snapshot = on_core(state.core.clone(), |core| core.snapshot()).await?;
@@ -881,6 +882,11 @@ async fn discard_recording(
         .iter()
         .find(|meeting| meeting.id == meeting_id)
         .ok_or("회의를 찾을 수 없습니다.")?;
+    if meeting.updated_at != expected_updated_at {
+        return Err(
+            "회의가 다른 곳에서 바뀌었습니다. 바뀐 내용을 확인한 뒤 다시 버려 주세요.".into(),
+        );
+    }
     let expected = nero_core::agent_control::meeting_edit_version(meeting)
         .map_err(|error| error.to_string())?;
     let handle = app.clone();

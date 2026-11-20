@@ -254,6 +254,7 @@ pub(crate) async fn create_meeting(
     time_zone: String,
     scope_revision: u64,
     target: Option<nero_core::DraftAttachmentTarget>,
+    for_recording: bool,
 ) -> Result<Meeting, String> {
     let state = app.state::<DesktopState>();
     state.processing.require_meeting_models()?;
@@ -277,6 +278,8 @@ pub(crate) async fn create_meeting(
             let reference = calendar_reference(event, zone.clone())?;
             match target {
                 Some(target) => core.attach_calendar_to_draft(target, reference),
+                // A recording goes into a meeting that can still take audio.
+                None if for_recording => core.meeting_for_calendar_recording(reference),
                 None => core.create_meeting_from_calendar(reference),
             }
             .map_err(|error| error.to_string())
@@ -500,9 +503,19 @@ pub async fn create_meeting_from_calendar(
     time_zone: String,
     scope_revision: u64,
     target: Option<nero_core::DraftAttachmentTarget>,
+    for_recording: Option<bool>,
 ) -> Result<Meeting, String> {
     crate::require_main(&window)?;
-    create_meeting(&app, occurrence_key, day, time_zone, scope_revision, target).await
+    create_meeting(
+        &app,
+        occurrence_key,
+        day,
+        time_zone,
+        scope_revision,
+        target,
+        for_recording.unwrap_or(false),
+    )
+    .await
 }
 #[tauri::command]
 pub fn calendar_reminder_ready(

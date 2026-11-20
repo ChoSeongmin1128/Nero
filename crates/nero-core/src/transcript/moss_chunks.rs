@@ -7,6 +7,8 @@ pub(crate) const PROJECTOR: &str = "moss-independent-chunks-projector-v3";
 const PROJECTOR_V2: &str = "moss-independent-chunks-projector-v2";
 const STORED_PROJECTOR: &str = "moss-independent-chunks-projector-v1";
 pub const CHUNK_FRAMES: u64 = 60 * SOURCE_TIMEBASE;
+// A failed chunk shorter than this is not recognized again in halves.
+pub const SPLIT_MINIMUM_FRAMES: u64 = 2 * SOURCE_TIMEBASE;
 const MAX_RAW_BYTES: usize = 16 * 1024 * 1024;
 // v2: two centisecond units observed with the pinned model, at the input rate.
 const TERMINAL_OVERRUN_FRAMES_V2: u64 = 320;
@@ -561,6 +563,15 @@ pub(super) fn decode_with_projector(
                 }
             }
         }
+        // A failed chunk too short to try again in halves has had its only attempt, and
+        // the deterministic model would give the same result to a retry.
+        if record.pieces.is_none()
+            && record.input.is_none()
+            && chunk.state == RecognitionChunkState::Failed
+            && end - start < SPLIT_MINIMUM_FRAMES
+        {
+            chunk.issue = Some("splitFailed".into());
+        }
         if let Some(pieces) = record.pieces {
             if pieces.len() < 2 {
                 return Err(invalid());
@@ -717,6 +728,29 @@ mod tests {
             "session",
             "generation",
         )
+    }
+
+    #[test]
+    fn a_failed_chunk_too_short_to_split_is_final_and_a_longer_one_stays_open() {
+        let failed = |frames: u64| {
+            let mut value = output(frames);
+            change(&mut value, 1, |native| {
+                native["parsedCompletely"] = json!(false)
+            });
+            project(&value)
+                .unwrap()
+                .source
+                .unwrap()
+                .recognition_report
+                .unwrap()
+                .chunks[1]
+                .issue
+                .clone()
+        };
+        let short = failed(CHUNK_FRAMES + SPLIT_MINIMUM_FRAMES / 2);
+        assert_eq!(short.as_deref(), Some("splitFailed"));
+        let long = failed(2 * CHUNK_FRAMES);
+        assert_eq!(long.as_deref(), Some("nativeOutputInvalid"));
     }
 
     #[test]
