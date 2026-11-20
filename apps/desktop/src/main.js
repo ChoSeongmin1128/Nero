@@ -365,7 +365,7 @@ function selectSpeechEngine(engine) {
   return run(async () => {
     speechSelectionError = ''; speechNotice = '';
     renderSpeechModels();
-    try { await acceptProcessing(await bridge.requestSpeechEngine(engine)); }
+    try { await acceptProcessing(await bridge.requestSpeechEngine(engine, speechMemoryAcknowledged.has(engine))); }
     catch (error) { speechSelectionError = error.message || '음성 인식 모델을 변경하지 못했습니다.'; }
   });
 }
@@ -719,34 +719,46 @@ async function runNow(action) {
   }
 }
 
+// Every way to start a recording reads the devices first and refuses while another
+// recording runs. A new recording opens the microphone settings when no microphone can be
+// used; one started from a meeting shows the issue on that meeting instead.
+async function microphoneReady(settingsReturnId = null) {
+  await refreshDevices();
+  if (activeSession()) { await selectMeeting(activeSession().meetingId); return false; }
+  if (!microphoneIssue()) return true;
+  if (settingsReturnId) await openSettings('recording', settingsReturnId);
+  return false;
+}
+async function showStartedRecording() {
+  if (!activeSession()) return;
+  await selectMeeting(activeSession().meetingId);
+  byId('recording-controls').tabIndex = -1;
+  byId('recording-controls').focus({ preventScroll: true });
+}
+
 async function createMeeting({ record = false, fromHome = false } = {}) {
   if (record && activeSession()) return selectMeeting(activeSession().meetingId);
   if (!modelsReady()) return openSetup();
   await finishEditing(async () => {
-    if (record) {
-      await refreshDevices();
-      if (microphoneIssue()) return openSettings('recording', 'library-record');
-      if (activeSession()) return selectMeeting(activeSession().meetingId);
-    }
     state.setupRequested = false;
-    const meeting = await bridge.createMeeting('새 회의', '');
-    acceptSnapshot(await bridge.readSnapshot());
     // A meeting made from a folder's or the unfiled list stays in that list; otherwise
     // it starts in the folder chosen in settings.
     const context = fromHome ? undefined : state.libraryFilter === 'unfiled' ? null : state.snapshot.folders?.some(folder => folder.id === state.libraryFilter) ? state.libraryFilter : undefined;
+    if (record) {
+      if (!await microphoneReady('library-record')) return;
+      acceptSnapshot(await bridge.createRecording(context === undefined ? null : context ?? 'unfiled', state.deviceId));
+      await showStartedRecording();
+      return;
+    }
+    const meeting = await bridge.createMeeting('새 회의', '');
+    acceptSnapshot(await bridge.readSnapshot());
     const placed = state.snapshot.meetings.find(item => item.id === meeting.id)?.folderId ?? null;
     if (context !== undefined && context !== placed) {
       try { acceptSnapshot(await bridge.moveMeetings([meeting.id], context)); } catch (error) { showError(error); }
     }
     await selectMeeting(meeting.id);
-    if (record) {
-      await startSelectedRecording();
-      byId('recording-controls').tabIndex = -1;
-      byId('recording-controls').focus({ preventScroll: true });
-    } else {
-      byId('meeting-title').focus();
-      byId('meeting-title').select();
-    }
+    byId('meeting-title').focus();
+    byId('meeting-title').select();
   });
 }
 
@@ -766,10 +778,9 @@ async function recordCalendarEvent(key, scope) {
   if (activeSession()) return selectMeeting(activeSession().meetingId);
   if (!modelsReady()) return openSetup();
   await finishEditing(async () => {
-    const meeting = await bridge.createMeetingFromCalendar(key, { ...scope, forRecording: true });
-    acceptSnapshot(await bridge.readSnapshot());
-    await selectMeeting(meeting.id);
-    await startSelectedRecording();
+    if (!await microphoneReady('home-title')) return;
+    acceptSnapshot(await bridge.recordCalendarOccurrence(key, scope, state.deviceId));
+    await showStartedRecording();
   });
 }
 
@@ -789,9 +800,7 @@ async function startSelectedRecording() {
   // The meeting the button was pressed on; another selected while devices load is not it.
   const meetingId = state.selectedId;
   await saveDraft();
-  await refreshDevices();
-  if (microphoneIssue() || state.selectedId !== meetingId) return;
-  if (activeSession()) return selectMeeting(activeSession().meetingId);
+  if (!await microphoneReady() || state.selectedId !== meetingId) return;
   acceptSnapshot(await bridge.startRecording(meetingId, state.deviceId));
 }
 
@@ -801,10 +810,9 @@ async function continueCalendarRecording(meetingId) {
   if (activeSession()) return selectMeeting(activeSession().meetingId);
   if (!modelsReady()) return openSetup();
   await saveDraft();
-  await refreshDevices();
-  if (microphoneIssue() || activeSession()) return;
+  if (!await microphoneReady()) return;
   acceptSnapshot(await bridge.continueCalendarRecording(meetingId, state.deviceId));
-  if (activeSession()) await selectMeeting(activeSession().meetingId);
+  await showStartedRecording();
 }
 
 function onEdit() {
@@ -1471,7 +1479,7 @@ mountDropImport({ window: globalThis, overlay: byId('drop-overlay'), message: by
     catch (error) { if (error?.name !== 'AbortError') throw error; }
   })) });
 const speechOffer = mountSpeechOfferDialog({ dialog: byId('speech-offer-dialog'),
-  onAccept: async () => { speechNotice = ''; await acceptProcessing(await bridge.respondSpeechOffer(true)); },
+  onAccept: async ({ acknowledgeMemoryWarning }) => { speechNotice = ''; await acceptProcessing(await bridge.respondSpeechOffer(true, acknowledgeMemoryWarning)); },
   onDecline: async () => { await acceptProcessing(await bridge.respondSpeechOffer(false)); } });
 
 const detail = mountMeetingDetail({ byId, finishEditing, onError: showError, onReveal(view) {

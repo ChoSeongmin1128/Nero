@@ -23,7 +23,7 @@ const bundle = await build({
   } }],
 });
 
-async function fixture(t, { devices = [{ id: 'mic', name: 'Microphone', isDefault: true }], session = null, ready = true, startError = false, folder = false } = {}) {
+async function fixture(t, { devices = [{ id: 'mic', name: 'Microphone', isDefault: true }], session = null, ready = true, startError = false, folder = false, occurrences = null } = {}) {
   const window = new Window({ url: 'http://nero.test', settings: { enableJavaScriptEvaluation: true, suppressInsecureJavaScriptEnvironmentWarning: true, disableCSSFileLoading: true, disableJavaScriptFileLoading: true } });
   t.after(() => window.happyDOM.abort());
   window.document.write(html);
@@ -40,6 +40,23 @@ async function fixture(t, { devices = [{ id: 'mic', name: 'Microphone', isDefaul
     createMeeting: (title, notes) => { const meeting = { id: 'new', title, notes, createdAt: 2, status: 'draft' }; snapshot = { ...snapshot, revision: snapshot.revision + 1, meetings: [...snapshot.meetings, meeting] }; return meeting; },
     moveMeetings: (ids, folderId) => { snapshot = { ...snapshot, revision: snapshot.revision + 1, meetings: snapshot.meetings.map(meeting => ids.includes(meeting.id) ? { ...meeting, folderId } : meeting) }; return snapshot; },
     startRecording: (meetingId, deviceId) => { assert.equal(meetingId, 'new'); assert.equal(deviceId, null); if (startError) throw new Error('마이크를 열지 못했습니다.'); snapshot = { ...snapshot, revision: snapshot.revision + 1, session: { id: 'capture', meetingId, state: 'recording', elapsedMs: 0 } }; return snapshot; },
+    ...(occurrences ? {
+      readCalendarMeetingOccurrences: ({ day, timeZone }) => ({ calendar: { connected: true }, occurrences, scopeRevision: 4, day, timeZone }),
+      recordCalendarOccurrence: (key, scope, deviceId) => {
+        const meeting = { id: 'event-meeting', title: '주간 회의', notes: '', createdAt: 2, status: 'recording' };
+        snapshot = { ...snapshot, revision: snapshot.revision + 1, meetings: [...snapshot.meetings, meeting], session: { id: 'capture', meetingId: meeting.id, state: 'recording', elapsedMs: 0, sampleRate: 48000, savedFrames: 0 } };
+        return snapshot;
+      },
+    } : {}),
+    // Core creates the meeting and starts capture in one step; a failed start keeps the draft.
+    createRecording: (folderId, deviceId) => {
+      assert.equal(deviceId, null);
+      const meeting = { id: 'new', title: '새 회의', notes: '', createdAt: 2, status: 'draft', folderId: folderId === 'unfiled' ? null : folderId };
+      snapshot = { ...snapshot, revision: snapshot.revision + 1, meetings: [...snapshot.meetings, meeting] };
+      if (startError) throw new Error('마이크를 열지 못했습니다.');
+      snapshot = { ...snapshot, revision: snapshot.revision + 1, session: { id: 'capture', meetingId: 'new', state: 'recording', elapsedMs: 0, sampleRate: 48000, savedFrames: 0 } };
+      return snapshot;
+    },
   };
   window.testBridge = Object.fromEntries(names.map(name => [name, async (...args) => { calls.push({ name, args }); if (name.startsWith('subscribe')) { subscriptions[name] = args[0]; return () => {}; } assert.ok(Object.hasOwn(stubs, name), `Unexpected native call: ${name}`); return stubs[name](...args); }]));
   window.eval(bundle.outputFiles[0].text);
@@ -64,8 +81,9 @@ test('list entry points remain inside the library with a collapsed sidebar; crea
 test('quick record creates once, starts through native boundary, and focuses recording controls', async t => {
   const f = await fixture(t);
   f.get('library-record').click(); f.get('library-record').click();
-  await f.wait(() => f.count('startRecording') === 1 && !f.get('library-record').disabled);
-  assert.equal(f.count('createMeeting'), 1);
+  await f.wait(() => f.count('createRecording') === 1 && !f.get('library-record').disabled);
+  assert.equal(f.count('createMeeting') + f.count('startRecording') + f.count('moveMeetings'), 0, 'one native step creates and starts');
+  assert.deepEqual(f.calls.find(call => call.name === 'createRecording').args, [null, null], 'outside a list the folder from settings is used');
   assert.equal(f.snapshot().session.meetingId, 'new');
   assert.match(f.get('library-record').textContent, /녹음으로 돌아가기/);
   assert.equal(f.window.document.activeElement.closest('#recording-controls'), f.get('recording-controls'));
@@ -79,7 +97,7 @@ for (const phase of ['recording', 'paused', 'finalizing']) test(`quick record re
   f.get('library-record').click();
   await f.wait(() => f.get('library-screen').hidden && !f.get('library-record').disabled);
   assert.equal(f.get('meeting-title').value, '기존 회의');
-  assert.equal(f.count('createMeeting'), 0); assert.equal(f.count('startRecording'), 0);
+  assert.equal(f.count('createMeeting') + f.count('createRecording'), 0); assert.equal(f.count('startRecording'), 0);
 });
 
 test('missing microphone opens recording settings without creating an empty meeting', async t => {
@@ -88,22 +106,22 @@ test('missing microphone opens recording settings without creating an empty meet
   await f.wait(() => f.get('settings-dialog').open);
   assert.equal(f.get('settings-recording-tab').getAttribute('aria-selected'), 'true');
   assert.match(f.get('settings-message').textContent, /마이크/);
-  assert.equal(f.count('createMeeting'), 0); assert.equal(f.count('startRecording'), 0);
+  assert.equal(f.count('createMeeting') + f.count('createRecording'), 0); assert.equal(f.count('startRecording'), 0);
 });
 
 test('missing speech models opens setup without creating a meeting or starting capture', async t => {
   const f = await fixture(t, { ready: false });
   f.get('library-record').click();
   await f.wait(() => !f.get('setup-screen').hidden && !f.get('library-record').disabled);
-  assert.equal(f.count('createMeeting'), 0); assert.equal(f.count('startRecording'), 0);
+  assert.equal(f.count('createMeeting') + f.count('createRecording'), 0); assert.equal(f.count('startRecording'), 0);
 });
 
-test('native start failure leaves the created draft available with an actionable error', async t => {
+test('native start failure leaves the created draft in the list with an actionable error', async t => {
   const f = await fixture(t, { startError: true });
   f.get('library-record').click();
   await f.wait(() => !f.get('error').hidden && !f.get('library-record').disabled);
   assert.match(f.get('error-message').textContent, /마이크/);
-  assert.equal(f.get('meeting-title').value, '새 회의');
+  assert.deepEqual(f.snapshot().meetings.map(meeting => meeting.title), ['새 회의']);
   assert.equal(f.snapshot().session, null);
 });
 
@@ -112,6 +130,32 @@ test('quick record respects the current folder', async t => {
   f.window.document.querySelector('[data-library-filter="folder"]').click();
   await f.wait(() => f.get('library-title').textContent === '업무');
   f.get('library-record').click();
-  await f.wait(() => f.count('startRecording') === 1 && !f.get('library-record').disabled);
+  await f.wait(() => f.count('createRecording') === 1 && !f.get('library-record').disabled);
+  assert.deepEqual(f.calls.find(call => call.name === 'createRecording').args, ['folder', null]);
   assert.equal(f.snapshot().meetings[0].folderId, 'folder');
+});
+
+test('recording a calendar event on home is one native step with the day it was chosen from', async t => {
+  const now = Date.now();
+  const f = await fixture(t, { occurrences: [{ key: 'weekly', title: '주간 회의', startAt: now - 600_000, endAt: now + 600_000 }] });
+  await f.wait(() => f.window.document.querySelector('[data-home-event="weekly"]'));
+  f.window.document.querySelector('[data-home-event="weekly"]').click();
+  await f.wait(() => f.count('recordCalendarOccurrence') === 1 && f.snapshot().session);
+  const [key, scope, deviceId] = f.calls.find(call => call.name === 'recordCalendarOccurrence').args;
+  assert.equal(key, 'weekly');
+  assert.equal(scope.scopeRevision, 4);
+  assert.ok(scope.day && scope.timeZone);
+  assert.equal(deviceId, null);
+  assert.equal(f.count('createMeetingFromCalendar') + f.count('startRecording') + f.count('createRecording'), 0);
+  await f.wait(() => f.get('meeting-title').value === '주간 회의');
+});
+
+test('a calendar event is not recorded without a usable microphone; the recording settings open', async t => {
+  const now = Date.now();
+  const f = await fixture(t, { devices: [], occurrences: [{ key: 'weekly', title: '주간 회의', startAt: now - 600_000, endAt: now + 600_000 }] });
+  await f.wait(() => f.window.document.querySelector('[data-home-event="weekly"]'));
+  f.window.document.querySelector('[data-home-event="weekly"]').click();
+  await f.wait(() => f.get('settings-dialog').open);
+  assert.equal(f.get('settings-recording-tab').getAttribute('aria-selected'), 'true');
+  assert.equal(f.count('recordCalendarOccurrence'), 0);
 });

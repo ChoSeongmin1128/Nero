@@ -50,8 +50,8 @@ export function mountRecordingSettings({ byId, bridge, escape, getState, activeS
     folderSelect.disabled = !state.connected || folder.busy();
     byId('auto-recorder').checked = autoRecorder;
     byId('auto-recorder').disabled = recorderBusy;
-    // Only MOSS on a Mac that can run it recognizes chunks while recording.
-    byId('recording-transcription-row').hidden = !(state.processing.recordingTranscriptionSupported && state.processing.speechEngine === 'moss');
+    // Core says whether this Mac and the chosen engine can recognize chunks while recording.
+    byId('recording-transcription-row').hidden = state.processing.recordingTranscriptionAvailable !== true;
     if (!transcriptionBusy) byId('recording-transcription').checked = state.processing.recordingTranscription === true;
     byId('recording-transcription').disabled = transcriptionBusy;
     return changed;

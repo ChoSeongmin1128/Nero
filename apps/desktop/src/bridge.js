@@ -31,6 +31,10 @@ export const setMeetingDate = (id, meetingDate) => call('set_meeting_date', { id
 export const listDevices = () => call('list_devices');
 export const startRecording = (meetingId, deviceId = null) => call('start_recording', { meetingId, deviceId }).then(accept);
 export const continueCalendarRecording = (meetingId, deviceId = null) => call('continue_calendar_recording', { meetingId, deviceId }).then(accept);
+// New recordings are created and started by Core in one step: `folderId` null files it in the
+// new-meeting folder from settings, 'unfiled' leaves it unfiled.
+export const createRecording = (folderId = null, deviceId = null) => call('create_recording', { folderId, deviceId }).then(accept);
+export const recordCalendarOccurrence = (occurrenceKey, { day, timeZone, scopeRevision }, deviceId = null) => call('record_calendar_occurrence', { occurrenceKey, scope: { day, timeZone, scopeRevision }, deviceId }).then(accept);
 export const pauseRecording = (sessionId) => call('pause_recording', { sessionId }).then(accept);
 export const resumeRecording = (sessionId) => call('resume_recording', { sessionId }).then(accept);
 export const stopRecording = (sessionId) => call('stop_recording', { sessionId }).then(accept);
@@ -87,12 +91,12 @@ export async function subscribeCloseRequest(callback) {
 }
 
 export const processingStatus = () => call('processing_status');
-export const requestSpeechEngine = engine => call('request_speech_engine', { engine });
+export const requestSpeechEngine = (engine, acknowledgeMemoryWarning = false) => call('request_speech_engine', { engine, acknowledgeMemoryWarning });
 export const cancelSpeechSwitch = () => call('cancel_speech_switch');
 export const retrySpeechModelCleanup = () => call('retry_speech_model_cleanup');
 export const storageUsage = () => call('storage_usage');
 export const compactRecordings = () => call('compact_recordings');
-export const respondSpeechOffer = accept => call('respond_speech_offer', { accept });
+export const respondSpeechOffer = (accept, acknowledgeMemoryWarning = false) => call('respond_speech_offer', { accept, acknowledgeMemoryWarning });
 export const setSpeakerEnabled = enabled => call('set_speaker_enabled', { enabled });
 export const prepareMeetingModels = (includeSummary = false) => call('prepare_meeting_models', { includeSummary });
 export const draftAttachmentTarget = (meetingId) => call('draft_attachment_target', { meetingId });

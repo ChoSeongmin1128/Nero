@@ -55,7 +55,7 @@ export function mountSpeechOfferDialog({ dialog, onAccept, onDecline }) {
     }
   };
   memoryInput.addEventListener('change', sync);
-  accept.addEventListener('click', () => { if (!accept.disabled) void respond(onAccept); });
+  accept.addEventListener('click', () => { if (!accept.disabled) void respond(() => onAccept({ acknowledgeMemoryWarning: Boolean(current?.memoryWarning) && memoryInput.checked })); });
   keep.addEventListener('click', () => { if (!keep.disabled) void respond(onDecline); });
 
   return {

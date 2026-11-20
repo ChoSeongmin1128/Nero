@@ -102,7 +102,7 @@ export function mountHome({ container, bridge, icon, escape, onRecord, onCreate,
       return ui.attentionNotice({ title: notice.title, message: notice.detail || notice.message, status: run.note, error: run.error, actionsHTML: action, attrs: { 'data-notice-id': notice.id } });
     }).join('')}</div>` : '';
     remember();
-    container.innerHTML = `<div class="home-content"><h1 class="home-date" tabindex="-1">${escape(dayTitle.format(now()))}</h1>${attentionBlock}${scheduleBlock}<div class="home-actions">${rows ? '<span class="home-actions-label">일정 없이</span>' : ''}${button('data-home-action="record"', 'mic', '녹음 시작', !running)}${button('data-home-action="create"', 'square-pen', '빈 회의')}${button('data-home-action="import"', 'upload', '파일 가져오기')}</div>${where}${hint}</div>`;
+    container.innerHTML = `<div class="home-content"><h1 id="home-title" class="home-date" tabindex="-1">${escape(dayTitle.format(now()))}</h1>${attentionBlock}${scheduleBlock}<div class="home-actions">${rows ? '<span class="home-actions-label">일정 없이</span>' : ''}${button('data-home-action="record"', 'mic', '녹음 시작', !running)}${button('data-home-action="create"', 'square-pen', '빈 회의')}${button('data-home-action="import"', 'upload', '파일 가져오기')}</div>${where}${hint}</div>`;
     const select = container.querySelector('[data-home-folder]');
     if (select) select.value = chosen;
     globalThis.NeroControls?.enhanceAll?.(container);

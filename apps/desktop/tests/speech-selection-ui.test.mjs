@@ -274,7 +274,7 @@ test('staged low-memory downloads need the acknowledgement and confirm before th
   await wait(()=>!f.get('settings-speech-picker-confirm').disabled);
   f.get('settings-speech-picker-confirm').click();
   await wait(()=>f.calls.some(call=>call.name==='requestSpeechEngine'));
-  assert.deepEqual(f.calls.find(call=>call.name==='requestSpeechEngine').args,['qwenKo']);
+  assert.deepEqual(f.calls.find(call=>call.name==='requestSpeechEngine').args,['qwenKo',true],'the acknowledgement goes with the request');
 });
 
 test('existing users get the switch offer once and only the buttons record a decision',async t=>{
@@ -290,7 +290,7 @@ test('existing users get the switch offer once and only the buttons record a dec
   assert.equal(dialog.querySelector('[data-action="accept-speech-offer"]').disabled,false);
   dialog.querySelector('[data-action="accept-speech-offer"]').click();
   await wait(()=>f.calls.some(call=>call.name==='respondSpeechOffer'));
-  assert.deepEqual(f.calls.find(call=>call.name==='respondSpeechOffer').args,[true]);
+  assert.deepEqual(f.calls.find(call=>call.name==='respondSpeechOffer').args,[true,false],'no warning, nothing acknowledged');
   await wait(()=>!dialog.open);
 });
 
