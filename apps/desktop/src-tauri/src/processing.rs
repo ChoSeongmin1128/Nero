@@ -272,10 +272,7 @@ fn retryable_missing(transcript: &nero_core::Transcript) -> bool {
         .as_ref()
         .and_then(|source| source.recognition_report.as_ref())
         .is_some_and(|report| {
-            report.chunks.iter().any(|chunk| {
-                chunk.state != nero_core::RecognitionChunkState::Complete
-                    && chunk.issue.as_deref() != Some("splitFailed")
-            })
+            report.chunks.iter().any(|chunk| !chunk.settled())
         })
 }
 
@@ -425,6 +422,8 @@ pub struct Processing {
     requeue: Mutex<Vec<String>>,
     // Meetings whose playback file is being rewritten; their jobs wait until it is done.
     compacting: Mutex<HashSet<String>>,
+    // Set when a recording starts, so a conversion gives way to it.
+    compaction_cancel: AtomicBool,
     // Jobs the person had paused when a recording took their place; the retry that
     // continues one starts paused too.
     user_paused_jobs: Mutex<HashSet<String>>,
@@ -686,6 +685,7 @@ impl Processing {
             interrupted_jobs: Mutex::new(HashSet::new()),
             requeue: Mutex::new(Vec::new()),
             compacting: Mutex::new(HashSet::new()),
+            compaction_cancel: AtomicBool::new(false),
             user_paused_jobs: Mutex::new(HashSet::new()),
             revision: AtomicU64::new(0),
             recording_transcription: Mutex::new(RecordingTranscription::default()),
@@ -2091,6 +2091,14 @@ impl Processing {
         {
             return Err(nero_core::CoreError::MeetingNotFound);
         }
+        if ids
+            .iter()
+            .any(|id| self.compacting.lock().unwrap().contains(id))
+        {
+            return Err(nero_core::CoreError::InvalidState(
+                "녹음 파일을 줄이는 중입니다. 끝난 뒤 다시 시도해 주세요.".into(),
+            ));
+        }
         if snapshot
             .active_session()
             .is_some_and(|session| ids.contains(&session.meeting_id))
@@ -2512,6 +2520,10 @@ impl Processing {
         let source = match source {
             Some(core) => {
                 let meeting = meeting_id.as_deref().ok_or("회의를 찾을 수 없습니다.")?;
+                // Its playback file is being rewritten, which would change the source below.
+                if self.compacting.lock().unwrap().contains(meeting) {
+                    return Err("녹음 파일을 줄이는 중입니다. 끝난 뒤 다시 시도해 주세요.".into());
+                }
                 let fingerprint = Self::source_fingerprint(&core, meeting, kind)?;
                 if required_fingerprint
                     .as_ref()
@@ -3087,6 +3099,10 @@ impl Processing {
         self.cancel_live()?;
         if self.shutting_down.load(Ordering::Acquire) {
             return Err("앱을 종료하고 있습니다.".into());
+        }
+        // Rewriting an older recording reads and writes gigabytes; the recording comes first.
+        if !self.compacting.lock().unwrap().is_empty() {
+            self.compaction_cancel.store(true, Ordering::Release);
         }
         if let Some(job) = running.as_ref() {
             if !job.handle.is_finished() && self.progress.lock().unwrap().kind == "import" {
@@ -3802,10 +3818,7 @@ impl Processing {
                 // Missing chunks no longer stop terminology and speaker analysis. Those
                 // already tried in pieces cannot change on retry (same input, same result).
                 let partial = report.as_ref().filter(|report| !report.text_complete()).map(|report| {
-                    let settled = report.chunks.iter().all(|chunk| {
-                        chunk.state == nero_core::RecognitionChunkState::Complete
-                            || chunk.issue.as_deref() == Some("splitFailed")
-                    });
+                    let settled = report.chunks.iter().all(nero_core::RecognitionChunk::settled);
                     if settled {
                         ("mossUnrecognized", "일부 구간을 인식하지 못했습니다. 나머지 기록과 화자 구분은 저장했습니다.")
                     } else {

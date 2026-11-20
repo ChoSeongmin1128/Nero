@@ -418,7 +418,6 @@ impl CoreHandle {
         self.call(move |engine| engine.create_meeting_from_calendar(reference))
     }
 
-    /// The occurrence's meeting that can still take a recording, or a new numbered one.
     pub fn meeting_for_calendar_recording(&self, reference: CalendarReference) -> Result<Meeting> {
         self.call(move |engine| engine.meeting_for_calendar_recording(reference))
     }
@@ -849,13 +848,17 @@ impl CoreHandle {
 
     // Reading and rewriting a long recording takes a while, so only the check before
     // and the swap after run on the actor; other requests are served meanwhile.
-    pub fn compact_recording(&self, meeting_id: &str) -> Result<u64> {
+    pub fn compact_recording(
+        &self,
+        meeting_id: &str,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Result<u64> {
         let id = meeting_id.to_owned();
         let Some((planned, source, root)) = self.call(move |engine| engine.compaction_plan(&id))?
         else {
             return Ok(0);
         };
-        let prepared = source.write(&root)?;
+        let prepared = source.write(&root, cancel)?;
         let id = meeting_id.to_owned();
         self.call(move |engine| engine.finish_compaction(&id, &planned, prepared))
     }

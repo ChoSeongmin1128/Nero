@@ -51,6 +51,9 @@ impl Engine {
             unreadable,
         } = store.load_meetings(&library)?;
         let pending_playback = store.recover(&mut meetings)?;
+        for stored in meetings.values() {
+            store.remove_conversion_temporaries(stored);
+        }
         let new_meeting_folder =
             store::read_json::<NewMeetingFolder>(&store.root.join(NEW_MEETING_FOLDER))
                 .ok()
@@ -405,14 +408,17 @@ impl Engine {
                     && stored.meeting.deleted_at.is_none()
                     && self.accepts_new_audio(stored)
             },
-        ));
-        if let Some(stored) = reusable {
-            return Ok(stored.meeting.clone());
-        }
+        ))
+        .map(|stored| stored.meeting.clone());
         let folder = self.meetings[source_id].meeting.folder_id.clone();
-        let meeting = self.create_calendar_part(reference)?.meeting;
-        if folder.is_some() {
-            // The meeting exists either way; a failed placement leaves it unfiled.
+        let reused = reusable.is_some();
+        let meeting = match reusable {
+            Some(meeting) => meeting,
+            None => self.create_calendar_part(reference)?.meeting,
+        };
+        // The recording follows the source meeting's folder, reused meeting included. The
+        // meeting exists either way; a failed placement leaves it where it was.
+        if (folder.is_some() || reused) && meeting.folder_id != folder {
             let _ = self.move_meetings(std::slice::from_ref(&meeting.id), folder);
         }
         Ok(self
@@ -1113,10 +1119,8 @@ impl Engine {
             .collect()
     }
 
-    /// Keeps only the speech playback file of a finished recording and returns the
-    /// bytes freed. The capture PCM cannot be brought back afterwards.
-    /// What converting `meeting_id` needs, checked on the actor. `None` when nothing
-    /// is left to reduce. The conversion itself runs off the actor.
+    // Converting reads the whole recording, so it runs off the actor between this check
+    // and `finish_compaction`.
     pub(crate) fn compaction_plan(
         &self,
         meeting_id: &str,
@@ -1141,8 +1145,6 @@ impl Engine {
         Ok(Some((stored, source, self.store.root.clone())))
     }
 
-    /// Puts a conversion written off the actor in place, if the meeting still has the
-    /// audio it was written from, and saves the meeting.
     pub(crate) fn finish_compaction(
         &mut self,
         meeting_id: &str,
@@ -1190,7 +1192,7 @@ impl Engine {
         let Some((planned, source, root)) = self.compaction_plan(meeting_id)? else {
             return Ok(0);
         };
-        let prepared = source.write(&root)?;
+        let prepared = source.write(&root, &std::sync::atomic::AtomicBool::new(false))?;
         self.finish_compaction(meeting_id, &planned, prepared)
     }
 
@@ -1665,9 +1667,17 @@ mod tests {
         assert_ne!(next.id, source.id);
         assert_eq!(next.title, "Synthetic schedule (2)");
         assert_eq!(next.calendar_reference, Some(reference));
-        assert_eq!(next.folder_id, Some(folder.id));
+        assert_eq!(next.folder_id, Some(folder.id.clone()));
         assert_eq!(next.notes, "");
         assert_eq!(next.status, MeetingStatus::Draft);
+        // The empty one is reused rather than numbering another, and follows the source.
+        let other = engine.create_folder("Other".into()).unwrap();
+        engine
+            .move_meetings(&[next.id.clone()], Some(other.id))
+            .unwrap();
+        let again = engine.create_calendar_continuation(&source.id).unwrap();
+        assert_eq!(again.id, next.id);
+        assert_eq!(again.folder_id, Some(folder.id));
         let plain = engine
             .create_meeting("Plain".into(), String::new())
             .unwrap();

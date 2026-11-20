@@ -78,6 +78,18 @@ pub struct RecognitionReport {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub normalized_end_segments: Vec<u32>,
 }
+impl RecognitionChunk {
+    // Nothing more can be recognized here: complete, failed again in pieces, or failed and
+    // too short to split, so a retry would give the deterministic model the same input.
+    // Decided here rather than in the stored projection, so saved reports stay as they are.
+    pub fn settled(&self) -> bool {
+        self.state == RecognitionChunkState::Complete
+            || self.issue.as_deref() == Some("splitFailed")
+            || (self.state == RecognitionChunkState::Failed
+                && self.end_frame - self.start_frame < SPLIT_MINIMUM_FRAMES)
+    }
+}
+
 impl RecognitionReport {
     pub fn text_complete(&self) -> bool {
         self.chunks
@@ -563,15 +575,6 @@ pub(super) fn decode_with_projector(
                 }
             }
         }
-        // A failed chunk too short to try again in halves has had its only attempt, and
-        // the deterministic model would give the same result to a retry.
-        if record.pieces.is_none()
-            && record.input.is_none()
-            && chunk.state == RecognitionChunkState::Failed
-            && end - start < SPLIT_MINIMUM_FRAMES
-        {
-            chunk.issue = Some("splitFailed".into());
-        }
         if let Some(pieces) = record.pieces {
             if pieces.len() < 2 {
                 return Err(invalid());
@@ -682,10 +685,7 @@ pub(super) fn can_publish(document: &Transcript) -> bool {
             .as_ref()
             .and_then(|source| source.recognition_report.as_ref())
             .is_some_and(|report| {
-                report.chunks.iter().all(|chunk| {
-                    chunk.state == RecognitionChunkState::Complete
-                        || chunk.issue.as_deref() == Some("splitFailed")
-                })
+                report.chunks.iter().all(RecognitionChunk::settled)
             })
 }
 
@@ -731,7 +731,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_chunk_too_short_to_split_is_final_and_a_longer_one_stays_open() {
+    fn a_failed_chunk_too_short_to_split_is_settled_and_a_longer_one_stays_open() {
         let failed = |frames: u64| {
             let mut value = output(frames);
             change(&mut value, 1, |native| {
@@ -744,13 +744,14 @@ mod tests {
                 .recognition_report
                 .unwrap()
                 .chunks[1]
-                .issue
                 .clone()
         };
+        // The stored projection keeps its issue; only the judgement changes.
         let short = failed(CHUNK_FRAMES + SPLIT_MINIMUM_FRAMES / 2);
-        assert_eq!(short.as_deref(), Some("splitFailed"));
+        assert_eq!(short.issue.as_deref(), Some("nativeOutputInvalid"));
+        assert!(short.settled());
         let long = failed(2 * CHUNK_FRAMES);
-        assert_eq!(long.as_deref(), Some("nativeOutputInvalid"));
+        assert!(!long.settled());
     }
 
     #[test]

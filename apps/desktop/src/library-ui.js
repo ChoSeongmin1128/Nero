@@ -329,11 +329,15 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     openDialog({ title: '휴지통으로 이동', content: `<p>${escape(description(ids))}</p>`, confirm: cancels ? '처리 취소 후 휴지통' : '휴지통으로 이동', destructive: true, detach: true, action: () => bridge.trashMeetings(ids) });
   }
   // The meeting stays as an empty copy to record again; the recording goes to the trash.
-  function discardDialog(id) {
+  async function discardDialog(id) {
     if (!current(id)) return;
     if (runningRecording([id])) { showError('녹음을 종료한 뒤 버려 주세요.'); return; }
+    // This window's own unsaved edits are saved first, so only a change made elsewhere
+    // while the dialog is open is refused.
+    await finishEditing(() => {});
+    acceptSnapshot(await bridge.readSnapshot());
+    if (!current(id)) return;
     const cancels = pendingJob(state().processing, { meetingId: id });
-    // The meeting as shown here; a change made elsewhere while the dialog is open is refused.
     const seen = current(id).updatedAt;
     let created = null;
     openDialog({ title: '녹음을 버릴까요?', content: `<p>${escape(description([id]))}의 녹음과 음성 기록, 요약을 휴지통으로 옮깁니다. 제목, 메모, 참석자, 일정, 폴더는 그대로 둔 빈 회의가 남아 다시 녹음할 수 있습니다. 휴지통에서 복원하면 녹음을 되찾을 수 있습니다.</p>`,
@@ -656,7 +660,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
   });
   byId('meeting-reveal').closest?.('details')?.addEventListener('toggle', updateReveal);
   for (const action of ['move', 'trash']) byId(`meeting-${action}`).addEventListener('click', () => { closeMenu(menus.active, true); actionFor(action, [state().selectedId].filter(Boolean)); });
-  byId('meeting-discard-recording').addEventListener('click', () => { closeMenu(menus.active, true); if (state().selectedId && !state().libraryBusy) discardDialog(state().selectedId); });
+  byId('meeting-discard-recording').addEventListener('click', () => { closeMenu(menus.active, true); if (state().selectedId && !state().libraryBusy) void discardDialog(state().selectedId).catch(showError); });
   byId('meeting-list').addEventListener('click', event => {
     const toggle = event.target.closest('[data-library-toggle]');
     const action = event.target.closest('[data-library-action]');

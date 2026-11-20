@@ -54,6 +54,9 @@ test('on macOS an input delay notice while the input starts is not shown, a late
   assert.equal(later.visible, true);
   assert.deepEqual(later.locations.map(location => location.seconds), [1]);
   assert.equal(recordingQuality({ xrunCount: 2, events: [startup] }, 48000, 96000, mac).visible, true);
+  // A device whose first buffer is longer than the bound has still saved nothing.
+  const longBuffer = { kind: 'xrun', count: 1, firstSavedFrame: 0, lastSavedFrame: 0, firstQueuedFrame: 2048, lastQueuedFrame: 2048 };
+  assert.equal(recordingQuality({ xrunCount: 1, events: [longBuffer] }, 16000, 32000, mac).visible, false);
   const elsewhere = recordingQuality({ xrunCount: 1, events: [startup] }, 48000, 96000, { startupNotice: false });
   assert.equal(elsewhere.visible, true);
   assert.deepEqual(elsewhere.locations.map(location => location.seconds), [0]);

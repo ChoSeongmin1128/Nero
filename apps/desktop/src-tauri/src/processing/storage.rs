@@ -4,6 +4,7 @@ use serde::Serialize;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
+use std::sync::atomic::Ordering;
 use uuid::Uuid;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
@@ -24,7 +25,21 @@ pub struct Compacted {
     pub freed_bytes: u64,
     pub meetings: usize,
     pub failed: usize,
+    // A recording started, so the pass stopped; the rest keep their original files.
+    pub stopped: bool,
     pub usage: StorageUsage,
+}
+
+// Releases a meeting's claim even if its conversion panics, so its jobs can start again.
+struct Claim<'a> {
+    compacting: &'a std::sync::Mutex<std::collections::HashSet<String>>,
+    id: &'a str,
+}
+
+impl Drop for Claim<'_> {
+    fn drop(&mut self) {
+        self.compacting.lock().unwrap().remove(self.id);
+    }
 }
 
 // Bytes of the regular files under `path`; links and unreadable entries count as none.
@@ -87,7 +102,12 @@ impl Processing {
             ));
         }
         let mut result = Compacted::default();
+        self.compaction_cancel.store(false, Ordering::Release);
         for (id, _) in core.reducible_recordings()? {
+            if self.compaction_cancel.load(Ordering::Acquire) {
+                result.stopped = true;
+                break;
+            }
             // Claimed under the gate new jobs take, so none starts reading the file while
             // it is replaced; the conversion itself runs after the gate is released.
             let claimed =
@@ -97,9 +117,12 @@ impl Processing {
                 });
             let compacted = match claimed {
                 Ok(true) => {
-                    let outcome = core.compact_recording(&id).map(Some);
-                    self.compacting.lock().unwrap().remove(&id);
-                    outcome
+                    let _claim = Claim {
+                        compacting: &self.compacting,
+                        id: &id,
+                    };
+                    core.compact_recording(&id, &self.compaction_cancel)
+                        .map(Some)
                 }
                 Ok(false) => Ok(None),
                 Err(error) => Err(error),
@@ -109,6 +132,10 @@ impl Processing {
                 Ok(Some(freed)) => {
                     result.freed_bytes += freed;
                     result.meetings += 1;
+                }
+                Err(_) if self.compaction_cancel.load(Ordering::Acquire) => {
+                    result.stopped = true;
+                    break;
                 }
                 Err(_) => result.failed += 1,
             }

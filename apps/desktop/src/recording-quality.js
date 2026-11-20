@@ -16,7 +16,9 @@ const macHost = () => /Macintosh|Mac OS X/.test(globalThis.navigator?.userAgent 
 
 export function recordingQuality(quality, sampleRate, frames, { startupNotice = macHost() } = {}) {
   const startupFrames = Number.isFinite(sampleRate) && sampleRate > 0 ? Math.floor(sampleRate / 10) : 0;
-  const startupXrun = event => startupNotice && event.kind === 'xrun' && Number.isSafeInteger(event.lastQueuedFrame) && event.lastQueuedFrame <= startupFrames;
+  // Before anything was saved, or within the bound (a device whose first buffer is longer
+  // than the bound still has nothing saved when it sends the notice).
+  const startupXrun = event => startupNotice && event.kind === 'xrun' && (event.lastSavedFrame === 0 || (Number.isSafeInteger(event.lastQueuedFrame) && event.lastQueuedFrame <= startupFrames));
   const all = (quality?.events || []).filter(event => Object.hasOwn(policies, event.kind));
   const startup = all.filter(startupXrun).reduce((sum, event) => sum + (Number.isSafeInteger(event.count) ? event.count : 0), 0);
   const events = all.filter(event => !startupXrun(event));

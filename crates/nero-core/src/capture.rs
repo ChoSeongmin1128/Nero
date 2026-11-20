@@ -313,7 +313,8 @@ impl Signals {
                     && self.saved_bytes.load(Ordering::Acquire) != 0 => {}
             cpal::ErrorKind::Xrun => {
                 let queued = self.queued_bytes.load(Ordering::Acquire) / self.frame_bytes;
-                if cfg!(target_os = "macos") && queued <= self.startup_frames {
+                let saved = self.saved_bytes.load(Ordering::Acquire);
+                if cfg!(target_os = "macos") && (saved == 0 || queued <= self.startup_frames) {
                     self.startup_xruns.fetch_add(1, Ordering::AcqRel);
                 }
                 self.record_event(CaptureQualityEventKind::Xrun)

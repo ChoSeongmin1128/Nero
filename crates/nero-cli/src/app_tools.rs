@@ -409,12 +409,8 @@ pub(crate) fn tool_help(tool: &AppTool) -> String {
     text
 }
 
-pub(crate) fn words() -> impl Iterator<Item = &'static [&'static str]> {
-    TOOLS.iter().map(|tool| tool.words)
-}
-
-pub(crate) fn tools_in(group: &str) -> impl Iterator<Item = &'static AppTool> + '_ {
-    TOOLS.iter().filter(move |tool| tool.words[0] == group)
+pub(crate) fn tools_in_order() -> impl Iterator<Item = &'static AppTool> {
+    TOOLS.iter()
 }
 
 #[cfg(test)]

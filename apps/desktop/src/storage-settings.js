@@ -46,7 +46,8 @@ export function mountStorageSettings({ byId, bridge, confirm }) {
       if (!current(value)) return;
       usage = result.usage;
       message = [result.meetings ? `${formatBytes(result.freedBytes)}를 확보했습니다.` : '',
-        result.failed ? `녹음 ${result.failed}개는 줄이지 못했습니다. 원래 파일은 그대로 있습니다.` : ''].filter(Boolean).join(' ');
+        result.failed ? `녹음 ${result.failed}개는 줄이지 못했습니다. 원래 파일은 그대로 있습니다.` : '',
+        result.stopped ? '녹음이 시작되어 줄이기를 멈췄습니다. 남은 녹음은 원래 파일 그대로 있습니다.' : ''].filter(Boolean).join(' ');
     } catch {
       if (current(value)) message = '녹음을 줄이지 못했습니다. 원래 파일은 그대로 있습니다.';
     } finally {

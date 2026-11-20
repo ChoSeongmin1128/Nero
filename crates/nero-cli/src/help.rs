@@ -123,17 +123,34 @@ const HEADER: &str = "Nero 로컬 CLI
 명령:
 ";
 
-fn words() -> Vec<&'static [&'static str]> {
-    let mut all: Vec<&'static [&'static str]> = TOPICS.iter().map(|topic| topic.words).collect();
-    all.extend(crate::app_tools::words());
+// Each command's usage line, from `nero` on.
+fn usage_lines() -> Vec<(&'static [&'static str], String)> {
+    let mut all: Vec<_> = TOPICS
+        .iter()
+        .map(|topic| (topic.words, topic.usage.to_string()))
+        .collect();
+    all.extend(
+        crate::app_tools::tools_in_order()
+            .map(|tool| (tool.words, crate::app_tools::usage_line(tool))),
+    );
     all
 }
 
-// "meetings list|search|get|..." per group, in table order.
+// "meetings list|search|get|..." per group, in table order. A command named by its group
+// alone (`recording start|pause|...`, `update status|...`) shows its actions instead.
 pub fn general() -> String {
     let mut groups: Vec<(&str, Vec<String>)> = Vec::new();
-    for words in words() {
-        let rest = words[1..].join(" ");
+    for (words, usage) in usage_lines() {
+        let rest = if words.len() > 1 {
+            words[1..].join(" ")
+        } else {
+            usage
+                .split_whitespace()
+                .nth(2)
+                .filter(|action| action.contains('|'))
+                .unwrap_or_default()
+                .to_string()
+        };
         let index = match groups.iter().position(|(group, _)| *group == words[0]) {
             Some(index) => index,
             None => {
@@ -173,7 +190,16 @@ pub fn for_arguments(arguments: &[&str]) -> String {
         .filter(|value| *value != "help")
         .take_while(|value| !value.starts_with('-'))
         .collect();
-    if let Some(tool) = crate::app_tools::find_words(&words) {
+    // A group name alone that is also a command (`recording`) lists the whole group.
+    let group_size = words.first().map_or(0, |group| {
+        usage_lines()
+            .iter()
+            .filter(|(entry, _)| entry[0] == *group)
+            .count()
+    });
+    if let Some(tool) = crate::app_tools::find_words(&words)
+        .filter(|tool| !(words.len() == 1 && tool.words.len() == 1 && group_size > 1))
+    {
         return crate::app_tools::tool_help(tool);
     }
     if let Some(topic) = TOPICS
@@ -186,14 +212,11 @@ pub fn for_arguments(arguments: &[&str]) -> String {
     let Some(group) = words.first() else {
         return general();
     };
-    let mut lines: Vec<String> = TOPICS
-        .iter()
-        .filter(|topic| topic.words[0] == *group)
-        .map(|topic| topic.usage.to_string())
+    let lines: Vec<String> = usage_lines()
+        .into_iter()
+        .filter(|(entry, _)| entry[0] == *group)
+        .map(|(_, usage)| usage)
         .collect();
-    lines.extend(
-        crate::app_tools::tools_in(group).map(crate::app_tools::usage_line),
-    );
     if lines.is_empty() {
         return general();
     }
@@ -211,15 +234,23 @@ mod tests {
     fn every_command_has_its_own_short_page_and_the_general_page_stays_small() {
         let general = general();
         assert!(general.len() < 3_000, "{}", general.len());
-        for words in words() {
+        for (words, _) in usage_lines() {
             let page = for_arguments(&[words, &["--help"]].concat());
-            assert!(page.starts_with(&format!("nero {}", words.join(" "))), "{words:?}\n{page}");
+            assert!(
+                page.starts_with(&format!("nero {}", words.join(" "))),
+                "{words:?}\n{page}"
+            );
             assert!(page.len() < 2_500, "{words:?} {}", page.len());
             assert!(general.contains(words[0]), "{words:?}");
         }
         assert!(for_arguments(&["settings", "set", "--help"]).contains("--new-meeting-folder"));
         assert!(for_arguments(&["summary", "get", "--help"]).contains("--include-citations는"));
         assert!(for_arguments(&["meetings", "--help"]).contains("nero meetings trash"));
+        assert!(for_arguments(&["recording", "--help"]).contains("nero recording continue"));
+        assert!(for_arguments(&["recording", "start", "--help"])
+            .starts_with("nero recording start|pause"));
+        assert!(general.contains("|start|pause|resume|stop|"));
+        assert!(general.contains("update status|check|download|install"));
         assert_eq!(for_arguments(&["--help"]), general);
         assert_eq!(for_arguments(&["unknown", "--help"]), general);
     }

@@ -80,6 +80,14 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Options, QueryError
         }
     }
     let strings: Vec<&str> = arguments.iter().map(String::as_str).collect();
+    // Any command or group asks for its own page; an unknown name gets the general one.
+    if strings
+        .iter()
+        .any(|value| matches!(*value, "--help" | "-h"))
+    {
+        let action = Action::Help(crate::help::for_arguments(&strings));
+        return Ok(Options { root, json, action });
+    }
     if let Some(parsed) = crate::app_tools::parse_cli(&strings) {
         let action = if strings
             .iter()

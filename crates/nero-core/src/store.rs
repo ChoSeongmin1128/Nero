@@ -119,9 +119,8 @@ pub struct CaptureQuality {
     pub events: Vec<CaptureQualityEvent>,
 }
 
-/// Audio queued within the first tenth of a second. macOS sends one overload notice as
-/// the device starts its input, right after the first buffer; the margin also covers a
-/// notice that arrives a few buffers late.
+// macOS sends one overload notice right after the device's first input buffer; a tenth
+// of a second also covers one that arrives a few buffers late.
 pub fn startup_notice_frames(sample_rate: u32) -> u64 {
     u64::from(sample_rate) / 10
 }
@@ -138,7 +137,7 @@ impl CaptureQuality {
             .iter()
             .filter(|event| {
                 event.kind == CaptureQualityEventKind::Xrun
-                    && event.last_queued_frame <= startup_frames
+                    && (event.last_saved_frame == 0 || event.last_queued_frame <= startup_frames)
             })
             .map(|event| event.count)
             .sum::<u64>()
@@ -337,15 +336,39 @@ pub(crate) struct ConversionSource {
 }
 
 impl ConversionSource {
-    // Reads the whole capture PCM and writes the converted file; needs only the root.
-    pub(crate) fn write(&self, root: &Path) -> Result<PreparedPlayback> {
+    // Reads the whole capture PCM and writes the converted file; needs only the root. Setting
+    // `cancel` stops it at the next read, and the partial file goes with the error.
+    pub(crate) fn write(
+        &self,
+        root: &Path,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Result<PreparedPlayback> {
         let raw = open_read(&self.raw_path)?;
         if raw.metadata()?.len() / self.manifest.frame_bytes() as u64 != self.frames {
             return Err(CoreError::InvalidState(
                 "줄일 수 있는 녹음이 아닙니다.".into(),
             ));
         }
-        write_playback(root, &self.manifest, &self.playback, raw)
+        write_playback(
+            root,
+            &self.manifest,
+            &self.playback,
+            Cancellable { raw, cancel },
+        )
+    }
+}
+
+struct Cancellable<'a> {
+    raw: File,
+    cancel: &'a std::sync::atomic::AtomicBool,
+}
+
+impl Read for Cancellable<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        if self.cancel.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(std::io::Error::other("녹음 파일 줄이기를 멈췄습니다."));
+        }
+        self.raw.read(buffer)
     }
 }
 
@@ -798,12 +821,13 @@ impl Store {
     /// alone, and the PCM must not go before the file is known to be right.
     #[cfg(test)]
     pub(crate) fn convert_playback(&self, stored: &mut StoredMeeting) -> Result<()> {
-        let prepared = self.prepare_conversion(stored)?.write(&self.root)?;
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let prepared = self
+            .prepare_conversion(stored)?
+            .write(&self.root, &cancel)?;
         self.install_conversion(prepared, stored)
     }
 
-    /// Checks that `stored` can be converted and what the result will be, without
-    /// reading the audio. `ConversionSource::write` does the long part.
     pub(crate) fn prepare_conversion(&self, stored: &StoredMeeting) -> Result<ConversionSource> {
         let unavailable = || CoreError::InvalidState("줄일 수 있는 녹음이 아닙니다.".into());
         let artifact = stored.meeting.audio.as_ref().ok_or_else(unavailable)?;
@@ -839,7 +863,6 @@ impl Store {
         })
     }
 
-    /// Puts a written conversion in place of the playback file and records its form.
     pub(crate) fn install_conversion(
         &self,
         prepared: PreparedPlayback,
@@ -875,6 +898,16 @@ impl Store {
 
     /// Bytes `compact` would free for this meeting: its kept PCM, plus what a native
     /// float playback file loses when it becomes the speech form.
+    // A conversion stopped by quitting leaves its partial file beside the playback file.
+    pub(crate) fn remove_conversion_temporaries(&self, stored: &StoredMeeting) {
+        if let (Some(session_id), true) = (&stored.capture_id, self.reducible_bytes(stored) > 0) {
+            let _ = remove_temporaries_in(
+                &self.root,
+                &sessions_dir(&stored.meeting.id).join(session_id),
+            );
+        }
+    }
+
     pub(crate) fn reducible_bytes(&self, stored: &StoredMeeting) -> u64 {
         let (Some(artifact), Some(session_id)) = (&stored.meeting.audio, &stored.capture_id)
         else {
@@ -1148,8 +1181,8 @@ fn publish_playback(
     install_playback(root, prepared, replace)
 }
 
-/// A converted playback file written and read back beside its final name, not yet in place.
-/// Dropping it removes the file.
+// Written and read back beside its final name; dropped without being put in place, it
+// removes the file.
 pub(crate) struct PreparedPlayback {
     temporary: PathBuf,
     wav_relative: PathBuf,
@@ -1169,7 +1202,7 @@ fn write_playback(
     root: &Path,
     manifest: &Manifest,
     playback: &Playback,
-    raw: File,
+    raw: impl Read,
 ) -> Result<PreparedPlayback> {
     let wav_relative = manifest.relative_dir().join("audio.wav");
     checked_path(root, &wav_relative)?;
@@ -1249,7 +1282,11 @@ pub(crate) fn forget_verified_playback(path: &Path) {
 // A playback WAV left half-written by an earlier crash or full disk is never
 // reused; each attempt writes a new uniquely named file.
 fn remove_playback_temporaries(root: &Path, manifest: &Manifest) -> Result<()> {
-    let directory = checked_path(root, &manifest.relative_dir())?;
+    remove_temporaries_in(root, &manifest.relative_dir())
+}
+
+fn remove_temporaries_in(root: &Path, relative: &Path) -> Result<()> {
+    let directory = checked_path(root, relative)?;
     for entry in fs::read_dir(&directory)? {
         let entry = entry?;
         let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
@@ -1264,7 +1301,7 @@ fn remove_playback_temporaries(root: &Path, manifest: &Manifest) -> Result<()> {
         if Uuid::parse_str(id).is_err() || !entry.file_type()?.is_file() {
             continue;
         }
-        let path = checked_path(root, &manifest.relative_dir().join(&name))?;
+        let path = checked_path(root, &relative.join(&name))?;
         fs::remove_file(&path)?;
     }
     Ok(())
