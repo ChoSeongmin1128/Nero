@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { processingFeedback, canRetryProcessing, canDismissProcessing } from '../src/processing-feedback.js';
+import { processingFeedback, canRetryProcessing, canDismissProcessing, jobActions } from '../src/processing-feedback.js';
 
 test('cancelled processing exposes recovery and dismissal without a false close icon', () => {
   const job = { id: 'cancelled', kind: 'transcribe', status: 'cancelled', retryable: true, message: '취소했습니다.' };
@@ -342,4 +342,24 @@ test('a pausable job offers pause and resume and shows who paused it', () => {
   assert.equal(processingFeedback(running, { cancelling: true }).pauseVisible, false);
   assert.equal(processingFeedback(running, { pausing: true }).pauseDisabled, true);
   assert.equal(processingFeedback({ ...running, status: 'queued' }).pauseVisible, false);
+});
+
+test('job actions allow exactly what the banner and the notification list show', () => {
+  const failed = { id: 'f', kind: 'transcribe', status: 'failed', retryable: true };
+  assert.equal(jobActions(failed).allows('retry'), true);
+  assert.equal(jobActions(failed).allows('ack'), true);
+  assert.equal(jobActions(failed).allows('cancel'), false);
+  const summary = { ...failed, kind: 'summary' };
+  assert.equal(jobActions(summary, { summaryEnabled: false }).retry, false, 'summary retry waits while in-app summaries are off');
+  assert.equal(jobActions(summary, { summaryEnabled: false }).ack, true);
+  const running = { id: 'r', kind: 'transcribe', status: 'running', pausable: true };
+  assert.equal(jobActions(running).allows('cancel'), true);
+  assert.equal(jobActions(running, { cancelling: true }).allows('cancel'), false, 'a requested cancel is not sent twice');
+  assert.equal(jobActions(running).allows('pause'), true);
+  assert.equal(jobActions(running).allows('resume'), false);
+  assert.equal(jobActions({ ...running, pause: { state: 'paused', by: 'user' } }).allows('resume'), true);
+  assert.equal(jobActions(running, { pausing: true }).allows('pause'), false);
+  assert.equal(jobActions({ ...failed, retrySuccessorId: 'next' }).allows('retry'), false);
+  assert.equal(jobActions(undefined).allows('retry'), false);
+  assert.equal(jobActions(running).allows('open'), false, 'opening the meeting is decided by the screen');
 });

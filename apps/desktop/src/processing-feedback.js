@@ -2,6 +2,24 @@ import { byteProgress, modelKinds } from './processing-state.js';
 
 export const canRetryProcessing = job => job?.acknowledged !== true && !job?.retrySuccessorId && job?.retryable === true && ['interrupted', 'failed', 'cancelled', 'needsReview'].includes(job?.status);
 export const canDismissProcessing = job => job?.acknowledged !== true && !job?.retrySuccessorId && ['completed', 'interrupted', 'failed', 'cancelled', 'needsReview'].includes(job?.status);
+const summaryKinds = new Set(['summary', 'summary-model']);
+
+// What a person may do with a job right now. The banner, the notification list and the code
+// that sends the request all read this, so a button is shown exactly when its action is allowed.
+// `summaryEnabled: false` withholds retry from summary work while in-app summaries are off.
+export function jobActions(job, { summaryEnabled = true, ...context } = {}) {
+  const feedback = processingFeedback(job, context);
+  const actions = {
+    feedback,
+    retry: canRetryProcessing(job) && (summaryEnabled || !summaryKinds.has(job?.kind)),
+    ack: canDismissProcessing(job),
+    cancel: feedback.cancelVisible && !feedback.cancelDisabled,
+    pause: feedback.pauseVisible && !feedback.pauseDisabled ? feedback.pauseAction : null,
+  };
+  actions.allows = action => action === 'retry' ? actions.retry : action === 'ack' ? actions.ack : action === 'cancel' ? actions.cancel
+    : ['pause', 'resume'].includes(action) ? actions.pause === action : false;
+  return actions;
+}
 const jobTitles = {
   cleanup: '임시 파일 정리',
   setup: '모델 준비',

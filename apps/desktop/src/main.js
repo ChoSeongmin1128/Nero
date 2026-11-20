@@ -32,7 +32,8 @@ import { mountDocumentActions } from './document-actions.jsx';
 import '../../../design-system/react-controls.jsx';
 import * as bridge from './bridge.js';
 import { ui, icon, escape, button, duration, recordingStatus, statusMarkup, sessionControls, applySystemAppearance } from './ui.js';
-import { processingFeedback, canRetryProcessing, canDismissProcessing } from './processing-feedback.js';
+import { processingFeedback, canDismissProcessing, jobActions } from './processing-feedback.js';
+import { mountProcessingBanner } from './processing-banner.js';
 import { processingJobs, pendingJob, processingResults, latestMeetingProcessing, processingNotices, modelPreparation, memoryBlocked, speakerNeedsPreparation, speechModelKinds, summaryModelKinds, queuedBehindModel } from './processing-state.js';
 import { mountModelDownloadStatus } from './model-download-status.js';
 import { mountLibrary, fullDate, meetingDay } from './library-ui.js';
@@ -166,7 +167,11 @@ let aiChat = null, aiLibrary = null, meetingContext = null;
 let lastLiveTranscript = null;
 const processingActions = new Map();
 const processingErrors = new Map();
-let processingFocus = null;
+const processingBanner = mountProcessingBanner({ byId, document, icon, escape,
+  view: () => ({ processing: state.processing, meetingId: !state.libraryOpen && !state.setupRequested ? currentMeeting()?.id : undefined, meetings: state.snapshot.meetings, selectedId: state.selectedId,
+    cancellingId: state.processingCancellingId, actions: processingActions, errors: processingErrors, recording: Boolean(activeSession()), summaryEnabled: localSummaryEnabled() }),
+  onAction: (action, jobId) => { processingAction(action, jobId).catch(showError); },
+  onOpenMeeting: meetingId => { void run(() => selectMeeting(meetingId)); } });
 function setHTML(id, html) { const node = byId(id); if (node.innerHTML !== html) node.innerHTML = html; }
 function setText(id, text) { const node = byId(id); if (node.textContent !== text) node.textContent = text; }
 const currentMeeting = () => state.snapshot.meetings.find((meeting) => meeting.id === state.selectedId);
@@ -304,12 +309,6 @@ async function prepareAudio(meeting, recording, force = false) {
 const modelsReady = () => state.processing.supported && state.processing.modelReady;
 const localSummaryEnabled = () => state.processing.localSummaryEnabled !== false;
 const localSummaryMessage = () => state.processing.localSummaryMessage || '앱 내 요약은 준비 중입니다.';
-const localSummaryJob = job => ['summary', 'summary-model'].includes(job?.kind);
-function displayProcessing() {
-  if (localSummaryEnabled()) return state.processing;
-  const withoutRetry = job => localSummaryJob(job) ? { ...job, retryable: false } : job;
-  return { ...withoutRetry(state.processing), jobs: state.processing.jobs?.map(withoutRetry) };
-}
 function renderSetup() {
   byId('setup-local-summary').hidden = !localSummaryEnabled();
   const ready = modelsReady();
@@ -413,7 +412,7 @@ function render() {
   const setupVisible = renderSetup();
   if (setupVisible && byId('setup-screen').scrollTop !== setupScroll) byId('setup-screen').scrollTop = setupScroll;
   speechOffer.update(state.processing.speechOffer, { blocked: !state.connected || Boolean(activeSession()) || setupVisible || Boolean(byId('settings-dialog').open) || Boolean(byId('quit-dialog').open) });
-  notificationCenter.update({ processing: displayProcessing(), meetings: state.snapshot.meetings, selectedMeetingId: state.selectedId, connected: state.connected, actions: processingActions, integrations: integrationNotices, notices: appUpdateNotices });
+  notificationCenter.update({ processing: state.processing, summaryEnabled: localSummaryEnabled(), meetings: state.snapshot.meetings, selectedMeetingId: state.selectedId, connected: state.connected, actions: processingActions, integrations: integrationNotices, notices: appUpdateNotices });
   navigation?.attention('home', attentionNotices(integrationNotices).length > 0);
   navigation?.updateCounts(notificationCenter.counts());
   if (setupVisible && !state.setupWasVisible) navigation?.close({ focus: false });
@@ -423,7 +422,8 @@ function render() {
   speakers.render();
   renderSearchStatus();
   renderSettings();
-  renderProcessing();
+  byId('import-audio').disabled = !state.connected || state.busy || Boolean(pendingJob(state.processing, { kind: 'import' })) || Boolean(activeSession());
+  processingBanner.render();
   const homeVisible = state.connected && !setupVisible && state.homeOpen && !state.libraryOpen;
   const meeting = homeVisible ? null : currentMeeting();
   byId('home-screen').hidden = !homeVisible;
@@ -1015,96 +1015,14 @@ async function onAgentWriteRequest({ requestId, kind } = {}) {
 
 const processingActive = () => state.processing.status === 'running';
 
-function renderProcessing() {
-  rememberProcessingFocus();
-  const notices = processingNotices(state.processing, !state.libraryOpen && !state.setupRequested ? currentMeeting()?.id : undefined);
-  const progress = notices.primary ? { ...(state.processing.id === notices.primary.id ? state.processing : {}), ...notices.primary } : {};
-  const feedback = processingFeedback(progress, { cancelling: state.processingCancellingId === progress.id || processingActions.get(progress.id) === 'cancel', waitingForModel: queuedBehindModel(state.processing, progress), recording: Boolean(activeSession()), pausing: ['pause', 'resume'].includes(processingActions.get(progress.id)) });
-  byId('import-audio').disabled = !state.connected || state.busy || Boolean(pendingJob(state.processing, { kind: 'import' })) || Boolean(activeSession());
-  byId('processing').hidden = !feedback.visible || progress.kind === 'setup';
-  byId('processing').dataset.state = feedback.state;
-  const owner = state.snapshot.meetings.find(meeting => meeting.id === progress.meetingId);
-  setText('processing-title', `${owner && owner.id !== state.selectedId ? owner.title + ': ' : ''}${feedback.title}`);
-  const detail = processingErrors.get(progress.id) || feedback.detail;
-  setText('processing-message', detail);
-  byId('processing-message').hidden = !detail;
-  const errorInfo = byId('processing-error-info');
-  const diagnosticKey = `${progress.id}:${progress.status}`;
-  if (errorInfo.dataset.job !== diagnosticKey) errorInfo.open = false;
-  errorInfo.dataset.job = diagnosticKey;
-  errorInfo.hidden = !feedback.diagnostics.length;
-  setHTML('processing-error-fields', feedback.diagnostics.map(([label, value]) => `<div>${escape(label)}: ${escape(value)}</div>`).join(''));
-  setText('processing-warning', feedback.warning);
-  byId('processing-warning').hidden = !feedback.warning;
-  byId('processing-spinner').hidden = !feedback.active || feedback.paused;
-  byId('processing-result-icon').hidden = feedback.active && !feedback.paused;
-  setHTML('processing-result-icon', icon(feedback.icon));
-  byId('cancel-processing').hidden = !feedback.cancelVisible;
-  byId('cancel-processing').disabled = feedback.cancelDisabled;
-  setText('cancel-processing', feedback.cancelLabel);
-  byId('pause-processing').hidden = !feedback.pauseVisible;
-  byId('pause-processing').disabled = feedback.pauseDisabled;
-  byId('pause-processing').dataset.jobAction = feedback.pauseAction;
-  setText('pause-processing', feedback.pauseLabel);
-  byId('processing-progress').hidden = !feedback.progress;
-  setText('processing-percent', feedback.progress ? `${feedback.progress.percent}%` : '');
-  byId('processing-percent').hidden = !feedback.progress;
-  if (feedback.progress) { byId('processing-progress').max = feedback.progress.max; byId('processing-progress').value = feedback.progress.value; }
-  byId('retry-processing').hidden = (!localSummaryEnabled() && localSummaryJob(progress)) || !canRetryProcessing(progress);
-  byId('retry-processing').disabled = processingActions.has(progress.id);
-  byId('open-processing-meeting').hidden = progress.status !== 'needsReview' || !owner;
-  byId('dismiss-processing').hidden = !canDismissProcessing(progress);
-  byId('dismiss-processing').disabled = processingActions.has(progress.id);
-  for (const [id, action] of [['cancel-processing', 'cancel'], ['retry-processing', 'retry'], ['open-processing-meeting', 'open'], ['dismiss-processing', 'ack']]) {
-    byId(id).dataset.jobId = progress.id || '';
-    byId(id).dataset.jobAction = action;
-  }
-  byId('pause-processing').dataset.jobId = progress.id || '';
-  restoreProcessingFocus();
-}
-
-function rememberProcessingFocus() {
-  if (processingFocus) return;
-  const target = document.activeElement;
-  const jobId = target?.dataset?.jobId;
-  if (!jobId) return;
-  const ids = [...new Set([...byId('processing').querySelectorAll('[data-job-id]')].map(node => node.dataset.jobId))];
-  processingFocus = { target, id: jobId, action: target.dataset.jobAction, ids, index: ids.indexOf(jobId) };
-}
-
-function restoreProcessingFocus() {
-  const saved = processingFocus;
-  if (!saved) return;
-  const active = document.activeElement;
-  if (active && active !== document.body && active !== saved.target && active.isConnected !== false) { processingFocus = null; return; }
-  if (processingActions.has(saved.id)) return;
-  const usable = node => node && !node.disabled && !node.hidden && node.isConnected !== false && !node.closest?.('[hidden], [inert]');
-  const banner = ['pause-processing', 'cancel-processing', 'retry-processing', 'open-processing-meeting', 'dismiss-processing'].map(byId).filter(node => !byId('processing').hidden && usable(node));
-  const forJob = id => banner.filter(node => node.dataset.jobId === id);
-  const same = forJob(saved.id);
-  const nextIds = saved.ids.slice(saved.index + 1);
-  const previousIds = saved.index < 0 ? [] : saved.ids.slice(0, saved.index).reverse();
-  const next = nextIds.map(id => forJob(id)[0]).find(Boolean);
-  const previous = previousIds.map(id => forJob(id)[0]).find(Boolean);
-  const successor = forJob(processingJobs(state.processing).find(job => job.id === saved.id)?.retrySuccessorId)[0];
-  const target = same.find(node => node.dataset.jobAction === saved.action) || same[0] || successor || next || previous
-    || banner[0]
-    || ['settings', 'navigation-toggle', 'library-title'].map(byId).find(usable);
-  processingFocus = null;
-  target?.focus({ preventScroll: true });
-}
-
 const processingCommands = { cancel: 'cancelProcessing', retry: 'retryProcessing', ack: 'acknowledgeProcessing', pause: 'pauseProcessing', resume: 'resumeProcessing' };
 // Failures throw to the caller, which shows them where the action was asked; the banner also keeps them per job.
 async function processingAction(action, jobId = state.processing.id) {
   const job = processingJobs(state.processing).find(item => item.id === jobId);
-  const allowed = action === 'cancel' ? ['queued', 'running'].includes(job?.status) && state.processingCancellingId !== job.id
-    : action === 'retry' ? canRetryProcessing(job) && (localSummaryEnabled() || !localSummaryJob(job))
-      : action === 'ack' ? canDismissProcessing(job)
-        : ['pause', 'resume'].includes(action) && job?.status === 'running' && job.pausable === true;
-  if (!allowed || processingActions.has(job.id)) return;
+  if (!job || processingActions.has(job.id)) return;
+  if (!jobActions(job, { cancelling: state.processingCancellingId === job.id, summaryEnabled: localSummaryEnabled() }).allows(action)) return;
   if (action === 'cancel') state.processingCancellingId = job.id;
-  rememberProcessingFocus();
+  processingBanner.remember();
   processingActions.set(job.id, action);
   processingErrors.delete(job.id);
   render();
@@ -1413,11 +1331,6 @@ byId('import-audio').addEventListener('click', () => run(() => finishEditing(asy
   const progress = await bridge.importAudio(target);
   if (progress) await acceptProcessing(progress);
 })));
-for (const id of ['pause-processing', 'cancel-processing', 'retry-processing', 'dismiss-processing']) byId(id).addEventListener('click', () => { processingAction(byId(id).dataset.jobAction, byId(id).dataset.jobId).catch(showError); });
-byId('open-processing-meeting').addEventListener('click', () => {
-  const job = processingJobs(state.processing).find(item => item.id === byId('open-processing-meeting').dataset.jobId);
-  if (job?.meetingId) void run(() => selectMeeting(job.meetingId));
-});
 function closeTranscriptMenu() {
   const menu = byId('transcript-menu');
   menu.open = false;

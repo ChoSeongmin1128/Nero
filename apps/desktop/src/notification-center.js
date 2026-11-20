@@ -1,6 +1,6 @@
 import { processingJobs, latestMeetingProcessing, queuedBehindModel } from './processing-state.js';
 import { createNoticeActions } from './notice-actions.js';
-import { processingFeedback, canRetryProcessing, canDismissProcessing } from './processing-feedback.js';
+import { processingFeedback, canDismissProcessing, jobActions } from './processing-feedback.js';
 
 const activeStatuses = new Set(['queued', 'running', 'cancelling']);
 const terminalStatuses = new Set(['completed', 'failed', 'cancelled', 'interrupted', 'needsReview']);
@@ -116,13 +116,14 @@ export function mountNotificationCenter({ container, onOpenMeeting, onProcessing
         return `<article class="notification-item" data-notification-id="${escape(job.id)}" aria-busy="${actionPending(job.id)}">${glyph(job.category === 'integration' ? 'link' : 'download')}<div class="notification-copy"><div class="notification-title-line"><strong class="notification-title">${escape(job.title)}</strong>${timeMark}</div><p>${escape(job.message)}</p>${run.note ? `<p class="notification-status" role="status">${escape(run.note)}</p>` : ''}${run.error ? `<p class="field-error" role="alert">${escape(run.error)}</p>` : ''}</div><div class="notification-actions">${job.category === 'integration' && job.action === 'update' ? button(job, 'update', run.pending === 'update' ? '<span class="activity-spinner" aria-hidden="true"></span>업데이트 중' : '업데이트', false) : button(job, job.category === 'integration' ? 'settings' : 'notice', escape(job.category === 'integration' ? '설정 열기' : job.actionLabel || '열기'), false, job.actionDisabled)}${job.unread ? button(job, 'ack', '닫기') : ''}</div></article>`;
       }
       const cancelling = snapshot.actions?.get(job.id) === 'cancel';
-      const feedback = processingFeedback(job, { cancelling, waitingForModel: job.waitingForModel, pausing: ['pause', 'resume'].includes(snapshot.actions?.get(job.id)) });
+      const allowed = jobActions(job, { cancelling, waitingForModel: job.waitingForModel, pausing: ['pause', 'resume'].includes(snapshot.actions?.get(job.id)), summaryEnabled: snapshot.summaryEnabled !== false });
+      const { feedback } = allowed;
       const group = notificationGroup(job);
       const mark = job.active ? (job.status === 'queued' || feedback.paused ? glyph(feedback.paused ? 'pause' : 'clock') : glyph('spinner'))
         : group === 'attention' ? glyph('triangle-alert', 'danger') : job.status === 'cancelled' ? glyph('circle-slash') : glyph('check');
       const title = job.hasMeeting ? `<button type="button" class="quiet notification-title" data-notification-job="${escape(job.id)}" data-notification-action="open"${snapshot.connected === false || actionPending(job.id) ? ' disabled' : ''}>${escape(job.title)}</button>` : `<strong class="notification-title">${escape(job.title)}</strong>`;
       const progress = feedback.progress ? `<span class="notification-time">${feedback.progress.percent}%</span>` : timeMark;
-      const controls = `${canRetryProcessing(job) ? button(job, 'retry', '다시 시도', false) : ''}${feedback.pauseVisible ? button(job, feedback.pauseAction, feedback.pauseLabel, true, feedback.pauseDisabled) : ''}${feedback.cancelVisible ? button(job, 'cancel', feedback.cancelLabel, true, feedback.cancelDisabled) : ''}${canAcknowledge(job) ? button(job, 'ack', '닫기') : ''}`;
+      const controls = `${allowed.retry ? button(job, 'retry', '다시 시도', false) : ''}${feedback.pauseVisible ? button(job, feedback.pauseAction, feedback.pauseLabel, true, feedback.pauseDisabled) : ''}${feedback.cancelVisible ? button(job, 'cancel', feedback.cancelLabel, true, feedback.cancelDisabled) : ''}${canAcknowledge(job) ? button(job, 'ack', '닫기') : ''}`;
       return `<article class="notification-item" data-notification-id="${escape(job.id)}" data-state="${escape(feedback.state)}" aria-busy="${actionPending(job.id)}"${job.selected ? ' data-selected="true"' : ''}>${mark}<div class="notification-copy"><div class="notification-title-line">${title}${progress}</div>${job.title === feedback.title ? '' : `<p class="notification-status">${escape(feedback.title)}</p>`}${feedback.detail ? `<p>${escape(feedback.detail)}</p>` : ''}${errors.has(job.id) ? `<p class="field-error" role="alert">${escape(errors.get(job.id))}</p>` : ''}${feedback.diagnostics.length ? `<details class="notification-diagnostics" data-notification-diagnostics="${escape(`${job.id}:${job.status}`)}"><summary>오류 정보</summary>${feedback.diagnostics.map(([label, value]) => `<p>${escape(label)}: ${escape(value)}</p>`).join('')}</details>` : ''}${feedback.progress ? `<progress max="${feedback.progress.max}" value="${feedback.progress.value}" aria-label="${escape(feedback.title)}"></progress>` : ''}</div>${controls ? `<div class="notification-actions">${controls}</div>` : ''}</article>`;
     };
     const groups = ['attention', 'active', 'done'].map(group => [group, jobs.filter(job => notificationGroup(job) === group)]).filter(([, items]) => items.length);
@@ -157,12 +158,10 @@ export function mountNotificationCenter({ container, onOpenMeeting, onProcessing
       await noticeActions.run(job, action);
       return;
     }
-    const feedback = processingFeedback(job);
+    const allowed = jobActions(job, { summaryEnabled: snapshot.summaryEnabled !== false });
     if (action === 'open' && !job.hasMeeting) return;
-    if (action === 'retry' && !canRetryProcessing(job)) return;
     if (action === 'ack' && !canAcknowledge(job)) return;
-    if (action === 'cancel' && (!feedback.cancelVisible || feedback.cancelDisabled)) return;
-    if (['pause', 'resume'].includes(action) && (!feedback.pauseVisible || feedback.pauseAction !== action)) return;
+    if (['retry', 'cancel', 'pause', 'resume'].includes(action) && !allowed.allows(action)) return;
     if (!['open', 'retry', 'ack', 'cancel', 'pause', 'resume'].includes(action)) return;
     // The owner reports pending job actions through snapshot.actions.
     if (action === 'open') pending.set(job.id, action);

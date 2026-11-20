@@ -28,6 +28,7 @@ const historySource = await readFile(new URL('../src/view-history.js', import.me
 const detailSource = await readFile(new URL('../src/meeting-detail-ui.js', import.meta.url), 'utf8');
 const actionsSource = await readFile(new URL('../src/transcript-actions.js', import.meta.url), 'utf8');
 const feedbackSource = await readFile(new URL('../src/processing-feedback.js', import.meta.url), 'utf8');
+const bannerSource = await readFile(new URL('../src/processing-banner.js', import.meta.url), 'utf8');
 const processingStateSource = await readFile(new URL('../src/processing-state.js', import.meta.url), 'utf8');
 const preparationProgressSource = await readFile(new URL('../src/model-preparation-progress.js', import.meta.url), 'utf8');
 const agentSettingsSource = await readFile(new URL('../src/agent-settings.js', import.meta.url), 'utf8');
@@ -174,6 +175,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     const mountNotesWidth = () => ({update(){}});
     ${detailSource.replace(/^import .*;\r?\n/gm, '').replace(/^export /gm, '')}
     ${feedbackSource.replace(/^import .*;\r?\n/gm, '').replace(/^export /gm, '')}
+    ${bannerSource.replace(/^import .*;\r?\n/gm, '').replace(/^export /gm, '')}
     ${processingStateSource.replace(/^export /gm, '')}
     ${preparationProgressSource.replace(/^export /gm, '')}
     ${agentSettingsSource.replace(/^export /gm, '')}
