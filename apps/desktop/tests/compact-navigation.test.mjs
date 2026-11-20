@@ -197,7 +197,12 @@ test('the rail stays usable while pinned and its clicks choose the list without 
   assert.equal(app.window.localStorage.getItem('nero.sidebar.pinned'), 'true');
   app.pointer(app.preview('all'), 'pointerenter');
   app.tick(500);
-  assert.equal(app.events.length, 1, 'hover does not switch lists while pinned');
+  assert.deepEqual(app.events.at(-1), { view: 'all', expanded: true }, 'resting on a rail button switches the list while pinned');
+  assert.equal(app.shell.classList.contains('nav-pinned'), true);
+  app.pointer(app.preview('unfiled'), 'pointerenter');
+  app.pointer(app.preview('unfiled'), 'pointerleave');
+  app.tick(500);
+  assert.equal(app.events.length, 2, 'passing over a rail button does not switch the list');
   trigger.click();
   assert.equal(app.compact.hidden, false);
   assert.equal(app.compact.inert, false);

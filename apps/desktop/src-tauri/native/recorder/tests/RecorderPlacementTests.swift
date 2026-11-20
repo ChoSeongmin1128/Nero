@@ -11,6 +11,7 @@ import AppKit
         assert(laptop.docked(expanded: true).maxY == laptop.frame.maxY)
         assert(laptop.docked(expanded: false).midX == laptop.notch!.midX)
         assert(laptop.docked(expanded: true).height > laptop.notch!.height)
+        assert(laptop.docked(expanded: false).height == laptop.notch!.height)
         let inset = RecorderMetrics.inset
         for (seconds, failure) in [(UInt64(95), false), (5025, false), (10800, false), (359999, false), (0, true)] {
             let text = RecorderMetrics.textWidth(seconds: seconds, failure: failure)

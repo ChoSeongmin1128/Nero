@@ -61,7 +61,8 @@ struct RecorderDisplay: Equatable {
         self.id = id; self.frame = frame; self.workArea = workArea; self.notch = notch
     }
 
-    var headerHeight: CGFloat { notch.map { $0.height + 4 } ?? RecorderMetrics.plainHeader }
+    // The docked header is exactly the menu bar band beside the notch, never taller.
+    var headerHeight: CGFloat { notch?.height ?? RecorderMetrics.plainHeader }
     var center: CGFloat { notch?.midX ?? workArea.midX }
 
     // Both wings take the wider side, so the panel stays centered on the notch.

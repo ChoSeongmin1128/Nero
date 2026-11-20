@@ -48,8 +48,9 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
     shell.classList.toggle('nav-peek', temporary && !pinned);
     shell.classList.toggle('nav-pinned', pinned);
     const focused = document.activeElement;
-    for (const { node, expanded, compact: collapsed } of destinations) {
-      const destination = open ? expanded : collapsed;
+    for (const { node, expanded, compact: collapsed, pinnedOnly } of destinations) {
+      // A control that would move under the pointer while the sidebar only peeks stays on the rail.
+      const destination = (pinnedOnly ? pinned && !unavailable() : open) ? expanded : collapsed;
       if (!node || !destination || node.parentElement === destination) continue;
       const preserveFocus = node.contains(focused);
       destination.append(node);
@@ -177,14 +178,14 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
   compact?.addEventListener('pointerenter', event => { if (event.pointerType === 'mouse') enter(compact); });
   compact?.addEventListener('pointerleave', () => leave(compact));
   compact?.addEventListener('focusout', hide);
-  // While the sidebar is not pinned, resting on a rail button shows its list; passing
-  // over one on the way elsewhere does not.
+  // Resting on a rail button shows its list, pinned or not; passing over one on the way
+  // elsewhere does not.
   let previewHover;
   for (const button of previews) {
     button.addEventListener('pointerenter', event => {
       clearTimeout(previewHover);
-      if (event.pointerType !== 'mouse' || pinned || unavailable() || openPopups().length) return;
-      previewHover = setTimeout(() => { if (!pinned) openPreview(button, { hover: true }); }, 140);
+      if (event.pointerType !== 'mouse' || unavailable() || openPopups().length) return;
+      previewHover = setTimeout(() => { if (!unavailable() && !openPopups().length) openPreview(button, { hover: true }); }, 140);
     });
     button.addEventListener('pointerleave', () => clearTimeout(previewHover));
     button.addEventListener('click', () => openPreview(button));

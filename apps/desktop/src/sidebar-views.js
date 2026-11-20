@@ -26,7 +26,6 @@ export function mountSidebarViews({ aside, navigation, notifications, trigger, b
   let view = views[saved] && saved !== 'notifications' && saved !== 'folder' ? saved : 'home';
   let folderId = '', returnView = view, unread = 0, active = 0, disposed = false;
   let bellHover, hoverOpened = false;
-  const pinned = () => aside.parentElement?.classList.contains('nav-pinned') === true;
   function paint() {
     if (view === 'folder' && !folderName(folderId)) { view = 'folders'; folderId = ''; }
     const opened = view === 'notifications', config = views[view] || {};
@@ -128,11 +127,11 @@ export function mountSidebarViews({ aside, navigation, notifications, trigger, b
   };
   const stateChanged = () => paint();
   const previewChanged = event => choose(event.detail?.view, '', { hover: event.detail?.hover === true });
-  // While the sidebar is not pinned, resting on the bell shows the notifications.
+  // Resting on the bell shows the notifications, like the rail's other lists.
   const bellEnter = event => {
     clearTimeout(bellHover);
-    if (event.pointerType !== 'mouse' || pinned() || view === 'notifications') return;
-    bellHover = setTimeout(() => { if (!pinned() && view !== 'notifications') { open({ focus: false }); hoverOpened = true; } }, 140);
+    if (event.pointerType !== 'mouse' || view === 'notifications') return;
+    bellHover = setTimeout(() => { if (view !== 'notifications') { open({ focus: false }); hoverOpened = true; } }, 140);
   };
   const bellLeave = () => clearTimeout(bellHover);
   trigger.addEventListener('click', click);
