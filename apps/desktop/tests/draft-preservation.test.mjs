@@ -5,6 +5,9 @@ import { requestAudioPlayback } from '../src/audio-playback.js';
 import { snapshotSignatures, compareSnapshotSignatures } from '../src/snapshot-update.js';
 import { attentionNotices, createIntegrationMonitor } from '../src/integration-notifications.js';
 import { createNoticeActions } from '../src/notice-actions.js';
+import { createSettingsPanels } from '../src/settings-panels.js';
+import { microphoneIssue as findMicrophoneIssue, mountRecordingSettings, readMicrophonePreference } from '../src/recording-settings.js';
+import { createNewMeetingFolder } from '../src/new-meeting-folder.js';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
@@ -149,7 +152,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
   bridge.writeClipboardText = async text => { copied.push(text); };
   const aiBridge = { appendNote: async () => {}, saveSummary: async () => {}, openSource: async () => {} };
   const templateSettings = { setActive() {}, beforeLeave: async () => true, isConfirming: () => false, hide() {} };
-  const context = vm.createContext({ recognitionCoverage, mountBrandIcons, snapshotSignatures, compareSnapshotSignatures, requestAudioPlayback, createIntegrationMonitor, attentionNotices, createNoticeActions, liveTranscriptRows, meetingResultPreview, renderMeetingMenu, testMountNotificationCenter: mountNotificationCenter,
+  const context = vm.createContext({ recognitionCoverage, mountBrandIcons, snapshotSignatures, compareSnapshotSignatures, requestAudioPlayback, createIntegrationMonitor, attentionNotices, createNoticeActions, createSettingsPanels, findMicrophoneIssue, mountRecordingSettings, readMicrophonePreference, createNewMeetingFolder, liveTranscriptRows, meetingResultPreview, renderMeetingMenu, testMountNotificationCenter: mountNotificationCenter,
     navigator: { clipboard: { writeText: async text => { copied.push(text); } } },
     document, testBridge: bridge, testAiBridge: aiBridge, testAiLifecycle: aiLifecycle, testAgentDialogCalls: agentDialogCalls, testTemplateSettings: templateSettings, localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
     NeroControls: { enhanceAll() {} },
@@ -227,7 +230,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     const bridge = testBridge;
     const { ui, icon, escape, button, duration, recordingStatus, statusMarkup, sessionControls, applySystemAppearance } = testUI;
     ${executable}
-    return { state, detail, documentSearch, summaryEvidenceOptions, aiChatOptions, speechPickerOptions, appLeaveEditors: [templateSettings, peopleSettings, meetingAttendees, speakers], restoreTranscript: restoreForTest, selectMeeting, saveDraft, finishEditing, onEdit, onQuitRequest, onAgentWriteRequest, refreshDevices, acceptSnapshot, saveTranscript, loadTranscript, acceptProcessing, loadSummary, renderSummary, createMeeting, openSetup, openSettings, changeMicrophone, changeMeetingDate, render, prepareAudio, exportDocument, editTranscriptRow, completeTranscriptRow, cancelTranscriptRow, processingAction };
+    return { state, detail, documentSearch, summaryEvidenceOptions, aiChatOptions, speechPickerOptions, appLeaveEditors: [templateSettings, peopleSettings, meetingAttendees, speakers], restoreTranscript: restoreForTest, selectMeeting, saveDraft, finishEditing, onEdit, onQuitRequest, onAgentWriteRequest, refreshDevices, acceptSnapshot, saveTranscript, loadTranscript, acceptProcessing, loadSummary, renderSummary, createMeeting, openSetup, openSettings, recordingSettings, changeMeetingDate, render, prepareAudio, exportDocument, editTranscriptRow, completeTranscriptRow, cancelTranscriptRow, processingAction };
   })()`, context);
   await tick();
   return {
@@ -1009,14 +1012,14 @@ test('microphone preference persists and settings reject changes during recordin
   await page.app.openSettings('recording');
   await page.setDevices([{ id: 'usb-input', name: 'USB 마이크', isDefault: true }]);
   page.element('settings-microphone').value = 'usb-input';
-  page.app.changeMicrophone();
+  page.element('settings-microphone').listeners.get('change')();
   const reopened = await openApp(null, undefined, storage);
   assert.equal(reopened.app.state.deviceId, 'usb-input');
   assert.equal(reopened.app.state.deviceName, 'USB 마이크');
   page.app.acceptSnapshot({revision: 2, meetings: page.app.state.snapshot.meetings, session: {id:'recording-a',meetingId:'a',state:'recording',elapsedMs:0}});
   assert.equal(page.element('settings-microphone').disabled, true);
   page.element('settings-microphone').value = '';
-  page.app.changeMicrophone();
+  page.element('settings-microphone').listeners.get('change')();
   assert.equal(page.app.state.deviceId, 'usb-input');
   assert.match(page.element('settings-message').textContent, /녹음을 마친 뒤/);
 });
@@ -1027,7 +1030,7 @@ test('settings storage failure preserves the microphone choice and reports recov
   await page.app.openSettings('recording');
   await page.setDevices([{id:'usb',name:'USB',isDefault:true}]);
   page.element('settings-microphone').value = 'usb';
-  page.app.changeMicrophone();
+  page.element('settings-microphone').listeners.get('change')();
   assert.equal(page.app.state.deviceId, null);
   assert.match(page.element('settings-message').textContent, /저장하지 못했습니다/);
   assert.equal(page.element('settings-microphone').value, '');
@@ -1368,16 +1371,16 @@ test('automatic recorder preference persists and rolls back native preference wh
   const page = await openApp(null, undefined, storage);
   page.element('auto-recorder').checked = false;
   await page.element('auto-recorder').listeners.get('change')();
-  assert.equal(page.app.state.autoRecorder, false);
+  assert.equal(page.app.recordingSettings.autoRecorder(), false);
   const reopened = await openApp(null, undefined, storage);
-  assert.equal(reopened.app.state.autoRecorder, false);
+  assert.equal(reopened.app.recordingSettings.autoRecorder(), false);
   const failed = await openApp(null, undefined, { get: () => null, set: () => { throw Error('storage'); } });
   const calls = [];
   failed.bridge.setAutoRecorder = async value => { calls.push(value); };
   failed.element('auto-recorder').checked = false;
   await failed.element('auto-recorder').listeners.get('change')();
   assert.deepEqual(calls, [false,true]);
-  assert.equal(failed.app.state.autoRecorder, true);
+  assert.equal(failed.app.recordingSettings.autoRecorder(), true);
 });
 
 test('editing a transcript retains frozen citations without ordinal navigation', async () => {

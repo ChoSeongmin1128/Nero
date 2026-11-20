@@ -1,6 +1,9 @@
 import { recognitionCoverage } from './recognition-coverage.js';
 import { mountBrandIcons } from './brand-icons.js';
 import { mountNavigationShell } from './navigation-shell.js';
+import { createSettingsPanels } from './settings-panels.js';
+import { microphoneIssue as findMicrophoneIssue, mountRecordingSettings, readMicrophonePreference } from './recording-settings.js';
+import { createNewMeetingFolder } from './new-meeting-folder.js';
 import { snapshotSignatures, compareSnapshotSignatures } from './snapshot-update.js';
 import { createViewHistory } from './view-history.js';
 import { mountWindowChrome } from './window-chrome.js';
@@ -64,7 +67,6 @@ if (document.documentElement.dataset.windowChrome === 'macos-overlay' && isTauri
 const byId = (id) => document.getElementById(id);
 const summaryTemplatePicker = mountSummaryTemplatePicker({ node: byId('summary-template'), bridge, onAvailabilityChange: () => queueMicrotask(() => render()) });
 void summaryTemplatePicker.reload();
-const settingsPanels = [...byId('settings-dialog').querySelectorAll('.app-settings-tabs [role="tab"][data-settings-panel]')].map(tab => tab.dataset.settingsPanel);
 const agentConnectionDialog = mountAgentConnectionDialog({ container: byId('settings-dialog'), fallbackTrigger: () => byId('settings-agent-manual') });
 const templateSettings = mountTemplateSettings({ container: byId('settings-dialog'), panel: byId('settings-templates-panel'), bridge });
 const peopleSettings = mountPeopleSettings({ container: byId('settings-dialog'), panel: byId('settings-people-panel'), bridge });
@@ -76,10 +78,24 @@ const agentSettings = mountAgentSettings({ byId, bridge, dialog: agentConnection
 const terminologySettings = mountTerminologySettings({ byId, bridge, isProcessing: () => processingActive(), onChange: () => renderSettings() });
 const storageConfirmation = mountConfirmDialog({ container: byId('settings-dialog') });
 const storageSettings = mountStorageSettings({ byId, bridge, confirm: options => storageConfirmation.confirm(options) });
+let preferenceStorage = null;
+try { preferenceStorage = globalThis.localStorage; } catch {}
 // Every calendar change goes to the notices and to home's schedule from this one subscription.
 const calendarSettings = mountCalendarSettings({ panel: byId('calendar-settings'), bridge, onSnapshot: value => {
   integrationMonitor.acceptCalendar(value);
   queueMicrotask(() => home.acceptCalendar(value));
+} });
+const newMeetingFolder = createNewMeetingFolder({ bridge, onChange: () => { renderSettings(); home.render(); } });
+const recordingSettings = mountRecordingSettings({ byId, bridge, escape, getState: () => state, activeSession: () => activeSession(), folder: newMeetingFolder,
+  acceptProcessing: progress => acceptProcessing(progress),
+  onMicrophone(preference) { state.deviceId = preference.id; state.deviceName = preference.name; render(); },
+  onChange: () => renderSettings(), storage: preferenceStorage });
+const settingsPanels = createSettingsPanels({ dialog: byId('settings-dialog'), byId, panels: {
+  recording: [storageSettings, recordingSettings],
+  transcription: [terminologySettings, { message: () => terminologySettings.error }],
+  agent: [agentSettings, calendarSettings, { setActive: active => aiChat?.setSettingsActive(active) }],
+  templates: [templateSettings],
+  people: [{ setActive: active => active ? peopleSettings.show() : peopleSettings.hide() }],
 } });
 const calendarReference = mountCalendarMeetingReference({ container: byId('calendar-meeting-reference'), bridge,
   onContinue: meetingId => run(() => continueCalendarRecording(meetingId)),
@@ -94,18 +110,9 @@ const calendarPicker = mountCalendarMeetingPicker({ container: document.body, br
   },
   onConfigure: () => openSettings('agent', 'create-calendar-meeting'),
 });
-const microphonePreferenceKey = 'nero.recording.microphone.v1';
-const recorderPreferenceKey = 'nero.recording.autoRecorder.v1';
-function readAutoRecorder() { try { return globalThis.localStorage?.getItem(recorderPreferenceKey) !== 'false'; } catch { return true; } }
-function readMicrophonePreference() {
-  try {
-    const value = JSON.parse(globalThis.localStorage?.getItem(microphonePreferenceKey) || 'null');
-    return value && (value.id === null || typeof value.id === 'string') ? { id: value.id, name: typeof value.name === 'string' ? value.name : '' } : { id: null, name: '' };
-  } catch { return { id: null, name: '' }; }
-}
-const microphonePreference = readMicrophonePreference();
+const microphonePreference = readMicrophonePreference(preferenceStorage);
 let navigation = null, viewHistory = null;
-const state = { snapshot: { meetings: [], folders: [], session: null }, homeOpen: true, libraryOpen: false, libraryFilter: 'all', librarySelection: new Set(), libraryBusy: false, librarySearchIds: null, librarySearchHits: [], pendingSearchIntent: null, setupReturnId: null, librarySearchPending: false, librarySearchUnavailable: 0, selectedId: null, devices: [], devicesLoaded: false, deviceId: microphonePreference.id, deviceName: microphonePreference.name, settingsPanel: 'appearance', summaryFeatureError: '', settingsKey: '', settingsError: '', settingsReturnId: 'settings', setupFromSettings: false, autoRecorder: readAutoRecorder(), recorderSettingBusy: false, newMeetingFolder: null, newMeetingFolderBusy: false, snapshotSignatures: null, processingKey: '', processingCancellingId: null, transcriptEditing: null, audioRequest: 0, audioLoading: null, dateSaving: null, dateKey: '', dateError: null, lastError: null, errorIsSave: false, connected: false, busy: false, composing: false, transcriptComposing: false, editLocks: 0, draft: null, saveTimer: null, saveQueue: Promise.resolve(), controlsKey: '', audioKey: '', processing: { status: 'idle', supported: false, modelReady: false, localSummaryEnabled: false }, transcriptDraft: null, transcriptKey: '', transcriptLoadId: 0, transcriptSaveQueue: Promise.resolve(), summary: null, citationTimes: null, summaryKey: '', summaryLoadId: 0, summaryLoaded: false, transcriptLoaded: false, summaryLoadError: false, transcriptLoadError: false, setupRequested: false };
+const state = { snapshot: { meetings: [], folders: [], session: null }, homeOpen: true, libraryOpen: false, libraryFilter: 'all', librarySelection: new Set(), libraryBusy: false, librarySearchIds: null, librarySearchHits: [], pendingSearchIntent: null, setupReturnId: null, librarySearchPending: false, librarySearchUnavailable: 0, selectedId: null, devices: [], devicesLoaded: false, deviceId: microphonePreference.id, deviceName: microphonePreference.name, settingsPanel: 'appearance', summaryFeatureError: '', settingsReturnId: 'settings', setupFromSettings: false, snapshotSignatures: null, processingKey: '', processingCancellingId: null, transcriptEditing: null, audioRequest: 0, audioLoading: null, dateSaving: null, dateKey: '', dateError: null, lastError: null, errorIsSave: false, connected: false, busy: false, composing: false, transcriptComposing: false, editLocks: 0, draft: null, saveTimer: null, saveQueue: Promise.resolve(), controlsKey: '', audioKey: '', processing: { status: 'idle', supported: false, modelReady: false, localSummaryEnabled: false }, transcriptDraft: null, transcriptKey: '', transcriptLoadId: 0, transcriptSaveQueue: Promise.resolve(), summary: null, citationTimes: null, summaryKey: '', summaryLoadId: 0, summaryLoaded: false, transcriptLoaded: false, summaryLoadError: false, transcriptLoadError: false, setupRequested: false };
 // Low-memory model preparation needs an explicit acknowledgement; it is not persisted.
 const speechMemoryAcknowledged = new Set();
 function acknowledgeSpeechMemory(engine, checked) {
@@ -635,59 +642,12 @@ async function selectMeeting(id, searchIntent = null, isHistoryCurrent = null) {
   } catch { return; }
 }
 
-function microphoneIssue() {
-  if (!state.devices.length) return '연결된 마이크가 없습니다.';
-  if (state.deviceId && !state.devices.some(device => device.id === state.deviceId)) return '선택한 마이크가 연결되어 있지 않습니다.';
-  if (!state.deviceId && !state.devices.some(device => device.isDefault)) return '시스템 기본 마이크를 찾지 못했습니다.';
-  return '';
-}
+const microphoneIssue = () => findMicrophoneIssue(state);
 
 function renderSettings() {
   const dialog = byId('settings-dialog');
-  const recording = state.settingsPanel === 'recording';
-  const transcription = state.settingsPanel === 'transcription';
-  agentSettings.setActive(dialog.open && state.settingsPanel === 'agent');
-  terminologySettings.setActive(dialog.open && transcription);
-  storageSettings.setActive(dialog.open && recording);
-  templateSettings.setActive(dialog.open && state.settingsPanel === 'templates');
-  calendarSettings.setActive(dialog.open && state.settingsPanel === 'agent');
-  aiChat?.setSettingsActive(dialog.open && state.settingsPanel === 'agent');
-  if (dialog.open && state.settingsPanel === 'people') peopleSettings.show(); else peopleSettings.hide();
-  for (const name of settingsPanels) {
-    const selected = state.settingsPanel === name;
-    byId(`settings-${name}-tab`).setAttribute('aria-selected', String(selected));
-    byId(`settings-${name}-tab`).tabIndex = selected ? 0 : -1;
-    byId(`settings-${name}-panel`).hidden = !selected;
-  }
-  const select = byId('settings-microphone');
-  const disabled = !state.connected || state.busy || Boolean(activeSession()) || !state.devices.length;
-  const refresh = state.settingsKey !== JSON.stringify([state.devices, state.deviceId, state.deviceName]) || select.disabled !== disabled;
-  const key = JSON.stringify([state.devices, state.deviceId, state.deviceName]);
-  if (key !== state.settingsKey) {
-    state.settingsKey = key;
-    const missing = state.deviceId && !state.devices.some(device => device.id === state.deviceId);
-    select.innerHTML = `<option value="">시스템 기본 마이크</option>${missing ? `<option value="${escape(state.deviceId)}" disabled>${escape(state.deviceName || '선택한 마이크')} (연결 안 됨)</option>` : ''}${state.devices.map(device => `<option value="${escape(device.id)}">${escape(device.name)}${device.isDefault ? ' (기본)' : ''}</option>`).join('')}`;
-    select.value = state.deviceId || '';
-  }
-  select.disabled = disabled;
-  byId('settings-microphone-hint').hidden = !activeSession();
-  if (activeSession()) select.setAttribute('aria-describedby', 'settings-microphone-hint');
-  else select.removeAttribute('aria-describedby');
-  const folderSelect = byId('settings-new-meeting-folder');
-  const folders = state.snapshot.folders || [];
-  const folderKey = JSON.stringify([folders.map(folder => [folder.id, folder.name]), state.newMeetingFolder]);
-  if (folderSelect.dataset.key !== folderKey) {
-    folderSelect.dataset.key = folderKey;
-    folderSelect.innerHTML = `<option value="">미분류</option>${folders.map(folder => `<option value="${escape(folder.id)}">${escape(folder.name)}</option>`).join('')}`;
-    folderSelect.value = folders.some(folder => folder.id === state.newMeetingFolder) ? state.newMeetingFolder : '';
-  }
-  folderSelect.disabled = !state.connected || state.newMeetingFolderBusy;
-  byId('auto-recorder').checked = state.autoRecorder;
-  byId('auto-recorder').disabled = state.recorderSettingBusy;
-  // Only MOSS on a Mac that can run it recognizes chunks while recording.
-  byId('recording-transcription-row').hidden = !(state.processing.recordingTranscriptionSupported && state.processing.speechEngine === 'moss');
-  if (!state.recordingTranscriptionBusy) byId('recording-transcription').checked = state.processing.recordingTranscription === true;
-  byId('recording-transcription').disabled = Boolean(state.recordingTranscriptionBusy);
+  const message = settingsPanels.render(state.settingsPanel);
+  const refresh = recordingSettings.render();
   const job = state.processing;
   const featureJob = pendingJob(job, { kind: 'summary-model' });
   const failedFeature = !featureJob && !job.summaryReady && processingJobs(job).filter(item => item.kind === 'summary-model' && item.status === 'failed' && !item.acknowledged).at(-1);
@@ -699,8 +659,6 @@ function renderSettings() {
   byId('models').disabled = !state.connected || state.busy || Boolean(pendingJob(job, { models: true }));
   byId('settings-local-summary').hidden = !localSummaryEnabled();
   summaryProgress.update(localSummaryEnabled() ? preparationView(summaryModelKinds) : { state: 'idle' });
-  const message = transcription ? terminologySettings.error
-    : recording ? state.settingsError || (!activeSession() && state.devicesLoaded ? microphoneIssue() : '') : '';
   byId('settings-message').textContent = message;
   byId('settings-message').hidden = !message;
   if (dialog.open) {
@@ -713,35 +671,15 @@ async function openSettings(panel = 'appearance', returnId = 'settings') {
   await finishEditing(() => {
     state.settingsPanel = panel;
     state.settingsReturnId = returnId;
-    state.settingsError = '';
+    recordingSettings.reset();
     const dialog = byId('settings-dialog');
     if (!dialog.open) dialog.showModal();
     renderSettings();
     globalThis.NeroControls.refresh?.();
     byId(`settings-${panel}-tab`).focus({ preventScroll: true });
   });
-  void reloadNewMeetingFolder();
-  try { await refreshDevices(); } catch { state.settingsError = '마이크 목록을 불러오지 못했습니다. 다시 시도해 주세요.'; renderSettings(); }
-}
-
-async function reloadNewMeetingFolder() {
-  try { state.newMeetingFolder = await bridge.readNewMeetingFolder() ?? null; } catch { return; }
-  renderSettings();
-  home.render();
-}
-
-function changeMicrophone() {
-  if (activeSession()) { state.settingsError = '녹음을 마친 뒤 마이크를 변경할 수 있습니다.'; state.settingsKey = ''; return renderSettings(); }
-  const id = byId('settings-microphone').value || null;
-  const device = state.devices.find(item => item.id === id);
-  if (id && !device) { state.settingsKey = ''; return renderSettings(); }
-  const preference = { id, name: device?.name || '' };
-  try {
-    if (!globalThis.localStorage) throw new Error('Storage unavailable');
-    globalThis.localStorage.setItem(microphonePreferenceKey, JSON.stringify(preference));
-    state.deviceId = preference.id; state.deviceName = preference.name; state.settingsError = '';
-  } catch { state.settingsError = '마이크 설정을 저장하지 못했습니다. 다시 시도해 주세요.'; state.settingsKey = ''; }
-  render();
+  void newMeetingFolder.reload();
+  try { await refreshDevices(); } catch { recordingSettings.fail('마이크 목록을 불러오지 못했습니다. 다시 시도해 주세요.'); }
 }
 
 async function refreshDevices() {
@@ -928,18 +866,15 @@ async function selectSettingsPanel(name, focus = false) {
 byId('settings-close').addEventListener('click', () => { void closeSettings(); });
 bindDialogDismiss(byId('settings-dialog'), { dismiss: closeSettings, blocked: () => templateSettings.isConfirming() || peopleSettings.isConfirming() });
 bindDialogDismiss(byId('quit-dialog'));
-byId('settings-dialog').addEventListener('close', () => { aiChat?.setSettingsActive(false); templateSettings.hide(); peopleSettings.hide(); void summaryTemplatePicker.reload(); terminologySettings.setActive(false); agentSettings.setActive(false); globalThis.NeroControls.close?.(); returnFocusTarget(byId(state.settingsReturnId) || byId('settings'), byId('navigation-toggle')).focus({ preventScroll: true }); });
-for (const name of settingsPanels) byId(`settings-${name}-tab`).addEventListener('click', () => { void selectSettingsPanel(name, true); });
+byId('settings-dialog').addEventListener('close', () => { settingsPanels.deactivate(); templateSettings.hide(); peopleSettings.hide(); void summaryTemplatePicker.reload(); globalThis.NeroControls.close?.(); returnFocusTarget(byId(state.settingsReturnId) || byId('settings'), byId('navigation-toggle')).focus({ preventScroll: true }); });
+for (const name of settingsPanels.names) byId(`settings-${name}-tab`).addEventListener('click', () => { void selectSettingsPanel(name, true); });
 byId('settings-dialog').addEventListener('keydown', event => {
   if (event.isComposing || event.keyCode === 229 || (templateSettings.isConfirming() || peopleSettings.isConfirming())) return;
-  const index = settingsPanels.findIndex(name => `settings-${name}-tab` === event.target.id);
-  if (index < 0 || !['ArrowDown', 'ArrowUp', 'ArrowRight', 'ArrowLeft', 'Home', 'End'].includes(event.key)) return;
+  const name = settingsPanels.neighbor(event.target.id, event.key);
+  if (!name) return;
   event.preventDefault();
-  const step = ['ArrowUp', 'ArrowLeft'].includes(event.key) ? -1 : 1;
-  const name = settingsPanels[event.key === 'Home' ? 0 : event.key === 'End' ? settingsPanels.length - 1 : (index + step + settingsPanels.length) % settingsPanels.length];
   void selectSettingsPanel(name, true);
 });
-byId('settings-microphone').addEventListener('change', changeMicrophone);
 
 byId('models').addEventListener('click', () => run(async () => {
   if (!localSummaryEnabled()) return;
@@ -975,42 +910,6 @@ byId('recording-controls').addEventListener('click', (event) => {
   });
 });
 byId('meeting-day').addEventListener('change', () => { void changeMeetingDate(); });
-byId('auto-recorder').addEventListener('change', async () => {
-  const previous = state.autoRecorder;
-  const next = byId('auto-recorder').checked;
-  state.recorderSettingBusy = true;
-  state.autoRecorder = next;
-  renderSettings();
-  try {
-    await bridge.setAutoRecorder(next);
-    try { globalThis.localStorage.setItem(recorderPreferenceKey, String(next)); }
-    catch (error) { await bridge.setAutoRecorder(previous); throw error; }
-    state.autoRecorder = next;
-    state.settingsError = '';
-  } catch { state.autoRecorder = previous; state.settingsError = '녹음 제어창 설정을 저장하지 못했습니다.'; }
-  finally { state.recorderSettingBusy = false; renderSettings(); }
-});
-byId('settings-new-meeting-folder').addEventListener('change', async () => {
-  const select = byId('settings-new-meeting-folder');
-  const previous = state.newMeetingFolder;
-  state.newMeetingFolderBusy = true;
-  renderSettings();
-  try {
-    state.newMeetingFolder = await bridge.setNewMeetingFolder(select.value || null) ?? null;
-    state.settingsError = '';
-  } catch { state.newMeetingFolder = previous; state.settingsError = '새 회의 폴더를 저장하지 못했습니다.'; }
-  finally { select.dataset.key = ''; state.newMeetingFolderBusy = false; renderSettings(); }
-});
-byId('recording-transcription').addEventListener('change', async () => {
-  const next = byId('recording-transcription').checked;
-  state.recordingTranscriptionBusy = true;
-  renderSettings();
-  try {
-    await acceptProcessing(await bridge.setRecordingTranscription(next));
-    state.settingsError = '';
-  } catch { state.settingsError = '녹음 중 음성 기록 설정을 저장하지 못했습니다.'; }
-  finally { state.recordingTranscriptionBusy = false; renderSettings(); }
-});
 byId('create-calendar-meeting').addEventListener('click', event => { const trigger = event.currentTarget; void run(() => finishEditing(async () => { if (!modelsReady()) return openSetup(); const target = await bridge.draftAttachmentTarget(state.selectedId); calendarPicker.open(trigger, target); })); });
 byId('retry-audio').addEventListener('click', () => { const meeting = currentMeeting(); if (meeting) void prepareAudio(meeting, Boolean(activeSession()?.meetingId === meeting.id), true); });
 byId('audio-player').addEventListener('error', () => { if (byId('audio-player').getAttribute('src')) { byId('audio-message').dataset.state = 'error'; byId('audio-message').textContent = '음성을 재생할 수 없습니다. 녹음 파일을 다시 열어 주세요.'; byId('retry-audio').hidden = false; } });
@@ -1086,7 +985,7 @@ async function prepareAppLeave(action) {
 function onAgentChanged(change) {
   if (change.area === 'aiChat') aiChat?.flow.externalChange(change.conversationIds || []);
   else if (change.area === 'meetingSources' || change.area === 'terminology') void meetingContext?.reload();
-  else if (change.area === 'settings') { void terminologySettings.reload(); void reloadNewMeetingFolder(); }
+  else if (change.area === 'settings') { void terminologySettings.reload(); void newMeetingFolder.reload(); }
 }
 
 async function onAgentWriteRequest({ requestId, kind } = {}) {
@@ -1771,8 +1670,8 @@ const home = mountHome({ container: byId('home-screen'), bridge, icon, escape,
   disabled: () => !state.connected || state.busy || !modelsReady(),
   device: microphoneLabel,
   folders: () => state.snapshot.folders || [],
-  folder: () => state.newMeetingFolder,
-  onFolder: folderId => run(async () => { state.newMeetingFolder = await bridge.setNewMeetingFolder(folderId) ?? null; home.render(); renderSettings(); }),
+  folder: () => newMeetingFolder.value(),
+  onFolder: folderId => run(() => newMeetingFolder.set(folderId)),
   onRecord: () => run(() => createMeeting({ record: true, fromHome: true })),
   onCreate: () => run(() => createMeeting({ fromHome: true })),
   onImport: () => run(importNewMeeting),
@@ -1782,7 +1681,7 @@ const home = mountHome({ container: byId('home-screen'), bridge, icon, escape,
   noticeState: id => noticeActions.state(id),
   onNotice: (notice, action) => noticeActions.run(notice, action),
 });
-void reloadNewMeetingFolder();
+void newMeetingFolder.reload();
 // The notification list and home show the same notices and run their buttons here.
 const noticeActions = createNoticeActions({ handlers: {
   async settings(notice) {
@@ -1811,9 +1710,7 @@ const noticeActions = createNoticeActions({ handlers: {
 } });
 noticeActions.subscribe(() => home.render());
 const notificationCenter = mountNotificationCenter({ container: byId('notification-center'), onOpenMeeting: id => selectMeeting(id), onProcessingAction: processingAction, showError, icon, noticeActions, onChanged: () => render() });
-let sidebarStorage = null;
-try { sidebarStorage = window.localStorage; } catch {}
-navigation = mountNavigationShell({ document, storage: sidebarStorage, icon,
+navigation = mountNavigationShell({ document, storage: preferenceStorage, icon,
   count: filter => filter === 'folders' ? (state.snapshot.folders || []).length : library.count(filter),
   folderName: id => (state.snapshot.folders || []).find(folder => folder.id === id)?.name || '',
   onPreview: (view, folder) => library.preview(view, folder),
@@ -1868,7 +1765,7 @@ try {
   await bridge.subscribeAgentChanged(onAgentChanged);
   await bridge.subscribeProcessingError(({ message }) => showError(message));
   await bridge.subscribeProcessing((progress) => { void acceptProcessing(progress).catch(showError); });
-  await bridge.setAutoRecorder(state.autoRecorder);
+  await bridge.setAutoRecorder(recordingSettings.autoRecorder());
   await acceptProcessing(await bridge.processingStatus());
   await bridge.subscribeOpenMeeting(async (meetingId, error) => { await selectMeeting(meetingId); if (error) showError(error); });
   await bridge.subscribeQuitRequest(onQuitRequest);
