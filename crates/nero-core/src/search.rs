@@ -6,6 +6,9 @@ pub struct SearchOptions {
     pub excerpt_chars: usize,
     pub matches_per_meeting: usize,
     pub speaker_names: bool,
+    // Whether the caller reads `truncated`; only then does a full search look for one
+    // more match.
+    pub reports_truncation: bool,
 }
 
 impl SearchOptions {
@@ -14,12 +17,14 @@ impl SearchOptions {
         excerpt_chars: 100,
         matches_per_meeting: 1,
         speaker_names: true,
+        reports_truncation: false,
     };
     pub const AGENT: Self = Self {
         context_chars: 40,
         excerpt_chars: 160,
         matches_per_meeting: 20,
         speaker_names: false,
+        reports_truncation: true,
     };
 }
 
@@ -80,8 +85,9 @@ impl<'a> MeetingSearch<'a> {
     }
 
     pub fn meeting(&mut self, meeting: &Meeting) {
-        self.field(SearchField::Title, &meeting.title, None);
-        self.field(SearchField::Notes, &meeting.notes, None);
+        if self.field(SearchField::Title, &meeting.title, None) {
+            self.field(SearchField::Notes, &meeting.notes, None);
+        }
     }
 
     pub fn transcript(&mut self, transcript: &Transcript) {
@@ -93,12 +99,16 @@ impl<'a> MeetingSearch<'a> {
         if !self.options.speaker_names {
             return;
         }
+        // A speaker's first segment is looked up only for a name that matches.
         for speaker in &transcript.speakers {
+            let Some(excerpt) = excerpt(&speaker.name, self.query, self.options) else {
+                continue;
+            };
             let first = transcript
                 .segments
                 .iter()
                 .position(|segment| segment.speaker_id.as_deref() == Some(speaker.id.as_str()));
-            if !self.field(SearchField::Speaker, &speaker.name, first) {
+            if !self.found(SearchField::Speaker, excerpt, first) {
                 return;
             }
         }
@@ -108,11 +118,16 @@ impl<'a> MeetingSearch<'a> {
         self.field(SearchField::Summary, text, None);
     }
 
-    // False once a match had to be left out.
+    // False once nothing more is wanted: a match had to be left out, or the matches are
+    // full and the caller does not ask whether more existed.
     fn field(&mut self, field: SearchField, text: &str, segment: Option<usize>) -> bool {
-        let Some(excerpt) = excerpt(text, self.query, self.options) else {
-            return true;
-        };
+        match excerpt(text, self.query, self.options) {
+            Some(excerpt) => self.found(field, excerpt, segment),
+            None => true,
+        }
+    }
+
+    fn found(&mut self, field: SearchField, excerpt: String, segment: Option<usize>) -> bool {
         if self.full() {
             self.truncated = true;
             return false;
@@ -122,7 +137,7 @@ impl<'a> MeetingSearch<'a> {
             excerpt,
             segment,
         });
-        true
+        !self.full() || self.options.reports_truncation
     }
 }
 
@@ -130,22 +145,22 @@ impl<'a> MeetingSearch<'a> {
 // is never split. None when the text does not contain it.
 pub fn excerpt(text: &str, query: &str, options: SearchOptions) -> Option<String> {
     let offset = text.to_lowercase().find(query)?;
-    let chars: Vec<char> = text.chars().collect();
     let mut folded_bytes = 0;
-    let start = chars
-        .iter()
+    let start = text
+        .chars()
         .position(|c| {
             folded_bytes += c.to_lowercase().map(char::len_utf8).sum::<usize>();
             folded_bytes > offset
         })
         .unwrap_or(0)
         .saturating_sub(options.context_chars);
-    let end = start.saturating_add(options.excerpt_chars).min(chars.len());
+    let mut rest = text.chars().skip(start);
+    let window: String = rest.by_ref().take(options.excerpt_chars).collect();
     Some(format!(
         "{}{}{}",
         if start > 0 { "..." } else { "" },
-        chars[start..end].iter().collect::<String>(),
-        if end < chars.len() { "..." } else { "" }
+        window,
+        if rest.next().is_some() { "..." } else { "" }
     ))
 }
 
@@ -223,6 +238,43 @@ mod tests {
         assert_eq!(screen.matches[0].field, SearchField::Transcript);
         assert_eq!(screen.matches[0].segment, Some(1));
         assert!(screen.full());
+
+        // The screen stops at its one match; the agent looks one past its limit.
+        assert!(!screen.truncated);
+        let mut screen = MeetingSearch::new("예산", SearchOptions::SCREEN);
+        let meeting = crate::Meeting {
+            id: "meeting".into(),
+            title: "예산 회의".into(),
+            notes: "예산 메모".into(),
+            attendees: Vec::new(),
+            calendar_reference: None,
+            created_at: 1,
+            updated_at: 1,
+            meeting_date: None,
+            recorded_at: None,
+            status: crate::MeetingStatus::Draft,
+            audio: None,
+            error: None,
+            warning: None,
+            capture_quality: None,
+            transcript_id: None,
+            folder_id: None,
+            deleted_at: None,
+        };
+        screen.meeting(&meeting);
+        assert_eq!(screen.matches.len(), 1);
+        assert_eq!(screen.matches[0].field, SearchField::Title);
+        assert!(screen.full() && !screen.truncated);
+        let mut agent = MeetingSearch::new(
+            "예산",
+            SearchOptions {
+                matches_per_meeting: 1,
+                ..SearchOptions::AGENT
+            },
+        );
+        agent.meeting(&meeting);
+        assert_eq!(agent.matches.len(), 1);
+        assert!(agent.truncated);
 
         let mut speaker = MeetingSearch::new("담당", SearchOptions::SCREEN);
         speaker.transcript(&transcript);

@@ -162,15 +162,37 @@ pub fn connection_info_with_hosts(
     config: &Path,
     force_host_refresh: bool,
 ) -> ConnectionInfo {
-    let changed = bundle_unchecked(resources, connections);
-    let installed =
-        installation::probe(home, config, connections, force_host_refresh || changed.is_some());
-    if let Some(identity) = changed {
-        if !matches!(installed.codex, installation::HostInstallation::Unknown(_)) {
-            let _ = record_host_check(connections, &identity);
-        }
-    }
+    let installed = checked_hosts(resources, connections, force_host_refresh, |refresh| {
+        installation::probe(home, config, connections, refresh)
+    });
     connection_info_with_installations(resources, root, connections, Some(&installed))
+}
+
+// Packages whose hosts this run has checked, by connections folder, in case the record
+// on disk could not be written.
+static CHECKED_BUNDLES: std::sync::Mutex<std::collections::BTreeMap<PathBuf, String>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+// The first status read after the bundled package changes checks the hosts once, whatever
+// they answer: a host that could not be read shows as unknown until the person checks
+// again. Reads wait here for one another, so two of them never both run that check.
+fn checked_hosts<T>(
+    resources: &Path,
+    connections: &Path,
+    force_refresh: bool,
+    probe: impl FnOnce(bool) -> T,
+) -> T {
+    let mut checked = CHECKED_BUNDLES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let changed = bundle_unchecked(resources, connections)
+        .filter(|identity| checked.get(connections) != Some(identity));
+    let installed = probe(force_refresh || changed.is_some());
+    if let Some(identity) = changed {
+        let _ = record_host_check(connections, &identity);
+        checked.insert(connections.to_path_buf(), identity);
+    }
+    installed
 }
 
 // An app update changes the bundled package; the first check after it looks at what the
@@ -1093,6 +1115,29 @@ mod tests {
         assert!(super::bundle_unchecked(&resources, &connections).is_none());
         fs::write(resources.join("agent/agent-build.json"), b"{\"integrationVersion\":\"0.3.0-nero.46\"}").unwrap();
         assert!(super::bundle_unchecked(&resources, &connections).is_some());
+    }
+
+    #[test]
+    fn successive_status_reads_check_the_hosts_once_per_package_whatever_they_answer() {
+        let temp = tempfile::tempdir().unwrap();
+        let (resources, connections) = (temp.path().join("resources"), temp.path().join("connections"));
+        fs::create_dir_all(resources.join("agent")).unwrap();
+        fs::write(resources.join("agent/agent-build.json"), b"{\"integrationVersion\":\"0.3.0-nero.45\"}").unwrap();
+        let read = |force| {
+            let mut refreshed = None;
+            super::checked_hosts(&resources, &connections, force, |refresh| refreshed = Some(refresh));
+            refreshed.unwrap()
+        };
+        // The probe's answer, unknown included, does not matter: the package was checked.
+        assert!(read(false));
+        assert!(!read(false));
+        assert!(read(true));
+        // A record that could not be written does not bring the check back in this run.
+        fs::write(resources.join("agent/agent-build.json"), b"{\"integrationVersion\":\"0.3.0-nero.46\"}").unwrap();
+        fs::remove_dir_all(&connections).unwrap();
+        fs::write(&connections, b"not a directory").unwrap();
+        assert!(read(false));
+        assert!(!read(false));
     }
 
     fn initialized_receipt(

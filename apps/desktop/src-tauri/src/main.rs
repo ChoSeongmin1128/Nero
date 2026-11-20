@@ -975,24 +975,48 @@ async fn create_recording(
         Some(id) if id == "unfiled" => nero_core::NewMeetingPlace::Folder(None),
         Some(id) => nero_core::NewMeetingPlace::Folder(Some(id)),
     };
-    record_new_meeting(&app, "새 회의".into(), place, device_id).await
+    record_new_meeting(&app, "새 회의".into(), place, device_id, true).await
 }
 
-// The screen's new recording and an agent's start without a meeting.
+// The screen's new recording and an agent's start without a meeting. `open_kept`: the
+// screen opens a meeting a failed start left; an agent's failure does not move the window.
 pub(crate) async fn record_new_meeting(
     app: &tauri::AppHandle,
     title: String,
     place: nero_core::NewMeetingPlace,
     device_id: Option<String>,
+    open_kept: bool,
 ) -> Result<Snapshot, String> {
+    let kept_for = app.clone();
     start_capture(app, device_id, move |core, device| {
-        let snapshot = core
+        let (meeting, started) = core
             .create_recording(&title, "", place, device)
             .map_err(|error| error.to_string())?;
+        let snapshot = started.map_err(|error| {
+            show_kept_meeting(&kept_for, core, open_kept.then_some(meeting.id), error)
+        })?;
         Ok(((), snapshot))
     })
     .await
     .map(|(_, snapshot)| snapshot)
+}
+
+// A start that failed after Core made its meeting keeps that meeting. The windows get the
+// library with it, and the main window opens `open` so trying again does not leave another
+// one; the request still answers `error`.
+pub(crate) fn show_kept_meeting(
+    app: &tauri::AppHandle,
+    core: &CoreHandle,
+    open: Option<String>,
+    error: nero_core::CoreError,
+) -> String {
+    if let Ok(snapshot) = core.snapshot() {
+        publish(app, &snapshot);
+    }
+    if let Some(meeting_id) = open {
+        let _ = show_meeting(app, meeting_id, None);
+    }
+    error.to_string()
 }
 
 // The recording screen and agent requests start capture through the same checks.
@@ -1564,14 +1588,6 @@ fn set_speaker_enabled(
     require_main(&window)?;
     state.processing.set_speaker_enabled(enabled)
 }
-#[tauri::command]
-fn prepare_model(
-    window: WebviewWindow,
-    state: tauri::State<'_, DesktopState>,
-) -> Result<Progress, String> {
-    require_main(&window)?;
-    state.processing.prepare_model()
-}
 // Both import entry points (file picker and drop) refuse before a file is chosen or sent.
 async fn import_preflight(
     state: &DesktopState,
@@ -1717,11 +1733,14 @@ async fn import_audio(
     let source = source
         .into_path()
         .map_err(|_| "로컬 음성 파일을 선택해 주세요.")?;
-    state
-        .processing
-        .import(state.core.clone(), source, target)
-        .map_err(String::from)?;
-    Ok(Some(state.processing.snapshot()))
+    let processing = state.processing.clone();
+    let core = state.core.clone();
+    // Admission reads Core and the queue writes its journal, off the async runtime.
+    on_processing(move || {
+        processing.import(core, source, target)?;
+        Ok(Some(processing.snapshot()))
+    })
+    .await
 }
 // Starts receiving a file dropped on the window; the same checks as `import_audio`.
 #[tauri::command]
@@ -1773,11 +1792,13 @@ async fn drop_import_finish(
     let upload = tauri::async_runtime::spawn_blocking(move || drops.finish(&token))
         .await
         .map_err(|_| "끌어 놓은 음성 파일을 받지 못했습니다.".to_string())??;
-    state
-        .processing
-        .import_dropped(state.core.clone(), upload)
-        .map_err(String::from)?;
-    Ok(state.processing.snapshot())
+    let processing = state.processing.clone();
+    let core = state.core.clone();
+    on_processing(move || {
+        processing.import_dropped(core, upload)?;
+        Ok(processing.snapshot())
+    })
+    .await
 }
 #[tauri::command]
 fn drop_import_cancel(window: WebviewWindow, state: tauri::State<'_, DesktopState>, token: String) {
@@ -2257,7 +2278,6 @@ fn main() {
             processing_status,
             set_speech_engine,
             set_speaker_enabled,
-            prepare_model,
             prepare_meeting_models,
             request_speech_engine,
             cancel_speech_switch,

@@ -48,7 +48,6 @@ pub(super) fn apply(choices: &mut [SpeechChoice]) {
     );
 }
 
-/// The warning shown before preparing `engine` on this machine, if it has one.
 pub(super) fn memory_warning(engine: SpeechEngine) -> Option<String> {
     warning_for(engine, physical_memory())
 }

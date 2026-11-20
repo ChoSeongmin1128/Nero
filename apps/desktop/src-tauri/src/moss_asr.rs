@@ -287,7 +287,8 @@ fn run_worker(
     match supervise(&mut child, cancel, Watch::budget(limit).stop_when(&stop)) {
         Ok(Ended::Unreadable(error)) => Err(error.to_string().into()),
         Ok(_) => Ok(()),
-        Err(Unconfirmed) => Err(failure(
+        Err(Unconfirmed) => Err(Failure::new(
+            FailureKind::Cleanup,
             "MOSS 실행기를 종료하지 못했습니다. 앱을 다시 열어 주세요.",
         )),
     }
@@ -426,10 +427,12 @@ fn split_failed(
             Ok(Some(pieces))
         };
         // A piece that could not be written or run leaves this chunk open for a later
-        // retry; the chunks already recognized are still saved. A stop ends the pass.
+        // retry; the chunks already recognized are still saved. A stop ends the pass, and
+        // so does a worker whose end was not confirmed: no other one starts beside it.
         let pieces = match attempt() {
             Ok(Some(pieces)) => pieces,
             Ok(None) => continue,
+            Err(error) if error.kind == FailureKind::Cleanup => return Err(error),
             Err(error) => {
                 cancelled(cancel)?;
                 eprintln!("Nero: MOSS 구간 {index}을 나눠 다시 인식하지 못했습니다: {}", error.message);

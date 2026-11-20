@@ -91,6 +91,9 @@ pub(super) fn probe(resources: &Path, variant: Option<AppleVariant>) -> Availabi
     let never = AtomicBool::new(false);
     match supervise(&mut child, &never, Watch::budget(Duration::from_secs(15))) {
         Ok(Ended::Exited(status)) if status.success() => {
+            // A descendant holding the output open would keep the read below from ending;
+            // the helper's tree ends first.
+            let _ = child.kill();
             let mut raw = Vec::new();
             if child
                 .stdout
@@ -235,4 +238,27 @@ pub(super) fn recognize(
         "helperSha256":helper_sha,"nativeResultSha256":native_sha,"nativeResultJson":native_json});
     serde_json::to_vec(&envelope)
         .map_err(|_| Failure::new(FailureKind::Output, "전사 결과를 저장하지 못했습니다."))
+}
+
+#[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
+mod probe_tests {
+    use super::*;
+
+    #[test]
+    fn a_status_whose_descendant_keeps_the_output_open_still_answers() {
+        use std::os::unix::fs::PermissionsExt;
+        let temporary = tempfile::tempdir().unwrap();
+        let helper = executable(temporary.path());
+        std::fs::create_dir_all(helper.parent().unwrap()).unwrap();
+        std::fs::write(
+            &helper,
+            "#!/bin/sh\nsleep 30 &\nprintf '%s' '{\"supported\":false,\"ready\":false,\"locale\":\"ko-KR\",\"assetStatus\":\"unsupported\",\"message\":\"fixture\",\"variant\":null,\"speechAvailable\":false,\"speechLocaleSupported\":false,\"dictationLocaleSupported\":false}'\nexit 0\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let started = std::time::Instant::now();
+        let status = probe(temporary.path(), None);
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert_eq!(status.message, "fixture");
+    }
 }

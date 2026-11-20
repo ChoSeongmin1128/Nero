@@ -1,6 +1,6 @@
-//! What the app's windows receive: saved documents with the judgements Core makes about
-//! them, so a screen shows them without repeating the rules. Saved documents stay as they
-//! are; these fields exist only in responses.
+// What the app's windows receive: saved documents with the judgements Core makes about
+// them, so a screen shows them without repeating the rules. Saved documents stay as they
+// are; these fields exist only in responses.
 use crate::{
     startup_notice_frames, CaptureQuality, Meeting, RecognitionChunk, SessionSnapshot, Snapshot,
     Transcript,
@@ -9,16 +9,21 @@ use serde::ser::{Error as _, SerializeStruct};
 use serde::{Serialize, Serializer};
 use serde_json::Value;
 
-// A recording without a known sample rate counts only notices before anything was saved.
-pub fn capture_quality(quality: &CaptureQuality, sample_rate: Option<u32>) -> Value {
+// `value` is `quality` as saved. A recording without a known sample rate counts only
+// notices before anything was saved.
+fn annotate_capture_quality(value: &mut Value, quality: &CaptureQuality, sample_rate: Option<u32>) {
     let startup_frames = sample_rate.map_or(0, startup_notice_frames);
-    let mut value = serde_json::to_value(quality).unwrap_or_default();
     if let Some(events) = value.get_mut("events").and_then(Value::as_array_mut) {
         for (projected, event) in events.iter_mut().zip(&quality.events) {
             projected["startup"] = event.startup_xrun(startup_frames).into();
         }
     }
     value["startupXrunCount"] = quality.startup_xruns(startup_frames).into();
+}
+
+pub fn capture_quality(quality: &CaptureQuality, sample_rate: Option<u32>) -> Value {
+    let mut value = serde_json::to_value(quality).unwrap_or_default();
+    annotate_capture_quality(&mut value, quality, sample_rate);
     value
 }
 
@@ -32,7 +37,7 @@ fn with_capture_quality<S: Serializer>(
         return document.serialize(serializer);
     };
     let mut value = serde_json::to_value(document).map_err(S::Error::custom)?;
-    value["captureQuality"] = capture_quality(quality, sample_rate);
+    annotate_capture_quality(&mut value["captureQuality"], quality, sample_rate);
     value.serialize(serializer)
 }
 
@@ -95,13 +100,37 @@ impl Serialize for ScreenTranscript {
         else {
             return self.0.serialize(serializer);
         };
-        let mut value = serde_json::to_value(&self.0).map_err(S::Error::custom)?;
-        if let Some(chunks) = value["source"]["recognitionReport"]["chunks"].as_array_mut() {
+        // Only the source becomes a JSON tree; the segments are written straight from the
+        // transcript. Naming every field keeps this in step with `Transcript`'s own form.
+        let Transcript {
+            version,
+            source_session_id,
+            model,
+            model_revision,
+            source,
+            speakers,
+            segments,
+            speaker_analysis,
+        } = &self.0;
+        let mut source = serde_json::to_value(source).map_err(S::Error::custom)?;
+        if let Some(chunks) = source["recognitionReport"]["chunks"].as_array_mut() {
             for (projected, chunk) in chunks.iter_mut().zip(&report.chunks) {
                 projected["settled"] = RecognitionChunk::settled(chunk).into();
             }
         }
-        value.serialize(serializer)
+        let mut transcript = serializer.serialize_struct("Transcript", 8)?;
+        transcript.serialize_field("version", version)?;
+        transcript.serialize_field("sourceSessionId", source_session_id)?;
+        transcript.serialize_field("model", model)?;
+        transcript.serialize_field("modelRevision", model_revision)?;
+        transcript.serialize_field("source", &source)?;
+        transcript.serialize_field("speakers", speakers)?;
+        transcript.serialize_field("segments", segments)?;
+        match speaker_analysis {
+            Some(analysis) => transcript.serialize_field("speakerAnalysis", analysis)?,
+            None => transcript.skip_field("speakerAnalysis")?,
+        }
+        transcript.end()
     }
 }
 
@@ -210,6 +239,18 @@ mod tests {
             .unwrap()
             .remove("startupXrunCount");
         assert_eq!(shown, saved);
+        // Coalesced counts that each pass validation never overflow their sum.
+        let mut huge = quality.clone();
+        for event in &mut huge.events {
+            event.count = u64::MAX / 2 + 1;
+            event.coalesced = true;
+        }
+        huge.xrun_count = u64::MAX;
+        assert!(huge.validate().is_ok());
+        assert_eq!(
+            huge.startup_xruns(u64::MAX),
+            if macos { u64::MAX } else { 0 }
+        );
         let mut plain = snapshot;
         plain.meetings[0].capture_quality = None;
         plain.session = None;
@@ -289,7 +330,53 @@ mod tests {
                 .collect::<Vec<_>>(),
             [true, false, true, true]
         );
-        let mut plain = transcript;
+        // Apart from `settled`, the screen gets the transcript as saved, every field included.
+        let mut full = transcript;
+        full.speakers = vec![crate::TranscriptSpeaker {
+            id: "speaker".into(),
+            name: "화자 1".into(),
+            name_origin: Some(crate::SpeakerNameOrigin::Automatic),
+        }];
+        full.segments = vec![crate::TranscriptSegment {
+            id: "segment".into(),
+            start: 0.5,
+            end: 1.25,
+            original_text: "원문".into(),
+            text: "수정".into(),
+            speaker_id: Some("speaker".into()),
+            source_index: Some(0),
+        }];
+        full.speaker_analysis = Some(crate::SpeakerAnalysis {
+            run_id: "run".into(),
+            scope: "recording".into(),
+            model: "diarizer".into(),
+            model_revision: "1".into(),
+            model_sha256: "b".repeat(64),
+            runtime: "runtime".into(),
+            projection_version: "projection".into(),
+            raw_sha256: "c".repeat(64),
+            assigned_count: 1,
+            unassigned_count: 0,
+            review_causes: Default::default(),
+            assignments_edited: false,
+        });
+        for transcript in [
+            full.clone(),
+            Transcript {
+                speaker_analysis: None,
+                ..full.clone()
+            },
+        ] {
+            let mut shown = serde_json::to_value(ScreenTranscript(transcript.clone())).unwrap();
+            for chunk in shown["source"]["recognitionReport"]["chunks"]
+                .as_array_mut()
+                .unwrap()
+            {
+                chunk.as_object_mut().unwrap().remove("settled").unwrap();
+            }
+            assert_eq!(shown, serde_json::to_value(&transcript).unwrap());
+        }
+        let mut plain = full;
         plain.source = None;
         assert_eq!(
             serde_json::to_value(ScreenTranscript(plain.clone())).unwrap(),

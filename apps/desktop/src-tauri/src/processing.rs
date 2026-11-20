@@ -194,8 +194,8 @@ pub struct Progress {
     pub speech_switch: Option<crate::speech_switch::SwitchView>,
     pub speech_offer: Option<crate::speech_switch::OfferView>,
     pub speech_cleanup: Option<model_retirement::View>,
-    /// Recognize MOSS chunks while recording, and whether that can apply now: this Mac
-    /// and the selected engine, as `Processing::recording_transcription_available`.
+    // Recognize MOSS chunks while recording, and whether that can apply now: this Mac
+    // and the selected engine, as `Processing::recording_transcription_available`.
     pub recording_transcription: bool,
     pub recording_transcription_available: bool,
     /// Whether the running job can be paused, and its pause when one is wanted.
@@ -204,14 +204,13 @@ pub struct Progress {
     pub review: Option<Review>,
 }
 
-/// What a job that ended as `needsReview` asks the person to look at.
+// What a job that ended as `needsReview` asks the person to look at.
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum Review {
-    /// The transcript was saved with missing chunks or range-only times; the job's own
-    /// message says which.
+    // Saved with missing chunks or range-only times; the job's message says which.
     Recognition,
-    /// Whether the result was saved is not known: the meeting shows what was kept.
+    // Whether the result was saved is not known: the meeting shows what was kept.
     SavedResult,
 }
 
@@ -303,19 +302,19 @@ impl JobSpec {
     }
 }
 
-/// Why Processing refused a request before starting anything. The screens show its
-/// message; agent requests answer their own code for each kind.
+// Why Processing refused a request before starting anything. The screens show its
+// message; agent requests answer their own code for each kind.
 #[derive(Debug)]
 pub enum Refusal {
-    /// A recording is in progress.
     Recording(String),
-    /// Speech recognition is not supported here or not prepared.
+    // Speech recognition is not supported here or not prepared.
     NotReady(String),
-    /// The chosen engine warns about memory and the person has not acknowledged it.
     MemoryWarning,
-    /// The draft meeting an import names cannot take it.
+    // The draft meeting an import names cannot take it.
     Meeting(nero_core::CoreError),
-    /// Any other reason, such as the queue's own.
+    // Core could not report its state, so nothing was decided.
+    Core(nero_core::CoreError),
+    // Any other reason, such as the queue's own.
     Other(String),
 }
 impl std::fmt::Display for Refusal {
@@ -325,7 +324,7 @@ impl std::fmt::Display for Refusal {
                 f.write_str(message)
             }
             Self::MemoryWarning => f.write_str("메모리 경고에 대한 사용자 확인이 필요합니다."),
-            Self::Meeting(error) => write!(f, "{error}"),
+            Self::Meeting(error) | Self::Core(error) => write!(f, "{error}"),
         }
     }
 }
@@ -333,6 +332,18 @@ impl From<String> for Refusal {
     fn from(message: String) -> Self {
         Self::Other(message)
     }
+}
+impl From<&str> for Refusal {
+    fn from(message: &str) -> Self {
+        Self::Other(message.into())
+    }
+}
+
+// The memory warning is asked where a download of the warned model starts. A first setup
+// only records the choice (its download starts from the setup screen), and a waiting
+// switch resumed, after a restart for one, was acknowledged when it began.
+fn memory_acknowledgement_needed(starts_download: bool, resumes_switch: bool, warned: bool) -> bool {
+    starts_download && !resumes_switch && warned
 }
 impl From<Refusal> for String {
     fn from(refusal: Refusal) -> Self {
@@ -521,6 +532,21 @@ fn agent_job_version(record: &JobRecord) -> String {
     )
 }
 
+// The running job also reports whether it can pause and any pause in effect.
+fn agent_job_controlled(
+    record: &JobRecord,
+    control: Option<&(String, Arc<crate::job_control::JobControl>)>,
+) -> serde_json::Value {
+    let mut view = agent_job_view(record);
+    if let Some((_, control)) =
+        control.filter(|(job, _)| record.status == JobStatus::Running && *job == record.id)
+    {
+        view["pausable"] = serde_json::json!(control.pausable());
+        view["pause"] = serde_json::json!(control.view());
+    }
+    view
+}
+
 fn agent_job_view(record: &JobRecord) -> serde_json::Value {
     serde_json::json!({"id":record.id,"kind":record.kind,"meetingId":record.meeting_id,"status":record.status,"editVersion":agent_job_version(record)})
 }
@@ -540,9 +566,6 @@ fn check_agent_job_version(
 
 pub(super) fn message(error: impl std::fmt::Display) -> String {
     error.to_string()
-}
-fn message_of(error: impl std::fmt::Display) -> Refusal {
-    Refusal::Other(error.to_string())
 }
 pub(super) fn cancelled(cancel: &AtomicBool) -> Result<(), String> {
     if cancel.load(Ordering::Acquire) {
@@ -966,11 +989,11 @@ impl Processing {
         engine: SpeechEngine,
         acknowledge_memory_warning: bool,
     ) -> Result<Progress, Refusal> {
-        self.speech_engine_preflight(core, engine, acknowledge_memory_warning)?;
-        Ok(self.switch_speech_engine(engine)?)
+        self.refuse_while_recording(core, "녹음을 마친 뒤 음성 인식 모델을 변경해 주세요.")?;
+        self.request_speech_engine_from(engine, false, acknowledge_memory_warning)
     }
-    /// Refuses a change of engine while recording, and one whose memory warning the
-    /// person has not acknowledged, as the settings screen asks before preparing.
+    // Agents and the switch offer are refused for an unacknowledged memory warning before
+    // anything else, whatever the request would then do.
     pub fn speech_engine_preflight(
         &self,
         core: &CoreHandle,
@@ -989,7 +1012,7 @@ impl Processing {
     fn refuse_while_recording(&self, core: &CoreHandle, message: &str) -> Result<(), Refusal> {
         if core
             .snapshot()
-            .map_err(message_of)?
+            .map_err(Refusal::Core)?
             .active_session()
             .is_some()
         {
@@ -997,14 +1020,17 @@ impl Processing {
         }
         Ok(())
     }
+    #[cfg(test)]
     fn switch_speech_engine(self: &Arc<Self>, engine: SpeechEngine) -> Result<Progress, String> {
-        self.request_speech_engine_from(engine, false)
+        self.request_speech_engine_from(engine, false, true)
+            .map_err(String::from)
     }
     fn request_speech_engine_from(
         self: &Arc<Self>,
         engine: SpeechEngine,
         from_offer: bool,
-    ) -> Result<Progress, String> {
+        memory_acknowledged: bool,
+    ) -> Result<Progress, Refusal> {
         if !engine.offered() && engine != self.speech_engine() {
             return Err("이전 전사 모델은 새로 선택할 수 없습니다. MOSS, Qwen 또는 macOS 기본 전사를 선택해 주세요.".into());
         }
@@ -1057,8 +1083,18 @@ impl Processing {
         // A deliberate move to another engine, with Qwen listed as recommended, answers the offer.
         let answers_offer =
             !from_offer && engine != SpeechEngine::QwenKo && engine != self.speech_engine();
+        let records_only =
+            !working || (self.model_ready_for(engine) && self.speakers_ready(speaker_enabled));
+        if memory_acknowledgement_needed(
+            !records_only && !self.model_ready_for(engine),
+            previous.is_some(),
+            crate::speech_recommendation::memory_warning(engine).is_some(),
+        ) && !memory_acknowledged
+        {
+            return Err(Refusal::MemoryWarning);
+        }
         *self.speech_switch_error.lock().unwrap() = None;
-        if !working || (self.model_ready_for(engine) && self.speakers_ready(speaker_enabled)) {
+        if records_only {
             self.set_speech_selection(engine, speaker_enabled, variant)?;
             self.forget_speech_switch()?;
             if answers_offer {
@@ -1084,7 +1120,7 @@ impl Processing {
                 *self.speech_switch_error.lock().unwrap() = Some(error.clone());
                 self.update(|_| ());
             }
-            return Err(error);
+            return Err(error.into());
         }
         if answers_offer {
             let _ = self.decide_speech_offer(crate::speech_switch::Decision::Declined);
@@ -1137,7 +1173,8 @@ impl Processing {
         if accept {
             // The offer is used up only once the switch has started; a refused switch
             // (no space, the same work already queued) leaves it to accept again.
-            let progress = self.request_speech_engine_from(SpeechEngine::Moss, true)?;
+            // `respond_speech_offer` asked for the memory acknowledgement first.
+            let progress = self.request_speech_engine_from(SpeechEngine::Moss, true, true)?;
             self.decide_speech_offer(crate::speech_switch::Decision::Accepted)?;
             return Ok(progress);
         }
@@ -1761,8 +1798,8 @@ impl Processing {
         }
     }
 
-    /// Settings > 녹음 "녹음하면서 음성 기록 만들기" can apply: this Mac can pause
-    /// jobs, the MOSS worker is present and MOSS is the selected engine.
+    // Settings > 녹음 "녹음하면서 음성 기록 만들기" can apply: this Mac can pause
+    // jobs, the MOSS worker is present and MOSS is the selected engine.
     pub fn recording_transcription_available(&self) -> bool {
         crate::job_control::SUPPORTED
             && self.speech_engine().transcribes_while_recording()
@@ -1844,7 +1881,6 @@ impl Processing {
         if limit == 0 || limit > 200 {
             return Err(nero_core::agent_control::ControlError::invalid());
         }
-        // The running job also reports whether it can pause and any pause in effect.
         let control = self.control.lock().unwrap().clone();
         let records = self.records.lock().unwrap();
         let mut matching = records
@@ -1860,17 +1896,7 @@ impl Processing {
             .iter()
             .skip(offset)
             .take(limit)
-            .map(|record| {
-                let mut view = agent_job_view(record);
-                if let Some((_, control)) = control
-                    .as_ref()
-                    .filter(|(job, _)| record.status == JobStatus::Running && *job == record.id)
-                {
-                    view["pausable"] = serde_json::json!(control.pausable());
-                    view["pause"] = serde_json::json!(control.view());
-                }
-                view
-            })
+            .map(|record| agent_job_controlled(record, control.as_ref()))
             .collect::<Vec<_>>();
         let next = offset.saturating_add(jobs.len());
         Ok(
@@ -1878,14 +1904,15 @@ impl Processing {
         )
     }
 
-    /// One job as `agent_jobs` lists it.
+    // One job as `agent_jobs` lists it, the running one's pause state included.
     pub fn agent_job(&self, id: &str) -> Option<serde_json::Value> {
+        let control = self.control.lock().unwrap().clone();
         self.records
             .lock()
             .unwrap()
             .iter()
             .find(|record| record.id == id)
-            .map(agent_job_view)
+            .map(|record| agent_job_controlled(record, control.as_ref()))
     }
 
     pub fn agent_cancel(
@@ -2925,6 +2952,16 @@ impl Processing {
                     r.id == job_id
                         && matches!(r.status, JobStatus::Cancelled | JobStatus::Cancelling)
                 });
+                // A cancel whose worker did not confirm its end leaves all work refused until
+                // the app reopens; a plain "cancelled" would hide why.
+                if user_cancelled && this.worker_cleanup_failed.load(Ordering::Acquire) {
+                    this.update(|p| {
+                        p.status = "failed".into();
+                        p.message = crate::process_tree::UNCONFIRMED.into();
+                        p.failure_kind = Some(crate::failure::FailureKind::Cleanup);
+                    });
+                    return;
+                }
                 if user_cancelled {
                     this.update(|p| {
                         p.status = "cancelled".into();
@@ -3022,13 +3059,10 @@ impl Processing {
             error
         })
     }
-    pub fn prepare_model(self: &Arc<Self>) -> Result<Progress, String> {
-        self.prepare_meeting_models_with_id(false, None, None, None, None)
-    }
     pub fn require_meeting_models(&self) -> Result<(), String> {
         meeting_models_ready(&self.snapshot())
     }
-    /// Setup the person asks for; refused while recording.
+    // Setup the person asks for; refused while recording.
     pub fn prepare_meeting_models(
         self: &Arc<Self>,
         core: &CoreHandle,
@@ -3538,8 +3572,7 @@ impl Processing {
         };
         Ok(())
     }
-    /// Refuses an import before a file is chosen or received: nothing may be recording,
-    /// speech recognition must be ready, and a draft `target` must still take audio.
+    // Runs before a file is chosen or received, so a refused import asks for nothing.
     pub fn import_preflight(
         &self,
         core: &CoreHandle,
@@ -3554,7 +3587,6 @@ impl Processing {
         Ok(())
     }
 
-    /// Imports `source` as a new meeting, or into the draft `target`; returns the job's id.
     pub fn import(
         self: &Arc<Self>,
         core: CoreHandle,
@@ -4499,20 +4531,24 @@ mod tests {
     }
 
     fn completed_recording(session_id: &str, meeting_id: &str) -> Snapshot {
-        serde_json::from_value(serde_json::json!({
-            "revision": 1,
-            "folders": [],
-            "meetings": [{
+        Snapshot {
+            revision: 1,
+            folders: Vec::new(),
+            meetings: vec![serde_json::from_value(serde_json::json!({
                 "id": meeting_id, "title": "Meeting", "notes": "", "createdAt": 1, "updatedAt": 2,
                 "status": "completed", "error": null,
                 "audio": { "sessionId": session_id, "relativePath": "audio.wav", "frames": 16000, "sampleRate": 16000, "channels": 1 }
-            }],
-            "session": {
-                "id": session_id, "meetingId": meeting_id, "deviceId": "mic", "deviceName": "Microphone",
-                "state": "completed", "elapsedMs": 1000, "savedFrames": 16000,
-                "sampleRate": 16000, "channels": 1, "error": null
-            }
-        })).unwrap()
+            }))
+            .unwrap()],
+            session: Some(
+                serde_json::from_value(serde_json::json!({
+                    "id": session_id, "meetingId": meeting_id, "deviceId": "mic", "deviceName": "Microphone",
+                    "state": "completed", "elapsedMs": 1000, "savedFrames": 16000,
+                    "sampleRate": 16000, "channels": 1, "error": null
+                }))
+                .unwrap(),
+            ),
+        }
     }
 
     #[test]
@@ -5575,7 +5611,10 @@ mod tests {
         let (_temp, process) = setup();
         process.shutdown().unwrap();
         assert_eq!(
-            process.prepare_model().err().unwrap(),
+            process
+                .prepare_meeting_models_with_id(false, None, None, None, None)
+                .err()
+                .unwrap(),
             "앱을 종료하고 있습니다."
         );
         assert!(process.running.lock().unwrap().is_none());

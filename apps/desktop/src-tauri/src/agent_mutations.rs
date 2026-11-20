@@ -441,7 +441,7 @@ fn refused(refusal: Refusal, other: impl FnOnce(String) -> ControlError) -> Cont
         Refusal::Meeting(CoreError::InvalidInput(_)) => {
             ControlError::core(CoreError::MeetingNotFound)
         }
-        Refusal::Meeting(error) => ControlError::core(error),
+        Refusal::Meeting(error) | Refusal::Core(error) => ControlError::core(error),
         Refusal::Other(message) => other(message),
     }
 }
@@ -516,8 +516,11 @@ fn meeting_import<G>(
             ControlError::new("processing_rejected", message)
         })
     };
-    port.import_preflight().map_err(refused)?;
-    // Open editors are saved before the import checks the draft's version.
+    // Open editors are saved only for an import Processing would take, and before it
+    // checks the draft's version; `port.import` checks a new meeting's import itself.
+    if target.is_some() {
+        port.import_preflight().map_err(refused)?;
+    }
     let _edits = target.as_ref().map(|_| save_edits()).transpose()?;
     let meeting_id = target.as_ref().map(|target| target.meeting_id.clone());
     let id = port.import(source, target).map_err(refused)?;
@@ -904,6 +907,20 @@ mod tests {
         );
         assert!(recording.imports.lock().unwrap().is_empty());
         assert!(unprepared.imports.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_failed_state_read_keeps_its_core_code() {
+        for (error, code) in [
+            (CoreError::Unavailable, "app_not_ready"),
+            (CoreError::Storage("disk".into()), "storage_error"),
+        ] {
+            assert_eq!(refused(Refusal::Core(error), |_| rejected()).code, code);
+        }
+        assert_eq!(
+            refused(Refusal::Other("queue".into()), |_| rejected()).code,
+            "processing_rejected"
+        );
     }
 
     #[test]

@@ -147,11 +147,26 @@ pub(crate) struct SpeakerAnalysisEvidence {
 }
 
 pub(crate) fn posterior_profile(draft: &SpeakerAnalysisDraft) -> bool {
-    let c = &draft.configuration;
-    !(draft.model != NEMO_MODEL
-        || draft.model_revision != NEMO_REVISION
-        || draft.model_sha256 != NEMO_SHA256
-        || !crate::speech_runtime::known(&draft.runtime)
+    posterior_profile_of(
+        &draft.model,
+        &draft.model_revision,
+        &draft.model_sha256,
+        &draft.runtime,
+        &draft.configuration,
+    )
+}
+
+pub(crate) fn posterior_profile_of(
+    model: &str,
+    model_revision: &str,
+    model_sha256: &str,
+    runtime: &str,
+    c: &serde_json::Value,
+) -> bool {
+    !(model != NEMO_MODEL
+        || model_revision != NEMO_REVISION
+        || model_sha256 != NEMO_SHA256
+        || !crate::speech_runtime::known(runtime)
         || c["scope"] != "recording"
         || c["fullAttention"] != false
         || c["batching"] != false

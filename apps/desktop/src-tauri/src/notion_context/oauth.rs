@@ -222,9 +222,8 @@ impl Pending {
         {
             return Err(Error::Protocol);
         }
-        let verifier = crate::oauth_callback::Pkce::new()
-            .ok_or(Error::Callback)?
-            .verifier;
+        // `authorization_url` derives the challenge from this verifier.
+        let verifier = crate::oauth_callback::random_token().ok_or(Error::Callback)?;
         let state = format!(
             "{}{}",
             uuid::Uuid::new_v4().simple(),
@@ -305,16 +304,26 @@ fn receive_callback(
         || cancellation.check().is_err(),
         |stream, request| match parse_callback(&request, host, path, state, metadata) {
             Ok(code) => {
-                let mut page = page.lock().unwrap();
                 if let Err(error) = cancellation.check() {
                     CallbackPage::reject(stream, &error.to_string());
                     return Some(Err(error));
                 }
-                *page = Some(CallbackPage::begin_for(
+                // The page is written before the slot is taken, so a cancellation that
+                // finishes it never waits for the browser.
+                let mut callback = CallbackPage::begin_for(
                     stream,
                     "Notion",
                     "Notion 연결을 완료했습니다. Nero로 돌아가 주세요.",
-                ));
+                );
+                let Ok(mut target) = page.lock() else {
+                    return Some(Err(Error::Callback));
+                };
+                if let Err(error) = cancellation.check() {
+                    drop(target);
+                    callback.finish(Err(&error.to_string()));
+                    return Some(Err(error));
+                }
+                *target = Some(callback);
                 Some(Ok(code))
             }
             Err(error) => {

@@ -1910,6 +1910,78 @@ fn a_worker_whose_end_was_not_confirmed_blocks_new_work_after_its_job() {
 }
 
 #[test]
+fn a_cancel_whose_worker_end_was_not_confirmed_ends_as_that_failure() {
+    let (_temporary, process) = setup();
+    let id = launch(
+        &process,
+        pending(record("transcribe"), |_, cancel, _| {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while !cancel.load(Ordering::Acquire) {
+                if Instant::now() >= deadline {
+                    return Err("취소 요청이 도착하지 않았습니다.".into());
+                }
+                thread::sleep(Duration::from_millis(2));
+            }
+            crate::job_control::report_unconfirmed_termination(&cancel);
+            Err(crate::process_tree::UNCONFIRMED.into())
+        }),
+    );
+    process.cancel(&id).unwrap();
+    finish(&process);
+    assert_eq!(status(&process, &id), JobStatus::Failed);
+    let progress = process.snapshot();
+    assert_eq!(progress.status, "failed");
+    assert_eq!(progress.message, crate::process_tree::UNCONFIRMED);
+    assert_eq!(
+        progress.failure_kind,
+        Some(crate::failure::FailureKind::Cleanup)
+    );
+    assert!(process.worker_ready().is_err());
+}
+
+#[test]
+fn a_running_job_looked_up_alone_matches_its_entry_in_the_list() {
+    let (_temporary, process) = setup();
+    let (started, started_rx) = mpsc::channel();
+    let (release, release_rx) = mpsc::channel::<()>();
+    let id = launch(
+        &process,
+        pending(record("summary"), move |_, _, _| {
+            started.send(()).map_err(message)?;
+            release_rx
+                .recv_timeout(Duration::from_secs(3))
+                .map_err(message)?;
+            Ok(None)
+        }),
+    );
+    started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    let listed = process.agent_jobs(None, 0, 50).unwrap()["jobs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|job| job["id"] == id.as_str())
+        .cloned()
+        .unwrap();
+    assert!(listed.get("pausable").is_some());
+    assert_eq!(process.agent_job(&id).unwrap(), listed);
+    release.send(()).unwrap();
+    finish(&process);
+}
+
+#[test]
+fn only_a_request_that_starts_a_new_download_needs_the_memory_acknowledgement() {
+    // (starts a download, resumes the waiting switch, the engine warns) -> needed
+    for (starts, resumes, warned, needed) in [
+        (true, false, true, true),
+        (false, false, true, false),
+        (true, true, true, false),
+        (true, false, false, false),
+    ] {
+        assert_eq!(memory_acknowledgement_needed(starts, resumes, warned), needed);
+    }
+}
+
+#[test]
 fn imports_and_engine_changes_are_refused_by_processing_before_any_job() {
     let (_temporary, process) = setup();
     let core = CoreHandle::open(&process.root).unwrap();

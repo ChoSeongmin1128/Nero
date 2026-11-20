@@ -1,18 +1,16 @@
-//! Which work may run while a meeting is recorded. The queue asks before a job starts,
-//! a job asks again before it reads its meeting, and a recording start asks whether the
-//! running job may stay. See docs/task-management.md.
+// Which work may run while a meeting is recorded. The queue asks before a job starts,
+// a job asks again before it reads its meeting, and a recording start asks whether the
+// running job may stay. See docs/task-management.md.
 use crate::job_journal::JobKind;
 use crate::speech_choice::SpeechEngine;
 
-/// What a recording, and a live worker reading it, mean for other work right now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Session<'a> {
     Idle,
-    /// The live worker of `meeting`'s recording is finishing after the recording ended.
+    // The live worker of `meeting`'s recording is finishing after the recording ended.
     Finishing(&'a str),
-    /// A recording is in progress; its meeting is not known while it starts. `live`: a
-    /// live worker (a legacy preview or the recording-time MOSS processor) reads it and
-    /// keeps the inference slot.
+    // Its meeting is not known while it starts. `live`: a live worker (a legacy preview or
+    // the recording-time MOSS processor) reads it and keeps the inference slot.
     Recording {
         meeting: Option<&'a str>,
         live: bool,
@@ -20,8 +18,8 @@ pub(crate) enum Session<'a> {
 }
 
 impl<'a> Session<'a> {
-    /// A recording as a job sees it before reading its meeting; the queue has already
-    /// kept the job back while a live worker held the slot.
+    // A recording as a job sees it before reading its meeting; the queue has already
+    // kept the job back while a live worker held the slot.
     pub(crate) fn recording(meeting: Option<&'a str>) -> Self {
         meeting.map_or(Self::Idle, |meeting| Self::Recording {
             meeting: Some(meeting),
@@ -30,8 +28,8 @@ impl<'a> Session<'a> {
     }
 }
 
-/// Recognition of a finished meeting, or its speaker analysis, that keeps running while
-/// another meeting records. `engine` decides only for a transcription.
+// Recognition of a finished meeting, or its speaker analysis, that keeps running while
+// another meeting records. `engine` decides only for a transcription.
 pub(crate) fn runs_beside_recording(kind: JobKind, engine: Option<SpeechEngine>) -> bool {
     crate::job_control::SUPPORTED
         && match kind {
@@ -41,8 +39,8 @@ pub(crate) fn runs_beside_recording(kind: JobKind, engine: Option<SpeechEngine>)
         }
 }
 
-/// Whether work of `kind` for `meeting` may run during `session`. A live worker keeps
-/// the slot: nothing else starts, though a download already running keeps going.
+// A live worker keeps the slot: nothing else starts, though a download already running
+// keeps going.
 pub(crate) fn admits(
     kind: JobKind,
     engine: Option<SpeechEngine>,

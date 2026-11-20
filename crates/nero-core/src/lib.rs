@@ -153,12 +153,12 @@ pub struct AudioPlayback {
     pub channels: u16,
 }
 
-/// Where a meeting made for a new recording goes.
+// Where a meeting made for a new recording goes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NewMeetingPlace {
-    /// The folder chosen for new meetings.
+    // The folder chosen for new meetings.
     Default,
-    /// This folder, or unfiled for `None`. A folder deleted meanwhile counts as `Default`.
+    // This folder, or unfiled for `None`. A folder deleted meanwhile counts as `Default`.
     Folder(Option<String>),
 }
 
@@ -248,8 +248,9 @@ pub struct SessionSnapshot {
     pub capture_quality: Option<CaptureQuality>,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+// Serialized only for the app's windows, with Core's judgements added (`projection`), so
+// it has no decoder that would drop those fields' diagnostics.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Snapshot {
     pub revision: u64,
     pub meetings: Vec<Meeting>,
@@ -720,33 +721,37 @@ impl CoreHandle {
     }
 
     /// Creates an explicitly requested recording in `place` without a gap between the
-    /// busy check and creation. A failed capture preserves the requested draft.
+    /// busy check and creation. A failed capture preserves the requested draft, returned
+    /// with that failure; a folder asked for that cannot be written stops before capture.
     pub fn create_recording(
         &self,
         title: &str,
         notes: &str,
         place: NewMeetingPlace,
         device_id: &str,
-    ) -> Result<Snapshot> {
+    ) -> Result<(Meeting, Result<Snapshot>)> {
         let (title, notes, device_id) = (title.to_owned(), notes.to_owned(), device_id.to_owned());
         self.call(move |engine| {
             engine.refuse_while_recording(recording_guard::Operation::StartRecording, [])?;
-            let meeting = engine.create_meeting_in(title, notes, place)?;
-            engine.start(&meeting.id, &device_id)
+            let (meeting, placed) = engine.create_meeting_in(title, notes, place)?;
+            let started = placed.and_then(|()| engine.start(&meeting.id, &device_id));
+            Ok((meeting, started))
         })
     }
 
+    // The occurrence's meeting with the capture's outcome: a failed start keeps it, and
+    // the next attempt takes it again.
     pub fn create_calendar_recording(
         &self,
         reference: CalendarReference,
         device_id: &str,
-    ) -> Result<(Meeting, Snapshot)> {
+    ) -> Result<(Meeting, Result<Snapshot>)> {
         let device_id = device_id.to_owned();
         self.call(move |engine| {
             engine.refuse_while_recording(recording_guard::Operation::StartRecording, [])?;
             let meeting = engine.meeting_for_calendar_recording(reference)?;
-            let snapshot = engine.start(&meeting.id, &device_id)?;
-            Ok((meeting, snapshot))
+            let started = engine.start(&meeting.id, &device_id);
+            Ok((meeting, started))
         })
     }
 

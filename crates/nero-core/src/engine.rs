@@ -133,16 +133,22 @@ impl Engine {
 
     pub fn create_meeting(&mut self, title: String, notes: String) -> Result<Meeting> {
         self.create_meeting_in(title, notes, crate::NewMeetingPlace::Default)
+            .map(|(meeting, _)| meeting)
     }
 
+    // The meeting, and whether it reached the folder asked for by name (see
+    // `place_new_meeting`). A malformed folder ID is refused before anything is made.
     pub(crate) fn create_meeting_in(
         &mut self,
         title: String,
         notes: String,
         place: crate::NewMeetingPlace,
-    ) -> Result<Meeting> {
+    ) -> Result<(Meeting, Result<()>)> {
         if self.quitting {
             return Err(CoreError::Unavailable);
+        }
+        if let crate::NewMeetingPlace::Folder(Some(id)) = &place {
+            store::validate_id(id)?;
         }
         let generated_title = title == "새 회의";
         let title = if generated_title {
@@ -192,26 +198,34 @@ impl Engine {
 
     pub(crate) fn file_new_meeting(&mut self, meeting: Meeting) -> Meeting {
         self.place_new_meeting(meeting, crate::NewMeetingPlace::Default)
+            .0
     }
 
     // A new meeting starts in its place. The meeting exists either way; a failed
-    // placement leaves it unfiled.
-    fn place_new_meeting(&mut self, meeting: Meeting, place: crate::NewMeetingPlace) -> Meeting {
-        let folder = match place {
+    // placement leaves it unfiled. Only a folder asked for by name reports that failure:
+    // the folder chosen for new meetings, or one deleted meanwhile, is best effort.
+    fn place_new_meeting(
+        &mut self,
+        meeting: Meeting,
+        place: crate::NewMeetingPlace,
+    ) -> (Meeting, Result<()>) {
+        let (folder, requested) = match place {
             crate::NewMeetingPlace::Folder(Some(id)) if self.library.folders.contains_key(&id) => {
-                Some(id)
+                (Some(id), true)
             }
-            crate::NewMeetingPlace::Folder(None) => None,
-            _ => self.new_meeting_folder(),
+            crate::NewMeetingPlace::Folder(None) => (None, false),
+            _ => (self.new_meeting_folder(), false),
         };
         let Some(folder) = folder else {
-            return meeting;
+            return (meeting, Ok(()));
         };
-        let _ = self.move_meetings(std::slice::from_ref(&meeting.id), Some(folder));
-        self.meetings
+        let placed = self.move_meetings(std::slice::from_ref(&meeting.id), Some(folder));
+        let meeting = self
+            .meetings
             .get(&meeting.id)
             .map(|stored| stored.meeting.clone())
-            .unwrap_or(meeting)
+            .unwrap_or(meeting);
+        (meeting, if requested { placed } else { Ok(()) })
     }
 
     // The meeting as stored, when its edit version is still `expected`. `active`
@@ -1741,12 +1755,22 @@ mod tests {
                 Some(chosen.id.clone()),
             ),
         ] {
-            let meeting = engine
+            let (meeting, placed) = engine
                 .create_meeting_in("새 회의".into(), String::new(), place)
                 .unwrap();
+            placed.unwrap();
             assert_eq!(meeting.folder_id, expected);
             assert_eq!(engine.meetings[&meeting.id].meeting.folder_id, expected);
         }
+        // A malformed folder ID is an input error, not a deleted folder: nothing is made.
+        let count = engine.meetings.len();
+        for malformed in ["", "../folder"] {
+            assert!(matches!(
+                engine.create_meeting_in("새 회의".into(), String::new(), place(Some(malformed))),
+                Err(CoreError::InvalidInput(_))
+            ));
+        }
+        assert_eq!(engine.meetings.len(), count);
         // A capture that fails after the meeting was made keeps that draft where it was
         // asked for, without a recording.
         let root = engine.store.root.clone();
@@ -1760,19 +1784,50 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         let before = in_listed(&core);
-        assert!(core
+        let (kept, started) = core
             .create_recording(
                 "새 회의",
                 "",
                 crate::NewMeetingPlace::Folder(Some(listed.id.clone())),
-                "unavailable synthetic device"
+                "unavailable synthetic device",
             )
-            .is_err());
+            .unwrap();
+        assert!(started.is_err());
         let after = in_listed(&core);
         assert_eq!(after.len(), before.len() + 1);
+        assert!(after.iter().any(|meeting| meeting.id == kept.id));
         assert!(after
             .iter()
             .all(|meeting| meeting.status == MeetingStatus::Draft && meeting.audio.is_none()));
+        assert!(core.snapshot().unwrap().active_session().is_none());
+    }
+
+    #[test]
+    fn a_folder_asked_for_that_cannot_be_written_stops_the_recording_before_capture() {
+        let (_temporary, mut engine) = engine();
+        let listed = engine.create_folder("Listed".into()).unwrap();
+        let root = engine.store.root.clone();
+        drop(engine);
+        let core = CoreHandle::open(&root).unwrap();
+        let count = core.list_meetings().unwrap().len();
+        // library.json is replaced through a new file beside it, which a directory refuses.
+        fs::remove_file(root.join("library.json")).unwrap();
+        fs::create_dir(root.join("library.json")).unwrap();
+        let (kept, started) = core
+            .create_recording(
+                "새 회의",
+                "",
+                crate::NewMeetingPlace::Folder(Some(listed.id.clone())),
+                "unavailable synthetic device",
+            )
+            .unwrap();
+        // The placement failure, not the missing device: capture was never tried.
+        assert!(matches!(started, Err(CoreError::Storage(_))));
+        let meetings = core.list_meetings().unwrap();
+        assert_eq!(meetings.len(), count + 1);
+        let kept = meetings.iter().find(|meeting| meeting.id == kept.id).unwrap();
+        assert_eq!(kept.folder_id, None);
+        assert_eq!(kept.status, MeetingStatus::Draft);
         assert!(core.snapshot().unwrap().active_session().is_none());
     }
 
@@ -1974,11 +2029,16 @@ mod tests {
         let root = engine.store.root.clone();
         drop(engine);
         let core = CoreHandle::open(root).unwrap();
+        let mut kept = Vec::new();
         for _ in 0..2 {
-            assert!(core
+            let (meeting, started) = core
                 .create_calendar_recording(reference.clone(), "unavailable synthetic device")
-                .is_err());
+                .unwrap();
+            assert!(started.is_err());
+            kept.push(meeting.id);
         }
+        // The second attempt took the empty meeting the first one left.
+        assert_eq!(kept[0], kept[1]);
         let meetings = core.list_meetings().unwrap();
         assert_eq!(meetings.len(), 2);
         let next = meetings.iter().find(|item| item.id != meeting.id).unwrap();
@@ -3759,6 +3819,15 @@ mod tests {
             engine.require_draft_attachment(&target).map(|_| ()),
             "음성이 없는 새 회의에서 다시 시도해 주세요."
         ));
+        // Only the recording meeting is refused: another empty draft still takes an event.
+        let idle = crate::DraftAttachmentTarget {
+            meeting_id: other.id.clone(),
+            expected_version: crate::edit_version::meeting_edit_version(
+                &engine.meetings[&other.id].meeting,
+            )
+            .unwrap(),
+        };
+        engine.require_draft_attachment(&idle).unwrap();
         let draft = crate::SpeakerAnalysisDraft {
             source: source.clone(),
             model: "example/diarizer".into(),

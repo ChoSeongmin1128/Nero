@@ -37,16 +37,17 @@ impl SpeechEngine {
             matches!(self, Self::Nemotron | Self::WhisperTurbo)
         }
     }
-    /// Recognizes a recording only after it ends; a session with it has no live worker.
+    // Recognizes a recording after it ends, with no live preview. MOSS can still recognize
+    // whole chunks while recording when Settings asks (`transcribes_while_recording`).
     pub(super) fn recognizes_after_recording(self) -> bool {
         matches!(self, Self::AppleSpeech | Self::QwenKo | Self::Moss)
     }
-    /// Its recognition of a finished meeting may run beside a recording of another one
-    /// where jobs can be paused (`job_control::SUPPORTED`).
+    // Its recognition of a finished meeting may run beside a recording of another one
+    // where jobs can be paused (`job_control::SUPPORTED`).
     pub(super) fn runs_beside_recording(self) -> bool {
         matches!(self, Self::Moss | Self::QwenKo)
     }
-    /// Can recognize a recording's chunks while it is made (Settings > 녹음).
+    // Can recognize a recording's chunks while it is made, when Settings > 녹음 asks.
     pub(super) fn transcribes_while_recording(self) -> bool {
         self == Self::Moss
     }

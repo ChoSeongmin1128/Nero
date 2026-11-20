@@ -86,7 +86,7 @@ impl RecognitionChunk {
         self.state == RecognitionChunkState::Complete
             || self.issue.as_deref() == Some("splitFailed")
             || (self.state == RecognitionChunkState::Failed
-                && self.end_frame - self.start_frame < SPLIT_MINIMUM_FRAMES)
+                && self.end_frame.saturating_sub(self.start_frame) < SPLIT_MINIMUM_FRAMES)
     }
 }
 
@@ -752,6 +752,13 @@ mod tests {
         assert!(short.settled());
         let long = failed(2 * CHUNK_FRAMES);
         assert!(!long.settled());
+        // A damaged report with its range reversed has nothing to split.
+        let reversed = RecognitionChunk {
+            start_frame: long.end_frame,
+            end_frame: long.start_frame,
+            ..long
+        };
+        assert!(reversed.settled());
     }
 
     #[test]

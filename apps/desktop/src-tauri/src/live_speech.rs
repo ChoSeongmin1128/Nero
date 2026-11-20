@@ -318,6 +318,9 @@ impl Processing {
             }
         }
         crate::processing::cancelled(cancel)?;
+        // The live worker may have ended without confirming its own worker's end; this
+        // transcription would start another recognizer beside it.
+        self.worker_ready()?;
         Ok(guard)
     }
     pub(super) fn wait_live(
@@ -847,6 +850,38 @@ mod lifecycle_tests {
             .try_wait()
             .unwrap()
             .is_some());
+    }
+}
+
+#[cfg(test)]
+mod unconfirmed_tests {
+    use super::*;
+    #[test]
+    fn a_live_worker_that_ends_unconfirmed_stops_the_transcription_waiting_for_it() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let process = Processing::new(root.clone(), root);
+        let running = Arc::new(AtomicBool::new(true));
+        *process.live.lock().unwrap() = Some(Arc::new(LiveJob::new(
+            "meeting",
+            "session",
+            SpeechEngine::Moss,
+            Arc::new(AtomicBool::new(false)),
+            running.clone(),
+            None,
+        )));
+        let ending = {
+            let process = process.clone();
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(100));
+                // As the live MOSS thread ends: the latch first, then the running flag.
+                process.cleanup_failed();
+                running.store(false, Ordering::Release);
+            })
+        };
+        let cancel = AtomicBool::new(false);
+        assert!(process.wait_live_asr("meeting", "session", &cancel).is_err());
+        ending.join().unwrap();
     }
 }
 

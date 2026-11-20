@@ -112,8 +112,8 @@ impl JobControl {
         self.pausable
     }
 
-    /// Whether a worker of this job may still be running after it was told to stop.
-    /// The job's owner then refuses new work, as for any unconfirmed worker end.
+    // A worker may still run after it was told to stop; the job's owner then refuses new
+    // work, as for any unconfirmed worker end.
     pub(crate) fn termination_unconfirmed(&self) -> bool {
         self.unconfirmed.load(Ordering::Acquire)
     }
@@ -198,7 +198,6 @@ pub(crate) fn pause_point(cancel: &AtomicBool) {
     }
 }
 
-/// Records on the job that owns `cancel` that one of its workers may still be running.
 pub(crate) fn report_unconfirmed_termination(cancel: &AtomicBool) {
     if let Some(control) = JobControl::find(cancel) {
         control.unconfirmed.store(true, Ordering::Release);

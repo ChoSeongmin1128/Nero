@@ -12,14 +12,14 @@ pub const CALLBACK_WINDOW: Duration = Duration::from_secs(180);
 // How long one connection may take to send its request head.
 const REQUEST_WINDOW: Duration = Duration::from_secs(5);
 
-// Every answer to the browser, the page with its inline styles (about 46 KB) included,
-// is written in blocking mode within this. A busy browser still gets the whole page; a
-// local client that stops reading holds the one-at-a-time accept loop only this long.
+// Each write of an answer to the browser, the page with its inline styles (about 46 KB)
+// included, gets this in blocking mode. A busy browser still gets the whole page; the
+// first write that fails or times out ends the answer, so a local client that stops
+// reading holds the one-at-a-time accept loop about this long.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(1);
 
 const ACCEPT_POLL: Duration = Duration::from_millis(25);
 
-/// Why a loopback receive ended without a decided sign-in.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Stopped {
     Cancelled,
@@ -27,11 +27,10 @@ pub enum Stopped {
     Failed,
 }
 
-/// Accepts loopback connections on the nonblocking `listener` until `answer` decides the
-/// sign-in, `deadline` passes or `cancelled()`. Each connection is put in blocking mode
-/// with `WRITE_TIMEOUT`, since an accepted socket can keep the listener's nonblocking
-/// mode, and must send its request head within `REQUEST_WINDOW`; one that does not is
-/// dropped. `answer` answers the browser and returns `Some` once the sign-in is decided.
+// Each connection is put in blocking mode with `WRITE_TIMEOUT`, since an accepted socket
+// can keep the listener's nonblocking mode, and must send its request head within
+// `REQUEST_WINDOW`; one that does not is dropped. `answer` returns `Some` once the
+// sign-in is decided.
 pub fn receive<T>(
     listener: &TcpListener,
     deadline: Instant,
@@ -44,8 +43,13 @@ pub fn receive<T>(
         }
         match listener.accept() {
             Ok((mut stream, peer)) if peer.ip().is_loopback() => {
-                let _ = stream.set_nonblocking(false);
-                let _ = stream.set_write_timeout(Some(WRITE_TIMEOUT));
+                // Without blocking mode and its write bound, answering this connection
+                // could hold the loop; it is dropped instead.
+                if stream.set_nonblocking(false).is_err()
+                    || stream.set_write_timeout(Some(WRITE_TIMEOUT)).is_err()
+                {
+                    continue;
+                }
                 let connection = deadline.min(Instant::now() + REQUEST_WINDOW);
                 let Some(request) = read_request(&mut stream, connection, &cancelled) else {
                     continue;
@@ -64,7 +68,6 @@ pub fn receive<T>(
     Err(Stopped::Expired)
 }
 
-/// A PKCE verifier (RFC 7636) and its S256 challenge.
 pub struct Pkce {
     pub verifier: String,
     pub challenge: String,
@@ -80,12 +83,10 @@ impl Pkce {
     }
 }
 
-/// The S256 challenge of a PKCE `verifier`.
 pub fn pkce_challenge(verifier: &str) -> String {
     URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
 }
 
-/// 32 random bytes in base64url without padding, for a verifier, state or nonce.
 pub fn random_token() -> Option<String> {
     let mut bytes = [0u8; 32];
     SystemRandom::new().fill(&mut bytes).ok()?;
@@ -215,8 +216,8 @@ impl CallbackPage {
 
     fn start(mut stream: TcpStream, status: &str, provider: &str, success_message: &str) -> Self {
         let nonce = uuid::Uuid::new_v4().simple().to_string();
-        let _ = stream.set_write_timeout(Some(WRITE_TIMEOUT));
-        let _ = write!(stream, "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nTransfer-Encoding: chunked\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'none'; style-src 'nonce-{nonce}'; script-src 'nonce-{nonce}'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'\r\nConnection: close\r\n\r\n");
+        let head = stream.set_write_timeout(Some(WRITE_TIMEOUT)).is_ok()
+            && write!(stream, "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nTransfer-Encoding: chunked\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'none'; style-src 'nonce-{nonce}'; script-src 'nonce-{nonce}'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'\r\nConnection: close\r\n\r\n").is_ok();
         let provider: String = provider
             .chars()
             .filter(|value| !value.is_control())
@@ -242,9 +243,10 @@ impl CallbackPage {
             .replace("{{NONCE}}", &nonce)
             .replace("{{PROVIDER}}", &html_text(&provider))
             .replace("{{CONFIG}}", &config);
-        chunk(&mut stream, &body);
+        // A failed write ends the answer; each further write could wait as long again.
+        let sent = head && chunk(&mut stream, &body);
         Self {
-            stream: Some(stream),
+            stream: sent.then_some(stream),
             nonce,
         }
     }
@@ -255,15 +257,16 @@ impl CallbackPage {
         };
         let message: String = result.err().unwrap_or_default().chars().take(512).collect();
         let payload = script_json(serde_json::json!({"ok": result.is_ok(), "message": message}));
-        chunk(
+        if chunk(
             &mut stream,
             &format!(
                 "<script nonce=\"{}\">finishConnection({payload});</script></body></html>",
                 self.nonce
             ),
-        );
-        let _ = stream.write_all(b"0\r\n\r\n");
-        let _ = stream.flush();
+        ) {
+            let _ = stream.write_all(b"0\r\n\r\n");
+            let _ = stream.flush();
+        }
     }
 }
 
@@ -291,9 +294,10 @@ impl Drop for CallbackPage {
     }
 }
 
-fn chunk(stream: &mut TcpStream, body: &str) {
-    let _ = write!(stream, "{:x}\r\n{body}\r\n", body.len());
-    let _ = stream.flush();
+fn chunk(stream: &mut TcpStream, body: &str) -> bool {
+    write!(stream, "{:x}\r\n{body}\r\n", body.len())
+        .and_then(|()| stream.flush())
+        .is_ok()
 }
 
 #[cfg(test)]
@@ -349,15 +353,19 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let browser = std::thread::spawn(move || {
             drop(TcpStream::connect(address).unwrap());
+            // Open and silent until the end: only the per-connection window lets the
+            // requests behind it through before the sign-in deadline.
+            let silent = TcpStream::connect(address).unwrap();
             let mut first = TcpStream::connect(address).unwrap();
             first.write_all(b"GET /other HTTP/1.1\r\n\r\n").unwrap();
             let mut answer = String::new();
             first.read_to_string(&mut answer).unwrap();
             let mut second = TcpStream::connect(address).unwrap();
             second.write_all(b"GET /callback HTTP/1.1\r\n\r\n").unwrap();
-            answer
+            (answer, silent)
         });
         let mut seen = Vec::new();
+        let started = Instant::now();
         let decided = receive(
             &listener,
             Instant::now() + Duration::from_secs(20),
@@ -372,7 +380,8 @@ mod tests {
             },
         );
         assert_eq!(decided, Ok("decided"));
-        assert!(browser.join().unwrap().starts_with("HTTP/1.1 400"));
+        assert!(started.elapsed() < REQUEST_WINDOW * 3);
+        assert!(browser.join().unwrap().0.starts_with("HTTP/1.1 400"));
         assert_eq!(seen, ["GET /other HTTP/1.1", "GET /callback HTTP/1.1"]);
     }
 

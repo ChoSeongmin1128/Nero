@@ -11,7 +11,7 @@ const MAX_RECORD_BYTES: u64 = 16 * 1024;
 
 // What a job does, stored as the same strings as before the enum. A record with a kind
 // this version does not know fails to read, and recovery sets that one job aside.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub(super) enum JobKind {
     #[serde(rename = "setup")]
     Setup,
@@ -31,7 +31,28 @@ pub(super) enum JobKind {
     Import,
 }
 
+// Read only from the stored string; a derived reader would also take `{"setup":null}`.
+impl<'de> Deserialize<'de> for JobKind {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let name = String::deserialize(deserializer)?;
+        JobKind::ALL
+            .into_iter()
+            .find(|kind| kind.as_str() == name)
+            .ok_or_else(|| serde::de::Error::custom("unknown job kind"))
+    }
+}
+
 impl JobKind {
+    const ALL: [Self; 8] = [
+        Self::Setup,
+        Self::Model,
+        Self::SummaryModel,
+        Self::SpeakerModel,
+        Self::Transcribe,
+        Self::Summary,
+        Self::Diarize,
+        Self::Import,
+    ];
     pub(super) fn as_str(self) -> &'static str {
         match self {
             Self::Setup => "setup",
@@ -926,27 +947,33 @@ mod tests {
     // like a damaged one: recovery sets it aside with its bytes and keeps the others.
     #[test]
     fn a_job_of_an_unknown_kind_is_set_aside_and_the_others_recover() {
-        let temp = tempfile::tempdir().unwrap();
-        let journal = Journal::new(temp.path().into());
-        let known = record(JobStatus::Queued);
-        let unknown = record(JobStatus::Completed);
-        journal.write(&known).unwrap();
-        journal.write(&unknown).unwrap();
-        let stored = states(temp.path(), &unknown).join("00000000000000000001.json");
-        let mut raw = serde_json::to_value(&unknown).unwrap();
-        raw["kind"] = serde_json::json!("future-kind");
-        fs::write(&stored, format!("{raw}\n")).unwrap();
-        let before = fs::read(&stored).unwrap();
+        // A kind stored as anything but its string, `{"setup":null}` included, is damaged.
+        for kind in [
+            serde_json::json!("future-kind"),
+            serde_json::json!({"setup": null}),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let journal = Journal::new(temp.path().into());
+            let known = record(JobStatus::Queued);
+            let unknown = record(JobStatus::Completed);
+            journal.write(&known).unwrap();
+            journal.write(&unknown).unwrap();
+            let stored = states(temp.path(), &unknown).join("00000000000000000001.json");
+            let mut raw = serde_json::to_value(&unknown).unwrap();
+            raw["kind"] = kind;
+            fs::write(&stored, format!("{raw}\n")).unwrap();
+            let before = fs::read(&stored).unwrap();
 
-        let report = journal.recover_available().unwrap();
-        assert_eq!(report.records.len(), 1);
-        assert_eq!(report.records[0].id, known.id);
-        assert_eq!(report.records[0].status, JobStatus::Interrupted);
-        assert_eq!(report.issues.len(), 1);
-        assert!(report.issues[0].contains(unknown.id.as_str()));
-        assert_eq!(fs::read(&stored).unwrap(), before);
-        assert!(journal.write(&unknown).is_err());
-        assert_eq!(fs::read(&stored).unwrap(), before);
+            let report = journal.recover_available().unwrap();
+            assert_eq!(report.records.len(), 1);
+            assert_eq!(report.records[0].id, known.id);
+            assert_eq!(report.records[0].status, JobStatus::Interrupted);
+            assert_eq!(report.issues.len(), 1);
+            assert!(report.issues[0].contains(unknown.id.as_str()));
+            assert_eq!(fs::read(&stored).unwrap(), before);
+            assert!(journal.write(&unknown).is_err());
+            assert_eq!(fs::read(&stored).unwrap(), before);
+        }
     }
 
     #[test]

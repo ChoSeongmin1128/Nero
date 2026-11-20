@@ -816,6 +816,7 @@ impl<L> AgentApp<'_, L> {
                             title.unwrap_or_else(|| "새 회의".into()),
                             nero_core::NewMeetingPlace::Default,
                             device_id,
+                            false,
                         ))
                         .map_err(rejected)?
                     }

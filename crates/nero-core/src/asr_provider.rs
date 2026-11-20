@@ -29,16 +29,19 @@ const ALL: [AsrProvider; 5] = [
 ];
 
 // The pinned Nemotron repository, read from the same manifest its output is checked against.
-fn nemotron_model() -> &'static str {
-    static MODEL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    MODEL.get_or_init(|| {
-        serde_json::from_str::<serde_json::Value>(include_str!(
-            "../../../config/models/nemotron-asr.json"
-        ))
-        .ok()
-        .and_then(|manifest| manifest["repository"].as_str().map(str::to_owned))
-        .unwrap_or_default()
-    })
+// None when the manifest names none, so no model, the empty one included, matches it.
+fn nemotron_model() -> Option<&'static str> {
+    static MODEL: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    MODEL
+        .get_or_init(|| {
+            serde_json::from_str::<serde_json::Value>(include_str!(
+                "../../../config/models/nemotron-asr.json"
+            ))
+            .ok()
+            .and_then(|manifest| manifest["repository"].as_str().map(str::to_owned))
+            .filter(|repository| !repository.is_empty())
+        })
+        .as_deref()
 }
 
 impl AsrProvider {
@@ -50,7 +53,7 @@ impl AsrProvider {
             Some(Self::Whisper)
         } else if model == qwen::MODEL {
             Some(Self::Qwen)
-        } else if model == nemotron_model() {
+        } else if Some(model) == nemotron_model() {
             Some(Self::Nemotron)
         } else {
             None
@@ -123,44 +126,50 @@ pub(crate) fn word_speaker_projector(version: &str) -> bool {
     )
 }
 
+fn routing(raw: &[u8]) -> Result<serde_json::Value> {
+    if raw.len() > 16 * 1024 * 1024 {
+        return Err(word_speakers::derived_invalid());
+    }
+    serde_json::from_slice(raw).map_err(|_| word_speakers::derived_invalid())
+}
+
 // The decoder follows the model the output names. Any other model is read as Nemotron
 // output, which then refuses it.
+fn native_decoder(value: &serde_json::Value) -> Decoder {
+    value["model"]
+        .as_str()
+        .and_then(AsrProvider::of_model)
+        .and_then(AsrProvider::decoder)
+        .unwrap_or(nemotron::decode_asr)
+}
+
 pub(crate) fn decode_native(
     raw: &[u8],
     duration: f64,
     session: &str,
     id: &str,
 ) -> Result<Transcript> {
-    if raw.len() > 16 * 1024 * 1024 {
-        return Err(word_speakers::derived_invalid());
-    }
-    let value: serde_json::Value =
-        serde_json::from_slice(raw).map_err(|_| word_speakers::derived_invalid())?;
-    let decode = value["model"]
-        .as_str()
-        .and_then(AsrProvider::of_model)
-        .and_then(AsrProvider::decoder)
-        .unwrap_or(nemotron::decode_asr);
+    let decode = native_decoder(&routing(raw)?);
     decode(raw, duration, session, id)
 }
 
 // A stored generation of a word-timed recognizer: its native output, or a speaker
-// generation derived from it.
+// generation derived from it. The routing tree is parsed once and dropped before the
+// typed decoder reads the output.
 pub(crate) fn decode_stored(
     raw: &[u8],
     duration: f64,
     session_id: &str,
     id: &str,
 ) -> Result<Transcript> {
-    if raw.len() > 16 * 1024 * 1024 {
-        return Err(word_speakers::derived_invalid());
-    }
-    let value: serde_json::Value =
-        serde_json::from_slice(raw).map_err(|_| word_speakers::derived_invalid())?;
+    let value = routing(raw)?;
     if value["schemaVersion"] == 2 {
+        drop(value);
         return word_speakers::decode_derived(raw, duration, session_id, id);
     }
-    decode_native(raw, duration, session_id, id)
+    let decode = native_decoder(&value);
+    drop(value);
+    decode(raw, duration, session_id, id)
 }
 
 #[cfg(test)]
@@ -173,10 +182,16 @@ mod tests {
             AsrProvider::of_model(apple_speech::DICTATION_MODEL),
             Some(AsrProvider::AppleSpeech)
         );
-        assert_eq!(
-            AsrProvider::of_model(nemotron_model()),
-            Some(AsrProvider::Nemotron)
-        );
+        let pinned = serde_json::from_str::<serde_json::Value>(include_str!(
+            "../../../config/models/nemotron-asr.json"
+        ))
+        .unwrap()["repository"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(!pinned.is_empty());
+        assert_eq!(AsrProvider::of_model(&pinned), Some(AsrProvider::Nemotron));
+        assert_eq!(AsrProvider::of_model(""), None);
         assert_eq!(
             AsrProvider::of_model("OpenMOSS-Team/MOSS-Transcribe-Diarize"),
             None

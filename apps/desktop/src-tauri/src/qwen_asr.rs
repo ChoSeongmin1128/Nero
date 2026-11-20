@@ -1,5 +1,5 @@
 // Qwen3-ASR-ko through the pinned CrispASR CLI: pause chunks, gain, aligner words.
-use crate::failure::Failure;
+use crate::failure::{Failure, FailureKind};
 use crate::process_tree::{supervise, Ended, Unconfirmed, Watch};
 use crate::processing::{cancelled, plain_file};
 use serde::Deserialize;
@@ -427,12 +427,19 @@ pub(super) fn recognize(
         Ok(Ended::Exited(_)) => {
             return Err("Qwen 구간 처리를 완료하지 못했습니다. 원본은 보관했습니다.".into())
         }
-        Ok(Ended::Cancelled | Ended::Stopped) => return Err("Qwen 처리를 취소했습니다.".into()),
+        Ok(Ended::Cancelled | Ended::Stopped) => {
+            return Err(Failure::new(FailureKind::Cancelled, "Qwen 처리를 취소했습니다."))
+        }
         Ok(Ended::OverBudget) => {
             return Err("Qwen 처리 시간이 너무 오래 걸렸습니다. 원본은 보관했습니다.".into())
         }
         Ok(Ended::Unreadable(error)) => return Err(error.to_string().into()),
-        Err(Unconfirmed) => return Err(crate::process_tree::UNCONFIRMED.into()),
+        Err(Unconfirmed) => {
+            return Err(Failure::new(
+                FailureKind::Cleanup,
+                crate::process_tree::UNCONFIRMED,
+            ))
+        }
     }
     drop(child);
     let log = read(&log_path, 64 * 1024 * 1024)?;

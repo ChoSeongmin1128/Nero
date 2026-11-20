@@ -141,8 +141,7 @@ impl CaptureQuality {
         self.events
             .iter()
             .filter(|event| event.startup_xrun(startup_frames))
-            .map(|event| event.count)
-            .sum::<u64>()
+            .fold(0_u64, |total, event| total.saturating_add(event.count))
             .min(self.xrun_count)
     }
 

@@ -505,8 +505,8 @@ pub async fn create_meeting_from_calendar(
     create_meeting(&app, occurrence_key, day, time_zone, scope_revision, target).await
 }
 
-/// The day view an occurrence was chosen from, as `read_calendar_meeting_occurrences`
-/// answered it.
+// The day view an occurrence was chosen from, as `read_calendar_meeting_occurrences`
+// answered it.
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OccurrenceScope {
@@ -538,11 +538,18 @@ pub async fn record_calendar_occurrence(
     let browse = result?;
     let zone = jiff::tz::TimeZone::get(&browse.time_zone)
         .map_err(|_| "일정 시간대를 확인하지 못했습니다.".to_string())?;
+    let kept_for = app.clone();
     let (_, snapshot) = crate::start_capture(&app, device_id, move |core, device| {
-        service.with_browsed_occurrence(&browse, &occurrence_key, |event| {
-            core.create_calendar_recording(calendar_reference(event, zone)?, device)
-                .map_err(|error| error.to_string())
-        })
+        // The calendar is held only to read the occurrence, not while the device opens.
+        let reference = service.with_browsed_occurrence(&browse, &occurrence_key, |event| {
+            calendar_reference(event, zone)
+        })?;
+        let (meeting, started) = core
+            .create_calendar_recording(reference, device)
+            .map_err(|error| error.to_string())?;
+        let snapshot = started
+            .map_err(|error| crate::show_kept_meeting(&kept_for, core, Some(meeting.id.clone()), error))?;
+        Ok((meeting, snapshot))
     })
     .await?;
     Ok(snapshot)
@@ -600,11 +607,13 @@ pub async fn start_calendar_recording(
             return Err("진행 중인 녹음을 마친 뒤 시작해 주세요.".into());
         }
         recording_calendar.with_current_reminder(&ticket, calendar::now_ms(), |event| {
-            core.create_calendar_recording(
-                calendar_reference(event, jiff::tz::TimeZone::system())?,
-                device,
-            )
-            .map_err(|error| error.to_string())
+            let (meeting, started) = core
+                .create_calendar_recording(
+                    calendar_reference(event, jiff::tz::TimeZone::system())?,
+                    device,
+                )
+                .map_err(|error| error.to_string())?;
+            Ok((meeting, started.map_err(|error| error.to_string())?))
         })
     })
     .await?;

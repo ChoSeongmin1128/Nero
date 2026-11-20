@@ -11,6 +11,8 @@ pub(super) struct TreeChild {
     job: Option<std::os::windows::io::OwnedHandle>,
     #[cfg(unix)]
     group: Option<i32>,
+    // Set when a kill was not confirmed in time; dropping it then does not wait again.
+    abandoned: bool,
 }
 
 impl Deref for TreeChild {
@@ -76,6 +78,38 @@ impl TreeChild {
             return Err(std::io::Error::last_os_error());
         }
         self.child.kill()
+    }
+
+    // Kills the worker's tree and waits up to `bound` for its end: the worker reaped and,
+    // when it owns a process group, no member of it left. A descendant can outlive the
+    // worker and still hold its files, so the worker's own exit is not enough.
+    fn end(&mut self, bound: Duration) -> bool {
+        let until = Instant::now() + bound;
+        loop {
+            let signalled = self.kill().is_ok();
+            if matches!(self.child.try_wait(), Ok(Some(_))) && self.tree_gone() {
+                return true;
+            }
+            if !signalled || Instant::now() >= until {
+                self.abandoned = true;
+                return false;
+            }
+            std::thread::sleep(POLL);
+        }
+    }
+
+    fn tree_gone(&self) -> bool {
+        #[cfg(unix)]
+        if let Some(group) = self.group {
+            extern "C" {
+                fn kill(pid: i32, signal: i32) -> i32;
+            }
+            const ESRCH: i32 = 3;
+            // Signal 0 only asks whether any process is left in the group.
+            return unsafe { kill(-group, 0) } != 0
+                && std::io::Error::last_os_error().raw_os_error() == Some(ESRCH);
+        }
+        true
     }
 }
 
@@ -145,6 +179,7 @@ fn spawn_with_scope(command: &mut Command, own_scope: bool) -> Result<TreeChild,
         job,
         #[cfg(unix)]
         group,
+        abandoned: false,
     })
 }
 
@@ -153,33 +188,31 @@ impl Drop for TreeChild {
         let _ = self.kill();
         #[cfg(windows)]
         drop(self.job.take());
-        let _ = self.child.wait();
+        if !self.abandoned {
+            let _ = self.child.wait();
+        }
     }
 }
 
-/// How a supervised worker ended.
 #[derive(Debug)]
 pub(super) enum Ended {
-    /// It exited by itself.
     Exited(std::process::ExitStatus),
-    /// Stopped because its job was cancelled.
     Cancelled,
-    /// Stopped after running longer than its budget, paused time left out.
+    // Ran longer than its budget, paused time left out.
     OverBudget,
-    /// Stopped because the caller's `stop_when` asked for it.
+    // The caller's `stop_when` asked for it.
     Stopped,
-    /// Its status could not be read; it was stopped.
+    // Its status could not be read; it was stopped.
     Unreadable(std::io::Error),
 }
 
-/// The worker was told to stop but its end could not be confirmed. It is recorded on the
-/// job that owns the cancel flag, and Processing refuses new work after that job.
+// The worker was told to stop but its end could not be confirmed. It is recorded on the
+// job that owns the cancel flag, and Processing refuses new work after that job.
 #[derive(Debug)]
 pub(super) struct Unconfirmed;
 
 pub(super) const UNCONFIRMED: &str = "음성 처리 종료를 확인하지 못했습니다. 앱을 다시 열어 주세요.";
 
-/// What a supervised worker is held to besides its job's cancellation and pause.
 #[derive(Default)]
 pub(super) struct Watch<'a> {
     budget: Option<Duration>,
@@ -194,13 +227,12 @@ impl<'a> Watch<'a> {
             ..Self::default()
         }
     }
-    /// Stops the worker once `stop` answers true.
     pub(super) fn stop_when(mut self, stop: &'a dyn Fn() -> bool) -> Self {
         self.stop_when = Some(stop);
         self
     }
-    /// On cancellation, writes `request` to the worker's input and gives it `grace` to
-    /// exit by itself before it is killed.
+    // On cancellation, writes `request` to the worker's input and gives it `grace` to
+    // exit by itself before it is killed.
     pub(super) fn ask_first(mut self, request: &'a [u8], grace: Duration) -> Self {
         self.ask_first = Some((request, grace));
         self
@@ -209,9 +241,13 @@ impl<'a> Watch<'a> {
 
 const POLL: Duration = Duration::from_millis(50);
 
-/// Waits for `child` while applying its job's pause and priority, and stops it on
-/// cancellation, an overrun budget or `stop_when`. Every stop kills the worker's tree
-/// and waits for it; an end that cannot be confirmed is `Unconfirmed`.
+// How long a killed tree gets to end before its end counts as unconfirmed: the bound a
+// live worker's end is given (`LiveJob::join`). An unbounded wait would hold a recording
+// start that cancels this worker's job.
+const END: Duration = Duration::from_secs(10);
+
+// Every stop ends the worker's tree within `END`; an end that cannot be confirmed is
+// `Unconfirmed`.
 pub(super) fn supervise(
     child: &mut TreeChild,
     cancel: &AtomicBool,
@@ -234,10 +270,9 @@ pub(super) fn supervise(
         };
         if let Some(stop) = stop {
             pauser.release(child);
+            // A worker that exits when asked still has its tree ended below.
             if let (Ended::Cancelled, Some((request, grace))) = (&stop, watch.ask_first) {
-                if ask_to_exit(child, request, grace) {
-                    break stop;
-                }
+                ask_to_exit(child, request, grace);
             }
             break terminate(child, cancel).map(|()| stop)?;
         }
@@ -275,16 +310,11 @@ fn ask_to_exit(child: &mut TreeChild, request: &[u8], grace: Duration) -> bool {
 }
 
 fn terminate(child: &mut TreeChild, cancel: &AtomicBool) -> Result<(), Unconfirmed> {
-    if child.try_wait().ok().flatten().is_some() {
+    if child.end(END) {
         return Ok(());
     }
-    child
-        .kill()
-        .and_then(|()| child.wait().map(|_| ()))
-        .map_err(|_| {
-            crate::job_control::report_unconfirmed_termination(cancel);
-            Unconfirmed
-        })
+    crate::job_control::report_unconfirmed_termination(cancel);
+    Err(Unconfirmed)
 }
 
 #[cfg(all(test, unix))]
@@ -359,6 +389,91 @@ mod supervise_tests {
             Ok(Ended::Cancelled)
         ));
         assert_eq!(polite.try_wait().unwrap().unwrap().code(), Some(3));
+    }
+
+    fn alive(pid: i32) -> bool {
+        extern "C" {
+            fn kill(pid: i32, signal: i32) -> i32;
+        }
+        unsafe { kill(pid, 0) == 0 }
+    }
+
+    fn descendant(directory: &std::path::Path, name: &str, script: &str) -> (TreeChild, i32) {
+        let file = directory.join(name);
+        let child = spawn(
+            Command::new("/bin/sh")
+                .args(["-c", script, "worker", file.to_str().unwrap()])
+                .stdin(std::process::Stdio::piped()),
+        )
+        .unwrap();
+        let started = Instant::now();
+        let pid = loop {
+            if let Some(pid) = std::fs::read_to_string(&file)
+                .ok()
+                .and_then(|text| text.trim().parse().ok())
+            {
+                break pid;
+            }
+            assert!(started.elapsed() < Duration::from_secs(5));
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert!(alive(pid));
+        (child, pid)
+    }
+
+    #[test]
+    fn an_end_that_cannot_be_confirmed_is_bounded_and_not_waited_for_again() {
+        use std::os::unix::process::CommandExt;
+        let mut worker = sleeper("30");
+        // A member of the worker's group that its kill cannot clear: a child of this test,
+        // exited but not reaped.
+        let mut member = Command::new("/usr/bin/true")
+            .process_group(worker.id() as i32)
+            .spawn()
+            .unwrap();
+        let started = Instant::now();
+        assert!(!worker.end(Duration::from_millis(300)));
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(worker.abandoned);
+        member.wait().unwrap();
+        assert!(worker.end(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn a_stop_ends_descendants_that_outlive_the_worker() {
+        let directory = tempfile::tempdir().unwrap();
+        // The worker has already exited when the stop comes; its descendant has not.
+        let (mut gone, pid) =
+            descendant(directory.path(), "exited", "sleep 30 & echo $! > \"$1\"; exit 0");
+        let started = Instant::now();
+        while gone.try_wait().unwrap().is_none() {
+            assert!(started.elapsed() < Duration::from_secs(5));
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(alive(pid));
+        let cancel = AtomicBool::new(true);
+        assert!(matches!(
+            supervise(&mut gone, &cancel, Watch::default()),
+            Ok(Ended::Cancelled)
+        ));
+        assert!(!alive(pid));
+
+        // A worker that exits when asked leaves no descendant behind either.
+        let (mut polite, pid) = descendant(
+            directory.path(),
+            "asked",
+            "sleep 30 & echo $! > \"$1\"; read answer; exit 3",
+        );
+        assert!(matches!(
+            supervise(
+                &mut polite,
+                &cancel,
+                Watch::default().ask_first(b"c\n", Duration::from_secs(5))
+            ),
+            Ok(Ended::Cancelled)
+        ));
+        assert_eq!(polite.try_wait().unwrap().unwrap().code(), Some(3));
+        assert!(!alive(pid));
     }
 
     #[test]

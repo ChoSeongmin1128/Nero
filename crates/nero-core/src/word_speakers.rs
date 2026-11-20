@@ -139,22 +139,24 @@ fn word_ranges(parent: &Transcript, words: &[Word], duration: f64) -> Result<Vec
     let mut ranges = Vec::new();
     for segment in &parent.segments {
         let start = cursor;
-        let mut text = String::new();
+        // The words joined by spaces must spell the segment; `rest` is what they have not
+        // spelled yet, so each word is compared once.
+        let original = segment.original_text.as_str();
+        let mut rest = original;
         while cursor < words.len() {
-            if !text.is_empty() {
-                text.push(' ');
+            if rest.len() != original.len() {
+                rest = rest.strip_prefix(' ').ok_or_else(derived_invalid)?;
             }
-            text.push_str(&words[cursor].word);
+            rest = rest
+                .strip_prefix(words[cursor].word.as_str())
+                .ok_or_else(derived_invalid)?;
             cursor += 1;
-            if text == segment.original_text {
+            if rest.is_empty() {
                 break;
-            }
-            if !segment.original_text.starts_with(&text) {
-                return Err(derived_invalid());
             }
         }
         if cursor == start
-            || text != segment.original_text
+            || !rest.is_empty()
             || (segment.start * 16000.0).round()
                 != (words[start].start.min(duration) * 16000.0).round()
             || (segment.end * 16000.0).round()
@@ -274,17 +276,13 @@ fn materialize(
     {
         return Err(derived_invalid());
     }
-    let profile = crate::SpeakerAnalysisDraft {
-        source: output.parent.clone(),
-        model: output.analysis.model.clone(),
-        model_revision: output.analysis.model_revision.clone(),
-        model_sha256: output.analysis.model_sha256.clone(),
-        runtime: output.analysis.runtime.clone(),
-        configuration: output.configuration.clone(),
-        raw: Vec::new(),
-        posterior: None,
-    };
-    if !crate::diarization::posterior_profile(&profile) {
+    if !crate::diarization::posterior_profile_of(
+        &output.analysis.model,
+        &output.analysis.model_revision,
+        &output.analysis.model_sha256,
+        &output.analysis.runtime,
+        &output.configuration,
+    ) {
         return Err(derived_invalid());
     }
     if output.posterior.input_frames == 0
@@ -412,6 +410,17 @@ pub(crate) fn decode_derived(
         return Err(derived_invalid());
     }
     let output: DerivedOutput = serde_json::from_slice(raw).map_err(|_| derived_invalid())?;
+    replay(&output, raw, duration, session, id)
+}
+
+// `output` is `raw` parsed; `raw` itself is hashed into the generation's identity.
+fn replay(
+    output: &DerivedOutput,
+    raw: &[u8],
+    duration: f64,
+    session: &str,
+    id: &str,
+) -> Result<Transcript> {
     let canonical = decode_native(output.canonical_asr_raw.as_bytes(), duration, session, id)?;
     if canonical.model != output.parent.model
         || canonical.model_revision != output.parent.model_revision
@@ -423,7 +432,7 @@ pub(crate) fn decode_derived(
     if words.input_audio_frames != output.posterior.prepared_frames {
         return Err(derived_invalid());
     }
-    let mut transcript = materialize(&output, &words.words, duration, session, id)?;
+    let mut transcript = materialize(output, &words.words, duration, session, id)?;
     transcript.source = Some(TranscriptSource {
         raw_sha256: hash(raw),
         projector_version: word_projector(&canonical.model).into(),
@@ -464,7 +473,8 @@ pub(crate) fn direct_parent_citation_targets(
     }
     let duration =
         output.posterior.input_frames as f64 / f64::from(output.posterior.input_sample_rate);
-    let replay = decode_derived(
+    let replay = replay(
+        &output,
         raw,
         duration,
         &current.source_session_id,
@@ -488,10 +498,10 @@ pub(crate) fn direct_parent_citation_targets(
     {
         return Err(derived_invalid());
     }
+    // The replay checked `parent_sha256` against the whole stored parent, so an equal
+    // digest of `source` is the same transcript.
     if output.parent.version != source.version
         || output.parent_sha256 != crate::summary::transcript_digest(source)?
-        || serde_json::to_value(&output.parent).map_err(|_| derived_invalid())?
-            != serde_json::to_value(source).map_err(|_| derived_invalid())?
     {
         return Ok(None);
     }
@@ -559,13 +569,20 @@ pub(crate) fn create_speaker_generation(
             .or_insert(0) += 1;
     }
     let posterior = draft.posterior.as_ref().ok_or_else(derived_invalid)?;
+    let parent_sha256 = crate::summary::transcript_digest(&draft.source)?;
+    let assignments_edited = draft
+        .source
+        .speaker_analysis
+        .as_ref()
+        .is_some_and(|a| a.assignments_edited);
+    // The parent moves into the output, so one copy of it stays alive below.
     let output = DerivedOutput {
         schema_version: 2,
         projector_version: word_projector(&baseline.model).into(),
         canonical_asr_raw: String::from_utf8(canonical).map_err(|_| derived_invalid())?,
         canonical_asr_sha256: baseline.source.as_ref().unwrap().raw_sha256.clone(),
-        parent: draft.source.clone(),
-        parent_sha256: crate::summary::transcript_digest(&draft.source)?,
+        parent: draft.source,
+        parent_sha256,
         configuration: draft.configuration.clone(),
         analysis: crate::SpeakerAnalysis {
             run_id: run.clone(),
@@ -579,11 +596,7 @@ pub(crate) fn create_speaker_generation(
             assigned_count: assigned,
             unassigned_count: plans.len() - assigned,
             review_causes: causes,
-            assignments_edited: draft
-                .source
-                .speaker_analysis
-                .as_ref()
-                .is_some_and(|a| a.assignments_edited),
+            assignments_edited,
         },
         posterior: PosteriorSource {
             input_frames: frames,
@@ -599,7 +612,7 @@ pub(crate) fn create_speaker_generation(
         atoms: plans,
     };
     let raw = serde_json::to_vec(&output).map_err(|_| derived_invalid())?;
-    let initial = decode_derived(&raw, duration, &draft.source.source_session_id, id)?;
+    let initial = decode_derived(&raw, duration, &output.parent.source_session_id, id)?;
     let mut current = initial.clone();
     for (segment, atom) in current.segments.iter_mut().zip(&output.atoms) {
         if atom.preserved {
@@ -609,7 +622,7 @@ pub(crate) fn create_speaker_generation(
     if current.segments.iter().any(|s| s.text != s.original_text) {
         current.version.revision = 1;
     }
-    let document = serde_json::json!({"schemaVersion":2,"analysis":output.analysis,"source":draft.source,"sourceSha256":output.parent_sha256,
+    let document = serde_json::json!({"schemaVersion":2,"analysis":output.analysis,"source":output.parent,"sourceSha256":output.parent_sha256,
         "configuration":output.configuration,"posterior":{"path":"posterior.f32le","frames":output.posterior.frames,"speakers":output.posterior.speakers,"secondsPerFrame":output.posterior.seconds_per_frame,"bytes":output.posterior.bytes,"sha256":output.posterior.sha256},
         "activityNormalization":{"rule":"nemo-v3-probability-frame-boundaries-v1","inputFrames":frames,"inputSampleRate":sample_rate,
             "preparedFrames":output.posterior.prepared_frames,"preparedSampleRate":16000,"nativeFrames":output.posterior.frames,

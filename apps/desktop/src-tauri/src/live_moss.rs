@@ -244,6 +244,12 @@ fn run(
                 &model,
                 &|| control.auto_reason().is_some(),
             );
+            // A chunk worker whose end was not confirmed may still run: none starts again,
+            // and its chunk is not queued for one.
+            if control.termination_unconfirmed() {
+                let _ = fs::remove_file(&chunk.path);
+                return Err(crate::process_tree::UNCONFIRMED.into());
+            }
             match outputs {
                 Ok(outputs) if !outputs.is_empty() => {
                     let (_, raw) = &outputs[0];

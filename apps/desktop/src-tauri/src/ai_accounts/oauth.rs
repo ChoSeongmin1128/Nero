@@ -227,6 +227,7 @@ fn receive(
                         return Some(Err("브라우저 연결 상태를 확인하지 못했습니다.".into()));
                     };
                     if cancelled(own, external) {
+                        drop(target);
                         callback.finish(Err("AI 로그인을 취소했습니다."));
                         return Some(Err("AI 로그인을 취소했습니다.".into()));
                     }

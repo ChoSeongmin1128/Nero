@@ -20,6 +20,8 @@ fn microphone_pause_resume_and_restart_preserve_recorded_audio() {
             NewMeetingPlace::Default,
             &device.id,
         )
+        .unwrap()
+        .1
         .unwrap();
     let session = started.session.unwrap();
     std::thread::sleep(Duration::from_secs(2));
