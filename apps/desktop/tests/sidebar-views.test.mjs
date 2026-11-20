@@ -12,10 +12,11 @@ function setup(t) {
   document.body.innerHTML = '<div class="navigation-shell"><nav class="navigation-rail"><button id="notifications">알림<span id="badge"></span></button><button id="settings">설정</button></nav><aside class="navigation-sidebar"><div id="navigation">회의 목록</div><section id="notifications-panel" hidden></section></aside><main><button id="toggle">탐색</button><textarea id="notes">작성 중인 메모</textarea></main></div>';
   const el = id => document.getElementById(id);
   const aside = document.querySelector('aside'), shell = document.querySelector('.navigation-shell');
-  mountNavigationSidebar({ shell, aside, content: document.querySelector('main'), trigger: el('toggle'), storage: window.localStorage });
+  let views = null;
+  const sidebar = mountNavigationSidebar({ shell, aside, content: document.querySelector('main'), trigger: el('toggle'), storage: window.localStorage, onStateChange: () => views?.refresh() });
   const center = mountNotificationCenter({ container: el('notifications-panel') });
   center.update({ connected: true });
-  const views = mountSidebarViews({ aside, navigation: el('navigation'), notifications: el('notifications-panel'), trigger: el('notifications'), badge: el('badge') });
+  views = mountSidebarViews({ aside, navigation: el('navigation'), notifications: el('notifications-panel'), trigger: el('notifications'), badge: el('badge'), reveal: () => sidebar.reveal() });
   t.after(() => { views.destroy(); center.destroy(); });
   return { window, document, aside, shell, el, center, views };
 }

@@ -165,7 +165,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
   const executable = source.replace(/^import .*;\r?\n/gm, '').replace('homeOpen: true,', 'homeOpen: false,');
   const app = await vm.runInContext(`(async () => {
     ${historySource.replace(/^export /gm, '')}
-    const mountSidebarViews=()=>({updateCounts(){},close(){},isOpen:()=>false});
+    const mountNavigationShell=()=>({updateCounts(){},close(){},isOpen:()=>false,attention(){},sync(){},navigated(){}});
     ${dismissSource.replace(/^export /gm, '')}
     ${qualitySource.replace(/^export /gm, '')}
     const mountNotesWidth = () => ({update(){}});
@@ -218,7 +218,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     const mountSummaryTemplatePicker = () => ({reload:async()=>{},isAvailable:()=>true,selected:async()=>({id:'meeting',revision:'test'})});
     const mountDocumentActions = () => ({ update() {}, close() {} });
     const mountAgentConnectionDialog = () => ({ open(...args) { testAgentDialogCalls.push(args); }, update() {}, close() {}, isOpen: () => false });
-    const mountLibrary = () => ({ render() {}, resetSelection() {}, show: async () => {}, railAttention() {} });
+    const mountLibrary = () => ({ render() {}, resetSelection() {}, show: async () => {} });
     const mountConfirmDialog = () => ({confirm:async()=>false});
     const mountStorageSettings = () => ({ compact: async () => {}, setActive() {} });
     const mountSpeakers = ({getState}) => ({beforeLeave:async()=>true,render() {}, reset() {}, open: async () => {}, label: segment => getState().transcriptDraft?.doc?.speakers?.find(speaker=>speaker.id === segment.speakerId)?.name || '화자 미지정'});

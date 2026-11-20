@@ -11,7 +11,10 @@ export function recentMeetingRow({ id, title, metadata, active = false, disabled
   return `<article class="navigation-recent-row" data-recent-row="${escape(id)}"><button type="button" class="quiet recent-meeting" data-recent-meeting="${escape(id)}" aria-label="${escape([title, ...description, duration ? `녹음 길이 ${durationLabel || duration}` : ''].filter(Boolean).join(', '))}"${active ? ' aria-current="page"' : ''}${disabled ? ' disabled' : ''}>${leadingIcon ? `<span class="recent-meeting-icon" aria-hidden="true">${leadingIcon}</span>` : ''}<span class="recent-title-line"><strong title="${escape(title)}">${escape(title)}</strong>${folder ? `<span class="recent-meeting-folder" title="${escape(folder)}">${escape(folder)}</span>` : ''}</span><span class="recent-meeting-meta"><span class="recent-meeting-timestamp" title="${escape(timestamp || '')}">${escape(timestamp || '')}</span>${duration ? `<span class="recent-meeting-duration" aria-label="녹음 길이 ${escape(durationLabel || duration)}">${escape(duration)}</span>` : ''}</span></button>${menu}</article>`;
 }
 
-export function mountNavigationSidebar({ shell, aside, content, trigger, backdrop, storage, storageKey = 'nero.sidebar.pinned', icons = globalThis.NeroIcons, relocate = [] }) {
+// The shell decides whether the sidebar shows. `onPreview` names the rail list to show, on a
+// rest, a click or the keyboard; `onActivate` follows only a click or the keyboard, when the
+// person chose that place; `onStateChange` follows the sidebar opening, closing or pinning.
+export function mountNavigationSidebar({ shell, aside, content, trigger, backdrop, storage, storageKey = 'nero.sidebar.pinned', icons = globalThis.NeroIcons, onPreview = () => {}, onActivate = () => {}, onStateChange = () => {} }) {
   const document = shell.ownerDocument;
   let preferenceStorage = storage;
   if (!preferenceStorage) { try { preferenceStorage = document.defaultView?.localStorage; } catch {} }
@@ -22,7 +25,6 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
   const edge = shell.querySelector('.navigation-edge');
   const compact = shell.querySelector('[data-navigation-compact]');
   const previews = [...compact?.querySelectorAll('[data-navigation-preview]') || []];
-  const destinations = [{ node: trigger, expanded: shell.querySelector('#navigation-toggle-expanded'), compact: shell.querySelector('#navigation-toggle-collapsed') }, ...relocate];
   for (const [selector, label] of [['#create-meeting', '새 회의'], ['#new', '새 회의']]) {
     const button = aside.querySelector(selector);
     if (button) { button.setAttribute('aria-label', label); button.title = label; }
@@ -47,14 +49,6 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
     shell.classList.toggle('collapsed', !pinned);
     shell.classList.toggle('nav-peek', temporary && !pinned);
     shell.classList.toggle('nav-pinned', pinned);
-    const focused = document.activeElement;
-    for (const { node, expanded, compact: collapsed } of destinations) {
-      const destination = open ? expanded : collapsed;
-      if (!node || !destination || node.parentElement === destination) continue;
-      const preserveFocus = node.contains(focused);
-      destination.append(node);
-      if (preserveFocus) focused.focus({ preventScroll: true });
-    }
     // The rail stays in place whether the sidebar is pinned or opens on demand.
     if (compact) {
       compact.hidden = false;
@@ -71,7 +65,7 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
     trigger.title = trigger.getAttribute('aria-label');
     trigger.innerHTML = icons?.(pinned ? 'panel-left-close' : temporary ? 'panel-left-peek' : 'panel-left') || '';
     if (backdrop) backdrop.hidden = true;
-    aside.dispatchEvent(new document.defaultView.CustomEvent('nero:navigation-state', { detail: { expanded: open, pinned } }));
+    onStateChange({ expanded: open, pinned });
   }
   function reveal() { if (unavailable()) return; clearTimeout(hoverTimer); clearTimeout(timer); if (!pinned) temporary = true; render(); }
   // A rail button chooses the sidebar's list; an unpinned sidebar opens to show it.
@@ -79,7 +73,8 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
     if (unavailable()) return;
     previewAnchor = button;
     previewView = button.dataset.navigationPreview;
-    aside.dispatchEvent(new document.defaultView.CustomEvent('nero:sidebar-preview', { detail: { view: previewView, hover } }));
+    onPreview(previewView);
+    if (!hover) onActivate(previewView);
     if (!pinned) reveal();
   }
   function openPopups() {
@@ -207,10 +202,10 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
     if (event.key === 'Escape' && temporary) { event.preventDefault(); closeTemporary(true); }
     if ((event.metaKey || event.ctrlKey) && event.code === 'Backslash') { event.preventDefault(); pin(!pinned); }
   });
-  aside.addEventListener('nero:sidebar-reveal', reveal);
   render();
   return {
     render,
+    reveal,
     navigate() { if (!pinned && !editingNavigation() && !openPopups().length) closeTemporary(); },
     resetTemporary() { closeTemporary(); },
     attention(view, on) {

@@ -1,5 +1,5 @@
 // The sidebar shows the list the rail chose; the content area shows what is opened from it.
-export function mountSidebarViews({ aside, navigation, notifications, trigger, badge, count = () => 0, folderName = () => '', onChange = () => {}, onPreview = () => {}, storage }) {
+export function mountSidebarViews({ aside, navigation, notifications, trigger, badge, count = () => 0, folderName = () => '', onChange = () => {}, onPreview = () => {}, reveal = () => {}, storage }) {
   const document = aside.ownerDocument;
   const find = id => aside.querySelector(`#${id}`);
   const heading = find('sidebar-preview-heading'), title = find('sidebar-preview-title'), openView = find('sidebar-preview-open');
@@ -62,7 +62,7 @@ export function mountSidebarViews({ aside, navigation, notifications, trigger, b
       else button.removeAttribute('aria-current');
     }
   }
-  function choose(name, folder = '', { hover = false } = {}) {
+  function choose(name, folder = '') {
     if (disposed || !views[name]) return;
     hoverOpened = false;
     if (notifications.contains(document.activeElement)) document.activeElement.blur();
@@ -72,7 +72,7 @@ export function mountSidebarViews({ aside, navigation, notifications, trigger, b
       returnView = name;
       try { if (name !== 'folder') storage?.setItem('nero.sidebar.view', name); } catch {}
     }
-    onPreview(name, folderId, { hover });
+    onPreview(name, folderId);
     paint();
   }
   function close({ focus = true } = {}) {
@@ -88,7 +88,7 @@ export function mountSidebarViews({ aside, navigation, notifications, trigger, b
     if (view !== 'notifications') returnView = view;
     view = 'notifications';
     paint();
-    aside.dispatchEvent(new document.defaultView.CustomEvent('nero:sidebar-reveal'));
+    reveal();
     onChange(true);
     if (focus) notifications.querySelector('[data-notification-heading]')?.focus({ preventScroll: true });
   }
@@ -108,8 +108,6 @@ export function mountSidebarViews({ aside, navigation, notifications, trigger, b
     if (event.target.closest?.('[role="menu"], [role="listbox"], dialog, [role="dialog"], [role="alertdialog"]')) return;
     event.preventDefault(); event.stopPropagation(); close();
   };
-  const stateChanged = () => paint();
-  const previewChanged = event => choose(event.detail?.view, '', { hover: event.detail?.hover === true });
   // Resting on the bell shows the notifications, like the rail's other lists.
   const bellEnter = event => {
     clearTimeout(bellHover);
@@ -124,19 +122,15 @@ export function mountSidebarViews({ aside, navigation, notifications, trigger, b
   library?.addEventListener('click', folderClick, true);
   notifications.addEventListener('click', closeFromList);
   notifications.addEventListener('keydown', keydown);
-  aside.addEventListener('nero:navigation-state', stateChanged);
-  aside.addEventListener('nero:sidebar-preview', previewChanged);
-  aside.addEventListener('nero:sidebar-content-updated', paint);
   paint();
   return {
-    open, close, choose, preview: choose, isOpen: () => view === 'notifications', activeView: () => view, folder: () => folderId,
+    open, close, choose, refresh: paint, isOpen: () => view === 'notifications', activeView: () => view, folder: () => folderId,
     updateCounts(counts = {}) { unread = Math.max(0, Number(counts.unread) || 0); active = Math.max(0, Number(counts.active) || 0); paint(); },
     destroy() {
       disposed = true;
       clearTimeout(bellHover); trigger.removeEventListener('pointerenter', bellEnter); trigger.removeEventListener('pointerleave', bellLeave);
       trigger.removeEventListener('click', click); back?.removeEventListener('click', backClick); library?.removeEventListener('click', folderClick, true);
       notifications.removeEventListener('click', closeFromList); notifications.removeEventListener('keydown', keydown);
-      aside.removeEventListener('nero:navigation-state', stateChanged); aside.removeEventListener('nero:sidebar-preview', previewChanged); aside.removeEventListener('nero:sidebar-content-updated', paint);
     },
   };
 }

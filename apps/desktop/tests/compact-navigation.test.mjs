@@ -6,7 +6,7 @@ import { mountNavigationSidebar } from '../../../design-system/navigation.mjs';
 import { mountLibrary } from '../src/library-ui.js';
 import { createRequire } from 'node:module';
 globalThis.NeroUI ??= createRequire(import.meta.url)('../../../design-system/components.js');
-import { mountSidebarViews } from '../src/sidebar-views.js';
+import { mountNavigationShell } from '../src/navigation-shell.js';
 
 function setup(t, preferences = {}) {
   t.mock.timers.enable({ apis: ['setTimeout'] });
@@ -24,13 +24,15 @@ function setup(t, preferences = {}) {
   const shell = document.querySelector('.navigation-shell'), aside = el('navigation-sidebar'), compact = document.querySelector('[data-navigation-compact]');
   shell.getBoundingClientRect = () => ({ width: 640 });
   const events = [], states = [];
-  aside.addEventListener('nero:sidebar-preview', event => { events.push({ view: event.detail.view, expanded: !aside.inert }); aside.dataset.previewView = event.detail.view; });
-  aside.addEventListener('nero:navigation-state', event => states.push(event.detail));
-  const navigation = mountNavigationSidebar({ shell, aside, content: document.querySelector('main'), trigger: el('navigation-toggle'), storage: window.localStorage });
+  const activated = [];
+  const navigation = mountNavigationSidebar({ shell, aside, content: document.querySelector('main'), trigger: el('navigation-toggle'), storage: window.localStorage,
+    onPreview: view => { events.push({ view, expanded: !aside.inert }); aside.dataset.previewView = view; },
+    onActivate: view => activated.push(view),
+    onStateChange: state => states.push(state) });
   const preview = view => compact.querySelector(`[data-navigation-preview="${view}"]`);
   const pointer = (node, type, pointerType = 'mouse') => node.dispatchEvent(new window.PointerEvent(type, { pointerType }));
   const escape = node => node.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
-  return { window, document, el, shell, aside, compact, navigation, events, states, preview, pointer, escape, tick: milliseconds => t.mock.timers.tick(milliseconds) };
+  return { window, document, el, shell, aside, compact, navigation, events, states, activated, preview, pointer, escape, tick: milliseconds => t.mock.timers.tick(milliseconds) };
 }
 
 test('resting on a rail button shows its list, passing over one does not, and the toggle and edge reveal the sidebar', t => {
@@ -52,6 +54,10 @@ test('resting on a rail button shows its list, passing over one does not, and th
   app.pointer(app.preview('trash'), 'pointerenter');
   app.tick(140);
   assert.deepEqual(app.events, [{ view: 'all', expanded: false }, { view: 'trash', expanded: true }]);
+  assert.deepEqual(app.activated, [], 'resting on a rail button shows its list without going there');
+  app.preview('home').click();
+  assert.deepEqual(app.activated, ['home']);
+  app.events.pop();
   assert.equal(app.document.activeElement, app.el('notes'), 'hovering keeps the writing focus');
   app.pointer(app.preview('trash'), 'pointerleave');
   app.pointer(app.compact, 'pointerleave');
@@ -284,12 +290,15 @@ async function productSidebar(t) {
     folders: [{ id: 'project', name: '프로젝트' }],
   } };
   const calls = [];
-  const library = mountLibrary({ bridge: {}, getState: () => state, byId: el, finishEditing: async action => action(), acceptSnapshot() {}, selectMeeting: id => calls.push(['select', id]), render() {}, showError(error) { throw error; }, beginNavigation: history => { calls.push(['navigate', history]); return () => true; }, escape: value => String(value ?? ''), icon: name => `<svg data-icon="${name}"></svg>`, duration: String, recordingStatus: String });
-  library.render();
-  const views = mountSidebarViews({ aside: el('navigation-sidebar'), navigation: el('sidebar-navigation-view'), notifications: el('notification-center'), trigger: el('notifications-open'), badge: el('notification-count'), storage: window.localStorage,
+  const library = mountLibrary({ bridge: {}, getState: () => state, byId: el, finishEditing: async action => action(), acceptSnapshot() {}, selectMeeting: id => calls.push(['select', id]), render() {}, showError(error) { throw error; }, beginNavigation: history => { calls.push(['navigate', history]); return () => true; }, onNavigated: () => views?.navigated(), escape: value => String(value ?? ''), icon: name => `<svg data-icon="${name}"></svg>`, duration: String, recordingStatus: String });
+  let views = null;
+  views = mountNavigationShell({ document, storage: window.localStorage,
     count: filter => filter === 'folders' ? state.snapshot.folders.length : library.count(filter),
     folderName: id => state.snapshot.folders.find(folder => folder.id === id)?.name || '',
     onPreview: (view, folder) => library.preview(view, folder) });
+  const renderLibrary = library.render;
+  library.render = () => { renderLibrary(); views.sync(`${state.homeOpen}:${state.libraryOpen}:${state.selectedId}:${state.libraryFilter}`); };
+  library.render();
   t.after(() => views.destroy());
   return { window, document, el, state, calls, library, views };
 }

@@ -1,6 +1,6 @@
 import { bindDialogDismiss } from './dialog-dismiss.js';
 import { mountActionMenus } from '../../../design-system/action-menu.mjs';
-import { mountNavigationSidebar, recentMeetingRow, renderMeetingMenu } from '../../../design-system/navigation.mjs';
+import { recentMeetingRow, renderMeetingMenu } from '../../../design-system/navigation.mjs';
 import { pendingJob } from './processing-state.js';
 import { createDragPreview } from './drag-preview.js';
 export function filterLibraryMeetings(meetings, filter = 'all', query = '') {
@@ -45,7 +45,7 @@ export const meetingDay = meeting => meeting.meetingDate || calendarDay(meeting.
 
 export { renderMeetingMenu } from '../../../design-system/navigation.mjs';
 
-export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnapshot, selectMeeting, render: renderApp, showError, escape, icon, duration, recordingStatus, phaseOf = meeting => meeting.status, isAudioReady = () => false, onViewChanged, beginNavigation = () => () => true }) {
+export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnapshot, selectMeeting, render: renderApp, showError, escape, icon, duration, recordingStatus, phaseOf = meeting => meeting.status, isAudioReady = () => false, onViewChanged, beginNavigation = () => () => true, onNavigated = () => {} }) {
   const dialog = byId('library-dialog');
   const dialogBody = byId('library-dialog-body');
   const owner = dialog.ownerDocument;
@@ -53,11 +53,9 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
   try { storage = owner.defaultView?.localStorage; } catch {}
   const readPreference = key => { try { return storage?.getItem(key); } catch { return null; } };
   const savePreference = (key, value) => { try { storage?.setItem(key, value); } catch {} };
-  const shell = owner.querySelector?.('.workspace');
-  const sidebar = shell ? mountNavigationSidebar({ shell, aside: byId('navigation-sidebar'), content: owner.querySelector('.main-content'), trigger: byId('navigation-toggle'), storage, icons: icon, relocate: [].map(([node, expanded, compact]) => ({ node: byId(node), expanded: byId(expanded), compact: byId(compact) })).filter(item => item.node && item.expanded && item.compact) }) : null;
   const savedView = getState().libraryView || readPreference('nero.library.view');
   getState().libraryView = ['folders', 'all'].includes(savedView) ? savedView : 'folders';
-  let navigationKey = '', cardsKey = '', breadcrumbKey = '';
+  let cardsKey = '', breadcrumbKey = '';
   const folderOverview = () => state().libraryFilter === 'all' && state().libraryView === 'folders' && !query();
   const dragPreview = createDragPreview(owner);
   let listRows = { ids: [], markup: [] };
@@ -112,7 +110,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
         state().libraryFilter = filter;
         state().libraryOpen = true;
         state().homeOpen = false;
-        sidebar?.navigate();
+        onNavigated();
         resetSelection();
         renderApp();
         byId('library-title')?.focus({ preventScroll: true });
@@ -448,7 +446,6 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     if (focused) [...list.querySelectorAll('[data-meeting-id]')].find(node => node.dataset.meetingId === focused)?.querySelector(focusSelector)?.focus({ preventScroll: true });
   }
   function render() {
-    sidebar?.render();
     const snapshot = state().snapshot;
     const folders = snapshot.folders || [];
     let counts;
@@ -494,8 +491,6 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
       breadcrumbKey = nextBreadcrumbKey;
       byId('navigation-breadcrumbs').innerHTML = home ? '<span class="breadcrumb-current" aria-current="page">홈</span>' : `<button type="button" class="quiet small" data-library-filter="all"${disabled ? ' disabled' : ''}${!selectedMeeting && filter === 'all' ? ' aria-current="page"' : ''}>회의 목록</button>${parent !== 'all' ? `<span class="breadcrumb-separator" aria-hidden="true">${icon('chevron-right')}</span><button type="button" class="quiet small" data-library-filter="${escape(parent)}"${disabled ? ' disabled' : ''}${!selectedMeeting ? ' aria-current="page"' : ''}>${escape(parentName)}</button>` : ''}${selectedMeeting ? `<span class="breadcrumb-separator" aria-hidden="true">${icon('chevron-right')}</span><span class="breadcrumb-current" aria-current="page" title="${escape(selectedMeeting.title)}">${escape(selectedMeeting.title)}</span>` : ''}`;
     }
-    const nextNavigationKey = `${state().homeOpen}:${state().libraryOpen}:${state().selectedId}:${filter}`;
-    if (navigationKey !== nextNavigationKey) { navigationKey = nextNavigationKey; sidebar?.navigate(); }
     byId('library-title').textContent = query() ? '검색 결과' : overview ? '폴더' : navigation.find(item => item.id === filter)?.name || '회의';
     byId('library-count').innerHTML = state().libraryBusy ? '<span class="activity-spinner" aria-hidden="true"></span><span role="status">처리 중</span>' : `${overview ? countInView('all') : visible.length}개`;
     const count = selection().size;
@@ -535,7 +530,6 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     byId('meeting-trash').disabled = disabled || !meeting || meeting.deletedAt != null || Boolean(meeting && runningRecording([meeting.id]));
     byId('meeting-discard-recording').disabled = byId('meeting-trash').disabled || !(meeting.audio || meeting.status !== 'draft');
     preview();
-    if (sidebar) byId('navigation-sidebar').dispatchEvent(new owner.defaultView.CustomEvent('nero:sidebar-content-updated'));
   }
   function updateReveal() {
     const meeting = current(state().selectedId);
@@ -718,6 +712,5 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     });
   }
   const count = filter => countLibraryMeetings(state().snapshot.meetings).get(filter) || 0;
-  return { render, show, preview, count, resetSelection, toggleSelection, handleRowSelection, selectedIds, visibleMeetings,
-    railAttention: (view, on) => sidebar?.attention(view, on) };
+  return { render, show, preview, count, resetSelection, toggleSelection, handleRowSelection, selectedIds, visibleMeetings };
 }

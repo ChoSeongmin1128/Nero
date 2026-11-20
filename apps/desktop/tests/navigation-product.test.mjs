@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { Window } from 'happy-dom';
 import { createRequire } from 'node:module';
 import { mountLibrary, renderMeetingMenu, formatRecentDuration } from '../src/library-ui.js';
-import { mountSidebarViews } from '../src/sidebar-views.js';
+import { mountNavigationShell } from '../src/navigation-shell.js';
 
 const settle = () => new Promise(resolve => setImmediate(resolve));
 globalThis.NeroUI ??= createRequire(import.meta.url)('../../../design-system/components.js');
@@ -28,11 +28,13 @@ async function setup(t, preferences = {}) {
       return { ...state.snapshot, meetings: state.snapshot.meetings.filter(meeting => !ids.includes(meeting.id)) };
     },
   };
-  let library;
-  library = mountLibrary({ bridge, duration: milliseconds => `${milliseconds / 1000}초`, recordingStatus: phase => phase, isAudioReady: id => state.readyAudio === id, getState: () => state, byId: id => document.getElementById(id), finishEditing: async action => action(), acceptSnapshot(snapshot) { state.snapshot = snapshot; }, selectMeeting(id) { state.selectedId = id; state.libraryOpen = false; library.render(); }, render() { library.render(); }, showError(error) { throw error; }, beginNavigation(history) { navigationCalls.push(history); return () => true; }, escape, icon: name => `<svg data-icon="${name}"></svg>` });
+  let library, sidebarViews;
+  library = mountLibrary({ bridge, duration: milliseconds => `${milliseconds / 1000}초`, recordingStatus: phase => phase, isAudioReady: id => state.readyAudio === id, getState: () => state, byId: id => document.getElementById(id), finishEditing: async action => action(), acceptSnapshot(snapshot) { state.snapshot = snapshot; }, selectMeeting(id) { state.selectedId = id; state.libraryOpen = false; library.render(); }, render() { library.render(); }, showError(error) { throw error; }, beginNavigation(history) { navigationCalls.push(history); return () => true; }, onNavigated: () => sidebarViews?.navigated(), escape, icon: name => `<svg data-icon="${name}"></svg>` });
+  sidebarViews = mountNavigationShell({ document, storage: window.localStorage, count: filter => library.count(filter), onPreview: view => library.preview(view) });
+  // As the app does, every screen render tells the navigation where the content now is.
+  const renderLibrary = library.render;
+  library.render = () => { renderLibrary(); sidebarViews.sync(`${state.homeOpen}:${state.libraryOpen}:${state.selectedId}:${state.libraryFilter}`); };
   library.render();
-  const byId = id => document.getElementById(id);
-  const sidebarViews = mountSidebarViews({ aside: byId('navigation-sidebar'), navigation: byId('sidebar-navigation-view'), notifications: byId('notification-center'), trigger: byId('notifications-open'), badge: byId('notification-count'), onPreview: view => library.preview(view) });
   t.after(() => sidebarViews.destroy());
   return { window, document, state, library, navigationCalls, mutations, bridge };
 }
@@ -444,7 +446,7 @@ test('sidebar reveal and dismissal preserve the persistent toolbar toggle', asyn
   const { window, document } = await setup(t);
   const shell = document.querySelector('.workspace'), aside = document.getElementById('navigation-sidebar');
   const trigger = document.getElementById('navigation-toggle');
-  aside.dispatchEvent(new window.CustomEvent('nero:sidebar-reveal'));
+  document.getElementById('notifications-open').click();
   assert.equal(shell.classList.contains('nav-peek'), true);
   assert.equal(aside.inert, false);
   assert.equal(trigger.parentElement.className, 'application-toolbar-actions');

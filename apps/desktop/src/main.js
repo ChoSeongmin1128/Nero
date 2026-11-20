@@ -1,6 +1,6 @@
 import { recognitionCoverage } from './recognition-coverage.js';
 import { mountBrandIcons } from './brand-icons.js';
-import { mountSidebarViews } from './sidebar-views.js';
+import { mountNavigationShell } from './navigation-shell.js';
 import { snapshotSignatures, compareSnapshotSignatures } from './snapshot-update.js';
 import { createViewHistory } from './view-history.js';
 import { mountWindowChrome } from './window-chrome.js';
@@ -107,7 +107,7 @@ function readMicrophonePreference() {
   } catch { return { id: null, name: '' }; }
 }
 const microphonePreference = readMicrophonePreference();
-let sidebarViews = null, viewHistory = null;
+let navigation = null, viewHistory = null;
 const state = { snapshot: { meetings: [], folders: [], session: null }, homeOpen: true, libraryOpen: false, libraryFilter: 'all', librarySelection: new Set(), libraryBusy: false, librarySearchIds: null, librarySearchHits: [], pendingSearchIntent: null, setupReturnId: null, librarySearchPending: false, librarySearchUnavailable: 0, selectedId: null, devices: [], devicesLoaded: false, deviceId: microphonePreference.id, deviceName: microphonePreference.name, settingsPanel: 'appearance', summaryFeatureError: '', settingsKey: '', settingsError: '', settingsReturnId: 'settings', setupFromSettings: false, autoRecorder: readAutoRecorder(), recorderSettingBusy: false, newMeetingFolder: null, newMeetingFolderBusy: false, snapshotSignatures: null, processingKey: '', processingCancellingId: null, transcriptEditing: null, audioRequest: 0, audioLoading: null, dateSaving: null, dateKey: '', dateError: null, lastError: null, errorIsSave: false, connected: false, busy: false, composing: false, transcriptComposing: false, editLocks: 0, draft: null, saveTimer: null, saveQueue: Promise.resolve(), controlsKey: '', audioKey: '', processing: { status: 'idle', supported: false, modelReady: false, localSummaryEnabled: false }, transcriptDraft: null, transcriptKey: '', transcriptLoadId: 0, transcriptSaveQueue: Promise.resolve(), summary: null, citationTimes: null, summaryKey: '', summaryLoadId: 0, summaryLoaded: false, transcriptLoaded: false, summaryLoadError: false, transcriptLoadError: false, setupRequested: false };
 // Low-memory model preparation needs an explicit acknowledgement; it is not persisted.
 const speechMemoryAcknowledged = new Set();
@@ -410,11 +410,12 @@ function render() {
   if (setupVisible && byId('setup-screen').scrollTop !== setupScroll) byId('setup-screen').scrollTop = setupScroll;
   speechOffer.update(state.processing.speechOffer, { blocked: !state.connected || Boolean(activeSession()) || setupVisible || Boolean(byId('settings-dialog').open) || Boolean(byId('quit-dialog').open) });
   notificationCenter.update({ processing: displayProcessing(), meetings: state.snapshot.meetings, selectedMeetingId: state.selectedId, connected: state.connected, actions: processingActions, integrations: integrationNotices, notices: appUpdateNotices });
-  library.railAttention('home', attentionNotices(integrationNotices).length > 0);
-  sidebarViews?.updateCounts(notificationCenter.counts());
-  if (setupVisible && !state.setupWasVisible) sidebarViews?.close({ focus: false });
+  navigation?.attention('home', attentionNotices(integrationNotices).length > 0);
+  navigation?.updateCounts(notificationCenter.counts());
+  if (setupVisible && !state.setupWasVisible) navigation?.close({ focus: false });
   state.setupWasVisible = setupVisible;
   library.render();
+  navigation?.sync(`${state.homeOpen}:${state.libraryOpen}:${state.selectedId}:${state.libraryFilter}`);
   speakers.render();
   renderSearchStatus();
   renderSettings();
@@ -1767,7 +1768,7 @@ const transcriptActions = mountTranscriptActions({ byId, bridge, finishEditing, 
     acceptSnapshot(await bridge.readSnapshot()); refreshMeetingSearch();
   },
 });
-const library = mountLibrary({ bridge, getState: () => state, byId, finishEditing, acceptSnapshot, selectMeeting, render, showError, escape, icon, recordingStatus, duration, beginNavigation, phaseOf: stateFor,
+const library = mountLibrary({ bridge, getState: () => state, byId, finishEditing, acceptSnapshot, selectMeeting, onNavigated: () => navigation?.navigated(), render, showError, escape, icon, recordingStatus, duration, beginNavigation, phaseOf: stateFor,
   isAudioReady: id => { const meeting = state.snapshot.meetings.find(item => item.id === id); return Boolean(meeting?.audio) && state.audioKey === audioKeyFor(meeting) && byId('audio-message').dataset.state === 'ready'; }, onViewChanged() { meetingSearch.update(byId('search').value, state.libraryFilter === 'trash'); if (state.libraryFilter === 'ai') { aiLibrary?.show(); aiChat?.open(null); } } });
 const home = mountHome({ container: byId('home-screen'), bridge, icon, escape,
   disabled: () => !state.connected || state.busy || !modelsReady(),
@@ -1815,15 +1816,16 @@ noticeActions.subscribe(() => home.render());
 const notificationCenter = mountNotificationCenter({ container: byId('notification-center'), onOpenMeeting: id => selectMeeting(id), onProcessingAction: processingAction, showError, icon, noticeActions, onChanged: () => render() });
 let sidebarStorage = null;
 try { sidebarStorage = window.localStorage; } catch {}
-sidebarViews = mountSidebarViews({ aside: byId('navigation-sidebar'), navigation: byId('sidebar-navigation-view'), notifications: byId('notification-center'), trigger: byId('notifications-open'), badge: byId('notification-count'), storage: sidebarStorage,
+navigation = mountNavigationShell({ document, storage: sidebarStorage, icon,
   count: filter => filter === 'folders' ? (state.snapshot.folders || []).length : library.count(filter),
   folderName: id => (state.snapshot.folders || []).find(folder => folder.id === id)?.name || '',
-  onPreview: (view, folder, { hover = false } = {}) => { library.preview(view, folder); if (view === 'home' && !hover) void openHome(); } });
+  onPreview: (view, folder) => library.preview(view, folder),
+  onActivate: view => { if (view === 'home') void openHome(); } });
 byId('sidebar-preview-open').addEventListener('click', () => { const filter = byId('sidebar-preview-open').dataset.sidebarFilter; void library.show(filter === 'unfiled' || filter === 'trash' || state.snapshot.folders.some(folder => folder.id === filter) ? filter : 'all'); });
 viewHistory = createViewHistory({
   canVisit: route => route.kind === 'home' ? true : route.kind === 'meeting' ? state.snapshot.meetings.some(meeting => meeting.id === route.id && !meeting.deletedAt) : ['all', 'unfiled', 'trash'].includes(route.filter) || state.snapshot.folders.some(folder => folder.id === route.filter),
   async navigate(route, { isCurrent }) {
-    sidebarViews.close({ focus: false });
+    navigation.close({ focus: false });
     if (route.kind === 'home') { await openHome(); return isCurrent() && state.homeOpen && !state.libraryOpen; }
     if (route.kind === 'meeting') { await selectMeeting(route.id, null, isCurrent); return isCurrent() && !state.libraryOpen && state.selectedId === route.id; }
     return await library.show(route.filter, { isCurrent, history: true, beforeCommit() { byId('search').value = route.query || ''; state.libraryView = route.view || 'folders'; } });
