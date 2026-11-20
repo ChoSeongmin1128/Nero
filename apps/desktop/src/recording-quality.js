@@ -9,12 +9,14 @@ const policies = {
 };
 const priority = { info: 0, warning: 1, error: 2 };
 
-// On macOS an overload notice before any audio was saved is the device starting its
-// input; it stays in the record but is not shown. Other platforms show every notice.
+// On macOS an overload notice within the first tenth of a second of queued audio is the
+// device starting its input; it stays in the record but is not shown. Core uses the same
+// bound. Other platforms show every notice.
 const macHost = () => /Macintosh|Mac OS X/.test(globalThis.navigator?.userAgent || '');
 
 export function recordingQuality(quality, sampleRate, frames, { startupNotice = macHost() } = {}) {
-  const startupXrun = event => startupNotice && event.kind === 'xrun' && event.lastSavedFrame === 0;
+  const startupFrames = Number.isFinite(sampleRate) && sampleRate > 0 ? Math.floor(sampleRate / 10) : 0;
+  const startupXrun = event => startupNotice && event.kind === 'xrun' && Number.isSafeInteger(event.lastQueuedFrame) && event.lastQueuedFrame <= startupFrames;
   const all = (quality?.events || []).filter(event => Object.hasOwn(policies, event.kind));
   const startup = all.filter(startupXrun).reduce((sum, event) => sum + (Number.isSafeInteger(event.count) ? event.count : 0), 0);
   const events = all.filter(event => !startupXrun(event));

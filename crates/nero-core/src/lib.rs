@@ -30,7 +30,9 @@ pub use capture::{CaptureLoad, CaptureReader};
 pub use diarization::{SpeakerAnalysis, SpeakerAnalysisDraft, SpeakerPosterior};
 pub use library::{Folder, FolderDeleteRequest, FolderMeetingState};
 pub use presentation::{DocumentFormat, DocumentKind, ExportedDocument};
-pub use store::{CaptureQuality, CaptureQualityEvent, CaptureQualityEventKind};
+pub use store::{
+    startup_notice_frames, CaptureQuality, CaptureQualityEvent, CaptureQualityEventKind,
+};
 pub use summary::{
     ExternalSummaryProducer, Summary, SummaryCitation, SummaryCitationTimes, SummaryCitations,
     SummaryContext, SummaryDraft, SummaryInput, SummaryProvenance, SummaryView,

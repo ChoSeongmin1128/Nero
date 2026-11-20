@@ -2009,7 +2009,7 @@ mod tests {
         let (_temporary, mut engine) = engine();
         let meeting = engine.create_meeting("회의".into(), "메모".into()).unwrap();
         let (session_id, mut sink) = synthetic(&mut engine, &meeting.id);
-        sink.write(&[0.25_f32.to_le_bytes(); 10].concat());
+        sink.write(&[0.25_f32.to_le_bytes(); 200].concat());
         let signals = engine.capture.as_ref().unwrap().signals.clone();
         let reader = engine
             .capture
@@ -2062,7 +2062,7 @@ mod tests {
         assert!(finished.error.is_none());
         assert_eq!(finished.warning, warning);
         assert_eq!(finished.capture_quality, quality);
-        assert_eq!(finished.audio.as_ref().unwrap().frames, 20);
+        assert_eq!(finished.audio.as_ref().unwrap().frames, 210);
         let root = engine.store.root.clone();
         drop(sink);
         drop(engine);
@@ -2133,7 +2133,7 @@ mod tests {
             route_changed_count: 1,
             ..Default::default()
         };
-        let warning = quality.warning();
+        let warning = quality.warning(48_000);
         let mut session_paths = Vec::new();
         let mut ids = Vec::new();
         for phase in [CapturePhase::Recording, CapturePhase::Completed] {

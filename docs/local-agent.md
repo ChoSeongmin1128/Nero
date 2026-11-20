@@ -257,6 +257,9 @@ SHA-256이다. 원문, 메모, 참석 명단 또는 기존 요약이 바뀌면 `
 캡처 진단은 단건 `meeting_get`에만 `captureQuality`, `error`와 고정 의미 정보
 `captureQualityMeaning`으로 반환한다. 목록/검색 메타데이터에 진단 이벤트를 싣지 않는다.
 `events`는 최대 64개이며 초과 관측은 종류별로 횟수와 첫/마지막 관측 범위를 합친다.
+macOS에서는 `lastQueuedFrame`이 `captureQualityMeaning.startupXrunQueuedFrameBound`(원본 샘플레이트의
+0.1초) 이하인 xrun을 장치가 입력을 시작할 때 보내는 알림으로 보며, 그 수를 `startupXrunCount`로 준다.
+이 알림은 녹음 문제로 보고하지 않는다.
 `firstObservedAtMs`/`lastObservedAtMs`는 앱이 관측한 시각이고 하드웨어의 실제 발생 시각은
 알 수 없다. `firstSavedFrame`/`lastSavedFrame`은 관측 당시 writer 진행 위치,
 `firstQueuedFrame`/`lastQueuedFrame`은 입력 큐가 받아들인 누적 위치다. 이 값들은

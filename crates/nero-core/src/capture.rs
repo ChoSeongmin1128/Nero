@@ -166,8 +166,10 @@ pub(crate) struct Signals {
     // queue size it is measured against.
     recent_pending_bytes: AtomicU64,
     queue_bytes: AtomicU64,
-    // Overload notices before the first audio was saved (the device starting input).
+    // Overload notices while the device starts its input, and the queued audio within
+    // which a notice still counts as that.
     startup_xruns: AtomicU64,
+    startup_frames: u64,
     phase: AtomicU8,
     completion: AtomicU8,
     // The input stream stopped (device gone or stream invalidated) but the capture
@@ -176,7 +178,12 @@ pub(crate) struct Signals {
 }
 
 impl Signals {
+    #[cfg(test)]
     fn new(frame_bytes: usize) -> Self {
+        Self::with_rate(frame_bytes, 0)
+    }
+
+    fn with_rate(frame_bytes: usize, sample_rate: u32) -> Self {
         Self {
             accepting: AtomicBool::new(false),
             callbacks: AtomicUsize::new(0),
@@ -198,6 +205,7 @@ impl Signals {
             recent_pending_bytes: AtomicU64::new(0),
             queue_bytes: AtomicU64::new(0),
             startup_xruns: AtomicU64::new(0),
+            startup_frames: store::startup_notice_frames(sample_rate),
             phase: AtomicU8::new(0),
             completion: AtomicU8::new(0),
             detached: AtomicBool::new(false),
@@ -298,8 +306,14 @@ impl Signals {
     pub(crate) fn device_event(&self, error: cpal::Error) {
         self.callbacks.fetch_add(1, Ordering::SeqCst);
         match error.kind() {
+            // Paused or stopped input saves nothing, so a notice then says nothing
+            // about the recording and is not kept.
+            cpal::ErrorKind::Xrun
+                if !self.accepting.load(Ordering::Acquire)
+                    && self.saved_bytes.load(Ordering::Acquire) != 0 => {}
             cpal::ErrorKind::Xrun => {
-                if cfg!(target_os = "macos") && self.saved_bytes.load(Ordering::Acquire) == 0 {
+                let queued = self.queued_bytes.load(Ordering::Acquire) / self.frame_bytes;
+                if cfg!(target_os = "macos") && queued <= self.startup_frames {
                     self.startup_xruns.fetch_add(1, Ordering::AcqRel);
                 }
                 self.record_event(CaptureQualityEventKind::Xrun)
@@ -360,7 +374,9 @@ impl Signals {
     }
 
     pub fn warning(&self) -> Option<String> {
-        self.quality().as_ref().and_then(CaptureQuality::warning)
+        self.quality()
+            .as_ref()
+            .and_then(|quality| quality.warning_within(self.startup_frames))
     }
 
     pub fn error(&self) -> Option<String> {
@@ -595,7 +611,10 @@ impl Capture {
         capacity: usize,
     ) -> Result<(Self, CallbackSink)> {
         let (producer, consumer) = queue(capacity)?;
-        let signals = Arc::new(Signals::new(manifest.frame_bytes()));
+        let signals = Arc::new(Signals::with_rate(
+            manifest.frame_bytes(),
+            manifest.sample_rate,
+        ));
         signals
             .queue_bytes
             .store(capacity as u64, Ordering::Relaxed);
@@ -953,7 +972,11 @@ fn checkpoint(root: &Path, raw: &File, manifest: &mut Manifest, signals: &Signal
         _ => CapturePhase::Prepared,
     };
     manifest.quality = signals.quality();
-    manifest.warning = manifest.quality.as_ref().and_then(CaptureQuality::warning);
+    let warning = manifest
+        .quality
+        .as_ref()
+        .and_then(|quality| quality.warning(manifest.sample_rate));
+    manifest.warning = warning;
     store::write_manifest(root, manifest)?;
     signals
         .timing
@@ -1126,7 +1149,11 @@ fn writer_loop(
     };
     manifest.error = error;
     manifest.quality = signals.quality();
-    manifest.warning = manifest.quality.as_ref().and_then(CaptureQuality::warning);
+    let warning = manifest
+        .quality
+        .as_ref()
+        .and_then(|quality| quality.warning(manifest.sample_rate));
+    manifest.warning = warning;
     if manifest.phase == CapturePhase::Completed && manifest.saved_frames == 0 {
         signals.interrupted();
         manifest.quality = signals.quality();
@@ -1319,7 +1346,7 @@ mod tests {
         sink.write_with_timestamp(&0.75_f32.to_le_bytes(), Some(stamp(100)));
         let outcome = capture.finish(CapturePhase::Completed, None).unwrap();
         let quality = outcome.manifest.quality.as_ref().unwrap();
-        assert!(quality.warning().is_none());
+        assert!(quality.warning(1000).is_none());
         let timing = quality.timing.as_ref().unwrap();
         assert_eq!(timing.callback_count, 2);
         assert_eq!(timing.input_frames, 3);
@@ -1367,48 +1394,62 @@ mod tests {
     }
 
     #[test]
-    fn an_overload_notice_before_any_audio_is_saved_is_kept_but_not_a_warning() {
-        let event = |count, last_saved_frame| CaptureQualityEvent {
+    fn an_overload_notice_while_input_starts_is_kept_but_not_a_warning() {
+        // 48 kHz: the first buffer is 512 frames and the bound is 4,800.
+        let event = |count, saved: u64, queued: u64| CaptureQualityEvent {
             kind: CaptureQualityEventKind::Xrun,
             count,
             first_observed_at_ms: 1,
             last_observed_at_ms: 1,
-            first_saved_frame: 0,
-            last_saved_frame,
-            first_queued_frame: 0,
-            last_queued_frame: 0,
+            first_saved_frame: saved,
+            last_saved_frame: saved,
+            first_queued_frame: queued,
+            last_queued_frame: queued,
             coalesced: false,
         };
         let startup = CaptureQuality {
-            xrun_count: 1,
-            events: vec![event(1, 0)],
+            xrun_count: 2,
+            // Right after the first buffer, and one that came a few buffers late.
+            events: vec![event(1, 0, 512), event(1, 1_024, 1_536)],
             ..CaptureQuality::default()
         };
         if !cfg!(target_os = "macos") {
-            assert_eq!(startup.startup_xruns(), 0);
-            assert!(startup.warning().is_some());
+            assert_eq!(startup.startup_xruns(4_800), 0);
+            assert!(startup.warning(48_000).is_some());
             return;
         }
-        assert_eq!(startup.startup_xruns(), 1);
-        assert_eq!(startup.warning(), None);
+        assert_eq!(startup.startup_xruns(4_800), 2);
+        assert_eq!(startup.warning(48_000), None);
         let later = CaptureQuality {
-            xrun_count: 2,
-            events: vec![event(1, 0), event(1, 48_000)],
+            xrun_count: 3,
+            events: vec![
+                event(1, 0, 512),
+                event(1, 1_024, 1_536),
+                event(1, 48_000, 48_512),
+            ],
             ..CaptureQuality::default()
         };
-        assert!(later.warning().unwrap().contains("입력 지연 신호"));
+        assert!(later.warning(48_000).unwrap().contains("입력 지연 신호"));
         // A notice counted without its event (beyond the kept events) still warns.
         let uncounted = CaptureQuality {
-            xrun_count: 2,
-            events: vec![event(1, 0)],
+            xrun_count: 3,
+            events: vec![event(1, 0, 512), event(1, 1_024, 1_536)],
             ..CaptureQuality::default()
         };
-        assert!(uncounted.warning().is_some());
+        assert!(uncounted.warning(48_000).is_some());
 
-        let signals = Signals::new(4);
+        let signals = Signals::with_rate(4, 48_000);
+        signals.accepting.store(true, Ordering::Release);
+        signals.queued_bytes.store(512 * 4, Ordering::Release);
         signals.device_event(cpal::ErrorKind::Xrun.into());
-        signals.saved_bytes.store(4, Ordering::Release);
+        signals.saved_bytes.store(48_000 * 4, Ordering::Release);
+        signals.queued_bytes.store(48_512 * 4, Ordering::Release);
         signals.device_event(cpal::ErrorKind::Xrun.into());
+        // Paused: nothing is being saved, so the notice is not kept.
+        signals.accepting.store(false, Ordering::Release);
+        signals.device_event(cpal::ErrorKind::Xrun.into());
+        let quality = signals.quality().unwrap();
+        assert_eq!(quality.xrun_count, 2);
         let load = CaptureLoad {
             signals: Arc::new(signals),
             session_id: "s".into(),
@@ -1456,6 +1497,7 @@ mod tests {
     #[test]
     fn observed_position_uses_saved_and_queued_frames_without_inventing_a_gap() {
         let signals = Signals::new(4);
+        signals.accepting.store(true, Ordering::Release);
         signals.saved_bytes.store(40, Ordering::Release);
         signals.queued_bytes.store(80, Ordering::Release);
         signals.device_event(cpal::ErrorKind::Xrun.into());
@@ -1493,6 +1535,7 @@ mod tests {
     #[test]
     fn bounded_observations_coalesce_overflow_without_losing_counts_or_terminal_faults() {
         let signals = Signals::new(4);
+        signals.accepting.store(true, Ordering::Release);
         let total = CAPTURE_QUALITY_INDIVIDUAL_EVENTS + 100;
         for frame in 0..total {
             signals
@@ -1663,7 +1706,7 @@ mod tests {
     fn nonterminal_device_events_keep_recording_and_persist_observations_at_checkpoints() {
         let (_temporary, store, mut capture, mut sink) = setup(4096);
         capture.begin();
-        sink.write(&[0.25_f32.to_le_bytes(); 10].concat());
+        sink.write(&[0.25_f32.to_le_bytes(); 200].concat());
         // Observed after audio was saved, not as the device starts its input.
         let began = Instant::now();
         while capture.signals.saved_bytes.load(Ordering::Acquire) == 0 {
@@ -1688,7 +1731,7 @@ mod tests {
             .join("manifest.json");
         let checkpoint: Manifest = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(checkpoint.phase, CapturePhase::Paused);
-        assert_eq!(checkpoint.saved_frames, 10);
+        assert_eq!(checkpoint.saved_frames, 200);
         assert_eq!(checkpoint.quality.as_ref().unwrap().xrun_count, 2);
         assert_eq!(
             checkpoint.quality.as_ref().unwrap().realtime_denied_count,
@@ -1708,18 +1751,18 @@ mod tests {
         assert_eq!(outcome.manifest.phase, CapturePhase::Completed);
         assert!(outcome.manifest.error.is_none());
         assert_eq!(outcome.manifest.quality.as_ref().unwrap().xrun_count, 3);
-        assert_eq!(outcome.manifest.saved_frames, 20);
+        assert_eq!(outcome.manifest.saved_frames, 210);
         let finished: Manifest = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
         assert_eq!(finished.quality, outcome.manifest.quality);
         assert_eq!(finished.warning, outcome.manifest.warning);
-        assert_eq!(outcome.audio.unwrap().frames, 20);
+        assert_eq!(outcome.audio.unwrap().frames, 210);
     }
 
     #[test]
     fn terminal_device_failure_still_interrupts_after_a_quality_warning() {
         let (_temporary, _store, mut capture, mut sink) = setup(4096);
         capture.begin();
-        sink.write(&[0.25_f32.to_le_bytes(); 10].concat());
+        sink.write(&[0.25_f32.to_le_bytes(); 200].concat());
         capture.flush().unwrap();
         capture.signals.device_event(cpal::ErrorKind::Xrun.into());
         // A disconnect or invalidated stream waits for the device; other errors end it.
@@ -1730,7 +1773,7 @@ mod tests {
         sink.write(&[0.5_f32.to_le_bytes(); 10].concat());
         let outcome = capture.finish(CapturePhase::Completed, None).unwrap();
         assert_eq!(outcome.manifest.phase, CapturePhase::Interrupted);
-        assert_eq!(outcome.manifest.saved_frames, 10);
+        assert_eq!(outcome.manifest.saved_frames, 200);
         assert!(outcome
             .manifest
             .error
@@ -1754,7 +1797,7 @@ mod tests {
         assert!(quality
             .events
             .iter()
-            .all(|event| event.first_saved_frame == 10));
+            .all(|event| event.first_saved_frame == 200));
     }
 
     #[test]

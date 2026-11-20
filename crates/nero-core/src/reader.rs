@@ -705,6 +705,12 @@ impl<'a> Transaction<'a> {
                 if let Some(quality) = &meeting.capture_quality {
                     quality.validate().map_err(|_| ReadError::InvalidDocument)?;
                     value["captureQuality"] = json!(quality);
+                    // Notices queued within this bound were the device starting its input
+                    // on macOS, not a recording problem; the record itself stays as saved.
+                    let startup_bound = meeting
+                        .audio
+                        .as_ref()
+                        .map(|audio| crate::startup_notice_frames(audio.sample_rate));
                     value["captureQualityMeaning"] = json!({
                         "framePosition":"writerProgressAtObservation",
                         "audioSampleRate":meeting.audio.as_ref().map(|audio| audio.sample_rate),
@@ -712,7 +718,11 @@ impl<'a> Transaction<'a> {
                         "affectedAudioRangeKnown":false,
                         "audioLossVerified":false,
                         "gapRecoveryVerified":false,
-                        "coalescedRangeIsContinuous":false
+                        "coalescedRangeIsContinuous":false,
+                        "startupXrunQueuedFrameBound":startup_bound.filter(|_| cfg!(target_os = "macos")),
+                        "startupXrunCount":startup_bound
+                            .filter(|_| cfg!(target_os = "macos"))
+                            .map(|bound| quality.startup_xruns(bound))
                     });
                 }
                 if let Some(error) = &meeting.error {

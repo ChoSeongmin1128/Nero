@@ -119,27 +119,39 @@ pub struct CaptureQuality {
     pub events: Vec<CaptureQualityEvent>,
 }
 
+/// Audio queued within the first tenth of a second. macOS sends one overload notice as
+/// the device starts its input, right after the first buffer; the margin also covers a
+/// notice that arrives a few buffers late.
+pub fn startup_notice_frames(sample_rate: u32) -> u64 {
+    u64::from(sample_rate) / 10
+}
+
 impl CaptureQuality {
-    /// Overload notices from before the first audio was saved. macOS reports one as
-    /// the device starts its input; it says nothing about the recording's content.
-    /// Other platforms count every notice.
-    pub fn startup_xruns(&self) -> u64 {
+    /// Overload notices while the device was starting its input (`startup_frames` from
+    /// `startup_notice_frames`). They say nothing about the recording's content. Other
+    /// platforms count every notice.
+    pub fn startup_xruns(&self, startup_frames: u64) -> u64 {
         if !cfg!(target_os = "macos") {
             return 0;
         }
         self.events
             .iter()
             .filter(|event| {
-                event.kind == CaptureQualityEventKind::Xrun && event.last_saved_frame == 0
+                event.kind == CaptureQualityEventKind::Xrun
+                    && event.last_queued_frame <= startup_frames
             })
             .map(|event| event.count)
             .sum::<u64>()
             .min(self.xrun_count)
     }
 
-    pub fn warning(&self) -> Option<String> {
+    pub fn warning(&self, sample_rate: u32) -> Option<String> {
+        self.warning_within(startup_notice_frames(sample_rate))
+    }
+
+    pub(crate) fn warning_within(&self, startup_frames: u64) -> Option<String> {
         let mut warnings: Vec<String> = Vec::new();
-        if self.xrun_count > self.startup_xruns() {
+        if self.xrun_count > self.startup_xruns(startup_frames) {
             warnings.push("오디오 입력 지연 신호가 기록되었습니다.".into());
         }
         if self.route_changed_count != 0 {
@@ -302,7 +314,7 @@ pub(crate) fn hydrate_capture_metadata(meeting: &mut Meeting, manifest: &Manifes
         meeting.recorded_at = Some(manifest.started_at);
     }
     meeting.warning = match &manifest.quality {
-        Some(quality) => quality.warning(),
+        Some(quality) => quality.warning(manifest.sample_rate),
         None => manifest.warning.clone(),
     };
     meeting.capture_quality = manifest.quality.clone();
