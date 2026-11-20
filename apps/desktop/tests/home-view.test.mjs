@@ -51,6 +51,7 @@ test('without a calendar, starting a recording is the emphasis and connecting is
 });
 
 test('a connection still being checked at launch shows loading with the shared spinner, not a connect hint', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const app = harness({ connected: false, restoring: true });
   t.after(() => app.window.happyDOM.abort());
   await app.home.refresh();
@@ -60,18 +61,44 @@ test('a connection still being checked at launch shows loading with the shared s
   assert.match(status.textContent, /일정을 불러오는 중/);
 });
 
-test('a connection check that outlasts its retries stops spinning and says so', async t => {
+test('a connection check is not polled; one wait says so when it takes too long', async t => {
   const timers = [];
-  const app = harness({ connected: false, restoring: true });
+  let clock = at.getTime();
+  const app = harness({ connected: false, restoring: true }, [], { now: () => new Date(clock) });
   t.after(() => app.window.happyDOM.abort());
   const original = globalThis.setTimeout;
-  globalThis.setTimeout = (callback) => { timers.push(callback); return timers.length; };
+  globalThis.setTimeout = (callback, delay) => { timers.push({ callback, delay }); return timers.length; };
   t.after(() => { globalThis.setTimeout = original; });
   await app.home.refresh();
-  for (let index = 0; index < 20; index += 1) await timers.shift()();
-  assert.equal(timers.length, 0);
+  await app.home.refresh();
+  assert.equal(timers.length, 1, 'repeated reads share one wait');
+  assert.equal(timers[0].delay, 30_000);
+  clock += 30_000;
+  timers.shift().callback();
+  assert.equal(app.calls.length, 2, 'waiting reads nothing again');
   assert.equal(app.container.querySelector('.activity-spinner'), null);
   assert.match(app.container.textContent, /연결을 아직 확인하지 못했습니다/);
+});
+
+test('a calendar change reloads today once home has shown it, and the same state does not', async t => {
+  const now = at.getTime();
+  let calendar = { connected: false, restoring: true };
+  const app = harness(undefined, [], { bridge: { readCalendarMeetingOccurrences: async request => { app.calls.push(request); return { calendar, occurrences: calendar.connected ? [{ key: 'now', title: '주간 회의', startAt: now - hour / 2, endAt: now + hour / 2 }] : [], scopeRevision: 4 }; } } });
+  t.after(() => app.window.happyDOM.abort());
+  app.home.acceptCalendar({ connected: false, restoring: true });
+  assert.equal(app.calls.length, 0, 'home has not shown today yet');
+  await app.home.refresh();
+  calendar = { connected: true, restoring: false };
+  app.home.acceptCalendar({ connected: true, restoring: false, lastSyncedAt: 1 });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(app.calls.length, 2);
+  assert.match(app.container.textContent, /주간 회의/);
+  app.home.acceptCalendar({ connected: true, restoring: false, lastSyncedAt: 1, revision: 9 });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(app.calls.length, 2, 'only connection, checking and sync changes reload');
+  app.home.acceptCalendar({ connected: true, restoring: false, lastSyncedAt: 2 });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(app.calls.length, 3, 'a finished sync shows its events');
 });
 
 test('reloading a connected schedule shows the shared spinner and the running event uses the status chip', async t => {

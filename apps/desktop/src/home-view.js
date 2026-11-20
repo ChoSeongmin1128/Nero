@@ -1,5 +1,6 @@
 import { calendarDay } from './calendar-meeting-flow.js';
 
+const RESTORE_PATIENCE = 30_000;
 const dayTitle = new Intl.DateTimeFormat('ko-KR', { month: 'long', day: 'numeric', weekday: 'long' });
 
 // Today's events in start order, each marked as running now or already over.
@@ -15,7 +16,7 @@ export function homeEvents(occurrences = [], now = Date.now()) {
 // `noticeState` how far their action got; `onNotice` runs it through the shared notice actions.
 export function mountHome({ container, bridge, icon, escape, onRecord, onCreate, onImport, onRecordEvent, onConnectCalendar, onFolder, onNotice, attention = () => [], noticeState = () => ({}), ui = globalThis.NeroUI, device = () => '', folders = () => [], folder = () => null, disabled = () => false, now = () => new Date(), timeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone }) {
   let schedule = { loading: false, connected: false, events: [], scopeRevision: null, day: '', timeZone: '', error: '' };
-  let request = 0, renderKey = '', retry = null, restoringTries = 0, focusTarget = null;
+  let request = 0, renderKey = '', restoringSince = null, restoringTimer = null, calendarKey = null, focusTarget = null;
   // Redrawing replaces every control, so the focused one is found again by what it does.
   // A button disabled while its action runs takes focus back once it is enabled again.
   const focusAttributes = ['data-home-notice', 'data-home-action', 'data-home-event', 'data-home-folder'];
@@ -44,17 +45,31 @@ export function mountHome({ container, bridge, icon, escape, onRecord, onCreate,
       if (current !== request) return;
       const restoring = Boolean(result?.calendar?.restoring);
       schedule = { loading: false, restoring, connected: Boolean(result?.calendar?.connected), events: result?.occurrences || [], scopeRevision: result?.scopeRevision ?? null, day, timeZone: zone, error: '' };
-      // Right after launch the saved Google connection is still being checked. When that
-      // outlasts the retries the note says so instead of spinning; a later calendar change reloads.
-      clearTimeout(retry);
-      if (restoring && restoringTries < 20) { restoringTries += 1; retry = setTimeout(() => { void refresh(); }, 1500); }
-      else if (restoring) schedule = { ...schedule, restoring: false, error: 'Google Calendar 연결을 아직 확인하지 못했습니다. 연결되면 오늘 일정이 표시됩니다.' };
-      else restoringTries = 0;
+      waitForRestore(restoring);
     } catch (error) {
       if (current !== request) return;
       schedule = { ...schedule, loading: false, events: [], error: error?.message || '오늘 일정을 불러오지 못했습니다.' };
     }
     render();
+  }
+
+  // Right after launch the saved Google connection is still being checked. The calendar's own
+  // change reloads today when that ends; if it takes too long the note says so instead of spinning.
+  function waitForRestore(restoring) {
+    if (!restoring) { restoringSince = null; clearTimeout(restoringTimer); restoringTimer = null; return; }
+    restoringSince ??= now().getTime();
+    const left = RESTORE_PATIENCE - (now().getTime() - restoringSince);
+    if (left <= 0) { schedule = { ...schedule, restoring: false, error: 'Google Calendar 연결을 아직 확인하지 못했습니다. 연결되면 오늘 일정이 표시됩니다.' }; return; }
+    if (restoringTimer === null) restoringTimer = setTimeout(() => { restoringTimer = null; if (schedule.restoring) { waitForRestore(true); render(); } }, left);
+  }
+  // Every calendar change reaches home here; a connection made, lost or finished checking, or a
+  // finished sync, reloads today once home has shown it.
+  function acceptCalendar(value) {
+    if (!value) return;
+    const next = `${Boolean(value.connected)}:${Boolean(value.restoring)}:${value.lastSyncedAt ?? ''}`;
+    if (next === calendarKey) return;
+    calendarKey = next;
+    if (schedule.day) void refresh();
   }
 
   function render() {
@@ -119,5 +134,5 @@ export function mountHome({ container, bridge, icon, escape, onRecord, onCreate,
   });
   // Today's schedule is read when home first shows on a given day.
   function ensure() { if (schedule.day !== calendarDay(now()) && !schedule.loading) void refresh(); }
-  return { refresh, ensure, render, focus: () => container.querySelector('.home-date')?.focus({ preventScroll: true }) };
+  return { refresh, ensure, render, acceptCalendar, focus: () => container.querySelector('.home-date')?.focus({ preventScroll: true }) };
 }
