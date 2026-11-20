@@ -259,10 +259,15 @@
     (function collect(node) { if (node.type === "definition" && !definitions.has(node.identifier)) definitions.set(node.identifier, node.url); (node.children || []).forEach(collect); })(tree);
     return `<article class="summary-document">${promote(tree.children).map(child => block(child)).join("")}</article>`;
   }
+  // A problem that stops a feature until the person acts. It stays until the cause is gone,
+  // so it has no close button; the consumer gives the one action that fixes it.
+  function attentionNotice({ title, message, actionsHTML = "", status = "", error = "", attrs = {} }) {
+    return `<section${attributes({ class: "attention-notice", ...attrs })}>${icon("triangle-alert")}<div class="attention-notice-copy"><strong>${escape(title)}</strong><span>${escape(message)}</span>${status ? `<span class="attention-notice-status" role="status">${escape(status)}</span>` : ""}${error ? `<span class="field-error" role="alert">${escape(error)}</span>` : ""}</div>${actionsHTML ? `<div class="attention-notice-actions">${actionsHTML}</div>` : ""}</section>`;
+  }
   function dialogContent({ title, titleId = "modal-title", bodyHTML = "", actionsHTML = "" }) {
     return `<h2${attributes({ id: titleId })}>${escape(title)}</h2>${bodyHTML}${actionsHTML ? `<div class="modal-footer"><span></span><div class="row">${actionsHTML}</div></div>` : ""}`;
   }
-  const api = { escape, highlightText, button, badge, status, meetingRow, personRow, personOption, utterance, transcriptRow, transcriptPreview, minutes, summaryDocument, dialogContent };
+  const api = { escape, highlightText, button, badge, status, meetingRow, personRow, personOption, utterance, transcriptRow, transcriptPreview, minutes, summaryDocument, attentionNotice, dialogContent };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.NeroUI = api;
 })(typeof globalThis === "object" ? globalThis : this);

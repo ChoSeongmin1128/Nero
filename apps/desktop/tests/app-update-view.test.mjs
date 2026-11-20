@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { Window } from 'happy-dom';
 import { mountAppUpdateView, appUpdateNotices } from '../src/app-update-view.js';
 import { mountNotificationCenter } from '../src/notification-center.js';
+import { createNoticeActions } from '../src/notice-actions.js';
 
 const html = await readFile(new URL('../src/index.html', import.meta.url), 'utf8');
 const tick = () => new Promise(resolve => setImmediate(resolve));
@@ -111,7 +112,8 @@ test('declined changes never install or acquire the lock', async t => {
 test('update failures expose a user action without routine completion notices', async t => {
   const app = setup(t);
   await app.view.start(); app.emit(status('error', { downloadReady: true, message: '설치를 다시 시도해 주세요.' }));
-  const center = mountNotificationCenter({ container: app.window.document.getElementById('notification-center'), onNoticeAction: service => { assert.equal(service, 'app-update'); return app.view.perform(); } });
+  const noticeActions = createNoticeActions({ handlers: { notice: notice => { assert.equal(notice.service, 'app-update'); return app.view.perform(); } } });
+  const center = mountNotificationCenter({ container: app.window.document.getElementById('notification-center'), noticeActions });
   t.after(() => center.destroy());
   center.update({ connected: true, notices: appUpdateNotices(app.view.getSnapshot()) });
   const container = app.window.document.getElementById('notification-center');

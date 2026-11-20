@@ -3,7 +3,8 @@ import { mountBrandIcons } from '../src/brand-icons.js';
 import { markdownSource as buildMarkdownSource } from '../scripts/build-markdown.mjs';
 import { requestAudioPlayback } from '../src/audio-playback.js';
 import { snapshotSignatures, compareSnapshotSignatures } from '../src/snapshot-update.js';
-import { createIntegrationMonitor } from '../src/integration-notifications.js';
+import { attentionNotices, createIntegrationMonitor } from '../src/integration-notifications.js';
+import { createNoticeActions } from '../src/notice-actions.js';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
@@ -148,7 +149,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
   bridge.writeClipboardText = async text => { copied.push(text); };
   const aiBridge = { appendNote: async () => {}, saveSummary: async () => {}, openSource: async () => {} };
   const templateSettings = { setActive() {}, beforeLeave: async () => true, isConfirming: () => false, hide() {} };
-  const context = vm.createContext({ recognitionCoverage, mountBrandIcons, snapshotSignatures, compareSnapshotSignatures, requestAudioPlayback, createIntegrationMonitor, liveTranscriptRows, meetingResultPreview, renderMeetingMenu, testMountNotificationCenter: mountNotificationCenter,
+  const context = vm.createContext({ recognitionCoverage, mountBrandIcons, snapshotSignatures, compareSnapshotSignatures, requestAudioPlayback, createIntegrationMonitor, attentionNotices, createNoticeActions, liveTranscriptRows, meetingResultPreview, renderMeetingMenu, testMountNotificationCenter: mountNotificationCenter,
     navigator: { clipboard: { writeText: async text => { copied.push(text); } } },
     document, testBridge: bridge, testAiBridge: aiBridge, testAiLifecycle: aiLifecycle, testAgentDialogCalls: agentDialogCalls, testTemplateSettings: templateSettings, localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
     NeroControls: { enhanceAll() {} },
@@ -218,7 +219,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
     const mountSummaryTemplatePicker = () => ({reload:async()=>{},isAvailable:()=>true,selected:async()=>({id:'meeting',revision:'test'})});
     const mountDocumentActions = () => ({ update() {}, close() {} });
     const mountAgentConnectionDialog = () => ({ open(...args) { testAgentDialogCalls.push(args); }, update() {}, close() {}, isOpen: () => false });
-    const mountLibrary = () => ({ render() {}, resetSelection() {}, show: async () => {} });
+    const mountLibrary = () => ({ render() {}, resetSelection() {}, show: async () => {}, railAttention() {} });
     const mountConfirmDialog = () => ({confirm:async()=>false});
     const mountStorageSettings = () => ({ compact: async () => {}, setActive() {} });
     const mountSpeakers = ({getState}) => ({beforeLeave:async()=>true,render() {}, reset() {}, open: async () => {}, label: segment => getState().transcriptDraft?.doc?.speakers?.find(speaker=>speaker.id === segment.speakerId)?.name || '화자 미지정'});

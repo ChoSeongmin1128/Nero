@@ -13,7 +13,8 @@ import { mountAppUpdateView } from './app-update-view.js';
 import './app-update-view.css';
 import { mountPeopleSettings, mountMeetingAttendees } from './people-ui.jsx';
 import { bindDialogDismiss } from './dialog-dismiss.js';
-import { createIntegrationMonitor } from './integration-notifications.js';
+import { attentionNotices, createIntegrationMonitor } from './integration-notifications.js';
+import { createNoticeActions } from './notice-actions.js';
 import { mountNotificationCenter } from './notification-center.js';
 import { mountHome } from './home-view.js';
 import './home-view.css';
@@ -410,6 +411,7 @@ function render() {
   if (setupVisible && byId('setup-screen').scrollTop !== setupScroll) byId('setup-screen').scrollTop = setupScroll;
   speechOffer.update(state.processing.speechOffer, { blocked: !state.connected || Boolean(activeSession()) || setupVisible || Boolean(byId('settings-dialog').open) || Boolean(byId('quit-dialog').open) });
   notificationCenter.update({ processing: displayProcessing(), meetings: state.snapshot.meetings, selectedMeetingId: state.selectedId, connected: state.connected, actions: processingActions, integrations: integrationNotices, notices: appUpdateNotices });
+  library.railAttention('home', attentionNotices(integrationNotices).length > 0);
   sidebarViews?.updateCounts(notificationCenter.counts());
   if (setupVisible && !state.setupWasVisible) sidebarViews?.close({ focus: false });
   state.setupWasVisible = setupVisible;
@@ -1781,28 +1783,39 @@ const home = mountHome({ container: byId('home-screen'), bridge, icon, escape,
   onImport: () => run(importNewMeeting),
   onRecordEvent: (key, scope) => run(() => recordCalendarEvent(key, scope)),
   onConnectCalendar: () => openSettings('agent', 'home-screen'),
+  attention: () => attentionNotices(integrationNotices),
+  noticeState: id => noticeActions.state(id),
+  onNotice: (notice, action) => noticeActions.run(notice, action),
 });
 void reloadNewMeetingFolder();
-const notificationCenter = mountNotificationCenter({ container: byId('notification-center'), onOpenMeeting: id => selectMeeting(id), onProcessingAction: processingAction, showError, icon, onNoticeAction: service => service === 'app-update' ? appUpdateView.perform() : undefined, onOpenIntegration: async service => {
-  await openSettings('agent', 'notifications-open');
-  const target = service === 'google-calendar' ? byId('calendar-settings').querySelector('.calendar-settings-account button:not(:disabled)') : byId(`settings-${service}-connect`);
-  target?.scrollIntoView?.({ block: 'nearest' });
-}, onUpdateIntegration: async service => {
-  // The same update as the button in settings; Claude Desktop opens the extension itself.
-  const info = await bridge.connectAgentClient(service);
-  const client = info?.clients?.find(item => item.id === service);
-  if (client?.state === 'error') throw new Error(client.detail || '업데이트하지 못했습니다. 설정 > 연동에서 다시 시도해 주세요.');
-  integrationMonitor.acceptAgents(info);
-  if (service === 'claude' && info?.claudeExtensionPath) {
+// The notification list and home show the same notices and run their buttons here.
+const noticeActions = createNoticeActions({ handlers: {
+  async settings(notice) {
     await openSettings('agent', 'notifications-open');
-    agentConnectionDialog.openClaudeExtension(info.claudeExtensionPath, byId('settings-claude-connect'));
+    const target = notice.service === 'google-calendar' ? byId('calendar-settings').querySelector('.calendar-settings-account button:not(:disabled)') : byId(`settings-${notice.service}-connect`);
+    target?.scrollIntoView?.({ block: 'nearest' });
+  },
+  async update(notice) {
+    // The same update as the button in settings; Claude Desktop opens the extension itself.
+    const service = notice.service;
+    const info = await bridge.connectAgentClient(service);
+    const client = info?.clients?.find(item => item.id === service);
+    if (client?.state === 'error') throw new Error(client.detail || '업데이트하지 못했습니다. 설정 > 연동에서 다시 시도해 주세요.');
+    integrationMonitor.acceptAgents(info);
+    if (service === 'claude' && info?.claudeExtensionPath) {
+      await openSettings('agent', 'notifications-open');
+      agentConnectionDialog.openClaudeExtension(info.claudeExtensionPath, byId('settings-claude-connect'));
+      return '';
+    }
+    // Claude Desktop shows its own install confirmation; until it is accepted the
+    // connection still needs the update.
+    if (client?.state === 'update_required') return service === 'claude' ? 'Claude Desktop에서 설치를 확인해 주세요.' : 'ChatGPT에서 설치를 확인해 주세요.';
     return '';
-  }
-  // Claude Desktop shows its own install confirmation; until it is accepted the
-  // connection still needs the update.
-  if (client?.state === 'update_required') return service === 'claude' ? 'Claude Desktop에서 설치를 확인해 주세요.' : 'ChatGPT에서 설치를 확인해 주세요.';
-  return '';
-}, onChanged: () => render() });
+  },
+  notice: notice => notice.service === 'app-update' ? appUpdateView.perform() : undefined,
+} });
+noticeActions.subscribe(() => home.render());
+const notificationCenter = mountNotificationCenter({ container: byId('notification-center'), onOpenMeeting: id => selectMeeting(id), onProcessingAction: processingAction, showError, icon, noticeActions, onChanged: () => render() });
 let sidebarStorage = null;
 try { sidebarStorage = window.localStorage; } catch {}
 sidebarViews = mountSidebarViews({ aside: byId('navigation-sidebar'), navigation: byId('sidebar-navigation-view'), notifications: byId('notification-center'), trigger: byId('notifications-open'), badge: byId('notification-count'), storage: sidebarStorage,

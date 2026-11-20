@@ -217,5 +217,14 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
     render,
     navigate() { if (!pinned && !editingNavigation() && !openPopups().length) closeTemporary(); },
     resetTemporary() { closeTemporary(); },
+    attention(view, on) {
+      const button = previews.find(item => item.dataset.navigationPreview === view);
+      if (!button) return;
+      button.dataset.navigationLabel ||= button.getAttribute('aria-label') || '';
+      const label = button.dataset.navigationLabel;
+      if (on) button.dataset.attention = 'true';
+      else delete button.dataset.attention;
+      button.setAttribute('aria-label', on ? `${label}, 확인할 항목 있음` : label);
+    },
   };
 }

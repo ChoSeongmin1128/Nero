@@ -61,3 +61,7 @@
 
 .application-toolbar .navigation-breadcrumbs > :not([aria-current="page"]) { display: none; }
 .application-toolbar .navigation-breadcrumbs > [aria-current="page"] { font-size: var(--text-aux-size); font-weight: var(--weight-medium); color: var(--text-secondary); }
+
+/* A rail destination with something to act on carries a dot; its accessible name says so. */
+.navigation-rail [data-navigation-preview][data-attention="true"] { position: relative; }
+.navigation-rail [data-navigation-preview][data-attention="true"]::after { content: ""; position: absolute; top: 5px; right: 5px; width: 7px; height: 7px; border-radius: 50%; background: var(--danger-text); box-shadow: 0 0 0 2px var(--surface-secondary); pointer-events: none; }

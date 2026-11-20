@@ -11,7 +11,9 @@ export function homeEvents(occurrences = [], now = Date.now()) {
 }
 
 // The screen a person opens Nero to: record the meeting happening now, or start one.
-export function mountHome({ container, bridge, icon, escape, onRecord, onCreate, onImport, onRecordEvent, onConnectCalendar, onFolder, device = () => '', folders = () => [], folder = () => null, disabled = () => false, now = () => new Date(), timeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone }) {
+// `attention` gives the notices that stop a feature (integration-notifications.js) and
+// `noticeState` how far their action got; `onNotice` runs it through the shared notice actions.
+export function mountHome({ container, bridge, icon, escape, onRecord, onCreate, onImport, onRecordEvent, onConnectCalendar, onFolder, onNotice, attention = () => [], noticeState = () => ({}), ui = globalThis.NeroUI, device = () => '', folders = () => [], folder = () => null, disabled = () => false, now = () => new Date(), timeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone }) {
   let schedule = { loading: false, connected: false, events: [], scopeRevision: null, day: '', timeZone: '', error: '' };
   let request = 0, renderKey = '', retry = null, restoringTries = 0;
   const clock = zone => new Intl.DateTimeFormat('ko-KR', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZone: zone });
@@ -46,7 +48,8 @@ export function mountHome({ container, bridge, icon, escape, onRecord, onCreate,
     const running = events.some(event => event.current);
     const off = disabled();
     const choices = folders(), chosen = choices.some(item => item.id === folder()) ? folder() : '';
-    const key = JSON.stringify([dayTitle.format(now()), Math.floor(at / 60000), schedule, off, device(), choices.map(item => [item.id, item.name]), chosen]);
+    const notices = attention().map(notice => ({ notice, run: noticeState(notice.id) }));
+    const key = JSON.stringify([dayTitle.format(now()), Math.floor(at / 60000), schedule, off, device(), choices.map(item => [item.id, item.name]), chosen, notices]);
     if (key === renderKey) return;
     renderKey = key;
     const format = clock(schedule.timeZone || timeZone());
@@ -59,7 +62,15 @@ export function mountHome({ container, bridge, icon, escape, onRecord, onCreate,
     const hint = !schedule.connected && !schedule.restoring && !schedule.loading && !schedule.error ? `<p class="home-note"><button type="button" class="quiet small" data-home-action="calendar">Google Calendar 연결</button><span>하면 오늘 일정에서 바로 녹음할 수 있습니다.</span></p>` : '';
     const options = `<option value="">미분류</option>${choices.map(item => `<option value="${escape(item.id)}"${item.id === chosen ? ' selected' : ''}>${escape(item.name)}</option>`).join('')}`;
     const where = `<div class="home-context"><label class="home-folder">${icon('folder')}<span>저장 위치</span><select data-home-folder aria-label="새 회의 저장 위치"${off ? ' disabled' : ''}>${options}</select></label>${device() ? `<span class="home-device">${icon('mic')}<span>${escape(device())}</span></span>` : ''}</div>`;
-    container.innerHTML = `<div class="home-content"><h1 class="home-date" tabindex="-1">${escape(dayTitle.format(now()))}</h1>${scheduleBlock}<div class="home-actions">${rows ? '<span class="home-actions-label">일정 없이</span>' : ''}${button('data-home-action="record"', 'mic', '녹음 시작', !running)}${button('data-home-action="create"', 'square-pen', '빈 회의')}${button('data-home-action="import"', 'upload', '파일 가져오기')}</div>${where}${hint}</div>`;
+    const attentionBlock = notices.length ? `<div class="home-attention">${notices.map(({ notice, run }) => {
+      const update = notice.action === 'update';
+      const busy = Boolean(run.pending);
+      const label = update ? (busy ? '업데이트 중' : '업데이트') : '설정 열기';
+      const html = `${busy ? '<span class="activity-spinner" aria-hidden="true"></span>' : ''}<span>${escape(label)}</span>`;
+      const action = ui.button({ html, withIcon: busy, className: `small${update ? ' primary' : ''}`, disabled: busy, attrs: { 'data-home-notice': notice.id, 'data-home-notice-action': update ? 'update' : 'settings' } });
+      return ui.attentionNotice({ title: notice.title, message: notice.detail || notice.message, status: run.note, error: run.error, actionsHTML: action, attrs: { 'data-notice-id': notice.id } });
+    }).join('')}</div>` : '';
+    container.innerHTML = `<div class="home-content"><h1 class="home-date" tabindex="-1">${escape(dayTitle.format(now()))}</h1>${attentionBlock}${scheduleBlock}<div class="home-actions">${rows ? '<span class="home-actions-label">일정 없이</span>' : ''}${button('data-home-action="record"', 'mic', '녹음 시작', !running)}${button('data-home-action="create"', 'square-pen', '빈 회의')}${button('data-home-action="import"', 'upload', '파일 가져오기')}</div>${where}${hint}</div>`;
     const select = container.querySelector('[data-home-folder]');
     if (select) select.value = chosen;
     globalThis.NeroControls?.enhanceAll?.(container);
@@ -72,6 +83,11 @@ export function mountHome({ container, bridge, icon, escape, onRecord, onCreate,
   container.addEventListener('click', event => {
     const target = event.target.closest?.('button');
     if (!target || target.disabled || !container.contains(target)) return;
+    if (target.dataset.homeNotice) {
+      const notice = attention().find(item => item.id === target.dataset.homeNotice);
+      if (notice) void onNotice?.(notice, target.dataset.homeNoticeAction);
+      return;
+    }
     if (target.dataset.homeEvent) {
       const key = target.dataset.homeEvent;
       void onRecordEvent?.(key, { day: schedule.day, timeZone: schedule.timeZone, scopeRevision: schedule.scopeRevision });

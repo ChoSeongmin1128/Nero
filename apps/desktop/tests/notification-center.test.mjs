@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Window } from 'happy-dom';
 import { mountNotificationCenter, notificationProjection } from '../src/notification-center.js';
+import { createNoticeActions } from '../src/notice-actions.js';
 
 const meetings = [{ id: 'a', title: '회의 A', deletedAt: null }, { id: 'b', title: '회의 B', deletedAt: null }];
 const job = (id, meetingId = 'a', status = 'failed', createdAt = 10, extra = {}) => ({ id, meetingId, kind: 'transcribe', status, createdAt, acknowledged: false, retryable: true, ...extra });
@@ -14,8 +15,10 @@ function harness(t, options = {}) {
   container.className = 'notification-center';
   window.document.body.append(container);
   const calls = [], errors = [];
-  const controller = mountNotificationCenter({ container, showError: error => errors.push(error),
-    onOpenMeeting: async id => { calls.push(['open', id]); }, ...options });
+  const { handlers = {}, ...rest } = options;
+  const noticeActions = createNoticeActions({ handlers });
+  const controller = mountNotificationCenter({ container, showError: error => errors.push(error), noticeActions,
+    onOpenMeeting: async id => { calls.push(['open', id]); }, ...rest });
   const update = (jobs, revision = 1, extra = {}) => controller.update({ connected: true, meetings,
     processing: { revision, jobs }, ...extra });
   const button = (id, action) => [...container.querySelectorAll('[data-notification-action]')]
@@ -253,7 +256,7 @@ test('reading failure details survives another job progress update', t => {
 
 test('integration notices share the bell count, open their settings and acknowledge without mutating jobs', async t => {
   const opened = [], changed = [];
-  const f = harness(t, { onOpenIntegration: async service => opened.push(service), onChanged: () => changed.push(true) });
+  const f = harness(t, { handlers: { settings: async notice => opened.push(notice.service) }, onChanged: () => changed.push(true) });
   const notice = { id: 'integration:codex:28', service: 'codex', title: 'ChatGPT 연동', message: '업데이트 필요' };
   f.update([], 1, { integrations: [notice] });
   assert.equal(f.controller.counts().unread, 1);
@@ -268,7 +271,7 @@ test('integration notices share the bell count, open their settings and acknowle
 test('an integration that needs an update is updated from its notification', async t => {
   const updated = [];
   let finish, fail = false;
-  const f = harness(t, { onUpdateIntegration: service => new Promise((resolve, reject) => { updated.push(service); finish = () => fail ? reject(new Error('업데이트하지 못했습니다.')) : resolve(); }) });
+  const f = harness(t, { handlers: { update: notice => new Promise((resolve, reject) => { updated.push(notice.service); finish = () => fail ? reject(new Error('업데이트하지 못했습니다.')) : resolve(); }) } });
   const notice = { id: 'integration:claude:update:44', service: 'claude', title: 'Claude 연동', message: '업데이트 필요', action: 'update' };
   f.update([], 1, { integrations: [notice] });
   assert.equal(f.button(notice.id, 'settings'), undefined);
@@ -283,7 +286,7 @@ test('an integration that needs an update is updated from its notification', asy
 });
 
 test('an update waiting for the host says what to do next on its notification', async t => {
-  const f = harness(t, { onUpdateIntegration: async () => 'Claude Desktop에서 설치를 확인해 주세요.' });
+  const f = harness(t, { handlers: { update: async () => 'Claude Desktop에서 설치를 확인해 주세요.' } });
   const notice = { id: 'integration:claude:update:45', service: 'claude', title: 'Claude 연동', message: '업데이트 필요', action: 'update' };
   f.update([], 1, { integrations: [notice] });
   await f.click(notice.id, 'update');
@@ -303,7 +306,7 @@ test('confirming mixed job and integration notifications cannot cancel or acknow
 });
 
 test('compact notifications preserve their own scroll and show retry failures inline', async t => {
-  const app = harness(t, { onNoticeAction: async () => { throw Error('예시 재시도 실패'); } });
+  const app = harness(t, { handlers: { notice: async () => { throw Error('예시 재시도 실패'); } } });
   app.update([], 1, { notices: [{ id: 'notice', title: '업데이트', message: '다시 시도해 주세요.', actionLabel: '다시 시도', service: 'app-update' }] });
   app.container.querySelector('.notification-list').scrollTop = 120;
   await app.click('notice', 'notice');

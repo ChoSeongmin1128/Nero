@@ -1,4 +1,5 @@
 import { processingJobs, latestMeetingProcessing, queuedBehindModel } from './processing-state.js';
+import { createNoticeActions } from './notice-actions.js';
 import { processingFeedback, canRetryProcessing, canDismissProcessing } from './processing-feedback.js';
 
 const activeStatuses = new Set(['queued', 'running', 'cancelling']);
@@ -50,11 +51,12 @@ export function notificationProjection({ processing = {}, meetings = [], selecte
     });
 }
 
-export function mountNotificationCenter({ container, onOpenMeeting, onProcessingAction, onOpenIntegration, onUpdateIntegration, onNoticeAction, onChanged = () => {}, showError = () => {}, icon = () => '', now = () => Date.now() }) {
+// Notice buttons run through `noticeActions` (notice-actions.js), which home shares; this
+// list keeps only its own read state and the processing rows' actions.
+export function mountNotificationCenter({ container, onOpenMeeting, onProcessingAction, noticeActions = createNoticeActions({ handlers: {} }), onChanged = () => {}, showError = () => {}, icon = () => '', now = () => Date.now() }) {
   const confirmedNotices = new Set();
   const pending = new Map();
   const errors = new Map();
-  const notes = new Map();
   const observedActive = new Set();
   let snapshot = { processing: {}, meetings: [], connected: false };
   let renderKey = '';
@@ -62,7 +64,8 @@ export function mountNotificationCenter({ container, onOpenMeeting, onProcessing
   let focusReturn = null;
   let confirming = false;
   const rows = () => [...notificationProjection(snapshot).filter(job => job.status !== 'completed' || observedActive.has(job.id)), ...(snapshot.integrations || []).map(item => ({ ...item, category: 'integration', active: false, unread: !confirmedNotices.has(item.id) })), ...(snapshot.notices || []).map(item => ({ ...item, category: 'notice', active: false, unread: !confirmedNotices.has(item.id) }))];
-  const actionPending = id => pending.has(id) || snapshot.actions?.has(id);
+  const actionPending = id => pending.has(id) || snapshot.actions?.has(id) || noticeActions.busy(id);
+  const noticeIdsNow = () => [...(snapshot.integrations || []), ...(snapshot.notices || [])].map(item => item.id);
   const canAct = job => !disposed && snapshot.connected !== false && !actionPending(job.id);
 
   function rememberFocus() {
@@ -96,7 +99,7 @@ export function mountNotificationCenter({ container, onOpenMeeting, onProcessing
     if (disposed) return;
     const jobs = rows();
     const saved = focusReturn = rememberFocus() || focusReturn;
-    const key = JSON.stringify([jobs, [...pending], [...errors], [...snapshot.actions || []], snapshot.connected, confirming]);
+    const key = JSON.stringify([jobs, [...pending], [...errors], noticeIdsNow().map(noticeActions.state), [...snapshot.actions || []], snapshot.connected, confirming]);
     if (key === renderKey) return;
     renderKey = key;
     const active = jobs.filter(job => job.active).length;
@@ -108,7 +111,10 @@ export function mountNotificationCenter({ container, onOpenMeeting, onProcessing
     const row = job => {
       const time = job.active ? '' : relativeTime(job.updatedAt || job.createdAt, now());
       const timeMark = time ? `<span class="notification-time">${escape(time)}</span>` : '';
-      if (['integration', 'notice'].includes(job.category)) return `<article class="notification-item" data-notification-id="${escape(job.id)}" aria-busy="${actionPending(job.id)}">${glyph(job.category === 'integration' ? 'link' : 'download')}<div class="notification-copy"><div class="notification-title-line"><strong class="notification-title">${escape(job.title)}</strong>${timeMark}</div><p>${escape(job.message)}</p>${notes.has(job.id) ? `<p class="notification-status" role="status">${escape(notes.get(job.id))}</p>` : ''}${errors.has(job.id) ? `<p class="field-error" role="alert">${escape(errors.get(job.id))}</p>` : ''}</div><div class="notification-actions">${job.category === 'integration' && job.action === 'update' ? button(job, 'update', pending.get(job.id) === 'update' ? '업데이트 중' : '업데이트', false) : button(job, job.category === 'integration' ? 'settings' : 'notice', escape(job.category === 'integration' ? '설정 열기' : job.actionLabel || '열기'), false, job.actionDisabled)}${job.unread ? button(job, 'ack', '닫기') : ''}</div></article>`;
+      if (['integration', 'notice'].includes(job.category)) {
+        const run = noticeActions.state(job.id);
+        return `<article class="notification-item" data-notification-id="${escape(job.id)}" aria-busy="${actionPending(job.id)}">${glyph(job.category === 'integration' ? 'link' : 'download')}<div class="notification-copy"><div class="notification-title-line"><strong class="notification-title">${escape(job.title)}</strong>${timeMark}</div><p>${escape(job.message)}</p>${run.note ? `<p class="notification-status" role="status">${escape(run.note)}</p>` : ''}${run.error ? `<p class="field-error" role="alert">${escape(run.error)}</p>` : ''}</div><div class="notification-actions">${job.category === 'integration' && job.action === 'update' ? button(job, 'update', run.pending === 'update' ? '<span class="activity-spinner" aria-hidden="true"></span>업데이트 중' : '업데이트', false) : button(job, job.category === 'integration' ? 'settings' : 'notice', escape(job.category === 'integration' ? '설정 열기' : job.actionLabel || '열기'), false, job.actionDisabled)}${job.unread ? button(job, 'ack', '닫기') : ''}</div></article>`;
+      }
       const cancelling = snapshot.actions?.get(job.id) === 'cancel';
       const feedback = processingFeedback(job, { cancelling, waitingForModel: job.waitingForModel, pausing: ['pause', 'resume'].includes(snapshot.actions?.get(job.id)) });
       const group = notificationGroup(job);
@@ -135,7 +141,7 @@ export function mountNotificationCenter({ container, onOpenMeeting, onProcessing
     snapshot = { ...snapshot, ...value, processing };
     const noticeIds = new Set([...(snapshot.integrations || []), ...(snapshot.notices || [])].map(item => item.id));
     for (const id of confirmedNotices) if (!noticeIds.has(id)) confirmedNotices.delete(id);
-    for (const id of notes.keys()) if (!noticeIds.has(id)) notes.delete(id);
+    noticeActions.keep(noticeIds);
     for (const job of processingJobs(processing)) if (activeStatuses.has(job.status)) observedActive.add(job.id);
     return render();
   }
@@ -144,20 +150,11 @@ export function mountNotificationCenter({ container, onOpenMeeting, onProcessing
     const job = rows().find(item => item.id === id);
     if (!job || !canAct(job)) return;
     if (['integration', 'notice'].includes(job.category)) {
+      if (action === 'ack') { confirmedNotices.add(job.id); render(); onChanged(); return; }
       if (action === 'notice' && job.actionDisabled) return;
-      pending.set(job.id, action); errors.delete(job.id); render();
-      try {
-        if (action === 'settings') await onOpenIntegration?.(job.service);
-        else if (action === 'update' && job.action === 'update') {
-          notes.delete(job.id);
-          const note = await onUpdateIntegration?.(job.service);
-          if (typeof note === 'string' && note) notes.set(job.id, note);
-        }
-        else if (action === 'notice') await onNoticeAction?.(job.service);
-        else if (action === 'ack') confirmedNotices.add(job.id);
-        else return;
-      } catch (error) { if (!disposed) { errors.set(job.id, error instanceof Error ? error.message : String(error)); showError(error); } }
-      finally { pending.delete(job.id); render(); onChanged(); }
+      if (action === 'update' && job.action !== 'update') return;
+      if (!['settings', 'update', 'notice'].includes(action)) return;
+      await noticeActions.run(job, action);
       return;
     }
     const feedback = processingFeedback(job);
@@ -211,6 +208,7 @@ export function mountNotificationCenter({ container, onOpenMeeting, onProcessing
     else void perform(target.dataset.notificationAction, target.dataset.notificationJob);
   };
   container.addEventListener('click', click);
+  const unsubscribe = noticeActions.subscribe(() => { render(); onChanged(); });
   return { update, render, counts: () => ({ active: rows().filter(job => job.active).length, unread: rows().filter(job => notificationGroup(job) === 'attention' && job.unread).length, total: rows().length }),
-    destroy() { disposed = true; container.removeEventListener('click', click); } };
+    destroy() { disposed = true; unsubscribe(); container.removeEventListener('click', click); } };
 }

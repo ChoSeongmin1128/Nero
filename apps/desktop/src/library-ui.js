@@ -747,5 +747,6 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     });
   }
   const count = filter => countLibraryMeetings(state().snapshot.meetings).get(filter) || 0;
-  return { render, show, preview, count, resetSelection, toggleSelection, handleRowSelection, selectedIds, visibleMeetings };
+  return { render, show, preview, count, resetSelection, toggleSelection, handleRowSelection, selectedIds, visibleMeetings,
+    railAttention: (view, on) => sidebar?.attention(view, on) };
 }

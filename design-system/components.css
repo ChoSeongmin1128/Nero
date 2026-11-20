@@ -402,6 +402,27 @@ input[type="checkbox"] {
   color: var(--accent);
 }
 
+.attention-notice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--warning-surface);
+  color: var(--text);
+  font-size: var(--text-caption-size);
+  line-height: var(--leading-ui);
+}
+.attention-notice > svg { flex: none; width: var(--icon-size); height: var(--icon-size); color: var(--warning-text); }
+.attention-notice-copy { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; flex: 1; min-width: 0; }
+.attention-notice-copy > strong { color: var(--warning-text); font-weight: var(--weight-semibold); }
+.attention-notice-copy > span:not(.field-error) { color: var(--text-secondary); }
+.attention-notice-copy > .attention-notice-status, .attention-notice-copy > .field-error { flex-basis: 100%; margin: 0; }
+.attention-notice-copy > .field-error { color: var(--warning-text); }
+.attention-notice-actions { display: flex; flex: none; gap: 6px; }
+
 .activity-spinner {
   display: inline-block;
   width: 14px;

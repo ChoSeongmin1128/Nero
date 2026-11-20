@@ -162,8 +162,31 @@ pub fn connection_info_with_hosts(
     config: &Path,
     force_host_refresh: bool,
 ) -> ConnectionInfo {
-    let installed = installation::probe(home, config, connections, force_host_refresh);
+    let changed = bundle_unchecked(resources, connections);
+    let installed =
+        installation::probe(home, config, connections, force_host_refresh || changed.is_some());
+    if let Some(identity) = changed {
+        if !matches!(installed.codex, installation::HostInstallation::Unknown(_)) {
+            let _ = record_host_check(connections, &identity);
+        }
+    }
     connection_info_with_installations(resources, root, connections, Some(&installed))
+}
+
+// An app update changes the bundled package; the first check after it looks at what the
+// hosts actually have once, instead of the record saved when the old package was current.
+fn bundle_unchecked(resources: &Path, connections: &Path) -> Option<String> {
+    let bundle = bounded_read(&resources.join("agent/agent-build.json"), 64 * 1024).ok()?;
+    let identity = format!("{:x}", Sha256::digest(&bundle));
+    let saved = bounded_read(&connections.join(HOST_CHECK), 1024).ok();
+    (saved.as_deref() != Some(identity.as_bytes())).then_some(identity)
+}
+
+const HOST_CHECK: &str = "host-check-bundle";
+
+fn record_host_check(connections: &Path, identity: &str) -> std::io::Result<()> {
+    private_directory(connections)?;
+    atomic_write(&connections.join(HOST_CHECK), identity.as_bytes())
 }
 
 pub fn install_prepared_connection(
@@ -1058,6 +1081,19 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn hosts_are_checked_once_after_the_bundled_package_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        let (resources, connections) = (temp.path().join("resources"), temp.path().join("connections"));
+        fs::create_dir_all(resources.join("agent")).unwrap();
+        fs::write(resources.join("agent/agent-build.json"), b"{\"integrationVersion\":\"0.3.0-nero.45\"}").unwrap();
+        let first = super::bundle_unchecked(&resources, &connections).unwrap();
+        super::record_host_check(&connections, &first).unwrap();
+        assert!(super::bundle_unchecked(&resources, &connections).is_none());
+        fs::write(resources.join("agent/agent-build.json"), b"{\"integrationVersion\":\"0.3.0-nero.46\"}").unwrap();
+        assert!(super::bundle_unchecked(&resources, &connections).is_some());
+    }
 
     fn initialized_receipt(
         directory: &Path,
