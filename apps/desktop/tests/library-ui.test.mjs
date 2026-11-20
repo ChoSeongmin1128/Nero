@@ -327,7 +327,7 @@ test('folder navigation flushes edits and clears the previous selection', async 
 
 test('detail selection moves from the preserved navigation scope to the open meeting in the sidebar list', () => {
   const app = harness();
-  app.byId('navigation-sidebar').dataset.sidebarView = 'home';
+  app.controller.preview('home');
   const list = () => app.byId('sidebar-meeting-list').innerHTML;
   app.state.snapshot.meetings[0].createdAt = new Date(2026, 0, 1, 9, 0).getTime();
   app.state.libraryFilter = 'project';
@@ -517,7 +517,7 @@ test('renaming a meeting invalidates content search without changing its scope',
 
 function showTrashPreview(app) {
   const sidebar = app.byId('navigation-sidebar');
-  sidebar.dataset.sidebarView = 'trash';
+  app.controller.preview('trash');
   sidebar.inert = false;
   app.byId('sidebar-empty-trash').hidden = false;
 }
@@ -553,7 +553,7 @@ test('sidebar empty trash confirms the whole trash without navigating the curren
 });
 
 for (const [name, change] of [
-  ['another preview', app => { app.byId('navigation-sidebar').dataset.sidebarView = 'all'; }],
+  ['another preview', app => { app.controller.preview('all'); }],
   ['hidden action', app => { app.byId('sidebar-empty-trash').hidden = true; }],
   ['hidden ancestor', app => { app.byId('sidebar-empty-trash').closest = () => ({}); }],
   ['hidden sidebar', app => { app.byId('navigation-sidebar').hidden = true; }],
@@ -916,7 +916,7 @@ test('bulk toolbar focus retains list-wide select-all and Escape behavior', () =
 
 test('recent duration updates after finalization without navigation or title changes', () => {
   const h = harness({}, { duration: value => `${value}ms` });
-  h.byId('navigation-sidebar').dataset.sidebarView = 'home';
+  h.controller.preview('home');
   h.controller.render();
   const list = () => h.byId('sidebar-meeting-list').innerHTML;
   const before = list();

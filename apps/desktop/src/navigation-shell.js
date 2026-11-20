@@ -19,6 +19,8 @@ export function mountNavigationShell({ document, storage, icon, count, folderNam
     aside, navigation: byId('sidebar-navigation-view'), notifications: byId('notification-center'), trigger: byId('notifications-open'), badge: byId('notification-count'), storage,
     count, folderName, onPreview, onChange: onNotifications, reveal: () => sidebar.reveal(),
   });
+  // The list remembered from the last session is filled from the start.
+  onPreview(views.activeView(), views.folder());
   return {
     // A temporary sidebar closes once the content moves somewhere else.
     sync(next) {

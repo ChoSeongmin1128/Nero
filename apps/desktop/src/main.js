@@ -4,6 +4,7 @@ import { mountNavigationShell } from './navigation-shell.js';
 import { createSettingsPanels } from './settings-panels.js';
 import { microphoneIssue as findMicrophoneIssue, mountRecordingSettings, readMicrophonePreference } from './recording-settings.js';
 import { createNewMeetingFolder } from './new-meeting-folder.js';
+import { openedMeetingId, routeKey, screenOf } from './screen-state.js';
 import { snapshotSignatures, compareSnapshotSignatures } from './snapshot-update.js';
 import { createViewHistory } from './view-history.js';
 import { mountWindowChrome } from './window-chrome.js';
@@ -168,7 +169,7 @@ let lastLiveTranscript = null;
 const processingActions = new Map();
 const processingErrors = new Map();
 const processingBanner = mountProcessingBanner({ byId, document, icon, escape,
-  view: () => ({ processing: state.processing, meetingId: !state.libraryOpen && !state.setupRequested ? currentMeeting()?.id : undefined, meetings: state.snapshot.meetings, selectedId: state.selectedId,
+  view: () => ({ processing: state.processing, meetingId: openedMeetingId(state) ?? undefined, meetings: state.snapshot.meetings, selectedId: state.selectedId,
     cancellingId: state.processingCancellingId, actions: processingActions, errors: processingErrors, recording: Boolean(activeSession()), summaryEnabled: localSummaryEnabled() }),
   onAction: (action, jobId) => { processingAction(action, jobId).catch(showError); },
   onOpenMeeting: meetingId => { void run(() => selectMeeting(meetingId)); } });
@@ -418,32 +419,32 @@ function render() {
   if (setupVisible && !state.setupWasVisible) navigation?.close({ focus: false });
   state.setupWasVisible = setupVisible;
   library.render();
-  navigation?.sync(`${state.homeOpen}:${state.libraryOpen}:${state.selectedId}:${state.libraryFilter}`);
+  navigation?.sync(routeKey(state));
   speakers.render();
   renderSearchStatus();
   renderSettings();
   byId('import-audio').disabled = !state.connected || state.busy || Boolean(pendingJob(state.processing, { kind: 'import' })) || Boolean(activeSession());
   processingBanner.render();
-  const homeVisible = state.connected && !setupVisible && state.homeOpen && !state.libraryOpen;
-  const meeting = homeVisible ? null : currentMeeting();
-  byId('home-screen').hidden = !homeVisible;
-  if (homeVisible) { home.ensure(); home.render(); }
+  const screen = screenOf({ connected: state.connected, setup: setupVisible, homeOpen: state.homeOpen, libraryOpen: state.libraryOpen, libraryFilter: state.libraryFilter,
+    meetingSelected: Boolean(currentMeeting()), modelsReady: modelsReady(), hasMeetings: state.snapshot.meetings.length > 0 });
+  const meeting = screen === 'home' ? null : currentMeeting();
+  byId('home-screen').hidden = screen !== 'home';
+  if (screen === 'home') { home.ensure(); home.render(); }
   calendarReference.render(meeting, { meetings: state.snapshot.meetings, enabled: state.connected && !state.busy && !activeSession() && modelsReady() });
-  aiChat?.setMeeting(state.libraryOpen || setupVisible ? null : meeting);
-  meetingContext?.setMeeting(state.libraryOpen || setupVisible ? null : meeting);
+  aiChat?.setMeeting(screen === 'meeting' ? meeting : null);
+  meetingContext?.setMeeting(screen === 'meeting' ? meeting : null);
   byId('ai-chat-open').disabled = !state.connected;
   byId('meeting-attendees').hidden = !meeting;
   byId('meeting-attendees').disabled = !state.connected || state.busy;
   setHTML('meeting-attendees', `${icon('users')}<span>참석자${meeting?.attendees?.length ? ` ${meeting.attendees.length}명` : ''}</span>`);
   byId('create-calendar-meeting').hidden = !meeting || Boolean(meeting.audio || meeting.calendarReference || activeSession()?.meetingId === meeting.id);
   byId('import-audio').hidden = !meeting || Boolean(meeting.audio || activeSession()?.meetingId === meeting.id);
-  const aiLibraryOpen = state.libraryOpen && state.libraryFilter === 'ai' && state.connected && !setupVisible;
-  byId('ai-library-screen').hidden = !aiLibraryOpen;
-  if (aiLibraryOpen) aiLibrary?.mount();
-  byId('library-screen').hidden = homeVisible || aiLibraryOpen || setupVisible || !state.connected || (!state.libraryOpen && !modelsReady() && !state.snapshot.meetings.length) || (!state.libraryOpen && Boolean(meeting));
-  byId('welcome').hidden = homeVisible || aiLibraryOpen || !byId('library-screen').hidden || setupVisible || Boolean(meeting);
-  byId('meeting-detail').hidden = setupVisible || state.libraryOpen || !meeting;
-  if (state.connected && !setupVisible) viewHistory?.visit(homeVisible ? { kind: 'home' } : state.libraryOpen || !meeting ? { kind: 'library', filter: state.libraryFilter, view: state.libraryView, query: byId('search').value } : { kind: 'meeting', id: meeting.id });
+  byId('ai-library-screen').hidden = screen !== 'ai-library';
+  if (screen === 'ai-library') aiLibrary?.mount();
+  byId('library-screen').hidden = screen !== 'library';
+  byId('welcome').hidden = screen !== 'welcome';
+  byId('meeting-detail').hidden = screen !== 'meeting';
+  if (state.connected && !setupVisible) viewHistory?.visit(screen === 'home' ? { kind: 'home' } : screen !== 'meeting' ? { kind: 'library', filter: state.libraryFilter, view: state.libraryView, query: byId('search').value } : { kind: 'meeting', id: meeting.id });
   if (!meeting) { detail.update({ id: null }); summaryEvidence?.reset(); return; }
   renderMeetingDates(meeting);
   if (!state.draft?.dirty && !state.draft?.saving && document.activeElement !== byId('meeting-title') && document.activeElement !== byId('meeting-notes')) {
@@ -455,8 +456,8 @@ function render() {
   renderTranscript(meeting);
   renderSummary(meeting);
   const showSummary = Boolean(state.summary?.document || resultPreview(meeting).visible || pendingJob(state.processing, { meetingId: meeting.id, kind: 'summary' }) || state.summaryLoadError);
-  detail.update({ inlineNotes: !showSummary, showSummary, id: byId('meeting-detail').hidden ? null : meeting.id, recording: Boolean(activeSession()?.meetingId === meeting.id && ['recording', 'paused'].includes(activeSession().state)), summaryLoaded: state.summaryLoaded, transcriptLoaded: state.transcriptLoaded, hasSummary: Boolean(state.summary?.document), hasTranscript: Boolean(state.transcriptDraft?.doc?.segments?.length), hasPreview: resultPreview(meeting).rows.length > 0, hasAudio: Boolean(meeting.audio) });
-  if (byId('meeting-detail').hidden) summaryEvidence?.reset();
+  detail.update({ inlineNotes: !showSummary, showSummary, id: screen === 'meeting' ? meeting.id : null, recording: Boolean(activeSession()?.meetingId === meeting.id && ['recording', 'paused'].includes(activeSession().state)), summaryLoaded: state.summaryLoaded, transcriptLoaded: state.transcriptLoaded, hasSummary: Boolean(state.summary?.document), hasTranscript: Boolean(state.transcriptDraft?.doc?.segments?.length), hasPreview: resultPreview(meeting).rows.length > 0, hasAudio: Boolean(meeting.audio) });
+  if (screen !== 'meeting') summaryEvidence?.reset();
   renderNotesSearch();
   documentSearch.refresh();
   speakers.syncPlayback?.();

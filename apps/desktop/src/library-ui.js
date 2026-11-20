@@ -1,6 +1,7 @@
 import { bindDialogDismiss } from './dialog-dismiss.js';
 import { mountActionMenus } from '../../../design-system/action-menu.mjs';
 import { recentMeetingRow, renderMeetingMenu } from '../../../design-system/navigation.mjs';
+import { openedMeetingId } from './screen-state.js';
 import { pendingJob } from './processing-state.js';
 import { createDragPreview } from './drag-preview.js';
 export function filterLibraryMeetings(meetings, filter = 'all', query = '') {
@@ -55,7 +56,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
   const savePreference = (key, value) => { try { storage?.setItem(key, value); } catch {} };
   const savedView = getState().libraryView || readPreference('nero.library.view');
   getState().libraryView = ['folders', 'all'].includes(savedView) ? savedView : 'folders';
-  let cardsKey = '', breadcrumbKey = '';
+  let cardsKey = '', breadcrumbKey = '', shown = { view: '', folderId: '' };
   const folderOverview = () => state().libraryFilter === 'all' && state().libraryView === 'folders' && !query();
   const dragPreview = createDragPreview(owner);
   let listRows = { ids: [], markup: [] };
@@ -341,7 +342,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
   function emptyTrashDialog(trigger) {
     const sidebar = byId('navigation-sidebar');
     const inTrash = trigger === byId('sidebar-empty-trash')
-      ? sidebar.dataset.sidebarView === 'trash' && !sidebar.hidden && !sidebar.inert && !trigger.hidden && !trigger.closest?.('[hidden],[inert]')
+      ? shown.view === 'trash' && !sidebar.hidden && !sidebar.inert && !trigger.hidden && !trigger.closest?.('[hidden],[inert]')
       : trigger === byId('library-empty-trash') && state().libraryFilter === 'trash';
     if (state().libraryBusy || !state().connected || !inTrash || dialog.open) return;
     const targets = filterLibraryMeetings(state().snapshot.meetings, 'trash').map(({ id, deletedAt }) => ({ id, deletedAt }));
@@ -373,7 +374,9 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     })).join('');
   }
   // The sidebar list for the rail's choice: all, unfiled, one folder, recent or trash.
-  function preview(view = byId('navigation-sidebar')?.dataset.sidebarView, folderId = byId('navigation-sidebar')?.dataset.sidebarFolder) {
+  // The list is the one navigation last asked for; each render refreshes that same list.
+  function preview(view = shown.view, folderId = shown.folderId) {
+    shown = { view, folderId };
     const container = byId('sidebar-meeting-list');
     const scope = view === 'folder' ? folderId : view === 'home' ? 'recent' : view;
     if (!container || !scope || ['folders', 'notifications', 'navigation'].includes(scope)) return;
@@ -385,7 +388,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
       .sort((a, b) => (b.recordedAt ?? b.createdAt ?? 0) - (a.recordedAt ?? a.createdAt ?? 0) || a.id.localeCompare(b.id));
     if (scope === 'recent') meetings = meetings.slice(0, 20);
     const disabled = Boolean(state().libraryBusy || !state().connected);
-    const activeId = state().libraryOpen || state().homeOpen ? null : state().selectedId;
+    const activeId = openedMeetingId(state());
     // Only what the rows show: notes and attendees change on every autosave.
     const key = JSON.stringify([scope, query(), disabled, activeId, snapshot.folders, meetings.map(meeting => [meeting.id, meeting.title, meeting.folderId, meeting.recordedAt, meeting.createdAt, meeting.audio?.frames, meeting.audio?.sampleRate, meeting.deletedAt])]);
     if (key === previewKey) return;
@@ -482,7 +485,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
       cardsKey = nextCardsKey;
       byId('library-folders').innerHTML = folders.map(folder => `<article class="library-folder-card-entry"><button type="button" class="library-folder-card" data-library-filter="${escape(folder.id)}"${disabled ? ' disabled' : ''}>${icon('folder')}<span><strong title="${escape(folder.name)}">${escape(folder.name)}</strong><small>${countInView(folder.id)}개 회의</small></span>${icon('chevron-right')}</button><details class="library-folder-menu"><summary aria-label="${escape(folder.name)} 폴더 메뉴">${icon('ellipsis')}</summary><div class="action-menu"><button type="button" data-folder-rename="${escape(folder.id)}"${disabled ? ' disabled' : ''}>이름 변경</button><button type="button" class="danger-text" data-folder-delete="${escape(folder.id)}"${disabled ? ' disabled' : ''}>폴더 삭제</button></div></details></article>`).join('');
     }
-    const selectedMeeting = state().libraryOpen || state().homeOpen ? null : current(state().selectedId);
+    const selectedMeeting = current(openedMeetingId(state()));
     const parent = selectedMeeting ? selectedMeeting.folderId || 'unfiled' : filter;
     const parentName = navigation.find(item => item.id === parent)?.name || '미분류';
     const home = state().homeOpen && !state().libraryOpen;
