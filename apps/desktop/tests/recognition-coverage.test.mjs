@@ -28,10 +28,12 @@ test('a bounded end correction does not show missing coverage or uncertain timin
 test('chunks that failed again in pieces are reported without a retry offer', () => {
   const document = { source: { recognitionReport: { sampleRate: 16000, timingContextSegments: [], chunks: [
     { index: 0, startFrame: 0, endFrame: 960000, state: 'complete' },
-    { index: 1, startFrame: 960000, endFrame: 1920000, state: 'failed', issue: 'splitFailed' },
+    { index: 1, startFrame: 960000, endFrame: 1920000, state: 'failed', issue: 'splitFailed', settled: true },
   ] } } };
   const clock = ms => `${Math.round(ms / 1000)}s`;
   assert.equal(recognitionCoverage(document, clock).message, '일부 구간을 인식하지 못했습니다: 60s - 120s. 나머지 기록은 보존되어 있습니다.');
-  document.source.recognitionReport.chunks[1].issue = 'nativeOutputInvalid';
+  document.source.recognitionReport.chunks[1].settled = false;
   assert.match(recognitionCoverage(document, clock).message, /다시 시도할 수 있습니다/);
+  delete document.source.recognitionReport.chunks[1].settled;
+  assert.match(recognitionCoverage(document, clock).message, /다시 시도할 수 있습니다/, 'without Core settling a chunk, retry stays offered');
 });

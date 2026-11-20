@@ -9,18 +9,12 @@ const policies = {
 };
 const priority = { info: 0, warning: 1, error: 2 };
 
-// On macOS an overload notice within the first tenth of a second of queued audio is the
-// device starting its input; it stays in the record but is not shown. Core uses the same
-// bound. Other platforms show every notice.
-const macHost = () => /Macintosh|Mac OS X/.test(globalThis.navigator?.userAgent || '');
-
-export function recordingQuality(quality, sampleRate, frames, { startupNotice = macHost() } = {}) {
-  const startupFrames = Number.isFinite(sampleRate) && sampleRate > 0 ? Math.floor(sampleRate / 10) : 0;
-  // Before anything was saved, or within the bound (a device whose first buffer is longer
-  // than the bound still has nothing saved when it sends the notice).
-  const startupXrun = event => startupNotice && event.kind === 'xrun' && (event.lastSavedFrame === 0 || (Number.isSafeInteger(event.lastQueuedFrame) && event.lastQueuedFrame <= startupFrames));
+// Core marks the notices a device sends while its input starts (`startup`) and counts them
+// (`startupXrunCount`); they stay in the record but are not shown.
+export function recordingQuality(quality, sampleRate, frames) {
+  const startupXrun = event => event.kind === 'xrun' && event.startup === true;
   const all = (quality?.events || []).filter(event => Object.hasOwn(policies, event.kind));
-  const startup = all.filter(startupXrun).reduce((sum, event) => sum + (Number.isSafeInteger(event.count) ? event.count : 0), 0);
+  const startup = Number.isSafeInteger(quality?.startupXrunCount) ? quality.startupXrunCount : 0;
   const events = all.filter(event => !startupXrun(event));
   const observed = events.map(event => policies[event.kind]);
   if (quality?.xrunCount > startup) observed.push(policies.xrun);

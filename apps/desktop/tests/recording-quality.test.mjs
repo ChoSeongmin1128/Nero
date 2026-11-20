@@ -42,22 +42,18 @@ test('observed positions never synthesize a gap or seek beyond saved audio', () 
   assert.equal(recordingQuality({events:[{kind:'deviceFailure',firstSavedFrame:50000}]},16000,48000).locations[0].seconds,null);
 });
 
-test('on macOS an input delay notice while the input starts is not shown, a later one is', () => {
-  const mac = { startupNotice: true };
-  // At 48 kHz the first tenth of a second is 4,800 queued frames.
-  const startup = { kind: 'xrun', count: 1, firstSavedFrame: 0, lastSavedFrame: 0, firstQueuedFrame: 512, lastQueuedFrame: 512 };
-  const late = { kind: 'xrun', count: 1, firstSavedFrame: 1024, lastSavedFrame: 1024, firstQueuedFrame: 1536, lastQueuedFrame: 1536 };
-  const hidden = recordingQuality({ xrunCount: 2, events: [startup, late] }, 48000, 96000, mac);
+test('a notice Core marks as the input starting is not shown, a later one is', () => {
+  const startup = { kind: 'xrun', count: 1, firstSavedFrame: 0, lastSavedFrame: 0, startup: true };
+  const late = { kind: 'xrun', count: 1, firstSavedFrame: 1024, lastSavedFrame: 1024, startup: true };
+  const hidden = recordingQuality({ xrunCount: 2, startupXrunCount: 2, events: [startup, late] }, 48000, 96000);
   assert.equal(hidden.visible, false);
   assert.deepEqual(hidden.locations, []);
-  const later = recordingQuality({ xrunCount: 3, events: [startup, late, { kind: 'xrun', count: 1, firstSavedFrame: 48000, lastSavedFrame: 48000, firstQueuedFrame: 48512, lastQueuedFrame: 48512 }] }, 48000, 96000, mac);
+  const later = recordingQuality({ xrunCount: 3, startupXrunCount: 2, events: [startup, late, { kind: 'xrun', count: 1, firstSavedFrame: 48000, lastSavedFrame: 48000, startup: false }] }, 48000, 96000);
   assert.equal(later.visible, true);
   assert.deepEqual(later.locations.map(location => location.seconds), [1]);
-  assert.equal(recordingQuality({ xrunCount: 2, events: [startup] }, 48000, 96000, mac).visible, true);
-  // A device whose first buffer is longer than the bound has still saved nothing.
-  const longBuffer = { kind: 'xrun', count: 1, firstSavedFrame: 0, lastSavedFrame: 0, firstQueuedFrame: 2048, lastQueuedFrame: 2048 };
-  assert.equal(recordingQuality({ xrunCount: 1, events: [longBuffer] }, 16000, 32000, mac).visible, false);
-  const elsewhere = recordingQuality({ xrunCount: 1, events: [startup] }, 48000, 96000, { startupNotice: false });
-  assert.equal(elsewhere.visible, true);
+  assert.equal(recordingQuality({ xrunCount: 2, startupXrunCount: 1, events: [startup] }, 48000, 96000).visible, true, 'notices beyond the starting ones are shown');
+  const elsewhere = recordingQuality({ xrunCount: 1, events: [{ ...startup, startup: false }] }, 48000, 96000);
+  assert.equal(elsewhere.visible, true, 'without Core marking it, a notice is shown');
   assert.deepEqual(elsewhere.locations.map(location => location.seconds), [0]);
+  assert.equal(recordingQuality({ xrunCount: 1, events: [{ ...startup, startup: undefined }] }, 48000, 96000).visible, true);
 });
