@@ -16,7 +16,8 @@ export function mountProcessingBanner({ byId, document, icon, escape, view, onAc
     if (focus) return;
     const target = document.activeElement;
     const jobId = target?.dataset?.jobId;
-    if (!jobId) return;
+    // Other job buttons, such as model preparation in Settings, keep their own focus.
+    if (!jobId || !buttons.some(id => byId(id) === target)) return;
     const ids = [...new Set([...byId('processing').querySelectorAll('[data-job-id]')].map(node => node.dataset.jobId))];
     focus = { target, id: jobId, action: target.dataset.jobAction, ids, index: ids.indexOf(jobId) };
   }
@@ -74,7 +75,8 @@ export function mountProcessingBanner({ byId, document, icon, escape, view, onAc
     byId('processing-result-icon').hidden = feedback.active && !feedback.paused;
     setHTML('processing-result-icon', icon(feedback.icon));
     byId('cancel-processing').hidden = !feedback.cancelVisible;
-    byId('cancel-processing').disabled = feedback.cancelDisabled;
+    // While another request for the job is on its way a cancel would be refused.
+    byId('cancel-processing').disabled = feedback.cancelDisabled || (current.actions.has(job.id) && pendingAction !== 'cancel');
     setText('cancel-processing', feedback.cancelLabel);
     byId('pause-processing').hidden = !feedback.pauseVisible;
     byId('pause-processing').disabled = feedback.pauseDisabled;
@@ -86,7 +88,8 @@ export function mountProcessingBanner({ byId, document, icon, escape, view, onAc
     if (feedback.progress) { byId('processing-progress').max = feedback.progress.max; byId('processing-progress').value = feedback.progress.value; }
     byId('retry-processing').hidden = !allowed.retry;
     byId('retry-processing').disabled = current.actions.has(job.id);
-    byId('open-processing-meeting').hidden = job.status !== 'needsReview' || !owner;
+    // The meeting already open needs no button to open it.
+    byId('open-processing-meeting').hidden = job.status !== 'needsReview' || !owner || owner.id === current.meetingId;
     byId('dismiss-processing').hidden = !allowed.ack;
     byId('dismiss-processing').disabled = current.actions.has(job.id);
     for (const [id, action] of [['cancel-processing', 'cancel'], ['retry-processing', 'retry'], ['open-processing-meeting', 'open'], ['dismiss-processing', 'ack']]) {

@@ -39,6 +39,6 @@ export function mountNavigationShell({ document, storage, icon, count, folderNam
     isOpen: () => views.isOpen(),
     activeView: () => views.activeView(),
     folder: () => views.folder(),
-    destroy: () => views.destroy(),
+    destroy() { views.destroy(); sidebar.dispose(); },
   };
 }

@@ -416,7 +416,7 @@ input[type="checkbox"] {
   line-height: var(--leading-ui);
 }
 .attention-notice > svg { flex: none; width: var(--icon-size); height: var(--icon-size); color: var(--warning-text); }
-.attention-notice-copy { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; flex: 1; min-width: 0; }
+.attention-notice-copy { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; flex: 1; min-width: 0; -webkit-user-select: text; user-select: text; }
 .attention-notice-copy > strong { color: var(--warning-text); font-weight: var(--weight-semibold); }
 .attention-notice-copy > span:not(.field-error) { color: var(--text-secondary); }
 .attention-notice-copy > .attention-notice-status, .attention-notice-copy > .field-error { flex-basis: 100%; margin: 0; }

@@ -14,24 +14,29 @@ export function homeEvents(occurrences = [], now = Date.now()) {
 // The screen a person opens Nero to: record the meeting happening now, or start one.
 // `attention` gives the notices that stop a feature (integration-notifications.js) and
 // `noticeState` how far their action got; `onNotice` runs it through the shared notice actions.
+// Home's notice buttons keep this id across redraws, so Settings can return focus to them.
+export const homeNoticeId = noticeId => `home-notice-${noticeId}`;
+
 export function mountHome({ container, bridge, icon, escape, onRecord, onCreate, onImport, onRecordEvent, onConnectCalendar, onFolder, onNotice, attention = () => [], noticeState = () => ({}), ui = globalThis.NeroUI, device = () => '', folders = () => [], folder = () => null, disabled = () => false, now = () => new Date(), timeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone }) {
   let schedule = { loading: false, connected: false, events: [], scopeRevision: null, day: '', timeZone: '', error: '' };
-  let request = 0, renderKey = '', restoringSince = null, restoringTimer = null, calendarKey = null, focusTarget = null;
+  let request = 0, renderKey = '', restoringSince = null, restoringTimer = null, calendarKey = null, stale = false, focusTarget = null;
   // Redrawing replaces every control, so the focused one is found again by what it does.
   // A button disabled while its action runs takes focus back once it is enabled again.
   const focusAttributes = ['data-home-notice', 'data-home-action', 'data-home-event', 'data-home-folder'];
   function remember() {
     const active = container.ownerDocument?.activeElement;
     if (!active || active === container.ownerDocument.body) return;
-    const control = container.contains(active) ? active.closest?.(focusAttributes.map(name => `[${name}]`).join(',')) : null;
+    // An enhanced folder picker is focused on its own button beside the hidden select.
+    const control = container.contains(active) ? active.closest?.(focusAttributes.map(name => `[${name}]`).join(',')) || active.closest?.('.nero-select')?.querySelector('[data-home-folder]') : null;
     const name = control && focusAttributes.find(item => control.hasAttribute(item));
     focusTarget = name ? `[${name}="${(control.getAttribute(name) || '').replace(/["\\]/g, '\\$&')}"]` : null;
   }
   function restore() {
     const control = focusTarget && container.querySelector(focusTarget);
-    if (!control || control.disabled) return;
+    if (!control) { focusTarget = null; return; }
+    if (control.disabled) return;
     focusTarget = null;
-    control.focus({ preventScroll: true });
+    (control.hidden ? control.closest('.nero-select')?.querySelector('button') : control)?.focus({ preventScroll: true });
   }
   const clock = zone => new Intl.DateTimeFormat('ko-KR', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZone: zone });
 
@@ -48,7 +53,8 @@ export function mountHome({ container, bridge, icon, escape, onRecord, onCreate,
       waitForRestore(restoring);
     } catch (error) {
       if (current !== request) return;
-      schedule = { ...schedule, loading: false, events: [], error: error?.message || '오늘 일정을 불러오지 못했습니다.' };
+      waitForRestore(false);
+      schedule = { ...schedule, loading: false, restoring: false, events: [], error: error?.message || '오늘 일정을 불러오지 못했습니다.' };
     }
     render();
   }
@@ -62,14 +68,17 @@ export function mountHome({ container, bridge, icon, escape, onRecord, onCreate,
     if (left <= 0) { schedule = { ...schedule, restoring: false, error: 'Google Calendar 연결을 아직 확인하지 못했습니다. 연결되면 오늘 일정이 표시됩니다.' }; return; }
     if (restoringTimer === null) restoringTimer = setTimeout(() => { restoringTimer = null; if (schedule.restoring) { waitForRestore(true); render(); } }, left);
   }
-  // Every calendar change reaches home here; a connection made, lost or finished checking, or a
-  // finished sync, reloads today once home has shown it.
+  // Every calendar change reaches home here: a connection made, lost or finished checking,
+  // another account or calendars, or a finished sync. Home reloads today once it has shown it;
+  // while another screen is in front it reloads when shown again.
   function acceptCalendar(value) {
     if (!value) return;
-    const next = `${Boolean(value.connected)}:${Boolean(value.restoring)}:${value.lastSyncedAt ?? ''}`;
+    const next = JSON.stringify([Boolean(value.connected), Boolean(value.restoring), value.lastSyncedAt ?? null, value.accountLabel ?? null, value.selectedCalendars ?? []]);
     if (next === calendarKey) return;
     calendarKey = next;
-    if (schedule.day) void refresh();
+    if (!schedule.day) return;
+    if (container.hidden) stale = true;
+    else void refresh();
   }
 
   function render() {
@@ -96,9 +105,10 @@ export function mountHome({ container, bridge, icon, escape, onRecord, onCreate,
     const attentionBlock = notices.length ? `<div class="home-attention">${notices.map(({ notice, run }) => {
       const update = notice.action === 'update';
       const busy = Boolean(run.pending);
-      const label = update ? (busy ? '업데이트 중' : '업데이트') : '설정 열기';
+      let label = '설정 열기';
+      if (update) label = busy ? '업데이트 중' : '업데이트';
       const html = `${busy ? '<span class="activity-spinner" aria-hidden="true"></span>' : ''}<span>${escape(label)}</span>`;
-      const action = ui.button({ html, withIcon: busy, className: 'small', disabled: busy, attrs: { 'data-home-notice': notice.id, 'data-home-notice-action': update ? 'update' : 'settings' } });
+      const action = ui.button({ html, withIcon: busy, className: 'small', disabled: busy, attrs: { id: homeNoticeId(notice.id), 'data-home-notice': notice.id, 'data-home-notice-action': update ? 'update' : 'settings' } });
       return ui.attentionNotice({ title: notice.title, message: notice.detail || notice.message, status: run.note, error: run.error, actionsHTML: action, attrs: { 'data-notice-id': notice.id } });
     }).join('')}</div>` : '';
     remember();
@@ -133,6 +143,6 @@ export function mountHome({ container, bridge, icon, escape, onRecord, onCreate,
     if (action === 'calendar') void onConnectCalendar?.();
   });
   // Today's schedule is read when home first shows on a given day.
-  function ensure() { if (schedule.day !== calendarDay(now()) && !schedule.loading) void refresh(); }
+  function ensure() { if ((stale || schedule.day !== calendarDay(now())) && !schedule.loading) { stale = false; void refresh(); } }
   return { refresh, ensure, render, acceptCalendar, focus: () => container.querySelector('.home-date')?.focus({ preventScroll: true }) };
 }

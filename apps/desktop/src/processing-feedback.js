@@ -16,8 +16,15 @@ export function jobActions(job, { summaryEnabled = true, ...context } = {}) {
     cancel: feedback.cancelVisible && !feedback.cancelDisabled,
     pause: feedback.pauseVisible && !feedback.pauseDisabled ? feedback.pauseAction : null,
   };
-  actions.allows = action => action === 'retry' ? actions.retry : action === 'ack' ? actions.ack : action === 'cancel' ? actions.cancel
-    : ['pause', 'resume'].includes(action) ? actions.pause === action : false;
+  actions.allows = action => {
+    switch (action) {
+      case 'retry': return actions.retry;
+      case 'ack': return actions.ack;
+      case 'cancel': return actions.cancel;
+      case 'pause': case 'resume': return actions.pause === action;
+      default: return false;
+    }
+  };
   return actions;
 }
 const jobTitles = {

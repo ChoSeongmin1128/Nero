@@ -233,17 +233,25 @@ test('keep leaves the note and error of notices that are still there', async () 
   assert.equal(actions.state('failed').error, '오류');
 });
 
-test('a result that lands after its notice went away is kept only until the owner next calls keep', async () => {
+test('a result that lands after its notice went away is not shown on the notice that comes back with the same id', async () => {
   const gate = deferred();
   const { actions } = noticeActionsWith({ update: () => gate.promise });
   const running = actions.run({ id: 'n1' }, 'update');
   actions.keep([]);
+  actions.keep(['n1']);
+  assert.equal(actions.busy('n1'), true, 'the running action still blocks a second start');
   gate.reject(new Error('늦은 실패'));
   await running;
-  assert.equal(actions.state('n1').error, '늦은 실패');
-  actions.keep([]);
-  actions.keep(['n1']);
   assert.equal(actions.state('n1').error, '');
+  assert.equal(actions.busy('n1'), false);
+});
+
+test('a handler hears where its action was asked', async () => {
+  const heard = [];
+  const { actions } = noticeActionsWith({ settings: async (notice, context) => { heard.push(context); } });
+  await actions.run({ id: 'n1' }, 'settings', { returnId: 'home-notice-n1' });
+  await actions.run({ id: 'n1' }, 'settings');
+  assert.deepEqual(heard, [{ returnId: 'home-notice-n1' }, {}]);
 });
 
 test('subscribers hear the start and the end once each and unsubscribing stops them', async () => {
@@ -646,8 +654,13 @@ test('the rail dot survives the sidebar being pinned and unpinned', t => {
   const app = railHarness(t);
   app.navigation.attention('trash', true);
   const toggle = app.document.getElementById('navigation-toggle');
+  const pinned = () => toggle.getAttribute('aria-label') === '사이드바 접기';
+  const before = pinned();
   toggle.click();
+  assert.equal(pinned(), !before);
+  assert.equal(app.preview('trash').dataset.attention, 'true');
   toggle.click();
+  assert.equal(pinned(), before);
   assert.equal(app.preview('trash').dataset.attention, 'true');
   assert.equal(app.preview('trash').getAttribute('aria-label'), `휴지통, ${phrase}`);
 });

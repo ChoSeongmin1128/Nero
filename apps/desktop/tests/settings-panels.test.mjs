@@ -67,10 +67,27 @@ test('a failed new-meeting folder change keeps the previous folder and reports b
   assert.ok(changes >= 5);
 });
 
-test('a folder that cannot be read leaves the current value and redraws nothing', async () => {
-  let changes = 0;
-  const folder = createNewMeetingFolder({ onChange: () => { changes += 1; }, bridge: { readNewMeetingFolder: async () => { throw new Error('offline'); } } });
+test('a folder that cannot be read keeps the folder already shown and redraws nothing', async () => {
+  let changes = 0, fail = false;
+  const folder = createNewMeetingFolder({ onChange: () => { changes += 1; }, bridge: { readNewMeetingFolder: async () => { if (fail) throw new Error('offline'); return 'project'; } } });
   await folder.reload();
-  assert.equal(folder.value(), null);
-  assert.equal(changes, 0);
+  assert.equal(folder.value(), 'project');
+  const after = changes;
+  fail = true;
+  await folder.reload();
+  assert.equal(folder.value(), 'project');
+  assert.equal(changes, after);
+});
+
+test('a read that finishes after a change does not bring back the old folder', async () => {
+  let release;
+  const folder = createNewMeetingFolder({ bridge: {
+    readNewMeetingFolder: () => new Promise(resolve => { release = resolve; }),
+    setNewMeetingFolder: async id => id,
+  } });
+  const reading = folder.reload();
+  await folder.set('chosen');
+  release('old');
+  await reading;
+  assert.equal(folder.value(), 'chosen');
 });

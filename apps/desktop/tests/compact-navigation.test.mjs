@@ -7,6 +7,7 @@ import { mountLibrary } from '../src/library-ui.js';
 import { createRequire } from 'node:module';
 globalThis.NeroUI ??= createRequire(import.meta.url)('../../../design-system/components.js');
 import { mountNavigationShell } from '../src/navigation-shell.js';
+import { routeKey } from '../src/screen-state.js';
 
 function setup(t, preferences = {}) {
   t.mock.timers.enable({ apis: ['setTimeout'] });
@@ -57,7 +58,7 @@ test('resting on a rail button shows its list, passing over one does not, and th
   assert.deepEqual(app.activated, [], 'resting on a rail button shows its list without going there');
   app.preview('home').click();
   assert.deepEqual(app.activated, ['home']);
-  app.events.pop();
+  assert.equal(app.events.pop().view, 'home', 'the click also shows the home list');
   assert.equal(app.document.activeElement, app.el('notes'), 'hovering keeps the writing focus');
   app.pointer(app.preview('trash'), 'pointerleave');
   app.pointer(app.compact, 'pointerleave');
@@ -297,7 +298,7 @@ async function productSidebar(t) {
     folderName: id => state.snapshot.folders.find(folder => folder.id === id)?.name || '',
     onPreview: (view, folder) => library.preview(view, folder) });
   const renderLibrary = library.render;
-  library.render = () => { renderLibrary(); views.sync(`${state.homeOpen}:${state.libraryOpen}:${state.selectedId}:${state.libraryFilter}`); };
+  library.render = () => { renderLibrary(); views.sync(routeKey(state)); };
   library.render();
   t.after(() => views.destroy());
   return { window, document, el, state, calls, library, views };
@@ -387,4 +388,25 @@ test('preview keyboard return preserves text editing and open menu priority', t 
   popup.querySelector('button').focus();
   assert.equal(key(popup.querySelector('button'), 'ArrowLeft').defaultPrevented, false);
   assert.equal(app.document.activeElement, popup.querySelector('button'));
+});
+
+test('a disposed sidebar removes its resize handle and stops answering the rail and keyboard', t => {
+  const app = setup(t);
+  assert.equal(app.document.querySelectorAll('.navigation-resize').length, 1);
+  app.navigation.dispose();
+  assert.equal(app.document.querySelectorAll('.navigation-resize').length, 0);
+  app.preview('all').click();
+  assert.deepEqual(app.activated, [], 'a click after dispose goes nowhere');
+  app.pointer(app.preview('trash'), 'pointerenter');
+  app.tick(500);
+  assert.equal(app.events.length, 0);
+});
+
+test('ArrowRight on a rail button only enters its list, Enter goes there like a click', t => {
+  const app = setup(t);
+  app.preview('home').dispatchEvent(new app.window.KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }));
+  assert.deepEqual(app.activated, []);
+  assert.equal(app.events.at(-1).view, 'home');
+  app.preview('all').dispatchEvent(new app.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+  assert.deepEqual(app.activated, ['all']);
 });

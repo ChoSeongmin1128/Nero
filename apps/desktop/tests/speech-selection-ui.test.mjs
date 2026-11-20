@@ -277,6 +277,22 @@ test('staged low-memory downloads need the acknowledgement and confirm before th
   assert.deepEqual(f.calls.find(call=>call.name==='requestSpeechEngine').args,['qwenKo',true],'the acknowledgement goes with the request');
 });
 
+test('accepting an offer with a memory warning needs the acknowledgement and sends it',async t=>{
+  const offer={id:'qwen-ko-final-transcript-2026-11',engine:'qwenKo',title:'Qwen3-ASR 한국어 · 녹음 후 전사',description:'',downloadBytes:4_400_000_000,
+    memoryWarning:'이 Mac 메모리 8GB 중 약 4.5GB, 절반 이상을 쓸 수 있어 처리 중 느려지거나 실패할 수 있습니다.'};
+  const f=await fixture(t,{speech:{speechOffer:offer}});
+  const dialog=f.get('speech-offer-dialog');
+  await wait(()=>dialog.open);
+  const accept=dialog.querySelector('[data-action="accept-speech-offer"]');
+  assert.equal(accept.disabled,true);
+  const box=dialog.querySelector('#speech-offer-memory');
+  box.checked=true; box.dispatchEvent(new f.window.Event('change'));
+  assert.equal(accept.disabled,false);
+  accept.click();
+  await wait(()=>f.calls.some(call=>call.name==='respondSpeechOffer'));
+  assert.deepEqual(f.calls.find(call=>call.name==='respondSpeechOffer').args,[true,true]);
+});
+
 test('existing users get the switch offer once and only the buttons record a decision',async t=>{
   const offer={id:'qwen-ko-final-transcript-2026-11',engine:'qwenKo',title:'Qwen3-ASR 한국어 · 녹음 후 전사',description:'',downloadBytes:4_400_000_000,memoryWarning:null};
   const f=await fixture(t,{speech:{speechOffer:offer}});

@@ -99,7 +99,7 @@ export function mountNotificationCenter({ container, onOpenMeeting, onProcessing
     if (disposed) return;
     const jobs = rows();
     const saved = focusReturn = rememberFocus() || focusReturn;
-    const key = JSON.stringify([jobs, [...pending], [...errors], noticeIdsNow().map(noticeActions.state), [...snapshot.actions || []], snapshot.connected, confirming]);
+    const key = JSON.stringify([jobs, [...pending], [...errors], noticeIdsNow().map(noticeActions.state), [...snapshot.actions || []], snapshot.connected, snapshot.summaryEnabled !== false, confirming]);
     if (key === renderKey) return;
     renderKey = key;
     const active = jobs.filter(job => job.active).length;
@@ -140,7 +140,7 @@ export function mountNotificationCenter({ container, onOpenMeeting, onProcessing
     const incoming = value.processing?.revision;
     const processing = incoming != null && previous != null && incoming < previous ? snapshot.processing : value.processing || snapshot.processing;
     snapshot = { ...snapshot, ...value, processing };
-    const noticeIds = new Set([...(snapshot.integrations || []), ...(snapshot.notices || [])].map(item => item.id));
+    const noticeIds = new Set(noticeIdsNow());
     for (const id of confirmedNotices) if (!noticeIds.has(id)) confirmedNotices.delete(id);
     noticeActions.keep(noticeIds);
     for (const job of processingJobs(processing)) if (activeStatuses.has(job.status)) observedActive.add(job.id);
@@ -207,7 +207,8 @@ export function mountNotificationCenter({ container, onOpenMeeting, onProcessing
     else void perform(target.dataset.notificationAction, target.dataset.notificationJob);
   };
   container.addEventListener('click', click);
-  const unsubscribe = noticeActions.subscribe(() => { render(); onChanged(); });
+  // A notice's progress changes only its own row; the counts the owner shows stay the same.
+  const unsubscribe = noticeActions.subscribe(() => render());
   return { update, render, counts: () => ({ active: rows().filter(job => job.active).length, unread: rows().filter(job => notificationGroup(job) === 'attention' && job.unread).length, total: rows().length }),
     destroy() { disposed = true; unsubscribe(); container.removeEventListener('click', click); } };
 }

@@ -367,6 +367,6 @@ test('job actions allow exactly what the banner and the notification list show',
 test('a result to review asks to open the meeting only when Core says the saved result needs it', () => {
   const base = { id: 'job', kind: 'transcribe', status: 'needsReview', phase: 'mossPartial', message: '일부 구간을 인식하지 못했습니다.' };
   assert.equal(processingFeedback({ ...base, review: 'savedResult' }).detail, '회의를 열어 저장된 결과를 확인해 주세요.');
-  assert.notEqual(processingFeedback({ ...base, review: 'recognition' }).detail, '회의를 열어 저장된 결과를 확인해 주세요.');
-  assert.notEqual(processingFeedback({ ...base, review: null }).detail, '회의를 열어 저장된 결과를 확인해 주세요.');
+  assert.equal(processingFeedback({ ...base, review: 'recognition' }).detail, base.message, 'a recognition review keeps its own message');
+  assert.equal(processingFeedback({ ...base, review: null }).detail, base.message);
 });

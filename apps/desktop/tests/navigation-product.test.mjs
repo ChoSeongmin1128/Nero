@@ -5,6 +5,7 @@ import { Window } from 'happy-dom';
 import { createRequire } from 'node:module';
 import { mountLibrary, renderMeetingMenu, formatRecentDuration } from '../src/library-ui.js';
 import { mountNavigationShell } from '../src/navigation-shell.js';
+import { routeKey } from '../src/screen-state.js';
 
 const settle = () => new Promise(resolve => setImmediate(resolve));
 globalThis.NeroUI ??= createRequire(import.meta.url)('../../../design-system/components.js');
@@ -30,10 +31,11 @@ async function setup(t, preferences = {}) {
   };
   let library, sidebarViews;
   library = mountLibrary({ bridge, duration: milliseconds => `${milliseconds / 1000}초`, recordingStatus: phase => phase, isAudioReady: id => state.readyAudio === id, getState: () => state, byId: id => document.getElementById(id), finishEditing: async action => action(), acceptSnapshot(snapshot) { state.snapshot = snapshot; }, selectMeeting(id) { state.selectedId = id; state.libraryOpen = false; library.render(); }, render() { library.render(); }, showError(error) { throw error; }, beginNavigation(history) { navigationCalls.push(history); return () => true; }, onNavigated: () => sidebarViews?.navigated(), escape, icon: name => `<svg data-icon="${name}"></svg>` });
-  sidebarViews = mountNavigationShell({ document, storage: window.localStorage, count: filter => library.count(filter), onPreview: view => library.preview(view) });
+  sidebarViews = mountNavigationShell({ document, storage: window.localStorage, count: filter => filter === 'folders' ? state.snapshot.folders.length : library.count(filter),
+    folderName: id => state.snapshot.folders.find(folder => folder.id === id)?.name || '', onPreview: (view, folder) => library.preview(view, folder) });
   // As the app does, every screen render tells the navigation where the content now is.
   const renderLibrary = library.render;
-  library.render = () => { renderLibrary(); sidebarViews.sync(`${state.homeOpen}:${state.libraryOpen}:${state.selectedId}:${state.libraryFilter}`); };
+  library.render = () => { renderLibrary(); sidebarViews.sync(routeKey(state)); };
   library.render();
   t.after(() => sidebarViews.destroy());
   return { window, document, state, library, navigationCalls, mutations, bridge };

@@ -8,7 +8,7 @@ import { createNoticeActions } from '../src/notice-actions.js';
 import { createSettingsPanels } from '../src/settings-panels.js';
 import { microphoneIssue as findMicrophoneIssue, mountRecordingSettings, readMicrophonePreference } from '../src/recording-settings.js';
 import { createNewMeetingFolder } from '../src/new-meeting-folder.js';
-import { openedMeetingId, routeKey, screenOf, showHome, showList, showMeeting } from '../src/screen-state.js';
+import { fallBackToList, openedMeetingId, routeKey, screenOf, showHome, showList, showMeeting } from '../src/screen-state.js';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
@@ -154,7 +154,7 @@ async function openApp(initialTranscript = null, readiness = { status: 'idle', s
   bridge.writeClipboardText = async text => { copied.push(text); };
   const aiBridge = { appendNote: async () => {}, saveSummary: async () => {}, openSource: async () => {} };
   const templateSettings = { setActive() {}, beforeLeave: async () => true, isConfirming: () => false, hide() {} };
-  const context = vm.createContext({ recognitionCoverage, mountBrandIcons, snapshotSignatures, compareSnapshotSignatures, requestAudioPlayback, createIntegrationMonitor, attentionNotices, createNoticeActions, createSettingsPanels, findMicrophoneIssue, mountRecordingSettings, readMicrophonePreference, createNewMeetingFolder, openedMeetingId, routeKey, screenOf, showHome, showList, showMeeting, liveTranscriptRows, meetingResultPreview, renderMeetingMenu, testMountNotificationCenter: mountNotificationCenter,
+  const context = vm.createContext({ recognitionCoverage, mountBrandIcons, snapshotSignatures, compareSnapshotSignatures, requestAudioPlayback, createIntegrationMonitor, attentionNotices, createNoticeActions, createSettingsPanels, findMicrophoneIssue, mountRecordingSettings, readMicrophonePreference, createNewMeetingFolder, fallBackToList, openedMeetingId, routeKey, screenOf, showHome, showList, showMeeting, liveTranscriptRows, meetingResultPreview, renderMeetingMenu, testMountNotificationCenter: mountNotificationCenter,
     navigator: { clipboard: { writeText: async text => { copied.push(text); } } },
     document, testBridge: bridge, testAiBridge: aiBridge, testAiLifecycle: aiLifecycle, testAgentDialogCalls: agentDialogCalls, testTemplateSettings: templateSettings, localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
     NeroControls: { enhanceAll() {} },
@@ -1126,6 +1126,22 @@ test('a recording started on one meeting never lands on another chosen while dev
   devices.resolve([{id:'usb',name:'USB',isDefault:true}]);
   await click; await tick();
   assert.equal(started, null);
+});
+
+test('a recording asked on a meeting does not start when the person went home while devices load', async () => {
+  const page = await openApp();
+  let started = null;
+  page.bridge.startRecording = async (meetingId, deviceId) => { started = {meetingId,deviceId}; return page.bridge.readSnapshot(); };
+  await page.setDevices([{id:'usb',name:'USB',isDefault:true}]);
+  page.app.state.deviceId = 'usb';
+  const devices = deferred();
+  page.bridge.listDevices = () => devices.promise;
+  const click = page.element('recording-controls').listeners.get('click')({target:{closest:()=>({dataset:{action:'start'}})}});
+  await tick();
+  page.app.state.homeOpen = true;
+  devices.resolve([{id:'usb',name:'USB',isDefault:true}]);
+  await click; await tick();
+  assert.equal(started, null, 'the selection stayed, but the meeting was no longer open');
 });
 
 test('starting a recording rechecks device availability and uses the saved preference', async () => {
@@ -2314,4 +2330,24 @@ test('explicit transcript refresh supersedes a reused citation read without adop
   pending.resolve(transcriptDocument());
   await Promise.all([loading, reused]);
   assert.equal(page.app.state.transcriptDraft.doc.segments[0].text, 'newly committed transcript');
+});
+
+test('the banner offers no button to open the meeting already open, and no cancel while a pause is on its way', async () => {
+  const page = await openApp(transcriptDocument());
+  await page.app.acceptProcessing({ revision: 7, status: 'idle', supported: true, modelReady: true, jobs: [
+    { id: 'review', kind: 'transcribe', meetingId: 'a', status: 'needsReview', review: 'savedResult', createdAt: 1 },
+  ] });
+  assert.equal(page.element('processing').hidden, false);
+  assert.equal(page.element('open-processing-meeting').hidden, true);
+  const running = { id: 'run', kind: 'transcribe', meetingId: 'a', status: 'running', pausable: true, createdAt: 2 };
+  await page.app.acceptProcessing({ revision: 8, status: 'running', ...running, supported: true, modelReady: true, jobs: [running] });
+  const pause = deferred();
+  page.bridge.pauseProcessing = () => pause.promise;
+  const request = page.app.processingAction('pause', 'run');
+  await tick();
+  assert.equal(page.element('cancel-processing').hidden, false);
+  assert.equal(page.element('cancel-processing').disabled, true, 'a cancel now would be refused');
+  pause.resolve({ revision: 9, status: 'running', ...running, pause: { state: 'paused', by: 'user' }, supported: true, modelReady: true, jobs: [{ ...running, pause: { state: 'paused', by: 'user' } }] });
+  await request;
+  assert.equal(page.element('cancel-processing').disabled, false);
 });

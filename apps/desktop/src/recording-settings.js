@@ -1,11 +1,12 @@
 const microphoneKey = 'nero.recording.microphone.v1';
 const recorderKey = 'nero.recording.autoRecorder.v1';
 
-export function readMicrophonePreference(storage = globalThis.localStorage) {
-  try {
-    const value = JSON.parse(storage?.getItem(microphoneKey) || 'null');
-    return value && (value.id === null || typeof value.id === 'string') ? { id: value.id, name: typeof value.name === 'string' ? value.name : '' } : { id: null, name: '' };
-  } catch { return { id: null, name: '' }; }
+// `storage` is the guarded handle the app passes; reading it never throws here.
+export function readMicrophonePreference(storage) {
+  let value = null;
+  try { value = JSON.parse(storage?.getItem(microphoneKey) || 'null'); } catch { return { id: null, name: '' }; }
+  if (!value || (value.id !== null && typeof value.id !== 'string')) return { id: null, name: '' };
+  return { id: value.id, name: typeof value.name === 'string' ? value.name : '' };
 }
 
 export function microphoneIssue({ devices, deviceId }) {
@@ -18,7 +19,7 @@ export function microphoneIssue({ devices, deviceId }) {
 // The recording panel of Settings: microphone, new-meeting folder, the recorder window and
 // recording-time transcription. The device list and chosen microphone stay in the app state
 // because recording reads them; this panel saves the choice and reports it with `onMicrophone`.
-export function mountRecordingSettings({ byId, bridge, escape, getState, activeSession, folder, acceptProcessing, onMicrophone, onChange, storage = globalThis.localStorage }) {
+export function mountRecordingSettings({ byId, bridge, escape, getState, activeSession, folder, acceptProcessing, onMicrophone, onChange, storage = null }) {
   let error = '', deviceKey = '', recorderBusy = false, transcriptionBusy = false;
   let autoRecorder = (() => { try { return storage?.getItem(recorderKey) !== 'false'; } catch { return true; } })();
   const fail = message => { error = message; onChange(); };
@@ -91,9 +92,12 @@ export function mountRecordingSettings({ byId, bridge, escape, getState, activeS
   async function changeTranscription() {
     const next = byId('recording-transcription').checked;
     transcriptionBusy = true; onChange();
-    try { await acceptProcessing(await bridge.setRecordingTranscription(next)); error = ''; }
-    catch { error = '녹음 중 음성 기록 설정을 저장하지 못했습니다.'; }
+    let progress;
+    try { progress = await bridge.setRecordingTranscription(next); error = ''; }
+    catch (failure) { error = failure?.message || '녹음 중 음성 기록 설정을 저장하지 못했습니다.'; }
     finally { transcriptionBusy = false; onChange(); }
+    // The setting is saved; showing its result is the app's work and reports its own failure.
+    if (progress) await acceptProcessing(progress);
   }
   byId('settings-microphone').addEventListener('change', changeMicrophone);
   byId('auto-recorder').addEventListener('change', () => changeRecorder());

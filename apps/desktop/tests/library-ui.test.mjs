@@ -756,12 +756,19 @@ test('empty trash respects recording protection before opening and at confirmati
 
 test('the recent sidebar list excludes trash, uses recording chronology and keeps the source order', () => {
   const app = harness();
-  const source = Array.from({length: 8}, (_, index) => ({id: String(index), title: '회의', folderId: null, createdAt: index * 10, updatedAt: 999 - index, deletedAt: index === 7 ? 1 : null}));
-  source[0].recordedAt = 65;
+  const source = Array.from({length: 26}, (_, index) => ({id: `m${String(index).padStart(2, '0')}`, title: '회의', folderId: null, createdAt: index * 10, updatedAt: 999 - index, deletedAt: index === 25 ? 1 : null}));
+  source[0].recordedAt = 999;
+  // m05 and m06 start at the same moment across the cutoff; the id breaks the tie.
+  source[6].createdAt = source[5].createdAt;
   app.state.snapshot.meetings = source;
   const before = JSON.stringify(source);
   app.controller.preview('recent');
-  assert.deepEqual([...app.byId('sidebar-meeting-list').innerHTML.matchAll(/data-recent-meeting="([^"]+)"/g)].map(match => match[1]), ['0', '6', '5', '4', '3', '2', '1']);
+  const shown = [...app.byId('sidebar-meeting-list').innerHTML.matchAll(/data-recent-meeting="([^"]+)"/g)].map(match => match[1]);
+  assert.equal(shown.length, 20, 'the recent list keeps the latest twenty');
+  assert.equal(shown[0], 'm00', 'recording time orders the list');
+  assert.equal(shown.includes('m25'), false, 'trash is left out');
+  assert.deepEqual(shown.slice(-2), ['m07', 'm05'], 'the tie across the cutoff is broken by id');
+  assert.equal(shown.includes('m06'), false);
   assert.equal(JSON.stringify(source), before);
 });
 

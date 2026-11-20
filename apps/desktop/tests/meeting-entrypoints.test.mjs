@@ -121,8 +121,11 @@ test('native start failure leaves the created draft in the list with an actionab
   f.get('library-record').click();
   await f.wait(() => !f.get('error').hidden && !f.get('library-record').disabled);
   assert.match(f.get('error-message').textContent, /마이크/);
-  assert.deepEqual(f.snapshot().meetings.map(meeting => meeting.title), ['새 회의']);
   assert.equal(f.snapshot().session, null);
+  f.window.document.querySelector('[data-navigation-preview="all"]').click();
+  await f.wait(() => f.window.document.querySelector('#sidebar-meeting-list [data-recent-meeting="new"]'));
+  f.window.document.querySelector('#sidebar-meeting-list [data-recent-meeting="new"]').click();
+  await f.wait(() => f.get('meeting-title').value === '새 회의');
 });
 
 test('quick record respects the current folder', async t => {
@@ -142,9 +145,9 @@ test('recording a calendar event on home is one native step with the day it was 
   f.window.document.querySelector('[data-home-event="weekly"]').click();
   await f.wait(() => f.count('recordCalendarOccurrence') === 1 && f.snapshot().session);
   const [key, scope, deviceId] = f.calls.find(call => call.name === 'recordCalendarOccurrence').args;
+  const [read] = f.calls.find(call => call.name === 'readCalendarMeetingOccurrences').args;
   assert.equal(key, 'weekly');
-  assert.equal(scope.scopeRevision, 4);
-  assert.ok(scope.day && scope.timeZone);
+  assert.deepEqual([scope.day, scope.timeZone, scope.scopeRevision], [read.day, read.timeZone, 4], 'the day the event was chosen from');
   assert.equal(deviceId, null);
   assert.equal(f.count('createMeetingFromCalendar') + f.count('startRecording') + f.count('createRecording'), 0);
   await f.wait(() => f.get('meeting-title').value === '주간 회의');

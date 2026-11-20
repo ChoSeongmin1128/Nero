@@ -169,7 +169,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
     const active = dialog.ownerDocument?.activeElement;
     if (onlyIfIdle && active && active !== dialog.ownerDocument.body && !dialog.contains?.(active)) return;
     const rows = byId('sidebar-meeting-list');
-    const rowTarget = returnRecentId && !rows?.hidden && [...rows.querySelectorAll('[data-recent-row]')].find(node => node.dataset.recentRow === returnRecentId)?.querySelector('summary');
+    const rowTarget = returnRecentId && rows && !rows.hidden && [...rows.querySelectorAll('[data-recent-row]')].find(node => node.dataset.recentRow === returnRecentId)?.querySelector('summary');
     let target = rowTarget || (returnFocus?.isConnected && !returnFocus.disabled && !returnFocus.hidden ? returnFocus : byId(state().libraryOpen ? 'library-title' : 'new-folder'));
     if (!target || target.hidden || target.closest?.('.navigation-sidebar')?.inert || target.closest?.('#sidebar-library-navigation[hidden],#sidebar-meeting-list[hidden],#new-folder[hidden]')) target = byId('navigation-toggle');
     target?.focus({ preventScroll: true });
@@ -464,8 +464,8 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
       clearDropTarget();
       folderKey = key;
       const focused = dialog.ownerDocument?.activeElement?.dataset?.libraryFilter;
-      const renderNavigation = items => items.map(item => `<div class="library-folder-item"><button type="button" class="quiet library-folder-link" data-library-filter="${escape(item.id)}" aria-label="${escape(item.name)}" title="${escape(item.name)}"${state().libraryOpen && filter === item.id ? ' aria-current="page"' : ''}${disabled ? ' disabled' : ''}>${icon(item.icon)}<span class="library-folder-name" title="${escape(item.name)}">${escape(item.name)}</span><span class="library-folder-count">${countInView(item.id)}</span></button>${folders.some(folder => folder.id === item.id) ? `<details class="library-folder-menu"><summary aria-label="${escape(item.name)} 폴더 메뉴">${icon('ellipsis')}</summary><div class="action-menu"><button type="button" data-folder-rename="${escape(item.id)}"${disabled ? ' disabled' : ''}>이름 변경</button><button type="button" class="danger" data-folder-delete="${escape(item.id)}"${disabled ? ' disabled' : ''}>폴더 삭제</button></div></details>` : ''}</div>`).join('');
-      byId('library-user-folders').innerHTML = renderNavigation(navigation.filter(item => folders.some(folder => folder.id === item.id)));
+      const folderRow = folder => `<div class="library-folder-item"><button type="button" class="quiet library-folder-link" data-library-filter="${escape(folder.id)}" aria-label="${escape(folder.name)}" title="${escape(folder.name)}"${state().libraryOpen && filter === folder.id ? ' aria-current="page"' : ''}${disabled ? ' disabled' : ''}>${icon('folder')}<span class="library-folder-name" title="${escape(folder.name)}">${escape(folder.name)}</span><span class="library-folder-count">${countInView(folder.id)}</span></button><details class="library-folder-menu"><summary aria-label="${escape(folder.name)} 폴더 메뉴">${icon('ellipsis')}</summary><div class="action-menu"><button type="button" data-folder-rename="${escape(folder.id)}"${disabled ? ' disabled' : ''}>이름 변경</button><button type="button" class="danger" data-folder-delete="${escape(folder.id)}"${disabled ? ' disabled' : ''}>폴더 삭제</button></div></details></div>`;
+      byId('library-user-folders').innerHTML = folders.map(folderRow).join('');
       if (focused) [...byId('folder-list').querySelectorAll('[data-library-filter]')].find(node => node.dataset.libraryFilter === focused)?.focus({ preventScroll: true });
     }
     const overview = folderOverview();

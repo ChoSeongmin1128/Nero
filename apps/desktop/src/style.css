@@ -6,8 +6,6 @@ body { overflow: hidden; }
 .workspace { display: grid; grid-template-columns: 220px minmax(0, 1fr); height: 100%; }
 .brand { display: inline-flex; align-items: center; gap: 9px; font-size: var(--text-heading-size); font-weight: var(--weight-heading); letter-spacing: var(--tracking-heading); }
 .brand img { display: block; flex: none; }
-.library-heading { display: flex; align-items: center; justify-content: space-between; min-height: 32px; padding: 0 8px; }
-.library-heading h2 { color: var(--text-secondary); font-size: var(--text-caption-size); font-weight: var(--weight-medium); }
 .section-heading h2, .recording-heading h2 { font-size: var(--text-subtitle-size); font-weight: var(--weight-semibold); letter-spacing: var(--tracking-ui); }
 .meeting-list { flex: 1; overflow: auto; padding: 0 6px 10px; }
 .meeting-item { display: flex; align-items: flex-start; gap: 8px; width: 100%; min-height: 36px; margin-bottom: 2px; border-color: transparent; background: transparent; padding: 5px 8px; text-align: left; }
@@ -482,13 +480,6 @@ html.recorder-document { background: transparent; }
 }
 
 /* Approved A library: one primary action, quiet search and readable rows. */
-#library-search-home { flex: none; margin: 6px 0 24px; max-width: 420px; }
-#library-search-home:empty { display: none; }
-#library-search-home > .search-field { display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--control-radius); background: var(--surface); color: var(--text-secondary); }
-#library-search-home .search-field > [data-detail-icon] { display: flex; flex: none; }
-#library-search-home .search-field svg { width: 17px; height: 17px; }
-#library-search-home input { border: 0; background: transparent; padding: 0; outline: none; box-shadow: none; font-size: var(--text-body-size); }
-#library-search-home:focus-within { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: var(--control-radius); }
 .library-screen-header { margin-bottom: 18px; }
 #library-count:not(:has(.activity-spinner)) { display: none; }
 #library-record { width: 100%; justify-content: flex-start; }

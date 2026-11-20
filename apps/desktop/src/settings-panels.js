@@ -5,7 +5,6 @@ export function createSettingsPanels({ dialog, byId, panels = {} }) {
   const parts = name => [panels[name] || []].flat();
   return {
     names,
-    has: name => names.includes(name),
     render(selected) {
       for (const name of names) {
         const shown = selected === name;

@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Window } from 'happy-dom';
-import { homeEvents, mountHome } from '../src/home-view.js';
+import { createRequire } from 'node:module';
+import { homeEvents, homeNoticeId, mountHome } from '../src/home-view.js';
 
 const hour = 3600000;
+const ui = createRequire(import.meta.url)('../../../design-system/components.js');
 const at = new Date(2026, 10, 19, 14, 30);
 
 function harness(calendar, occurrences = [], extra = {}) {
@@ -128,3 +130,65 @@ test('home picks the folder new meetings start in, unfiled by default', async t 
   assert.match(app.container.querySelector('.home-context').textContent, /내장 마이크/);
 });
 
+
+test('choosing other calendars reloads today even when no sync has finished yet', async t => {
+  const app = harness({ connected: true });
+  t.after(() => app.window.happyDOM.abort());
+  await app.home.refresh();
+  app.home.acceptCalendar({ connected: true, lastSyncedAt: null, selectedCalendars: ['a'] });
+  await new Promise(resolve => setImmediate(resolve));
+  const before = app.calls.length;
+  app.home.acceptCalendar({ connected: true, lastSyncedAt: null, selectedCalendars: ['a', 'b'] });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(app.calls.length, before + 1);
+});
+
+test('a calendar change while home is hidden reloads once home is shown again', async t => {
+  const app = harness({ connected: true });
+  t.after(() => app.window.happyDOM.abort());
+  await app.home.refresh();
+  const before = app.calls.length;
+  app.container.hidden = true;
+  app.home.acceptCalendar({ connected: true, lastSyncedAt: 5 });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(app.calls.length, before, 'nothing is read for a hidden home');
+  app.container.hidden = false;
+  app.home.ensure();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(app.calls.length, before + 1);
+});
+
+test('a failed read after a connection check shows the failure, not the check still running', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let fail = false;
+  const app = harness(undefined, [], { bridge: { readCalendarMeetingOccurrences: async () => { if (fail) throw new Error('일정을 읽지 못했습니다.'); return { calendar: { connected: false, restoring: true }, occurrences: [] }; } } });
+  t.after(() => app.window.happyDOM.abort());
+  await app.home.refresh();
+  fail = true;
+  await app.home.refresh();
+  t.mock.timers.tick(60_000);
+  assert.equal(app.container.querySelector('.activity-spinner'), null);
+  assert.match(app.container.textContent, /일정을 읽지 못했습니다/);
+  assert.doesNotMatch(app.container.textContent, /아직 확인하지 못했습니다/);
+});
+
+test('a notice that left does not take focus when it comes back later', async t => {
+  let notices = [{ id: 'n1', title: 'Claude 연동', message: '업데이트가 필요합니다.', action: 'update' }];
+  const app = harness({ connected: false }, [], { attention: () => notices, onNotice: () => {}, ui });
+  t.after(() => app.window.happyDOM.abort());
+  await app.home.refresh();
+  app.container.querySelector('[data-home-notice="n1"]').focus();
+  notices = [];
+  app.home.render();
+  app.window.document.body.focus();
+  notices = [{ id: 'n1', title: 'Claude 연동', message: '업데이트가 필요합니다.', action: 'update' }];
+  app.home.render();
+  assert.notEqual(app.window.document.activeElement?.dataset?.homeNotice, 'n1');
+});
+
+test('home notice buttons keep an id Settings can return focus to', async t => {
+  const app = harness({ connected: false }, [], { attention: () => [{ id: 'integration:claude', title: 'Claude 연동', message: '', action: 'update' }], onNotice: () => {}, ui });
+  t.after(() => app.window.happyDOM.abort());
+  await app.home.refresh();
+  assert.ok(app.window.document.getElementById(homeNoticeId('integration:claude')));
+});

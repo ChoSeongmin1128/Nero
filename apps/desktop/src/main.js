@@ -4,7 +4,7 @@ import { mountNavigationShell } from './navigation-shell.js';
 import { createSettingsPanels } from './settings-panels.js';
 import { microphoneIssue as findMicrophoneIssue, mountRecordingSettings, readMicrophonePreference } from './recording-settings.js';
 import { createNewMeetingFolder } from './new-meeting-folder.js';
-import { openedMeetingId, routeKey, screenOf, showHome, showList, showMeeting } from './screen-state.js';
+import { fallBackToList, openedMeetingId, routeKey, screenOf, showHome, showList, showMeeting } from './screen-state.js';
 import { snapshotSignatures, compareSnapshotSignatures } from './snapshot-update.js';
 import { createViewHistory } from './view-history.js';
 import { mountWindowChrome } from './window-chrome.js';
@@ -20,7 +20,7 @@ import { bindDialogDismiss } from './dialog-dismiss.js';
 import { attentionNotices, createIntegrationMonitor } from './integration-notifications.js';
 import { createNoticeActions } from './notice-actions.js';
 import { mountNotificationCenter } from './notification-center.js';
-import { mountHome } from './home-view.js';
+import { homeNoticeId, mountHome } from './home-view.js';
 import './home-view.css';
 import './notification-center.css';
 import { returnFocusTarget } from './focus-return.js';
@@ -89,7 +89,7 @@ const calendarSettings = mountCalendarSettings({ panel: byId('calendar-settings'
 } });
 const newMeetingFolder = createNewMeetingFolder({ bridge, onChange: () => { renderSettings(); home.render(); } });
 const recordingSettings = mountRecordingSettings({ byId, bridge, escape, getState: () => state, activeSession: () => activeSession(), folder: newMeetingFolder,
-  acceptProcessing: progress => acceptProcessing(progress),
+  acceptProcessing: progress => acceptProcessing(progress).catch(showError),
   onMicrophone(preference) { state.deviceId = preference.id; state.deviceName = preference.name; render(); },
   onChange: () => renderSettings(), storage: preferenceStorage });
 const settingsPanels = createSettingsPanels({ dialog: byId('settings-dialog'), byId, panels: {
@@ -444,7 +444,11 @@ function render() {
   byId('library-screen').hidden = screen !== 'library';
   byId('welcome').hidden = screen !== 'welcome';
   byId('meeting-detail').hidden = screen !== 'meeting';
-  if (state.connected && !setupVisible) viewHistory?.visit(screen === 'home' ? { kind: 'home' } : screen !== 'meeting' ? { kind: 'library', filter: state.libraryFilter, view: state.libraryView, query: byId('search').value } : { kind: 'meeting', id: meeting.id });
+  // Only places a person can come back to are remembered.
+  const visit = { home: () => ({ kind: 'home' }), meeting: () => ({ kind: 'meeting', id: meeting.id }),
+    library: () => ({ kind: 'library', filter: state.libraryFilter, view: state.libraryView, query: byId('search').value }) };
+  visit['ai-library'] = visit.library;
+  if (state.connected && visit[screen]) viewHistory?.visit(visit[screen]());
   if (!meeting) { detail.update({ id: null }); summaryEvidence?.reset(); return; }
   renderMeetingDates(meeting);
   if (!state.draft?.dirty && !state.draft?.saving && document.activeElement !== byId('meeting-title') && document.activeElement !== byId('meeting-notes')) {
@@ -524,7 +528,7 @@ function acceptSnapshot(snapshot) {
   if (quitQuestion && recordingSessionId() !== previousRecording) quitQuestion.sessionId = recordingSessionId();
   state.snapshotSignatures = signatures;
   state.connected = true;
-  if (state.selectedId && !snapshot.meetings.some(meeting => meeting.id === state.selectedId && meeting.deletedAt == null)) { state.selectedId = null; state.draft = null; state.transcriptDraft = null; state.summary = null; showList(state); speakers.reset(); clearAudio(); }
+  if (state.selectedId && !snapshot.meetings.some(meeting => meeting.id === state.selectedId && meeting.deletedAt == null)) { state.selectedId = null; state.draft = null; state.transcriptDraft = null; state.summary = null; fallBackToList(state); speakers.reset(); clearAudio(); }
   const saved = currentMeeting();
   const draft = state.draft;
   // Compare with what this draft last saved: a save stores the title trimmed, which is
@@ -729,6 +733,16 @@ async function microphoneReady(settingsReturnId = null) {
   if (settingsReturnId) await openSettings('recording', settingsReturnId);
   return false;
 }
+// Core creates the meeting and starts capture together; when capture fails the meeting it
+// created stays, so the list is read again to show it with the error.
+async function startNewRecording(start) {
+  try { acceptSnapshot(await start()); }
+  catch (error) {
+    try { acceptSnapshot(await bridge.readSnapshot()); } catch {}
+    throw error;
+  }
+  await showStartedRecording();
+}
 async function showStartedRecording() {
   if (!activeSession()) return;
   await selectMeeting(activeSession().meetingId);
@@ -745,9 +759,8 @@ async function createMeeting({ record = false, fromHome = false } = {}) {
     // it starts in the folder chosen in settings.
     const context = fromHome ? undefined : state.libraryFilter === 'unfiled' ? null : state.snapshot.folders?.some(folder => folder.id === state.libraryFilter) ? state.libraryFilter : undefined;
     if (record) {
-      if (!await microphoneReady('library-record')) return;
-      acceptSnapshot(await bridge.createRecording(context === undefined ? null : context ?? 'unfiled', state.deviceId));
-      await showStartedRecording();
+      if (!await microphoneReady(fromHome ? 'home-title' : 'library-record')) return;
+      await startNewRecording(() => bridge.createRecording(context === undefined ? null : context ?? 'unfiled', state.deviceId));
       return;
     }
     const meeting = await bridge.createMeeting('새 회의', '');
@@ -779,8 +792,7 @@ async function recordCalendarEvent(key, scope) {
   if (!modelsReady()) return openSetup();
   await finishEditing(async () => {
     if (!await microphoneReady('home-title')) return;
-    acceptSnapshot(await bridge.recordCalendarOccurrence(key, scope, state.deviceId));
-    await showStartedRecording();
+    await startNewRecording(() => bridge.recordCalendarOccurrence(key, scope, state.deviceId));
   });
 }
 
@@ -800,7 +812,8 @@ async function startSelectedRecording() {
   // The meeting the button was pressed on; another selected while devices load is not it.
   const meetingId = state.selectedId;
   await saveDraft();
-  if (!await microphoneReady() || state.selectedId !== meetingId) return;
+  // Leaving the meeting while devices load means it is no longer the one to record.
+  if (!await microphoneReady() || openedMeetingId(state) !== meetingId) return;
   acceptSnapshot(await bridge.startRecording(meetingId, state.deviceId));
 }
 
@@ -1490,7 +1503,6 @@ const detail = mountMeetingDetail({ byId, finishEditing, onError: showError, onR
 } });
 meetingContext = mountMeetingContext({ node: byId('meeting-context-control'), bridge: aiChatBridge, getMeeting: () => state.libraryOpen ? null : currentMeeting(), onSettings: () => { void openSettings('agent', 'meeting-context-control').catch(showError); } });
 // Opening a conversation keeps the shown meeting; its meeting link moves the main view.
-async function openAiConversation(id) { if (await aiChat.flow.selectConversation(id)) await aiChat.open(); }
 async function openAiMeeting(meetingId) {
   if (!state.snapshot.meetings.some(meeting => meeting.id === meetingId && !meeting.deletedAt)) throw new Error('이 회의를 열 수 없습니다.');
   if (state.selectedId !== meetingId || state.libraryOpen) await selectMeeting(meetingId);
@@ -1599,17 +1611,17 @@ const home = mountHome({ container: byId('home-screen'), bridge, icon, escape,
   onConnectCalendar: () => openSettings('agent', 'home-screen'),
   attention: () => attentionNotices(integrationNotices),
   noticeState: id => noticeActions.state(id),
-  onNotice: (notice, action) => noticeActions.run(notice, action),
+  onNotice: (notice, action) => noticeActions.run(notice, action, { returnId: homeNoticeId(notice.id) }),
 });
 void newMeetingFolder.reload();
 // The notification list and home show the same notices and run their buttons here.
 const noticeActions = createNoticeActions({ handlers: {
-  async settings(notice) {
-    await openSettings('agent', 'notifications-open');
+  async settings(notice, { returnId = 'notifications-open' } = {}) {
+    await openSettings('agent', returnId);
     const target = notice.service === 'google-calendar' ? byId('calendar-settings').querySelector('.calendar-settings-account button:not(:disabled)') : byId(`settings-${notice.service}-connect`);
     target?.scrollIntoView?.({ block: 'nearest' });
   },
-  async update(notice) {
+  async update(notice, { returnId = 'notifications-open' } = {}) {
     // The same update as the button in settings; Claude Desktop opens the extension itself.
     const service = notice.service;
     const info = await bridge.connectAgentClient(service);
@@ -1617,7 +1629,7 @@ const noticeActions = createNoticeActions({ handlers: {
     if (client?.state === 'error') throw new Error(client.detail || '업데이트하지 못했습니다. 설정 > 연동에서 다시 시도해 주세요.');
     integrationMonitor.acceptAgents(info);
     if (service === 'claude' && info?.claudeExtensionPath) {
-      await openSettings('agent', 'notifications-open');
+      await openSettings('agent', returnId);
       agentConnectionDialog.openClaudeExtension(info.claudeExtensionPath, byId('settings-claude-connect'));
       return '';
     }
@@ -1634,7 +1646,7 @@ navigation = mountNavigationShell({ document, storage: preferenceStorage, icon,
   count: filter => filter === 'folders' ? (state.snapshot.folders || []).length : library.count(filter),
   folderName: id => (state.snapshot.folders || []).find(folder => folder.id === id)?.name || '',
   onPreview: (view, folder) => library.preview(view, folder),
-  onActivate: view => { if (view === 'home') void openHome(); } });
+  onActivate: view => { if (view === 'home') openHome().catch(showError); } });
 byId('sidebar-preview-open').addEventListener('click', () => { const filter = byId('sidebar-preview-open').dataset.sidebarFilter; void library.show(filter === 'unfiled' || filter === 'trash' || state.snapshot.folders.some(folder => folder.id === filter) ? filter : 'all'); });
 viewHistory = createViewHistory({
   canVisit: route => route.kind === 'home' ? true : route.kind === 'meeting' ? state.snapshot.meetings.some(meeting => meeting.id === route.id && !meeting.deletedAt) : ['all', 'unfiled', 'trash'].includes(route.filter) || state.snapshot.folders.some(folder => folder.id === route.filter),
