@@ -2,6 +2,7 @@ mod app_tools;
 pub mod cli;
 mod connection;
 mod dates;
+mod help;
 pub mod mcp;
 mod mutations;
 mod templates;

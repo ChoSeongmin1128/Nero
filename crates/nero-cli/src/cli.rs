@@ -6,104 +6,13 @@ use std::ffi::OsString;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 
-pub const HELP: &str = "Nero 로컬 CLI
-
-사용법: nero [--data-dir PATH] [--json] <명령>
-
-  meetings list [--trashed] [--folder-id ID | --unfiled] [--from MS|DATE] [--to MS|DATE] [--on DATE] [--timezone IANA] [--offset N] [--limit N]
-  meetings search QUERY [--folder-id ID | --unfiled] [--from MS|DATE] [--to MS|DATE] [--on DATE] [--timezone IANA] [--offset N] [--limit N]
-  meetings get ID [--offset N] [--limit N]
-  transcript get ID [--start SECONDS] [--end SECONDS] [--offset N] [--limit N]
-  summary get ID [--format txt|md] [--include-citations] [--offset N] [--limit N]
-  summary context ID
-  summary import ID --file JSON_PATH
-  folders list [--offset N] [--limit N]
-  people list [--offset N] [--limit N]
-  people update --expected-version HASH --file JSON_PATH
-  meetings attendees ID --expected-version HASH --file JSON_PATH
-  meetings attendee-promote ID --expected-version HASH --file JSON_PATH
-  meetings update ID --expected-version HASH --file JSON_PATH
-  meetings date ID --expected-version HASH [--date YYYY-MM-DD | --clear]
-  meetings move --file JSON_PATH
-  meetings trash --file JSON_PATH
-  meetings restore --file JSON_PATH
-  folders create NAME --expected-version HASH
-  folders rename ID NAME --expected-version HASH
-  folders delete ID --expected-version HASH
-  templates list
-  templates get ID
-  templates create --file JSON_PATH
-  templates update ID --expected-revision HASH --file JSON_PATH
-  templates delete ID --expected-revision HASH
-  templates reset ID --expected-revision HASH
-  jobs list [--meeting-id ID] [--offset N] [--limit N]
-  jobs cancel ID --expected-version HASH
-  meetings import ABSOLUTE_AUDIO_PATH [--meeting-id ID --expected-version HASH]
-  speech set ENGINE [--acknowledge-memory-warning]
-  speech cancel-switch --target ENGINE
-  update status|check|download|install
-  doctor
-  mcp
-
---json              성공 결과를 JSON으로, 오류를 stderr의 JSON으로 출력
---data-dir PATH     앱 데이터 폴더 지정. 조회는 폴더나 파일을 생성하지 않음
---help, -h          도움말
---version, -V       버전
---expected-source-version HASH  같은 조회 첫 페이지의 sourceVersion
---max-bytes N        JSON payload 예산. 1 이상 1048576 이하
---timezone IANA      목록 표시/날짜 해석 시간대. 생략한 목록 표시는 UTC
-
-회의/폴더 목록과 본문은 기본 50개, 최대 200개씩 조회합니다.
-meetings get의 메모와 summary get의 본문은 개행을 보존한 최대 4096바이트 텍스트 조각으로 나눕니다.
-offset/limit은 조각 수이며 페이지의 본문을 순서대로 연결하면 선택한 형식의 전체 본문이 됩니다.
-요약은 기본 Markdown이며 내부 인용 번호를 제외합니다. --format txt는 일반 텍스트로 변환합니다.
---include-citations는 현재 사용자가 내부 인용 번호를 명시적으로 요청한 경우에만 사용합니다.
-날짜 필터는 Unix epoch 밀리초 또는 YYYY-MM-DD이며 from 포함, to 미포함입니다.
-문자열 날짜와 --on은 명시 --timezone이 필요합니다. --on과 --from/--to는 함께 쓸 수 없습니다.
-날짜 경계가 없는 날이나 모호한 자정은 거부하며 epoch 경계로 명시할 수 있습니다.
-다음 페이지는 pagination.nextOffset과 첫 sourceVersion을 사용합니다. 예산에 따라 limit보다 적게 반환할 수 있습니다.
-음성 기록 start/end는 초 단위이며 지정 구간과 겹치는 발언을 조회합니다.
-doctor는 저장소가 없어도 실행 중인 연동 버전과 앱 동봉 버전을 비교합니다.
-공개 연동 최신 버전은 확인하지 않으며 네트워크 조회나 자동 설치를 하지 않습니다.
-mcp는 stdin/stdout으로 MCP를 제공하며 stdout에 진단 문구를 쓰지 않습니다.
-템플릿 JSON은 name/description/prompt 세 문자열입니다. --file -는 stdin을 읽습니다.
-기본/사용자 템플릿을 삭제할 수 있으며 기존 회의 요약은 유지됩니다.
-회의 수정은 실행 중인 Nero에 요청합니다. 파일은 update의 title/notes 또는
-일괄 작업의 expectedVersions와 move의 folderId(null=미분류)를 포함합니다.
-회의/폴더 수정본은 조회 응답의 editVersion이며 sourceVersion과 다릅니다.
-앱 업데이트는 실행 중인 Nero의 공식 업데이트 흐름을 사용합니다. check는 공개 채널을 조회하고
-download는 다운로드를 시작합니다. status로 진행 상태를 확인하세요. install은 모든 편집 저장과
-녹음/처리 작업 유휴 상태를 확인한 뒤 설치/재시작 요청 수락을 반환합니다.
-accepted:true는 설치 완료가 아니며 다시 실행한 Nero의 버전/상태를 확인해야 합니다.
-구버전 앱이 이 명령을 지원하지 않으면 앱의 업데이트 화면을 사용합니다.
-작업 조회/취소는 실행 중인 Nero에 요청하며 모델을 실행하지 않습니다.
-작업 취소는 jobs list의 editVersion을 사용하며 취소 요청 수락 후 상태를 다시 조회합니다.
-인원 update 파일은 people/groups 전체 배열, attendees 파일은 attendees 배열입니다.
-attendee-promote 파일은 attendeeId/name/expectedCatalogVersion 세 문자열입니다.
-요약 import 파일은 summary context의 context, 생성한 text, producer를 포함합니다.
-원문/메모/참석자/기존 요약이 바뀌면 저장하지 않습니다. 요약 저장은 실행 중인 Nero에 요청합니다.
-meetings import는 실행 중인 Nero가 원본을 복사해 가져오며 원본 파일을 옮기거나 바꾸지 않습니다.
---meeting-id는 음성이 없는 빈 회의에만 붙이며 meetings get의 editVersion이 필요합니다.
-가져오기 작업 ID를 반환하며 jobs list로 진행을 확인합니다. 녹음 중이거나 음성 인식 준비 전에는 거부합니다.
-doctor의 speech는 현재 음성 인식 엔진, 화자 구분 설정, 선택지와 대기 중인 전환을 보여 줍니다.
-ai/sources/calendar/terminology/glossary/settings/recording/speakers/models 명령과 meetings new,
-meetings notes-append, transcript start/history/save/restore, jobs retry/acknowledge는 실행 중인
-Nero의 기능을 그대로 사용합니다. 불리언은 --이름 또는 --no-이름, 여러 값은 같은 옵션을 반복하며,
---file JSON_PATH는 나머지 필드를 한 객체로 줍니다. 결과는 JSON입니다. 영구 삭제와 로그인은 없습니다.
-speech set은 준비된 엔진이면 바로 전환하고, 아니면 현재 엔진을 유지한 채 수 GB의 모델을
-내려받은 뒤 전환할 수 있습니다. 메모리 경고가 있으면 사용자 확인 후에만
---acknowledge-memory-warning을 사용합니다. speech cancel-switch는 대기 중인 전환과 다운로드를 취소합니다.
-";
-
-// The app-service commands come from one table and sit with the other running-app requests.
 pub fn help() -> String {
-    let anchor = "  update status|check|download|install\n";
-    HELP.replacen(anchor, &format!("{}{anchor}", crate::app_tools::help()), 1)
+    crate::help::general()
 }
 
 #[derive(Debug, PartialEq)]
 enum Action {
-    Help,
+    Help(String),
     Version,
     Mcp,
     Request {
@@ -176,7 +85,7 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Options, QueryError
             .iter()
             .any(|value| matches!(*value, "--help" | "-h"))
         {
-            Action::Help
+            Action::Help(crate::help::for_arguments(&strings))
         } else {
             match parsed? {
                 (method, params, None) => Action::Request { method, params },
@@ -191,7 +100,8 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Options, QueryError
         return Ok(Options { root, json, action });
     }
     let action = match strings.as_slice() {
-        [] | ["--help" | "-h" | "help"] => Action::Help,
+        [] | ["--help" | "-h" | "help"] => Action::Help(crate::help::general()),
+        ["help", ..] => Action::Help(crate::help::for_arguments(&strings)),
         ["--version" | "-V"] => Action::Version,
         ["mcp"] => Action::Mcp,
         ["doctor" | "status"] => Action::Request {
@@ -199,12 +109,12 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Options, QueryError
             params: json!({}),
         },
         ["meetings" | "transcript" | "summary" | "folders" | "people" | "templates" | "jobs"
-        | "update" | "speech", ..]
+        | "update" | "speech" | "doctor" | "mcp", ..]
             if strings
                 .iter()
                 .any(|value| matches!(*value, "--help" | "-h")) =>
         {
-            Action::Help
+            Action::Help(crate::help::for_arguments(&strings))
         }
         ["update", action @ ("status" | "check" | "download" | "install")] => Action::Request {
             method: "app_update",
@@ -788,7 +698,7 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> i32 {
         Err(error) => return write_error(&error, requested_json),
     };
     match options.action {
-        Action::Help => return write_stdout(&help()),
+        Action::Help(text) => return write_stdout(&text),
         Action::Version => {
             return write_stdout(&format!(
                 "nero {} (integration {}; API 1)\n",
@@ -1277,10 +1187,10 @@ mod tests {
                 params: json!({"target":"qwenKo"})
             }
         );
-        assert_eq!(
+        assert!(matches!(
             args(&["speech", "set", "--help"]).unwrap().action,
-            Action::Help
-        );
+            Action::Help(text) if text.starts_with("nero speech set")
+        ));
         for arguments in [
             vec!["meetings", "import", "relative.m4a"],
             vec!["meetings", "import", audio, "--meeting-id", id],
@@ -1724,11 +1634,15 @@ mod tests {
 
     #[test]
     fn help_and_version_need_no_library() {
-        assert_eq!(args(&["--help"]).unwrap().action, Action::Help);
+        assert_eq!(args(&["--help"]).unwrap().action, Action::Help(help()));
         assert_eq!(args(&["--version"]).unwrap().action, Action::Version);
-        assert_eq!(
+        assert!(matches!(
             args(&["transcript", "get", "--help"]).unwrap().action,
-            Action::Help
-        );
+            Action::Help(text) if text.starts_with("nero transcript get")
+        ));
+        assert!(matches!(
+            args(&["doctor", "--help"]).unwrap().action,
+            Action::Help(text) if text.starts_with("nero doctor")
+        ));
     }
 }

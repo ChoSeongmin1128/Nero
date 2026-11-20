@@ -141,7 +141,7 @@ pub(crate) const TOOLS: [AppTool; 43] = [
     AppTool { name: "settings_get", words: &["settings", "get"], positional: None, usage: "", read_only: true, destructive: false, open_world: false,
         description: "Read Nero settings an agent may change: speakerAnalysis, terminology (available, enabled), recordingTranscription (supported, enabled) and newMeetingFolder (folderId, or null for unfiled).",
         fields: none },
-    AppTool { name: "settings_set", words: &["settings", "set"], positional: None, usage: "[--speaker-analysis | --no-speaker-analysis] [--terminology | --no-terminology] [--recording-transcription | --no-recording-transcription]", read_only: false, destructive: false, open_world: false,
+    AppTool { name: "settings_set", words: &["settings", "set"], positional: None, usage: "[--speaker-analysis | --no-speaker-analysis] [--terminology | --no-terminology] [--recording-transcription | --no-recording-transcription] [--new-meeting-folder ID|unfiled]", read_only: false, destructive: false, open_world: false,
         description: "Change Nero settings only on explicit current user request. speakerAnalysis and terminology apply to future processing. speakerAnalysis changes only while nothing is recording or processing; terminology needs a saved glossary. recordingTranscription recognizes MOSS chunks while recording so the transcript is ready sooner after it ends; it uses CPU/GPU and memory during recording, applies to recordings started afterwards and needs settings_get recordingTranscription.supported. newMeetingFolder is the folder new meetings, recordings and imports start in (a folder ID from folders_list, or unfiled); a continued calendar recording stays in its source meeting's folder.",
         fields: || vec![field("speakerAnalysis", boolean(), "Speaker analysis for future transcripts."), field("terminology", boolean(), "Terminology correction for future transcripts."), field("recordingTranscription", boolean(), "Transcribe while recording, for recordings started afterwards."), field("newMeetingFolder", string(64), "Folder ID new meetings start in, or unfiled.")] },
     AppTool { name: "recording_devices", words: &["recording", "devices"], positional: None, usage: "", read_only: true, destructive: false, open_world: false,
@@ -367,11 +367,54 @@ pub(crate) fn merge_file(params: Value, file: Value) -> Result<Value, QueryError
     Ok(Value::Object(params))
 }
 
-pub(crate) fn help() -> String {
+pub(crate) fn usage_line(tool: &AppTool) -> String {
+    format!("nero {} {}", tool.words.join(" "), tool.usage)
+        .trim_end()
+        .to_string()
+}
+
+pub(crate) fn find_words(arguments: &[&str]) -> Option<&'static AppTool> {
     TOOLS
         .iter()
-        .map(|tool| format!("  {} {}\n", tool.words.join(" "), tool.usage).replace(" \n", "\n"))
-        .collect()
+        .filter(|tool| arguments.starts_with(tool.words))
+        .max_by_key(|tool| tool.words.len())
+}
+
+// One command's help reuses its MCP definition, so an agent reads only what it asked about.
+pub(crate) fn tool_help(tool: &AppTool) -> String {
+    let mut text = format!("{}\n\n{}\n", usage_line(tool), tool.description);
+    let fields = (tool.fields)();
+    if !fields.is_empty() {
+        text.push('\n');
+        for field in fields {
+            let label = if tool.positional == Some(field.name) {
+                camel_to_flag(field.name)[2..].replace('-', "_").to_ascii_uppercase()
+            } else if field.schema["type"] == "boolean" {
+                let flag = camel_to_flag(field.name);
+                format!("{flag} | --no-{}", &flag[2..])
+            } else {
+                flag_name(field.name, &field.schema)
+            };
+            let repeat = if field.schema["type"] == "array" { " (반복)" } else { "" };
+            let need = if field.required { " (필수)" } else { "" };
+            let description = field.schema["description"].as_str().unwrap_or_default();
+            text.push_str(&format!("  {label}{repeat}{need}  {description}\n"));
+        }
+    }
+    text.push_str(if tool.read_only {
+        "\n조회만 합니다. 실행 중인 Nero에 요청하며 결과는 JSON입니다.\n"
+    } else {
+        "\n현재 사용자가 요청한 변경에만 씁니다. 실행 중인 Nero에 요청하며 결과는 JSON입니다.\n--file JSON_PATH로 나머지 필드를 한 객체로 줄 수 있습니다.\n"
+    });
+    text
+}
+
+pub(crate) fn words() -> impl Iterator<Item = &'static [&'static str]> {
+    TOOLS.iter().map(|tool| tool.words)
+}
+
+pub(crate) fn tools_in(group: &str) -> impl Iterator<Item = &'static AppTool> + '_ {
+    TOOLS.iter().filter(move |tool| tool.words[0] == group)
 }
 
 #[cfg(test)]

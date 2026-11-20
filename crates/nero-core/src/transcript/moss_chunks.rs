@@ -10,7 +10,7 @@ pub const CHUNK_FRAMES: u64 = 60 * SOURCE_TIMEBASE;
 const MAX_RAW_BYTES: usize = 16 * 1024 * 1024;
 // v2: two centisecond units observed with the pinned model, at the input rate.
 const TERMINAL_OVERRUN_FRAMES_V2: u64 = 320;
-// v3: 100 ms, after 40 and 60 ms overruns were observed on real meetings.
+// v3: 100 ms.
 const TERMINAL_OVERRUN_FRAMES: u64 = 1600;
 
 // What each stored projector version accepts. Documents keep the version they were
@@ -849,7 +849,7 @@ mod tests {
         assert!(v2.source.unwrap().recognition_report.unwrap().needs_review());
     }
 
-    // The four ways real 60 s chunks failed on a 305-minute meeting.
+    // The four ways a 60 s chunk ends badly.
     #[test]
     fn observed_end_of_chunk_failures_keep_their_text_and_a_repetition_still_fails() {
         let mut value = output(5 * CHUNK_FRAMES);

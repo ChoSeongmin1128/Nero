@@ -86,9 +86,11 @@ macOS의 서명된 실행 파일은 서명 시각이 들어 있는 부분을 빼
 ## CLI
 
 아래 `nero`는 앱에 동봉된 실행 파일의 절대 경로나 사용자가 직접 등록한 명령을 뜻한다.
+`nero --help`는 명령 이름만 보여 주고, 사용법과 규칙은 `nero <명령> --help`가 그 명령 것만 보여 준다. 앱 기능 명령의 도움말은 같은 MCP 도구 정의를 쓴다.
 
 ```sh
 nero --help
+nero meetings list --help
 nero --version
 nero doctor --json
 nero update status --json
