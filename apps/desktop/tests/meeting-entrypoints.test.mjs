@@ -53,7 +53,12 @@ async function fixture(t, { devices = [{ id: 'mic', name: 'Microphone', isDefaul
       assert.equal(deviceId, null);
       const meeting = { id: 'new', title: '새 회의', notes: '', createdAt: 2, status: 'draft', folderId: folderId === 'unfiled' ? null : folderId };
       snapshot = { ...snapshot, revision: snapshot.revision + 1, meetings: [...snapshot.meetings, meeting] };
-      if (startError) throw new Error('마이크를 열지 못했습니다.');
+      if (startError) {
+        // The app publishes the kept meeting and opens it before the command fails.
+        subscriptions.subscribeSnapshots(snapshot);
+        subscriptions.subscribeOpenMeeting('new');
+        throw new Error('마이크를 열지 못했습니다.');
+      }
       snapshot = { ...snapshot, revision: snapshot.revision + 1, session: { id: 'capture', meetingId: 'new', state: 'recording', elapsedMs: 0, sampleRate: 48000, savedFrames: 0 } };
       return snapshot;
     },
@@ -116,16 +121,14 @@ test('missing speech models opens setup without creating a meeting or starting c
   assert.equal(f.count('createMeeting') + f.count('createRecording'), 0); assert.equal(f.count('startRecording'), 0);
 });
 
-test('native start failure leaves the created draft in the list with an actionable error', async t => {
+test('native start failure opens the draft Core kept with an actionable error', async t => {
   const f = await fixture(t, { startError: true });
   f.get('library-record').click();
   await f.wait(() => !f.get('error').hidden && !f.get('library-record').disabled);
   assert.match(f.get('error-message').textContent, /마이크/);
   assert.equal(f.snapshot().session, null);
-  f.window.document.querySelector('[data-navigation-preview="all"]').click();
-  await f.wait(() => f.window.document.querySelector('#sidebar-meeting-list [data-recent-meeting="new"]'));
-  f.window.document.querySelector('#sidebar-meeting-list [data-recent-meeting="new"]').click();
-  await f.wait(() => f.get('meeting-title').value === '새 회의');
+  await f.wait(() => f.get('meeting-title').value === '새 회의' && !f.get('meeting-detail').hidden);
+  assert.equal(f.count('createRecording'), 1);
 });
 
 test('quick record respects the current folder', async t => {

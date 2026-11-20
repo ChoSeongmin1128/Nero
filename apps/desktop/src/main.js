@@ -739,14 +739,10 @@ async function microphoneReady(settingsReturnId = null) {
   if (settingsReturnId) await openSettings('recording', settingsReturnId);
   return false;
 }
-// Core creates the meeting and starts capture together; when capture fails the meeting it
-// created stays, so the list is read again to show it with the error.
+// Core creates the meeting and starts capture together. When capture fails, the app
+// publishes the meeting Core kept and opens it, and the error comes back here.
 async function startNewRecording(start) {
-  try { acceptSnapshot(await start()); }
-  catch (error) {
-    try { acceptSnapshot(await bridge.readSnapshot()); } catch {}
-    throw error;
-  }
+  acceptSnapshot(await start());
   await showStartedRecording();
 }
 async function showStartedRecording() {
