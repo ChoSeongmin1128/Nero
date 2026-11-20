@@ -59,7 +59,7 @@ export function mountLibrary({ bridge, getState, byId, finishEditing, acceptSnap
   const readPreference = key => { try { return storage?.getItem(key); } catch { return null; } };
   const savePreference = (key, value) => { try { storage?.setItem(key, value); } catch {} };
   const shell = owner.querySelector?.('.workspace');
-  const sidebar = shell ? mountNavigationSidebar({ shell, aside: byId('navigation-sidebar'), content: owner.querySelector('.main-content'), trigger: byId('navigation-toggle'), storage, icons: icon, relocate: [['notifications-open', 'notifications-expanded', 'notifications-collapsed', true]].map(([node, expanded, compact, pinnedOnly]) => ({ node: byId(node), expanded: byId(expanded), compact: byId(compact), pinnedOnly })).filter(item => item.node && item.expanded && item.compact) }) : null;
+  const sidebar = shell ? mountNavigationSidebar({ shell, aside: byId('navigation-sidebar'), content: owner.querySelector('.main-content'), trigger: byId('navigation-toggle'), storage, icons: icon, relocate: [].map(([node, expanded, compact]) => ({ node: byId(node), expanded: byId(expanded), compact: byId(compact) })).filter(item => item.node && item.expanded && item.compact) }) : null;
   const savedView = getState().libraryView || readPreference('nero.library.view');
   getState().libraryView = ['folders', 'all'].includes(savedView) ? savedView : 'folders';
   const recents = byId('recent-section');

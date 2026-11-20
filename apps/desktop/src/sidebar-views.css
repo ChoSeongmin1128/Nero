@@ -23,7 +23,8 @@
 .recent-section::details-content { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
 .recent-section > summary { flex: none; }
 .recent-meetings { display: grid; flex: 1; grid-auto-rows: max-content; align-content: start; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; gap: 1px; }
-#notifications-open { position: relative; }
+/* The bell keeps one place in the toolbar whether the sidebar is pinned or collapsed. */
+.application-toolbar > #notifications-open { position: relative; flex: none; margin-inline-end: 4px; }
 #notifications-open[aria-pressed="true"] { color: var(--text); background: var(--hover); }
 /* Only what needs the person: a failed job or a broken connection. */
 .navigation-notification-count { position: absolute; top: -3px; right: -5px; min-width: 15px; height: 15px; padding: 0 4px; border-radius: var(--radius); background: var(--danger-text); color: var(--canvas); font-size: var(--text-micro-size); font-weight: var(--weight-semibold); line-height: 15px; text-align: center; pointer-events: none; }
@@ -32,7 +33,6 @@
 .library-header .navigation-brand { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 8px; align-items: center; }
 .navigation-brand > .brand { grid-column: 1; grid-row: 1; min-width: 0; }
 .navigation-brand > .navigation-toggle-slot { grid-column: 2; grid-row: 1; }
-.sidebar-header-actions:empty { display: none; }
 .sidebar-header-actions { grid-column: 2; grid-row: 1; display: flex; justify-content: flex-end; align-items: center; gap: 4px; min-width: 0; }
 .library-header .sidebar-header-actions button, .library-header .navigation-toggle-slot button { flex: none; width: 28px; min-width: 28px; height: 28px; min-height: 28px; padding: 5px; gap: 0; color: var(--text-secondary); }
 .library-header .sidebar-header-actions button:hover:not(:disabled), .library-header .navigation-toggle-slot button:hover:not(:disabled) { color: var(--text); }

@@ -412,31 +412,31 @@ test('the rail owns the list choices and utilities in both modes while the toolb
     assert.equal(rail.contains(document.getElementById(id)), false);
     assert.equal(aside.contains(document.getElementById(id)), false);
   }
-  const utilities = ['sidebar-model-download', 'sidebar-app-update', 'notifications-open', 'settings'];
+  const utilities = ['sidebar-model-download', 'sidebar-app-update', 'settings'];
   const placement = () => utilities.map(id => document.getElementById(id).parentElement);
   for (const id of utilities) {
     assert.equal(document.querySelectorAll(`#${id}`).length, 1);
     assert.ok(footer.contains(document.getElementById(id)), id);
   }
   assert.ok(footer.lastElementChild.contains(document.getElementById('settings')), 'settings is last');
-  assert.ok(document.getElementById('notifications-open').contains(document.getElementById('notification-count')));
+  const bell = document.getElementById('notifications-open');
+  assert.equal(bell.parentElement, toolbar, 'the bell lives in the toolbar');
+  assert.ok(bell.nextElementSibling === document.getElementById('ai-chat-open'), 'the bell sits left of the Nero panel button');
+  assert.ok(bell.contains(document.getElementById('notification-count')));
   const before = placement();
   const trigger = document.getElementById('navigation-toggle');
   trigger.click();
   assert.equal(rail.hidden, false);
   assert.equal(rail.inert, false);
   assert.equal(aside.inert, false);
-  const bell = document.getElementById('notifications-open');
-  assert.equal(bell.parentElement.id, 'notifications-expanded', 'a pinned sidebar shows the bell beside the logo');
-  assert.ok(document.getElementById('navigation-header').contains(bell));
-  assert.ok(bell.contains(document.getElementById('notification-count')));
-  const others = ids => ids.map(id => document.getElementById(id).parentElement);
-  assert.deepEqual(others(['sidebar-model-download', 'sidebar-app-update', 'settings']), [before[0], before[1], before[3]], 'pinning does not relocate the other utilities');
+  assert.deepEqual(placement(), before, 'pinning does not relocate utilities');
+  assert.equal(bell.parentElement, toolbar, 'pinning keeps the bell in the toolbar');
   assert.equal(trigger.parentElement.className, 'application-toolbar-actions');
   trigger.click();
   assert.equal(rail.hidden, false);
   assert.equal(rail.inert, false);
-  assert.deepEqual(placement(), before, 'collapsing returns the bell to the rail');
+  assert.deepEqual(placement(), before);
+  assert.equal(bell.parentElement, toolbar, 'collapsing keeps the bell in the toolbar');
   assert.equal(document.querySelectorAll('#create-meeting').length, 1);
   assert.ok(toolbar.contains(document.getElementById('create-meeting')));
   assert.equal(rail.contains(document.getElementById('create-meeting')), false);

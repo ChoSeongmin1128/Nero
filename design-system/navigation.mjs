@@ -48,9 +48,8 @@ export function mountNavigationSidebar({ shell, aside, content, trigger, backdro
     shell.classList.toggle('nav-peek', temporary && !pinned);
     shell.classList.toggle('nav-pinned', pinned);
     const focused = document.activeElement;
-    for (const { node, expanded, compact: collapsed, pinnedOnly } of destinations) {
-      // A control that would move under the pointer while the sidebar only peeks stays on the rail.
-      const destination = (pinnedOnly ? pinned && !unavailable() : open) ? expanded : collapsed;
+    for (const { node, expanded, compact: collapsed } of destinations) {
+      const destination = open ? expanded : collapsed;
       if (!node || !destination || node.parentElement === destination) continue;
       const preserveFocus = node.contains(focused);
       destination.append(node);
