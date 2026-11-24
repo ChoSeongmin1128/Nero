@@ -40,7 +40,7 @@ This file applies to the entire repository.
   ends and does not provide live previews. See `scripts/apple-speech/README.md`.
 - Legacy Nemotron recognition sends the complete recording through one stateful
   NeMo-Speech.cpp stream with endpointing disabled, then finishes the stream at EOF.
-  `commit_nemotron_transcript` requires pinned model/runtime identity, full input-frame
+  `commit_transcript` with `AsrProvider::Nemotron` requires pinned model/runtime identity, full input-frame
   identity, successful native completion evidence and valid word timestamps. Preserve
   native output, the execution receipt and original audio; completion evidence does
   not prove that every spoken word was recognized. Never silently switch to chunk ASR.
